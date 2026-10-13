@@ -1,131 +1,88 @@
 # Projects, spaces, and operations
 
-This specification owns durable space and project identity, team enrollment and
-sessions, project membership, project homes, registration/setup, rebuildable
-caches, and process ownership boundaries. The source-built server, its update
-lifecycle, provisioning, transfer, and backup/restore are in
-[Server and machine operations](server-and-machine-operations.md).
+Space/project identity, membership, setup, caches and operational lifecycle.
+[Machine operations](server-and-machine-operations.md) owns deployment,
+provisioning, transfer and backup.
 
 ## Spaces and durable identity
 
-A **space** is one durable RCP authority domain backed by one SQLite control
-plane. It owns the project catalog, operational records, execution configuration,
-and, for a team space, members and credentials.
+A space owns one SQLite control plane, project catalog, operational/execution
+state and team credentials. It mints random `space_id` and immutable `personal`
+or `team` kind (legacy installs migrate personal). Identity survives restart,
+address/path changes, upgrade and authorized relocation; it is never inferred
+from host, files, credentials or users. `/api/health` separately reports transient
+`instance_id` and path-derived `data_dir_id`. A restored copy shares authority:
+operators must prevent the old copy from serving.
 
-Every space mints one random `space_id` and stores an immutable kind,
-`personal` or `team`. Existing installations migrate to personal. The id and
-kind survive process restart, address/port change, upgrades, machine replacement,
-and authorized relocation of the complete data directory. RCP never infers them
-from host, path, credentials, users, or process state.
-
-`space_id` is distinct from the transient process `instance_id` and the
-path-derived `data_dir_id`. `/api/health` reports all three lifecycles
-separately. Copying/restoring the complete control plane also copies the authority
-id; an operator must ensure an old restored copy cannot keep serving.
-
-A personal space has one durable local owner and a separate owner credential. A team
-space authenticates every human request and gives equal product authority to its
-members; RCP defines no administrator product role.
+Personal spaces have one durable owner and separate credential. Teams authenticate
+every human request with equal member authority, without an administrator role.
 
 ### Personal sign-in
 
-Every personal API request and terminal WebSocket requires an owner session.
-The static Web shell, adoption health, owner credential exchange and code
-redemption, and OPTIONS remain public. The phone-pairing listener is separate.
-Display-name selection follows authentication and grants no session by itself.
+Personal APIs and terminal sockets require owner sessions. Static shell, adoption
+health, credential exchange/code redemption and OPTIONS are public; phone pairing
+has its own listener. Display-name selection grants no authentication.
 
-The desktop keeps a 32-byte secret in Keychain, keyed by data-directory identity.
-A fresh backend enrolls its hash only under the data-directory ownership lock.
-Exchange never enrolls a credential. Each personal server start supplies a
-single-use sign-in code. Human mode prints its sign-in URL to stdout;
-`--machine-readable` emits only the launch outcome JSON, with the code in
-`owner_sign_in_code`. Reused and team outcomes omit that field.
-The code expires after ten minutes and locks after repeated incorrect guesses.
-Redemption may replace the desktop secret;
-replacement revokes previous owner sessions. No raw secret or code is persisted.
+Desktop Keychain stores a 32-byte secret keyed by data-directory identity. Only
+fresh initialization under the instance lock enrolls its hash; exchange never
+enrolls. Each personal start issues a single-use ten-minute code, locked after
+repeated guesses. Human launch prints a URL; machine launch returns only outcome
+JSON with `owner_sign_in_code`, absent for reused/team outcomes. Redemption may
+replace the secret and revoke old sessions. Raw codes/secrets are never persisted.
 
-Owner and team sessions share hashed token storage, expiry, and revocation.
-Their admission policies and cookies are separate. The owner cookie is host-only,
-HttpOnly, SameSite=Strict, and Secure on HTTPS. Owner credentials, codes, and
-sessions are excluded from database snapshots and invalidated on restore.
-A restored personal backend requires a new sign-in.
+Owner/team sessions share hashed storage, expiry and revocation, but separate
+admission and cookies. Owner cookie is host-only HttpOnly SameSite=Strict, Secure
+on HTTPS. Snapshots exclude owner credentials/codes/sessions; restore requires
+fresh personal sign-in.
 
 ### Space machines
 
-A space keeps one machine card per host route, with a name, account, and
-writable paths; SSH picks the account from the route and provider sign-in is
-keyed by host, so a second account on one host is refused, down to the table's
-unique host. Project manifests stay the source of truth for a project's
-machines: setup and **Add machine** copy a card's host and account, so the
-wrong-account check still runs when the route does not name the user, and a
-project machine finds its
-card by host. The space page can add a card but never writes a manifest. The list fills from
-registered projects' accepted manifests at startup, on registration, and when a
-machine is added; when two manifests name different accounts for one host, its
-card names none (and a warning is logged) rather than keeping one at random; raw manifest loads, preflight, history reload, backup, and
-rehearsals never write it. The table is space data: backup keeps it, and project
-transfer excludes it, so a target space grants its own paths.
+One machine card per unique host records name, account and writable paths. SSH
+selects account through the route; a second account on one host refuses. Project
+manifests own machine configuration: setup/Add machine copies card host/account
+and rechecks account even when the route omits user. Space card creation never
+writes manifests. Startup, registration and Add machine fill cards from accepted
+manifests; conflicting accounts produce a nameless account and logged warning.
+Raw loads, preflight, replay, backup and rehearsal never mutate cards. Backup
+keeps them; transfer excludes them so the target grants its own paths.
 
 ## Team initialization and enrollment
 
-`rcp space init --team` deliberately creates a team space and requires an
-interactive terminal and explicit name. It prints one single-use bootstrap code
-exactly once. Serving a team space prints no secret.
+`rcp space init --team` needs an interactive terminal and explicit name, creates
+a team and prints one bootstrap code once. Fresh installed service stays stopped
+until initialization as `rcp`; serving never prints a secret or initializes beside
+another lock owner. [Install](../server.md) owns this procedure.
 
-On a fresh source-server installation, the systemd unit is installed but remains
-stopped until an operator runs that command interactively as the `rcp` service
-account through the installed wrapper. Only successful initialization permits
-the first service start. Initialization therefore neither opens SQLite beside a
-running lock owner nor sends the bootstrap code to a service log.
+The first member redeems bootstrap; later members redeem short-lived single-use
+invitations from any member. Repeated bad guesses lock that code only. Copy text
+names space/expiry and shows the code once, never in a URL. The identity panel
+shows an equal-ranked roster/count and creator-only invitation ledger: waiting,
+joined name, expired, locked or revoked. Refresh rereads both.
 
-The first member exchanges that bootstrap code; later members use short-lived,
-single-use invitations created by any existing member. Repeated invalid guesses
-lock only that code. Invitation copy text names the nonsecret space and expiry,
-shows the code once, and never embeds it in a URL.
+Only a live invitation's creator may revoke it, idempotently preserving the first
+time. Redemption reports it as invalid, not revoked. Consumed invitations cannot
+remove members. Restore and member removal revoke outstanding invitations.
 
-The desktop identity panel lists the enrolled team roster and count without
-roles or ranks. An invitation's creator sees its nonsecret ledger state as
-waiting, the joining member's display name after enrollment, expired, locked,
-or revoked, and may refresh that roster and ledger explicitly. Raw codes remain
-one-display secrets.
+Enrollment returns one high-entropy permanent `rcp_` token; SQLite keeps indexed
+SHA-256 hashes and uses constant-time comparisons. Raw tokens go only to controlled
+exchange, never URLs, ordinary requests, JavaScript storage, prompts or history.
+Exchange creates an HTTP-only Secure SameSite=Lax `__Host-` browser cookie with
+central idle expiry. Restart does not reenroll. Members rotate/revoke only their
+own token and log out their own sessions, subject to last-member safeguards in
+[machine operations](server-and-machine-operations.md#machine-authority-and-the-operator-surface).
+Revocation does not cancel already-authorized tasks.
 
-An invitation's creator may revoke it while it is still live, because a code
-that reached the wrong place is otherwise redeemable until it expires. Only the
-creator may revoke, matching who can see it, and a revoked code is refused as
-invalid rather than as revoked. Revocation is idempotent and keeps the first
-revocation time. A consumed invitation is not revocable: the member it already
-minted is removed through member removal, not by editing the credential that
-made them. Restoring a backup and removing a member both revoke that member's
-outstanding invitations.
+Second-device pairing exchanges a short-lived single-use code plus human-entered
+device name for its own session, not the permanent token. Restore revokes pairing
+codes. Desktop **Add team space** uses SSH to loopback, then bootstrap/invitation
+or permanent-token exchange. Phones use tailnet HTTPS per the
+[device guide](../device-pairing.md); public HTTPS is not a deployment path.
+Unauthenticated team browsers see focused sign-in; personal spaces use owner auth.
 
-Enrollment issues one permanent, high-entropy `rcp_`-prefixed token for that
-human. RCP stores only an indexed SHA-256 hash and constant-time compares it.
-Raw tokens are accepted only by the controlled exchange endpoint and are absent
-from URLs, ordinary API requests, JavaScript storage, prompts, receipts,
-diagnostics, configuration, and canonical history.
-
-The exchange creates a server-side browser session in a `__Host-` prefixed,
-HTTP-only, `Secure`, `SameSite=Lax` cookie with centrally configured idle
-expiry. Restart does not re-enroll members. A member may rotate or revoke only
-their own credential and may log out their own session.
-
-A second device joins by pairing, not by receiving the token: a signed-in
-session issues a short-lived single-use code, and the new device redeems it
-with a human-typed device name for an ordinary session of its own. Restoring a
-backup revokes outstanding pairing codes along with invitations.
-
-A team space binds only loopback because credentials may not cross plaintext
-HTTP. The source-built desktop **Add team space** flow reaches it through an SSH
-tunnel, enrolls a new member with a bootstrap or invitation code, or reconnects
-an existing member with their permanent token. A phone reaches the same
-loopback listener through the operator's tailnet, where `tailscale serve`
-terminates HTTPS in front of it; the procedure is in the server guide. A public
-HTTPS front is not a product path. An unauthenticated browser receives the
-focused team login boundary; a personal space remains locally owned without a
-team credential.
-
-Credential revocation does not cancel already-authorized tasks. Stopping work
-and changing project membership are separate authority actions.
+Each connection proves current native protocol overlap; the
+[projection spec](api-web-and-desktop-projections.md#confirmed-team-desktop-target)
+owns ranges and fixtures. **Why:** version age and saved minima cannot prove wire
+compatibility. A small integer range avoids a second feature-capability API.
 
 ## Project identity and home
 
@@ -144,9 +101,8 @@ enrolled spaces; there is no fresh-identity fork. Transfer
 creates a separate team checkout and moves the canonical home only after the old
 home is fenced. Its home-change record preserves both space-scoped human actors;
 it does not change ownership of a person's checkout. Team-to-team and
-team-to-personal product transfers remain excluded. The transfer's
-operational-record boundary and versioned archive formats are settled in the
-[personal-to-team transfer decision](../decisions/2026-08-27-personal-to-team-transfer-archive.md).
+team-to-personal product transfers remain excluded. The [transfer archive](server-and-machine-operations.md#personal-to-team-transfer-archive)
+owns transferred history and recovery.
 
 Episode archives travel with their original archiving-human snapshot and time.
 A graph branch that Merge cleanup archived travels as its owner's
@@ -205,179 +161,68 @@ still has whatever read visibility its host operating-system account permits.
 
 ## Member terminal lifecycle
 
-`TerminalManager` owns one session per repository per project, and underneath
-that one shell per working tree: a request is refused when any session, under
-another alias or in another project, is already open on the tree it resolves
-to, or is still opening on it. An open reserves the tree it resolved, not the
-alias it was asked for, because a registration can be renamed or moved while
-that open is still probing or launching. A working tree is identified by the
-path a session resolved, locally or on its execution machine, and the host it
-resolved it on. Declarations are how settings name a tree and are never
-compared, so two declarations that spell one tree are one tree.
-Registrations can be renamed and moved between projects, and two shells writing
-one tree is what the rule exists to prevent. Project members may attach to the
-existing session of their own project's alias, or end it. The starting member remains its
-audit actor; losing that member's project membership or beginning account
-removal ends the shell, including detached sessions. A viewing member who loses
-access is disconnected independently. A deleted or retired project's sessions
-also lose membership and end.
+`TerminalManager` admits one session per project/repository and one shell per
+resolved working tree across aliases/projects. Tree identity is resolved path
+plus host, not declaration spelling. An opening request reserves that identity
+so renames cannot admit another shell. Project members can attach/end their
+session; its starter remains the audit actor. Lost starter membership, account
+removal, project deletion or retirement ends it; viewers losing access disconnect.
+A slow viewer detaches with reconnect available while the shell keeps running.
+Mouse-reporting programs receive drags; Option-drag on Mac or Shift-drag elsewhere
+still selects text.
 
-A viewer that cannot keep up with its own output is detached, not ended: the
-shell keeps running and the view offers a reconnect. Reusing the session-end
-signal there would report a live shell as terminated.
+Sessions survive view closure/browser disconnect. Only arriving input renews the
+30-minute idle lifetime, even if PTY delivery is backpressured. Output and passive
+attachment do not. A five-second sweep checks membership, exit and expiry.
+Shutdown/maintenance ends sessions; mirrored startup reconciles orphan units and
+persisted launch intents before new sessions.
 
-While a full-screen program such as Codex reports the mouse, a drag goes to
-that program; Option-drag on a Mac, or Shift-drag elsewhere, still selects text
-to copy.
+A mirrored record finishes only after its unit is confirmed gone, including
+failed launches or exited SSH. Remote cleanup uses a fresh connection if needed
+and the recorded account. Shutdown leaves uncertain records unfinished without
+waiting serially for the network. Failed live stops retain runtime for retry,
+hide the session, disconnect viewers and discard their queued output. Successful
+stops drain queued output. Any uncertain stop blocks a second shell on that tree,
+even under a new alias.
 
-Sessions outlive the Terminals view and disconnected browsers. Only terminal
-input renews the 30-minute idle lifetime in `limits.py`, and it renews it on
-arrival rather than once the shell has taken it, because a backpressured PTY
-can leave a write waiting for as long as it likes; output and passive
-attachment do not keep an abandoned shell alive. The lifecycle sweep rechecks
-membership, process exit, and idle expiry every five seconds. Clean server
-shutdown and maintenance end sessions. For mirrored sessions, startup stops
-orphan systemd units named in this application's metadata before admitting new
-sessions, including launch intents persisted before a crash.
+Startup reconciliation is bounded and concurrent, best-effort per record, never
+a server boot gate. Metadata must include every current field with correct string
+or end-field null types and a filename matching session id; defaults cannot turn
+missing host into local authority. Unreadable records stay untouched and block
+any identifiable project/repository. Unexpected reconciliation failures also
+block. Each filename owns its independent blocker. Readable unfinished records
+are retained before stopping, including when the startup budget expires. Foreign
+data-directory unit identities retire as mismatches without attempting a stop.
+Open retries every retained record matching alias or resolved tree and refuses
+until all owned units are confirmed gone; unreadable records can match only alias.
 
-A session record is finished only when its unit is known to be gone. Ending a
-mirrored remote session confirms the stop explicitly rather than trusting the
-far side's hangup handler, and a stop that cannot be confirmed leaves the
-record unfinished, because an unfinished record is what the next startup
-reconciles. A session whose SSH has already exited is confirmed the same way,
-over a fresh connection: the supervisor writes its completion marker before the
-cleanup that can still fail, and reports that failure only through an exit
-status a dropped link produces too, so a finished shell says nothing about
-whether its unit went with it. Server shutdown leaves the same unfinished
-record rather than waiting on the network for every live session.
+Sessions pin declared path, machine, host and account. List, open (before 404 or
+launch checks) and socket access retire changed/removed registrations. Stale
+aliases retire concurrently; open settles only its own alias. Failed retirement
+retries later and keeps the tree reserved. An unchanged running session returns
+before capability/inventory checks, whose failure gates only new launches.
+Probe, resolution and launch run outside the manager lock; duplicate concurrent
+opens refuse rather than queue behind an unreachable machine.
 
-A live session whose stop fails keeps its runtime so the stop can be retried on
-the next sweep, and stops being one a member can list, attach to, or be handed
-back by a new open request. The decision to end it stands even though its shell
-may still be running, and a second shell on that checkout is refused until the
-stop succeeds — under whatever alias it is asked for, because a failed local
-stop leaves no retained record and settings can register that checkout under
-another name. Anyone already watching is told the session ended, because a
-socket reads its queue without consulting the manager again, and refusing the
-next attach would leave the viewer it already has. The output still queued for
-them goes with it: the decision is that they stop receiving from this session,
-and a subscriber queue holds many frames of it. A stop that succeeds instead
-lets what is queued through, because the shell finished and that output is
-theirs.
+Backend eligibility belongs to the repository machine, not space kind. Linux
+requires systemd tools, `findmnt` and a reachable user manager for mirroring;
+other systems use cooperative PTYs. Terminal capability does not require linger.
+Cooperative termination hangs up then uses bounded kill; deliberately detached
+descendants have no cleanup guarantee or canonical-state filesystem fence.
+Payloads explicitly report that limitation. Mirrored verification failure never
+falls back to cooperative.
 
-Startup reconciliation is best effort per record and never refuses the server a
-boot. A record is readable when it names every field this version writes,
-each holding a string or, for the two that end a record, null, and the file is
-named for the session in it; `save_metadata` writes every record that way, so
-anything else was not written by this version and is not read through the
-dataclass's defaults, where an absent execution host would say local. An unreadable
-record is left exactly as found and, if it still names a project and
-repository, blocks that repository in a way nothing can confirm gone, because
-being unable to read a record is not evidence that its shell is gone. It is
-resolved by hand or by the version that wrote it. A readable record that fails
-to reconcile for a reason no branch anticipates, such as a destination `ssh`
-refuses outright, blocks its repository the same way. Only the file's own name
-identifies a blocker, so two records never share one and resolving either
-cannot release the other.
-
-A readable, unfinished record is retained before its stop is tried and finished
-only once its unit is confirmed gone. Records reconcile together, because
-shutdown leaves every live remote session unfinished and a machine that went
-away would otherwise cost one remote stop timeout per record before any other
-startup owner runs; the budget bounds the boot, because the stops are blocking
-calls in one thread pool. Retaining first is what makes the budget safe: a
-record still running when it expires stays retained with everything it says,
-so a later open retries the very stop it names. A record naming a unit this
-data directory does not own is retired as a unit-identity mismatch without a
-stop attempt, because the unit prefix hashes the data directory and moving it
-must not be a permanent startup failure. A launch that fails finishes its own
-record on the same condition: a cooperative launch has no unit, and a mirrored
-one is finished only once its unit is known to be gone, because a mirrored
-launch can create its unit and then fail before readiness.
-
-A retained record blocks a reopen. Opening a repository retries every retained
-record that speaks for it, once the open has resolved its tree, and refuses
-while any cannot be confirmed gone, rather than putting a second shell on one
-working tree. A record speaks for an open by the alias it was filed under and
-by the tree its shell resolved, compared against the tree the open resolved, so
-settings dropping an alias and registering the same checkout under another
-name or spelling hide nothing. A record this version could not read resolved
-nothing, so its alias is all it has. The retry runs wherever a record was
-retained: after a startup that could not stop it, after a launch that failed
-with its unit unaccounted for, and after an end whose stop went unconfirmed.
-
-A session records what its repository was registered as: the declared path,
-the machine, that machine's host, and its account. Re-registering the alias as
-any of those retires the session rather than handing it back, so a request for
-one checkout is never answered with a live shell on another, on another
-machine, or under another account. Two machines can share a path string, so
-the path alone does not identify a registration. Remote unit cleanup carries
-that recorded account as well, because stopping under a different one would
-find no unit, call that success, and finish a record whose unit still runs.
-
-Opening a session returns an existing session for that repository before any
-launch prerequisite is consulted. A capability probe or inventory read that now
-fails gates a new launch; it never withholds a session that is already running.
-
-That holds only while the alias still names what the session opened on. Once it
-names another path, machine or account, or the project stops registering it at
-all, the running shell is not what was asked for.
-
-Nothing recomputes a registration on its own, and a member cannot be relied on
-to ask: the Open control is hidden for a repository that already has a session,
-so a stale session hides the very control that would replace it. The
-projections a member reaches a session through settle registrations instead —
-the polling session list, the open request before its 404 and before every
-launch prerequisite, and the socket, which is reached by id rather than through
-the list. A session whose alias has stopped naming it is retired there, so it
-stops being listed and stops being attachable without anyone opening anything.
-Stale aliases are retired together rather than in turn, because every one of
-those callers is a member waiting on an answer and an alias whose machine has
-gone costs a stop timeout. An open request settles only the alias its answer is
-about, so it never waits on the machines of aliases it does not mention. An
-alias whose retirement fails keeps its session, and the next call retries.
-
-Opening a session holds the manager lock only to admit the request and to
-publish the result. The capability probe, remote repository resolution, and the
-launch run outside it, so one unreachable machine cannot stall another member's
-open, end, or the lifecycle sweep. A second open for a repository already
-opening is refused rather than queued behind it.
-
-A cooperative session is a server-owned PTY with a plain shell in the repository,
-using the scrubbed environment and no mount profile. Normal termination hangs
-up the shell and uses a bounded kill if needed. Server exit closes its PTY and
-hangs up the shell; deliberately detached descendants have no cleanup guarantee.
-This is not systemd cgroup ownership. Its session payload reports `cooperative`
-and the missing canonical-state protection: no canonical-state fence exists on
-that machine.
-
-Eligibility belongs to the repository's machine, never its space kind. Linux
-selects the mirrored backend only with usable systemd tools, `findmnt`, and a
-reachable user manager; other operating systems select cooperative. A remote
-machine's source-shipped capability probe supplies its OS, its prerequisites,
-and its systemd version. It does not require lingering for the execution
-account, because a terminal's manager need only outlive its own session.
-`TerminalManager` caches one probe per machine for its lifetime, including failed
-results, and caches the local machine's capability the same way rather than
-spawning its probe processes on every repositories poll. A cache miss schedules background work and projects pending without
-blocking the route. Changed machine metadata invalidates the matching result;
-the explicit terminal Refresh action invalidates the project's machine results.
-An older in-flight result cannot replace a newer probe, and is
-cancelled so it stops holding a probe worker its replacement needs.
-
-Remote sessions use a server-owned SSH PTY. Browser detachment still leaves the
-same session running, but loss of the SSH link ends its RCP session and records
-the link failure. A shell completion marker distinguishes an actual shell exit
-255 from SSH's ambiguous exit 255. There is no automatic replacement shell. A
-mirrored profile or verification failure ends the launch with its diagnostic and never
-starts a cooperative session. Backend selection and launch details are owned by
+One source-shipped capability probe per machine is cached for the manager's
+lifetime, failures included. Misses project pending and run in background.
+Metadata changes or terminal Refresh invalidate it; stale in-flight probes are
+cancelled and cannot replace newer results. Remote sessions use an SSH PTY;
+link loss ends the session without replacement. A completion marker distinguishes
+shell exit 255 from transport exit 255. Launch/containment details belong to
 [Providers and containment](providers-and-containment.md#member-terminals).
 
-The operational metadata under the application data directory records member,
-project, repository, start, end, and termination reason. It contains no PTY byte
-transcript. A bounded in-memory output tail supports reconnect and is discarded
-when the session ends; no shell history file is written. This lifecycle owns no
-canonical research mutation and introduces no manifest permission setting.
+Metadata records member, project, repository, start/end and reason, never a PTY
+transcript. A bounded memory tail serves reconnect and disappears on end; no
+shell history is written. Terminals add no graph mutation or manifest permission.
 
 ## Repository and truth scope
 
@@ -397,10 +242,6 @@ rendering for its exact graph target plus only its selected raw repository
 pointers. Work-like write containment separately permits exact admitted
 repositories on the execution machine; context and write permission are not the
 same thing.
-
-Routes never write a manifest, Patch, branch, or materialized output directly.
-State workspaces own locks, atomic temp-file replacement, and explicit local or
-remote publication.
 
 Provisioning storage represents a repository source as a GitHub reference or
 null (server only). Requests can create a team project, receive a transfer, add
@@ -431,167 +272,114 @@ or push proof.
 
 ## Durable agent task lifecycle
 
-`AppStore` may keep one SQLite file. Add compound transactions for proven harmful
-partial-write windows; do not split the store for aesthetic breadth alone.
+`AppStore` uses SQLite; compound transactions address harmful partial writes,
+not aesthetic module size. Each thread reuses one connection for outer blocks;
+nested blocks commit independently. Acquire resets transaction, foreign-key,
+row-factory and migration-pragma state. Memory databases are uncached. Idle handles
+are globally bounded and close at thread exit, disposal or `close()`; active
+blocks close on exit. Shutdown and temporary stores close explicitly. Inode
+replacement invalidates cached connections. Live snapshots use SQLite backup;
+offline copies/hashes/publication close stores first to flush WAL.
 
-Each store reuses one connection per thread for outermost connection blocks.
-Nested blocks keep separate connections and independent commit boundaries.
-Acquisition restores transaction, foreign-key, row-factory, and migration-pragma
-state. Memory databases remain uncached. Idle handles have a process-wide bound;
-thread exit, store disposal, and explicit `close()` release them. App shutdown
-and temporary-store retirement call `close()`; active blocks close on exit.
-A replaced database inode invalidates its cached connection on the next acquire.
-Live snapshots use SQLite backup. Offline copies, hashes, and publication must
-close their stores first so committed WAL data reaches the database file.
+Empty databases replay current raw DDL captured from a real migration, in SQLite
+creation order, stamp the ledger and seed space/owner/bootstrap identity.
+Existing databases run ordered migrations and validation.
 
-New empty databases replay the raw current DDL captured from a real migration
-run, preserving SQLite creation order, then stamp the complete ledger and seed
-space identity, the personal owner, or a requested team bootstrap code. Existing
-databases still execute the ordered migration chain and its validation.
+`queued` can become `running`; `queued` or `running` can become `pausing`.
+Any active state can become `paused`, `succeeded`, `failed` or `interrupted`.
+Resume/Retry admit child attempts under chain rules, never rewrite parent status.
+Each change checks and updates in one write transaction. A refused single-task
+transition preserves status, receipts, Patch, notices and cleanup, adding one
+truthful warning. Human pause instead retains its explicit error without a refusal
+event; bulk restart ignores terminal rows. Missing ids raise `KeyError` without
+side effects. Terminal progress updates quietly do nothing. Cleanup and lifecycle
+receipts/notices occur only for an applied transition.
 
-Agent task status transitions are one durable contract: `running` may follow
-`queued`; `pausing` may follow `queued` or `running`; and `paused`, `succeeded`,
-`failed`, or `interrupted` may follow any active status (`queued`, `running`, or
-`pausing`). Resume and Retry are child-attempt admissions with their own
-attempt-chain requirements, not transitions of the parent row.
+Public rows supply `active`, `queued`, `pausing`, `awaiting_human`, `paused`,
+`failed`, `settled`, `finished`, `status_label` and retained status. Web gates and
+labels use those answers; its sealed response type prevents a second status
+machine in client string branches.
 
-Every status-changing operation observes and updates the task under one write
-transaction. An existing task that refuses a single-task transition keeps its
-status, receipts, retained Patch output, lifecycle notices, and cleanup state,
-and appends one truthful warning refusal event. The human pause request keeps
-its explicit error response and writes no refusal event; bulk restart
-interruption is quiet for terminal rows. A missing task id raises `KeyError`
-without writing any event, receipt, notice, or cleanup. Progress updates on an
-existing terminal task quietly do nothing, while a missing id still fails
-loudly. Completion cleanup, pause/failure receipts, and lifecycle notices occur
-only when their guarded transition applies.
+`storage/request_compat.py` normalizes persisted requests when a row becomes an
+`AgentTaskRecord`, before any recovery/Retry/watcher/mail policy parses it.
+Only the explicit per-kind retirement allowlist removes fields (currently legacy
+`auto_research.ending`). Unknown fields remain for strict rejection; mappings
+assembled outside row decoding use the same helper. Live models remain
+`extra="forbid"`. Retire only shipped fields whose removal preserves meaning.
 
-Public task rows carry the backend's lifecycle answers alongside the retained
-status: `active`, `queued`, `pausing`, `awaiting_human`, `paused`, `failed`,
-`settled`, `finished`, and `status_label`. Browser task surfaces group, gate,
-and label work from those answers; they do not compare the status vocabulary to
-reconstruct the lifecycle. The Web response type seals that vocabulary so a new
-string branch fails typechecking instead of silently creating another state
-machine.
-
-A persisted task request crosses `storage/request_compat.py` when its SQLite row
-becomes an `AgentTaskRecord`, before startup, watcher, mail, Retry, or recovery
-policy can choose a parser. The decoder removes only fields named in an explicit
-per-kind retirement allowlist; the current allowlist contains only legacy
-`auto_research.ending`. Unknown or unallowlisted fields remain and strict request
-validation refuses them. A stored mapping assembled outside row decoding uses
-the same migration helper. Live request models remain `extra="forbid"`.
-Extend the closed retirement allowlist only for a shipped, now-retired field
-whose removal preserves meaning; keep unknown fields for strict rejection.
+The [backend ownership rationale](../decisions/2026-08-20-backend-structural-refactor-closure.md)
+explains why named engine/owner calls do not require a plugin architecture.
 
 ## Add project and retained research
 
-RCP exposes one visible project wizard with three backend-authorized intents:
-**Use an existing checkout personally**, **Create a shared team project**, and
-**Move an existing personal project to a team**. Entry context may preselect an
-intent, but the heading, review, and progress always name it plainly. Project
-Settings and the personal project card menu open the same wizard with the move
-intent and source project already selected; RCP does not grow a second transfer
-or team-setup wizard.
+One project wizard exposes backend-authorized intents: **Use an existing checkout
+personally**, **Create a shared team project**, and **Move an existing personal
+project to a team**. Entry may preselect intent/source, including Settings and
+project-card Move; heading, review and progress name it. Personal setup uses the
+direct owner, team creation uses provisioning, and move coordinates both spaces.
+Team backends refuse old direct registration/setup routes before interpreting
+bodies or inspecting files. Backend eligibility, not path or space-kind inference,
+decides which fields/actions appear.
 
-Personal setup keeps the current path-based local/SSH fields. The local desktop
-field has its native folder picker. The SSH field preserves manual absolute
-entry and may browse from the authenticated remote user's home, one backend-
-validated directory level at a time, using only SSH state already present on
-the RCP-running machine. It labels direct Git repositories and `.research`
-directories, does not recursively scan, and never accepts credentials. New team
-setup accepts GitHub.com repository URLs and execution placement, then derives
-the server-managed central checkout paths; it never asks the member to move or
-upload an existing checkout. This slice accepts only
-`https://github.com/<owner>/<repository>[.git]` and
-`git@github.com:<owner>/<repository>[.git]`, normalizes either to one bounded
-`GitHubRepositoryRef`, and derives all clone and settings URLs from that value.
-A local-only codebase must first be pushed through the human's ordinary Git
-workflow to a GitHub repository with a real commit. RCP neither creates that
-GitHub repository nor takes the member's GitHub token. Move mode reads
-repository and history identity from the selected personal project and asks
-only for target placement and configuration that may change.
+Personal setup accepts local/SSH paths. Desktop offers its native local picker;
+SSH browsing starts at the authenticated user's home, one backend-validated
+level at a time, labels Git/`.research` directories, never recursively scans or
+collects credentials, and retains manual absolute entry.
+Team setup derives managed paths from GitHub sources or blank **Server only**
+choices. Empty GitHub setup announces its initial commit. See
+[Central checkouts](server-and-machine-operations.md#central-checkouts-and-repository-credentials)
+for sources and [provisioning](server-and-machine-operations.md#durable-project-provisioning)
+for review. Move reads source identity/history and asks only for target changes.
+Desktop offers it only when source export, target import and native authenticated
+relay are all available; browsers have no native relay capability.
 
-The one wizard is presentation, not one authority path. Personal setup uses the
-existing direct setup owner, new team setup uses a durable provisioning request,
-and move coordinates the authenticated personal and team backends. Direct calls
-to the old registration route or ordinary setup preflight/create routes on a
-team backend are rejected before request-body interpretation, filesystem
-inspection, or catalog mutation. Each backend exports only its own
-product eligibility, required fields, and any pinned source identity. The native
-desktop bridge separately exports relay capability and its authenticated saved
-targets. The desktop offers move only when the personal backend permits export,
-the selected team backend permits import, and the native bridge can connect and
-relay between them. A browser has no native capability answer and therefore
-cannot offer cross-space move. Neither surface infers product authority from
-paths or space kind.
+An existing `.research/manifest.toml` is retained research regardless of the
+entered name. Read-only preflight replays without repair, publication, identity
+claim or catalog changes and shows canonical identity, location, revision count,
+compatibility and exact failure. Compatible state opens without manifest overwrite;
+incompatible state may expose its last coherent materialization read-only without
+claiming home or repairing history.
 
-In a personal space, Add project treats an existing `.research/manifest.toml` as retained RCP
-research regardless of the name entered in the wizard. Read-only preflight
-replays it without publication, repair, identity claim, or catalog mutation and
-shows the canonical project, location, revision count, compatibility, and exact
-failure if replay halts.
+**Start fresh** requires exact human review. Under the local/remote append lock,
+it rechecks manifest/history fingerprints and atomically renames all `.research`
+to a unique timestamped sibling. Drift requires review again; incomplete archive
+proof prevents initialization. Later failure leaves the archive recoverable and
+no broken registration.
 
-Compatible retained state may be opened without overwriting its manifest.
-Incompatible state may expose its last coherent materialization read-only, but
-that inspection neither claims home nor repairs history.
-
-Starting fresh never overwrites retained work. After exact human review, RCP
-fingerprints the manifest and Patch history and, under the same local or remote
-append lock, atomically renames the entire `.research/` directory to a unique
-timestamped sibling. If the fingerprint moved, review starts again. If the
-archive cannot be proven complete, initialization does not begin. A later setup
-failure leaves the archive recoverable and does not register a broken project.
-
-An already registered legacy project without a nameplate adopts into its current
-space idempotently. Separately discovered legacy state requires explicit claim.
-Catalog aliases, tasks, chats, papers, watchers, attachments, and display-cache
-rows migrate atomically to the canonical random id; interrupted migration
-converges without duplicating the identity revision or moving a native session's
-workspace.
+Registered legacy projects adopt their current space idempotently; separately
+discovered state needs explicit claim. Catalog aliases, tasks, chats, papers,
+watchers, attachments and display caches move atomically to the canonical random
+id. Interrupted migration converges without duplicate identity revisions or moving
+a native session workspace.
 
 ## Rebuildable caches
 
-Remote-source copies, derived session slices, and display caches are project
-owned, bounded, and never canonical truth. Clearing the open project's cache
-affects only that project and is blocked only by its active readers.
+Project-owned remote-source copies, session slices and display caches are bounded
+and noncanonical. Clearing affects only the selected project and is blocked by
+its active readers. It deletes source copies/slices and rebuilds the display
+snapshot because that is also the offline copy; failure retains and names the
+previous snapshot. Every snapshot uses the running release's official skill
+catalog and defaults for unset manifest fields, never a cached catalog.
 
-Clearing deletes remote-source copies and session slices but rebuilds the display
-snapshot from current state, because that snapshot is also the offline copy. A
-rebuild that fails keeps the previous copy, and the clear result names it. The
-official skill catalog is never served from a cache: every project snapshot
-carries the running release's catalog, and skill-default fields the manifest
-leaves unset carry the running release's defaults.
-
-In a personal space, clearing every project's rebuildable cache is a separate
-app-wide danger action with an explicit warning and is blocked while any project
-has an active reader. A team space exposes only the project-owned action because
-membership in one project grants no authority over another project's cache.
-Neither action touches provider originals, canonical state, repositories, tasks,
-chats, drafts, views, or paper content.
+Personal spaces also offer explicit app-wide cache clearing, blocked by any
+project reader. Teams offer only project clearing because membership does not
+authorize other projects. Neither action touches provider originals, repositories,
+canonical state, tasks, chats, drafts, views or Paper.
 
 ## Process and lock ownership
 
-One RCP process owns one data directory, enforced by an OS lock. `rcp open`
-reuses a healthy owner or gracefully replaces an unavailable one; explicit
-`rcp serve` performs the same takeover only after recoverable work is paused.
-The replaced server gives in-flight requests a bounded grace period shorter than
-the takeover wait and then aborts every pending canonical-lock wait, so one stuck
-request cannot defeat replacement. The human is
-never asked to discover or kill the old process manually.
+The [instance invariant](../../AGENTS.md#stable-invariants) is enforced by an OS
+lock. `rcp open` reuses a healthy owner or gracefully replaces an unavailable one;
+`serve` takes over only after recoverable work pauses. The old server gives
+requests bounded grace shorter than takeover wait, then aborts canonical-lock
+waits. No manual process hunting is required.
 
-Remote canonical locks are process-held advisory files. Writers wait for live
-contention; a read-side refresh waits a bounded time and then reports canonical
-state unavailable, so one stuck writer cannot freeze a project's readers.
-Display-only routes (the episode list, the Experiment index, the Home run list,
-and the branch revision poll) accept a mirror up to 10 seconds old before they
-refresh it. Every read that gates a decision keeps the 2-second window, and
-writes sync first as before.
-Process death releases ownership. The remote holder releases the lock itself
-when its client stops heartbeating, so an orphaned holder cannot outlive a dead
-connection by more than the heartbeat timeout. RCP may reclaim only a provably
-empty legacy lock directory; populated, symlink, or special entries remain with
-an exact diagnostic and no instruction to delete them.
+Remote writers wait on process-held advisory locks; refresh waits are bounded.
+Display-only episode/Experiment/Home/branch polls accept ten-second mirrors;
+decision reads use two seconds and writes sync first. Process death or missed
+client heartbeats releases the holder within its timeout. Only proven-empty
+legacy lock directories may be reclaimed; populated, symlink or special entries
+remain with an exact diagnostic, never a deletion instruction.
 
 ## Deletion
 

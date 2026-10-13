@@ -56,7 +56,7 @@ reading projects, opening existing views, sending ordinary conversation turns,
 operating bounded Experiment controls, and authorizing or gracefully stopping
 Auto-research. RCP's voice agent uses the same fixed tool catalog. An agent the
 member runs in their own page acts as that member
-([decision](decisions/2026-10-02-agents-in-a-member-page-act-as-that-member.md)).
+([why](specs/conversations-episodes-and-watchers.md#native-chat-context)).
 Those tools compose the same browser and API owners as visible controls; they
 add no backend shortcut, graph-change channel, or provider capability, and they
 expose none of the protected judgment controls.
@@ -128,7 +128,7 @@ number here.
   only where the provider can do so without disabling real compute. This is an
   accidental-write guardrail for cooperative users, not a hostile-user security
   boundary or a read-confidentiality claim. The per-chat browser grant is human
-  consent to a code-defined tool ([decision](decisions/2026-10-04-agents-browse-with-playwright-cli.md)).
+  consent to a code-defined tool ([why](specs/providers-and-containment.md#browser-grants)).
 - **Canonical state has one home.** A project has one durable id, one home
   space, and one local or remote canonical state repository. Main and graph
   branch namespaces live inside that repository. Routes never write canonical
@@ -186,12 +186,13 @@ Current sources have this precedence:
 
 1. This file owns repository-wide product boundaries and cross-cutting
    invariants.
-2. The applicable file in [`specs/`](specs/) owns current module behavior.
-3. Active [`decisions/`](decisions/README.md) records explain rationale but do
-   not override current design or specifications.
-4. Active [`handoffs/`](handoffs/README.md) authorize and scope work not yet
-   implemented. A human-confirmed, ready handoff need not be reconfirmed, but it
-   may not silently change current design.
+2. The applicable file in [`specs/`](specs/) owns current module behavior and
+   the short rationale that guards it.
+3. The few [`decisions/`](decisions/README.md) records explain cross-cutting
+   rationale but do not override current design or specifications.
+
+Docs describe only current behavior. Unbuilt work lives in GitHub issues and
+pull requests.
 
 [`server.md`](server.md), [`device-pairing.md`](device-pairing.md), and
 [`desktop.md`](desktop.md) are operator and
@@ -250,5 +251,5 @@ user-authored rule language, provider-neutral hostile-process sandbox,
 live output watcher, hard provider interruption,
 persistent provider daemon, or peer-to-peer agent mail. Human steering of an
 ordinary running chat uses only RCP's existing process for that exact attempt.
-Confirmed but unimplemented product journeys belong in an active handoff rather
-than being described as current behavior here.
+Confirmed but unimplemented product journeys belong in a GitHub issue, never
+here.

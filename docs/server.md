@@ -1,22 +1,12 @@
 # Team server operator guide
 
-This guide is the terminal workflow for one artifact-installed RCP team server. It is
-written for the machine operator who has `sudo` on a disposable or dedicated
-Ubuntu host. The supported host is Ubuntu 22.04 LTS or Ubuntu 24.04 LTS on
-x86-64 with systemd.
+Terminal procedures for an artifact-installed team server on Ubuntu 22.04/24.04
+LTS x86-64 with systemd, run by a machine operator with sudo.
 
-The [install guide](install.md#team-server) points here;
-this document is the single complete server setup and operations procedure.
-
-The `rcp server` CLI is the complete machine workflow and is itself a continuous
-terminal wizard. It keeps one current-step line on screen instead of dumping its
-internal plan or every completed step. At a human boundary it names the machine
-or external service, gives the required action and success signal, and waits;
-pressing Enter runs declared terminal actions and continues the same operation.
-Every stop also prints an exact command that can continue later. Failures print
-bounded diagnosis and exact diagnostic/recovery commands instead of raw command
-output. `--machine-readable` is the noninteractive append-only JSON event stream;
-it never prompts or runs a human action.
+The CLI shows one current step. At human stops, Enter runs the displayed actions;
+quitting leaves an exact continue command. Failures give bounded causes and
+recovery commands. `--machine-readable` emits noninteractive JSON without running
+human actions.
 
 Use the numbered sections for a fresh installation. For an existing server,
 jump directly to [member invitations](#invite-another-person-to-the-team-space),
@@ -122,12 +112,8 @@ RCP_SUPERVISOR_WHEEL_URL='paste the supervisor wheel download link from the same
 sudo /usr/local/bin/uv tool run --from "$RCP_WHEEL_URL" --with "$RCP_SUPERVISOR_WHEEL_URL" rcp server install --team-name "My lab"
 ```
 
-The two-wheel invocation is the explicit trust boundary for first installation.
-It gives the disposable bootstrap access to the matching supervisor without
-adding a permanent supervisor dependency to RCP. Bootstrap checks that both
-versions still match promoted stable, verifies the full five-asset bundle, and
-creates the dedicated `rcp` account. No source checkout, source deploy key, or
-operator GitHub credential is installed.
+Bootstrap verifies both wheels against promoted stable and the complete five-asset
+bundle, then creates `rcp`. It installs no source checkout or operator credential.
 
 ## 7. What the installer sets up
 
@@ -182,9 +168,8 @@ sudo systemctl restart rcp.service
 curl --fail --silent http://127.0.0.1:8421/api/health
 ```
 
-The independent supervisor recovers locally before systemd admits the service.
-The wizard's final line also names the one optional follow-up: letting members
-connect phones and other devices, which is [`device-pairing.md`](device-pairing.md).
+Startup recovery needs no network. To connect phones, follow
+[device pairing](device-pairing.md).
 
 ## 10. Configure one operator route
 
@@ -237,17 +222,10 @@ does not change global `sshd_config`.
 
 ## 11. Provider authentication
 
-Provider logins are signed in, verified, and signed out from the product, in
-**Settings, Provider logins**, by any signed-in member; the server records who
-did it and shows the result to everyone. The operator installs the provider
-executables under the service account; nothing else about a login needs a
-shell. The reasoning is in the
-[provider logins decision](decisions/2026-09-14-provider-logins-are-kept-alive.md).
-
-Stay in the ordinary operator SSH session for the installs. You do not need to
-log in directly as `rcp`, enable its password, or open an interactive shell as
-it. Prefix each provider command with `sudo -u rcp -H`; `-H` makes the provider
-store its binary and settings under `/home/rcp` instead of the operator's home.
+Any member signs Codex/Claude in, verifies and signs out in **Settings, Provider
+logins**; the result and actor are shared. Operators install executables.
+Stay in your operator SSH session and prefix commands with `sudo -u rcp -H`
+so binaries/settings belong to `/home/rcp`. No direct service-account login is needed.
 
 ### Codex
 
@@ -276,23 +254,16 @@ sudo -u rcp -H /bin/bash -lc \
   'curl -fsSL https://claude.ai/install.sh | bash'
 ```
 
-Claude does not run on the browser login under `/home/rcp`. That login rotates a
-single-use refresh token on every process start, and one lost write kills it for
-every member. Instead, on any machine with a browser and a Claude subscription,
-run `claude setup-token` and copy the long-lived token it prints. In **Settings,
-Provider logins**, paste it into the Claude account's token field and choose
-**Sign in**. RCP stores it as `rcp`, readable by the service alone, under the
-application data directory (`providers/claude/<account>/setup-token`, mode 0600)
-beside a record of who pasted it and when; for an SSH execution account it also
-places the file on that account. Every Claude process RCP starts receives the
-token as `CLAUDE_CODE_OAUTH_TOKEN`, and the variables that would make Claude bill
-an API key instead are removed. Saving ends in the same one real request as
-Codex; only its answer marks the account signed in. The token lasts about a year;
-RCP shows the paste date and an estimated expiry, and a classified login failure
-is the truth when they disagree. Paste a new token to replace it.
+On a browser-equipped machine with a Claude subscription, run `claude setup-token`.
+Paste its long-lived token into **Settings, Provider logins → Claude → Sign in**.
+RCP saves it in app data at `providers/claude/<account>/setup-token` (0600), also
+on the SSH account when applicable, and injects `CLAUDE_CODE_OAUTH_TOKEN` into
+its Claude processes without API-key billing variables. A real request verifies
+sign-in. This avoids competing single-use browser refresh tokens.
 
-The token travels once, from the browser to the token field. Never put it in a
-command argument, a log, an issue, chat, or a project file; RCP never prints it.
+The token lasts about a year; RCP shows paste time and estimated expiry, but real
+login failure determines validity. Paste a replacement to renew. Never put the
+token in argv, logs, issues, chat or project files.
 
 ### OpenCode
 
@@ -316,33 +287,20 @@ sudo -u rcp -H /bin/bash -lc '~/.opencode/bin/opencode providers login'
 
 ### Verify and sign out
 
-`codex login status` and `claude auth status` read the stored credential and
-report the auth mode. Neither contacts the provider, so they prove that a
-credential exists and nothing about whether it still works; RCP does not trust
-them and never shows them as proof. When a real provider process reports a dead
-login, RCP marks that machine account signed out, refuses to start new provider
-work on it, and shows one notice on every project's Runs view and on the space
-landing. **Verify sign-in** runs one minimal real request as `rcp` and, when
-that succeeds, resumes the parked work.
+Native status commands prove only stored credentials, not a working login.
+A classified failure fences new work and shows a notice on Runs and the space
+home. **Verify sign-in** sends one real request and resumes parked work on success.
+**Sign out** runs Codex logout or deletes Claude's local/remote token, then fences
+new work until sign-in.
 
-**Sign out** runs `codex logout` as `rcp`, or deletes the stored Claude token
-(on the server and on the SSH account), then fences the account exactly as a
-failed login does until a member signs it in again.
-
-The `providers` directory is excluded from protected backups, and an archive's
-login state and probed readiness describe the archived machine. A restore marks
-every provider account signed out with the reason recorded and forgets every
-readiness probe; a member signs in or verifies each account again on the
-restored server. A data directory that arrives without a restore still resets
-each Claude account whose token did not come with it at start.
+Backups exclude provider credentials. Restore marks accounts signed out and drops
+readiness probes: sign in or verify again. Startup also resets a Claude account
+whose data arrived without its token.
 
 ### Update provider CLIs
 
-Stay in the ordinary operator SSH session for updates too. Do not enable a
-password or direct login for `rcp`, and do not run provider maintenance under
-the operator's home. RCP wraps each supported provider's native update, runs it
-under the `rcp` account, keeps its output bounded, and verifies the resulting
-executable and version; the login is untouched:
+Run updates from the operator session. RCP invokes the native updater as `rcp`,
+bounds output and verifies the executable/version without reading credentials:
 
 ```bash
 sudo /usr/local/bin/rcp server provider update codex
@@ -350,28 +308,12 @@ sudo /usr/local/bin/rcp server provider update claude
 sudo /usr/local/bin/rcp server provider update opencode
 ```
 
-The Codex command reruns OpenAI's supported standalone installer under
-`/home/rcp`; the Claude command runs `claude update`, and the OpenCode command
-runs `opencode upgrade`. These are the current
-provider-owned update paths documented by
-[OpenAI](https://learn.chatgpt.com/docs/codex/cli) and
-[Anthropic](https://code.claude.com/docs/en/cli-usage). An update never
-substitutes for a sign-in and never reads the login.
-
-RCP runs the Codex installer in its supported noninteractive mode, so it does
-not ask whether to launch Codex or remove an older npm-managed installation.
-RCP leaves that older installation in place, gives the account-local standalone
-command in `/home/rcp/.local/bin` precedence, then checks that command's version
-before reporting success. The older system installation can be removed
-separately after the server is qualified; it does not need to be removed during
-this update.
-
-If the account's login is dead, the readiness check names it and points at
-**Settings, Provider logins**, where any member signs it in again. If an older
-project recorded a version-numbered executable before RCP preserved provider
-symlink paths, use **Resolve** once for that provider in Project Settings, then
-rerun `server provider check --project <project-id>`. Future native updates
-retain the stable command path.
+Codex reruns its noninteractive installer; Claude runs `claude update`; OpenCode
+runs `opencode upgrade`. Account-local Codex wins over an older system copy, which
+is left for separate cleanup. An update is not a sign-in: repair dead login in
+**Settings, Provider logins**. For a project pinned to an old versioned executable,
+use **Resolve** in Settings, then rerun `server provider check --project <project-id>`.
+Stable provider paths survive subsequent native updates.
 
 After the project wizard names its project id, run the exact readiness command
 it prints:
@@ -382,14 +324,13 @@ sudo -u rcp -H /usr/local/bin/rcp server provider check --project <project-id>
 
 Installing or authenticating a provider does not silently add it to an existing
 project. Select that provider for an agent profile in project setup, then run the
-printed check. RCP does not copy a member's personal provider directory or store
-the credential itself.
+printed check. RCP does not copy a member's personal provider directory.
 
 ## 12. Add the team space in the desktop app
 
 In the desktop app, choose **Add team space**, select SSH, enter the
 saved server route, and enroll with the one-time bootstrap code from Step 8. The
-unified project wizard can then create a team project from GitHub or move an
+unified project wizard can then create a GitHub or server-only team project, or move an
 existing personal RCP project into the team space.
 
 ### Move a personal project, including unpublished commits if wanted
@@ -398,7 +339,9 @@ From the personal project's Settings, choose **Move to team space**, select
 the enrolled team, and review its repository/machine mapping. The same setup
 wizard handles the server checkout and repository-scoped GitHub grants.
 
-**Include local unpushed commits** starts unchecked. Leave it off to use the
+**Include local unpushed commits** starts unchecked for GitHub sources. A source
+without an origin transfers as server-only and always includes its reviewed commit
+and Git bundle; its target attaches that commit to `main` with no remote. Leave it off to use the
 GitHub version of the code; commits that exist only in your personal checkout
 will stay there. Check it to copy each repository's currently saved commit and
 its history directly to the team, without pushing anything to GitHub. Review
@@ -465,8 +408,8 @@ invitations carry no enrollment secret.
 ## 13. Create the first shared project
 
 From the enrolled team space, open the ordinary project wizard and choose
-**Create a shared team project**. Enter the GitHub repository, project name,
-execution machine, and provider profiles. RCP creates one durable request and
+**Create a shared team project**. Enter the project name, execution machine and provider profiles. Enter a GitHub
+URL or leave it blank for **Server only** (its code is not backed up). RCP creates one durable request and
 shows its exact request id and operator command. Run that command as `rcp`, or
 use the configured desktop operator route:
 
@@ -479,9 +422,12 @@ repository-scoped public deploy key. Add it to that repository with **Allow
 write access** enabled, return to the terminal, and press Enter. The server does
 not log in to a GitHub user. Each project keeps its own write-enabled key.
 
-If GitHub reports that the repository is empty, push the intended codebase or a
-visible first commit through the ordinary human Git workflow, then press Enter
-to resume the same request. RCP does not create a hidden initialization commit.
+For an empty GitHub repository, setup announces and creates the empty
+`Start RCP project` commit as `RCP <rcp@rcp.invalid>`, then pushes `main` with the
+deploy key. Server-only setup makes that commit without a remote or deploy key.
+Later **Add repository** and **Connect to GitHub** use this same provisioning and
+review flow; divergent GitHub history needs a human merge before retry.
+
 After the CLI reaches **ready for review**, return to the project wizard, review
 the exact checkout, Git, machine, and provider answers, then choose **Create
 project**. RCP creates canonical `.research/` state only after this final human
@@ -633,18 +579,11 @@ sudo /usr/local/bin/rcp server backup configure \
   --confirm
 ```
 
-On first setup, RCP creates one recovery identity at
-`/etc/rcp/backup-recovery.agekey`, keeps it root-owned with mode `0600`, and
-stores only its public recipient in the unchanged backup table in
-`server.toml`. It also stores that public recipient in the root-owned mode-`0644`
-`/etc/rcp/backup-recovery.agekey.pub` sidecar, which lets RCP recognize a missing
-server-managed identity without adding a config key. Later configuration reuses
-the same identity. If that file is missing, damaged, unsafe, or does not match
-the configured recipient, RCP stops and tells you to restore it; it never
-silently makes a replacement. That file is also the only key that decrypts the
-archives made with it: before the teardown sequence removes `/etc/rcp`, copy it
-to protected storage off the host, or accept that the retained archives become
-permanently undecryptable.
+RCP creates/reuses root-only 0600 `/etc/rcp/backup-recovery.agekey` and its public
+0644 `.pub` sidecar; config stores only the recipient. Missing, damaged, unsafe or
+mismatched identity refuses, never regenerates. It is the only decrypting key:
+copy it to protected off-host storage before deleting `/etc/rcp`, or retained
+archives become permanently unreadable.
 
 The wizard verifies the destination, creates and reads back one protected
 archive, and only then enables the systemd timer. The destination may be local
@@ -656,15 +595,12 @@ sudo -u rcp -H /usr/local/bin/rcp server backup run
 sudo -u rcp -H /usr/local/bin/rcp server doctor
 ```
 
-Nightly, manual, and pre-update backups share the configured archive retention.
-Each archive's receipt is removed with it. The newest complete archive is also
-kept if later partial archives pushed it outside the count, so at most
-`retention + 1` archives remain. Status and diagnostic sidecars replace fixed
-files. Only the newest failed plaintext capture is retained for inspection;
-the next completed backup, including a partial archive, removes all old backup
-captures. Retry also reclaims interrupted archive, receipt, and status writes
-after reconciling any pending publication. Ordinary agent scratch is unaffected.
-These are count bounds: archive size still follows the team's research data.
+All captures share retention: the configured count plus the newest complete
+archive if otherwise pruned, at most `retention + 1` archive/receipt pairs.
+Only the newest failed plaintext capture remains; the next completed capture,
+even partial, removes old stages. Retry reconciles interrupted publication before
+cleanup. Status/diagnostics stay bounded; research size and agent scratch do not.
+Server-only repository code is excluded and named in backup status.
 
 This simple default does not survive loss of the whole machine unless the
 backup destination and recovery identity are also retained elsewhere. Labs
@@ -704,19 +640,14 @@ For a member credential known to have been revoked after the archive was
 captured, use the printed `--remove-stale-member <member-id>` command. This is
 the ordinary member-removal transaction running offline: another active member
 must remain, no project may be orphaned, and the changed roster must be reviewed
-again. The root-only final activation runs behind closed admission. Over an
-initialized team the supervisor first takes a complete protected backup, closes
-new work, stops the service, and retains a rollback checkpoint of the current
-data before the archive replaces it. The candidate then starts as a fenced
-service-account probe, proves detached work cannot recover, and persists exact
-space/commit/project readback. Only after that durable choice does the unit
-start, open HTTP, and become enabled. If the root command disappears first, the
-fenced process exits cleanly after its bounded timeout. A failure before the
-choice restores the previous bytes and launch authority: an initialized server
-returns to serving its previous data, and a fresh target stays stopped and
-uninitialized. After the choice, recovery keeps the restored data and never
-reapplies the old checkpoint. Rerun the same archive-bound command rather than
-editing SQLite or systemd.
+again.
+
+Final activation checkpoints an initialized server and verifies restored state
+under closed admission. Pre-selection failure restores its old service, or keeps
+a fresh target stopped. Post-selection recovery preserves restored data. Reenter
+the same archive-bound command after interruption; never edit SQLite/systemd to
+bypass it. The [spec](specs/server-and-machine-operations.md#backup-and-restore)
+owns the recovery contract.
 
 ## Remove a team member
 

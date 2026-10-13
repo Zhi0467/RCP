@@ -1,28 +1,20 @@
 # Desktop testing and release
 
-RCP's desktop shell is a native macOS entrance to the same React interface and FastAPI
-backend used by the browser path. This document covers the desktop-specific development,
-verification, and release work that does not belong in the main README.
-
-The current desktop target is Apple Silicon macOS. Read `web/src-tauri/tauri.conf.json`
-for the authoritative platform settings and `web/package.json` for the available commands.
+Native macOS testing and release procedures. The target is Apple Silicon;
+`web/src-tauri/tauri.conf.json` owns platform settings and `web/package.json`
+lists build commands.
 
 ## Personal sign-in
 
-The desktop keeps an owner secret in Keychain, keyed by data-directory identity.
-A fresh backend receives it on stdin and enrolls its hash while holding the data
-lock. An owned start redeems its captured startup code once with the saved
-secret, or the spawned secret if none is saved. Without a code, adoption
-exchanges the saved secret. Only a newly supplied secret is written to Keychain.
-Authentication completes before protected requests. Native downloads, PDF
-preview, transfer, notifications, and update notices use the same authenticated personal client.
+The desktop authenticates before protected requests using its data-directory
+Keychain secret and captured one-time startup code. Downloads, PDF, transfer,
+notifications and update checks share that client. See
+[personal sign-in](specs/projects-spaces-and-operations.md#personal-sign-in).
 
-When adopting a terminal-started backend without a matching Keychain secret,
-paste the terminal's one-time sign-in code. An authentication failure leaves the
-adopted process running. Restarting a desktop-owned backend can recover a missing
-Keychain entry through the `owner_sign_in_code` field captured from its launch
-JSON on stdout. Machine-readable launch stdout is one JSON object; human launches
-print a sign-in URL. Codes are omitted from desktop diagnostics and logs.
+When adopting a terminal backend without a matching secret, paste its one-time
+code. Failure leaves the adopted process running. Restarting an owned backend
+can recover a missing Keychain entry from launch JSON's `owner_sign_in_code`;
+codes never enter diagnostics.
 
 Verify fresh start, adoption, restart, reload, sign-out, and a reset Keychain entry
 with disposable data. Check the plain-HTTP WKWebView owner cookie in both source
@@ -94,32 +86,19 @@ open "/Applications/RCP Dev.app"
 
 ### Only the menu Quit stops the backend
 
-`Quit RCP` in the application menu, and its Cmd+Q accelerator, are one custom
-`MenuItem` routed through `on_menu_event` to `request_app_quit`. That path runs the
-shutdown and stops the backend the app owns.
-
-Every other quit gesture leaves that backend running: the Dock icon's Quit,
-`osascript -e 'quit app "RCP"'`, and logout or restart. macOS terminates the process
-without Tauri emitting `RunEvent::ExitRequested`, so the handler in `src/lib.rs` never
-runs. Measured on 2026-08-29 by logging every `ExitRequested` and observing none, while
-the shell exited and its backend kept serving.
-
-This matters because a leaked backend still holds 8421, so the next launch adopts it
-through `--reuse-existing` and source edits do not take effect. Stop it explicitly:
+Use **Quit RCP** or Cmd+Q to shut down the owned backend through the native menu.
+Other macOS quit paths can exit without Tauri's `ExitRequested`, leaving the
+backend serving on 8421. A later launch then adopts it and source changes do not
+load. If a backend leaked, stop it explicitly (this targets all matching servers):
 
 ```bash
 pkill -f "rcp serve"
 ```
 
-A fix belongs in the macOS `applicationShouldTerminate:` delegate, not in a wider match
-arm. The handler's `code: None` guard is deliberate: the shutdown's own `app.exit(code)`
-re-enters that event with `Some(code)`, so matching every code would re-enter quit.
-
-A successful build is not the desktop test. Open the relevant bundle through Finder,
-exercise the affected workflow, inspect the visible result, and check the backend log for
-errors. Native window, Quit, artifact, packaged-environment, update, and text-scale
-behavior are verified through the desktop itself; a browser check does not stand in
-for any of them.
+Open the actual bundle, exercise the affected workflow and inspect backend logs.
+Browser checks do not prove native windows, Quit, packaged environment, updater
+or text scaling. The `ExitRequested` handler's `code: None` guard prevents its own
+`app.exit(code)` from recursively starting shutdown.
 
 ## Keep-awake checks
 
@@ -191,24 +170,16 @@ the surrounding viewer and repository preview allow only same-origin framing.
 
 ## WebView origin probes
 
-Two example probes drive a real WKWebView to answer questions browser tests
-cannot. The original HTTP probe remains evidence only. The HTTPS probe exercises
-the same native trust primitive now linked into every macOS desktop build; its
-test servers and automatic navigation remain example-only.
-
-`run-loopback-origin-probe.py` is the original HTTP drive. It records that a
-`Secure` session cookie is lost on plain loopback origins, including exact
-`localhost`:
+These probes drive WKWebView, not a substitute browser. The HTTP probe checks
+that Secure cookies are lost on plain loopback, including exact localhost:
 
 ```bash
 python3 web/src-tauri/scripts/run-loopback-origin-probe.py --mode aliases --phase login
 ```
 
-`run-local-https-origin-probe.py` repeats that drive over local HTTPS with a
-certificate the probe generates for itself, pinned in the WebView's own
-server-trust challenge. Its `https-trust-probe` Cargo feature enables only the
-standalone GUI example. `--cert-dir` reuses one certificate across runs so the
-restart phase measures cookie persistence rather than a changed certificate:
+The HTTPS probe uses a self-generated certificate pinned in the production native
+trust hook. Its Cargo feature enables only the GUI example. Reuse `--cert-dir`
+so restart tests cookie persistence rather than certificate replacement:
 
 ```bash
 python3 web/src-tauri/scripts/run-local-https-origin-probe.py --phase login --cert-dir /tmp/rcp-probe-certs
@@ -219,40 +190,20 @@ session survives an application restart. Each run first asserts that the host
 does not already trust the probe certificate, so a success cannot be confused
 with pre-existing system trust.
 
-Production startup loads or creates one versioned local-HTTPS identity in
-`local-https-identity-v1.sealed` under the app configuration directory. The file
-is authenticated encryption with mode `0600`; its 32-byte key is the Keychain
-item at service `<bundle identifier>.local-https`, account
-`desktop-identity-sealing-key/source-v1`. The released app's service is
-`app.researchcontrolpanel.rcp.local-https`; `RCP Dev.app` keeps its own under
-`app.researchcontrolpanel.rcp.dev.local-https`, because its configuration
-directory, and so its sealed file, is separate. A dev bundle whose file was
-sealed under the shared service before this split adopts that key once it
-authenticates the file, and leaves the shared entry for the released app. Never print or export the Keychain
-value or decrypted identity. The source-built app accesses that short key only
-through `/usr/bin/security`, whose ACL remains stable across ad-hoc rebuilds.
-That ACL authorizes the Apple tool, not the calling RCP process: it prevents
-rebuild churn and keeps secrets out of argv/page/log state, but it does not
-protect them from another process deliberately invoking the tool as the same
-macOS user. The current cooperative provider model accepts that limitation for
-source builds and the unsigned prebuilt app alike; app-bound credential access
-is later work.
-Permanent team member tokens use the same bounded helper under service
-`app.researchcontrolpanel.rcp.team-member-token.source-v1`, with one
-`team-connection/<uuid>` account per saved connection.
-Saved team connections use connection-bound `rcp-<uuid>.rcp.localhost` origins;
-only their exact validated origins may enter the main window, and only the
-stored certificate fingerprint is passed to the native trust hook.
-The encrypted version-4 identity records a 365-day certificate lifetime and
-rotates atomically during the final seven days. Its leaf explicitly carries
-`CA:FALSE`, TLS server-auth usage, and the key usages required by WKWebView.
-Startup reissues valid earlier identity records and migrates the exact previously
-shipped `rcp-<uuid>.localhost` registry origin; malformed or partial identity
-state still fails closed. Both macOS bundle plists grant the manual-trust ATS
-exception only to `rcp.localhost` and its direct connection subdomains. That
-exception does not authorize HTTP: the native navigation owner still admits
-only exact saved HTTPS origins and the trust handler still requires the pinned
-certificate to pass hostname, validity, and server-use evaluation.
+Production seals the local HTTPS identity under app config with a Keychain key.
+Released and dev bundles use separate services/files; legacy dev identity adoption
+requires authenticating the sealed file first. Never print/export keys or plaintext.
+The `/usr/bin/security` helper avoids rebuild ACL churn but does not protect against
+another deliberate same-user process; this is the cooperative account boundary.
+Team tokens use the same bounded helper with one account per saved connection.
+
+Only exact saved `rcp-<uuid>.rcp.localhost` HTTPS origins and their pinned certificate
+enter the main window. Identity version 4 rotates its 365-day certificate in the
+last seven days; valid older identities/origins migrate, malformed state refuses.
+Certificates must pass hostname, validity and server-use checks. ATS exceptions
+cover only `rcp.localhost` and direct connection subdomains, never authorize HTTP.
+The [projection spec](specs/api-web-and-desktop-projections.md#confirmed-team-desktop-target)
+owns connection, credential and trust contracts.
 
 The ignored D3 live test uses the same production tunnel owner with an existing
 system SSH login, forwards only the remote host's loopback SSH banner, then
@@ -295,18 +246,14 @@ Build the application:
 npm --prefix web run desktop:build
 ```
 
-This command compiles the frontend, freezes the Python backend with PyInstaller, prepares
-the target-specific sidecar, and assembles:
+The build compiles Web, freezes Python with PyInstaller and assembles the sidecar:
 
 ```text
 web/src-tauri/target/release/bundle/macos/RCP.app
 ```
 
-The frozen backend includes the entire first-party Python package as source and
-package data, including SSH helpers, nested skills, and service templates.
-Packaging generates a SHA-256 inventory from those files and the frontend;
-startup verifies the extracted files against it. Adding a runtime resource inside
-the package does not require another per-file packaging or validation list.
+Packaging includes first-party package source/data and Web assets with a verified
+SHA-256 inventory. Keep runtime resources inside the package; no per-file list is needed.
 
 Smoke-test the backend inside that exact bundle:
 
@@ -315,12 +262,10 @@ uv run python packaging/smoke-backend.py \
   web/src-tauri/target/release/bundle/macos/RCP.app/Contents/MacOS/rcp-backend
 ```
 
-The smoke test also creates a disposable remote project and runs a Discuss turn
-through the served API. It uses isolated SSH and provider test executables to
-exercise the packaged staging scripts and verify a persisted agent answer without
-credentials or a real model request. Candidate CI runs it against the bundled backend.
-PR CI also freezes the backend on Linux and runs this same journey; the macOS
-candidate remains the check for the actual desktop artifact.
+The smoke test drives a disposable SSH-project Discuss turn over the served API
+using fake SSH/provider executables, verifying packaged staging and a saved answer
+without real credentials/model calls. Candidate CI runs the bundled backend; Linux
+PR freezing checks the same journey but does not replace macOS qualification.
 
 Then launch that bundle as above, with a throwaway `RCP_DATA_DIR`, and exercise the desktop workflows affected by
 the candidate. Confirm that the project index opens, a project can be read, provider
@@ -393,14 +338,11 @@ The native versions in `web/package.json`, `web/package-lock.json`, and
 `web/src-tauri/Cargo.toml`/`Cargo.lock` must equal `src/rcp/__init__.py`; a test
 enforces it, so a version bump changes all of them.
 
-Apple signing is not planned. It needs a paid Apple Developer account, and a
-locally built app is never gatekept, so it would only spare prebuilt-app users
-the one-time Open Anyway approval. The release build is ad-hoc signed, without
-the hardened runtime: an unsealed bundle makes macOS call the downloaded app
-damaged instead of offering Open Anyway, and the hardened runtime stops the
-backend from loading its unpacked Python library. Without a signing identity the Keychain
-cannot bind credentials to the app, so the prebuilt app keeps the source build's
-Keychain storage. Only the published prebuilt app enables the Tauri updater:
+Release bundles are ad-hoc signed without hardened runtime: sealing prevents
+macOS's damaged-app error, while hardened runtime blocks unpacked Python loading.
+Credentials use the same cooperative Keychain boundary as source builds.
+
+Only the published prebuilt app enables the Tauri updater:
 `npm --prefix web run desktop:build-signed` requires `RCP_UPDATE_ENDPOINT` and
 `RCP_UPDATE_PUBKEY`, compiles both into the app, and gives the same key to the
 Tauri signer. Every other build sets neither, reports `enabled: false`, and

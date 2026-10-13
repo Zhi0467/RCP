@@ -1,43 +1,27 @@
 # Retire the open-question register with explicit product boundaries
 
-Confirmed by the human 2026-09-05. This record preserves decisions likely to be
-reopened accidentally, not a second backlog or a claim that proposed features ship.
+These cross-cutting choices constrain new features; current behavior belongs to
+the linked owners.
 
-- **Glossary:** thin, revisable project-wide definitions authored by graph-writing
-  agents through ordinary Patches; preserve inline rendering. Definitions are
-  not nodes. Authority lives in [the authority spec](../specs/authority-and-proposals.md).
-- **Watchers:** completion is the deliberate wake boundary. Keep observation
-  failure handling and retained completed/stopped/degraded history; no
-  intermediate-output wake or extra record-cleanup feature. See
-  [watcher resources](../specs/conversations-episodes-and-watchers.md#watcher-resources).
-- **Parallel work:** do not introduce an exclusive repository lease. Shared
-  checkout tasks remain concurrent. Composer worktree selection and explicit
-  Git integration landed separately in [PR #48](https://github.com/Zhi0467/RCP/pull/48).
-  Their [conversation contract](../specs/conversations-episodes-and-watchers.md)
-  remains separate from RCP's research-graph branches.
-- **Quality advice:** use programmatic nonblocking flags in the existing validator.
-  Reject the separate mandatory scanner proposal S59, not optional graph-review
-  skills. Do not pretend a deterministic rule can judge scientific meaning.
-- **Human graph editing:** permit general node/edge editing with preview and
-  Sync, preserving history on removal. Reject artifact-selection-to-Evidence
-  shortcuts; the viewer remains ordinary chat context, and WebMCP gains no
-  human-judgment authority. See [graph projections](../specs/api-web-and-desktop-projections.md).
-- **Domains:** RCP's core is general-purpose. Data interaction, visualization and
-  domain connectors may be future extensions. Do not impose a research-field
-  allowlist or claim supported domains from speculative rankings; describe actual
-  capabilities and complement external specialized tools.
-- **Live steering:** retain the modest provider-call extension, not a
-  persistent session daemon. The
-  [current provider contract](../specs/providers-and-containment.md#live-human-steering)
-  bounds delivery to one ordinary human chat attempt and preserves authority and
-  recovery. The unverified live drive is listed in
-  [the open live checks](../handoffs/README.md).
-- **Peer mail:** no cross-episode/worker-to-worker mail. Preserve the existing
-  orchestrator/worker star topology and recipient budget/authority boundaries.
-- **Restore:** add no client rollback detector. Preserve the existing restore
-  safety procedure without suggesting that matching `space_id` detects an older
-  snapshot. See [server operations](../specs/server-and-machine-operations.md#backup-and-restore).
+- [Watchers](../specs/conversations-episodes-and-watchers.md#watcher-resources)
+  wake on completion, not intermediate output. Preserve observation failures and
+  completed/stopped/degraded history without a separate cleanup feature.
+- [Parallel repository work](../specs/conversations-episodes-and-watchers.md)
+  needs no exclusive repository lease. Shared-checkout concurrency and explicit
+  code integration are separate from graph branching.
+- [Graph editing](../specs/api-web-and-desktop-projections.md) uses preview and
+  Sync. Artifact selection is conversation context, not an Evidence-creation or
+  human-judgment shortcut.
+- [Provider steering](../specs/providers-and-containment.md#live-human-steering)
+  extends the existing ordinary chat attempt, not a persistent provider daemon.
+  [Agent mail](../specs/auto-research-and-branch-merge.md#mail-and-lifecycle-notices)
+  stays within an orchestrator/worker star, without peer or cross-episode mail.
+- [Restore](../specs/server-and-machine-operations.md#backup-and-restore) uses
+  its explicit safety procedure. Matching `space_id` does not detect an older
+  snapshot and must not be presented as a client rollback detector.
 
-The superseded register was deleted; git history holds it.
-Do not restore its unresolved statuses as current instructions. Future feature
-work requires concrete scope and its owning specification, not a revived register.
+RCP's core is general-purpose. Domain connectors and visualization may extend it;
+there is no research-field allowlist or speculative claim of supported domains.
+[Glossary and quality advice](../specs/graph-history-and-transitions.md#typed-graph-operations)
+belong to the graph spec: definitions are metadata, and deterministic advice
+cannot judge scientific meaning.
