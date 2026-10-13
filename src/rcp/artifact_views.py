@@ -245,6 +245,9 @@ def artifact_viewer_document(
             "const liveUrl="
             + json.dumps(live_url).replace("<", "\\u003c")
             + ";\n"
+            + "const liveArtifactId="
+            + json.dumps(descriptor.artifact_id)
+            + ";\n"
             + f"const defaultLiveDelay={LIVE_ARTIFACT_REFRESH_SECONDS * 1000};\n"
             + importlib.resources.files("rcp").joinpath("artifact_live.js").read_text("utf-8")
         )
@@ -330,6 +333,9 @@ def _inline_viewer_document(
         scripts.append(
             "const liveUrl="
             + json.dumps(live_url).replace("<", "\\u003c")
+            + ";\n"
+            + "const liveArtifactId="
+            + json.dumps(descriptor.artifact_id)
             + ";\n"
             + f"const defaultLiveDelay={LIVE_ARTIFACT_REFRESH_SECONDS * 1000};\n"
             + resources.joinpath("artifact_live.js").read_text("utf-8")
@@ -512,6 +518,14 @@ listen(privatePort,'message',(event)=>{
 """,
         wrapper_script="""
 let pendingLive=null;
+let deliveredGraphIds=new Set();
+listen(window,'message',(event)=>{
+  const frame=artifact();
+  const value=event.data;
+  if(!frame || event.source!==frame.contentWindow || value?.type!=='rcp-open-node' ||
+     value.version!==1 || typeof value.id!=='string' || !deliveredGraphIds.has(value.id)) return;
+  parentPost({type:'rcp-open-node',version:1,id:value.id},'*');
+});
 channelReady.push(()=>{
   if(pendingLive) portPost(artifactPort,pendingLive);
   if(window.parent!==window) parentPost({type:'rcp-live-ready',version:1},'*');
@@ -519,6 +533,9 @@ channelReady.push(()=>{
 listen(window,'message',(event)=>{
   if(window.parent===window || event.source!==window.parent) return;
   if(event.data?.kind!=='rcp-live-data' || event.data.version!==1) return;
+  const graph=event.data.snapshots?.find(snapshot=>snapshot.kind==='graph');
+  if(graph && !graph.error && !graph.unchanged && Array.isArray(graph.nodes))
+    deliveredGraphIds=new Set(graph.nodes.map(node=>node.id));
   pendingLive=event.data;
   if(artifactPort) portPost(artifactPort,pendingLive);
 });

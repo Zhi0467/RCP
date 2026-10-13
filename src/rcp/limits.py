@@ -523,6 +523,9 @@ ARTIFACT_IMPORT_RETRY_SECONDS = 30
 ARTIFACT_IMPORT_MAX_RETRY_SECONDS = 3600
 
 # Live artifact declarations, bounded reads, viewer refresh, and final capture retries.
+# Serialized UTF-8 envelopes; graphs are complete or return an error, never clipped.
+LIVE_ARTIFACT_GRAPH_MAX_BYTES = 2 * 1024 * 1024
+LIVE_ARTIFACT_MESSAGE_MAX_BYTES = 4 * 1024 * 1024
 LIVE_ARTIFACT_MAX_NEEDS = 16
 LIVE_ARTIFACT_MAX_ROWS = 1000
 LIVE_ARTIFACT_MAX_BYTES = 256 * 1024

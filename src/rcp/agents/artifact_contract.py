@@ -16,6 +16,7 @@ from rcp.limits import (
     CHAT_ARTIFACT_MAX_COUNT,
     CHAT_ARTIFACT_MAX_FILE_BYTES,
     CHAT_ARTIFACT_MAX_TOTAL_BYTES,
+    LIVE_ARTIFACT_GRAPH_MAX_BYTES,
     LIVE_ARTIFACT_LOG_TAIL_LINES,
     LIVE_ARTIFACT_MAX_BYTES,
     LIVE_ARTIFACT_MAX_FILES,
@@ -23,10 +24,12 @@ from rcp.limits import (
     LIVE_ARTIFACT_MAX_ROWS,
     LIVE_ARTIFACT_MAX_SCANNED_ENTRIES,
     LIVE_ARTIFACT_MAX_TOTAL_BYTES,
+    LIVE_ARTIFACT_MESSAGE_MAX_BYTES,
     LIVE_ARTIFACT_REFRESH_SECONDS,
     LIVE_ARTIFACT_SSH_REFRESH_SECONDS,
 )
 from rcp.live_artifacts import (
+    GRAPH_TITLE_MAX_CHARS,
     NEED_SNAPSHOT_MODELS,
     EpisodeNeed,
     FileSnapshot,
@@ -96,6 +99,8 @@ def live_contract(*, allow_episode: bool = False) -> str:
             lines.extend(_fields(FileSnapshot, indent="      ", skip=("kind",)))
     lines.extend(
         [
+            f"- One graph need watches the complete bound graph, never finalizes, and cannot mix with job or episode. It may mix with node/file/files. Titles cap at {GRAPH_TITLE_MAX_CHARS} characters; ids are never cut. Graph snapshots cap at {LIVE_ARTIFACT_GRAPH_MAX_BYTES} serialized UTF-8 bytes and whole messages at {LIVE_ARTIFACT_MESSAGE_MAX_BYTES}; over-cap reads return error codes without partial graph data and keep polling. Retain the last complete display on error. The viewer handles head caching and expands unchanged responses.",
+            '- To open native node details from a pinned Research view, post parent.postMessage({type: "rcp-open-node", version: 1, id: node.id}, "*"). Only ids in the delivered graph are forwarded. No acknowledgement returns; other viewers ignore this action.',
             "  Each Evidence entry has:",
             *_fields(LiveEvidence, indent="  "),
             f"- Limits: at most {LIVE_ARTIFACT_MAX_NEEDS} sources; file reads cap at {LIVE_ARTIFACT_MAX_ROWS} rows and {LIVE_ARTIFACT_MAX_BYTES} bytes; folder sources cap at {LIVE_ARTIFACT_MAX_FILES} files and {LIVE_ARTIFACT_MAX_TOTAL_BYTES} total bytes and list at most {LIVE_ARTIFACT_MAX_SCANNED_ENTRIES} directory entries, so keep the folder narrow; job logs keep the last {LIVE_ARTIFACT_LOG_TAIL_LINES} lines.",

@@ -4,9 +4,16 @@ from __future__ import annotations
 
 from html.parser import HTMLParser
 from pathlib import PurePosixPath
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from rcp.limits import (
     LIVE_ARTIFACT_MAX_NEEDS,
@@ -29,6 +36,12 @@ class NodeNeed(LiveModel):
         default="node", description="Watch a node in this artifact's graph."
     )
     id: str = Field(min_length=1, description="The node id in the artifact's main or branch graph.")
+
+
+class GraphNeed(LiveModel):
+    kind: Literal["graph"] = Field(
+        default="graph", description="Watch the artifact's entire bound graph."
+    )
 
 
 class EpisodeNeed(LiveModel):
@@ -99,7 +112,7 @@ class FilesNeed(LiveModel):
 
 
 LiveNeed = Annotated[
-    JobNeed | NodeNeed | EpisodeNeed | FileNeed | FilesNeed, Field(discriminator="kind")
+    JobNeed | NodeNeed | GraphNeed | EpisodeNeed | FileNeed | FilesNeed, Field(discriminator="kind")
 ]
 
 
@@ -110,6 +123,15 @@ class LiveTag(LiveModel):
         max_length=LIVE_ARTIFACT_MAX_NEEDS,
         description="Sources to watch in snapshot order.",
     )
+
+    @model_validator(mode="after")
+    def graph_sources(self) -> Self:
+        kinds = [need.kind for need in self.needs]
+        if kinds.count("graph") > 1 or (
+            "graph" in kinds and {"job", "episode"}.intersection(kinds)
+        ):
+            raise ValueError("graph allows one need and cannot be combined with job or episode")
+        return self
 
 
 class ResolvedLiveNeed(LiveModel):
@@ -182,6 +204,57 @@ class NodeSnapshot(LiveSnapshot):
     )
 
 
+GRAPH_TITLE_MAX_CHARS = 240
+
+
+class GraphNode(LiveModel):
+    id: str
+    type: str
+    title: str = Field(max_length=GRAPH_TITLE_MAX_CHARS)
+    title_truncated: bool
+    status: str | None
+    standing: str | None
+
+
+class GraphEdge(LiveModel):
+    source: str
+    relation: str
+    target: str
+
+
+class GraphSnapshot(LiveSnapshot):
+    kind: Literal["graph"] = Field(default="graph", description="Bound graph snapshot.")
+    head: str | None = Field(default=None, description="Opaque complete graph cache token.")
+    unchanged: Literal[True] | None = Field(
+        default=None, description="Reuse the previously cached graph."
+    )
+    nodes: list[GraphNode] | None = Field(
+        default=None,
+        description="All nodes: id, type, title, title_truncated, status, standing; no bodies.",
+    )
+    edges: list[GraphEdge] | None = Field(
+        default=None, description="All edges: source, relation, target."
+    )
+
+    @model_validator(mode="after")
+    def exclusive_payload(self) -> Self:
+        if self.error is not None:
+            valid = all(
+                value is None for value in (self.head, self.unchanged, self.nodes, self.edges)
+            )
+        elif self.unchanged:
+            valid = bool(self.head) and self.nodes is None and self.edges is None
+        else:
+            valid = bool(self.head) and self.nodes is not None and self.edges is not None
+        if not valid:
+            raise ValueError("graph snapshot must be full, unchanged, or error")
+        return self
+
+    @model_serializer(mode="wrap")
+    def serialize_payload(self, handler):
+        return {key: value for key, value in handler(self).items() if value is not None}
+
+
 class EpisodeSnapshot(LiveSnapshot):
     kind: Literal["episode"] = Field(default="episode", description="Own episode snapshot.")
     turn: int | None = Field(default=None, description="Episode turn count.")
@@ -220,7 +293,7 @@ class FilesSnapshot(LiveSnapshot):
 
 
 Snapshot = Annotated[
-    JobSnapshot | NodeSnapshot | EpisodeSnapshot | FileSnapshot | FilesSnapshot,
+    JobSnapshot | NodeSnapshot | GraphSnapshot | EpisodeSnapshot | FileSnapshot | FilesSnapshot,
     Field(discriminator="kind"),
 ]
 
@@ -248,6 +321,7 @@ class LiveDataMessage(LiveModel):
 NEED_SNAPSHOT_MODELS = (
     (JobNeed, JobSnapshot),
     (NodeNeed, NodeSnapshot),
+    (GraphNeed, GraphSnapshot),
     (EpisodeNeed, EpisodeSnapshot),
     (FileNeed, FileSnapshot),
     (FilesNeed, FilesSnapshot),
