@@ -397,7 +397,7 @@ def prepared_graph_observation_delta(
 
 
 def merge_prepared_graph_observation_delta(
-    delta: dict[str, object] | None,
+    delta: Mapping[str, object] | None,
     execution: AgentTaskExecution | None,
     native_session_id: str | None,
 ) -> dict[str, object] | None:
@@ -405,7 +405,7 @@ def merge_prepared_graph_observation_delta(
 
     observed = prepared_graph_observation_delta(execution, native_session_id)
     if not observed:
-        return delta
+        return dict(delta) if delta is not None else None
     current = (delta or {}).get("current")
     return {
         **(delta or {}),
