@@ -5,7 +5,7 @@ project's type which node types play which part, instead of naming node types
 or node classes themselves. The research type answers today
 (``rcp.core.research_type``); another type would answer the same questions
 differently, and the code asking them would not change. See
-``docs/decisions/2026-10-04-the-kernel-asks-node-type-questions.md``.
+``docs/specs/graph-history-and-transitions.md`` (Product ontology).
 
 Custom ontology types are stored as their base type, so every answer here is
 keyed by the base ``node.type``.

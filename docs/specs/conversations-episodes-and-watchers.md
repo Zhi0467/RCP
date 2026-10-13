@@ -7,49 +7,31 @@ Auto-research orchestration and episode graph branches are in
 
 ## Human notification observations
 
-Notification reconciliation is independent of graph watchers. Every main
-target reconciles accepted attention boundaries in the sender thread, starting
-immediately after startup and again after each accepted main transition. This
-reconciliation never runs on the API readiness path, so a slow remote graph
-read cannot hold the health endpoint closed. Episode health is local, so every
-project's episode baseline is taken before the API serves, and each pass
-observes it before replaying any graph, so one slow remote delays no other
-project's episode observation. Reconciliation runs even while no member
-wants graph notifications, so turning a kind on never replays old attention; a
-failed attempt retries on the next sender pass, and a pass with no change
-replays nothing. Graph items of a project awaiting reconciliation are held, not
-delivered. An unreachable canonical project produces no observation. The
-notification marker and per-device outbox rows advance in one SQLite
-transaction; empty attention is still a durable first-run baseline. The first
-baseline sends nothing, and it is the graph as it stood before the API began
-serving: an accepted main transition signals its revision, and a first baseline
-that would swallow a signalled revision is placed before it so that attention
-is delivered. A signal arriving after that first baseline recovers only its
-silently swallowed attention, even if newer transitions have already delivered.
-The current marker and delivered receipts never move backwards or replay.
-A delivered row is deleted once its 24-hour delivery window has passed.
+The sender reconciles main-target attention after startup and accepted main
+transitions, never on API readiness. It takes each project's local episode
+baseline before serving and observes episodes before remote graph reads. Slow
+or unreachable graphs do not block other projects' episode observations.
+Graph items awaiting reconciliation stay held; failures retry next pass.
 
-An update boundary stops the sender between projects: the graph read it finds
-in flight completes, and projects the pass did not reach stay dirty and held
-for the resumed or relaunched owner.
+Observation runs even with notifications disabled, so enabling a kind does not
+replay old attention. Markers and per-device outbox rows advance atomically.
+The first baseline sends nothing and represents the graph before serving;
+accepted-transition signals prevent it swallowing new attention. A late signal
+recovers only swallowed attention without moving markers backwards or replaying
+delivered receipts. Delivered rows expire after their 24-hour window. Update
+pauses finish the in-flight project read and leave unreached projects dirty.
 
-Every 15 seconds the sender rechecks unfinished episodes and ended episodes
-whose recorded observation is not yet terminal. It uses the same batched health
-calculation as the episode API and observes `(health, blocked_reason)`.
-Changes to `needs_action`, or to `wrapping_up` with `sign_in`, use the Needs you
-preference. Changes to `completed`, `stopped`, or `failed` use Episodes finished.
-Existing episodes are baselined without notification when their project is first
-observed. Episodes created after that baseline notify on their first eligible
-observation, including one that has already ended between passes. Ending during
-downtime therefore remains observable on restart.
+Every 15 seconds the sender observes `(health, blocked_reason)` for unfinished
+or not-yet-terminally-observed episodes, using the API's batched health logic.
+`needs_action` and `wrapping_up` with `sign_in` use **Needs you**; `completed`,
+`stopped` and `failed` use **Episodes finished**. Existing episodes baseline
+silently; new episodes notify on their first eligible observation, even if they
+ended between passes or during downtime.
 
-Questions use the same `episode_needs_action` (Needs you) preference for chats
-and episodes. A durable creation event per question id produces one push, even
-when another question already holds an episode in `needs_action`. Chat questions
-link to their chat; episode questions link to their episode. Delivery checks
-recognize question items independently of episode health. A health transition
-whose cause is that question does not send a second push. Dismissal, later wakes,
-and reauthorization produce no new question event.
+Each question creation produces one durable **Needs you** event, linked to its
+chat or episode. Delivery is independent of episode health; a health change
+caused by the question adds no second push. Dismissal, wakes and reauthorization
+do not recreate the event.
 
 ## Discuss and Work turns
 
@@ -99,106 +81,62 @@ cannot clean up the old host through its new target.
 
 ## Native chat context
 
-Chat is not transcript ingestion. Canonical chat history exists for display,
-but RCP never reads, indexes, copies, projects, validates, or authorizes from
-prior RCP transcript text. Provider-native session continuation may retain the
-provider's context without making the displayed transcript an RCP input.
+RCP chat history is display data, never an input for transcript ingestion or
+task authority. Native provider continuation may retain its own context. An
+agent the member runs in their authenticated page acts as that member under
+[Authority and Proposals](authority-and-proposals.md); a Work message it sends
+is new member input, not replayed transcript authority.
 
-Task insertion resolves an ordinary chat's current native session from the
-latest task of that exact chat that established one, inside the same transaction
-as the overlap guard and stage binding. Human turns and generic watcher wakes
-use this rule; client session hints and transcript text do not select sessions.
-Resolution never searches back past an unusable current binding.
+**Why:** Page agents use the member's existing session and fixed tool catalog.
+A separate actor would duplicate identity without changing where authority comes
+from. Protected judgment stays outside the catalog. Voice confirmation defaults
+on for Work and episode authorization; terminal commands always require an exact
+command/repository confirmation. WebMCP has no RCP confirmation guard. Disabling
+voice confirmation accepts misheard speech or injected content starting paid
+work. History attributes these actions to the member, not a separate agent.
+The [API spec](api-web-and-desktop-projections.md) owns the tool surface.
 
-Human turns and watcher wakes differ in what blocks them and what they compare:
+Task insertion resolves the latest native-session binding of the exact chat in
+the same transaction as overlap and stage admission. Client hints and transcript
+text cannot select it; resolution never skips an unusable current binding.
 
-- An active turn or a paused, resumable turn blocks both. A human turn is
-  refused; a wake defers without claiming its completion.
-- Only a wake also waits on an unresolved current turn (queued, running,
-  pausing, paused, or interrupted). A human turn after an interrupted turn
-  continues its session.
-- A human turn keeps the current session across a model change. A human
-  provider or machine change starts a fresh session and records that reason.
-  The composer offers provider, model, and reasoning per turn, defaulting to
-  the conversation's last turn, else the Settings profile, and says when a
-  provider change will start a fresh session. The machine is not offered.
-- A wake's recorded provider, model, or machine must match the current
-  session. A mismatch records a failed notification task with an actionable
-  reason; its completion is claimed once, no provider launches, and the task
-  offers no Retry, because a retry would replay the refused policy.
+- Active and paused-resumable turns block human turns and defer wakes. Wakes
+  additionally defer queued, pausing or interrupted current turns; a human may
+  continue after interruption.
+- Human model changes keep the session. Provider or machine changes start fresh
+  with a recorded reason. The composer offers provider/model/reasoning, defaulting
+  to the last turn then Settings, but not machine selection.
+- Wakes require their recorded provider/model/machine to match. Mismatch claims
+  completion once and records a failed notification task without provider launch
+  or Retry. Deferred wakes replace one visible reason until admitted.
 
-A deferred wake shows its reason on each completed watcher it would claim.
-The reason replaces itself rather than accumulating and clears when the wake
-is admitted.
+Every resolution records `chat_session_resolution`. Fresh-session reasons are
+`no_session_yet`, `session_history_only`, `session_recovery_abandoned`,
+`session_stage_unavailable`, `session_stale`, or `session_context_unavailable`.
+`session_limit` keeps the session. Viewer edits use an artifact's saved session
+without making it current; composer comments use the current chat session.
+**New session** creates a new chat id. Provider, host, stage, target and scope
+remain bound; neither another chat nor another graph target can reuse them.
 
-Every resolution records a durable `chat_session_resolution` receipt with its
-outcome and reason code. A binding that cannot be continued starts fresh with
-one of these reasons: `no_session_yet`, `session_history_only`,
-`session_recovery_abandoned`, `session_stage_unavailable`, or a provider drop
-of the current session: `session_stale` (the provider no longer has it) or
-`session_context_unavailable` (the saved continuation context failed and
-requires a retry), the classification Retry uses to refuse resuming a dropped
-session. A `session_limit` failure continues the session: its classification
-also matches account quota, after which the session can still resume. An
-artifact edit from the viewer runs on the artifact's saved session and never
-becomes the chat's current session; a comment sent from the chat composer is an
-ordinary turn on the chat's current session. The exact provider, machine, chat, graph target,
-stage, and launch write scope remain enforced. **New session** creates a new
-chat id.
+A generic `watcher_wake` is a new logical turn, clears handoffs and uses the wake
+prompt node. Experiment and child wakes keep their own policies. Shared master
+restoration, deltas and replacement are owned by
+[continuation prompts](providers-and-containment.md#continuation-prompts).
+The chat master supplies graph target/head, focus, run-scope repositories, selected
+packages and non-secret compute metadata. Separate Discuss/Work contracts grant
+only the mode named on each turn. Resumes include the unchanged human message,
+logical turn id, artifact directory and changed values. Baselines commit only
+after mechanical success and bind provider, host, session, project, target,
+conversation and focus. A legacy master without a durable record is reusable
+only when its bytes match its filename digest.
 
-A chat watcher wake is a new logical `watcher_wake` turn, clears prior handoffs,
-and selects the `wake` prompt node when continuing a session. It carries the
-compact delta and compatible master pointer, bootstrapping the master when
-necessary. Experiment and Auto-research child wakes retain their own policies.
-
-The first ordinary turn in an RCP-owned native session receives one master
-context. It supplies shared project context once: the current graph target and
-head, focused node, exact run-scope repository pointers, enabled-package
-pointers, and selected non-secret compute connection metadata. Separate Discuss
-and Work contracts define their authority, schemas, and outputs against that
-shared context. Seeing both grants no cumulative authority: each turn carries
-one explicit mode marker. A refreshed master replaces earlier master
-instructions while retaining the conversation's native progress.
-
-Later ordinary resumes send the marker, logical turn id, human message
-unchanged, resolved artifact directory, and one line for each stable value that
-changed since the master, such as a new command client, write root, or compute
-connection. They end with one master pointer. The execution, launch-helper, and
-write-boundary instructions live in the master once; only their changing values
-travel. The pointer says
-it is the contract given at the session's start and to read it only after a
-compaction or a lost grip on the graph rules or authority; it is not an
-instruction to reread unchanged context. RCP records the master's exact bytes on
-the operation that first sent it and restores that file into the conversation's
-stage before every pointer, so the path always resolves. A master from before
-that record is kept only when its bytes match the digest in its own name;
-otherwise the session is bootstrapped with a freshly rendered master. A new baseline commits
-only after a mechanically successful turn and is bound to provider, host, native
-session, project, graph target, conversation, and focused node. Failed or
-interrupted work does not advance it.
-
-Compute selection is stable conversation context, persisted independently on
-the task request and canonical chat record for truthful recovery. Ordinary turns
-send a concise added/removed/updated delta: additions and updates carry the
-selected profile's non-secret access metadata so a resumed agent can use it,
-while removals need only the display name. The resource metadata cannot change
-the provider, execution machine, `run_on`, graph target, or write scope.
-
-An exact conversation/native session cannot be reused across a different chat
-or graph target. Main and branch-bound stages fail closed instead of silently
-continuing with the other target's authority.
-
-Opening an episode branch exposes the ordinary node and project composers
-for that graph target, during and after the episode. These chats have independent
-human authorization and sessions; they do not route through the orchestrator or
-spend its budget. Canonical chat records carry their graph target. Older records
-resolve it from their durable task/session binding before appearing in a target's
-chat list. A branch id never upgrades Discuss or expands repository write scope.
-Every recovery and watcher continuation preserves that original target.
-
-A human may also start an ordinary Experiment loop on the branch. It owns a new
-Experiment episode and budget, without an Auto-research child route. Its Run,
-Stop, control projection, recovery, and watchers all use the exact branch target.
+Compute selections persist on task and chat records. Added/updated entries send
+bounded access metadata; removals send names. They change no execution or graph
+scope. Branch composers work during and after an episode with independent human
+authorization, sessions and budgets. Older chat records resolve their target from
+durable task/session bindings. Branch chats and their recovery preserve that
+target. A human may start a separate Experiment episode on the branch without an
+Auto-research child route.
 
 ## Conversation worktrees
 
@@ -252,160 +190,90 @@ record removal likewise never deletes repository worktrees.
 
 ## Conversation scratch and human input
 
-One conversation owns one reusable scratch stage because provider-native resume
-depends on its original working directory. Each logical turn owns one exact
-`turns/<turn-id>/artifacts` directory. Stale `patch.json` and `watch.json` are
-cleared fail-closed before a new turn that could misattribute them. A committed
-native chat-session context retains that stage, including its immutable master
-context, even while no turn is active.
+A conversation retains one scratch stage because native resume needs its cwd.
+Each logical turn owns `turns/<turn-id>/artifacts`. New turns clear stale
+`patch.json` and `watch.json` fail-closed. Committed native context retains its
+stage and master even while idle.
 
-Human-started Discuss and Work chats and Experiment invocations may use the staged `ask`
-command for missing information. The human answers on the question card; the
-composer remains steering. Answers are human input, never approval or changes to
-capability, write roots, graph target, or budget. Discuss resolves only `ask`,
-with no graph commands or write scope. Artifact-edit Discuss turns, consolidation,
-ingestion, paper coach, Auto-research workers, and child Work and Experiments
-cannot ask directly.
+Human Discuss/Work chats and human Experiment invocations may `ask`; the question
+card receives answers while the composer remains steering. Viewer edits,
+consolidation, ingestion, Paper, workers and child Work/Experiments cannot ask.
+[The command protocol](providers-and-containment.md#one-graph-output-channel)
+owns idempotency, allowed verbs and acknowledgement. Answers never change authority.
 
-A call waits for the bounded client interval. Its random `call_id` stays outside
-arguments and survives every fresh request round. Live pending replies carry
-`attempt` and `max_attempts` (3); a parked reply carries neither and counts no
-attempt, and clients without an id omit `attempt`. A thread-safe,
-process-local record retains the last 32 distinct calls per question and their
-attempt numbers; restarting RCP resets this advisory count.
-If the answer blocks work, repeat the exact call to keep waiting. Otherwise,
-continue other work and repeat it later to check. After the third unanswered
-attempt, stop asking and end the turn; the question remains on the human's card
-and their answer resumes the conversation. Prefer one blocking shell wait; if
-polling an unfinished command, use waits of about five minutes.
-An answered response counts as received only after the client acknowledges its
-response token and the receiving task settles successfully on the original native
-session and authority binding.
-Steering comes before a new turn: when the chat has a running turn bound exactly
-like the asking turn (the continuation-receipt binding below), able to receive
-input, and no ask call (by any turn) is still waiting on that question or has
-just returned its answer, the answer is steered into it.
-Only an acknowledged steer becomes the answer's projection, shown as that
-turn's delivered steer; the acknowledgment counts as the turn's answer
-acknowledgment, so its successful settlement records receipt and no follow-up
-runs. The acknowledgment is recorded before the transcript; if that write
-fails, reconciliation repairs it onto the receiving turn, never by a second
-delivery. A refused or unknown steer records nothing: the answer is projected and
-delivered by its ordinary follow-up, so the chat never shows a refusal for an
-answer that still arrives.
-Failed or disconnected turns retain delivery eligibility. After full settlement
-and at startup, an unreceived chat answer admits at most one same-mode follow-up, transactionally claimed
-with task insertion, pinned to the asking turn's native session, authority, write
-scope and target. Discuss answers continue Discuss with no Patch scope or write
-fingerprint; Work answers continue Work with the original write fingerprint.
-Before launch and recorded settlement, both owners check the complete origin
-against the current provider, native session, resolved execution host, stage,
-mode/capability, graph target, and write binding. A clean-session handoff or
-provider-changing Retry cannot redeliver an answer under a different binding.
-Occupied or paused sessions defer admission; unusable bindings
-remain visible. Each answer is projected once as a human chat message through
-StateWorkspace using its question id and answer revision. Its follow-up turn's id
-derives from the same pair, so the projected answer names that turn before it is
-admitted and a queued follow-up never repeats it. An Experiment answer names only a
-claimed follow-up, because a later continuation may claim it under its own id.
-Projecting a chat answer first reserves the asking turn's prompt at the turn's
-creation time, as a live steer does, so the answer never precedes the prompt.
-The reservation is a no-op once the prompt is recorded. An Experiment
-transcript shows no turn prompts, so it gets none. Settlement and the answer
-route reconcile only their project's unreceived answers; startup sweeps every
-project. A durable projected-revision
-marker retires successful projections from reconciliation; stable-id replay repairs
-a missing marker without republishing. Deferred follow-up admission remains retryable
-after projection succeeds. Question offer and acknowledgement reads query operation
-and category independently of the receipt display cap. Fresh question snapshots
-come from operational records, never displayed chat history.
+Each bounded ask call retains a random `call_id` across transport rounds.
+Pending replies carry `attempt` and `max_attempts` (3); parked replies count no
+attempt. Clients without an id omit the count. A thread-safe process-local
+record retains the last 32 calls per question; restart resets this advice.
+Repeat the exact call while blocked, or check later while doing independent
+work. After three unanswered attempts, end the turn and leave the card open.
+Prefer one blocking shell wait; unfinished-command polling uses roughly
+five-minute waits.
 
-While an ordinary human-triggered Discuss or Work turn runs, the human may send
-plain text to it through the ordinary composer: while the watched attempt can
-receive input, Send addresses that attempt: Codex app-server injects into its
-running turn, and Claude delivers the message to the running attempt and
-decides itself whether it joins that turn or runs as the next one in the same
-session.
-There is no separate steering control. The backend supplies whether the
-exact attempt can receive input, its action label, and its disabled reason, using
-the actual runtime, including a fallback to exec. The composer shows no hint
-line: the action label names the send button, and the button's enabled or
-disabled state alone shows whether the running attempt can be steered.
-The mode toggle is disabled exactly while the composer addresses the running
-attempt, because a follow-up uses that attempt's captured mode. While steering,
-the toggle and send button show the running turn's mode; the mode the human
-picked for their next turn returns when the turn stops taking input. A turn that
-cannot receive input leaves the toggle available for the next ordinary turn.
-Episode workers cannot be steered; the human continues to message their orchestrator
-through the episode's ordinary mail path.
+An answer is received only after client acknowledgement and successful settlement
+on its original session and authority binding. Before creating a follow-up, RCP
+may steer it into a compatible running chat turn when no ask call is waiting or
+has just returned that answer. Only an acknowledged steer becomes its transcript
+projection. Acknowledgement precedes projection, so reconciliation repairs a
+failed write without delivering again. Refused/unknown steering leaves ordinary
+follow-up eligible and shows no false refusal for the answer.
 
-Each steer is stored as the human's chat message with its addressed task attempt
-and a **delivered**, **refused**, or **unknown** receipt. A delivered receipt is
-labelled **Delivered** for every runtime and carries no explanatory reason. A
-refused receipt retains the reason. Reload reads that stored record; it does not infer delivery from
-answer text or replay the input. Provider acknowledgment means delivery, not a
-promise that the model followed the instruction. The message remains human input,
-never an assistant answer, provider trace, or graph-change channel. It cannot
-upgrade Discuss to Work or change the active turn's scope, target, budget, or
-permission. Refused and unknown input is not silently sent as a subsequent turn.
-The [provider lifecycle](providers-and-containment.md#live-human-steering) owns
-acknowledgment, completion races, and disconnect handling.
+Settlement and startup admit at most one unreceived-answer follow-up, atomically
+claimed with task insertion. It keeps the asking turn's mode, native session,
+provider, host, stage, target and write binding. Both live launch and recorded
+settlement verify the complete origin. Provider switches and clean handoffs
+cannot receive it; occupied/paused bindings defer, unusable bindings stay visible.
+Discuss retains no Patch/write fingerprint; Work retains its original one.
 
-The composer may turn dictated speech into editable text, through
-macOS dictation in the desktop app or through the member's own transcription
-service (see [dictation](api-web-and-desktop-projections.md#dictation)). It never
-sends on its own; Send pressed while dictating finishes the dictation and sends
-the final transcript once it is in the draft, to the target and launch
-settings (mode, agent, repositories, compute, attachments) Send had when pressed;
-if any changed, nothing is sent and the
-draft stays. RCP never stores the audio. SpeechAnalyzer recognizes
-speech on the Mac; the older Apple recognizer, used before macOS 26, for
-unsupported languages, and in builds without SpeechAnalyzer, may send audio to
-Apple. A network service receives the audio under its own retention policy.
-Audio files remain refused as attachments. Temporary input attachments
-are claimed atomically for one nonblank Discuss or Work message, bounded by the
-current file allow-list and size/count limits, staged immutably on the execution
-host, and reused exactly by task recovery. A partial or unprovable transfer
-fails the task rather than dropping files and running text-only.
+Answers project once through StateWorkspace using question id and revision.
+Chat follow-up ids derive from that pair; Experiment answers name only a claimed
+follow-up. Chat projection first reserves the asking prompt at its creation time
+so answers cannot precede it; Experiment transcripts contain no turn prompts.
+Stable ids and a projected-revision marker repair partial publication without
+republishing. Successful projection does not retire deferred admission. Routes
+and settlement reconcile their project; startup sweeps all. Question/receipt
+queries do not depend on the receipt display cap or displayed history.
 
-Attachment bytes, hashes, and paths never become canonical chat or graph data.
-Chat history retains only display metadata and expiry. Files are untrusted
-temporary context and cannot be the sole durable provenance for Evidence.
+The ordinary composer addresses the watched attempt while it can receive input.
+The backend supplies capability, button label and disabled reason from its actual
+runtime. No hint line or separate steering control is shown. While steering,
+mode is locked to the running turn; the next-turn selection returns afterwards.
+Unsupported runtimes leave that next-turn toggle available. Episode workers use
+orchestrator mail instead. Steers persist as human messages with delivered,
+refused or unknown receipts. Reload never infers acknowledgement from reply text
+or resends input. [Provider steering](providers-and-containment.md#live-human-steering)
+owns transport races and placement.
 
-A turn may also carry project references: a stored artifact (episode reports
-included), a graph node on its source target, or the saved paper introduction.
-The human adds them by drag, by pasting a copied reference link, or from the
-composer's project picker. Accepted node and project chat admission, in Discuss
-or Work, reads each source through its owner and copies the bytes into the
-turn's attachment batch, with the source frozen on the descriptor. Staging,
-remote transfer, and recovery use only that retained copy, so a later edit or
-deletion does not change the turn. A missing source rejects the turn. References
-share the attachment count and size caps. They are read-only context. They add
-no read or write root on RCP storage and no graph authority, and a node from
-another target does not change the chat's target. The prompt lists them apart
-from uploads, never as editable artifact comments. Steering, Experiment runs,
-episode start, continue, and mail, seed, refresh, paper coach, merge, and
-artifact edits refuse them, and question and watcher follow-ups clear them.
+[Dictation](api-web-and-desktop-projections.md#dictation) produces editable text,
+never sends automatically. Send finishes dictation, then sends once with the
+captured target/settings; a changed target or setting keeps the draft instead.
+RCP stores no audio. SpeechAnalyzer is local; the older Apple recognizer or a
+chosen network service may send audio externally. Audio attachments are refused.
 
-An assistant answer also supports temporary selection comments for the next
-human turn. Finishing a selection of answer text, by pointer release wherever it
-lifts or by a touch selection settling, offers a floating Comment button on
-top of the selection; the selection and the platform's Copy are left untouched,
-and the composer opens only when Comment is chosen. A sweep that overshoots the answer
-is clamped to the answer's text. A visible Comment command opens the same
-floating flow with the answer in a real keyboard-selectable text control. At
-every layout width, the composer stays inside the soft-keyboard-adjusted visual
-viewport and scrolls when necessary.
-Each submitted comment becomes one editable or removable composer annotation,
-and the main composer shows their count. Several annotations may be staged. They
-remain a per-chat draft, including after a comment is edited blank, and block
-send until completed or removed. On send, each contributes only its copied
-selected text followed by `comment: <comment>` to the ordinary human message.
-Artifact comments are not chat annotations. They are sent from the artifact
-viewer; see [paper-artifacts-and-result-views.md](paper-artifacts-and-result-views.md).
-Annotations carry no message references, source identifiers, offsets, durable
-annotation records, or graph authority. Staging clears when the turn is accepted
-and otherwise remains a client-side draft for that chat.
+One nonblank Discuss/Work message atomically claims bounded temporary attachments.
+They stage immutably on the execution host and recovery reuses the exact batch;
+partial transfer fails rather than dropping files. Chat retains display metadata
+and expiry, never bytes/hashes/paths. Attachments are untrusted context, not sole
+durable Evidence provenance.
+
+Project references may name stored artifacts/reports, graph nodes on their source
+target, or the saved paper introduction. Drag, pasted reference links and the
+project picker create read-only copies through each source owner at admission.
+Missing sources reject the turn; later edits/deletion cannot change staged bytes.
+They share attachment caps and add no roots or target authority. Prompts list
+them separately from uploads and editable comments. Only ordinary node/project
+Discuss/Work admits them; steering and other run kinds refuse them, and question
+or watcher follow-ups clear them.
+
+Answer-text selections offer a floating Comment action without disturbing Copy.
+Overshoots clamp to answer text; a visible Comment command provides a keyboard
+text-control alternative. The comment editor stays within the keyboard-adjusted
+viewport at every width. Multiple editable/removable annotations remain per-chat
+drafts with a count; blank comments block send until completed or removed.
+Sending appends copied text and `comment: <comment>` to the human message, with
+no source ids, offsets or durable annotation model. Acceptance clears drafts;
+refusal retains them. [Artifact comments](paper-artifacts-and-result-views.md)
+use their own viewer flow.
 
 ## Common episode parent
 
@@ -417,242 +285,139 @@ authority, watcher/child settlement, and compact wrap-up facts.
 
 ### Episode isolation
 
-Run captures independent code and graph isolation choices. Auto-research keeps
-graph isolation locked on. Its omitted code choice resolves on when eligible,
-otherwise off. Experiments default both off. The episode records the resolved
-choices. Explicit code isolation still refuses when ineligible.
+Run captures separate code and graph isolation choices. Auto-research locks graph
+isolation on and defaults eligible code isolation on; Experiment defaults both
+off. Explicit ineligible code isolation is refused. Choices become immutable
+at first launch.
 
-An Experiment with graph isolation on creates an episode branch from an
-immutable main head, with its own Patch log. Its isolation owner records that
-branch id. With graph isolation off it keeps its existing graph target. An
-Experiment started on an existing branch keeps that branch and its isolation
-owner. Branch Work has no Decision exception. A new graph-isolated Run starts
-fresh; pending watcher completions on main remain on main.
+Graph-isolated Experiment Run creates a branch from an immutable main head and
+starts fresh. Otherwise it keeps its target; an Experiment on an existing branch
+keeps that branch's isolation owner. Pending main observations stay on main.
+Branch Work gains no Decision exception.
 
-The episode that first creates isolation owns one immutable `EpisodeIsolation`.
-It records the owner id, optional graph branch id, and optional worktree identity
-before the first provider launch. Worktree identity pins the repository alias,
-machine, execution host, shared path, worktree path, Git common directory, branch,
-starting branch, and starting commit. Operation state is stored separately.
-The choices cannot change after the first launch.
+The first isolating episode records `EpisodeIsolation` before launch: owner,
+optional graph branch, and worktree repository alias, machine/host, shared and
+worktree paths, Git common directory, branch, starting branch/commit. Operation
+state is separate. Children, Add N turns and human Experiments on its branch use
+`isolation_owner_episode_id`, never a second binding, and must match its host.
+Truth membership is unchanged.
 
-Auto-research children, Add N turns continuations, and human-started Experiments
-on the owner's branch store `isolation_owner_episode_id`. They resolve that
-owner's binding and never create another one. Their execution host must match
-the worktree binding. Graph truth membership is unchanged.
+Code isolation requires one run-scope repository and Git 2.38+ on the execution
+host. A grant covering the shared checkout makes it ineligible. Every launch
+rechecks grants and binding; Work/orchestration write the worktree, not the shared
+checkout. Resume, Retry and restart retain it; missing/moved worktrees fail.
 
-Code isolation requires exactly one run-scope repository and Git 2.38 or later
-on the execution host. The shipped worktree script probes the Git version.
-A machine writable-path grant overlapping the shared checkout makes code
-isolation ineligible.
-Every launch rechecks grants and the exact binding. Work and orchestrate receive
-the worktree as their repository write root. The shared checkout is not writable.
+Human Merge reserves the isolation owner across all admissions until landing,
+verification and cleanup finish. Live turns must settle. The
+[compute gate](compute-jobs.md#episode-merge-and-removal-gate) owns job checks and
+confirmation. Scheduler work without helper rows is represented by active or
+degraded external watchers, or stopped watchers without completion; graph
+conditions do not block removal. Confirmed jobs reach the merge agent. Unfinished
+jobs leave `worktree_kept` with worktree, code branch and graph branch intact for
+a later Merge; confirmed standalone removal may remove the worktree.
 
-Recovery, Resume, Retry, and restart retain the binding. A missing or moved
-worktree fails before launch. No path falls back to the shared checkout.
+Episode Merge may commit leftovers respecting Gitignore, but refuses interrupted
+Git operations, unmerged entries and dirty submodules. No code/graph residue
+allows verified local landing and one graph transition without a provider turn;
+otherwise one merge agent lands code before RCP verifies and commits graph state.
+[Episode merge](auto-research-and-branch-merge.md#episode-code-merge-and-cleanup)
+owns landing and cleanup.
 
-Human-dispatched Merge reserves the isolation owner before any Git write. Every
-admission on that binding checks the reservation, including continuations,
-Resume, Retry, and recovery. It stays held through landing, verification, and
-cleanup. Live turns must settle first. Live or unobservable compute jobs pause
-Merge and Remove worktree, even after their watcher stops, until the human
-confirms them. A scheduler job has no registry row, so an active or degraded
-external watcher, or a stopped one with no recorded completion, pauses them on a
-binding with a worktree. A graph-condition watcher runs no job and never pauses
-them. The confirmed jobs are stored on the merge attempt; the code merge agent
-receives them and stops them before it merges, so a confirmed Merge with a code
-worktree always runs that agent. Merge never removes a worktree a job may still
-write: if any job still reads as unfinished after the agent's turn, the merge
-finishes with the worktree, its branch, and the graph branch kept and marked
-`worktree_kept`, and a later Merge removes them once the jobs have ended. A
-standalone Remove worktree removes it over confirmed jobs. RCP itself never
-cancels them.
+Every episode turn uses the parent's recorded human authorizer. A requesting
+member owns an idempotent recovery receipt but cannot replace that authorizer.
+Missing authorization refuses recovery and requires fresh human Run.
 
-Episode Merge may commit the episode worktree's leftovers, respecting Gitignore.
-It refuses interrupted Git operations, unmerged entries, and dirty submodules.
-With no code or graph residue, it lands code into the chosen local branch,
-verifies delivery, then commits one graph transition without a provider turn.
-Otherwise one merge task's agent lands the code the way chat Integrate does,
-and RCP verifies it before the graph commit.
-See [episode merge](auto-research-and-branch-merge.md#episode-code-merge-and-cleanup)
-for landing, recovery, and cleanup.
+The validated session binding pins provider, session, host, reusable stage,
+project, graph target and actor conversation. Human Run creates all three fresh:
+episode, session and conversation; a chat id with turns is refused. Wakes retain
+the recorded conversation. Provider switch activates only after mechanical
+success and is offered only where a clean-session path exists: not child Work
+or stopping episodes. Orchestrator wakes may switch and retain their paid
+delivery. Its children without an explicit pick still use Settings' node_chat
+profile. Switch requires a changed binding, including machine when movable;
+plain Retry remains separate.
 
-The parent's recorded human authorizer is the authority for every turn inside the
-episode, so a different current human pressing Resume or Retry cannot stand in for
-it. An episode with no recorded authorizer therefore has no recoverable turn, and
-RCP refuses that recovery by naming the situation and the remaining action — a
-fresh human Run, which starts a new episode and records its own authorizer.
-An idempotent Resume or Retry receipt belongs to the requesting member; it does
-not replace the episode's recorded authorizer.
-
-Every episode has exactly one validated native-session binding at a time:
-provider, session id, execution host, exact reusable stage, project, graph
-target, and actor conversation. A human Run always starts a fresh episode,
-fresh native session, and fresh conversation: Run refuses a `chat_id` that
-already has turns. Watcher wakes and continuations keep the conversation the episode
-recorded. A provider switch is a deliberate recovery that becomes
-active only after a mechanically successful handoff; automatic work never
-silently switches or starts fresh. The switch is offered only where the actor
-can accept a new binding: a rebinding starts a clean native session, which an
-Auto-research worker never gets and which a stopping episode refuses from
-anyone, so neither shows one beside the exact Retry they do permit. An
-orchestrator wake is offered the switch like any other orchestrator turn: the
-wake names the delivery attached to the turn, and that delivery is staged from
-the paid allocation, so a clean session still receives it. The switch rebinds
-that one turn, so an Auto-research switch names the children it leaves behind:
-a child without the orchestrator's own pick resolves its binding from the
-project's node_chat profile, which only Settings moves. Because the switch exists to change the binding, it holds its
-submission until the selection actually differs from the one that failed, and
-the execution machine is part of that selection wherever the recovery is free to
-move it. A run that can retry unchanged keeps its own plain Retry and never
-routes through the switch to get one.
-
-Only operational provider turns spend the operational ceiling. Validation,
-same-invocation Patch/watcher correction, exact Resume/Retry, and hidden report
-generation do not consume another operational unit.
+Only operational turns spend the ceiling. Validation, same-invocation repair,
+exact Resume/Retry and hidden reports spend no extra unit.
 
 ### Episode archive
 
-A project member may archive any episode and unarchive it later, including an
-episode that is running, waiting, recovering, stopping, or generating its report.
-The archive is shared by every member of the project in personal and team
-spaces. It records the acting human and time independently of the episode's
-original authorizer. It changes presentation only: lifecycle, budgets, reports,
-tasks, watchers, retained stages, and canonical graph history remain intact.
-Archive does not stop or settle work. Running tasks, admitted children, watchers,
-and reports continue, and lifecycle changes do not undo the archive choice.
-
-Archive applies to the selected episode. A child Experiment has its own archive
-control; archiving its parent does not archive the child. Starting another
-episode creates an unarchived run. Existing archives survive restart, backup,
-and project transfer without conferring authority on historical identities.
+Project members may archive/unarchive any episode, including live or reporting
+ones. The shared choice records actor/time separately from the authorizer and
+changes presentation only. Work, watchers, reports, budgets and graph history
+continue; lifecycle changes do not undo it. Children archive independently and
+new episodes start unarchived. Restart, backup and transfer retain the choice.
 
 `POST /api/projects/{project_id}/episodes/{episode_id}/archive` accepts exactly
-`{"archived": true}` or `{"archived": false}` under ordinary human project
-membership and write admission. It checks project and member access atomically
-with the archive mutation and returns the episode. Episode projections export
-`archived` and `can_archive`; the browser never infers eligibility from status.
-Lists retain archived records for the explicit **Show archived** view.
+`{"archived": true}` or `{"archived": false}`. Membership and write admission are
+checked atomically with the mutation. Projections supply `archived` and
+`can_archive`; lists expose **Show archived**.
 
 ## Experiment readiness and budget
 
-An Experiment can start a new bounded episode on a graph target only when the
-following hold for that target; loops on other targets never block it
-([decision](../decisions/2026-10-06-experiment-loops-are-per-branch.md)):
+Experiment starts are per exact graph target; loops elsewhere are informational.
+Admission requires decided `governed_by` Decisions with selected options and no
+pending Proposals, no open `blocked_by` Blocker, a nonterminal Experiment, and no
+live parent, unresolved automatic invocation or deliverable watcher on this
+target. A parent that armed no watcher and took no exit still blocks Run;
+**Stop loop** releases it even when the loop looks inactive.
 
-1. each `governed_by` Decision is decided with a selected option;
-2. none of those Decisions has a pending Proposal;
-3. no `blocked_by` Blocker is open; and
-4. no current episode still has a queued/running automatic invocation or a
-   deliverable live watcher; and
-5. no episode parent is still live at all. A turn can succeed below the ceiling
-   while arming no observer and taking no exit, which leaves the parent live with
-   nothing to wake it. The loop then reads as inactive, admission still refuses a
-   second live parent, and **Stop loop** is the control that releases it; and
-6. the Experiment itself is not `completed`, `abandoned`, or `superseded`.
+Readiness separates graph and operational reasons and adds
+`isolated_start_reasons` for a prospective branch. Run waits while other-target
+loops load; failed/partial reads report unknown overlap but leave Run available.
+Every Experiment-node chat/wake receives this target's loop status, authorizer,
+Stop attribution, other-target loops and refreshed watcher-state file, without
+maintenance authority. Agents able to ask should clarify interference with other
+branches; children pause conflicting work and tell their orchestrator. Branch
+turns also receive read-only main graph and shared-checkout/Git pointers.
 
-Readiness reports its graph gates and its operational reasons as separate lists,
-so no surface has to tell them apart by reading the sentences. It also reports
-`isolated_start_reasons`, the reasons a graph-isolated start would be refused. A human isolated
-start is checked against the branch it will create. The start response and the
-Run dialog list live loops on that node on other targets as information. Run
-waits while that list loads; if the list cannot load, the dialog says overlap
-is unknown and Run stays available. A partially read list shows healthy loops
-and the count of unreadable live loops on this node on other targets. Run stays
-available.
+A completed, abandoned or superseded Experiment cannot start fresh until an
+admitted graph change reopens it. This does not revoke an existing episode turn.
+The control says **Start episode**, then **Start new episode** once history exists.
+Run defaults to the node's `invocation_ceiling`; a human override pins only the
+episode without changing graph state. A terminal episode with no live turn may
+**Add N turns**, creating a continuation on the same node, target and session via
+`continues_episode_id`. The inspector starts against the node's limit; history
+keeps pinned usage while **Next episode limit** shows the current node value.
 
-Every chat turn on an Experiment node, including resumed and watcher-driven
-turns, receives a small loop-status block for its node: this target's loop (live, stopped,
-completed, or none; who started it; who stopped it and when), live loops on
-other targets, and a watcher-state file refreshed for this target. It grants no
-watcher-maintenance authority. A loop agent that can `ask` is told to ask the
-human when its work could interfere with another branch's episodes, for example
-the same node and the same checkout; an Auto-research child, which cannot, is
-told to pause that work and report the conflict for its orchestrator. Turns on a graph branch also receive read pointers:
-the shared checkout path, Git access to other code branches, and main's
-`graph.json` staged read-only; write scope and Patch collection are unchanged.
+Fresh human Run may pick provider/model/reasoning, defaulting to node_chat;
+machine stays with that profile. Continuations keep the source binding. Children
+use the orchestrator's explicit pick, otherwise Settings. Starts and
+reauthorization do not gate on compute readiness; [compute jobs](compute-jobs.md)
+owns probes and cancellation.
 
-Graph prerequisites derive from the exact graph target's final graph. A closed
-Experiment separately refuses a fresh episode: Runs says the Experiment is
-complete and offers no episode-start action until a human or already-authorized
-graph-writing task edits the node back to a nonterminal status. This fresh-start
-gate does not revoke an invocation already authorized inside the current episode.
-Before any episode the action says **Start episode**; after history exists it says
-**Start new episode**. The node's current `invocation_ceiling` is the default
-pinned operational ceiling; a human Run may authorize an explicit count instead,
-which pins that episode without a graph revision and leaves the node's own limit
-unchanged. Runs is where that count is chosen: on a terminal episode with no
-live turn its control says **Add N turns** and creates a continuation episode
-on the same node, graph target, and native session, chained by
-`continues_episode_id`; **Start new episode** remains the fresh start. The node
-inspector keeps the plain start against the node's own limit, which it shows
-beside it. Historical episodes
-retain their pinned used/ceiling values while the current node value remains
-separately visible as **Next episode limit**.
-
-A human fresh start may pick provider, model, and reasoning, defaulting to the
-Settings node_chat profile; the machine stays the profile's. The pick is pinned
-for every turn and watcher wake of that episode, like any resolved binding. A
-continuation keeps its source's binding, and an Auto-research child takes the
-orchestrator's pick when it names one, otherwise the Settings profile.
-
-Human Experiment-loop episode starts, including a completed-watcher start, are
-not gated on compute readiness. The helper probes when invoked; Settings shows
-the stored probe. Stop and pause do not cancel jobs. The
-[compute jobs spec](compute-jobs.md) owns scheduler prerequisites, the generic
-helper, and explicit human Cancel.
-
-Starting an episode does not create an ExperimentAttempt. Attempts are semantic
-agent-authored bookkeeping and never control budget, watcher identity, or
-episode admission. A nonblank human initial goal is retained exactly; only blank
-input receives the RCP fallback objective.
-
-Only the newest unresolved operational task in the newest episode on the same
-graph target may perform operational Resume or Retry. Patch-only repair may reflect retained completed
-work but cannot rerun side effects or reopen an old episode.
+Run creates no ExperimentAttempt: attempts are semantic bookkeeping, not budget
+or admission. Nonblank initial goals remain exact; blank input gets a fallback.
+Only the newest unresolved task in the newest same-target episode may Resume or
+Retry operationally. Patch-only repair may reflect completed work, never repeat
+effects or reopen an old episode.
 
 ## Experiment-loop graph authority
 
-Each invocation receives a dedicated Experiment contract and compact control
-file with phase, episode, graph target, invocation counts, pinned Decisions,
-current drift, completion criteria, and delivered watcher identities. Watcher
-state is a separate exact file. The provider never receives prior chat
-transcripts. A wake, an Add N turns continuation, and a same-session Resume or
-Retry send only what is new, inline: why the turn started, current focused
-authority, causal guidance, execution instructions, control inputs, schema, and
-output and validator paths. They end with one pointer to the Experiment contract
-that started the session (see
-[continuation prompts](providers-and-containment.md#continuation-prompts)).
-Current inline instructions take precedence while the objective, attempt ledger,
-and completed native-session progress remain intact. The episode report gets no
-pointer, and the next operational turn on its session reopens the master.
-Revoking artifact edits use the same reopening rule; a Discuss edit under the
-chat master revokes nothing. Revocation is tracked per owner, the episode and
-the chat, and clears only after a successful launch of that owner records its
-reopened master; edit completion does not.
+Each invocation receives focused Experiment authority and a compact control file:
+phase, episode/target, counts, pinned Decisions, drift, completion criteria and
+delivered watchers. Watcher state is separate; no prior transcript is supplied.
+[Continuation prompts](providers-and-containment.md#continuation-prompts) owns
+wake/recovery deltas, master pointers and report revocation. Current inline
+restrictions preserve the objective, attempt ledger and completed progress.
 
-A human may post in an Experiment's own conversation from Agents when no turn
-runs. The turn is an ordinary chat turn on the same native session: it spends
-no episode budget and does not touch Stop. Whenever a session's latest master
-belongs to another owner, or a report or revoking edit revoked it, the next
-launch reopens its own master with a replacing bootstrap: a human turn the
-chat master, on fresh turns, Resume, Retry, and recovery; an Experiment turn,
-including renderer-free graph repair, the master recorded in its own episode
-lineage. All owners reserve the
-exact native session and stage atomically, including human chats, episode
-invocations, wakes, recovery, reports, and artifact edits. Busy edit admission
-returns 409 without queueing, steering, spending budget, or changing Stop.
+Between Experiment turns a human may send an ordinary chat turn on its session
+from Agents. It spends no episode budget and changes no Stop state. When another
+owner's master or a report/revoking edit displaced its contract, the next owner
+reopens its own master: chat for human fresh/recovery turns, episode lineage for
+Experiment turns and renderer-free repair. Revocation clears only after that
+owner succeeds. A chat-master Discuss edit revokes nothing.
 
-The Experiment-loop Patch may update its own attempt/status and guidance, create
-Evidence and Blockers, assert legal epistemic and output edges, and create the
-permitted Proposal shapes within its pinned upstream/tested boundary. It may not
-set standing, decide a Decision, apply a Hypothesis transition, change its pinned
-Decision bundle, remove nodes, or treat Experiment status as automatic
-invocation control. Fresh human episode admission owns the closed-status gate.
+Chats, invocations, wakes, recovery, reports and artifact edits reserve the exact
+session/stage atomically. Busy artifact edit admission returns 409, with no
+queueing, steering, budget spend or Stop change.
 
-Validation and Apply both use the episode's exact project and graph target.
-When a child belongs to an Auto-research episode, every graph context, Patch,
-watcher, correction, settlement, and report input remains branch-targeted.
+Experiment Patch may update its own attempt/status/guidance, create Evidence and
+Blockers, assert legal epistemic/output edges and permitted Proposals inside its
+pinned upstream/tested boundary. It cannot set standing, decide Decisions,
+transition Hypotheses, change the pinned Decision bundle or remove nodes.
+Experiment status does not control invocation. Validation, Apply and every child
+context, correction, watcher, settlement and report retain the exact graph target.
 
 ## Graceful Stop and recovery
 
@@ -880,86 +645,56 @@ budget, Stop fence, or graph state.
 
 ## Visual wrap-up
 
-Completion, operational exhaustion, unrecoverable failure, and a human-authority
-pause fence new operational work and enter one hidden report wrap-up. Explicit
-Stop is the only ending that declines it. An ending whose turn never bound a
-provider session has no session to resume and so terminalizes directly, with no
-wrap-up record and no report error; that is an absence of a report, not a failed
-one, and it never leaves the episode on a live wrap-up status.
+Completion, budget exhaustion, unrecoverable failure and authority pause fence
+operational work and enter one hidden report allocation. Explicit Stop declines
+it. An ending with no provider session terminalizes directly without a report
+record or error.
 
-Report generation resumes the exact episode session and stage with only the
-durable ending, the official report-skill/output pointer, and one compact
-immutable mode receipt. It never rebuilds or resends the graph or transcript.
-The mode receipt compacts in a fixed order until its stored envelope fits the
-receipt size bound, measured with the storage encoder, so size never fails
-admission. A wrap-up the reconciler cannot admit because of a permanent defect
-(a validation error, an inconsistent ledger, a conflicting fence) is recorded
-once as a failed wrap-up with the defect as its report error, and the episode
-settles to its ending's terminal status; a transient failure (a lock, an
-unreachable host) is retried on the next poll. Once a wrap-up row exists,
-reconciliation reuses it and never rebuilds the receipt. One warning is logged
-per process for each episode and failure kind.
-The hidden allocation permits at most three provider turns total, clears the
-exact output before each attempt, and spends no operational unit.
+The report resumes the exact session/stage with the durable ending, report
+skill/output pointer and immutable compact mode receipt, never a rebuilt graph
+or transcript. Receipt compaction follows a fixed order and storage-encoded size
+bound. Permanent admission defects record one failed wrap-up and terminalize;
+transient locks/outages retry. Existing rows reuse their receipt; warnings are
+once per process, episode and failure kind. At most three provider attempts clear
+the exact output before each run and spend no operational budget.
 
-If shutdown interrupts or pauses an in-flight hidden allocation, startup
-requeues that same operation rather than creating another allocation. The
-transaction clears its prior write-scope fingerprint and records a reserved
-dispatch-reset fence newer than the old worker's attempt receipts. Only that
-durable fence makes the requeued operation launchable; public receipt writers
-cannot forge it, and the previous attempt remains inspectable history.
+Startup requeues an interrupted hidden allocation rather than creating another.
+It clears the old scope fingerprint and records a private dispatch-reset fence
+newer than prior attempt receipts. Only that fence authorizes redispatch; old
+attempts remain history.
 
-A valid `episode-report.html` is captured as an Artifact with permanent original
-bytes in RCP storage and served in the opaque artifact sandbox. Its report
-lifecycle record binds that first version rather than retaining inline HTML.
-The report has no Patch, watcher, command,
-Proposal, or graph channel and never determines the episode verdict. Final
-report failure is a durable visible nonblocking error with no manual report
-Retry; the episode still terminalizes. It is shown beside the ending it belongs
-to, never as the episode's health, its recommended next step, or a reason to
-withhold a control.
+Valid `episode-report.html` becomes a permanent Artifact whose lifecycle binds
+its original version in the opaque sandbox. It has no graph, Proposal, watcher
+or command channel and cannot change the ending. Final report failure is visible
+beside the ending, nonblocking, with no manual report Retry; it never becomes
+episode health, a recommendation or a reason to withhold controls.
 
 ## Runs projection
 
-The backend Experiment-control projection derives one health, one Runs section,
-one **Recommended next step**, and the exact available controls from structured
-episode, task, Stop, budget, watcher, report, and owning-node state. Raw task and
-report state remain supporting data and do not compete as peer episode states:
-the ending fence alone decides that an episode is over and which episode controls
-it retires. Once the episode is terminal, a closed owning Experiment makes the
-Runs object Completed even when that episode ended by human Stop; the stopped
-ending remains inspectable history. The browser renders the published answers
-and never reconstructs them from a fresher task list. Controls appear only when
-currently valid, and no recommendation and no diagnostic names an unavailable
-action. Report availability is independent of current-episode selection: the
-backend publishes the newest available report for the same Experiment and exact
-graph target, so a later stopped episode cannot hide an earlier durable report.
-The stopped episode remains current history; the report link retains its actual
-owning episode id. The backend also publishes `report_is_current`; a report from
-an earlier episode is labelled **Previous episode report**, while the selected
-episode's own report is labelled **Open report**.
+The backend publishes one health, Runs section, recommended next step and exact
+controls from episode, task, Stop, budget, watcher, report and node state. The
+ending fence decides whether the episode is over. A terminal episode on a closed
+Experiment reads Completed even after human Stop, whose ending remains history.
+The browser neither rebuilds health from task rows nor suggests unavailable actions.
 
-Active observations read **Waiting on watchers**. When only completed results
-remain, Runs reads **Completion pending delivery**. After all observations finish,
-a receiving Auto-research parent that cannot admit new work or has spent its
-shared Experiment allowance produces **Needs action** with the current reason,
-rather than recommending waiting for an already-completed observation. These
-parent facts are read from the same SQLite snapshot as the Experiment runtime,
-not persisted as stale delivery errors.
+Report availability is independent of current episode: the newest report for
+that Experiment and target remains linked to its owner. `report_is_current`
+selects **Open report** or **Previous episode report**.
 
-The runtime, parent episode, visible task rows, usage meter, and latest available
-report used for one Experiment-control answer come from one SQLite read snapshot.
-Resume, Retry, and provider switch target only the exact current operation named
-in that answer; a missing task row yields no client control. Recovery admission
-atomically rejects an older attempt or any episode with an already active task.
-After an accepted recovery, the browser refreshes the authoritative project
-projection before releasing the busy controls, including after a provider switch.
-A refresh failure is reported separately from failure to start recovery.
+Active observers show **Waiting on watchers**; completed observations show
+**Completion pending delivery**. A receiving Auto-research parent unable to admit
+work or out of shared Experiment allowance shows **Needs action** with its current
+reason. Parent facts are read live, not saved as delivery errors.
 
-The experiment detail retains exact target, episode history, pinned budgets,
-current next-episode limit, current guidance validity, watcher provenance and
-groups, session continuity, diagnostics, and report. Ordinary conversations and
-Paper coaching remain outside Runs.
+Runtime, parent, tasks, usage and report come from one SQLite read snapshot.
+Recovery controls address only its exact current operation; missing rows offer
+none. Admission rejects older attempts or overlapping episode work. Accepted
+recovery refreshes the authoritative projection before releasing busy controls;
+refresh errors stay separate from admission errors.
+
+Details retain target, history, pinned budgets, next limit, guidance validity,
+watcher provenance/groups, session continuity, diagnostics and report.
+Ordinary chats and Paper stay outside Runs.
 
 ### Episode browser preference
 

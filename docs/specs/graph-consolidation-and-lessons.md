@@ -1,174 +1,117 @@
 # Graph consolidation and lessons
 
-This specification owns the nightly graph consolidation, its authorization and
-schedule, its Inbox rows, and the per-project store of operational lessons.
+This spec owns nightly consolidation, its schedule and Inbox rows, and the
+project's operational lessons.
 
 ## Authorization and schedule
 
-A project member enables consolidation in Project settings by choosing a local
-time and time zone. The schedule records that member, the time of the choice,
-and a fresh authorization id, and it expires
-`CONSOLIDATION_AUTHORIZATION_DAYS` later. Choosing again, with the same or an
-edited time and zone, renews it under the
-acting member with a new authorization id. A run admitted under the previous
-authorization that has not launched yet ends as a failure; the next occurrence
-runs under the new one. Any member can turn it off. An expired schedule
-starts nothing and stays visible in the settings card until renewed or turned
-off.
+A member enables consolidation in Project settings with local time/time zone.
+The schedule captures member, choice time, and a fresh authorization id expiring
+`CONSOLIDATION_AUTHORIZATION_DAYS` later. Choosing again renews it under the acting
+member, even with unchanged settings. Unlaunched runs under the old id fail.
+Any member may disable it; expiry stays visible until renewal or disablement.
 
-Each local calendar date of the schedule is one **occurrence**, due at the
-chosen local time (a time that does not exist on a DST transition date is due at
-the first valid minute after it; an ambiguous one at its first instance). The
-consolidation scheduler checks due schedules every `CONSOLIDATION_POLL_SECONDS`
-once the machine has been awake long enough for an automatic launch. Handling a
-due occurrence and computing the next due occurrence commit in one transaction
-with the run row it creates, so a restart neither loses nor repeats an
-occurrence. The next due occurrence is the first one after the handling time, so
-any number of missed occurrences collapses into one.
+Each local date is one occurrence. A nonexistent DST time uses the first valid
+minute afterward; an ambiguous time uses its first instance. Polling uses
+`CONSOLIDATION_POLL_SECONDS` after the machine's automatic-launch wake delay.
+Occurrence handling, next due time, and run creation commit together. The next
+occurrence is after handling time, collapsing missed dates into one run.
 
-A due occurrence:
+A due occurrence stays owed while an earlier run is unresolved and starts nothing
+if authorization expired. Departed authorizers or projects refusing new work
+produce failure rows. Paused resumable chat, unavailable history, and unresolved
+launch configuration fail without tasks as `consolidation_chat_paused`,
+`history_unavailable`, and `consolidation_launch_unavailable`; they advance the
+occurrence, not coverage. No new main revision outside consolidation since the
+covered head records `skipped` for recent nights. Otherwise one run/turn is admitted.
 
-- stays owed, starting nothing, while an earlier consolidation run of the
-  project is unresolved (admitted, queued, running, or awaiting its
-  outcome);
-- starts nothing when the schedule has expired;
-- creates a failure row and starts nothing when the authorizer is no longer a
-  project member or the project no longer accepts new work;
-- creates a failure row without a task when the consolidation chat has a resumable
-  paused turn (`consolidation_chat_paused`), history is unavailable
-  (`history_unavailable`), or launch configuration cannot resolve
-  (`consolidation_launch_unavailable`), advancing the occurrence while leaving the
-  covered head unchanged;
-- records the outcome `skipped`, remembered for the settings card's recent
-  nights, and starts nothing when no revision outside consolidation runs has
-  been committed on main since the last covered head;
-- otherwise creates a run row and admits one consolidation turn bound to it.
-
-The **covered head** advances only when a run succeeds: to the run's input head,
-plus any later revisions committed by that run's own operation. A failed run
-leaves it unchanged, so the next night tries again. A revision committed by
-someone else during a run is never covered by that run.
-
-Immediately before the provider first launches, including a launch released by
-provider sign-in or startup recovery, RCP checks the captured authorization id
-against the schedule, expiry, the authorizer's membership, and project write
-admission. A failed check ends the run as a failure without a provider turn. A
-turn that already started settles under its captured authority; every Apply
-still checks live membership.
+Only success advances the covered head: its input head plus subsequent revisions
+from that run's operation, never concurrent work by others. Failure leaves it for
+the next night. Immediately before first provider launch, including sign-in release
+or startup recovery, RCP rechecks authorization id, expiry, membership, and write
+admission. Failure launches nothing. Already-started turns settle under captured
+authority; Apply still checks live membership.
 
 ## The consolidation turn
 
-The turn is an ordinary Work launch on main with the ordinary `work_auto`
-capability, trigger `schedule`, and the schedule's authorizer as
-`authorized_by`. Its graph authority equals ordinary Work: new
-ResearchQuestions and Hypotheses may be created, existing ones change only by
-Proposal, and accepted nodes are not removed directly. What sets it apart comes
-only from its server-owned binding to a consolidation run, never from a chat id,
-workflow, or request field.
+One ordinary Work turn on main uses `work_auto`, trigger `schedule`, and the
+schedule authorizer. Its server-owned run binding grants consolidation behavior;
+a chat id, workflow, or request field cannot. It uses the dedicated chat with no
+native session from earlier nights, retaining normal scratch/artifact folders.
+The official `graph-consolidation` workflow and dependencies resolve through the
+skill registry regardless of project defaults and appear in the launch receipt.
 
-It runs in the project's dedicated consolidation chat, admitted by the
-scheduler with no native session, so it never reuses an earlier night's
-provider transcript. The chat's stable scratch and artifact folders persist as
-for any chat. It runs the official `graph-consolidation` workflow and its
-dependencies, resolved through the skill registry regardless of project skill
-defaults and recorded in the launch receipt.
+The command client offers `validate`, keyed `apply`, and `lesson`. Watcher handoff
+is refused; ordinary Patch correction applies. Keyed Apply commits in-turn and
+returns its revision, storing immutable bytes/digest under operation/key. Identical
+bytes replay the result; changed bytes under a used key refuse. Another key with
+the same bytes shares the canonical effect. At settlement, a matching final
+`patch.json` is not reapplied; a new Patch follows ordinary Work Apply.
 
-Its staged command client offers exactly `validate`, keyed `apply`, and
-`lesson`. It cannot hand off watchers: a `watch.json` it leaves is refused.
-Ordinary Patch correction rounds apply.
+The workflow consolidates and rewrites unreadable asserted nodes under graph
+writing rules, and defines shared terms in the glossary. It only suggests accepted
+node rewrites, since editing resets standing. Existing protected beliefs still
+require [Proposals](authority-and-proposals.md#protected-belief-proposals).
+It finishes with `consolidation-report.html` in the ordinary artifact root.
 
-Keyed `apply` commits a Patch on main inside the turn and returns the new
-revision. RCP records an immutable copy and digest of each applied Patch under
-the operation and key, with a source effect id derived from the operation and
-Patch digest; repeating a key with the same bytes replays the result, and
-different bytes under a used key are refused. The same bytes under another key share the same canonical effect.
-At settlement RCP matches the final `patch.json` by operation and
-digest against those receipts: a match is not applied again, and a new final
-Patch applies as for any Work turn under its own effect id.
-
-Besides consolidating, the workflow keeps the graph readable. It rewrites
-`asserted` nodes that fall short of the "Writing for a reader" rules in the
-graph rules every graph-writing launch receives, and it builds the glossary
-from terms several nodes use without defining. It only suggests rewrites of
-accepted nodes, because an edit would return them to `asserted`. A rewrite of
-an existing ResearchQuestion or Hypothesis goes through a Proposal, like any
-other change to a protected belief.
-
-The workflow ends by writing `consolidation-report.html` in the turn's artifact
-root, captured by ordinary turn-artifact discovery.
+**Why:** expiring standing authorization makes routine maintenance possible while
+bounding each night to one invocation. Ordinary Work on main avoids a new episode
+kind and daily merge obligation; existing authority and semantic merge rules
+already handle protected changes and open-branch conflicts. In-turn Apply lets
+the report describe committed changes rather than intended ones.
 
 ## Outcomes and Inbox rows
 
-A run's outcome is separate from its task verdict. RCP settles it by run id from
-the ended task, every canonical commit of the run's operation, and the
-captured artifact, and retries settlement at startup and on scheduler passes
-until it is recorded. A settled outcome is final; later history recovery can
-verify its revisions and Proposal count but cannot turn a failure into a report
-or advance its covered head. A run succeeds when the task succeeded, no graph
-update of the turn remains rejected or unavailable, and the report was captured
-as a viewable HTML artifact.
+Run outcome is separate from task verdict. Settlement uses run id, ended task,
+canonical commits for its operation, and captured artifact. Startup and scheduler
+passes retry until recorded. Success requires a succeeded task, no rejected or
+unavailable graph update, and a viewable HTML report. Settled outcomes are final:
+later history recovery can verify revisions/Proposal counts but cannot convert
+failure to report or advance coverage.
 
-Paused, stopped, abandoned, or irrecoverably interrupted consolidation tasks
-settle as failures without advancing the covered head and are never resumed,
-retried, or continued as scheduled runs; a human may start a separate ordinary
-Work turn in the same chat.
+Paused, stopped, abandoned, or irrecoverably interrupted runs fail without coverage
+and never resume/retry/continue as scheduled runs. Humans may start separate Work
+in that chat. Each run produces one **Consolidation** Inbox row:
 
-Each run leaves one row in the project's Inbox under **Consolidation**:
+- **Report:** opens in the viewer, offers Keep into Artifacts or Dismiss. Open
+  rows protect temporary artifacts from expiry; Dismiss starts ordinary retention.
+  Keeping from the viewer also closes the row.
+- **Failure:** typed error and Dismiss only. Prelaunch failures have no operation
+  or revisions. Postlaunch failures list canonical operation revisions, marked
+  unverified if history cannot be read, never falsely empty.
 
-- a **report** row when the run succeeded. It opens the report in the artifact
-  viewer and offers **Keep**, which keeps the artifact into the Artifacts
-  panel, and **Dismiss**. While the row is open the report artifact does not
-  expire. Dismiss gives it the ordinary temporary-artifact retention from that
-  moment. Keeping the artifact from the viewer also closes the row as kept;
-- a **failure** row otherwise, with a typed error. A failure before launch has
-  no operation and lists no revisions. A failure after launch lists the
-  revisions RCP committed for the operation, read from history; if history
-  cannot be read the list is marked unverified rather than empty. It offers
-  only **Dismiss**.
-
-The consolidation response projects `can_write` from project write admission.
-Keep and Dismiss use that offer independently of graph-history availability;
-these actions never require a graph mutation. Artifact Keep availability and
-kept state use `kept_at`, independently of temporary expiry protection.
-
-Both rows show how many Proposals the run's commits created. Keep and Dismiss
-close the row for every member. The rows grant no authority; Proposals appear
-in the Inbox through their ordinary path.
-
-Each row sends one `consolidation` notification, as does a schedule's
-authorization when RCP first observes it within its last
-`CONSOLIDATION_EXPIRY_NOTICE_DAYS` or already expired. A closed row or a
-renewed or deleted authorization makes its pending notice ineligible.
+Both show created Proposal counts. Keep/Dismiss close the row for all members,
+using projected `can_write` independently of graph availability. Artifact Keep
+uses `kept_at`, separate from expiry protection. Proposals use the ordinary Inbox;
+report rows grant no authority. Each row emits one `consolidation` notification,
+as does authorization first observed within `CONSOLIDATION_EXPIRY_NOTICE_DAYS` of
+expiry or already expired. Closed rows and renewed/deleted grants invalidate notices.
 
 ## Operational lessons
 
-A lesson is a short note on how to get work done in the project. Lessons are
-RCP-owned records in the data directory, never graph state, and never authority:
-a lesson cannot widen capability, write roots, graph target, or budget. Adding
-one is an operational command, separate from filesystem and graph authority.
+Lessons are short operational notes in RCP's data directory, never graph state or
+authority. They cannot widen capability, roots, target, or budget. Served mutating
+mailbox owners may `lesson add`: human Work, child Work, Experiment turns,
+Auto-research root/workers, and consolidation. Validation-only Discuss, Seed,
+Refresh, and branch merge clients cannot. Consolidation may also page `lesson list`
+and update/delete agent-written notes. Member-written or edited notes are human-owned
+and agents cannot revise/delete them; members manage all lessons in Settings.
 
-Owners with a served mutating command mailbox may add a lesson with `lesson
-add`: human-triggered Work, child Work, Experiment-loop turns, the Auto-research
-orchestrator and its workers, and the consolidation turn. Validation-only
-clients (Discuss, Seed, Refresh, branch merge) do not. The consolidation turn
-may also page through every lesson with `lesson list` and update or delete
-agent-written ones. A lesson written or edited by a member is human-owned;
-agents cannot update or delete it. Each agent mutation is keyed by operation,
-subcommand, and key, checked against live membership of the task's authorizer,
-and committed with its durable result in one transaction, so a retry replays
-even after a delete. Members list, add, edit, and delete lessons in Project
-settings.
-
-Every Discuss, Work, Experiment-loop, and Auto-research launch, and the
-consolidation turn, receives a pointer to one staged `lessons.md` rendered from
-the store when the launch is staged, bounded by `LESSONS_RENDER_MAX_BYTES`,
-human-owned lessons first, each group newest first, with the count of omitted
-lessons stated. Text and count limits are `LESSON_TEXT_MAX_CHARS` and
+Agent mutations key by operation/subcommand/key, check live authorizer membership,
+and commit with their durable result, so retries replay even after deletion.
+Discuss, Work, Experiment, Auto-research, and consolidation launches receive a
+pointer to staged `lessons.md`, rendered at staging from the store. It is bounded
+by `LESSONS_RENDER_MAX_BYTES`, human-owned first, newest first within each group,
+with an omitted count. Text/count caps are `LESSON_TEXT_MAX_CHARS` and
 `LESSONS_PER_PROJECT_MAX`.
+
+**Why:** operational know-how is not research meaning for replay, merge, or paper,
+and repository instruction files belong to the human. The turn encountering a
+problem records it while it has context; nightly work prunes it. A bounded file
+pointer avoids spending prompt tokens on every lesson at every launch.
 
 ## Transfer, backup, and restore
 
-Lessons, schedules, runs, and their receipts stay with the space and are not
-part of a project transfer. Backup captures them with the rest of SQLite.
-Restore keeps lessons and closed rows, ends unresolved runs as failures, and
-turns off every restored schedule until a member enables it again.
+Lessons, schedules, runs, and receipts stay with the space, outside project
+transfer. Backup captures them in SQLite. Restore retains lessons/closed rows,
+fails unresolved runs, and disables schedules until a member enables them again.

@@ -27,22 +27,15 @@ npm --prefix web run build
 uv sync
 ```
 
-The Playwright command installs the managed Chromium binary used by the web
-interaction tests and is needed once after `npm ci`. The build order matters
-because the Python build includes `web/dist`.
-
-Every `uv run` command rebuilds this checkout's editable install, so the same
-order applies to each new checkout, including a new Git worktree. Neither
-`web/dist` nor `web/node_modules` is tracked, so run both steps there before the
-first `uv run` in it:
+Playwright installs test Chromium. Build `web/dist` before `uv sync` or `uv run`:
+the editable Python package includes it. Each new checkout/worktree needs its
+own untracked Web dependencies and bundle:
 
 ```bash
 npm --prefix web ci && npm --prefix web run build
 ```
 
-The `web/dist present` hook in `.pre-commit-config.yaml` stops a commit with
-that instruction if you forget, because otherwise the build failure appears as a
-long traceback above the later passing hooks.
+The `web/dist present` pre-commit hook checks this prerequisite.
 
 ## Update a source checkout
 
@@ -61,16 +54,11 @@ For a source-built desktop app, include the desktop build:
 scripts/update-from-source <tag> --desktop
 ```
 
-The script refuses a running backend or missing build tools before changing the
-checkout. It records the starting branch or commit, fetches the exact tag, checks
-it out detached, installs Web dependencies, builds `web/dist`, and runs `uv sync`.
-With `--desktop`, it also builds the development app and requires Rust and the
-Xcode command-line tools. A failed step stops the update. After a failure past
-the checkout, the script restores the recorded start by itself: it checks that
-revision out again, reinstalls Web dependencies, rebuilds `web/dist`, and runs
-`uv sync`. Only if that restore also fails does it print the remaining commands to
-run by hand. The app in `/Applications` is never replaced, and no local branch is
-reset.
+The script refuses active backends or missing tools, records the start revision,
+fetches/checks out the tag detached and rebuilds Web/Python. `--desktop` also needs
+Rust/Xcode and builds the dev app. Failure restores the recorded checkout/build;
+if recovery fails it prints remaining commands. No branch reset or `/Applications`
+replacement occurs.
 
 For the Web app, restart with `uv run rcp serve`. For the desktop app, replace
 `/Applications/RCP Dev.app` with `web/src-tauri/target/debug/bundle/macos/RCP Dev.app` and
@@ -159,13 +147,9 @@ logging, and verification details.
 
 ## Team server
 
-RCP can run a shared team space from source on a lab-owned Ubuntu server.
-Installation, member invitations and joining, shared-project setup, provider
-maintenance, updates, backup, restore, member removal, verification, and
-recovery are all documented in the [team server guide](server.md); connecting
-phones and other devices is in [docs/device-pairing.md](device-pairing.md).
-Maintainers release through the build, tag, and promote process in
-[docs/release.md](release.md).
+Install promoted artifacts on Ubuntu using the [team server guide](server.md).
+See [device pairing](device-pairing.md) for phones and [release](release.md) for
+maintainer promotion.
 
 ## Verify a checkout
 
@@ -189,7 +173,7 @@ locally.
 | --- | --- |
 | `age` and `age-keygen` on `PATH` | real age encryption of a backup archive, rather than the stub |
 | `systemd-run` on `PATH` | the compute-job backend probe |
-| `RCP_RUN_EXACT_BASE_UPGRADE=1` | upgrade from the exact previous commit's data, and release updates from every published non-prerelease `v*` release with current and stale caches, including the switched release's live check (needs authenticated `gh` and every release tag fetched) |
+| `RCP_RUN_EXACT_BASE_UPGRADE=1` | upgrade from the exact previous commit's data, and release updates from every supported published stable `v*` release at or above `UPDATE_SOURCE_FLOOR` with current and stale caches, including the switched release's live check (needs authenticated `gh` and every release tag fetched) |
 | `RCP_FROZEN_BACKEND=<path to the built backend binary>` | local unpushed commits through a frozen desktop backend |
 | `RCP_RUN_GIT_CREDENTIALS_LIVE=1` plus `RCP_LIVE_GITHUB_ADMIN_TOKEN` and `RCP_LIVE_GITHUB_REPOSITORY` | live GitHub credential checks |
 | `RCP_RUN_PROJECT_CHECKOUT_LIVE=1` plus `RCP_LIVE_PROJECT_CHECKOUT_SSH_HOST` and `RCP_LIVE_PROJECT_CHECKOUT_SSH_ACCOUNT` | project checkout over real SSH |

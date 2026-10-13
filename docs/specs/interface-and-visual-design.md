@@ -1,554 +1,305 @@
 # Interface and visual design
 
-Current design decisions for the RCP web interface: what the surfaces are, how
-they behave, and the visual grammar they share. This file owns those decisions;
-[`api-web-and-desktop-projections.md`](api-web-and-desktop-projections.md) owns
-the data those surfaces read and the shell that hosts them.
+This file owns Web layout and visual grammar. The
+[API spec](api-web-and-desktop-projections.md) owns projections and shell behavior;
+[paper and artifacts](paper-artifacts-and-result-views.md) owns content interaction.
 
 ## Visual grammar
 
-RCP's **Classic** theme uses Margin Dev's visual grammar: a
-restrained paper, sheet, walnut, and oxblood system, warm rules and shadows,
-compatible typography, and tactile book materials. Project covers share one
-oxblood base and differ by texture only; decorative color is never assigned per
-card. Their textures are restrained bookcloth and paper grain, never loud dye,
-mosaic, or simulated wood. Semantic accents are reserved for meaningful type or
-state. RCP keeps its own information architecture and behavior.
+**Classic** borrows Margin Dev's paper, sheet, walnut, and oxblood grammar:
+warm rules/shadows, compatible typography, and tactile book materials. Covers
+share an oxblood base and differ only by restrained bookcloth/paper texture,
+never decorative per-card colors, loud dye, mosaic, or simulated wood.
+Semantic accents identify type or state. RCP keeps its own architecture.
 
-**Aqua** is the default theme with pearl-gray or dark slate surfaces, rounded
-controls, shallow bevels, and restrained blue highlights. One upper-left light source gives raised
-buttons a bright upper edge and a soft lower shadow; fields and selected controls
-use inset shadows. Pressing a button changes its relief. Project tiles use plain
-raised surfaces instead of book materials. Semantic type, status, warning, and
-focus indicators remain distinct. Clickable Overview rows, Runs card headers,
-space Runs rows, and available artifact rows also rise from the surface and
-press inward while held. Expanded run detail and unavailable artifacts do not
-use the same action cue. An available artifact's preview link spans its entire
-row and opens the shared in-app viewer panel. Its **Source chat** link remains
-a separate click target.
+**Aqua**, the default, uses pearl-gray/dark-slate surfaces, rounded controls,
+shallow bevels, and blue highlights. Upper-left light gives raised controls a
+bright top edge and lower shadow; fields and selected/pressed controls are inset.
+Project tiles are plain raised surfaces. Clickable Overview rows, Runs headers,
+space Runs rows, and available artifacts rise and press inward; expanded detail
+and unavailable artifacts do not. Artifact preview targets span the row, with
+Source chat a separate target. Type, status, warning, and focus remain distinct.
 
-The space landing page's **Display** control places **Mode** above **Theme**.
-Mode offers **System**, **Light**, and **Dark** independently of **Classic** or
-**Aqua**. Both themes support all three modes, and changing theme preserves the
-selected mode. Aqua with System mode is the default; saved theme choices are preserved.
-
-Both choices are remembered on this browser origin and apply across projects,
-including before the first paint. System follows the operating system's light
-or dark preference. Legacy System, Light, and Dark choices become Aqua with
-the same mode; legacy Soft Aqua becomes Aqua with Light mode. Display preferences
-do not change project settings or research state.
-
-The RCP mark is one unified logo. An initial tile beside the full acronym reads
-as a duplicated letter, so the visible logo contains **RCP** exactly once.
+Display places Mode (System/Light/Dark) above Theme (Classic/Aqua). They are
+independent, remembered per origin, applied before paint, and shared across
+projects. System follows OS appearance. Defaults are Aqua/System; legacy mode
+choices retain their mode in Aqua, and Soft Aqua becomes Aqua/Light.
+The unified logo contains RCP once, without a redundant initial tile.
 
 ## No commentary lines
 
-Never place a smaller, muted, or more transparent explanatory line beneath a
-button, title, large label, card heading, or other primary element. Helper
-subtitles and descriptive microcopy are removed wherever they appear; primary
-wording, hierarchy, shape, color, motion, and control state carry the meaning.
-
-Actual errors, conflicts, required warnings, and accessibility labels stay
-explicit, except a failure the reader recovers from with one action: the item
-shows the failure visually and carries only that action, as an icon, never a
-stacked error box or caption. An unsent chat turn has a red edge where a sent
-turn has its spinner, and an icon-only Resend in its top-right corner. When an item genuinely has more to say, a card carries its name and
-state and an explicit control opens a read-only inspector — never a caption under
-the card.
-
-Chat and coaching surfaces contain no sample prompts, slogans, instructional
-empty-state copy, or textarea placeholder text. An empty conversation is simply
-empty.
+Do not put muted explanatory subtitles beneath buttons, titles, labels, or
+headings. Wording, hierarchy, shape, color, motion, and control state carry meaning.
+Errors, conflicts, required warnings, and accessibility labels stay explicit.
+A failure recoverable with one action uses a visual mark and one icon-only action,
+not a stacked box/caption: an unsent turn has a red edge and top-right Resend.
+More detail belongs in an explicit read-only inspector.
+Chat and coaching have no sample prompts, slogans, instructional empty states,
+or textarea placeholders. Empty conversations are empty.
 
 ## Phone layout
 
-At phone width every surface sticks to the screen edges like a native app. Text
-wraps, so no page or panel pans sideways; wide content such as code, tables, or
-the graph canvas scrolls inside its own box. Screen-height surfaces use the
-visible viewport (`dvh`), so nothing sits behind the browser toolbar. A dialog
-taller than the screen scrolls to its last control, and scrolling it never moves
-the page underneath. An open artifact fills the screen. Pinch zoom magnifies the
-page without resizing RCP's windows.
+At phone width, pages/panels meet screen edges and text wraps without horizontal
+page panning. Code, tables, graphs, and other wide content scroll in their own
+containers. Screen-height surfaces use `dvh`; tall dialogs scroll to their last
+control without moving the page. Open artifacts fill the screen. Pinch zoom
+magnifies the page without resizing RCP windows. Verify at 390px.
 
 ## Project shell
 
-The shell is intentionally bare: no RCP wordmark, product logo, or revision label
-beside the project name. Agent tasks and Refresh are icon-only accessible
-controls; project chat is **Ask**. The attention destination is **Inbox** with a
-colored count, and DAG is a subpanel of **Research** rather than a primary
-destination. **Paper** is likewise a subpanel of **Artifacts**, reached from a
-Files | Paper switch; its route view stays `paper`, and the paper's unsynced
-badge shows on the Artifacts tab. Destination order ends Terminals, Agents,
-Settings.
+No wordmark, logo, or revision label sits beside the project name. Group labelled
+Sync/Ask together and icon-only History/Refresh together. Agent tasks are
+icon-only and accessible. Inbox carries a colored count; DAG is under Research.
+Paper is under Artifacts' Files | Paper switch, retaining route `paper` and an
+unsynced badge on Artifacts. Destination order ends Terminals, Agents, Settings.
 
-Group the header semantically — labeled **Sync / Ask** together, then icon-only
-**History / Refresh** together. Do not space all four as unrelated peers.
+At widths <=560px, one top bar holds Back, project name (opens the project dock),
+Sync only for staged changes, and a labelled-row ⋯ menu. Bottom tabs show Overview,
+Inbox, Research, Runs, and More; More is active for its destinations. Ask floats
+above the bar except in Agents. Status banners and Overview revision use one
+line. Provider/compute notices expand from a summary while keeping failures
+visible; Inbox counts share a row.
 
-At viewport widths of 560px or less the shell is one top bar and a bottom tab
-bar. The top bar holds back, the project name (which opens the open-project
-dock), **Sync** only while changes are staged, and a **⋯** menu with every other
-project control, each a labelled row. The bottom bar shows Overview, Inbox,
-Research, and Runs, with the remaining destinations under **More**, which reads
-as active while one of them is open. **Ask** is a floating button above the tab
-bar, absent in Agents, whose composer is already the way to ask. Status banners
-shrink to one line; provider sign-in and compute-route notices collapse to a
-one-line summary that expands in place, keeping any failed check's alert
-visible; Inbox counts share one row; and the Overview revision is one small line.
-
-Glossary definitions appear inline where terms are read. Glossary has no
-navigation destination. Graph-writing agents add or revise the definitions through
-`upsert_glossary` Patches.
-
-A previously opened project feels immediate even when canonical state is remote:
-render one rebuildable durable display snapshot first and refresh the
-authoritative state in the background. That cache stays out of every history,
-agent, Sync, paper-write, and other authority path. Canonical mutation controls
-wait for reconciliation, and blocking remote refreshes run off the web event loop.
+Glossary definitions are inline, without a destination. Cached projects paint
+immediately and reconcile in the background; mutation availability and cache
+boundaries follow [revision observation](api-web-and-desktop-projections.md#revision-observation-and-drafts).
 
 ## Projections
 
-The visible projections are **Research** and **Runs**.
+Research shows question-centered paths and separates unconnected records. Research
+flow places types in the order defined by the [Research projection](api-web-and-desktop-projections.md#research).
 
-Research shows question-centered paths with unconnected records separated. Its
-DAG **Research flow** gives each node type its own column in research order,
-as defined in the Research projection spec.
+Runs has no page title. Needs Action and In progress are unfolded, mixed-mode,
+reverse-chronological lists. Only runs stopped pending human action belong in
+Needs Action. Completed folds Experiment loop, then Auto-research. The owning
+Experiment/Auto-research name leads; start time is secondary, without “Episode”.
+Groups name the mode once. Cards have no muted recommendation/report commentary.
+Backend controls select the current Experiment episode and its section/health;
+older episodes remain in History. Seed/Refresh, chat, and coaching are not Runs
+rows; Blockers stay in Inbox.
 
-Runs is the episode ledger for bounded Experiment loops and Auto-research. It
-carries no page title and is ordered **Needs Action**, **In progress**, then
-**Completed**. Needs Action holds only runs that have stopped advancing and stay
-stopped until a human acts; a run still moving on its own is In progress. Each of
-those two is an unfolded reverse-chronological card list across both episode
-modes. Completed is grouped into foldable **Experiment loop** and
-**Auto-research** lists, in that order. The owning Experiment title or Auto-research identity is
-the card's visual headline; start time is secondary metadata without an
-`Episode` prefix. Completed groups name
-the episode mode once; cards do not repeat it or add muted recommendation and
-report commentary below the status. An Experiment contributes only the current
-episode selected by its backend control; older episodes remain in History rather
-than duplicating the same Experiment in Runs. That same control supplies the
-card's Experiment health and section, so the summary cannot disagree with its
-expanded detail.
-
-Seed/Refresh, generic node chat, project chat, paper-coach tasks, and Blockers
-live in their owning History or Inbox surfaces, never as Runs rows. Pressing an
-Experiment's **Run** navigates to its episode card in Runs and opens its detail
-rather than a floating node-chat window. That detail's only loop-level action is
-**Stop loop**; invocation-level Pause, Resume, and Retry stay in the Agent task
-inspector.
+Run opens episode detail in Runs. Stop loop is the loop action; task-level
+Pause/Resume/Retry remain in the task inspector.
 
 ## Nodes and node detail
 
-A node must be understandable when opened alone: ordinary language, enough
-context-setting sentences, and inline explanations rather than terse project
-jargon. Relation rows open a focused one-hop DAG view.
+Nodes use ordinary language and enough context to stand alone. Relation rows
+open focused one-hop DAGs. Node detail floats, resizes, retains project-scoped
+size across close/minimize, remains reachable after viewport changes, and closes
+on entry to Agents.
 
-Node detail is a resizable floating inspection window. Its project-scoped size
-survives minimize/restore and close/reopen, remains reachable after a viewport
-change, and closes when the human enters Agents.
-
-Node wording correction is a literal human edit, not an agent request. A direct
-prose editor stages the change in the project draft and clears the draft standing
-to asserted; node chat is never started merely to rewrite text. Canonical history
-changes only when the human presses Sync.
-
-**New node** creates any of the six built-in node types or an active custom type
-in the same project draft. Graph connection controls select source, target and
-relation; a node-to-node connection gesture opens the same editor. Explicit
-select controls provide a keyboard alternative. Connections can be removed or
-replaced through that draft. Backend preview validates the full batch before
-Sync; the UI does not derive lifecycle effects or imply that staging committed.
-Removing a node removes its current incident edges, not its history. Existing
-accepted-node and active-Experiment safeguards still apply. Artifact selections
-stay in the viewer for in-place editing; they are not graph-editing controls or
-Evidence creation shortcuts.
+Literal prose edits stage in the project draft and reset draft standing to
+asserted; they do not start chat. New node offers all built-in/active custom types.
+Connection gestures and keyboard select controls share one source/target/relation
+editor; removal/replacement is staged. Backend preview validates the batch; Sync
+commits. Node removal removes incident edges, not history. Accepted-node and
+active-Experiment safeguards apply. Artifact selections are not graph editing
+or Evidence shortcuts.
 
 ## DAG controls
 
-At viewport widths of 560px or less, DAG controls start closed behind a
-chevron disclosure so the canvas is the primary content. Opening the disclosure
-exposes the same controls; wider views keep them visible.
+At <=560px controls start behind a chevron; wider views show them. Provide
+boundary-aware scroll chaining, brighten/dim-all, fullscreen with node detail,
+Release all pins, and individual pin release. Repulsion visibly changes spacing;
+manual dragging has room beyond auto-layout. Touchpad pinch anchors at its focal
+point without turning ordinary two-finger scroll into zoom.
 
-Boundary-aware page scroll chaining, brighten/dim-all, fullscreen with visible
-node details, **Release all pins**, and per-node pin release. Repulsion must
-visibly affect spacing, and the canvas must leave generous room for manual
-dragging beyond auto-layout positions. Touchpad pinch zoom stays anchored at the
-gesture focal point without turning ordinary two-finger scrolling into zoom or
-disrupting other DAG interactions.
-
-**Fit** fits and centers the graph horizontally without magnifying past authored
-node size. Tall columns remain vertically scrollable, starting at the top; short
-graphs are centered vertically. Adding rows must not shrink the fitted columns.
-Fit preserves manual pins, and leaving and returning restores the zoom, scroll,
-and centering offsets.
+Fit centers horizontally without exceeding authored node size. Tall graphs start
+at the top and scroll vertically; short ones center vertically. Added rows do not
+shrink columns. Fit preserves pins; returning restores zoom, scroll, and offsets.
 
 ## Agent browser controls
 
-Discuss and Work chats have a **Browser use** switch in the composer's Options
-menu, beside **Work in a worktree**. The folded chip is a sliders icon with no
-label; it counts the options that are on, so a Browser grant stays visible. On
-a phone the open menu spans the composer, and the chat view keeps a
-screen-height shell so the composer sits at the bottom of the screen. The menu closes on an outside click,
-Escape, or a switch to another chat. New chats start with it off. Each chat loads and saves its own server preference. The
-switch waits for a successful load and keeps the server value after a failed
-save. Errors offer a check-again action. Paper coaching has no Browser switch.
+Chat Options holds Browser use beside Work in a worktree. Its sliders chip has no
+label and counts enabled options. The phone menu spans the composer in a
+screen-height chat; outside click, Escape, or changing chat closes it. New chats
+start off. Loading/saving follows server preferences; failed saves retain the
+server value and offer Check again. Coaching has no Browser switch.
 
-Experiment launch controls in node detail and Runs, and the Auto-research
-launch dialog, keep their launch options (Browser use, and Code worktree where
-the launch offers one, and On a new branch with its name field in node detail)
-inside the agent picker, under its provider fields. The folded picker chip
-counts the options that are on and matches the height of the Start button
-beside it. The Auto-research branch name stays outside the picker. Every instance is the switch and its **Browser use** name
-only, with no caption line beside it.
-Continuations keep the episode's existing grant.
+Experiment/Auto-research launch options sit inside the agent picker beneath
+provider fields; its chip counts enabled options and matches Start's height.
+The Auto-research branch name stays outside. Browser use has no caption.
+Continuations retain their grant. Unavailable/lost access appears on the affected
+turn/timeline with reason, server detail, and applicable machine fix; unknown
+codes retain detail. Granted/unrequested access adds no notice.
 
-Unavailable or lost browser access appears as a notice on the affected chat
-turn and in episode timeline turn details. The notice gives the reason, the
-server detail when present, and a machine-card fix when applicable. Unknown
-codes show a generic failure with the server detail. Unrequested and granted
-turns add no notice.
-
-Each saved machine card loads its Browser row independently after mounting;
-readiness never delays the rest of the card. The row shows status and diagnostic
-detail, offers **Install** when the browser is absent, and tells the human to
-install Node 20+ and npm first when either is missing or too old. Missing system
-libraries show a selectable command and **Copy command**. An account whose
-background processes stop at logout (`linger_disabled`) offers **Allow
-background processes**, which runs `loginctl enable-linger` as that account;
-when the host refuses, the row shows the administrator's command with **Copy
-command** instead. Install shows progress
-and disables repeat requests until it returns the new readiness. Failed checks
-and installs leave **Check again** available.
+Machine Browser rows load independently. Missing browser offers Install;
+missing/old Node or npm asks for Node 20+ and npm. Missing libraries show Copy
+command. `linger_disabled` offers Allow background processes; refusal shows the
+administrator command. Install disables repeats while running; failure leaves
+Check again. See [browser API consumers](api-web-and-desktop-projections.md#agent-browser-web-consumers).
 
 ## Conversation composer
 
-Discuss and Work are switchable on every node and project conversation. Discuss
-is plum, Work is dark forest, `Shift+Tab` toggles while the composer is focused
-and is not addressing a running attempt, and every sent turn keeps an immutable
-visible mode label. A resumed task keeps its original mode regardless of the
-current composer setting.
+Discuss is plum; Work is forest. Shift+Tab toggles in an idle focused composer.
+Every turn retains its mode, including resumed tasks. The Agents header has title,
+then agent picker, New session, and repository scope. The picker names provider,
+model, and effort; runtime stays in the inspector. No extra metadata/mode row.
+The list has search and a fold icon, not a title band; a hairline divides chat.
 
-In the Agents workspace, a conversation header has two rows: the title, then
-the agent picker beside New session and repository scope. There is no metadata
-row; the picker already names the umbrella provider (`provider_label`, such as
-Claude or Codex), model, and effort, and the task inspector keeps the runtime.
-Neither the header nor an agent card
-names Discuss or Work; each turn's own label already carries it. The agent list has no title
-band: a sidebar icon beside its search folds it, a folded list leaves that
-icon at the chat band's top left, and a hairline separates list from chat.
+Cards have a fixed size, one-line title, and secondary metadata. Their menu
+removes local unsent drafts or renames/pins/archives saved chats. Rename/archive
+are shared display choices; pins are member-owned. Blank names restore derived
+names; rename is inline. Archived counts include unloaded chats and offer Restore.
+Revisits retain the loaded set until refresh, preventing archived-card flashes.
+Use shipped provider logos (Claude orange, others monochrome), otherwise labels.
+Display changes never alter transcripts/tasks.
 
-Cards share one fixed size: a one-line title and one secondary line of
-meta; the group they sit in names their state. A three-dot menu on
-the card removes an unsent draft, which exists only in the browser, or renames,
-pins, or archives a conversation with turns. Rename and archive are project
-display choices shared by every member; a pin belongs to the member who made it
-(`POST /api/projects/{project_id}/chats/{chat_id}/title`, `.../pin`, and
-`.../archive`, read together from `GET /api/projects/{project_id}/chat-display`,
-which returns the acting user's pins);
-a blank name returns the derived one. Rename edits the title in place on the
-card. An Archived filter appears when any exist, counts every archived chat
-including unloaded pages, and offers Restore. A revisit keeps the last loaded
-display set until its reload answers, so archived chats never flash back into
-the list. Card metadata shows a provider's monochrome logo (Claude in its brand
-orange) when RCP ships one in `web/public/providers`, otherwise its label.
-Transcripts and tasks are never changed or deleted.
+One wide readable column shows human requests as quiet paper cards and unboxed
+assistant prose. Inspectable progress folds behind Activity; failure/recovery
+stays explicit. The composer is a contained writing surface. List groups, in order:
 
-Chat uses one wide readable column. A human request is a quiet paper card;
-assistant prose is unboxed. Current task activity folds behind a muted Activity
-row when its underlying status can already be inspected, while failures and
-recovery controls stay explicit. The composer is a calm contained writing
-surface rather than a full-width control bar.
+- New reply: successful and unread.
+- Failed: latest turn failed.
+- Stopped: paused/interrupted, with the same resume path.
+- Working: queued/running/pausing.
+- Done: read success, unsent draft, or unloaded turns.
 
-The **Agents** destination (formerly Chats; the route view is still `chats`) lists
-conversations as an agent-hub panel. Each conversation belongs to exactly one
-group, and each group lists its conversations in recency order. The groups come
-from the backend's answers on the latest loaded turn, in this order:
+Pinned leads only All, newest pin first, with per-row status; filters/counts ignore
+pins. Group headings carry colored state/counts, rows no redundant state dots.
+Unread cards have tint, accent edge, bold title, and New; unread failed/stopped
+cards keep their group. Offered Retry/Resume stays visible; working rows show
+phase/elapsed time. Search requires every word to match loaded card/turn content.
+Filters are All/Working. A failed/stopped conversation has a backend-labelled
+recovery banner above it.
 
-- **New reply**: the turn succeeded after the human last viewed this
-  conversation (the read markers in `api-web-and-desktop-projections.md`).
-- **Failed**: the turn failed.
-- **Stopped**: the turn was paused or interrupted. Both resume the same way.
-- **Working**: the turn is queued, running, or pausing.
-- **Done**: the turn succeeded and was read. An unsent draft, and a
-  conversation whose turns are not loaded, are also Done.
+Agents shows the selected graph, plus unarchived listed branch orchestrators on
+main. Orchestrators open in place without linking branch ids to main nodes.
+No graph filter or branch/role tags; user tags remain. Active-lineage children
+show Working/Done, with attention on their orchestrator. Posting and target
+ownership follow [Agents](api-web-and-desktop-projections.md#agents).
 
-Pinned conversations leave their group for a **Pinned** section above the
-groups, newest pin first, in the All view only; each pinned row carries its own
-status mark. Filters and their counts ignore pins.
+Entry opens a board unless a link selects a chat; the board icon returns there.
+Leaving Agents resets it. Columns are Needs you (New reply/Failed/Stopped),
+Working, Done, Archived. Cards show logo/spinner, title, provider/model/effort/task
+type, state/age, and offered recovery. Click opens chat with list folded and
+composer focused. Mouse dragging reorders within columns in per-project browser
+storage, with pins first. Dropping into/out of Archived archives/restores; other
+state moves and working-agent archive are refused. Branch episode cards open Runs
+and cannot move. Touch scrolls; menus archive. Alt+Up/Down reorders focused cards.
+Columns become two at <=920px and one at <=560px.
 
-The group header carries the state: a mark and a label in the state's colour,
-plus a count. Rows carry no state dot. Each row is a raised card with a one-line
-title and a provider · repository line. Failed and Stopped rows add Retry or
-Resume when the task offers it, and a working row shows its live phase and
-elapsed time. An unread turn is the most prominent thing in the list in any
-group: a tinted card, an accent border, a bold title, and a New pill. A failed
-or stopped turn that is unread stays in its own group. Search runs in the browser over what each card
-already holds: its name, node, chat kind, latest message, and every loaded
-turn's prompt, provider, model, effort, and repositories; every word must match.
-Chips filter to All or Working. Above the conversation, the two-row header
-described above names the title and holds the agent picker; a failed or stopped turn adds a banner
-with the backend label and Resume or Retry when the task offers it.
+At <=560px, the chat list starts behind an Agents disclosure and closes on selection.
+Wider layouts retain resizable-list preferences; viewport changes never overwrite
+them. Only code, tables, and display math scroll sideways in transcripts; paths
+and URLs wrap. Fenced blocks have icon-only exact-text Copy, with 44px phone targets.
 
-The Agents tab shows the selected graph's agents. On main it also lists every
-branch's Auto-research orchestrator whose chain is in the episode list (an
-archived branch's is not), with its attention state, so the Agents count always
-has a card to open; an orchestrator opens in place, like any other agent,
-without switching the graph, and shows node ids without links to main's nodes. A branch lists only its own agents. It has no
-graph filter and no branch or role tags on cards; the user tag stays. While its
-lineage runs, an orchestrator's children never count as unread and never sit in Needs you: they
-show as Working or Done, and the orchestrator's own card carries any attention
-the chain needs. It opens on a **board**; a link that names a chat (Ask, a source-chat
-link, or a chat route) opens that chat instead, and the list's board icon returns
-to the board. The board has four columns: **Needs you** (New reply, Failed,
-Stopped), **Working**, **Done**, and **Archived**. Each card shows the provider
-logo, with a spinner ring while the agent works, the title, a provider · model ·
-effort · task-type line, and its state or age with Retry or Resume when offered.
-Clicking a card opens its chat with the list folded and the composer focused.
-Leaving Agents for another view resets it to the board. A mouse drag reorders
-cards within a column, and that order is the viewer's own, kept in browser
-storage per project; pins still lead their column. Dropping on Archived archives
-the chat, and dragging out of Archived restores it. A drop on another state
-column is refused, because the run decides the state, and a working agent cannot
-be archived. A branch episode card opens in Runs and does not move. Touch scrolls
-the board rather than dragging, so archiving there goes through the card's menu;
-Alt+Up and Alt+Down reorder a focused card from the keyboard. The board's
-columns go to two at 920px or less and to one at 560px or less.
+`/` or `$` selects packages: arrows highlight, Enter chooses instead of sending,
+Escape dismisses. Settings owns defaults; selections apply to one turn. Fresh
+conversations use Settings defaults; existing sessions retain their last profile.
+Seed/Refresh has launch controls; Raw truth inputs choose context.
 
-At viewport widths of 560px or less, Agents uses a single column. The conversation
-list starts closed behind an **Agents** disclosure above the conversation and
-closes after selecting a chat. Wider views retain the resizable list and its
-saved collapse preference; changing viewport size does not overwrite that
-preference or the saved list width.
+The + menu holds Upload file, From RCP, and configured Compute connections with
+execution-machine reachability. Selection does not change provider or `run_on`,
+restores from the latest persisted turn, survives Send, and drops removed settings.
+Compute Settings takes names, optional SSH targets, and nonsecret hints, never
+keys/passwords. Its matrix distinguishes reachability/auth/host-key failures and
+names the machine needing repair. Explicit Probe runs checks; routine refresh
+uses cache. Unsaved edits mask results, disable Probe with Save first, and are
+not stored in settings drafts. Saves fence older in-flight probe responses.
 
-Nothing in a transcript scrolls sideways except code blocks, tables, and display
-math: long paths, URLs, and identifiers in agent answers and human messages wrap.
-Every fenced Markdown block carries a small icon-only copy control in its own
-strip, with a 44px tap target on phones, that copies the block's exact text.
+Machine tiles show name, host, provider/job status, and writable-path count.
+One card opens at a time below them. Dashed Add machine opens other space machines;
+selection derives an alias and opens it. Setup shares these tiles and New machine.
+Cards group provider paths, Long-running jobs, and shared writable paths. Folder
+pickers have breadcrumbs, one-level/filter/paging, protected entries, and Use this
+folder. Use Slurm opts into scheduler submission; Jobs root sets helper storage;
+Reset compute removes the block through Save. No scheduler resource form exists.
 
-Selecting packages is `/` or `$` in the composer, and it is keyboard-first:
-arrows highlight, Enter selects the highlight instead of sending, and Escape
-dismisses. Project Settings holds the defaults; a composer selection applies to
-that turn only.
+Hidden folders sits beside writable paths: code defaults cannot be removed;
+user additions use the folder picker and save immediately for all projects.
+Show Enforced/Unhidden and reason, never imply enforcement without a projection.
+Remote status says Checked at launch without probing. Gaps appear here/doctor,
+not as per-turn badges. API validation/status belongs to
+[machine hidden folders](api-web-and-desktop-projections.md#machine-hidden-folders).
+Job-route readiness uses compute labels/tones; saving changed config checks it,
+editing masks it, and Runs offers fixes/Check again.
 
-Agent configuration is owned by Project Settings. Chat and coaching show one
-non-expandable provider-name box only — no model, reasoning, machine, permission
-summary, or locked/editable label. Seed/Refresh keeps its explicit launch
-controls, and chat keeps Raw truth inputs because those select context rather
-than execution configuration. Settings supplies fresh conversation defaults; an
-existing native conversation retains the profile it last ran with, so
-continuation never silently moves providers or machines.
-
-The composer's **+** menu holds Upload file, From RCP, and a **Compute** sub-list. It lists only the project's
-configured compute connections, shows green reachable or red unavailable status
-for the conversation's actual execution machine, and attaches or detaches each
-resource without changing the provider or `run_on`. The active count and checked
-items recover from the newest persisted turn. Sending keeps the active set for
-the next turn; settings removal reconciles a stale selection away.
-
-Project Settings owns compute connections beside provider executables. A local
-entry needs a name; an SSH entry adds `user@host`; either may carry one optional
-non-secret access hint. There is no password or private-key input. Settings shows
-one probe result per agent execution machine and distinguishes unreachable,
-authentication, and host-key failures. Credential repair text names the exact
-agent machine rather than inviting credentials into RCP. The explicit **Probe**
-action refreshes those results; ordinary project polling reuses the last matrix
-and does not launch SSH work. The floating connection list uses native checkbox
-semantics, and unsaved connection edits are not copied into local settings-draft
-storage. Editing a connection masks its saved probe result and disables **Probe**
-with a concise save-first label until the metadata is saved. A compute-settings
-save also invalidates older in-flight readiness responses, so a late old-target
-success cannot replace the empty state left by a failed new-target probe.
-
-Project Settings shows its machines as small tiles (name, host, and status dots
-for each provider, the jobs route, and the writable-path count) with a dashed
-**Add machine** tile. Every card starts closed; clicking a tile opens that
-machine's card below, one at a time, grouping
-provider executables, **Long-running jobs**, and the machine's writable paths.
-The same writable-path record appears in space Settings, so the project card
-says the list applies to every project on that machine. **Add machine** opens
-a labelled box of the space's other machines as the same tiles; one click adds
-that machine under a name derived from its card and opens it. Setup picks from
-the same tiles. Both end with a dashed **New machine** tile. Writable paths are picked with a small folder picker (breadcrumbs, one
-level, name filter, **Load more**, locked protected folders, **Use this
-folder**) rather than typed. **Use Slurm** opts into direct scheduler submission; **Jobs root**
-configures helper storage. RCP exposes no scheduler resource settings. **Reset
-compute** removes the optional block through the normal Settings **Save**.
-
-Each machine card also shows **Hidden folders** beside writable paths. Code-owned
-default directories, files, and globs are read-only rows with no removal control.
-**Add folder** opens the same folder picker; user additions have a remove control.
-Edits save immediately for all projects using that machine, and any member can
-edit them. Refusals stay inline with the attempted action. The effective
-**Enforced** or **Unhidden** state and its reasons remain visible, including
-readable keys and the macOS browser exception; a missing projection is explicitly
-unavailable, never shown as enforced. Errors and status use the ordinary card
-hierarchy, without muted explanatory subtitles. Local status combines wrapper
-readiness with current user-key and deploy-key signing evidence and the macOS
-browser exception. Remote status is `null`, rendered as checked at launch;
-Settings does not probe remote agents. Gaps appear only here and in doctor,
-without per-turn warning traces or badges; the agent prompt retains its effective
-status.
-
-Readiness uses the same label, tone, and pending presentation as compute
-connections, with one row per offered route (scheduler and helper). There is
-no Probe control: a save that changes the block checks it in the background,
-and editing masks the saved result until then. A route that is not ready
-shows on Runs with its fix and **Check again**.
-
-Chat and Experiment show one external job row per shell watcher. Its log path,
-observation status, last check, and diagnostic remain visible with Cancel
-requester and time when recorded. A completed watcher does not assert scientific
-success; **Cancel requested** does not assert the process was stopped. There is
-no second job-ID-based display path.
-
-**Stop watching** keeps its existing meaning and never cancels external work.
-A **Cancel** control appears only while the backend's `can_cancel` permits it,
-including on a stopped watcher that may still describe live work. It is
-independent of graph read-only mode or Experiment action locks because the API
-owns project write admission. The action response updates the displayed receipt;
-the existing watcher refresh owns observation. The browser does not infer
-cancellation availability from watcher status.
-
-Watcher actions sit at the right of the row. Completed shell and graph-condition
-watchers offer **Hide**, which removes the full watcher row or detail card from Chat
-and Runs on this device and browser origin, scoped to the project. **Show hidden watchers** restores
-them. This display preference preserves the watcher record and other viewers'
-lists; a watcher that becomes active again is visible regardless of the preference.
+External jobs show one watcher row with log, observation, checks, diagnostics,
+and cancellation receipt. Completion is not scientific success; Cancel requested
+is not proof of stopping. Stop watching does not cancel. Backend offers decide
+Cancel independently of graph read-only state; watcher refresh owns observation.
+Actions sit at the right. Hide removes completed watcher rows/cards only for this
+browser/project; Show hidden watchers restores them, and renewed activity overrides
+hiding. Records and other viewers are unaffected.
 
 ## Terminals
 
-**Terminals** is a project destination beside Overview, Inbox, Research, Runs,
-Artifacts, Agents, and Settings when at least one project machine can host
-a session. Remote pending and failed probes also keep it visible so their
-status and recovery control remain reachable. It is hidden for empty projects
-or only unavailable local machines. Settings has no terminal control. The empty
-state consists of repository controls showing their starting paths. Unavailable
-repositories show their capability reason and cannot open a terminal. Remote
-rows distinguish pending checks, unreachable hosts, authentication failures,
-host-key failures, and missing prerequisites. The tab polls while a probe is
-pending; ordinary refresh reads cached results. The terminal Refresh control
-explicitly retries machine probes. Space kind does not affect eligibility.
+Destination eligibility and probe behavior follow the
+[terminal API](api-web-and-desktop-projections.md#member-terminal-api). Settings has
+no terminal control. Repository controls show starting paths and unavailable
+reasons. Pending remote probes refresh; explicit Refresh retries probes.
+A left rail lists sessions with Live/Idle, selection, and End. The right pane
+holds the shell. Running Work appears above it and on the rail without blocking
+terminal use. Theme changes repaint using project tokens.
 
-A left rail lists open sessions with Live or Idle state, selection, and an
-individual End control. One session exists per repository in each project.
-The right pane holds the selected interactive shell. A running Work turn does
-not block opening a session: its title appears above the active terminal, and
-a Work running mark appears on its rail row. Repository paths are data, not
-instructional helper copy.
-
-Leaving the destination detaches the viewer without ending the shell. Returning
-lists the existing sessions; ending a session, losing membership, or idle expiry
-ends it. SSH link loss ends the session with an explicit link-drop diagnostic
-that survives removal from the open-session list. It offers no reconnect into a
-new shell; opening the repository again is a new session. Theme and mode changes
-repaint the terminal using the same surface and text tokens as the project UI.
-
-The shell runs as the service account and inherits the Work turn's trust
-boundary. A mirrored session's mount namespace provides accident resistance to
-wrong-directory mistakes; it is not isolation from the service account or a
-boundary against deliberate action.
-Mirrored sessions refuse canonical-state writes in that filesystem view.
-Cooperative sessions show a visible, explicit warning in the terminal pane:
-canonical-state protection is unavailable on this machine, and there is no
-canonical-state fence. This required warning uses semantic warning colors,
-border, and surface tokens, following the Aqua treatment and remaining explicit
-in Classic and Aqua across System, Light, and Dark modes. It is not a smaller,
-muted commentary line beneath a heading. Terminal setup failures remain explicit
-in the view; a failed mirrored launch never offers a cooperative downgrade.
+Leaving detaches without ending the shell; return lists it again. End, lost
+membership, or expiry closes it. SSH loss shows a diagnostic, never a reconnect
+that silently starts another shell. Cooperative sessions visibly warn that
+canonical-state protection is unavailable, using semantic warning surface/border/
+color in every theme/mode, not muted microcopy. Setup failures stay explicit;
+mirrored launch failure offers no cooperative downgrade. Trust rules belong to
+[Providers and containment](providers-and-containment.md#member-terminals).
 
 ## Paper
 
-The editor/coach split is human-resizable, and the editor begins with authored
-content rather than a redundant canonical-file banner. The authored Markdown
-switches between Write and Preview in the same pane, using the chat renderer so
-unsaved text can be read without creating a second document.
+The editor/coach split resizes. Authored content leads without a canonical-file
+banner. Write/Preview share one pane and the chat Markdown renderer, so unsaved
+text can be previewed without creating another document.
 
 ## Auto-research and episode history
 
-Auto-research starts from the project header, beside Ask, because the action is
-project-wide and belongs where project-wide actions live. Its budget is typed in
-invocations with observed cost shown beside it: the enforced number stays exact,
-the legible number stays honest. Its report allocation is hidden from that
-operational budget. Every non-Stop ending produces the durable visual report;
-Stop alone means no report.
+Auto-research starts in the project header beside Ask. Its exact invocation budget
+has observed cost beside it; hidden report allocation stays outside that meter.
+Report lifecycle belongs to [episode reports](paper-artifacts-and-result-views.md#episode-reports).
 
-An episode's history is a read-only agent roster on one SVG timeline. A fixed
-label column groups People, Orchestrator or Experiment agent, Workers, and
-Experiments or Watchers; actors with the same row key share a row. Date and time
-rows sit above status-colored turn, attempt, and report blocks. Experiment
-episodes have light rails, failed worker attempts are red slivers, and a Stop
-request is a square mark. Only live runs show a vertical now line; there are no
-vertical grid lines or commentary captions.
+History is one read-only SVG roster/timeline. Fixed labels group People,
+Orchestrator/Experiment agent, Workers, and Experiments/Watchers by row key.
+Date/time rows sit above colored turn/attempt/report blocks. Episodes have light
+rails, failed worker attempts red slivers, Stop a square, and live runs a now line.
+No vertical grid or commentary captions.
 
-Solid lines connect recorded starting spans to actors, with clickable hand-off
-icons. Message arrows begin at envelopes and end at delivery time; failed
-attempt delivery has a red ring, while undelivered messages use a dashed line
-and cross. Notice diamonds and watcher ringed dots open their payloads. A wake
-signal is dashed to its landed turn's start; harvested or acknowledged signals
-are dotted to the recorded landing time. Watcher lines originate from their
-recorded node row, and missing stop attribution stays unattributed. Delivery
-labels never claim a message was read.
+Solid lines connect recorded starts with clickable handoff icons. Message arrows
+run from envelopes to delivery; failed delivery has a red ring, undelivered a
+dashed cross. Notice diamonds/watcher dots open payloads. Wake signals dash to
+turn starts; harvested/acknowledged signals dot to landing time. Sources and Stop
+attribution use recorded provenance; delivery never means read.
 
-One popover beneath the selected item shows its details: fetched hand-off or
-message text, including loading and error states, the inline signal payload,
-or an actor or span summary. For an orchestrator turn it shows the cause, what
-landed in the turn, what the turn did, and its headline. It links turn and
-attempt spans to the task inspector and child episodes to their existing
-Experiment detail; report spans do not open the task inspector. Close, Escape,
-and outside click dismiss it. Selection draws a thin outline on the selected
-block, highlights related actors, spans, and items, and dims others. There is no
-panel or table below the chart.
+One popover shows selected text (with loading/error), signal, or actor/span detail.
+Orchestrator turns show cause, incoming work, actions, and headline. Turns/attempts
+link to the inspector, children to Experiment detail; reports do not open task
+inspection. Close/Escape/outside click dismiss. Selection outlines/highlights
+related items and dims others. No extra panel/table sits below the chart.
+Counts explicitly identify truncation.
 
-Summary counts cover returned actors, hand-offs, and message
-dispositions and explicitly say when only truncated items are counted.
-
-Pinch or Ctrl/Cmd+wheel zooms at the cursor; buttons and double-click zoom, with
-Shift+double-click zooming out. Dragging, sideways scroll, and Shift+scroll pan;
-vertical scrolling remains page scrolling. Whole run and First 90 min presets
-share a minimum zoom window of ten minutes. Dragging never selects an item and
-overlapping turn numbers are omitted. Interactive elements have keyboard focus,
-motion respects reduced-motion preferences, and the chart scrolls inside its
-own container at narrow widths. Colors use existing theme tokens in Classic,
-Aqua, and dark mode. Watcher controls and the task inspector retain their own
-surfaces.
+Pinch/Ctrl/Cmd-wheel zooms at cursor; buttons/double-click zoom, Shift-double-click
+zooms out. Drag/sideways/Shift-scroll pan; vertical scroll moves the page. Whole run
+and First 90 min presets have a ten-minute minimum window. Drag never selects;
+overlapping numbers hide. Keyboard focus, reduced motion, theme tokens, and
+container scrolling at narrow widths apply. Watcher/task controls keep their owners.
 
 ## Artifact viewer
 
-One viewer panel is mounted beside the application shell, surviving loading and
-identity branches. Changing the open project closes it. Chat artifacts, an
-artifact's Expand inside a reply, Artifacts, History reports, Runs,
-repository-file links, and WebMCP all open it. Its default is
-right-docked and full height. Dragging its left edge resizes it; dragging the
-title bar floats it. Double-clicking the title bar enters full screen and
-repeats to restore the prior placement. Enter or Space on the focused title bar
-does the same. The dock control moves it into the project's dock row, beside
-docked node windows; that item restores it in docked mode. Space Settings and
-project setup hide the viewer, open or docked, until the project shows again. There is no mode button row.
-Size and placement persist on this browser origin and remain reachable after
-viewport changes.
+One shell-mounted panel survives loading/identity branches and closes on project
+change. All artifact/report/repository entrances use it. It starts right-docked,
+full-height; left-edge drag resizes and title drag floats. Title double-click or
+focused Enter/Space toggles fullscreen and restores placement. Dock moves it beside
+node windows; restoring docks it. Settings/setup hide it until project return.
+No mode-button row. Origin-scoped size/placement stays reachable after resizing.
 
-An artifact inside a reply has no frame of its own: it sits in the reply's flow
-at the reply's width, paints with the reply's palette, and shows its name,
-version, Live or Finished, and its actions as one quiet caption line beneath it.
-A placeholder shimmer holds its space until it is measured. Comment mode outlines
-the artifact with a dashed accent line and says how to select a part.
+Inline artifacts share reply width/palette, with no frame, a loading shimmer,
+and a quiet name/version/live-state/action caption. Comment mode adds a dashed
+selection outline. Content and interaction follow
+[artifacts inside a reply](paper-artifacts-and-result-views.md#artifacts-inside-a-reply).
 
-The title bar contains the name, Live or Finished when supplied, version,
-Undo when offered, the reply-thread control when supplied, dock, and close.
-An admitted edit shows Editing until the server clears it; the panel refreshes
-the iframe when the current version changes. State polling runs only while
-open and visible, including static artifacts so other members' edits and Undo
-appear. Disposing the viewer request aborts it. Permanent HTTP errors stop
-automatic requests until Retry; network and transient HTTP failures remain polled.
-Undo reloads the current version. Errors remain explicit and retryable.
+The title holds name, live state, version, offered Undo/reply link, dock, and close.
+Editing persists until cleared by the server. Visible panels poll even static
+artifacts for other members' edits/Undo; disposal aborts. Permanent HTTP errors
+stop automatic reads until Retry; transient failures keep polling. Version changes
+and Undo reload the frame. Errors remain explicit.
 
-The iframe hosts the same-origin viewer shell, which owns selection, comments,
-Send, and the reason Send is unavailable. Agent HTML stays in the shell's
-opaque sandbox; the panel never reads that inner frame. A selection alone
-never dispatches an edit or stages a chat draft. Repository files use their
-script-free preview. PDFs open in the desktop system viewer; in the browser
-they offer Download only, with no Open action.
-
-Each Runs card preserves the server order: its report first, followed by every
-turn and worker artifact, with name, kind, time, and the worker label when
-present. Worker and turn timeline popovers show artifacts from their exact producing operation,
-using the same fetched run list. Every preview opens the shared panel.
+The same-origin shell owns comments and availability; the panel never reads opaque
+agent HTML. Selection alone sends/stages nothing. Repository previews are script-free.
+PDFs open via desktop system viewer or browser Download. Runs preserves server
+order (report first, then outputs), with kind/time/worker labels. Timeline popovers
+filter that list to the exact operation; all previews use this panel.

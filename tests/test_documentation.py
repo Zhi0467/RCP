@@ -24,7 +24,6 @@ EXPECTED_SPECS = {
 EXPECTED_CURRENT_FILES = {
     "docs/decisions/README.md",
     "docs/design.md",
-    "docs/handoffs/README.md",
     *(f"docs/specs/{name}" for name in EXPECTED_SPECS),
     "tests/test_documentation.py",
 }
@@ -78,6 +77,7 @@ def test_current_documentation_layout_is_complete() -> None:
     assert {path.name for path in (DOCS / "specs").glob("*.md")} == EXPECTED_SPECS
 
     assert not (DOCS / "archive").exists()
+    assert not (DOCS / "handoffs").exists()
 
 
 def test_current_markdown_links_and_anchors_resolve() -> None:
