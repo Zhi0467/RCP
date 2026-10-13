@@ -68,7 +68,7 @@ def families_for_path(path: str) -> set[str]:
         "cursors.json",
         "scope-base.json",
     }:
-        return {"graph:main"}
+        return {"graph:main", "refs"}
     return set()
 
 

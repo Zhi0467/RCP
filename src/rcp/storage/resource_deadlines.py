@@ -20,6 +20,7 @@ def _install_deadline(
     owner: str,
     deadline: str,
     scope: str = "row.project_id",
+    entity: str = "''",
     predicate: str = "1",
 ) -> None:
     """Backfill and maintain one deadline per owner/resource, including deletes."""
@@ -27,13 +28,13 @@ def _install_deadline(
     def insert(alias: str, source: str = "") -> str:
         return (
             "INSERT OR REPLACE INTO resource_deadlines(scope,resource,entity,owner,deadline) "
-            f"SELECT {scope}, '{resource}', '', '{table}:' || {owner}, {deadline} "
-            f"{source} WHERE ({predicate}) AND ({deadline}) IS NOT NULL;"
+            f"SELECT {scope}, '{resource}', {entity}, '{table}:' || {owner}, {deadline} "
+            f"{source} WHERE ({predicate}) AND ({deadline}) IS NOT NULL AND ({entity}) IS NOT NULL;"
         ).replace("row.", alias + ".")
 
     remove = (
         "DELETE FROM resource_deadlines "
-        f"WHERE scope={scope} AND resource='{resource}' AND entity='' "
+        f"WHERE scope={scope} AND resource='{resource}' AND entity=({entity}) "
         f"AND owner='{table}:' || {owner};"
     ).replace("row.", "OLD.")
     key = f"resource_deadline_{table}_{resource.replace('.', '_')}"
@@ -72,14 +73,18 @@ def migrate_resource_deadlines(connection: sqlite3.Connection) -> None:
             "(row.kind IN ('node_chat','project_chat') OR (row.kind='auto_research' "
             "AND json_extract(row.request_json,'$.role')='orchestrator'))",
         )
-    _install_deadline(
-        connection,
-        table="artifacts",
-        resource="artifacts",
-        owner="row.artifact_id",
-        deadline="(julianday(json_extract(row.metadata,'$.expires_at'))-2440587.5)*86400.0",
-        predicate="json_extract(row.metadata,'$.kept_at') IS NULL",
-    )
+    for resource in ("artifacts", "tasks.status", "tasks.progress", "task"):
+        _install_deadline(
+            connection,
+            table="artifacts",
+            resource=resource,
+            entity="json_extract(row.metadata,'$.origin_operation_id')"
+            if resource == "task"
+            else "''",
+            owner="row.artifact_id",
+            deadline="(julianday(json_extract(row.metadata,'$.expires_at'))-2440587.5)*86400.0",
+            predicate="json_extract(row.metadata,'$.kept_at') IS NULL",
+        )
     _install_deadline(
         connection,
         table="consolidation_schedules",

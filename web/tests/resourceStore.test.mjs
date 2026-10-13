@@ -49,6 +49,71 @@ function manualProfile(name, project) {
   };
 }
 
+test("a closed tab's mutation cannot settle into its reopened resource", async () => {
+  const store = new ResourceStore();
+  const { reads, profile } = manualProfile("tasks.status");
+  const id = store.register("tab", profile);
+  reads[0].resolve("original");
+  await settle();
+  const command = store.beginMutation("retry", new Map([[id, (value) => value]]));
+  store.release("tab");
+  store.register("tab", profile);
+  reads[1].resolve("reopened");
+  await settle();
+  command.settle(new Map([[id, "old response"]]));
+  assert.equal(store.view(id).value, "reopened");
+  assert.equal(reads.length, 2);
+});
+
+test("an invalidation during a read requires a subsequent read", async () => {
+  const store = new ResourceStore();
+  const { reads, profile } = manualProfile("graph");
+  const id = store.register("tab", profile);
+  store.invalidate(id);
+  reads[0].resolve("before invalidation");
+  await settle();
+  assert.equal(reads.length, 2);
+  reads[1].resolve("after invalidation");
+  await settle();
+  assert.equal(store.view(id).value, "after invalidation");
+  assert.equal(reads.length, 2);
+});
+
+test("queued hidden reads progress even while active reads keep accruing debt", async () => {
+  const store = new ResourceStore();
+  store.setActiveProject("active");
+  const active = ["a", "b", "c", "d"].map((name) => manualProfile(name, "active"));
+  const ids = active.map(({ profile }) => store.register("active", profile));
+  const hidden = manualProfile("graph", "hidden");
+  store.register("hidden", hidden.profile);
+  for (const id of ids) store.invalidate(id);
+  active[0].reads[0].resolve("done");
+  await settle();
+  assert.equal(hidden.reads.length, 1);
+});
+
+test("refresh waits for its own read and rejects its read failure", async () => {
+  const store = new ResourceStore();
+  const { reads, profile } = manualProfile("graph");
+  const id = store.register("tab", profile);
+  let completed = false;
+  const refresh = store.refresh(id).then(() => {
+    completed = true;
+  });
+  reads[0].resolve("earlier read");
+  await settle();
+  assert.equal(completed, false);
+  reads[1].resolve("refreshed");
+  await refresh;
+  const error = new Error("offline");
+  const failed = assert.rejects(store.refresh(id), (failure) => failure === error);
+  reads[2].reject(error);
+  await failed;
+  const closed = assert.rejects(store.refresh(id));
+  store.release("tab");
+  await closed;
+});
+
 test("a read started before a newer read never commits", async () => {
   const store = new ResourceStore();
   const { reads, profile } = manualProfile("tasks.status");
@@ -368,10 +433,10 @@ test("with a scheduler, a new key reads once, after its first watermark", async 
     clock: time.clock,
     visibility: { isHidden: () => false, listen: () => () => {} },
   });
-  scheduler.start();
   const { reads, profile } = manualProfile("chats");
   store.register("tab", profile);
   assert.equal(reads.length, 0);
+  scheduler.start();
   await time.advance(1);
   assert.equal(reads.length, 1);
   reads[0].resolve("v7");

@@ -71,6 +71,7 @@ export interface ProjectSessionTabState {
 export interface ProjectSessionState extends ProjectSessionTabState {
   project: ProjectSnapshot | null;
   renderedRevision: number;
+  renderedEpoch: string | null;
   transitionHead: GraphHeadRef;
   transitionRulesetTag: string | null;
   transitionManifestState: ProjectSessionManifestState;
@@ -109,6 +110,7 @@ export type ProjectSessionAction =
   | {
       kind: "snapshot_applied";
       snapshot: ProjectSnapshot;
+      epoch?: string | null;
       preserve_readiness: boolean;
       request?: { project_id: string; request_id: number };
     }
@@ -181,6 +183,7 @@ export function emptyProjectSessionState(
     graphTarget,
     project: null,
     renderedRevision: 0,
+    renderedEpoch: null,
     humanDraft: null,
     transitionHead: { ...canonicalGraphHead(0), target: graphTarget },
     transitionRulesetTag: null,
@@ -497,8 +500,14 @@ export function cachedSnapshotCanReplace(
   renderedProjectId: string | null,
   renderedRevision: number,
   snapshot: ProjectSnapshot,
+  renderedEpoch: string | null,
+  epoch: string | null,
 ): boolean {
-  return snapshot.id !== renderedProjectId || snapshot.graph.revision >= renderedRevision;
+  return (
+    epoch !== renderedEpoch ||
+    snapshot.id !== renderedProjectId ||
+    snapshot.graph.revision >= renderedRevision
+  );
 }
 
 export function persistProjectHumanDraft(
@@ -598,6 +607,8 @@ function applyProjectSnapshot(
       state.project?.id ?? state.transitionCoordinator.active_project_id,
       state.renderedRevision,
       decodedProject,
+      state.renderedEpoch,
+      action.epoch === undefined ? state.renderedEpoch : action.epoch,
     )
   ) {
     return state;
@@ -683,6 +694,7 @@ function applyProjectSnapshot(
     ...state,
     project,
     renderedRevision: nextGraph.revision,
+    renderedEpoch: action.epoch === undefined ? state.renderedEpoch : action.epoch,
     humanDraft,
     transitionHead: transitionHeadsEqual(state.transitionHead, nextHead)
       ? state.transitionHead

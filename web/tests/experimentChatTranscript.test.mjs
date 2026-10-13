@@ -241,3 +241,26 @@ test("transcript profile preserves missing responses for viewer-specific handlin
     globalThis.fetch = originalFetch;
   }
 });
+
+test("hidden projects retain selected transcripts until their own selection changes", async () => {
+  const { ProjectTabResources } = await server.ssrLoadModule(
+    "/src/projects/projectTabResources.ts",
+  );
+  const { ResourceStore } = await server.ssrLoadModule("/src/core/resourceStore.ts");
+  const { chatResourceProfile } = await server.ssrLoadModule("/src/chat/chatResources.ts");
+  const store = new ResourceStore();
+  store.attachScheduler(() => {});
+  const retained = new ProjectTabResources(store, new Map());
+  const select = (project, chat) =>
+    retained.select(project, [
+      chatResourceProfile(project, MAIN_GRAPH, chat, `/api/projects/${project}`),
+    ]);
+  const watched = (project, chat) => store.requests(project).some((key) => key.entity === chat);
+  select("p", "c");
+  select("q", "c");
+  assert.ok(watched("p", "c"));
+  select("p", "other");
+  assert.equal(watched("p", "c"), false);
+  assert.ok(watched("p", "other"));
+  assert.ok(watched("q", "c"));
+});

@@ -2654,7 +2654,7 @@ def test_remote_generations_track_deletion_chat_and_paper_without_graph_head(
     chat.write_text('"first"\n')
     paper.write_text("first")
     workspace.capture()
-    families = ["graph:main", "chats", f"chat:{chat_id}", "paper", "unknown"]
+    families = ["graph:main", "refs", "chats", f"chat:{chat_id}", "paper", "unknown"]
     before = workspace.content_generations(families)
     with workspace.read_snapshot() as old:
         chat.unlink()
@@ -2674,6 +2674,11 @@ def test_remote_generations_track_deletion_chat_and_paper_without_graph_head(
         with ThreadPoolExecutor(max_workers=1) as pool:
             pool.submit(observe).result(timeout=5)
     assert not old.exists()
+    (manifest.research_dir / "graph.json").write_text('{"revision": 2}')
+    workspace.capture()
+    changed = workspace.content_generations(families)
+    assert changed["graph:main"] != after["graph:main"]
+    assert changed["refs"] != after["refs"]
 
 
 def test_capture_and_writer_share_order_but_not_display_lock(tmp_path, manifest, monkeypatch):

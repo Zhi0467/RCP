@@ -1,4 +1,5 @@
-import { beginTaskMutation } from "./agents/taskActions";
+import { useProjectTabResources } from "./projects/projectTabResources";
+import { beginTaskMutation, beginTaskPublication } from "./agents/taskActions";
 import { beginChatSend } from "./agents/chatSendMutation";
 import { ArtifactViewer } from "./artifacts/ArtifactViewer";
 import { ResourceStore, resourceKeyId } from "./core/resourceStore";
@@ -14,7 +15,12 @@ import {
   useRefreshHealth,
   useResource,
 } from "./core/useResource";
-import { taskStatusProfile, usageProfile } from "./agents/taskResources";
+import {
+  taskResourceProfile,
+  tasksResourceKey,
+  taskStatusProfile,
+  usageProfile,
+} from "./agents/taskResources";
 import {
   type SettingsResource,
   settingsProfile,
@@ -959,27 +965,41 @@ function MemberApp({
       setNotice({ kind: "error", text: "This project is no longer available." });
     },
   };
-  const registeredTabs = useRef(new Set<string>());
-  const retainedViewKeys = useRef(new Map<string, string[]>());
+  const tabResources = useProjectTabResources(store);
+  const {
+    tabs: registeredTabs,
+    views: retainedViewKeys,
+    profiles: retainedViewProfiles,
+  } = tabResources;
   const paperEditorStates = useRef(new Map<string, PaperEditorState>());
   useEffect(() => {
     if (!backendSessionReady) return;
     const next = new Set(openProjectTabs.map((tab) => tab.id));
     if (projectId) next.add(projectId);
-    for (const id of registeredTabs.current)
+    for (const id of new Set([...registeredTabs, ...retainedViewProfiles.keys()]))
       if (!next.has(id)) {
         store.release(id);
         store.dropProject(id);
         tabRefs.current.delete(id);
-        retainedViewKeys.current.delete(id);
+        retainedViewKeys.delete(id);
+        retainedViewProfiles.delete(id);
         paperEditorStates.current.delete(id);
       }
     for (const id of next)
-      if (backendSessionReady && !registeredTabs.current.has(id))
-        store.register(id, taskStatusProfile(id));
-    registeredTabs.current = next;
+      if (backendSessionReady && !registeredTabs.has(id)) store.register(id, taskStatusProfile(id));
+    registeredTabs.clear();
+    for (const id of next) registeredTabs.add(id);
     scheduler.now();
-  }, [backendSessionReady, openProjectTabs, projectId, scheduler, store]);
+  }, [
+    backendSessionReady,
+    openProjectTabs,
+    projectId,
+    registeredTabs,
+    retainedViewKeys,
+    retainedViewProfiles,
+    scheduler,
+    store,
+  ]);
   useEffect(() => {
     if (!backendSessionReady) {
       scheduler.stop();
@@ -1046,7 +1066,6 @@ function MemberApp({
     taskInspectorLoading,
     activeTask,
     activityTask,
-    upsertTask,
     recordStartedTask,
     presentTask: presentAgentTask,
     selectTaskInspector,
@@ -1347,7 +1366,7 @@ function MemberApp({
     async (_includeTasks = true) => {
       if (!projectId) return;
       // Commands invalidate concrete resources; there is no reload bundle.
-      store.invalidate(resourceKeyId(graphResourceKey(projectId, graphTarget)));
+      await store.refresh(resourceKeyId(graphResourceKey(projectId, graphTarget)));
     },
     [store, projectId, graphTarget],
   );
@@ -1595,7 +1614,6 @@ function MemberApp({
       paperEditorStates.current.clear();
     }
     lastProjectOpen.current = { backendKey, projectId, graphTarget, setupOpen };
-    const previousKeys = new Set(retainedViewKeys.current.get(projectId) ?? []);
     const profiles: import("./core/resourceStore").ResourceProfile<unknown>[] = [
       graphProfile(projectId, graphTarget),
       refsProfile(projectId),
@@ -1607,20 +1625,7 @@ function MemberApp({
       manifestProfile(projectId, graphTarget, projectSession.transitionManifestExpectedRulesetTag),
     ];
     if (view === "paper") profiles.push(paperProfile(projectId));
-    const ids = profiles.map((profile) => {
-      const id = resourceKeyId(profile.key);
-      if (!previousKeys.has(id))
-        store.register(
-          projectId,
-          profile as import("./core/resourceStore").ResourceProfile<unknown>,
-        );
-      return id;
-    });
-    store.suspend(
-      projectId,
-      [...previousKeys].filter((id) => !ids.includes(id)),
-    );
-    retainedViewKeys.current.set(projectId, ids);
+    tabResources.select(projectId, profiles);
     const current = getProjectSessionState();
     if (
       !previous ||
@@ -1669,6 +1674,7 @@ function MemberApp({
     // validates the current ref without blocking this layout pass.
   }, [
     store,
+    tabResources,
     backendSessionReady,
     backendKey,
     projectId,
@@ -2601,7 +2607,9 @@ function MemberApp({
       const mutation =
         projectId && (kind === "node_chat" || kind === "project_chat")
           ? beginChatSend(store, projectId, graphTarget, kind, request, admissionId)
-          : null;
+          : projectId
+            ? beginTaskPublication(store, projectId)
+            : null;
       try {
         const task = await api<AgentTask>(
           kind === "node_chat" || kind === "project_chat"
@@ -2817,6 +2825,7 @@ function MemberApp({
       }
       const finishTaskStart = beginTaskStart();
       if (!finishTaskStart) throw new Error("Another task start is already being submitted.");
+      const mutation = beginTaskPublication(store, project.id);
       try {
         // A fresh Run is its own conversation. Reusing the node's newest chat
         // would file the episode inside a human's finished Work chat.
@@ -2849,6 +2858,7 @@ function MemberApp({
         );
         if (!sameGraphTarget(task.graph_target, expectedTarget))
           throw new Error("Experiment start returned a different graph target.");
+        mutation.settle(task);
         if (!isActiveGraph(project.id)) return task;
         recordStartedTask(task);
         setExperimentStartOverlap({ projectId: project.id, loops: task.live_elsewhere });
@@ -2875,11 +2885,15 @@ function MemberApp({
           });
         }
         return task;
+      } catch (error) {
+        mutation.fail();
+        throw error;
       } finally {
         finishTaskStart();
       }
     },
     [
+      store,
       apiBase,
       graphPath,
       graphTarget,
@@ -3167,16 +3181,19 @@ function MemberApp({
   };
 
   const requestEpisodeMerge = async (episodeId: string, body: MergeEpisodeBody = {}) => {
-    if (!apiBase || episodeAction) return;
+    if (!apiBase || !projectId || episodeAction) return;
     const finishEpisodeAction = beginEpisodeAction(`merge:${episodeId}`);
     if (!finishEpisodeAction) return;
+    const mutation = beginTaskPublication(store, projectId);
     try {
       const nextEpisode = await mergeEpisodeToMain(apiBase, episodeId, body);
       replaceEpisode(nextEpisode);
       const mergeTask = activeBranchMergeTask(nextEpisode);
+      mutation.settle(mergeTask ?? undefined);
       if (mergeTask) recordStartedTask(mergeTask);
       await reload();
     } catch (error) {
+      mutation.fail();
       // A pause on unfinished jobs is the panel's own prompt, not an app error.
       if (!unfinishedJobsFromError(error)) {
         setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
@@ -3262,6 +3279,7 @@ function MemberApp({
     if (!finishTaskRepair) {
       throw new Error("Another task action is already being submitted.");
     }
+    const mutation = projectId ? beginTaskPublication(store, projectId, operationId) : null;
     try {
       if (mutationsDisabled) {
         throw new Error("Graph repair is unavailable while replay is degraded.");
@@ -3271,7 +3289,7 @@ function MemberApp({
           `${apiBase}/tasks/${encodeURIComponent(operationId)}/apply-graph-update-again`,
           { method: "POST" },
         );
-        upsertTask(updated);
+        mutation?.settle(updated);
         setNotice(null);
         // The task stays succeeded, so completion-driven refresh never fires:
         // reload the graph and chats to show the new receipt and its actions.
@@ -3287,8 +3305,12 @@ function MemberApp({
         `${apiBase}/tasks/${encodeURIComponent(operationId)}/repair-graph-update`,
         { method: "POST" },
       );
+      mutation?.settle(next);
       recordStartedTask(next);
       setNotice(null);
+    } catch (error) {
+      mutation?.fail();
+      throw error;
     } finally {
       finishTaskRepair();
     }
@@ -3327,11 +3349,18 @@ function MemberApp({
 
   const refreshAgentTask = useCallback(
     async (operationId: string): Promise<AgentTask> => {
-      const next = await api<AgentTask>(`${apiBase}/tasks/${encodeURIComponent(operationId)}`);
-      upsertTask(next);
-      return next;
+      if (!projectId) throw new Error("No project is open.");
+      const owner = crypto.randomUUID();
+      const id = store.register(owner, taskResourceProfile(projectId, operationId));
+      try {
+        await store.refresh(id);
+        store.invalidate(tasksResourceKey(projectId));
+        return store.committedValue<AgentTask>(id)!;
+      } finally {
+        store.release(owner, [id]);
+      }
     },
-    [apiBase, upsertTask],
+    [projectId, store],
   );
 
   const requestRetry = (task: AgentTask) => {

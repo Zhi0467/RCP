@@ -113,12 +113,10 @@ export class RefreshScheduler {
     this.options = options;
     this.clock = options.clock ?? defaultClock;
     this.visibility = options.visibility ?? documentVisibility;
+    options.store.attachScheduler(() => this.now());
   }
 
-  private detachStore: (() => void) | null = null;
-
   start(): void {
-    this.detachStore = this.options.store.attachScheduler(() => this.now());
     this.stopVisibility = this.visibility.listen(() => {
       if (!this.visibility.isHidden()) this.now();
     });
@@ -126,8 +124,6 @@ export class RefreshScheduler {
   }
 
   stop(): void {
-    this.detachStore?.();
-    this.detachStore = null;
     this.stopVisibility?.();
     this.stopVisibility = null;
     if (this.timer !== null) this.clock.clearTimeout(this.timer);
@@ -145,7 +141,7 @@ export class RefreshScheduler {
 
   /** Runs a beat as soon as no request is in flight. */
   now(): void {
-    if (this.inFlight) return;
+    if (!this.stopVisibility || this.inFlight) return;
     this.schedule(0);
   }
 

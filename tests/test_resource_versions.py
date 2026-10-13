@@ -26,6 +26,12 @@ _CASES = [
     ("chat_display", "chats", "title", {"chat_id": "chat"}),
     ("provider_login_states", "settings", "detail", {"state": "signed_in"}),
     ("chat_reads", "chats", "read_through", {"user_id": "member"}),
+    ("chat_reads", "digest", "read_through", {"user_id": "member"}),
+    *[("branch_names", resource, "name", {}) for resource in ("digest", "chats", "artifacts")],
+    *[
+        ("artifacts", resource, "metadata", {"metadata": '{"origin_operation_id":"task"}'})
+        for resource in ("tasks.status", "tasks.progress", "task")
+    ],
 ]
 
 
@@ -75,7 +81,11 @@ def test_owner_writes_commit_atomically_and_pruning_invalidates(
         connection.execute("SAVEPOINT mutation")
         connection.execute(
             f"UPDATE {table} SET {column}=?",
-            ("changed",),
+            (
+                '{"origin_operation_id":"task","kept_at":"now"}'
+                if column == "metadata"
+                else "changed",
+            ),
         )
         assert _generation(connection, resource) > inserted
         connection.execute("ROLLBACK TO mutation")
@@ -321,3 +331,79 @@ def test_only_launch_receipts_move_terminals(tmp_path: Path) -> None:
         receipt = {"receipt_id": 2, "operation_id": "task", "payload_json": launch}
         _insert(connection, "graph_run_receipts", receipt, store.now())
         assert _generation(connection, "terminals") > before
+
+
+def test_artifact_edit_lifecycle_invalidates_viewer(tmp_path):
+    store = AppStore(tmp_path / "store.db")
+    with store.connection() as connection:
+        _insert(
+            connection,
+            "graph_runs",
+            {
+                **_CASES[0][3],
+                "request_json": '{"artifact_edit":{"artifact_id":"artifact"}}',
+                "status": "queued",
+            },
+            store.now(),
+        )
+        for status in ("running", "failed"):
+            before = _generation(connection, "artifacts")
+            connection.execute("UPDATE graph_runs SET status=?", (status,))
+            assert _generation(connection, "artifacts") > before
+
+
+@pytest.mark.parametrize("owner", ["graph_runs", "auto_research_messages"])
+def test_orchestrator_chat_invalidates_chain_root(tmp_path, owner):
+    store = AppStore(tmp_path / "store.db")
+    target = '{"kind":"branch","branch_id":"root"}'
+    with store.connection() as connection:
+        for episode in ("root", "continuation"):
+            _insert(
+                connection,
+                "episodes",
+                {
+                    "episode_id": episode,
+                    "mode": "auto_research",
+                    "invocation_ceiling": 1,
+                    "graph_target_json": target,
+                },
+                store.now(),
+            )
+        _insert(
+            connection,
+            "graph_runs",
+            {
+                **_CASES[0][3],
+                "kind": "auto_research",
+                "episode_id": "continuation",
+                "graph_target_json": target,
+                "request_json": '{"role":"orchestrator"}',
+            },
+            store.now(),
+        )
+        _insert(
+            connection,
+            "auto_research_messages",
+            {
+                "episode_id": "continuation",
+                "sender_role": "human",
+            },
+            store.now(),
+        )
+        before = _generation(connection, "chats")
+        root_before = connection.execute(
+            "SELECT COALESCE(SUM(generation),0) FROM resource_versions "
+            "WHERE scope='p' AND resource='chat' AND entity='root'"
+        ).fetchone()[0]
+        if owner == "graph_runs":
+            connection.execute("UPDATE graph_runs SET status='succeeded', result_json='{}'")
+        else:
+            connection.execute("UPDATE auto_research_messages SET delivery_operation_id='task'")
+        assert _generation(connection, "chats") > before
+        assert (
+            connection.execute(
+                "SELECT generation FROM resource_versions "
+                "WHERE scope='p' AND resource='chat' AND entity='root'"
+            ).fetchone()[0]
+            > root_before
+        )

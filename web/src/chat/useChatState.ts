@@ -1,3 +1,4 @@
+import { useProjectTabResources } from "../projects/projectTabResources";
 import { useRefreshRuntime, useResource } from "../core/useResource";
 import { resourceKeyId, type ResourceView } from "../core/resourceStore";
 import {
@@ -8,7 +9,14 @@ import {
 } from "./chatResources";
 import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget";
 import type { GraphTargetRef } from "../core/types";
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { ApiError, markChatRead } from "../core/api";
 import { chatSummariesForTarget, mergeChatSummaryPage } from "./chatApi";
 import {
@@ -214,13 +222,12 @@ export function useChatState({
   const profileIds = profiles.map((profile) => resourceKeyId(profile.key));
   const profileToken = JSON.stringify(profileIds);
   const entityToken = JSON.stringify(profiles.map((profile) => profile.key.entity));
-  useEffect(() => {
-    if (!projectId) return;
-    profiles.forEach((profile) => store.register(projectId, profile));
-    return () => store.suspend(projectId, profileIds);
+  const retainedTranscripts = useProjectTabResources(store);
+  useLayoutEffect(() => {
+    if (projectId) retainedTranscripts.select(projectId, profiles);
     // Resource identity includes the owning graph, independent of the viewed graph.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store, projectId, profileToken]);
+  }, [retainedTranscripts, projectId, profileToken]);
   const getTranscriptViews = useMemo(() => {
     let previous: ResourceView<ChatTranscript>[] = [];
     return () => {

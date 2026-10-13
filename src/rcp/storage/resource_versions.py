@@ -42,10 +42,10 @@ _PROJECT_TABLES = {
     "auto_research_child_work": ("episodes",),
     "episode_isolations": ("episodes", "refs", "terminals"),
     "episode_isolation_states": ("episodes", "refs", "graph", "terminals"),
-    "branch_names": ("refs", "graph"),
-    "branch_name_reservations": ("refs", "graph"),
+    "branch_names": ("refs", "graph", "digest", "chats", "artifacts"),
+    "branch_name_reservations": ("refs", "graph", "digest", "chats", "artifacts"),
     "conversation_worktrees": ("refs", "chats", "terminals"),
-    "artifacts": ("artifacts",),
+    "artifacts": ("artifacts", "tasks.status", "tasks.progress"),
     "artifact_imports": ("artifacts",),
     "artifact_revision_candidates": ("artifacts",),
     "compute_backend_probes": ("settings", "terminals"),
@@ -163,9 +163,15 @@ def migrate_resource_versions(connection: sqlite3.Connection) -> None:
             )
         if table == "agent_usage":
             statements.append(_bump("ROW.project_id", "task", "ROW.operation_id"))
+        if table == "artifacts":
+            task = "json_extract(ROW.metadata,'$.origin_operation_id')"
+            statements.append(_bump("ROW.project_id", "task", task, f"{task} IS NOT NULL"))
         _install(connection, table, statements)
     for table in ("chat_reads", "chat_pins"):
-        _install(connection, table, [_bump("ROW.project_id", "chats", "'member:' || ROW.user_id")])
+        statements = [_bump("ROW.project_id", "chats", "'member:' || ROW.user_id")]
+        if table == "chat_reads":
+            statements.append(_bump("ROW.project_id", "digest"))
+        _install(connection, table, statements)
     for table, resources in _GLOBAL_TABLES.items():
         _install(connection, table, [_bump("''", resource) for resource in resources])
     # Graph completion embeds Experiment episode details, including archive and
@@ -196,6 +202,24 @@ def migrate_resource_versions(connection: sqlite3.Connection) -> None:
                     else []
                 ),
                 _bump(scope, "episode", "ROW.episode_id"),
+                *(
+                    [
+                        _bump(
+                            scope,
+                            "chats",
+                            predicate="ROW.sender_role='human' AND ROW.delivery_operation_id IS NOT NULL",
+                        ),
+                        _bump(
+                            scope,
+                            "chat",
+                            "(SELECT json_extract(graph_target_json,'$.branch_id') "
+                            "FROM episodes WHERE episode_id=ROW.episode_id)",
+                            "ROW.sender_role='human' AND ROW.delivery_operation_id IS NOT NULL",
+                        ),
+                    ]
+                    if table == "auto_research_messages"
+                    else []
+                ),
             ],
         )
     for table, entity in (
@@ -256,11 +280,22 @@ def migrate_resource_versions(connection: sqlite3.Connection) -> None:
                 _bump(scope, "chat", chat, f"{chat} IS NOT NULL"),
             ],
         )
+    # Every orchestrator continuation writes its chain root's branch/chat.
+    task_chat = (
+        "CASE WHEN ROW.kind='auto_research' AND json_extract(ROW.request_json,'$.role')='orchestrator' "
+        "THEN json_extract(ROW.graph_target_json,'$.branch_id') "
+        "ELSE json_extract(ROW.request_json,'$.chat_id') END"
+    )
     _install(
         connection,
         "graph_runs",
         [
             _bump("ROW.project_id", "tasks.status", predicate="ROW.visible=1"),
+            _bump(
+                "ROW.project_id",
+                "artifacts",
+                predicate="json_extract(ROW.request_json,'$.artifact_edit') IS NOT NULL",
+            ),
             _bump("ROW.project_id", "refs", predicate="ROW.visible=1"),
             _bump(
                 "ROW.project_id",
@@ -273,7 +308,7 @@ def migrate_resource_versions(connection: sqlite3.Connection) -> None:
             _bump(
                 "ROW.project_id",
                 "chats",
-                predicate="json_extract(ROW.request_json,'$.chat_id') IS NOT NULL",
+                predicate=f"({task_chat}) IS NOT NULL",
             ),
         ],
         columns=("project_id", "operation_id", "status", "finished_at", "visible", "history_only"),
@@ -289,8 +324,8 @@ def migrate_resource_versions(connection: sqlite3.Connection) -> None:
             _bump(
                 "ROW.project_id",
                 "chat",
-                "json_extract(ROW.request_json,'$.chat_id')",
-                "json_extract(ROW.request_json,'$.chat_id') IS NOT NULL",
+                task_chat,
+                f"({task_chat}) IS NOT NULL",
             ),
         ],
     )

@@ -299,7 +299,11 @@ test("the real start handler selects its returned isolated episode beside a live
     live_elsewhere: { rows: [{ episode_id: "live-main-loop", graph_target: main }], omitted: 0 },
   };
   let finished = 0;
+  const { ResourceStore } = await server.ssrLoadModule("/src/core/resourceStore.ts");
+  const { beginTaskPublication } = await server.ssrLoadModule("/src/agents/taskActions.ts");
   const start = await callbackFromSource("../src/App.tsx", "startExperiment", {
+    store: new ResourceStore(),
+    beginTaskPublication,
     project: {
       id: "project-one",
       experiment_control: { [loop.node_id]: { can_start: false, isolated_start_reasons: [] } },

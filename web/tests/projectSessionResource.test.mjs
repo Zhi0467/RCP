@@ -81,3 +81,48 @@ test("cached graph selection is stable and local preview changes survive it", ()
   assert.equal(session.getProjectSessionState().draftPreviewPending, false);
   store.release("tab");
 });
+
+test("graph reads reject older revisions only within their accepted epoch", async () => {
+  const { graphProfile } = await server.ssrLoadModule("/src/graph/graphResources.ts");
+  const store = new ResourceStore();
+  store.observeEpoch("before");
+  let revision = 8;
+  const profile = graphProfile("p");
+  profile.fetch = async () => ({
+    id: "p",
+    snapshot_freshness: "fresh",
+    graph_target: { kind: "main" },
+    graph: { revision, nodes: {}, edges: {}, proposals: {}, ambiguities: {}, glossary: {} },
+    attention: {
+      pending_proposal_ids: [],
+      decisions_awaiting_choice_ids: [],
+      open_blocker_ids: [],
+      proposal_actions: {},
+      decision_prior_choices: {},
+    },
+  });
+  const id = store.register("p", profile);
+  await new Promise((resolve) => setImmediate(resolve));
+  let session;
+  function Harness() {
+    session = useProjectSession("p");
+    return null;
+  }
+  renderToStaticMarkup(
+    React.createElement(
+      RefreshRuntimeContext.Provider,
+      { value: { store } },
+      React.createElement(Harness),
+    ),
+  );
+  assert.equal(session.getProjectSessionState().renderedRevision, 8);
+  revision = 2;
+  store.invalidate(id);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(session.getProjectSessionState().renderedRevision, 8);
+  store.observeEpoch("after");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(store.view(id).value.graph.revision, 2);
+  assert.equal(session.getProjectSessionState().renderedRevision, 2);
+  store.release("p");
+});

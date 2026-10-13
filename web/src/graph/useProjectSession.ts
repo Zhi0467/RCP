@@ -30,17 +30,21 @@ export function useProjectSession(initialProjectId: string | null) {
   const derived = useRef<{
     local: ProjectSessionState;
     snapshot: ProjectSnapshot | undefined;
+    epoch: string | null;
     state: ProjectSessionState;
   } | null>(null);
   const getState = useCallback(() => {
     const current = local.current;
-    const snapshot = current.projectId
+    const resource = current.projectId
       ? store.view<ProjectSnapshot>(
           resourceKeyId(graphResourceKey(current.projectId, current.graphTarget)),
-        ).value
+        )
       : undefined;
+    const snapshot = resource?.value;
+    const epoch = resource?.epoch ?? null;
     const cached = derived.current;
-    if (cached?.local === current && cached.snapshot === snapshot) return cached.state;
+    if (cached?.local === current && cached.snapshot === snapshot && cached.epoch === epoch)
+      return cached.state;
     const sameTarget =
       cached &&
       cached.state.projectId === current.projectId &&
@@ -48,7 +52,7 @@ export function useProjectSession(initialProjectId: string | null) {
     // A local edit does not re-accept the same snapshot: doing so would erase
     // its freshly computed preview after stripping the canonical payload.
     let next: ProjectSessionState;
-    if (sameTarget && cached.snapshot === snapshot) {
+    if (sameTarget && cached.snapshot === snapshot && cached.epoch === epoch) {
       next = { ...current, project: cached.state.project };
     } else if (snapshot) {
       next = projectSessionReducer(
@@ -56,7 +60,7 @@ export function useProjectSession(initialProjectId: string | null) {
           ...current,
           project: sameTarget ? cached.state.project : null,
         },
-        { kind: "snapshot_applied", snapshot, preserve_readiness: false },
+        { kind: "snapshot_applied", snapshot, epoch, preserve_readiness: false },
       );
       // Reconciliation changes human drafts and preview coordination, which
       // must survive the next local command without retaining a payload copy.
@@ -64,7 +68,7 @@ export function useProjectSession(initialProjectId: string | null) {
     } else {
       next = current;
     }
-    derived.current = { local: local.current, snapshot, state: next };
+    derived.current = { local: local.current, snapshot, epoch, state: next };
     return next;
   }, [store]);
 

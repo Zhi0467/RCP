@@ -134,18 +134,29 @@ test("task commands paint intent, settle a retry and retain failure on the task"
   pause.fail(new ApiError("refused", 409));
   assert.equal(store.view(id).value[0].status, "succeeded");
   assert.equal(store.view(id).value[0].pausing, undefined);
-  assert.equal(store.view(id).value[0].action_error, "refused");
-  // A lost answer shows no failure; the server's reread task replaces the overlay.
+  assert.ok(store.view(id).value[0].action_error);
+  const refreshed = { ...original, status: "succeeded", updated_at: "3" };
+  for (let settled = 0; settled < reads.length; settled += 1) {
+    reads[settled].resolve([refreshed]);
+    await flush();
+  }
+  assert.equal(store.view(id).value[0].updated_at, "3");
+  assert.equal(store.view(id).value[0].action_error_action, "pause");
+  assert.ok(store.view(id).value[0].action_error);
+  assert.equal(store.committedValue(id)[0].action_error, undefined);
+  assert.deepEqual(store.view(id).pending, []);
+  // The next action clears feedback; a lost answer then shows no failure.
   const lost = beginTaskMutation(store, "p", original, "resume");
+  assert.equal(store.view(id).value[0].action_error, undefined);
   lost.fail(new TypeError("response lost"));
   assert.deepEqual(store.view(id).pending, []);
   assert.notEqual(store.view(id).value[0].action_error_action, "resume");
-  const admitted = { ...original, status: "succeeded", updated_at: "3" };
+  const admitted = { ...original, status: "succeeded", updated_at: "4" };
   for (let settled = 0; settled < reads.length; settled += 1) {
     reads[settled].resolve([admitted]);
     await flush();
   }
-  assert.equal(store.view(id).value[0].updated_at, "3");
+  assert.equal(store.view(id).value[0].updated_at, "4");
   assert.equal(store.view(id).value[0].action_error, undefined);
   const retry = beginTaskMutation(store, "p", original, "retry");
   assert.equal(store.view(id).value[0].action_error, undefined);
@@ -156,6 +167,13 @@ test("task commands paint intent, settle a retry and retain failure on the task"
   );
   assert.equal(store.view(id).value[1].status, "succeeded");
   assert.deepEqual(store.view(id).pending, []);
+  const closed = beginTaskMutation(store, "p", original, "pause");
+  store.release("tab");
+  store.register("tab", profile);
+  reads.at(-1).resolve([admitted]);
+  await flush();
+  closed.fail(new ApiError("refused", 409));
+  assert.equal(store.view(id).value[0].action_error, undefined);
 });
 
 async function chatStore() {

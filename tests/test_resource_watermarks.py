@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import uuid
 from collections.abc import Iterable
 from contextlib import contextmanager
@@ -299,3 +300,32 @@ def test_registered_route_uses_identity_and_published_content(manifest, tmp_path
     assert all(old["version"] != new["version"] for old, new in zip(before, after, strict=True))
     assert coordinator.demands[-1] == ("test", {project}, None)
     assert TestClient(app).post("/api/resource-watermarks", json=body).status_code == 401
+
+
+def test_artifact_expiry_invalidates_task_consumers(endpoint, monkeypatch):
+    deadline = endpoint.now + timedelta(seconds=2)
+    keys = [{"name": name} for name in ("artifacts", "tasks.status", "tasks.progress")]
+    keys += [{"name": "task", "entity": "origin"}]
+    with endpoint.store.connection() as connection:
+        connection.execute(
+            "INSERT INTO artifacts VALUES('artifact', ?, ?)",
+            (
+                endpoint.project,
+                json.dumps({"origin_operation_id": "origin", "expires_at": deadline.isoformat()}),
+            ),
+        )
+    before = beat(endpoint, keys)["projects"][0]["resources"]
+    assert all(item["valid_until"] is not None for item in before)
+    monkeypatch.setattr(
+        endpoint.store, "now", lambda: (deadline + timedelta(seconds=1)).isoformat()
+    )
+    after = beat(endpoint, keys)["projects"][0]["resources"]
+    assert all(old["version"] != new["version"] for old, new in zip(before, after, strict=True))
+    with endpoint.store.connection() as connection:
+        connection.execute(
+            "UPDATE artifacts SET metadata=json_set(metadata, '$.kept_at', ?)",
+            (endpoint.store.now(),),
+        )
+        assert not connection.execute(
+            "SELECT 1 FROM resource_deadlines WHERE owner='artifacts:artifact'"
+        ).fetchall()

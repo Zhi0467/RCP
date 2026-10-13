@@ -40,6 +40,8 @@ interface PendingOperation {
 
 export interface ResourceView<T> {
   value: T | undefined;
+  /** Epoch of the accepted value, which may lag the latest watermark. */
+  epoch: string | null;
   /** No accepted read yet. */
   loading: boolean;
   /** The last read failed or the scheduler cannot reach the backend. */
@@ -57,6 +59,11 @@ interface ResourceState {
   dormant: Set<string>;
   value: unknown;
   hasValue: boolean;
+  valueEpoch: string | null;
+  invalidations: number;
+  lastRead: number;
+  waiters: { invalidation: number; resolve(): void; reject(error: unknown): void }[];
+  overlays: Map<string, (value: unknown) => unknown>;
   committed: string | undefined;
   observed: string | undefined;
   /** Owes a read regardless of tokens (invalidated, new epoch, unsettled command). */
@@ -103,6 +110,7 @@ export function retryBackoffMs(failures: number): number {
 
 const EMPTY_VIEW: ResourceView<never> = {
   value: undefined,
+  epoch: null,
   loading: true,
   stale: false,
   error: undefined,
@@ -123,6 +131,7 @@ export class ResourceStore {
    */
   private requestWatermark: (() => void) | null = null;
   private mutations = 0;
+  private reads = 0;
   private readonly now: () => number;
 
   constructor(now: () => number = Date.now) {
@@ -154,6 +163,11 @@ export class ResourceStore {
         dormant: new Set(),
         value: undefined,
         hasValue: false,
+        valueEpoch: null,
+        invalidations: 0,
+        lastRead: 0,
+        waiters: [],
+        overlays: new Map(),
         committed: undefined,
         observed: undefined,
         owed: false,
@@ -200,6 +214,7 @@ export class ResourceStore {
       if (state.owners.size > 0) continue;
       state.inFlight?.abort();
       this.states.delete(id);
+      this.finishRefreshes(state, Infinity, new Error("Resource released"));
       removed = true;
     }
     if (removed) this.notify();
@@ -237,6 +252,7 @@ export class ResourceStore {
       if (state.profile.key.project !== project) continue;
       state.inFlight?.abort();
       this.states.delete(id);
+      this.finishRefreshes(state, Infinity, new Error("Resource released"));
       removed = true;
     }
     if (removed) this.notify();
@@ -244,7 +260,10 @@ export class ResourceStore {
 
   /** Clears everything, e.g. after the backend or member changed. */
   reset(): void {
-    for (const state of this.states.values()) state.inFlight?.abort();
+    for (const state of this.states.values()) {
+      state.inFlight?.abort();
+      this.finishRefreshes(state, Infinity, new Error("Resource store reset"));
+    }
     this.states.clear();
     this.epoch = null;
     this.notify();
@@ -332,12 +351,23 @@ export class ResourceStore {
     owed.sort(
       (left, right) =>
         Number(right.profile.key.project === this.activeProject) -
-        Number(left.profile.key.project === this.activeProject),
+          Number(left.profile.key.project === this.activeProject) || left.lastRead - right.lastRead,
+    );
+    const backgroundWaiting = owed.some(
+      (state) => state.profile.key.project !== this.activeProject,
     );
     for (const state of owed) {
       if (this.running >= RESOURCE_READ_SLOTS) return;
       const background = state.profile.key.project !== this.activeProject;
       if (background && this.runningBackground >= RESOURCE_BACKGROUND_READ_SLOTS) continue;
+      // Leave the next available slot to queued background work.
+      if (
+        !background &&
+        backgroundWaiting &&
+        this.runningBackground === 0 &&
+        this.running >= RESOURCE_READ_SLOTS - RESOURCE_BACKGROUND_READ_SLOTS
+      )
+        continue;
       void this.read(state, background);
     }
   }
@@ -358,6 +388,8 @@ export class ResourceStore {
     const generation = state.generation;
     const sequence = ++state.sequence;
     const version = state.observed;
+    const invalidation = state.invalidations;
+    state.lastRead = ++this.reads;
     state.inFlight = controller;
     this.running += 1;
     if (background) this.runningBackground += 1;
@@ -365,20 +397,26 @@ export class ResourceStore {
       const value = await state.profile.fetch(controller.signal);
       if (this.accepts(state, generation, sequence)) {
         state.value = state.profile.reconcile
-          ? state.profile.reconcile(state.hasValue ? state.value : undefined, value)
+          ? state.profile.reconcile(
+              state.valueEpoch === this.epoch ? state.value : undefined,
+              value,
+            )
           : value;
         state.hasValue = true;
+        state.valueEpoch = this.epoch;
         state.committed = version;
         state.acceptedReads += 1;
-        state.owed = false;
+        state.owed = state.invalidations !== invalidation;
         state.error = undefined;
         state.failures = 0;
         state.retryAt = 0;
+        this.finishRefreshes(state, invalidation);
         this.changed(state);
       }
     } catch (error) {
       if (this.accepts(state, generation, sequence)) {
         state.error = error;
+        this.finishRefreshes(state, invalidation, error);
         state.failures += 1;
         state.retryAt = this.now() + retryBackoffMs(state.failures);
         this.changed(state);
@@ -414,25 +452,37 @@ export class ResourceStore {
   beginMutation(
     operationId: string,
     effects: ReadonlyMap<string, (value: unknown) => unknown>,
-  ): { settle(values?: ReadonlyMap<string, unknown>): void; fail(): void } {
+  ): {
+    settle(values?: ReadonlyMap<string, unknown>): void;
+    fail(feedback?: ReadonlyMap<string, PendingOperation>): void;
+  } {
     const order = ++this.mutations;
     // A response is accepted only within the generation and read history it
     // started from: an epoch change or an accepted read outranks it.
-    const startedAt = new Map<string, { generation: number; reads: number }>();
+    const startedAt = new Map<
+      string,
+      { state: ResourceState; generation: number; reads: number }
+    >();
     for (const [id, apply] of effects) {
       const state = this.states.get(id);
       if (!state) continue;
       this.fence(state);
-      startedAt.set(id, { generation: state.generation, reads: state.acceptedReads });
+      startedAt.set(id, { state, generation: state.generation, reads: state.acceptedReads });
       state.pending.push({ id: operationId, apply });
       state.view = null;
     }
     this.notify();
-    const finish = (values: ReadonlyMap<string, unknown> | undefined, ok: boolean) => {
+    const finish = (
+      values: ReadonlyMap<string, unknown> | undefined,
+      ok: boolean,
+      feedback?: ReadonlyMap<string, PendingOperation>,
+    ) => {
       for (const id of effects.keys()) {
         const state = this.states.get(id);
-        if (!state) continue;
+        if (!state || startedAt.get(id)?.state !== state) continue;
         state.pending = state.pending.filter((operation) => operation.id !== operationId);
+        const overlay = feedback?.get(id);
+        if (overlay) state.overlays.set(overlay.id, overlay.apply);
         if (ok) {
           this.fence(state);
           const start = startedAt.get(id);
@@ -445,9 +495,13 @@ export class ResourceStore {
           if (current && values?.has(id)) {
             const value = values.get(id);
             state.value = state.profile.reconcile
-              ? state.profile.reconcile(state.hasValue ? state.value : undefined, value)
+              ? state.profile.reconcile(
+                  state.valueEpoch === this.epoch ? state.value : undefined,
+                  value,
+                )
               : value;
             state.hasValue = true;
+            state.valueEpoch = this.epoch;
             // The response's own version is unknown, so the version of the
             // data it replaces stays committed: a token that moved meanwhile
             // still owes a read.
@@ -463,7 +517,7 @@ export class ResourceStore {
     };
     return {
       settle: (values) => finish(values, true),
-      fail: () => finish(undefined, false),
+      fail: (feedback) => finish(undefined, false, feedback),
     };
   }
 
@@ -473,9 +527,10 @@ export class ResourceStore {
     if (!state) return;
     this.fence(state);
     state.value = state.profile.reconcile
-      ? state.profile.reconcile(state.hasValue ? state.value : undefined, value)
+      ? state.profile.reconcile(state.valueEpoch === this.epoch ? state.value : undefined, value)
       : value;
     state.hasValue = true;
+    state.valueEpoch = this.epoch;
     state.error = undefined;
     // A response may be older than a read accepted while it was in flight, so
     // one read confirms it.
@@ -489,8 +544,36 @@ export class ResourceStore {
     const state = this.states.get(id);
     if (!state) return;
     state.owed = true;
+    state.invalidations += 1;
     state.retryAt = 0;
     this.pump();
+  }
+
+  /** Invalidates and waits for a read started after this request. */
+  refresh(id: string): Promise<void> {
+    const state = this.states.get(id);
+    if (!state) return Promise.reject(new Error("Resource is not registered"));
+    return new Promise((resolve, reject) => {
+      state.waiters.push({ invalidation: state.invalidations + 1, resolve, reject });
+      this.invalidate(id);
+    });
+  }
+
+  private finishRefreshes(state: ResourceState, invalidation: number, error?: unknown): void {
+    const ready = state.waiters.filter((waiter) => waiter.invalidation <= invalidation);
+    state.waiters = state.waiters.filter((waiter) => waiter.invalidation > invalidation);
+    for (const waiter of ready) {
+      if (error !== undefined) waiter.reject(error);
+      else waiter.resolve();
+    }
+  }
+
+  /** Clears local operation feedback when its owner starts the next action. */
+  clearOverlay(id: string, operationId: string): void {
+    const state = this.states.get(id);
+    if (!state) return;
+    state.overlays.delete(operationId);
+    this.changed(state);
   }
 
   /** Accepted data only, for response merges that must not persist other overlays. */
@@ -504,8 +587,10 @@ export class ResourceStore {
     if (!state.view) {
       let value = state.hasValue ? state.value : undefined;
       for (const operation of state.pending) value = operation.apply(value);
+      for (const apply of state.overlays.values()) value = apply(value);
       state.view = {
         value,
+        epoch: state.valueEpoch,
         loading: !state.hasValue,
         stale: state.error !== undefined,
         error: state.error,

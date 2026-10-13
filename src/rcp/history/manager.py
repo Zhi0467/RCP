@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import stat
+import threading
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
@@ -397,12 +398,15 @@ class HistoryManager:
         self.on_accepted_branch_transition = on_accepted_branch_transition
         self._branch_materialization_repairs: set[str] = set()
         self._history_engine: ProjectHistoryEngine | None = None
+        self._engine_lock = threading.Lock()
+        self._reader_lock = threading.Lock()
+        self._reader: HistoryManager | None = None
 
     @property
     def history_engine(self) -> ProjectHistoryEngine:
         from rcp.history.engine import ProjectHistoryEngine
 
-        with self._process_lock:
+        with self._engine_lock:
             if self._history_engine is None:
                 self._history_engine = ProjectHistoryEngine(self)
             return self._history_engine
@@ -415,15 +419,21 @@ class HistoryManager:
                 yield self
             return
         with self.workspace.read_snapshot() as root:
-            reader = HistoryManager(
-                self.manifest,
-                LocalStateWorkspace(root, str(root), display_reader=True),
-                expected_space_id=self.expected_space_id,
-                project_id=self.project_id,
-                write_authority=self.write_authority,
-            )
-            reader._read_project_root = self.manifest.path.parent.parent
-            reader._reload_manifest()
+            with self._reader_lock:
+                reader = self._reader
+                if reader is None or reader.root != root:
+                    reader = HistoryManager(
+                        self.manifest,
+                        LocalStateWorkspace(root, str(root), display_reader=True),
+                        expected_space_id=self.expected_space_id,
+                        project_id=self.project_id,
+                        write_authority=self.write_authority,
+                    )
+                    reader._read_project_root = self.manifest.path.parent.parent
+                    reader._reload_manifest()
+                    self._reader = reader
+                if reader.history_engine.store is None:
+                    reader.history_engine.store = self.history_engine.store
             yield reader
 
     def initialize(self) -> MaterializationResult:

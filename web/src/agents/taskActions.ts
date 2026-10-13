@@ -1,7 +1,7 @@
 import { ApiError } from "../core/api";
-import type { ResourceStore } from "../core/resourceStore";
+import { type ResourceStore, resourceKeyId } from "../core/resourceStore";
 import type { AgentTask } from "../core/types";
-import { tasksResourceKey } from "./taskResources";
+import { taskResourceProfile, tasksResourceKey } from "./taskResources";
 
 export type TaskAction = "pause" | "resume" | "retry" | "stop";
 
@@ -14,6 +14,8 @@ export function beginTaskMutation(
 ) {
   const id = tasksResourceKey(projectId);
   const operationId = `${task.operation_id}:${action}:${crypto.randomUUID()}`;
+  const feedbackId = `task-action:${task.operation_id}`;
+  store.clearOverlay(id, feedbackId);
   const pending = (value: unknown) =>
     ((value as AgentTask[] | undefined) ?? [task]).map((row) => {
       if (row.operation_id !== task.operation_id) return row;
@@ -69,22 +71,46 @@ export function beginTaskMutation(
         mutation.settle();
         return;
       }
-      mutation.fail();
-      const rows = store.committedValue<AgentTask[]>(id) ?? [];
       const message = error instanceof Error ? error.message : String(error);
-      store.write(
-        id,
-        rows.map((row) =>
-          row.operation_id === task.operation_id
-            ? {
-                ...row,
-                action_error: message,
-                action_error_action: action,
-                action_pending: undefined,
-              }
-            : row,
-        ),
+      mutation.fail(
+        new Map([
+          [
+            id,
+            {
+              id: feedbackId,
+              apply: (value) =>
+                ((value as AgentTask[] | undefined) ?? []).map((row) =>
+                  row.operation_id === task.operation_id
+                    ? { ...row, action_error: message, action_error_action: action }
+                    : row,
+                ),
+            },
+          ],
+        ]),
       );
+    },
+  };
+}
+
+export function beginTaskPublication(store: ResourceStore, projectId: string, taskId?: string) {
+  const id = tasksResourceKey(projectId);
+  const detailId = taskId ? resourceKeyId(taskResourceProfile(projectId, taskId).key) : null;
+  const mutation = store.beginMutation(
+    crypto.randomUUID(),
+    new Map((detailId ? [id, detailId] : [id]).map((key) => [key, (value: unknown) => value])),
+  );
+  return {
+    settle(task?: AgentTask) {
+      if (!task) return mutation.settle();
+      const rows = store.committedValue<AgentTask[]>(id) ?? [];
+      const values = new Map<string, unknown>([
+        [id, [task, ...rows.filter((row) => row.operation_id !== task.operation_id)]],
+      ]);
+      if (detailId && task.operation_id === taskId) values.set(detailId, task);
+      mutation.settle(values);
+    },
+    fail() {
+      mutation.fail();
     },
   };
 }

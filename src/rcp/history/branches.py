@@ -567,6 +567,9 @@ class BranchHistoryManager:
         ]
 
     def slice(self, from_revision: int, to_revision: int | None = None) -> list[dict[str, object]]:
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.slice(from_revision, to_revision)
         generation = self.history_engine.snapshot(self.graph_target)
         assert generation.source.metadata is not None
         self._validate_metadata(generation.source.metadata)

@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isActiveTask, projectActivityTask } from "./agentTasks";
-import { resourceKeyId } from "../core/resourceStore";
-import { useResource, useRefreshRuntime } from "../core/useResource";
+import { useResource } from "../core/useResource";
 import {
   selectTasks,
   taskProgressProfile,
   taskResourceProfile,
   taskStatusProfile,
-  tasksResourceKey,
 } from "./taskResources";
 import type { AgentTask } from "../core/types";
 
@@ -37,7 +35,6 @@ export function cloneAgentTasksSnapshot(snapshot: AgentTasksSnapshot): {
 }
 
 export function useAgentTasks({ projectId }: UseAgentTasksOptions) {
-  const { store } = useRefreshRuntime();
   const owner = `${projectId}:task-view`;
   const status = useResource(owner, projectId ? taskStatusProfile(projectId) : null);
   const progress = useResource(owner, projectId ? taskProgressProfile(projectId) : null);
@@ -75,33 +72,14 @@ export function useAgentTasks({ projectId }: UseAgentTasksOptions) {
     }
   }, [activityTask]);
 
-  const upsertTask = useCallback(
-    (task: AgentTask) => {
-      if (!projectId) return;
-      const id = tasksResourceKey(projectId);
-      const current = store.committedValue<AgentTask[]>(id) ?? [];
-      store.write(id, [task, ...current.filter((item) => item.operation_id !== task.operation_id)]);
-      store.write(resourceKeyId(taskResourceProfile(projectId, task.operation_id).key), task);
-    },
-    [projectId, store],
-  );
+  const recordStartedTask = useCallback((task: AgentTask) => {
+    setActivityTaskId(task.operation_id);
+  }, []);
 
-  const recordStartedTask = useCallback(
-    (task: AgentTask) => {
-      upsertTask(task);
-      setActivityTaskId(task.operation_id);
-    },
-    [upsertTask],
-  );
-
-  const presentTask = useCallback(
-    (task: AgentTask) => {
-      upsertTask(task);
-      setActivityTaskId(task.operation_id);
-      setTaskInspectorId(task.operation_id);
-    },
-    [upsertTask],
-  );
+  const presentTask = useCallback((task: AgentTask) => {
+    setActivityTaskId(task.operation_id);
+    setTaskInspectorId(task.operation_id);
+  }, []);
 
   const selectTaskInspector = useCallback((operationId: string | null) => {
     setTaskInspectorId(operationId);
@@ -185,7 +163,6 @@ export function useAgentTasks({ projectId }: UseAgentTasksOptions) {
     taskInspectorLoading,
     activeTask,
     activityTask,
-    upsertTask,
     recordStartedTask,
     presentTask,
     selectTaskInspector,

@@ -351,16 +351,73 @@ def test_branch_watermarks_fence_revisions_without_replaying(manifest, tmp_path,
     assert client.get(base, params=params).json()["revision"] == synced.json()["head"]["revision"]
 
 
-def test_branch_reads_reuse_the_shared_engine_main_prefix(manifest, tmp_path, monkeypatch):
+def _remote_display_workspace(app, main):
+    from rcp.transport import SSHStateWorkspace
+
+    workspace = SSHStateWorkspace(main.history.root, "research.example", "/srv/project")
+    workspace._generations.copy(main.history.root)
+    app.state.catalog._display_workspaces[main.history.project_id] = workspace
+    return workspace
+
+
+def test_remote_raw_branch_history_does_not_refresh(manifest, tmp_path, monkeypatch):
+    from tests.test_branch_history import _branch_patch
+
+    app, main, episode, root = _app_branch(manifest, tmp_path)
+    branch = main.for_graph_target(episode.graph_target)
+    patch, _ = branch.history.append(
+        _branch_patch("ev/branch").model_copy(update={"source_operation_id": root.operation_id})
+    )
+    workspace = _remote_display_workspace(app, main)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("display reads must not refresh canonical state")
+
+    monkeypatch.setattr(workspace, "refresh_if_stale", forbidden)
+    response = signed_in_client(app).get(
+        f"/api/projects/{episode.project_id}/history", params={"branch_id": episode.episode_id}
+    )
+    assert response.status_code == 200, response.text
+    assert [row["revision"] for row in response.json()] == [patch.revision]
+
+
+@pytest.mark.parametrize("warm_engine", [False, True])
+def test_service_construction_does_not_wait_for_snapshot_lock(manifest, tmp_path, warm_engine):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from rcp.history import HistoryManager
+    from rcp.service import ProjectService
+
+    app, main, episode, _root = _app_branch(manifest, tmp_path)
+    history = HistoryManager(
+        manifest, write_authority=main.history.write_authority, project_id=episode.project_id
+    )
+    if warm_engine:
+        _ = history.history_engine
+    with ThreadPoolExecutor(max_workers=1) as pool, history.workspace.snapshot_lock:
+        future = pool.submit(
+            ProjectService, manifest, history, main.paper, data_dir=app.state.catalog.data_dir
+        )
+        service = future.result(timeout=2)
+    assert service.history.history_engine.store is not None
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_branch_reads_reuse_the_shared_engine_main_prefix(manifest, tmp_path, monkeypatch, remote):
     from rcp.core import materialize
     from rcp.core.transition_models import GraphTargetRef
     from rcp.history.queries import HeadSpec
 
     app, main, episode, _root = _app_branch(manifest, tmp_path)
-    engine = main.history_engine
-    main_head = engine.resolve(HeadSpec(revision="head"), default_target=GraphTargetRef())
-    assert engine.state_at(main_head).nodes[QUESTION].id == QUESTION
-    main_patches = {step.patch.model_dump_json() for step in engine.steps(main_head)}
+    if remote:
+        _remote_display_workspace(app, main)
+        main = app.state.catalog.open_display(episode.project_id)
+    with main.history.read_view() as reader:
+        engine = reader.history_engine
+        assert engine.store is main.history_engine.store
+        main_head = engine.resolve(HeadSpec(revision="head"), default_target=GraphTargetRef())
+        assert engine.state_at(main_head).nodes[QUESTION].id == QUESTION
+        main_patches = {step.patch.model_dump_json() for step in engine.steps(main_head)}
     assert main_patches
     apply_patch = materialize._apply_patch
 
@@ -379,4 +436,5 @@ def test_branch_reads_reuse_the_shared_engine_main_prefix(manifest, tmp_path, mo
             response = client.get(base + endpoint, params=params)
             assert response.status_code == 200, response.text
     branch_service = main.for_graph_target(episode.graph_target, initialize=False)
-    assert branch_service.history_engine is engine
+    with branch_service.history.read_view() as branch_reader:
+        assert branch_reader.history_engine is engine

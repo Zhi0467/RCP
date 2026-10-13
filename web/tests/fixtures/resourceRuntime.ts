@@ -9,13 +9,29 @@ export const runtime = {
   scheduler: new RefreshScheduler({
     store,
     clientId: "fixture",
-    openProjects: () => [],
+    openProjects: () =>
+      [...store.awaitingWatermark()].map((projectId) => ({ projectId, currentRef: "main" })),
     activeProjectId: () => null,
     onLostAccess: () => {},
-    send: async () => ({ epoch: "fixture", as_of: "", projects: [], unavailable: [] }),
+    send: async (request) => ({
+      epoch: "fixture",
+      as_of: new Date().toISOString(),
+      unavailable: [],
+      projects: request.open.map((project) => ({
+        requested_id: project.project_id,
+        project_id: project.project_id,
+        resources: project.resources.map((resource) => ({
+          ...resource,
+          version: "fixture",
+          valid_until: null,
+        })),
+        sync: { last_completed_at: null, status: "local", error: null },
+      })),
+    }),
   }),
 };
 
+runtime.scheduler.start();
 bindArtifactResourceStore(store);
 
 export function ResourceRuntime({ children }: { children: ReactNode }) {
