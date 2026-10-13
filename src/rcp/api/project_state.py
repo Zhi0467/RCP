@@ -323,7 +323,14 @@ async def cached_project_revision(
         branch = await asyncio.to_thread(
             _branch_revision, project_id, branch_id, project_display_cache, catalog, store
         )
-        return {**branch, "steer_epoch": background_tasks.steer_epoch(project_id)}
+        return {
+            **branch,
+            # Tasks are project-wide, so a branch view watches the same signal.
+            "task_status_signal": await asyncio.to_thread(
+                store.agent_task_status_signal, project_id
+            ),
+            "steer_epoch": background_tasks.steer_epoch(project_id),
+        }
     snapshot = await asyncio.to_thread(
         project_display_cache.cached_project_snapshot,
         project_id,
