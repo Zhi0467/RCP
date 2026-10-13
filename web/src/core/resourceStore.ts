@@ -320,6 +320,9 @@ export class ResourceStore {
       state.committed = undefined;
       state.observed = undefined;
       state.owed = true;
+      // A reachable new epoch ends any backoff earned against the old one.
+      state.failures = 0;
+      state.retryAt = 0;
       state.view = null;
     }
     this.notify();

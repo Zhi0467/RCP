@@ -181,6 +181,17 @@ test("a new epoch drops in-flight reads and rereads everything", async () => {
   assert.equal(store.view(id).value, "after");
 });
 
+test("a new epoch ends a resource's read backoff", async () => {
+  const store = new ResourceStore();
+  const { reads, profile } = manualProfile("graph");
+  store.register("tab", profile);
+  store.observeEpoch("e1");
+  reads[0].reject(new Error("offline"));
+  await settle();
+  store.observeEpoch("e2");
+  assert.equal(reads.length, 2);
+});
+
 test("hidden projects use one background slot", async () => {
   const store = new ResourceStore();
   store.setActiveProject("active");
