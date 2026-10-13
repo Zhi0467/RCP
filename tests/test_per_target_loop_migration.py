@@ -100,7 +100,7 @@ def test_per_target_upgrade_rehearses_and_preserves_live_history(tmp_path: Path)
     readonly = AppStore.open_read_only_snapshot(path)
     assert readonly.check_storage_schema_migrations() == (
         43,
-        49,
+        50,
         (
             "per_target_experiment_loops_v1",
             "client_requests_v1",
@@ -108,6 +108,7 @@ def test_per_target_upgrade_rehearses_and_preserves_live_history(tmp_path: Path)
             "branch_names_v1",
             "graph_seen_heads_v1",
             "resource_watermarks_v1",
+            "research_view_pins_v1",
         ),
     )
     readonly.close()
