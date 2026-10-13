@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { chromium } from "playwright";
 import { createServer } from "vite";
-import { timelineFixture } from "./fixtures/timeline.mjs";
+import { mockEpisodeReads, timelineFixture } from "./fixtures/timeline.mjs";
 
 test("reopening an indexed Experiment restores selection when its exact hash is unchanged", async () => {
   const server = await createServer({
@@ -18,6 +18,7 @@ test("reopening an indexed Experiment restores selection when its exact hash is 
     assert.ok(address && typeof address === "object");
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
+    await mockEpisodeReads(page);
     const exactHash =
       "#/projects/project-one?view=runs&experiment=experiment%2Fbranch-child&episode=child-experiment-episode&target=branch&branch=auto-research-parent&parent=auto-research-parent";
     // The parent card's Timeline is the only projection that links to the child;

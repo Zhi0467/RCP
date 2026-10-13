@@ -14,3 +14,13 @@ export function timelineFixture(episode_id, mode = "auto_research", overrides = 
     ...overrides,
   };
 }
+
+/** The episode resource reads its row and messages beside its timeline. */
+export async function mockEpisodeReads(page, episodes = []) {
+  await page.route(/\/api\/projects\/[^/]+\/episodes\?episode_id=/, (route) =>
+    route.fulfill({ json: episodes }),
+  );
+  await page.route(/\/api\/projects\/[^/]+\/episodes\/[^/]+\/messages$/, (route) =>
+    route.request().method() === "GET" ? route.fulfill({ json: [] }) : route.fallback(),
+  );
+}

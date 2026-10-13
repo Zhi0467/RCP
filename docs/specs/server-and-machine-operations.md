@@ -87,7 +87,8 @@ The lifespan coordinator unions membership-filtered open sets under independent
 60-second leases and captures each remote workspace every ten seconds. Tab
 activation bypasses cadence and coalesces one follow-up. Shutdown drains workers.
 Changed/deleted paths advance graph, branch, chat, Paper and Settings tokens;
-unchanged captures update health only. Local state uses direct reads/counters.
+unchanged captures update health only, which graph tokens fold in as
+reachability. Local state uses direct reads/counters.
 
 Capture and authoritative publication share sequencing. Writes retain canonical
 transactions. Retry/Resume/chat preparation pins display inputs and resolves

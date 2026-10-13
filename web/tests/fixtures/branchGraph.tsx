@@ -1,3 +1,4 @@
+import { ResourceRuntime } from "./resourceRuntime";
 import { useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { DagView } from "../../src/graph/GraphViews";
@@ -264,4 +265,8 @@ function Fixture() {
     </main>
   );
 }
-createRoot(document.getElementById("root")!).render(<Fixture />);
+createRoot(document.getElementById("root")!).render(
+  <ResourceRuntime>
+    <Fixture />
+  </ResourceRuntime>,
+);

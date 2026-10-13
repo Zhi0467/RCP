@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { activateProject, ResourceRuntime } from "./resourceRuntime";
+import { useLayoutEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { useTheme } from "../../src/ui/useTheme";
 import { ProjectSettings } from "../../src/projects/ProjectSettings";
@@ -98,6 +99,7 @@ function Fixture() {
   useTheme();
   const [project, setProject] = useState(() => projectFor("alpha"));
   const [visible, setVisible] = useState(true);
+  useLayoutEffect(() => activateProject(project.id), [project.id]);
   return (
     <main>
       <header>
@@ -131,4 +133,8 @@ function Fixture() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(<Fixture />);
+createRoot(document.getElementById("root")!).render(
+  <ResourceRuntime>
+    <Fixture />
+  </ResourceRuntime>,
+);

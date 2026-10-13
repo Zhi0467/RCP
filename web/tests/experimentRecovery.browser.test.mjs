@@ -5,6 +5,7 @@ import { createServer } from "vite";
 import { timelineFixture } from "./fixtures/timeline.mjs";
 import { mockEpisodeArtifacts } from "./fixtures/episodeArtifacts.mjs";
 import { withTaskAnswers } from "./taskAnswers.mjs";
+import { watermarkResponse } from "./watermarks.mjs";
 
 let server;
 let browser;
@@ -39,13 +40,14 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
       const submissions = [];
       page.on("requestfailed", (request) => {
         // The Terminals tab's projections are abandoned when the view unmounts
-        // mid-flight, and a Runs refresh supersedes an in-flight artifact list.
-        // A deliberate abort is cleanup, not a failure.
+        // mid-flight, and a Runs refresh supersedes an in-flight artifact list
+        // or question read. A deliberate abort is cleanup, not a failure.
         const aborted = new URL(request.url()).pathname;
         if (
           (aborted.endsWith("/terminals") ||
             aborted.endsWith("/terminals/repositories") ||
-            aborted.endsWith("/artifacts")) &&
+            aborted.endsWith("/artifacts") ||
+            aborted.endsWith("/questions")) &&
           request.failure()?.errorText === "net::ERR_ABORTED"
         )
           return;
@@ -248,7 +250,12 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
       await page.route("**/api/**", async (route) => {
         const path = new URL(route.request().url()).pathname;
         let json = [];
-        if (path === "/api/health" || path === "/api/health/details")
+        if (path === "/api/resource-watermarks")
+          // Recovery moves the server's counters for every resource it touches.
+          json = watermarkResponse(route.request().postDataJSON(), {
+            version: () => String(recovered),
+          });
+        else if (path === "/api/health" || path === "/api/health/details")
           json = { status: "ok", space_id: "space", space_kind: "personal", instance_id: "test" };
         else if (path === "/api/identity")
           json = {
@@ -330,6 +337,10 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
             "/api/projects/demo/terminals",
             // The graph picker lists the project's refs with the project.
             "/api/projects/demo/graph-refs",
+            // Project navigation and the opened card read their own resources.
+            "/api/projects/demo/paper",
+            "/api/projects/demo/paper/sessions",
+            "/api/projects/demo/episodes/episode/messages",
           ].includes(path)
         )
           unexpectedRequests.push(path);

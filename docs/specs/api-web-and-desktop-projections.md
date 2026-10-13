@@ -14,10 +14,14 @@ demand. Unknown and forbidden ids both appear in `unavailable`; only due project
 receive tokens. Responses carry `epoch`, one `as_of`, per-resource `key`,
 `version`, `valid_until`, and `state`, plus remote sync health.
 
-Three set-based SQLite reads cover authorization/aliases, transactional counters,
-and indexed deadlines. The route never opens a project, replays history,
-completes a snapshot, or waits for snapshot locks or SSH. File families use
-published catalog generations; terminal runtime uses its owner's generation.
+Set-based SQLite reads cover authorization/aliases, transactional counters,
+indexed deadlines, and, when progress is watched, which projects have a running
+task. The route never opens a project, replays history, completes a snapshot, or
+waits for snapshot locks or SSH. File families use published catalog
+generations; terminal runtime uses its owner's generation. Graph tokens fold in
+whether sync health reports an error, because the graph payload carries
+canonical reachability. While a task runs, `tasks.progress` and task details
+take a clock tick, because elapsed time and progress are computed from the clock.
 Entity counters are project-scoped; chat read/pin counters are member-scoped.
 
 `tasks.status` and chat, episode, and terminal inventories exclude progress;

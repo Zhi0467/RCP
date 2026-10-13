@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createServer } from "vite";
-import { timelineFixture } from "./fixtures/timeline.mjs";
+import { mockEpisodeReads, timelineFixture } from "./fixtures/timeline.mjs";
 import { mockEpisodeArtifacts } from "./fixtures/episodeArtifacts.mjs";
 import { chromium } from "playwright";
 import { rootTask, episode, withGraphBranch } from "./fixtures/campaigns.mjs";
@@ -42,6 +42,7 @@ test("a stopped ineligible branch submits a deliberate merge and shows the serve
     const reason = "Branch writers must settle before merging: auto_research paused-turn (paused).";
     let polledEpisode = stopped;
     await mockEpisodeArtifacts(page);
+    await mockEpisodeReads(page);
     await page.route("**/api/projects/*/episodes/*/questions", (route) =>
       route.fulfill({ json: [] }),
     );
@@ -155,6 +156,7 @@ test("a served exhausted card settles from wrapping up to a visible report failu
     };
     let polls = 0;
     await mockEpisodeArtifacts(page);
+    await mockEpisodeReads(page);
     await page.route("**/api/projects/*/episodes/*/questions", (route) =>
       route.fulfill({ json: [] }),
     );
@@ -396,6 +398,7 @@ test("an envelope loads full text, reports fetch failure, and closes accessibly"
       links: {},
     });
     await mockEpisodeArtifacts(page);
+    await mockEpisodeReads(page);
     await page.route("**/api/projects/*/episodes/*/questions", (route) =>
       route.fulfill({ json: [] }),
     );
@@ -528,6 +531,7 @@ test("ended orchestrator message sends the edited budget and retains its id afte
       message_requires_continuation: true,
     };
     await mockEpisodeArtifacts(page);
+    await mockEpisodeReads(page);
     await page.route("**/api/projects/*/episodes/*/questions", (route) =>
       route.fulfill({ json: [] }),
     );
@@ -537,6 +541,7 @@ test("ended orchestrator message sends the edited budget and retains its id afte
     await page.route("**/fixture/episode", (route) => route.fulfill({ json: ended }));
     const requests = [];
     await page.route("**/api/projects/**/messages", async (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
       requests.push(route.request().postDataJSON());
       await route.fulfill(
         requests.length === 1

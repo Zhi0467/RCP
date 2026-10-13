@@ -356,3 +356,19 @@ def _insert_running_task(connection, project_id, at):
         "created_at, updated_at, status_message) VALUES(?, ?, 'node_chat', 'running', '{}', ?, ?, '')",
         (str(uuid.uuid4()), project_id, at.isoformat(), at.isoformat()),
     )
+
+
+def test_graph_token_moves_with_canonical_reachability(endpoint, monkeypatch):
+    keys = [{"name": "graph", "ref": "main"}, {"name": "paper"}]
+    healthy = beat(endpoint, keys)["projects"][0]["resources"]
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            endpoint.coordinator,
+            "sync_health",
+            lambda project_id: {"last_completed_at": None, "status": "error", "error": "offline"},
+        )
+        offline = beat(endpoint, keys)["projects"][0]["resources"]
+    # The snapshot embeds reachability; the Paper read does not.
+    assert offline[0]["version"] != healthy[0]["version"]
+    assert offline[1]["version"] == healthy[1]["version"]
+    assert beat(endpoint, keys)["projects"][0]["resources"] == healthy
