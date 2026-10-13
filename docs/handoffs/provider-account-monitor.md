@@ -1,7 +1,7 @@
 # Provider account monitor
 
 Status: design, not started. Nothing below is implemented. Implementation waits
-for an explicit start.
+for an explicit start and for the open decisions at the end.
 
 ## Problem
 
@@ -17,60 +17,102 @@ twice before the limit reset, and stopped.
 - `ProviderAccounts` (`src/rcp/agents/provider_accounts.py`) owns one durable
   login state per `(provider, host)` account: `signed_in` or `signed_out`, with
   a generation.
-- While an account is `signed_out`, the shared admission fence parks paid work
-  instead of failing it: queued tasks stay queued, Auto-research recoveries are
-  created `blocked`, and mail, notices, and watcher completions stay pending.
+- `BackgroundAgentTasks.admit_provider_task` is the shared admission fence.
+  While an account is `signed_out` it refuses new paid work. Queued tasks stay
+  queued, Auto-research recoveries are created `blocked`, and mail, notices, and
+  watcher completions stay pending.
 - `ProviderSignInRunner.verify` runs the profile's `login_probe_command`, one
-  minimal authenticated request on the execution host. Success marks the account
-  `signed_in` and calls `resume_account`, wired in `api/app.py` to
-  `resume_provider_account` (`src/rcp/runs/provider_login.py`), which releases
-  the parked work once through the existing recovery owners.
+  minimal real request on the execution host. Success marks the account
+  `signed_in` and calls `resume_provider_account`
+  (`src/rcp/runs/provider_login.py`), which releases parked work once.
+- The browser grant is the model for a per-launch toggle: `browser_requested`
+  on the episode row, `chat_browser_preferences` per chat, and one shared
+  `web/src/core/BrowserControls.tsx` at every entry point.
 
 ## Design
 
-Extend that account owner rather than add a parallel one.
+1. **One state owner.** `ProviderAccounts` gains a `limited` state beside
+   `signed_in` and `signed_out`. Login validity and capacity stay distinct.
+2. **Passive observation.** A turn that fails with a limit marks its account
+   `limited`. No new prose parsing beyond the profile's classification.
+3. **Park through the existing fence.** While `limited`, `admit_provider_task`
+   parks paid work as for `signed_out`.
+4. **Probe only while work waits.** One loop in the backend process probes a
+   `limited` account with `login_probe_command`, only while opted-in work is
+   parked. Interval 5, 10, 20, then 30 minutes, with jitter and no overlapping
+   probes, in `limits.py`. A probe is a real model request.
+5. **Release through the owners.** A successful probe marks the account
+   `signed_in` and releases parked work through each work kind's own recovery
+   owner. Parking spends no recovery attempt. A probe never resets an exhausted
+   or repeat-blocked ladder.
+6. **Auto-recover is a launch option, and launch options become one object.**
+   Today each per-launch runtime choice has its own path: the browser grant
+   (`browser_requested` column, `chat_browser_preferences`, `BrowserToggle`)
+   and the code worktree (a `codeWorktree` checkbox feeding `EpisodeIsolation`).
+   Auto-recover would be a third. Instead, introduce one `LaunchOptions` model
+   (browser, worktree, auto-recover) with one storage owner on the episode and
+   the chat, one field on every launch request, and one web control used at
+   Experiment and Auto-research start, Agents, and the chat composer. Browser
+   and worktree move onto it first, with no behavior change; auto-recover is
+   then a new field, not a new path. Each option's enforcement stays with its
+   owner (browser runtime, isolation, recovery); only the choice is shared.
+   Children, reports, and wakes inherit their episode's options. Auto-recover
+   off means the work stays parked across account recovery and backend restart
+   until a human acts.
+7. **Projection.** The provider card shows the account state and a manual
+   Verify. It never holds the recovery switch: account health is shared,
+   permission to spend is not. Usage numbers are out of scope.
 
-1. **One state owner per account.** `ProviderAccounts` stays the single owner.
-   Add a `limited` state beside `signed_in` and `signed_out`, with the same
-   generation fence.
-2. **Passive observation first.** A turn that fails with `session_limit` marks
-   its account `limited`, as `provider_auth` marks it `signed_out` today. No
-   provider prose is parsed beyond the existing classification.
-3. **Park the same way.** While `limited`, the existing admission fence parks
-   paid work for that account exactly as for `signed_out`.
-4. **Active probe only while limited.** One background loop in the backend
-   process probes each `limited` account with the existing
-   `login_probe_command` on a bounded interval (in `limits.py`). One probe per
-   account, never per task.
-5. **Release through the existing path.** A successful probe marks the account
-   `signed_in` and calls the same `resume_account`, so every parked task,
-   recovery, mail batch, and watcher completion is released once, idempotently.
-6. **Opt-in auto-recover.** With auto-recover off, a successful probe only
-   updates the account state the UI shows; parked work waits for the human.
-   With it on, release runs automatically.
-7. **Projection.** The provider card shows the account state from the same
-   owner. Usage numbers are out of scope for now.
+The monitor never calls RCP's HTTP API. It runs in the backend process, reaches
+the provider only through its CLI on the execution host, and releases work
+in process.
 
-The monitor never calls RCP's HTTP API. It lives in the backend process, talks
-to the provider only by running its CLI on the execution host, and releases work
-through in-process recovery owners. The HTTP routes remain callers of the same
-owner (Verify, sign-in, sign-out).
+## Gaps the implementation must close (from review)
+
+- Release covers queued tasks and `provider_auth` recoveries only. It misses
+  failed ordinary chat and Agents turns, Experiment turns failed by a limit,
+  repeat-blocked Auto-research recoveries, failed workers and child Work (use
+  their owner's route), and reports (their loop spends all three attempts on a
+  limit).
+- `AdmissionRefused` is a `ValueError`. Child admission reconciliation and child
+  Experiment kickoff treat that as permanent and cancel. Parking must not cancel.
+- Recovered remote failures settle through `fail_agent_task` without a failure
+  kind, so a limit there is never observed.
+- "Off" is not enforced today: `verify()` reconciles, later lifecycle passes
+  release every unrecovered `signed_in` generation, and polling retries pending
+  recoveries once admission succeeds. The work-level flag must gate all three.
+- `verify` overwrites the generation unconditionally. A probe must use a
+  captured availability revision and a conditional update, so a stale probe
+  never clears a newer limit or a sign-out.
+- `docs/specs/providers-and-containment.md` says limit scope is not modeled and
+  repeated failure stops automatic attempts. Update it in the same change.
 
 ## Open decisions
 
-- Probe interval and whether it backs off.
-- Where auto-recover lives in the UI. Candidates: one switch on the provider
-  account card (an account fact, set once), or a per-launch choice at the
-  entrypoints that spend budget (Experiment and Auto-research start, Agents,
-  the chat composer).
-- Whether a turn that succeeds while an account is `limited` (another task got
-  through) clears the state without a probe.
+- **Launch options scope.** The worktree option allocates a resource (a branch
+  and a directory, kept or removed at Merge); browser and auto-recover are
+  plain consents. Unify the choice and its storage for all three, or keep the
+  worktree on `EpisodeIsolation` and unify only the two consents.
+
+- **Limit scope.** Review found `session_limit` groups signatures without
+  knowing their scope. Some may be per session or per context, not per account.
+  Parking the whole account on any of them could stall unrelated work, and a
+  passing probe does not prove a big saved session can continue. Options: park
+  the account on every limit (simple, matches the umbrella term), or let each
+  profile mark which signatures are account-wide and keep the rest scoped to
+  the affected work.
+- **Shared accounts.** `(provider, host)` is an execution endpoint, not a
+  billing account. One subscription on two hosts gets two rows and two probes.
+  Accept that, or add an account identity to the profile.
+- **Success while limited.** Recommendation: a turn that succeeds does not clear
+  `limited`. It may predate the limit or use another model.
 
 ## Checks when implemented
 
-- Unit: a `session_limit` failure marks the account `limited` and parks new paid
-  admission; a successful probe releases each kind of parked work once.
-- Integration: a stubbed provider that fails with a limit, then succeeds; the
-  episode continues on its saved session without a human Retry when
-  auto-recover is on, and waits when it is off.
+- Unit: a limit marks the account `limited` and parks new paid admission; a
+  successful probe releases each kind of parked work once; a stale probe does
+  not clear a newer limit.
+- Integration: a stubbed provider fails with a limit, then succeeds. The episode
+  continues on its saved session without a human Retry when auto-recover is on,
+  and stays parked across a backend restart when it is off.
 - Live: a real Claude usage limit on a disposable team server.

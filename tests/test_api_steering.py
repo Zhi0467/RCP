@@ -602,8 +602,11 @@ time.sleep(120)
         client.close()
 
 
-@pytest.mark.parametrize("delivery", ["delivered", "refused"])
-def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(running_chat, delivery):
+@pytest.mark.parametrize("delivery", ["delivered", "refused", "unrecorded"])
+def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(
+    running_chat, monkeypatch, delivery
+):
+    from rcp.runs import steering
     from rcp.storage.question_models import QuestionOrigin
 
     run = running_chat
@@ -644,6 +647,12 @@ def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(running_cha
     )
     if delivery == "refused":
         run.defer().set_result(ProviderSteerReceipt("refused", "Turn ended."))
+    if delivery == "unrecorded":
+        # The provider took the answer, then the transcript write failed.
+        def fail(*_args, **_kwargs):
+            raise OSError("transcript unavailable")
+
+        monkeypatch.setattr(steering, "_record_steer", fail)
 
     response = run.client.post(
         f"/api/projects/{run.project_id}/questions/{question.question_id}/answer",
@@ -652,6 +661,7 @@ def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(running_cha
 
     assert response.status_code == 200, response.text
     assert [(turn, text) for turn, _id, text in run.receipts] == [("owned-turn", "Use route A")]
+    monkeypatch.undo()
     run.finish()
     # Settlement records receipt or claims the follow-up just after the turn settles.
     settled = wait_until(
@@ -665,17 +675,29 @@ def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(running_cha
         timeout=TASK_SETTLE_TIMEOUT,
         detail="the answer was neither received nor given a follow-up",
     )
-    answer = next(
-        item
-        for item in run.app.state.service.chat_transcript(run.chat_id).messages
-        if item.text == "Use route A"
+    answers = wait_until(
+        lambda: [
+            item
+            for item in run.app.state.service.chat_transcript(run.chat_id).messages
+            if item.text == "Use route A"
+        ],
+        timeout=TASK_SETTLE_TIMEOUT,
+        detail="the answer never reached the transcript",
     )
+    assert len(answers) == 1
+    answer = answers[0]
     if delivery == "delivered":
         assert (settled.client_receipt_operation_id, settled.followup_operation_id) == (
             run.operation_id,
             None,
         )
         assert (answer.operation_id, answer.steering.status) == (run.operation_id, "delivered")
+    elif delivery == "unrecorded":
+        # Never a paid second delivery; the chat still shows the answer.
+        assert (settled.client_receipt_operation_id, settled.followup_operation_id) == (
+            run.operation_id,
+            None,
+        )
     else:
         # The chat shows the answer once, on the turn that actually receives it.
         assert settled.client_receipt_revision is None
