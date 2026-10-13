@@ -816,14 +816,6 @@ function MemberApp({
   const pinBranchId = graphTarget.kind === "branch" ? graphTarget.branch_id : null;
   const pinScope = JSON.stringify([projectId, pinBranchId]);
   const [pinSelection, setPinSelection] = useState<{ scope: string; id: string } | null>(null);
-  const pinsProfile =
-    backendSessionReady && projectId ? researchViewsProfile(projectId, pinBranchId) : null;
-  const pinsResource = useResource("research-view-pins", pinsProfile);
-  const pins = pinsResource.value?.pins ?? [];
-  const activePin =
-    pinSelection?.scope === pinScope
-      ? pins.find((pin) => pin.artifact_id === pinSelection.id)
-      : undefined;
   const graphView = useResource(
     `${projectId}:graph-view`,
     backendSessionReady && projectId ? graphProfile(projectId, graphTarget) : null,
@@ -967,6 +959,17 @@ function MemberApp({
     loading,
     getActiveProjectId,
   });
+  // Pins are fetched only where their tabs are shown.
+  const pinsProfile =
+    backendSessionReady && projectId && (view === "scientific" || view === "dag")
+      ? researchViewsProfile(projectId, pinBranchId)
+      : null;
+  const pinsResource = useResource("research-view-pins", pinsProfile);
+  const pins = pinsResource.value?.pins ?? [];
+  const activePin =
+    pinSelection?.scope === pinScope
+      ? pins.find((pin) => pin.artifact_id === pinSelection.id)
+      : undefined;
   const tabRefs = useRef(new Map<string, string>());
   const currentRef = graphTarget.kind === "main" ? "main" : `branch:${graphTarget.branch_id}`;
   if (projectId) tabRefs.current.set(projectId, currentRef);

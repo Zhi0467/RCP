@@ -100,3 +100,7 @@ the exact boundary source from the preceding immutable fixture.
 `pre-resource-versions-v22-940a99c` retains the last shape before transactional
 resource watermarks (storage migration 49), ending at migration 48. It is built
 by the exact boundary source from the preceding immutable fixture.
+
+`pre-research-view-pins-v23-0b85be8` retains the last shape before personal
+Research view pins (storage migration 50), ending at migration 49. It is built
+by the exact boundary source from the preceding immutable fixture.

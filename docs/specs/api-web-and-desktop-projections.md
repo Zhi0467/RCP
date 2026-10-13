@@ -1682,7 +1682,7 @@ graph target are checked for each read. The returned `rcp-live-data` envelope
 contains ordered snapshots, completeness, final/static state, a diagnostic when
 applicable, and the refresh interval. Saved final bytes are authoritative for
 that version. Invalid declarations expose their stored reason as static data.
-A `graph_head` query parameter names the head of the shell's cached complete
+A `head` query parameter names the head of the shell's cached complete
 graph; a matching head returns that snapshot as unchanged after rechecking
 bindings.
 

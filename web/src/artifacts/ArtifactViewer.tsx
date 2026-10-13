@@ -88,6 +88,7 @@ export function ArtifactViewer() {
     setEditing(false);
     setUndoing(false);
     setPinning(false);
+    setPinFailed(false);
     if (target) setPlacement((current) => collapseViewer(current, false));
   }, [target]);
 
@@ -260,7 +261,9 @@ export function ArtifactViewer() {
             aria-label="Pin in Research"
             title="Pin in Research"
             aria-pressed={state.pinned}
-            style={pinFailed ? { borderColor: "var(--danger, #b42318)" } : undefined}
+            style={
+              pinFailed && !state.pinned ? { borderColor: "var(--danger, #b42318)" } : undefined
+            }
             disabled={pinning || state.pinned}
             onClick={() => void pin()}
           >

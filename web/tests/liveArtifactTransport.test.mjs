@@ -65,20 +65,20 @@ const message = (graph) => ({
 test("only complete graph caches advance heads; errors retain polling and stale mark until recovery", async () => {
   const s = shell();
   await s.refresh(message(full("one")));
-  assert.equal(s.requests[0].searchParams.has("head"), false);
+  assert.equal(s.requests[0].includes("head="), false);
   await s.refresh(message({ kind: "graph", error: "graph_too_large" }));
   assert.equal(s.frame.dataset.graphStale, "true");
   assert.equal(vm.runInContext("liveFinished", s.context), false);
-  assert.equal(s.requests.at(-1).searchParams.get("head"), "one");
+  assert.equal(s.requests.at(-1), "/live?head=one");
   await s.refresh(message({ kind: "graph", head: "one", unchanged: true }));
   assert.equal(s.delivered.at(-1).snapshots[0].nodes[0].id, "node");
   assert.equal(s.frame.dataset.graphStale, "false");
   await s.refresh(message(full("two")));
   await s.refresh(message({ kind: "graph", error: "message_too_large" }));
-  assert.equal(s.requests.at(-1).searchParams.get("head"), "two");
+  assert.equal(s.requests.at(-1), "/live?head=two");
   const fresh = shell();
   await fresh.refresh(message({ kind: "graph", head: "two", unchanged: true }));
-  assert.equal(fresh.requests[0].searchParams.has("head"), false);
+  assert.equal(fresh.requests[0].includes("head="), false);
   assert.equal(fresh.delivered.length, 0);
 });
 

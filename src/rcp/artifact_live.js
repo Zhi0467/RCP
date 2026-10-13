@@ -19,8 +19,9 @@ async function refreshLive() {
   if (document.hidden || liveBusy || !liveReady || liveFinished) return;
   liveBusy = true;
   try {
-    const url = new URL(liveUrl, window.location.href);
-    if (graphCache) url.searchParams.set("head", graphCache.head);
+    const url = graphCache
+      ? `${liveUrl}${liveUrl.includes("?") ? "&" : "?"}head=${encodeURIComponent(graphCache.head)}`
+      : liveUrl;
     const response = await fetch(url, { credentials: "same-origin", cache: "no-store" });
     if (!response.ok) throw new Error("Live data unavailable");
     const value = await response.json();
@@ -33,16 +34,23 @@ async function refreshLive() {
       } else if (graph.unchanged === true) {
         if (!graphCache || graph.head !== graphCache.head)
           throw new Error("Graph cache unavailable");
-        value.snapshots = value.snapshots.map((snapshot) => snapshot === graph ? graphCache : snapshot);
+        value.snapshots = value.snapshots.map((snapshot) =>
+          snapshot === graph ? graphCache : snapshot,
+        );
         markGraphStale(false);
-      } else if (typeof graph.head === "string" && Array.isArray(graph.nodes) && Array.isArray(graph.edges)) {
+      } else if (
+        typeof graph.head === "string" &&
+        Array.isArray(graph.nodes) &&
+        Array.isArray(graph.edges)
+      ) {
         graphCache = graph;
         graphIds = new Set(graph.nodes.map((node) => node.id));
         markGraphStale(false);
       } else throw new Error("Invalid graph snapshot");
     }
     lastLive = value.static ? null : value;
-    liveFinished = value.static === true || (!graph && value.final === true && value.complete === true);
+    liveFinished =
+      value.static === true || (!graph && value.final === true && value.complete === true);
     liveDelay = value.refresh_seconds * 1000;
     if (liveNotice)
       liveNotice.textContent = value.reason || (value.complete ? "" : "Live data incomplete");
@@ -58,10 +66,16 @@ async function refreshLive() {
 window.addEventListener("message", (event) => {
   if (event.source !== liveFrame.contentWindow) return;
   const value = event.data;
-  if (value?.type === "rcp-open-node" && value.version === 1 &&
-      typeof value.id === "string" && graphIds.has(value.id)) {
-    window.parent.postMessage({type: "rcp-open-node", version: 1,
-      artifact_id: liveArtifactId, node_id: value.id}, window.location.origin);
+  if (
+    value?.type === "rcp-open-node" &&
+    value.version === 1 &&
+    typeof value.id === "string" &&
+    graphIds.has(value.id)
+  ) {
+    window.parent.postMessage(
+      { type: "rcp-open-node", version: 1, artifact_id: liveArtifactId, node_id: value.id },
+      window.location.origin,
+    );
     return;
   }
   if (value?.type !== "rcp-live-ready" || value.version !== 1) return;
