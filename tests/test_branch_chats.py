@@ -493,7 +493,7 @@ def test_stop_persists_exact_target_before_display_failure(manifest, tmp_path, m
     def unavailable(*_args, **_kwargs):
         raise HTTPException(status_code=503, detail="Display generation unavailable")
 
-    monkeypatch.setattr(experiments, "get_project_service", unavailable)
+    monkeypatch.setattr(experiments, "get_project_writer", unavailable)
     # The accepted Stop is answered even when the display read after it fails.
     experiments.stop_bound_experiment_episode(
         project_id, episode, store=store, catalog=app.state.catalog
