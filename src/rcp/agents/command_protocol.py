@@ -141,7 +141,7 @@ class GraphDiffArguments(BaseModel):
     from_head: str | None = Field(default=None, alias="from")
     to_head: str | None = Field(default=None, alias="to")
     branch_changes: str | None = Field(default=None, pattern=r"^[A-Za-z0-9._-]{1,200}$")
-    ids: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
+    ids: list[Annotated[str, Field(min_length=1)]] = Field(
         default_factory=list, max_length=GRAPH_HISTORY_COMMAND_IDS_MAX_COUNT
     )
     cursor: str | None = Field(
@@ -168,7 +168,7 @@ class GraphDiffArguments(BaseModel):
 class GraphLogArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    id: str = Field(min_length=1, max_length=200)
+    id: str = Field(min_length=1)
     at: str = "@head"
     cursor: str | None = Field(
         default=None, min_length=1, max_length=GRAPH_HISTORY_COMMAND_CURSOR_MAX_LENGTH

@@ -513,13 +513,13 @@ def build_semantic_delta(
 
 
 def branch_human_review_changes(
-    patches: Sequence[StepRecord | Patch], base: GraphState, branch: GraphState
+    patches: Sequence[StepRecord], base: GraphState, branch: GraphState
 ) -> list[BranchHumanReviewChange]:
     """Retain exact human initiating writes, never generated actions or summary claims."""
 
     latest: dict[tuple[str, str], BranchHumanReviewChange] = {}
     for step in patches:
-        patch = step.patch if isinstance(step, StepRecord) else step
+        patch = step.patch
         if patch.admission != "accepted":
             continue
         if patch.author != "human":

@@ -16,7 +16,6 @@ from rcp.agents.continuation_prompt import (
     changed_since_master,
     classify,
     compose,
-    graph_head_delta,
     master_key,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
@@ -40,6 +39,7 @@ from rcp.runs.session_master import (
     commit_prepared_graph_observation,
     continuation_session_master,
     prepare_graph_observation,
+    prepared_graph_observation_delta,
     record_inline_prompt,
     record_session_master,
     session_master_label,
@@ -248,23 +248,13 @@ async def stream_coach(
         )
 
         graph_read_scope = GraphReadScope(project_id=paper.project_id, target=GraphTargetRef())
-        staged_head = prepare_graph_observation(
+        prepare_graph_observation(
             execution,
             service,
             owner_id="paper",
             target=graph_read_scope.target,
             revision=service.history.state().revision,
             native_session_id=request.session_id,
-        )
-        seen_head = (
-            execution.store.graph_seen_head(
-                paper.project_id,
-                "paper",
-                request.session_id,
-                graph_read_scope.target,
-            )
-            if execution is not None and request.session_id
-            else None
         )
         history_staged = stage_patch_validation_mailbox(
             local_stage=local_stage,
@@ -346,7 +336,7 @@ async def stream_coach(
                 master=master,
                 delta={
                     **(changed_since_master(master, master_values) or {}),
-                    **graph_head_delta(seen_head, staged_head),
+                    **prepared_graph_observation_delta(execution, request.session_id),
                 },
             )
             recovery_mode = "resume" if resuming else "retry" if retrying else None
