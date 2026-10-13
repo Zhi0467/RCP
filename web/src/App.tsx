@@ -1529,15 +1529,9 @@ function MemberApp({
                   isActiveProject(requestedProjectId) &&
                   sameGraphTarget(requestedTarget, activeGraphTargetRef.current),
               );
-            if (!isActiveProject(requestedProjectId)) {
-              // Left mid-read: the state saved on leaving is older than this list.
-              if (nextTasks)
-                updateInactiveProjectStates(requestedProjectId, (state) => ({
-                  ...state,
-                  tasks: nextTasks,
-                }));
-              return;
-            }
+            // Left mid-read: this list may predate the one saved on leaving, so it is
+            // dropped; the signal stays unrecorded and the background sweep rereads.
+            if (!isActiveProject(requestedProjectId)) return;
             if (nextTasks) {
               replaceTasks(nextTasks, tasksRead);
               // A teammate's turn may have started and finished between heartbeats;
