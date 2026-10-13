@@ -11,7 +11,6 @@ import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -35,7 +34,6 @@ from rcp.core.materialize import (
     MaterializationResult,
     apply_valid_patch,
     finalize_patch_bookkeeping,
-    materialize_patches,
     prepare_patch_bookkeeping,
 )
 from rcp.core.models import (
@@ -46,7 +44,6 @@ from rcp.core.models import (
     Patch,
     ProjectHomeTransfer,
     ProjectIdentity,
-    ReplayFailure,
 )
 from rcp.core.operations import SetProjectTruthScopeOperation, adapt_persisted_patch_document
 from rcp.core.research_md import render_research_md
@@ -55,7 +52,6 @@ from rcp.core.transitions import (
     GraphTransitionManager,
     PreparedTransition,
     TransitionConflict,
-    accepted_transition_head_chain_failure,
     project_transition_projection,
 )
 from rcp.core.validation import ValidationReport, build_validation_context, validate_patch
@@ -364,40 +360,6 @@ def _is_exact_prepared_identity_prefix(
         and patch.producer == "system"
         and patch.ops == []
         and patch.project_identity == identity
-    )
-
-
-def _patch_failure_created_at(path: Path) -> datetime:
-    """Retain useful failure chronology even when the Patch schema cannot load."""
-
-    with suppress(OSError, TypeError, ValueError):
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(raw, dict) and isinstance(raw.get("created_at"), str):
-            created_at = datetime.fromisoformat(raw["created_at"])
-            return created_at if created_at.tzinfo is not None else created_at.replace(tzinfo=UTC)
-    with suppress(OSError):
-        return datetime.fromtimestamp(path.stat().st_mtime, UTC)
-    return datetime.fromtimestamp(0, UTC)
-
-
-def _first_replay_revision(paths: list[Path]) -> int:
-    return int(paths[0].stem) if paths else 0
-
-
-def _first_replay_created_at(
-    paths: list[Path],
-    patches: list[Patch],
-    *,
-    fallback: Path | None = None,
-) -> datetime:
-    if patches:
-        return patches[0].created_at
-    if paths:
-        return _patch_failure_created_at(paths[0])
-    return (
-        _patch_failure_created_at(fallback)
-        if fallback is not None
-        else datetime.fromtimestamp(0, UTC)
     )
 
 
@@ -1510,13 +1472,12 @@ class HistoryManager:
         accepted_patch_observer: AcceptedPatchObserver | None = None,
     ) -> MaterializationResult:
         with self._process_lock:
-            if accepted_patch_observer is None:
-                result = self._replay(pending_patch_paths)
-            else:
-                result = self._replay(
-                    pending_patch_paths,
-                    accepted_patch_observer=accepted_patch_observer,
-                )
+            result = self.history_engine.materialization(
+                self.graph_target,
+                refresh=False,
+                pending_patch_paths=pending_patch_paths,
+                accepted_patch_observer=accepted_patch_observer,
+            )
             if write_outputs and result.state.replay_status == "complete":
                 self.ensure_layout()
                 self._write_materialized_outputs(result)
@@ -1549,7 +1510,7 @@ class HistoryManager:
         required = self._materialized_paths(include_manifest=True)
         if not all((self.root / path).is_file() for path in required):
             return None
-        result = self._replay()
+        result = self.history_engine.materialization(self.graph_target, refresh=False)
         if result.state.project_truth_scope != self.manifest.project.truth_scope:
             return None
         expected_json = {
@@ -1572,111 +1533,6 @@ class HistoryManager:
                 return None
         except (OSError, ValueError):
             return None
-        return result
-
-    def _replay(
-        self,
-        pending_patch_paths: list[Path] | None = None,
-        *,
-        accepted_patch_observer: AcceptedPatchObserver | None = None,
-    ) -> MaterializationResult:
-        pending = pending_patch_paths or []
-        patch_paths = sorted(
-            [*self._patch_paths(), *pending],
-            key=lambda path: int(path.stem),
-        )
-        patches: list[Patch] = []
-        structural_failure: ReplayFailure | None = None
-        for path in patch_paths:
-            try:
-                patches.append(self._decode_persisted_patch(path.read_text(encoding="utf-8")))
-            except OSError as exc:
-                structural_failure = ReplayFailure(
-                    revision=int(path.stem),
-                    created_at=_patch_failure_created_at(path),
-                    code="patch-read-failed",
-                    message=str(exc),
-                )
-                break
-            except ValueError as exc:
-                structural_failure = ReplayFailure(
-                    revision=int(path.stem),
-                    created_at=_patch_failure_created_at(path),
-                    code="patch-schema-invalid",
-                    message=str(exc),
-                )
-                break
-        scope_base_path = self.root / "scope-base.json"
-        scope_failure: ReplayFailure | None = None
-        if scope_base_path.is_file():
-            try:
-                initial_truth_scope = json.loads(scope_base_path.read_text(encoding="utf-8"))[
-                    "truth_scope"
-                ]
-                if not isinstance(initial_truth_scope, list) or not all(
-                    isinstance(alias, str) for alias in initial_truth_scope
-                ):
-                    raise ValueError("truth_scope must be a list of repository aliases")
-            except (OSError, KeyError, TypeError, ValueError) as exc:
-                initial_truth_scope = self.manifest.project.truth_scope
-                scope_failure = ReplayFailure(
-                    revision=_first_replay_revision(patch_paths),
-                    created_at=_first_replay_created_at(
-                        patch_paths,
-                        patches,
-                        fallback=scope_base_path,
-                    ),
-                    code="scope-provenance-invalid",
-                    message=f"Canonical scope provenance {scope_base_path} is invalid: {exc}",
-                )
-        elif patch_paths:
-            initial_truth_scope = self.manifest.project.truth_scope
-            scope_failure = ReplayFailure(
-                revision=_first_replay_revision(patch_paths),
-                created_at=_first_replay_created_at(patch_paths, patches),
-                code="scope-provenance-missing",
-                message=(
-                    f"Canonical scope provenance {scope_base_path} is absent while Patch history "
-                    "exists; replay is refused rather than substituting the current manifest scope."
-                ),
-            )
-        else:
-            initial_truth_scope = self.manifest.project.truth_scope
-        chain_failure = accepted_transition_head_chain_failure(
-            patches,
-            target=self.graph_target,
-            initial_transition_id=None,
-        )
-        chain_prefix = patches
-        if chain_failure is not None:
-            chain_prefix = []
-            for patch in patches:
-                if patch.revision == chain_failure.revision:
-                    break
-                chain_prefix.append(patch)
-        replayable_patches = [] if scope_failure is not None else chain_prefix
-        result = materialize_patches(
-            replayable_patches,
-            context=build_validation_context(
-                self.manifest,
-                GraphState(project_truth_scope=list(initial_truth_scope)),
-                mode="replay",
-            ),
-            accepted_patch_observer=accepted_patch_observer,
-        )
-        structural_or_chain_failure = min(
-            (item for item in (structural_failure, chain_failure) if item is not None),
-            key=lambda item: item.revision,
-            default=None,
-        )
-        failure = scope_failure or structural_or_chain_failure
-        if failure is not None and result.state.replay_status == "complete":
-            result.state = result.state.model_copy(
-                update={
-                    "replay_status": "degraded",
-                    "replay_failure": failure,
-                }
-            )
         return result
 
     def _write_materialized_outputs(self, result: MaterializationResult) -> None:
