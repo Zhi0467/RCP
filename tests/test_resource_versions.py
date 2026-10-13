@@ -176,14 +176,9 @@ def test_watermark_migration_backfills_existing_owner_deadlines(tmp_path: Path) 
     store = AppStore(path)
     with store.connection() as connection:
         _insert(connection, "graph_runs", {**_CASES[0][3], "finished_at": store.now()}, store.now())
-        triggers = connection.execute(
-            "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'resource_%'"
-        ).fetchall()
-        for trigger in triggers:
-            connection.execute(f'DROP TRIGGER "{trigger[0]}"')
-        for table in ("resource_versions", "resource_deadlines", "resource_watermark_epoch"):
-            connection.execute(f"DROP TABLE {table}")
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=49")
+        from tests.storage_helpers import downgrade_resource_watermarks
+
+        downgrade_resource_watermarks(connection)
     store.close()
     store = AppStore(path)
     with store.connection() as connection:
@@ -254,6 +249,7 @@ def test_current_schema_classifies_every_table_and_installs_all_owner_triggers(t
             "projects",
             "chat_reads",
             "chat_pins",
+            "research_view_pins",
             "auto_research_experiment_invocations",
             "auto_research_child_work_attempts",
             "artifact_versions",
