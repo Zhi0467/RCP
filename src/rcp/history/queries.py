@@ -118,7 +118,7 @@ class GraphLogEntry(_AnswerModel):
 
 
 class GraphLogPage(_AnswerModel):
-    """Every step that touched one id, oldest first, read at ``at_head``."""
+    """Every step that touched one id, newest first, read at ``at_head``."""
 
     id: str
     at_head: str

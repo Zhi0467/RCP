@@ -287,9 +287,10 @@ def test_log_keeps_creation_and_removal_when_net_diff_is_empty(history):
     )
     after = head(engine, "main@head")
     assert not engine.diff(before, after, ids=frozenset({"ev/transient"})).changes
+    # Newest first, like git log.
     assert [entry.change.change for entry in engine.log("ev/transient", after).entries] == [
-        "created",
         "removed",
+        "created",
     ]
 
 

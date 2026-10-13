@@ -332,7 +332,9 @@ def compute_log(
     identity: str,
 ) -> LogAnswer:
     units = tuple(
-        unit.model_dump_json().encode() for step in steps for unit in _log_units(step, entity_id)
+        unit.model_dump_json().encode()
+        for step in reversed(steps)
+        for unit in _log_units(step, entity_id)
     )
     return LogAnswer(
         log_key(entity_id, head, identity),

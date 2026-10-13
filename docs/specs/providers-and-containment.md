@@ -754,7 +754,8 @@ project; its writes stay pinned to its one target.
 Each change in an answer gives the entity id, type, title, change kind, and
 every changed field's before and after value, never unchanged fields. Each step
 gives its head, producer, task id, episode id, and authored summary; inherited
-main steps on a branch log are marked inherited. Answers are bounded by count
+main steps on a branch log are marked inherited. A log lists its steps newest
+first, like `git log`. Answers are bounded by count
 and encoded size in `limits.py` and continue through a cursor pinned to the
 resolved heads, so a moving `@head` never shifts between pages. A long value
 continues on the next page rather than being cut. Neither verb is a mutating
