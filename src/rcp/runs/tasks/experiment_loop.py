@@ -46,9 +46,9 @@ from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.prompts import (
     _invoked_package_section,
+    graph_read_contract,
     invoked_package_pointers,
     invoked_provider_skill_section,
-    render_graph_history,
 )
 from rcp.background import AgentTaskExecution
 from rcp.compute_jobs.job_managers import JOB_MANAGERS
@@ -1165,10 +1165,9 @@ def _experiment_start_contract(
             else None
         ),
     )
-    if turn.graph_read_scope is not None:
-        contract += "\n\n" + render_graph_history(
-            turn.graph_read_scope, turn.patch_inputs.command_client
-        )
+    contract = graph_read_contract(
+        contract, turn.graph_read_scope, turn.patch_inputs.command_client
+    )
     if invoked:
         contract += invoked_provider_skill_section(turn.request.resolved_provider_skills)
     if "ask" in _work_turn_command_handler(turn).allowed_verbs:

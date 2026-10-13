@@ -50,7 +50,7 @@ from rcp.agents.continuation_prompt import (
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.invocation_broker import ProviderInvocationGate
-from rcp.agents.prompts import render_graph_history
+from rcp.agents.prompts import graph_read_contract
 from rcp.agents.schema import (
     AgentProjectNode,
     OrchestratorAgentPatch,
@@ -1929,7 +1929,7 @@ async def stream_branch_merge_run(
                 stage, token, deterministic_ops, round_number=outcome.rebase_rounds
             )
             staged_head = observe_snapshot()
-            contract = (
+            contract = graph_read_contract(
                 branch_merge_task_contract(
                     context_path=context_path,
                     context_id=context.context_id,
@@ -1940,9 +1940,9 @@ async def stream_branch_merge_run(
                     residue_block=render_merge_residue(residue),
                     ontology_extensions=_has_ontology_extensions(context.main_graph),
                     code_block=code_block,
-                )
-                + "\n\n"
-                + render_graph_history(graph_read_scope, history_client)
+                ),
+                graph_read_scope,
+                history_client,
             )
             master_values = merge_values = _merge_master_values(
                 context,
