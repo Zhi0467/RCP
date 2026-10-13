@@ -249,7 +249,10 @@ A running orchestrator may harvest or clear its inbox without a separate wake;
 the harvest returns and consumes, in one transaction, the pending lifecycle
 notices and the pending mail addressed to the orchestrator, attributing the
 consumption to the running turn, so mail that arrives before a turn's last
-harvest never costs a wake. Budget exhaustion retains notices but cannot create
+harvest never costs a wake. Every orchestrator command result carries
+`inbox_pending` with the notice and mail counts a harvest would consume, whenever
+either is nonzero, so a running turn learns of new input without polling.
+Budget exhaustion retains notices but cannot create
 an unauthorized turn. Clear refuses before acknowledgment if even its compact
 full response exceeds the bound.
 

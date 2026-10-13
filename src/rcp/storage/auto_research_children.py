@@ -1668,6 +1668,29 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
             )
         return [notice.notice_id for notice in notices]
 
+    def auto_research_inbox_pending_counts(self, episode_id: str) -> dict[str, int]:
+        """Count what a Harvest would consume now, by the same selection."""
+
+        with self.connection() as connection:
+            root = connection.execute(
+                "SELECT root_operation_id FROM episodes WHERE episode_id = ?", (episode_id,)
+            ).fetchone()
+            notices = connection.execute(
+                """
+                SELECT COUNT(*) FROM auto_research_lifecycle_notices
+                WHERE episode_id = ? AND delivered_at IS NULL AND acknowledged_at IS NULL
+                """,
+                (episode_id,),
+            ).fetchone()[0]
+            mail = connection.execute(
+                """
+                SELECT COUNT(*) FROM auto_research_messages
+                WHERE episode_id = ? AND recipient_task_id = ? AND delivered_at IS NULL
+                """,
+                (episode_id, root[0] if root else None),
+            ).fetchone()[0]
+        return {"notices": int(notices), "mail": int(mail)}
+
     def process_auto_research_lifecycle_inbox(
         self,
         episode_id: str,
