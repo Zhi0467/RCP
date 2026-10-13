@@ -1520,6 +1520,15 @@ function MemberApp({
             const tasksRead = beginTasksRead();
             // A failed read retries next beat; this one still checks the graph below.
             const nextTasks = await api<AgentTask[]>(`${base}/tasks`).catch(() => null);
+            if (nextTasks && isActiveProject(requestedProjectId))
+              await settleTerminalTasks(
+                requestedProjectId,
+                requestedTarget,
+                consumeTerminalTasks(nextTasks),
+                () =>
+                  isActiveProject(requestedProjectId) &&
+                  sameGraphTarget(requestedTarget, activeGraphTargetRef.current),
+              );
             if (!isActiveProject(requestedProjectId)) {
               // Left mid-read: the state saved on leaving is older than this list.
               if (nextTasks)
@@ -1530,13 +1539,6 @@ function MemberApp({
               return;
             }
             if (nextTasks) {
-              await settleTerminalTasks(
-                requestedProjectId,
-                requestedTarget,
-                consumeTerminalTasks(nextTasks),
-                () => isActiveProject(requestedProjectId),
-              );
-              if (!isActiveProject(requestedProjectId)) return;
               replaceTasks(nextTasks, tasksRead);
               // A teammate's turn may have started and finished between heartbeats;
               // its chat history then changed without any status change seen here.
