@@ -904,14 +904,23 @@ button.relation-map-node:hover {
   background: color-mix(in srgb, var(--coral) 8%, var(--sheet));
   border-left-color: var(--coral);
 }
+/* A narrow drawer wraps the picker and Start to their own row rather than
+   crushing the label and button into broken words. */
 .experiment-control-heading {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
 }
 .experiment-control-heading > div:first-child {
   display: grid;
+  flex: none;
   gap: 2px;
+  white-space: nowrap;
+}
+.experiment-control-heading > .experiment-run-button {
+  flex: none;
+  white-space: nowrap;
 }
 .experiment-control-heading > div:first-child strong {
   font: 700 var(--type-xl) var(--mono);

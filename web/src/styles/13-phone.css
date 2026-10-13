@@ -40,6 +40,17 @@
   .chat-new-session-label {
     display: none;
   }
+  /* An Experiment's limit takes the first row; its picker and Start share the
+     next, the picker taking what Start leaves. */
+  .experiment-control-heading > div:first-child {
+    flex-basis: 100%;
+  }
+  .experiment-control-heading > .agent-config-chip {
+    flex: 1 1 auto;
+    justify-content: space-between;
+    margin-left: 0;
+    min-width: 0;
+  }
   /* The agent picker takes its own full row; Cancel and the action share the
      row below, the action filling what Cancel leaves. */
   .campaign-dialog > footer {

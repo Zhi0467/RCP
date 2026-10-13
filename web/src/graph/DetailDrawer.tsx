@@ -5,7 +5,6 @@ import {
   experimentStartOverlap,
 } from "../experiments/experimentStart";
 import { BrowserToggle } from "../core/BrowserControls";
-import { OptionsFold } from "../core/OptionsFold";
 import {
   AgentConfigChip,
   AgentConfigControls,
@@ -726,6 +725,10 @@ export function DetailDrawer({
                         disabled={nodeMutationDisabled || experimentRunBusy}
                         label="Experiment agent"
                         workLike={launchProfile?.work_like_capable}
+                        optionCount={
+                          Number(browserRequested) +
+                          Number((inheritedIsolation ?? isolation).code_worktree)
+                        }
                         onToggle={() => setLaunchOpen((open) => !open)}
                       />
                     )}
@@ -790,21 +793,6 @@ export function DetailDrawer({
                       )}
                     </div>
                   )}
-                  <OptionsFold
-                    count={
-                      Number(browserRequested) +
-                      Number((inheritedIsolation ?? isolation).code_worktree)
-                    }
-                    label="Launch options"
-                    placement="inline"
-                  >
-                    <BrowserToggle
-                      checked={browserRequested}
-                      disabled={nodeMutationDisabled || experimentRunBusy}
-                      onChange={setBrowserRequested}
-                    />
-                    <div className="chat-option">{codeWorktreeToggle}</div>
-                  </OptionsFold>
                   {launchOpen && project && launchProfile && launchConfig && (
                     <AgentConfigControls
                       project={project}
@@ -815,7 +803,20 @@ export function DetailDrawer({
                       locked={nodeMutationDisabled || experimentRunBusy}
                       showRunOn={false}
                       compact
-                    />
+                    >
+                      <div
+                        className="agent-config-options"
+                        role="group"
+                        aria-label="Launch options"
+                      >
+                        <BrowserToggle
+                          checked={browserRequested}
+                          disabled={nodeMutationDisabled || experimentRunBusy}
+                          onChange={setBrowserRequested}
+                        />
+                        {codeWorktreeToggle}
+                      </div>
+                    </AgentConfigControls>
                   )}
                   {startReasons.length > 0 && (
                     <ul className="experiment-gate-reasons" aria-label="Run requirements">

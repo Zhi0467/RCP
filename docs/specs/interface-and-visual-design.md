@@ -193,11 +193,11 @@ switch waits for a successful load and keeps the server value after a failed
 save. Errors offer a check-again action. Paper coaching has no Browser switch.
 
 Experiment launch controls in node detail and Runs, and the Auto-research
-launch dialog, use the same Options fold for their launch options (Browser use,
-and Code worktree where the launch offers one). There it opens in place under
-its chip instead of over the form; the branch name stays outside it. Every
-instance is the switch and its **Browser use** name only, with no caption line
-beside it.
+launch dialog, keep their launch options (Browser use, and Code worktree where
+the launch offers one) inside the agent picker, under its provider fields. The
+folded picker chip counts the options that are on. The branch name stays
+outside the picker. Every instance is the switch and its **Browser use** name
+only, with no caption line beside it.
 Continuations keep the episode's existing grant.
 
 Unavailable or lost browser access appears as a notice on the affected chat

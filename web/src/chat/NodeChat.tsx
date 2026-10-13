@@ -40,6 +40,7 @@ import {
   RadioTower,
   RotateCcw,
   Send,
+  SlidersHorizontal,
   Upload,
   X,
 } from "lucide-react";
@@ -205,7 +206,6 @@ import {
 import { SkillPicker, useSkillPicker } from "../core/SkillPicker";
 import { RepositoryScope } from "./RepositoryScope";
 import { BrowserTurnNotice, ChatBrowserControl } from "../core/BrowserControls";
-import { OptionsFold } from "../core/OptionsFold";
 import { WorktreeChooser, WorktreeControls, useConversationWorktree } from "./WorktreeControls";
 
 interface Props {
@@ -514,8 +514,25 @@ export function NodeChat({
   }));
   const computeIdentityRef = useRef(`${project.id}\0${chatId}`);
   const [computeMenuOpen, setComputeMenuOpen] = useState(false);
+  const [optionsOpen, setOptionsOpen] = useState(false);
   const [browserOn, setBrowserOn] = useState(false);
   const optionCount = Number(browserOn) + Number(worktree.chosen);
+  const optionsRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!optionsOpen) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!optionsRef.current?.contains(event.target as Node)) setOptionsOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOptionsOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [optionsOpen]);
   const modeRef = useRef(modeState.value);
   const [submitting, setSubmitting] = useState(false);
   const referencesKey = referenceDraftKey(
@@ -765,6 +782,7 @@ export function NodeChat({
     });
     if (reset) {
       setComputeMenuOpen(false);
+      setOptionsOpen(false);
     }
   }, [chatId, computeConnections, derivedComputeIds, project.id]);
 
@@ -3169,36 +3187,49 @@ export function NodeChat({
                   />
                 </>
               )}
-              {/* Keyed by chat, so switching chats closes it. */}
-              <OptionsFold
-                key={`${project.id}:${chatId}`}
-                count={optionCount}
-                label="Turn options"
-                placement="popover"
-              >
-                <ChatBrowserControl
-                  key={`${project.id}:${chatId}`}
-                  apiBase={questionApiBase}
-                  chatId={chatId}
-                  machine={config.run_on}
-                  disabled={readOnly}
-                  onRequestedChange={setBrowserOn}
-                />
-                {!commentOnly && (
-                  <WorktreeChooser
-                    state={worktree.state}
-                    chosen={worktree.chosen}
-                    disabled={Boolean(
-                      relatedActive ||
-                      pausedAttempt ||
-                      submitting ||
-                      reviewPending ||
-                      repairingTaskId,
-                    )}
-                    onChoose={worktree.choose}
+              <div className="chat-compute-picker chat-options-picker" ref={optionsRef}>
+                <button
+                  className="chat-compute-trigger"
+                  type="button"
+                  aria-expanded={optionsOpen}
+                  aria-label="Options"
+                  title="Options"
+                  onClick={() => setOptionsOpen((open) => !open)}
+                >
+                  <SlidersHorizontal size={14} />
+                  {optionCount ? <strong>{optionCount}</strong> : null}
+                  <ChevronUp size={12} />
+                </button>
+                {/* Mounted while folded, so the count reflects the saved Browser choice. */}
+                <fieldset
+                  className="chat-options-menu"
+                  aria-label="Turn options"
+                  hidden={!optionsOpen}
+                >
+                  <ChatBrowserControl
+                    key={`${project.id}:${chatId}`}
+                    apiBase={questionApiBase}
+                    chatId={chatId}
+                    machine={config.run_on}
+                    disabled={readOnly}
+                    onRequestedChange={setBrowserOn}
                   />
-                )}
-              </OptionsFold>
+                  {!commentOnly && (
+                    <WorktreeChooser
+                      state={worktree.state}
+                      chosen={worktree.chosen}
+                      disabled={Boolean(
+                        relatedActive ||
+                        pausedAttempt ||
+                        submitting ||
+                        reviewPending ||
+                        repairingTaskId,
+                      )}
+                      onChoose={worktree.choose}
+                    />
+                  )}
+                </fieldset>
+              </div>
             </div>
             <div className="chat-send-actions">
               <button

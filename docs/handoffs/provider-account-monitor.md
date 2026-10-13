@@ -54,9 +54,10 @@ twice before the limit reset, and stopped.
    the chat, one field on every launch request, and one web control used at
    Experiment and Auto-research start, Agents, and the chat composer. Browser
    and worktree move onto it first, with no behavior change; auto-recover is
-   then a new field, not a new path. The web control already exists:
-   `web/src/core/OptionsFold.tsx`, the composer's Options fold, shared by the
-   composer and the three launch forms. Auto-recover is one more row in it. Each option's enforcement stays with its
+   then a new field, not a new path. In the web, launch forms already keep
+   their options inside the agent picker (`agent-config-options`, counted on
+   the picker chip) and the composer keeps them in its Options menu.
+   Auto-recover is one more row in each. Each option's enforcement stays with its
    owner (browser runtime, isolation, recovery); only the choice is shared.
    Children, reports, and wakes inherit their episode's options. Auto-recover
    off means the work stays parked across account recovery and backend restart

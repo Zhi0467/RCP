@@ -721,6 +721,45 @@ details[open] > .view-disclosure-summary > svg:last-child {
   font-size: var(--type-2xs);
   margin: 8px 0 0;
 }
+/* Launch options sit under the agent fields; a host form must not stretch them. */
+.agent-config-options {
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 9px;
+  padding-top: 9px;
+}
+.agent-config .agent-config-options label {
+  align-items: center;
+  display: inline-flex;
+  font-size: var(--type-xs);
+  font-weight: 600;
+  gap: 8px;
+}
+.agent-config-options .browser-consent {
+  font-size: var(--type-xs);
+}
+.agent-config-options input[type="checkbox"] {
+  flex: none;
+  margin: 0;
+  padding: 0;
+  width: auto;
+}
+/* On a full-width chip the count sits beside the chevron, not mid-row. */
+.agent-config-chip-count {
+  align-items: center;
+  margin-left: auto;
+  background: var(--cobalt-soft);
+  border-radius: 50%;
+  color: var(--cobalt-dark);
+  display: inline-flex;
+  flex: none;
+  font-size: var(--type-2xs);
+  height: 15px;
+  justify-content: center;
+  min-width: 15px;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .agent-config-summary > svg,

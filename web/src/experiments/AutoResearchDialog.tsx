@@ -1,5 +1,4 @@
 import { BrowserToggle } from "../core/BrowserControls";
-import { OptionsFold } from "../core/OptionsFold";
 import {
   AgentConfigChip,
   AgentConfigControls,
@@ -344,28 +343,6 @@ export function AutoResearchDialog({
                   onChange={setBranch}
                 />
               </div>
-              <OptionsFold
-                count={Number(browserRequested) + Number(codeWorktree)}
-                label="Launch options"
-                placement="inline"
-              >
-                <BrowserToggle
-                  checked={browserRequested}
-                  disabled={busy}
-                  onChange={setBrowserRequested}
-                />
-                <div className="chat-option">
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={codeWorktree}
-                      disabled={busy}
-                      onChange={(event) => setCodeWorktree(event.target.checked)}
-                    />
-                    Code worktree
-                  </label>
-                </div>
-              </OptionsFold>
             </>
           )}
           {!continued && launchOpen && project && launchProfile && launchConfig && (
@@ -382,6 +359,22 @@ export function AutoResearchDialog({
               <p className="agent-config-note">
                 Experiments it spawns use the Settings Node chat profile.
               </p>
+              <div className="agent-config-options" role="group" aria-label="Launch options">
+                <BrowserToggle
+                  checked={browserRequested}
+                  disabled={busy}
+                  onChange={setBrowserRequested}
+                />
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={codeWorktree}
+                    disabled={busy}
+                    onChange={(event) => setCodeWorktree(event.target.checked)}
+                  />
+                  Code worktree
+                </label>
+              </div>
             </AgentConfigControls>
           )}
         </div>
@@ -401,6 +394,7 @@ export function AutoResearchDialog({
               disabled={busy}
               label="Orchestrator agent"
               workLike={launchProfile?.work_like_capable}
+              optionCount={Number(browserRequested) + Number(codeWorktree)}
               onToggle={() => setLaunchOpen((current) => !current)}
             />
           )}

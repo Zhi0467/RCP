@@ -1238,7 +1238,7 @@ test("an isolated closed experiment stays disabled with its server reason", () =
   }
 });
 
-test("a branch hides the new-branch toggle and keeps Code worktree in launch options", () => {
+test("a branch hides the new-branch toggle; Code worktree is in the agent picker", () => {
   const node = {
     id: "experiment/toggles",
     type: "experiment",
@@ -1276,25 +1276,20 @@ test("a branch hides the new-branch toggle and keeps Code worktree in launch opt
         onRunExperiment() {},
       }),
     );
-    const count = (pattern) =>
-      ((html.match(pattern)?.[1] ?? "").match(/type="checkbox"/g) ?? []).length;
-    return [
-      count(/<div class="experiment-isolation"[^>]*>(.*?)<\/div>/s),
-      count(
-        /<fieldset class="chat-options-menu" aria-label="Launch options"[^>]*>(.*?)<\/fieldset>/s,
-      ),
-    ];
+    const group = html.match(/<div class="experiment-isolation"[^>]*>(.*?)<\/div>/s)?.[1] ?? "";
+    return (group.match(/type="checkbox"/g) ?? []).length;
   };
   const previousWindow = globalThis.window;
   globalThis.window = { innerWidth: 1440, innerHeight: 900 };
   try {
-    assert.deepEqual(toggles({ kind: "main" }, null), [1, 2]);
-    assert.deepEqual(
+    // Code worktree lives in the agent picker; only "On a new branch" stays here.
+    assert.equal(toggles({ kind: "main" }, null), 1);
+    assert.equal(
       toggles(
         { kind: "branch", branch_id: "branch-1" },
         { graph_isolation: true, code_worktree: false },
       ),
-      [0, 2],
+      0,
     );
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
