@@ -1427,6 +1427,42 @@ function MemberApp({
     [getActiveProjectId, isActiveProject],
   );
 
+  // What a finished task changes beyond its own row. The task poll or the
+  // heartbeat, whichever reads the finish first, settles it once.
+  const settleTerminalTasks = useCallback(
+    async (
+      requestedProjectId: string,
+      target: GraphTargetRef,
+      terminalTasks: AgentTask[],
+      stillCurrent: () => boolean,
+    ) => {
+      if (terminalTasks.length === 0) return;
+      const base = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
+      const report = (error: unknown) => {
+        if (stillCurrent())
+          setNotice({
+            kind: "error",
+            text: error instanceof Error ? error.message : String(error),
+          });
+      };
+      void api<AgentUsageSnapshot>(`${base}/usage`).then((nextUsage) => {
+        if (stillCurrent() && isActiveProject(requestedProjectId)) setUsage(nextUsage);
+      });
+      if (terminalTasks.some(terminalTaskNeedsAuthoritativeProjectReload)) {
+        await reloadAuthoritativeProject().catch(report);
+      } else if (
+        terminalTasks.some((task) => task.kind === "node_chat" || task.kind === "project_chat")
+      ) {
+        await api<WatcherRecord[]>(projectWatchersPath(base, target))
+          .then((nextWatchers) => {
+            if (stillCurrent()) setWatchers(nextWatchers);
+          })
+          .catch(report);
+      }
+    },
+    [isActiveProject, reloadAuthoritativeProject],
+  );
+
   const heartbeatProjectCache = useCallback(
     (requestedProjectId: string): Promise<void> => {
       const requestedTarget = isActiveProject(requestedProjectId)
@@ -1484,8 +1520,23 @@ function MemberApp({
             const tasksRead = beginTasksRead();
             // A failed read retries next beat; this one still checks the graph below.
             const nextTasks = await api<AgentTask[]>(`${base}/tasks`).catch(() => null);
-            if (!isActiveProject(requestedProjectId)) return;
+            if (!isActiveProject(requestedProjectId)) {
+              // Left mid-read: the state saved on leaving is older than this list.
+              if (nextTasks)
+                updateInactiveProjectStates(requestedProjectId, (state) => ({
+                  ...state,
+                  tasks: nextTasks,
+                }));
+              return;
+            }
             if (nextTasks) {
+              await settleTerminalTasks(
+                requestedProjectId,
+                requestedTarget,
+                consumeTerminalTasks(nextTasks),
+                () => isActiveProject(requestedProjectId),
+              );
+              if (!isActiveProject(requestedProjectId)) return;
               replaceTasks(nextTasks, tasksRead);
               // A teammate's turn may have started and finished between heartbeats;
               // its chat history then changed without any status change seen here.
@@ -1634,9 +1685,11 @@ function MemberApp({
       refreshChatSummaries,
       removeProject,
       beginTasksRead,
+      consumeTerminalTasks,
       replaceTasks,
       replaceTasksReadBeforeRestore,
       runProjectHeartbeat,
+      settleTerminalTasks,
       updateInactiveProjectStates,
     ],
   );
@@ -3136,42 +3189,7 @@ function MemberApp({
       const recoveredAfterFailure = consecutiveFailures > 0;
       consecutiveFailures = 0;
       if (recoveredAfterFailure) void reverifyIdentity("active-task-poll-recovered");
-      const terminalTasks = consumeTerminalTasks(next);
-      if (terminalTasks.length > 0) {
-        void api<AgentUsageSnapshot>(`/api/projects/${encodeURIComponent(projectId)}/usage`).then(
-          (nextUsage) => {
-            if (!stopped && isActiveProject(projectId)) setUsage(nextUsage);
-          },
-        );
-        if (terminalTasks.some(terminalTaskNeedsAuthoritativeProjectReload)) {
-          try {
-            await reloadAuthoritativeProject();
-          } catch (error) {
-            if (!stopped) {
-              setNotice({
-                kind: "error",
-                text: error instanceof Error ? error.message : String(error),
-              });
-            }
-          }
-        } else if (
-          terminalTasks.some((task) => task.kind === "node_chat" || task.kind === "project_chat")
-        ) {
-          try {
-            const nextWatchers = await api<WatcherRecord[]>(
-              projectWatchersPath(`/api/projects/${encodeURIComponent(projectId)}`, graphTarget),
-            );
-            if (!stopped) setWatchers(nextWatchers);
-          } catch (error) {
-            if (!stopped) {
-              setNotice({
-                kind: "error",
-                text: error instanceof Error ? error.message : String(error),
-              });
-            }
-          }
-        }
-      }
+      await settleTerminalTasks(projectId, graphTarget, consumeTerminalTasks(next), () => !stopped);
       // The awaits above can outlive this effect; a stopped poll applies nothing.
       if (stopped) return;
       replaceTasks(next, tasksRead);
@@ -3189,10 +3207,10 @@ function MemberApp({
     isActiveProject,
     projectId,
     graphTarget,
-    reloadAuthoritativeProject,
     beginTasksRead,
     replaceTasks,
     reverifyIdentity,
+    settleTerminalTasks,
   ]);
 
   useEffect(() => {
