@@ -2381,3 +2381,18 @@ def test_file_client_acknowledges_only_consumed_answer(
     else:
         assert code == 2
         assert output["result"]["delivery"] == "unknown"
+
+
+@pytest.mark.parametrize("verb", ["status", "validate"])
+def test_a_waiting_inbox_prints_before_the_reply_body(verb) -> None:
+    from rcp.agents.staged_command_client import _display_response
+
+    pending = {"notices": 0, "mail": 1}
+    shown = _display_response(
+        {"status": "ok", "message": None, "result": {"long": "x", "inbox_pending": pending}},
+        verb,
+    )
+    # First after status, so truncating a long reply cannot cut it off.
+    assert list(shown)[:2] == ["status", "inbox_pending"]
+    assert shown["inbox_pending"] == pending
+    assert "inbox_pending" not in shown.get("result", {})

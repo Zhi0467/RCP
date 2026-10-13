@@ -12,6 +12,7 @@ export function EpisodeQuestions({
   freshness: string;
 }) {
   const { questions, error, refresh } = useQuestions(apiBase, "episode", episodeId, freshness);
+  const newestFirst = [...questions].sort((a, b) => b.created_at.localeCompare(a.created_at));
   const openCount = questions.filter(
     (question) => questionIsOpen(question) && !question.withdrawn_readonly,
   ).length;
@@ -23,12 +24,16 @@ export function EpisodeQuestions({
         <details className="experiment-fold nested" open={openCount > 0}>
           <summary>
             <span className="experiment-fold-title">Questions</span>
-            <span className="experiment-fold-count">
-              {openCount > 0 ? `${openCount}/${questions.length}` : questions.length}
-            </span>
+            {openCount > 0 ? (
+              <span className="episode-questions-open">
+                {openCount} {openCount === 1 ? "needs" : "need"} you
+              </span>
+            ) : (
+              <span className="experiment-fold-count">{questions.length}</span>
+            )}
           </summary>
           <div className="experiment-fold-body">
-            {questions.map((question) => (
+            {newestFirst.map((question) => (
               <QuestionCard
                 key={question.question_id}
                 question={question}

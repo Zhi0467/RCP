@@ -258,7 +258,7 @@ def _auto_research_commands(
   resumes as a new episode whose `ceiling` the notice states; `source_ending` says how the previous
   episode ended. Child Experiments still running were carried over and will report to you.
   Inputs committed while this provider turn is running are queued rather than injected.
-  Any command result carrying `inbox_pending` (notice and mail counts) means a Harvest has
+  Any command output carrying `inbox_pending` (notice and mail counts) means a Harvest has
   something for you now, such as a human's answer; Harvest before acting on stale context.
   `inbox --clear` acknowledges the current notice and mail snapshot and returns ids without bodies.
   Neither action erases audit history. If Clear refuses because the complete snapshot cannot fit

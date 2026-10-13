@@ -812,8 +812,20 @@ def _run_brokered(namespace, broker, request_content, request_id, deadline=None)
 
 
 def _display_response(response, verb):
-    """Keep the established validator stdout shape over the generic envelope."""
+    """Keep the established validator stdout shape over the generic envelope.
 
+    A waiting inbox is printed first, so a long reply cannot truncate it away.
+    """
+
+    result = response.get("result")
+    pending = result.get("inbox_pending") if isinstance(result, dict) else None
+    display = _display_body(response, verb)
+    if pending is None:
+        return display
+    return {"status": display.pop("status"), "inbox_pending": pending, **display}
+
+
+def _display_body(response, verb):
     if verb == "validate":
         result = response.get("result")
         if isinstance(result, dict) and result.get("status") in (
@@ -838,8 +850,11 @@ def _display_response(response, verb):
     result = response.get("result")
     if not isinstance(result, dict):
         result = {}
-    if verb == "ask":
-        result = {key: value for key, value in result.items() if key != "receipt_token"}
+    result = {
+        key: value
+        for key, value in result.items()
+        if key != "inbox_pending" and not (verb == "ask" and key == "receipt_token")
+    }
     return {
         "status": response["status"],
         "message": message,

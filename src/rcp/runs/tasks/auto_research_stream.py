@@ -1242,10 +1242,18 @@ def _claimed_messages(
     execution: AgentTaskExecution,
     turn: _CanonicalWorkerTurn | _CanonicalOrchestratorTurn,
 ) -> list[AutoResearchMessageRecord]:
+    # A running turn's Harvest also names that turn, but its mail was never part
+    # of the batch the wake claimed and staged; recovery must not count it.
+    harvested = {
+        message_id
+        for receipt in execution.store.auto_research_inbox_receipts(turn.request.episode_id)
+        for message_id in receipt.message_ids
+    }
     return [
         message
         for message in execution.store.auto_research_messages(turn.request.episode_id)
         if message.delivery_operation_id == turn.allocation_operation_id
+        and message.message_id not in harvested
     ]
 
 

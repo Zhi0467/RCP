@@ -2544,6 +2544,24 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
     assert events[-1].event == "done"
     retained_lifecycle = (stage / "lifecycle.json").read_text(encoding="utf-8")
     retained_mail = (stage / "messages.json").read_text(encoding="utf-8")
+    # A second answer arrives mid-turn and this turn harvests it; the harvest
+    # names the turn, yet it is not part of the batch the wake claimed.
+    record_auto_research_message(
+        store,
+        episode_id=auto_research.episode_id,
+        sender_role="human",
+        sender_task_id=None,
+        authorized_by=auto_research.authorized_by,
+        recipient_task_id=root.operation_id,
+        body="A second answer, harvested during the turn.",
+    )
+    store.process_auto_research_lifecycle_inbox(
+        auto_research.episode_id,
+        effect_id="mid-turn-harvest",
+        mode="harvest",
+        acknowledged_by=root.operation_id,
+        delivery_operation_id=wake.operation_id,
+    )
     store.fail_agent_task(wake.operation_id, "provider connection interrupted")
     retry = _recovery_task(
         store,
@@ -2564,7 +2582,7 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
         data_dir,
         continuation="retry",
     )
-    assert recovery_events[-1].event == "done"
+    assert recovery_events[-1].event == "done", recovery_events[-1].text
 
 
 @pytest.mark.parametrize(
