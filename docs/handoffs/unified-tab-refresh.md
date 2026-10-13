@@ -1,8 +1,9 @@
 # Unified tab refresh
 
-Status: design only. Nothing is implemented; implementation waits for an
-explicit start. Implemented: none. Remaining: every
-slice below.
+Status: implementation started 2026-10-12, all slices in this PR at
+v0.4.19. Implemented: the Web store and scheduler core
+(`web/src/core/resourceStore.ts`, `refreshScheduler.ts`, `useResource.ts`).
+Remaining: every slice below.
 
 ## Goal
 
@@ -61,8 +62,9 @@ remote-state projects.
    watches progress.
 8. **Paper is a plain profile.** No scheduler or store special case; its
    mandatory entry read goes. The one addition is a draft-version guard on
-   save: today `save` overwrites the stored draft before any check, so a save
-   from a stale copy refuses instead of replacing a newer draft. The existing
+   save: today `save` overwrites the stored draft before any check. The Paper
+   snapshot carries a `draft_revision`; a save from a stale copy gets 409
+   `paper_draft_moved` instead of replacing a newer draft. The existing
    canonical `base_hash` conflict path is unchanged.
 
 ## Design
@@ -91,9 +93,10 @@ remote-state projects.
 - **Time.** Things that change with time alone (a finished task dropping out
   of the list, question liveness, artifact expiry, readiness rechecks) carry
   indexed deadlines; tokens include the latest elapsed deadline at `as_of`.
-- **Data carries its version.** Every payload read and mutation response
-  returns `{key, version, as_of, value}`, read in one transaction or from one
-  pinned generation, so the app never pairs old data with a new token.
+- **Payload bodies stay as they are.** The app records, as a read's committed
+  version, the watermark it observed before starting that read. Data read
+  after observing a token is at least that new; if it moved during the read,
+  the next beat sees a different token and the resource reads again.
 - **Retired.** `/cached/revision`, `task_status_signal`, `steer_epoch`,
   `latest_task_id`, `latest_watcher_id`, and the settings, Experiment, and
   compute signals become registry tokens. Graph revision stays domain data;
