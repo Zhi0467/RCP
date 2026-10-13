@@ -26,6 +26,7 @@ interface Props {
   mutatingActionsDisabled?: boolean;
   onSelect: (taskId: string) => void;
   onPause: () => void;
+  onStop?: () => void;
   onResume: () => void;
   onRetry: () => void;
   onClose: () => void;
@@ -39,6 +40,7 @@ export function AgentTaskInspector({
   mutatingActionsDisabled = false,
   onSelect,
   onPause,
+  onStop,
   onResume,
   onRetry,
   onClose,
@@ -121,7 +123,31 @@ export function AgentTaskInspector({
               </div>
             ) : task ? (
               <>
-                <section className="run-detail-hero">
+                <section
+                  className="run-detail-hero"
+                  style={
+                    task.action_error ? { border: "1px solid var(--danger, #c23b3b)" } : undefined
+                  }
+                >
+                  {task.action_error && (
+                    <button
+                      className="icon-button"
+                      title={task.action_error}
+                      aria-label={`Retry action: ${task.action_error}`}
+                      disabled={actionBusy || mutatingActionsDisabled}
+                      onClick={
+                        task.action_error_action === "stop"
+                          ? onStop
+                          : task.action_error_action === "pause"
+                            ? onPause
+                            : task.action_error_action === "resume"
+                              ? onResume
+                              : onRetry
+                      }
+                    >
+                      <RotateCcw size={16} />
+                    </button>
+                  )}
                   <div className={`run-detail-icon ${task.status}`}>
                     {task.settled ? (
                       <Check size={20} />

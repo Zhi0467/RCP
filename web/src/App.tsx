@@ -1,3 +1,21 @@
+import { beginTaskMutation } from "./agents/taskActions";
+import { beginChatSend } from "./agents/chatSendMutation";
+import { ArtifactViewer } from "./artifacts/ArtifactViewer";
+import { ResourceStore, resourceKeyId } from "./core/resourceStore";
+import {
+  RefreshScheduler,
+  WATERMARK_REQUEST_TIMEOUT_MS,
+  type OpenProject,
+  type WatermarkResponse,
+} from "./core/refreshScheduler";
+import { RefreshRuntimeContext, useRefreshRuntime, useRefreshHealth } from "./core/useResource";
+import { taskStatusProfile, usageProfile } from "./agents/taskResources";
+import {
+  type SettingsResource,
+  settingsProfile,
+  providerLoginsProfile,
+  useProjectResource,
+} from "./projects/projectResources";
 import { canStartExperiment } from "./experiments/experimentStart";
 import { ExperimentStartOverlap } from "./experiments/ExperimentStartOverlap";
 import { UpdateNotice } from "./desktop/UpdateNotice";
@@ -56,6 +74,7 @@ import { isActiveTask } from "./agents/agentTasks";
 import { mergeProviderLogins } from "./projects/providers";
 import { loadChatTranscript } from "./chat/chatApi";
 import {
+  bindArtifactResourceStore,
   closeArtifactViewer,
   openArtifact,
   openEpisodeReport,
@@ -71,7 +90,6 @@ import {
   conversationHref,
   chatEntryConversationId,
   groupChatConversations,
-  chatIdForTask,
   startConversationTurn,
   unsentConversation,
   type ChatKind,
@@ -149,21 +167,13 @@ import {
   useProjectHistory,
   validationNoticeId,
 } from "./graph/useProjectHistory";
-import {
-  EXPERIMENT_BOARD_POLL_DELAY_MS,
-  startProjectCachePolling,
-  useProjectTabs,
-} from "./projects/useProjectTabs";
+import { EXPERIMENT_BOARD_POLL_DELAY_MS, useProjectTabs } from "./projects/useProjectTabs";
 import {
   cachedSnapshotCanReplace,
   canonicalGraphHead,
   latestSnapshotRequestCanApply,
   persistProjectHumanDraft,
   projectDraftPreviewEffectInputs,
-  projectHeartbeatSnapshotDisposition,
-  heartbeatNamesUnknownId,
-  heartbeatTaskStatusMoved,
-  projectHeartbeatMetadataChanged,
   projectSettingsSavedProject,
   RETAIN_ALL_PROJECT_READINESS,
   serializeProjectSessionTabState,
@@ -229,7 +239,6 @@ import type {
   AgentTask,
   AgentTaskKind,
   AgentTaskRequest,
-  AgentUsageSnapshot,
   AppView,
   Episode,
   ProjectArtifact,
@@ -239,7 +248,6 @@ import type {
   ExperimentControlState,
   ExperimentStartResponse,
   LoopOverlap,
-  GraphRevisionSnapshot,
   GraphNode,
   GraphState,
   GraphTargetRef,
@@ -249,7 +257,6 @@ import type {
   ProjectCard,
   ProjectInvitation,
   ProjectSnapshot,
-  ProviderLoginState,
   ProjectTransitionResponse,
   TransitionPreviewResponse,
   TrustView,
@@ -324,42 +331,21 @@ import {
   humanAttentionBlockers,
   projectAttentionForPresentation,
 } from "./projectAttention";
-import {
-  currentProjectReadinessGeneration,
-  invalidateProjectReadinessGenerations,
-  projectReadinessFailureApplies,
-  projectReadinessFailureState,
-  type ProjectReadinessGeneration,
-  projectReadinessResponseApplies,
-  type ProjectReadinessSnapshot,
-  projectReadinessUpdate,
-  PROVIDER_SKILL_READINESS_POLL_DELAY_MS,
-  type ProviderReadinessInFlight,
-  type ProviderReadinessRequestState,
-  shouldPollProviderSkillReadiness,
-  shouldRequestProviderReadiness,
-} from "./projectReadiness";
+
 import {
   type CachedProjectTabState,
-  canonicalRevisionNeedsReload,
   emptyProjectCounts,
-  loadExperimentWatcherPoll,
-  loadGraphRevision,
   openProjectSequence,
-  projectIsStillReadable,
   projectWatchersPath,
   projectWithTransitionProjection,
-  reconcileInactiveProjectTabState,
 } from "./projectSnapshot";
 import {
   activeBranchMergeTask,
   experimentControlsNeedWrapupPolling,
   isExperimentLoopRecovery,
   retryProfileKind,
-  taskActionNeedsAuthoritativeProjectReload,
   taskRetryConfig,
   taskRetryRequestBody,
-  terminalTaskNeedsAuthoritativeProjectReload,
 } from "./taskRecovery";
 import {
   experimentStartNeedsSync,
@@ -377,17 +363,6 @@ export {
   humanAttentionBlockers,
   projectAttentionForPresentation,
 } from "./projectAttention";
-export {
-  currentProjectReadinessGeneration,
-  invalidateProjectReadinessGenerations,
-  projectReadinessFailureApplies,
-  projectReadinessFailureState,
-  projectReadinessResponseApplies,
-  projectReadinessUpdate,
-  shouldPollProviderSkillReadiness,
-  shouldRequestProviderReadiness,
-} from "./projectReadiness";
-export type { ProjectReadinessGeneration } from "./projectReadiness";
 export {
   canonicalRevisionNeedsReload,
   loadExperimentWatcherPoll,
@@ -506,10 +481,6 @@ function ArtifactsSubnav({
   );
 }
 
-function pageIsHidden(): boolean {
-  return document.visibilityState === "hidden";
-}
-
 export function AcceptanceAgentIndicator({
   agentMode,
 }: {
@@ -557,16 +528,81 @@ export default function App() {
     identity.actorIdentity?.user.identity_kind,
   ]);
   useLayoutEffect(() => closeArtifactViewer(), [sessionKey]);
-  return <MemberApp key={sessionKey} desktop={desktop} identity={identity} />;
+  return <RefreshMemberApp key={sessionKey} desktop={desktop} identity={identity} />;
+}
+
+interface RefreshBindings {
+  open: OpenProject[];
+  active: string | null;
+  lostAccess(projectId: string): void;
+}
+function RefreshMemberApp(props: {
+  desktop: boolean;
+  identity: ReturnType<typeof useActorIdentity>;
+}) {
+  const bindings = useRef<RefreshBindings>({ open: [], active: null, lostAccess: () => {} });
+  const runtime = useMemo(() => {
+    const store = new ResourceStore();
+    const scheduler = new RefreshScheduler({
+      store,
+      clientId: crypto.randomUUID(),
+      openProjects: () => bindings.current.open,
+      activeProjectId: () => bindings.current.active,
+      onLostAccess: (id) => bindings.current.lostAccess(id),
+      send: (request, signal) =>
+        api<WatermarkResponse>(
+          "/api/resource-watermarks",
+          {
+            method: "POST",
+            body: JSON.stringify(request),
+            signal,
+          },
+          { attemptTimeoutMs: WATERMARK_REQUEST_TIMEOUT_MS, readOnly: true },
+        ),
+    });
+    return { store, scheduler, backendKey: props.identity.backendKey };
+  }, [props.identity.backendKey]);
+  useEffect(
+    () => () => {
+      runtime.scheduler.stop();
+      runtime.store.reset();
+    },
+    [runtime],
+  );
+  useLayoutEffect(() => bindArtifactResourceStore(runtime.store), [runtime]);
+  return (
+    <RefreshRuntimeContext.Provider value={runtime}>
+      <MemberApp {...props} refreshBindings={bindings} />
+      <RefreshHealthMarker />
+      <ArtifactViewer />
+    </RefreshRuntimeContext.Provider>
+  );
+}
+function RefreshHealthMarker() {
+  const health = useRefreshHealth();
+  return health.failing ? (
+    <span
+      role="status"
+      aria-label="Backend contact stale"
+      title="Backend contact stale"
+      style={{ position: "fixed", top: 8, right: 8, zIndex: 1000, color: "var(--danger, #b33)" }}
+    >
+      ●
+    </span>
+  ) : null;
 }
 
 function MemberApp({
   desktop,
   identity,
+  refreshBindings,
 }: {
   desktop: boolean;
   identity: ReturnType<typeof useActorIdentity>;
+  refreshBindings: React.RefObject<RefreshBindings>;
 }) {
+  const { store, scheduler } = useRefreshRuntime();
+  const refreshHealth = useRefreshHealth();
   const [initialRoute] = useState(() => ({
     project: parseProjectHash(window.location.hash),
     graphTarget: graphTargetFromHash(window.location.hash),
@@ -585,6 +621,7 @@ function MemberApp({
   // One request id per logical continuation, kept until the server has answered
   // it, so a retry after a lost response replays the episode already created.
   const continuationRequestIds = useRef(new Map<string, string>());
+  const taskActionRequestIds = useRef(new Map<string, string>());
   activeGraphTargetRef.current = graphTarget;
   const {
     identityReady,
@@ -758,12 +795,7 @@ function MemberApp({
     cachedProjectSnapshotForOpen,
     rememberLeftGraphTarget,
     cachedProjectStateForOpen,
-    inactiveCachedProjectState,
-    updateInactiveProjectStates,
-    isProjectTabOpen,
-    projectIdsForHeartbeat,
     adjacentProjectId,
-    runProjectHeartbeat,
   } = useProjectTabs<CachedProjectTabState>({
     initialProjectId: initialRoute.project.projectId,
     initialSetupOpen: initialRoute.setupOpen,
@@ -779,13 +811,23 @@ function MemberApp({
   // Activation keeps the previous snapshot on screen, inert, until the target
   // paints. The held copy is never cached or drafted against.
   const [heldRefProject, setHeldRefProject] = useState<ProjectSnapshot | null>(null);
-  const project =
+  const settingsResource = useProjectResource(
+    backendSessionReady && projectId ? settingsProfile(projectId) : null,
+  );
+  const baseProject =
     targetProject ??
     (sessionProject?.id === projectId
       ? sessionProject
       : heldRefProject?.id === projectId
         ? heldRefProject
         : null);
+  const project = useMemo(
+    () =>
+      baseProject && settingsResource.value
+        ? { ...baseProject, ...settingsResource.value }
+        : baseProject,
+    [baseProject, settingsResource.value],
+  );
   const displayedProjectRef = useRef(project);
   displayedProjectRef.current = project;
   const graph = project?.graph ?? emptyGraph;
@@ -813,13 +855,12 @@ function MemberApp({
     // A failed read keeps the last snapshot inert; only a target paint releases it.
     if (heldRefProject && targetProject) setHeldRefProject(null);
   }, [heldRefProject, targetProject]);
-  const [usage, setUsage] = useState<AgentUsageSnapshot | null>(null);
+  const usage =
+    useProjectResource(backendSessionReady && projectId ? usageProfile(projectId) : null).value ??
+    null;
   const [watchers, setWatchers] = useState<WatcherRecord[]>([]);
   const watchersRef = useRef(watchers);
   watchersRef.current = watchers;
-  const [providerReadinessRequests, setProviderReadinessRequests] = useState<
-    Record<string, ProviderReadinessRequestState>
-  >({});
   const {
     view,
     trustView,
@@ -872,6 +913,51 @@ function MemberApp({
     loading,
     getActiveProjectId,
   });
+  const tabRefs = useRef(new Map<string, string>());
+  const currentRef = graphTarget.kind === "main" ? "main" : `branch:${graphTarget.branch_id}`;
+  if (projectId) tabRefs.current.set(projectId, currentRef);
+  refreshBindings.current = {
+    open: backendSessionReady
+      ? openProjectTabs.map((tab) => ({
+          projectId: tab.id,
+          currentRef: tabRefs.current.get(tab.id) ?? "main",
+        }))
+      : [],
+    active: backendSessionReady ? projectId : null,
+    lostAccess: (id) => {
+      closeProjectRoute(id);
+      removeProject(id);
+      forgetProjectViewport(id);
+      store.release(id);
+      tabRefs.current.delete(id);
+      setNotice({ kind: "error", text: "This project is no longer available." });
+    },
+  };
+  const registeredTabs = useRef(new Set<string>());
+  useEffect(() => {
+    const next = new Set(openProjectTabs.map((tab) => tab.id));
+    for (const id of registeredTabs.current)
+      if (!next.has(id)) {
+        store.release(id);
+        store.dropProject(id);
+        tabRefs.current.delete(id);
+      }
+    for (const id of next) if (backendSessionReady) store.register(id, taskStatusProfile(id));
+    registeredTabs.current = next;
+    scheduler.now();
+  }, [backendSessionReady, openProjectTabs, scheduler, store]);
+  useEffect(() => {
+    if (!backendSessionReady) {
+      scheduler.stop();
+      return;
+    }
+    scheduler.start();
+    return () => scheduler.stop();
+  }, [backendSessionReady, scheduler]);
+  useLayoutEffect(() => {
+    if (backendSessionReady && projectId) scheduler.activate(projectId);
+    else store.setActiveProject(null);
+  }, [backendSessionReady, currentRef, projectId, scheduler, store]);
   const selectedIndexedExperiment = experimentIndexEntryForRoute(
     experimentLoops,
     projectId,
@@ -899,9 +985,6 @@ function MemberApp({
     request: Promise<void>;
   } | null>(null);
   const initialShowHandshake = useRef(false);
-  const providerReadinessRequestsInFlight = useRef(new Map<string, ProviderReadinessInFlight>());
-  const projectReadinessGenerations = useRef(new Map<string, ProjectReadinessGeneration>());
-  const providerSkillReadinessPoll = useRef<{ projectId: string; timeoutId: number } | null>(null);
   const currentProjectStateRef = useRef<Omit<CachedProjectTabState, "viewState"> | null>(null);
   const updateProject = useCallback(
     (update: (current: ProjectSnapshot | null) => ProjectSnapshot | null) => {
@@ -930,10 +1013,6 @@ function MemberApp({
     taskInspectorLoading,
     activeTask,
     activityTask,
-    beginTasksRead,
-    replaceTasks,
-    replaceTasksReadBeforeRestore,
-    consumeTerminalTasks,
     upsertTask,
     recordStartedTask,
     presentTask: presentAgentTask,
@@ -945,17 +1024,13 @@ function MemberApp({
     beginTaskRepair,
     resetProjectTasks,
     restoreProjectTasks,
-  } = useAgentTasks({ projectId, reportError: reportErrorNotice });
+  } = useAgentTasks({
+    projectId: backendSessionReady ? projectId : null,
+    reportError: reportErrorNotice,
+  });
   const { retryTask, tasks: projectTasks, taskInspectorId, inspectedTask } = agentTasksSnapshot;
   const projectTasksRef = useRef(projectTasks);
   projectTasksRef.current = projectTasks;
-  // Chat-summary refreshes the heartbeat still owes, per project. Each debt is a
-  // fresh object, so a retry clears only the debt it was started for.
-  const chatRefreshOwedRef = useRef(new Map<string, object>());
-  // The last steer epoch each project's heartbeat reported.
-  const steerEpochsRef = useRef(new Map<string, number>());
-  // The task status signal each project's task list was last read under.
-  const taskStatusSignalsRef = useRef(new Map<string, string>());
   const tasks = useMemo(
     () => projectTasks.filter((task) => sameGraphTarget(task.graph_target, graphTarget)),
     [projectTasks, graphTarget],
@@ -1008,7 +1083,6 @@ function MemberApp({
     ensureConversation,
     refreshChatSummaries,
     recordTaskUpdates,
-    recordWatcherResults,
     markVisibleChatRead,
     refreshChatReads,
     resetProjectChats,
@@ -1241,7 +1315,6 @@ function MemberApp({
       restoreProjectChats(state, presented.nodes);
       restoreProjectTasks(state);
       restoreProjectHistory(state);
-      setUsage(state.usage);
       setWatchers([...state.watchers]);
       setProjectReconciliation("authoritative");
       setLoading(false);
@@ -1296,7 +1369,7 @@ function MemberApp({
   );
 
   const reload = useCallback(
-    async (includeTasks = true) => {
+    async (_includeTasks = true) => {
       if (!projectId) return;
       const requestedProjectId = projectId;
       const requestId = beginProjectSnapshotRequest(requestedProjectId);
@@ -1315,20 +1388,6 @@ function MemberApp({
         authoritativeProjectId.current = requestedProjectId;
         setProjectReconciliation("authoritative");
       });
-      const tasksRead = beginTasksRead();
-      const tasksRequest = includeTasks
-        ? api<AgentTask[]>(`${base}/tasks`).then((nextTasks) => {
-            if (responseIsCurrent()) replaceTasks(nextTasks, tasksRead);
-          })
-        : Promise.resolve();
-      const usageRequest = api<AgentUsageSnapshot>(`${base}/usage`)
-        .then((nextUsage) => {
-          if (responseIsCurrent()) setUsage(nextUsage);
-        })
-        .catch((error) => {
-          if (!(error instanceof ApiError && error.status === 404)) throw error;
-          if (responseIsCurrent()) setUsage(null);
-        });
       const watchersRequest = api<WatcherRecord[]>(projectWatchersPath(base, graphTarget)).then(
         (nextWatchers) => {
           if (responseIsCurrent()) setWatchers(nextWatchers);
@@ -1342,13 +1401,7 @@ function MemberApp({
           });
         }
       });
-      await Promise.all([
-        projectRequest,
-        tasksRequest,
-        usageRequest,
-        watchersRequest,
-        chatsRequest,
-      ]);
+      await Promise.all([projectRequest, watchersRequest, chatsRequest]);
     },
     [
       applyProjectSnapshot,
@@ -1359,8 +1412,6 @@ function MemberApp({
       projectId,
       projectSnapshotRequestIsCurrent,
       refreshChatSummaries,
-      beginTasksRead,
-      replaceTasks,
     ],
   );
   reloadRef.current = reload;
@@ -1440,305 +1491,6 @@ function MemberApp({
     [getActiveProjectId, isActiveProject],
   );
 
-  // What a finished task changes beyond its own row. The task poll or the
-  // heartbeat, whichever reads the finish first, settles it once.
-  const settleTerminalTasks = useCallback(
-    async (
-      requestedProjectId: string,
-      target: GraphTargetRef,
-      terminalTasks: AgentTask[],
-      stillCurrent: () => boolean,
-    ) => {
-      if (terminalTasks.length === 0) return;
-      const base = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
-      const report = (error: unknown) => {
-        if (stillCurrent())
-          setNotice({
-            kind: "error",
-            text: error instanceof Error ? error.message : String(error),
-          });
-      };
-      void api<AgentUsageSnapshot>(`${base}/usage`).then((nextUsage) => {
-        if (stillCurrent() && isActiveProject(requestedProjectId)) setUsage(nextUsage);
-      });
-      if (terminalTasks.some(terminalTaskNeedsAuthoritativeProjectReload)) {
-        await reloadAuthoritativeProject().catch(report);
-      } else if (
-        terminalTasks.some((task) => task.kind === "node_chat" || task.kind === "project_chat")
-      ) {
-        await api<WatcherRecord[]>(projectWatchersPath(base, target))
-          .then((nextWatchers) => {
-            if (stillCurrent()) setWatchers(nextWatchers);
-          })
-          .catch(report);
-      }
-    },
-    [isActiveProject, reloadAuthoritativeProject],
-  );
-
-  const heartbeatProjectCache = useCallback(
-    (requestedProjectId: string): Promise<void> => {
-      const requestedTarget = isActiveProject(requestedProjectId)
-        ? activeGraphTargetRef.current
-        : MAIN_GRAPH;
-      // Single flight per (project, ref): a heartbeat for the ref just left
-      // must not swallow the first one for the ref now shown.
-      return runProjectHeartbeat(graphSessionKey(requestedProjectId, requestedTarget), async () => {
-        const base = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
-        let observation: GraphRevisionSnapshot;
-        try {
-          observation = await loadGraphRevision(
-            (path) => api(graphTargetUrl(path, requestedTarget)),
-            base,
-          );
-        } catch (error) {
-          if (!(error instanceof ApiError && error.status === 404)) throw error;
-          // A 404 here is ambiguous: the display cache may merely be missing,
-          // or the project may have stopped being readable — deleted, or no
-          // longer ours. The filtered index answers which.
-          if (await projectIsStillReadable(api, requestedProjectId)) return;
-          // Close the tab *and* leave the view: closing alone would strand the
-          // reader on a project they can no longer load anything from.
-          closeProjectRoute(requestedProjectId);
-          removeProject(requestedProjectId);
-          forgetProjectViewport(requestedProjectId);
-          setNotice({ kind: "error", text: "This project is no longer available." });
-          return;
-        }
-        const observedRevision = observation.revision;
-        const tabIsOpen = () => isProjectTabOpen(requestedProjectId);
-        if (!tabIsOpen()) return;
-        if (isActiveProject(requestedProjectId)) {
-          if (!sameGraphTarget(requestedTarget, activeGraphTargetRef.current)) return;
-          window.dispatchEvent(new CustomEvent("rcp:refresh-questions", { detail: base }));
-          const loadedTaskIds = projectTasksRef.current.map((task) => task.operation_id);
-          // A final steer receipt can land after its task stopped being polled.
-          // Recorded only once the tasks are read, so a failed read retries.
-          const seenSteerEpoch = steerEpochsRef.current.get(requestedProjectId);
-          // A first observation counts as moved: a receipt may have landed between
-          // this page's task load and its first heartbeat.
-          const steerMoved =
-            observation.steer_epoch !== undefined && seenSteerEpoch !== observation.steer_epoch;
-          // A teammate's task can finish while no task poll runs here.
-          const taskStatusMoved = heartbeatTaskStatusMoved(
-            observation.task_status_signal,
-            taskStatusSignalsRef.current.get(requestedProjectId),
-          );
-          let tasksCurrent = true;
-          if (
-            steerMoved ||
-            taskStatusMoved ||
-            heartbeatNamesUnknownId(observation.latest_task_id, loadedTaskIds)
-          ) {
-            const tasksRead = beginTasksRead();
-            // A failed read retries next beat; this one still checks the graph below.
-            const nextTasks = await api<AgentTask[]>(`${base}/tasks`).catch(() => null);
-            if (nextTasks && isActiveProject(requestedProjectId))
-              await settleTerminalTasks(
-                requestedProjectId,
-                requestedTarget,
-                consumeTerminalTasks(nextTasks),
-                () =>
-                  isActiveProject(requestedProjectId) &&
-                  sameGraphTarget(requestedTarget, activeGraphTargetRef.current),
-              );
-            // Left mid-read: this list may predate the one saved on leaving, so it is
-            // dropped; the signal stays unrecorded and the background sweep rereads.
-            if (!isActiveProject(requestedProjectId)) return;
-            if (nextTasks) {
-              replaceTasks(nextTasks, tasksRead);
-              // A teammate's turn may have started and finished between heartbeats;
-              // its chat history then changed without any status change seen here.
-              if (
-                nextTasks.some(
-                  (task) => chatIdForTask(task) && !loadedTaskIds.includes(task.operation_id),
-                )
-              )
-                chatRefreshOwedRef.current.set(requestedProjectId, {});
-            } else tasksCurrent = false;
-          }
-          if (tasksCurrent && observation.steer_epoch !== undefined)
-            steerEpochsRef.current.set(requestedProjectId, observation.steer_epoch);
-          if (tasksCurrent && observation.task_status_signal !== undefined)
-            taskStatusSignalsRef.current.set(requestedProjectId, observation.task_status_signal);
-          // Owed until it succeeds: the task is already listed, so no later
-          // heartbeat would notice it again.
-          const owed = chatRefreshOwedRef.current.get(requestedProjectId);
-          if (owed) {
-            await refreshChatSummaries(requestedProjectId, base)
-              .then(() => {
-                // A refresh for a project no longer shown returns without
-                // applying, so the debt stands until it is shown again.
-                if (
-                  isActiveProject(requestedProjectId) &&
-                  chatRefreshOwedRef.current.get(requestedProjectId) === owed
-                )
-                  chatRefreshOwedRef.current.delete(requestedProjectId);
-              })
-              .catch(() => {
-                // Stays owed; the next heartbeat retries.
-              });
-          }
-          const loadedWatcherIds = watchersRef.current.map((watcher) => watcher.watcher_id);
-          if (heartbeatNamesUnknownId(observation.latest_watcher_id, loadedWatcherIds)) {
-            const nextWatchers = await api<WatcherRecord[]>(
-              projectWatchersPath(base, requestedTarget),
-            );
-            if (
-              isActiveProject(requestedProjectId) &&
-              sameGraphTarget(requestedTarget, activeGraphTargetRef.current)
-            )
-              setWatchers(nextWatchers);
-          }
-          if (
-            canonicalRevisionNeedsReload(
-              observedRevision,
-              getProjectSessionState().renderedRevision,
-              observation.graph_mutation,
-              getProjectSessionState().project?.graph_mutation,
-            ) ||
-            (observedRevision === getProjectSessionState().renderedRevision &&
-              projectHeartbeatMetadataChanged(
-                observation,
-                getProjectSessionState().project,
-                requestedTarget,
-              ))
-          ) {
-            await reloadAuthoritativeProject(requestedProjectId);
-          }
-          return;
-        }
-
-        // A background tab keeps its saved task list current, so switching back
-        // shows each agent's real status at once instead of after the reload.
-        const taskStatusSignal = observation.task_status_signal;
-        // Tasks are project-wide, so every retained ref, branches included, takes them.
-        if (
-          taskStatusSignal !== undefined &&
-          heartbeatTaskStatusMoved(
-            taskStatusSignal,
-            taskStatusSignalsRef.current.get(requestedProjectId),
-          )
-        ) {
-          // A failed read retries next beat; this one still checks the graph below.
-          const nextTasks = await api<AgentTask[]>(`${base}/tasks`).catch(() => null);
-          if (nextTasks && isActiveProject(requestedProjectId)) {
-            // Activated mid-read: the restored list is older than this one.
-            if (replaceTasksReadBeforeRestore(nextTasks))
-              taskStatusSignalsRef.current.set(requestedProjectId, taskStatusSignal);
-            return;
-          }
-          if (nextTasks) {
-            updateInactiveProjectStates(requestedProjectId, (state) => ({
-              ...state,
-              tasks: nextTasks,
-            }));
-            taskStatusSignalsRef.current.set(requestedProjectId, taskStatusSignal);
-          }
-        }
-        const retained = inactiveCachedProjectState(requestedProjectId);
-        if (
-          !retained ||
-          observedRevision < retained.project.graph.revision ||
-          (observedRevision === retained.project.graph.revision &&
-            !projectHeartbeatMetadataChanged(observation, retained.project))
-        )
-          return;
-        const snapshot = await api<ProjectSnapshot>(`${base}/cached`);
-        const current = inactiveCachedProjectState(requestedProjectId);
-        const disposition = projectHeartbeatSnapshotDisposition({
-          requestedProjectId,
-          activeProjectId: getActiveProjectId(),
-          tabOpen: tabIsOpen(),
-          inactiveState: current,
-          snapshotRevision: snapshot.graph.revision,
-          renderedRevision: getProjectSessionState().renderedRevision,
-          metadataChanged: projectHeartbeatMetadataChanged(
-            snapshot,
-            getProjectSessionState().project,
-            activeGraphTargetRef.current,
-          ),
-        });
-        if (disposition.kind === "reload_active") {
-          await reloadAuthoritativeProject(requestedProjectId);
-          return;
-        }
-        if (disposition.kind === "ignore") {
-          return;
-        }
-        const next = reconcileInactiveProjectTabState(disposition.state, snapshot);
-        if (next === disposition.state) return;
-        cacheProjectState(requestedProjectId, next);
-        try {
-          persistProjectHumanDraft(
-            localStorage,
-            draftActorIdRef.current,
-            requestedProjectId,
-            next.humanDraft,
-          );
-        } catch {
-          // A background cache refresh must not discard the in-memory draft.
-        }
-      });
-    },
-    [
-      cacheProjectState,
-      closeProjectRoute,
-      forgetProjectViewport,
-      getActiveProjectId,
-      getProjectSessionState,
-      inactiveCachedProjectState,
-      isActiveProject,
-      isProjectTabOpen,
-      reloadAuthoritativeProject,
-      refreshChatSummaries,
-      removeProject,
-      beginTasksRead,
-      consumeTerminalTasks,
-      replaceTasks,
-      replaceTasksReadBeforeRestore,
-      runProjectHeartbeat,
-      settleTerminalTasks,
-      updateInactiveProjectStates,
-    ],
-  );
-
-  useEffect(() => {
-    if (!backendSessionReady) return;
-    const runHeartbeat = (id: string) => {
-      void heartbeatProjectCache(id).catch(() => {
-        // Heartbeat failures leave the last usable display cache intact.
-      });
-    };
-    return startProjectCachePolling(
-      {
-        setInterval: (callback, delay) => window.setInterval(callback, delay),
-        clearInterval: (intervalId) => window.clearInterval(intervalId),
-      },
-      {
-        isHidden: pageIsHidden,
-        listen: (callback) => {
-          document.addEventListener("visibilitychange", callback);
-          return () => document.removeEventListener("visibilitychange", callback);
-        },
-      },
-      () => projectIdsForHeartbeat().forEach(runHeartbeat),
-      () => {
-        const activeId = getActiveProjectId();
-        if (activeId) runHeartbeat(activeId);
-      },
-    );
-  }, [
-    actorIdentityChecked,
-    heartbeatProjectCache,
-    identityIssue,
-    identityReady,
-    getActiveProjectId,
-    projectIdsForHeartbeat,
-    teamSessionRequired,
-    backendSessionReady,
-  ]);
-
   useEffect(() => {
     if (!desktop) return;
     let stopped = false;
@@ -1749,11 +1501,7 @@ function MemberApp({
       const activeId = getActiveProjectId();
       if (activeId) {
         const visibleProjectId = activeId;
-        const tasksRead = beginTasksRead();
-        const nextTasks = await api<AgentTask[]>(
-          `/api/projects/${encodeURIComponent(visibleProjectId)}/tasks`,
-        );
-        if (isActiveProject(visibleProjectId)) replaceTasks(nextTasks, tasksRead);
+        scheduler.activate(visibleProjectId);
         setProjectReconciliation("reconciling");
         void reloadRef.current(false).catch((error) => {
           if (!isActiveProject(visibleProjectId) || stopped) return;
@@ -1842,112 +1590,18 @@ function MemberApp({
     recordDesktopUpdateReady,
     refreshDesktopUpdate,
     replaceProjects,
-    beginTasksRead,
-    replaceTasks,
     reportIdentityIssue,
     reverifyIdentity,
+    scheduler,
   ]);
 
-  const requestProjectReadiness = useCallback(
-    (refresh: boolean): Promise<ProjectReadinessSnapshot | null> => {
-      if (!apiBase || !projectId) return Promise.resolve(null);
-      const requestedProjectId = projectId;
-      const requestGeneration = currentProjectReadinessGeneration(
-        projectReadinessGenerations.current,
-        requestedProjectId,
-      );
-      const existing = providerReadinessRequestsInFlight.current.get(requestedProjectId);
-      if (
-        existing !== undefined &&
-        existing.generation.provider === requestGeneration.provider &&
-        existing.generation.compute === requestGeneration.compute
-      ) {
-        if (!refresh || existing.refresh) return existing.request;
-        return existing.request.then(() => requestProjectReadiness(true));
-      }
-
-      setProviderReadinessRequests((current) => ({
-        ...current,
-        [requestedProjectId]: { pending: true, providerError: null, computeError: null },
-      }));
-      let request: Promise<ProjectReadinessSnapshot | null>;
-      request = loadProjectReadiness(apiBase, refresh)
-        .then((readiness) => {
-          const applies = projectReadinessResponseApplies(
-            projectReadinessGenerations.current,
-            requestedProjectId,
-            requestGeneration,
-          );
-          if (!applies.provider && !applies.compute) return null;
-          if (isActiveProject(requestedProjectId)) {
-            updateProject((current) =>
-              current?.id === requestedProjectId
-                ? { ...current, ...projectReadinessUpdate(readiness, applies) }
-                : current,
-            );
-          }
-          // The caller polls provider skill inventories, so a superseded
-          // provider slice has no follow-up left to decide.
-          return applies.provider ? readiness : null;
-        })
-        .catch((error) => {
-          const applies = projectReadinessResponseApplies(
-            projectReadinessGenerations.current,
-            requestedProjectId,
-            requestGeneration,
-          );
-          if (!applies.provider && !applies.compute) return null;
-          const message = error instanceof Error ? error.message : String(error);
-          const registered =
-            providerReadinessRequestsInFlight.current.get(requestedProjectId)?.request === request;
-          if (projectReadinessFailureApplies(registered, applies)) {
-            setProviderReadinessRequests((current) => ({
-              ...current,
-              [requestedProjectId]: projectReadinessFailureState(
-                current[requestedProjectId],
-                applies,
-                message,
-              ),
-            }));
-            if (isActiveProject(requestedProjectId)) {
-              setNotice({ kind: "error", text: message });
-            }
-          }
-          if (refresh) throw error instanceof Error ? error : new Error(message);
-          return null;
-        })
-        .finally(() => {
-          if (
-            providerReadinessRequestsInFlight.current.get(requestedProjectId)?.request === request
-          ) {
-            providerReadinessRequestsInFlight.current.delete(requestedProjectId);
-            setProviderReadinessRequests((current) => ({
-              ...current,
-              [requestedProjectId]: {
-                pending: false,
-                providerError: current[requestedProjectId]?.providerError ?? null,
-                computeError: current[requestedProjectId]?.computeError ?? null,
-              },
-            }));
-          }
-        });
-      providerReadinessRequestsInFlight.current.set(requestedProjectId, {
-        refresh,
-        generation: requestGeneration,
-        request,
-      });
-      return request;
-    },
-    [apiBase, isActiveProject, projectId, updateProject],
+  const loginResource = useProjectResource(
+    backendSessionReady && projectId ? providerLoginsProfile(projectId) : null,
   );
-
-  // The Runs view overlays the live machine-account login states on the
-  // project's own account list. One small read per poll; the readiness
-  // snapshot is not re-requested for it.
-  const [liveProviderLogins, setLiveProviderLogins] = useState<ProviderLoginState[] | null>(null);
+  const liveProviderLogins = loginResource.value ?? null;
   const refreshProviderLogins = useCallback(async () => {
-    setLiveProviderLogins(await loadProviderLogins());
-  }, []);
+    if (projectId) store.invalidate(resourceKeyId(providerLoginsProfile(projectId).key));
+  }, [projectId, store]);
   const runsProviderLogins = useMemo(
     () => mergeProviderLogins(project?.provider_logins ?? [], liveProviderLogins),
     [project?.provider_logins, liveProviderLogins],
@@ -1972,10 +1626,7 @@ function MemberApp({
       }
       try {
         // Agents reads only the index; provider logins belong to the Runs view.
-        await Promise.all([
-          refreshProjectExperimentLoops(projectId),
-          ...(view === "execution" ? [refreshProviderLogins()] : []),
-        ]);
+        await Promise.all([refreshProjectExperimentLoops(projectId)]);
       } catch (error) {
         if (!stopped) {
           reportErrorNotice(
@@ -2000,69 +1651,25 @@ function MemberApp({
   ]);
 
   const refreshReadiness = useCallback(async () => {
-    await requestProjectReadiness(true);
-  }, [requestProjectReadiness]);
-
-  const ensureProjectReadiness = useCallback(() => {
-    if (
-      !apiBase ||
-      !projectId ||
-      project?.id !== projectId ||
-      projectReconciliation !== "authoritative" ||
-      !shouldRequestProviderReadiness(
-        project.provider_readiness,
-        providerReadinessRequestsInFlight.current.has(projectId),
-      )
-    )
-      return;
-    const requestedProjectId = projectId;
-    const readCachedReadiness = (completedFollowUps: number) => {
-      void requestProjectReadiness(false).then((readiness) => {
-        if (!readiness) return;
-        if (!isActiveProject(requestedProjectId)) return;
-        if (
-          shouldPollProviderSkillReadiness(readiness.provider_skill_inventories, completedFollowUps)
-        ) {
-          const timeoutId = window.setTimeout(() => {
-            providerSkillReadinessPoll.current = null;
-            if (!isActiveProject(requestedProjectId)) return;
-            readCachedReadiness(completedFollowUps + 1);
-          }, PROVIDER_SKILL_READINESS_POLL_DELAY_MS);
-          providerSkillReadinessPoll.current = { projectId: requestedProjectId, timeoutId };
-        } else {
-          providerSkillReadinessPoll.current = null;
-        }
-      });
-    };
-    readCachedReadiness(0);
-  }, [
-    apiBase,
-    isActiveProject,
-    project,
-    projectId,
-    projectReconciliation,
-    requestProjectReadiness,
-  ]);
-
-  useEffect(() => {
-    return () => {
-      const pending = providerSkillReadinessPoll.current;
-      if (pending?.projectId === projectId) {
-        window.clearTimeout(pending.timeoutId);
-        providerSkillReadinessPoll.current = null;
-      }
-    };
-  }, [projectId]);
+    if (!projectId) return;
+    const id = resourceKeyId(settingsProfile(projectId).key);
+    const mutation = store.beginMutation(
+      crypto.randomUUID(),
+      new Map([[id, (value: unknown) => value]]),
+    );
+    try {
+      const readiness = await loadProjectReadiness(apiBase, true);
+      const current = store.view<SettingsResource>(id).value;
+      mutation.settle(current ? new Map([[id, { ...current, ...readiness }]]) : undefined);
+    } catch (error) {
+      mutation.fail();
+      throw error;
+    }
+  }, [apiBase, projectId, store]);
 
   const refreshUsage = useCallback(async () => {
-    if (!apiBase) return;
-    try {
-      const nextUsage = await api<AgentUsageSnapshot>(`${apiBase}/usage`);
-      if (projectId && isActiveProject(projectId)) setUsage(nextUsage);
-    } catch (error) {
-      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
-    }
-  }, [apiBase, isActiveProject, projectId]);
+    if (projectId) store.invalidate(resourceKeyId(usageProfile(projectId).key));
+  }, [projectId, store]);
 
   useLayoutEffect(() => {
     // A new editor supersedes the old one's pending save. Leaving Paper alone
@@ -2137,21 +1744,6 @@ function MemberApp({
     if (backendChanged) {
       clearProjectCache();
       authoritativeProjectId.current = null;
-      for (const id of new Set([
-        ...projectReadinessGenerations.current.keys(),
-        ...providerReadinessRequestsInFlight.current.keys(),
-      ])) {
-        invalidateProjectReadinessGenerations(projectReadinessGenerations.current, id, {
-          provider: false,
-          compute: false,
-        });
-      }
-      providerReadinessRequestsInFlight.current.clear();
-      setProviderReadinessRequests({});
-      if (providerSkillReadinessPoll.current) {
-        window.clearTimeout(providerSkillReadinessPoll.current.timeoutId);
-        providerSkillReadinessPoll.current = null;
-      }
       setHeldRefProject(displayedProjectRef.current);
       const current = getProjectSessionState();
       let draft =
@@ -2273,7 +1865,6 @@ function MemberApp({
       resetProjectChats();
       resetProjectTasks();
       resetProjectHistory(projectId, graphTarget);
-      setUsage(null);
       setWatchers([]);
       setExperimentStartOverlap(null);
       resetProjectHeader(projectId);
@@ -2482,10 +2073,6 @@ function MemberApp({
   ]);
 
   useEffect(() => {
-    if (projectReconciliation === "authoritative") ensureProjectReadiness();
-  }, [ensureProjectReadiness, projectReconciliation]);
-
-  useEffect(() => {
     try {
       localStorage.setItem(TEXT_SCALE_STORAGE_KEY, String(textScale));
     } catch {
@@ -2515,16 +2102,12 @@ function MemberApp({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [desktop]);
 
-  const watchersAwaitingDelivery = useMemo(
-    () => watchers.some((watcher) => !watcher.notified),
-    [watchers],
-  );
   const mutationsDisabled = project ? projectGraphMutationsDisabled(project) : false;
   const {
     consolidation,
     error: consolidationError,
     refresh: refreshConsolidation,
-  } = useConsolidation(apiBase, String(graph.revision));
+  } = useConsolidation(backendSessionReady ? apiBase : "", String(graph.revision));
   const refreshProjectIndexQuietly = useCallback(() => {
     // The landing count follows Caught up; a failed index read keeps the old list.
     void loadProjectIndex().catch(() => undefined);
@@ -2534,7 +2117,12 @@ function MemberApp({
     error: projectDigestError,
     catchingUp: projectDigestCatchingUp,
     catchUp: catchUpProjectDigest,
-  } = useProjectDigest(projectId, graphTarget, String(graph.revision), refreshProjectIndexQuietly);
+  } = useProjectDigest(
+    backendSessionReady ? projectId : null,
+    graphTarget,
+    String(graph.revision),
+    refreshProjectIndexQuietly,
+  );
   const digestChangedNodes = useMemo(
     () => digestChangedNodeIds(projectDigest, graphTarget),
     [projectDigest, graphTarget],
@@ -3028,7 +2616,6 @@ function MemberApp({
     [listedConversations, readUnreadChatIds],
   );
   const chatsIndicator = chatIndicator(listedConversations, unreadChatIds);
-  const hasActiveTasks = projectTasks.some(isActiveTask);
 
   const changeAppTextScale = (action: TextScaleAction) => {
     setTextScale((current) => changeTextScale(current, action));
@@ -3148,8 +2735,8 @@ function MemberApp({
     if (recordTaskUpdates(projectTasks)) {
       if (projectId) {
         void refreshChatSummaries(projectId, apiBase).catch((error) => {
-          // The task change is already recorded, so the heartbeat owes the retry.
-          chatRefreshOwedRef.current.set(projectId, {});
+          // Its resource token retains the refresh debt after a failed read.
+          scheduler.now();
           setNotice({
             kind: "error",
             text: `Chats could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
@@ -3165,6 +2752,7 @@ function MemberApp({
     recordTaskUpdates,
     refreshChatSummaries,
     projectTasks,
+    scheduler,
   ]);
 
   useEffect(() => {
@@ -3185,135 +2773,6 @@ function MemberApp({
     selectedChatId,
     selectedExperimentChatId,
     view,
-  ]);
-
-  useEffect(() => {
-    if (!projectId || !hasActiveTasks) return;
-    let stopped = false;
-    let timer = 0;
-    let consecutiveFailures = 0;
-    const schedule = (delay: number) => {
-      timer = window.setTimeout(() => void poll(), delay);
-    };
-    const poll = async () => {
-      let next: AgentTask[];
-      const tasksRead = beginTasksRead();
-      try {
-        next = await api<AgentTask[]>(`/api/projects/${encodeURIComponent(projectId)}/tasks`);
-      } catch (error) {
-        if (!stopped) {
-          setNotice({
-            kind: "error",
-            text: error instanceof Error ? error.message : String(error),
-          });
-          void reverifyIdentity("active-task-poll-failure");
-          consecutiveFailures += 1;
-          schedule(Math.min(8000, 1000 * 2 ** (consecutiveFailures - 1)));
-        }
-        return;
-      }
-      if (stopped) return;
-      const recoveredAfterFailure = consecutiveFailures > 0;
-      consecutiveFailures = 0;
-      if (recoveredAfterFailure) void reverifyIdentity("active-task-poll-recovered");
-      await settleTerminalTasks(projectId, graphTarget, consumeTerminalTasks(next), () => !stopped);
-      // The awaits above can outlive this effect; a stopped poll applies nothing.
-      if (stopped) return;
-      replaceTasks(next, tasksRead);
-      if (next.some(isActiveTask)) schedule(1000);
-    };
-    schedule(500);
-    return () => {
-      stopped = true;
-      window.clearTimeout(timer);
-    };
-  }, [
-    consumeTerminalTasks,
-    graphPath,
-    hasActiveTasks,
-    isActiveProject,
-    projectId,
-    graphTarget,
-    beginTasksRead,
-    replaceTasks,
-    reverifyIdentity,
-    settleTerminalTasks,
-  ]);
-
-  useEffect(() => {
-    if (!projectId || !watchersAwaitingDelivery) return;
-    const requestedProjectId = projectId;
-    const base = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
-    let stopped = false;
-    let timer = 0;
-    const schedule = () => {
-      timer = window.setTimeout(() => void poll(), 5000);
-    };
-    const poll = async () => {
-      const requestId = beginProjectSnapshotRequest(requestedProjectId);
-      const tasksRead = beginTasksRead();
-      try {
-        const {
-          watchers: nextWatchers,
-          tasks: nextTasks,
-          project: nextProject,
-        } = await loadExperimentWatcherPoll(api, base, graphTarget);
-        if (
-          !stopped &&
-          isActiveProject(requestedProjectId) &&
-          projectSnapshotRequestIsCurrent(requestedProjectId, requestId)
-        ) {
-          const hasUnseenWatcherResults = recordWatcherResults(nextTasks);
-          const applied = applyProjectSnapshot(
-            nextProject,
-            authoritativeProjectId.current === requestedProjectId,
-            { projectId: requestedProjectId, requestId },
-          );
-          if (!applied) return;
-          authoritativeProjectId.current = requestedProjectId;
-          setProjectReconciliation("authoritative");
-          setWatchers(nextWatchers);
-          replaceTasks(nextTasks, tasksRead);
-          if (hasUnseenWatcherResults) {
-            void refreshChatSummaries(requestedProjectId, base).catch((error) => {
-              if (!stopped && isActiveProject(requestedProjectId)) {
-                reportErrorNotice(
-                  `Chats could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
-                );
-              }
-            });
-          }
-        }
-      } catch (error) {
-        if (!stopped && isActiveProject(requestedProjectId)) {
-          reportErrorNotice(
-            `Watcher status could not refresh: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        }
-      } finally {
-        if (!stopped) schedule();
-      }
-    };
-    schedule();
-    return () => {
-      stopped = true;
-      window.clearTimeout(timer);
-    };
-  }, [
-    applyProjectSnapshot,
-    graphPath,
-    isActiveGraph,
-    beginProjectSnapshotRequest,
-    isActiveProject,
-    projectId,
-    projectSnapshotRequestIsCurrent,
-    graphTarget,
-    recordWatcherResults,
-    refreshChatSummaries,
-    beginTasksRead,
-    replaceTasks,
-    reportErrorNotice,
-    watchersAwaitingDelivery,
   ]);
 
   const pendingProposals = useMemo(
@@ -3402,7 +2861,7 @@ function MemberApp({
         await reloadAuthoritativeProject(requestedProjectId);
       } else {
         // The saved draft is reconciled against its exact target on next open.
-        if (expectedHead.target.kind === "main") await heartbeatProjectCache(requestedProjectId);
+        scheduler.now();
       }
     };
     try {
@@ -3541,6 +3000,11 @@ function MemberApp({
     ): Promise<AgentTask> => {
       const finishTaskStart = beginTaskStart();
       if (!finishTaskStart) throw new Error("Another task start is already being submitted.");
+      const admissionId = requestId ?? crypto.randomUUID();
+      const mutation =
+        projectId && (kind === "node_chat" || kind === "project_chat")
+          ? beginChatSend(store, projectId, graphTarget, kind, request, admissionId)
+          : null;
       try {
         const task = await api<AgentTask>(
           kind === "node_chat" || kind === "project_chat"
@@ -3549,27 +3013,40 @@ function MemberApp({
           {
             method: "POST",
             body: JSON.stringify(request),
-            ...(requestId ? { headers: { "Idempotency-Key": requestId } } : {}),
+            headers: { "Idempotency-Key": admissionId },
           },
           // A keyed start can be sent again safely, so a lost request ends
           // instead of holding the start lock with no answer.
-          requestId ? { attemptTimeoutMs: IDEMPOTENT_TASK_START_TIMEOUT_MS } : {},
+          { attemptTimeoutMs: IDEMPOTENT_TASK_START_TIMEOUT_MS },
         );
         if (
           (kind === "node_chat" || kind === "project_chat") &&
           !sameGraphTarget(task.graph_target, graphTarget)
         )
           throw new Error("Conversation start returned a different graph target.");
+        mutation?.settle(task);
         if (projectId && isActiveGraph(projectId)) {
           recordStartedTask(task);
           setNotice(null);
         }
         return task;
+      } catch (error) {
+        mutation?.fail(error);
+        throw error;
       } finally {
         finishTaskStart();
       }
     },
-    [apiBase, graphPath, graphTarget, projectId, isActiveGraph, beginTaskStart, recordStartedTask],
+    [
+      apiBase,
+      graphPath,
+      graphTarget,
+      projectId,
+      isActiveGraph,
+      beginTaskStart,
+      recordStartedTask,
+      store,
+    ],
   );
   const loadWebMcpConversation = useCallback(
     (chatId: string) => loadChatTranscript(apiBase, chatId, api, graphTarget),
@@ -3652,24 +3129,43 @@ function MemberApp({
       if (experimentStopIds.has(episodeId))
         throw new Error("This Experiment Stop is already being submitted.");
       const finishExperimentStop = beginExperimentStop(episodeId);
+      const stopping = projectTasks
+        .filter((task) => task.episode_id === episodeId && isActiveTask(task))
+        .map((task) => ({
+          task,
+          mutation: beginTaskMutation(store, task.project_id, task, "stop"),
+        }));
       try {
         // The exact-episode endpoint resolves its own target, independently of this page.
         await api<unknown>(experimentStopPath(apiBase, nodeId, episodeId), {
           method: "POST",
         });
+        for (const { mutation } of stopping) mutation.settle();
+        scheduler.now();
         try {
-          await Promise.all([reload(), refreshExperimentLoops()]);
+          await refreshExperimentLoops();
         } catch (error) {
           setNotice({
             kind: "error",
             text: `Stop was requested, but Runs could not refresh: ${error instanceof Error ? error.message : String(error)}`,
           });
         }
+      } catch (error) {
+        for (const { mutation } of stopping) mutation.fail(error);
+        throw error;
       } finally {
         finishExperimentStop();
       }
     },
-    [apiBase, beginExperimentStop, experimentStopIds, refreshExperimentLoops, reload],
+    [
+      apiBase,
+      beginExperimentStop,
+      experimentStopIds,
+      refreshExperimentLoops,
+      projectTasks,
+      scheduler,
+      store,
+    ],
   );
   const stopExperimentLoop = useCallback(
     async (nodeId: string, episodeId: string) => {
@@ -3988,14 +3484,24 @@ function MemberApp({
       if (!apiBase) throw new Error("No RCP project is open.");
       const finishEpisodeAction = beginEpisodeAction(`stop:${episodeId}`);
       if (!finishEpisodeAction) throw new Error("Wait for the current episode action to finish.");
+      const stopping = projectTasks
+        .filter((task) => task.episode_id === episodeId && isActiveTask(task))
+        .map((task) => ({
+          task,
+          mutation: beginTaskMutation(store, task.project_id, task, "stop"),
+        }));
       try {
         replaceEpisode(await stopEpisode(apiBase, episodeId));
-        await refreshEpisodes();
+        for (const { mutation } of stopping) mutation.settle();
+        scheduler.now();
+      } catch (error) {
+        for (const { mutation } of stopping) mutation.fail(error);
+        throw error;
       } finally {
         finishEpisodeAction();
       }
     },
-    [apiBase, beginEpisodeAction, refreshEpisodes, replaceEpisode],
+    [apiBase, beginEpisodeAction, projectTasks, replaceEpisode, scheduler, store],
   );
   const requestEpisodeStop = async (episodeId: string) => {
     try {
@@ -4118,43 +3624,29 @@ function MemberApp({
     action: "pause" | "resume" | "retry",
     presentTask = true,
   ) => {
-    if (taskActionId) return;
+    if (taskActionId || !projectId) return;
     if (action !== "pause" && mutationsDisabled && taskMayMutateGraph(task)) return;
-    const finishTaskAction = beginTaskAction(task.operation_id);
-    if (!finishTaskAction) return;
-    let recoveryStarted = false;
+    const finish = beginTaskAction(task.operation_id);
+    if (!finish) return;
+    const mutation = beginTaskMutation(store, projectId, task, action);
+    const admissionKey = JSON.stringify([projectId, task.operation_id, action]);
+    const requestId = taskActionRequestIds.current.get(admissionKey) ?? crypto.randomUUID();
+    taskActionRequestIds.current.set(admissionKey, requestId);
     try {
       const next = await api<AgentTask>(`${apiBase}/tasks/${task.operation_id}/${action}`, {
         method: "POST",
+        headers: { "Idempotency-Key": requestId },
       });
-      recoveryStarted = true;
-      upsertTask(next);
-      if (presentTask) presentAgentTask(next);
-      setNotice(null);
-      if (taskActionNeedsAuthoritativeProjectReload(task, action)) await reload();
-    } catch (caught) {
-      const taskError = caught instanceof Error ? caught.message : String(caught);
-      if (recoveryStarted) {
-        setNotice({
-          kind: "error",
-          text: `Recovery started, but Runs could not refresh: ${taskError}`,
-        });
-        return;
-      }
-      if (taskActionNeedsAuthoritativeProjectReload(task, action)) {
-        try {
-          await reload();
-        } catch (reloadError) {
-          setNotice({
-            kind: "error",
-            text: `${taskError} Runs could not refresh: ${reloadError instanceof Error ? reloadError.message : String(reloadError)}`,
-          });
-          return;
-        }
-      }
-      setNotice({ kind: "error", text: taskError });
+      taskActionRequestIds.current.delete(admissionKey);
+      mutation.settle(next);
+      if (presentTask && isActiveGraph(task.project_id)) presentAgentTask(next);
+      scheduler.now();
+    } catch (error) {
+      if (error instanceof ApiError && error.status < 500)
+        taskActionRequestIds.current.delete(admissionKey);
+      mutation.fail(error);
     } finally {
-      finishTaskAction();
+      finish();
     }
   };
 
@@ -4207,31 +3699,33 @@ function MemberApp({
   };
 
   const retryAgentTask = async (task: AgentTask, config: AgentRunConfig) => {
-    if (taskActionId || mutationsDisabled) return;
-    const finishTaskAction = beginTaskAction(task.operation_id);
-    if (!finishTaskAction) return;
-    let recoveryStarted = false;
+    if (taskActionId || mutationsDisabled || !projectId) return;
+    const finish = beginTaskAction(task.operation_id);
+    if (!finish) return;
+    const mutation = beginTaskMutation(store, projectId, task, "retry");
+    const body = JSON.stringify(taskRetryRequestBody(task, config));
+    const admissionKey = JSON.stringify([projectId, task.operation_id, "retry", body]);
+    const requestId = taskActionRequestIds.current.get(admissionKey) ?? crypto.randomUUID();
+    taskActionRequestIds.current.set(admissionKey, requestId);
     try {
       const next = await api<AgentTask>(`${apiBase}/tasks/${task.operation_id}/retry`, {
         method: "POST",
-        body: JSON.stringify(taskRetryRequestBody(task, config)),
+        headers: { "Idempotency-Key": requestId },
+        body,
       });
-      recoveryStarted = true;
-      upsertTask(next);
-      if (!isExperimentLoopRecovery(task)) presentAgentTask(next);
-      closeRetryTask();
-      setNotice(null);
-      if (isExperimentLoopRecovery(task)) await reload();
-    } catch (caught) {
-      const taskError = caught instanceof Error ? caught.message : String(caught);
-      setNotice({
-        kind: "error",
-        text: recoveryStarted
-          ? `Recovery started, but Runs could not refresh: ${taskError}`
-          : taskError,
-      });
+      taskActionRequestIds.current.delete(admissionKey);
+      mutation.settle(next);
+      if (isActiveGraph(task.project_id)) {
+        if (!isExperimentLoopRecovery(task)) presentAgentTask(next);
+        closeRetryTask();
+      }
+      scheduler.now();
+    } catch (error) {
+      if (error instanceof ApiError && error.status < 500)
+        taskActionRequestIds.current.delete(admissionKey);
+      mutation.fail(error);
     } finally {
-      finishTaskAction();
+      finish();
     }
   };
 
@@ -5283,6 +4777,7 @@ function MemberApp({
   const phonePrimaryViews = new Set<AppView>(["overview", "attention", "scientific", "execution"]);
   const projectDock = (
     <ProjectDock
+      sync={refreshHealth.sync}
       tabs={openProjectTabs}
       activeProjectId={projectId}
       onActivate={activateProjectTab}
@@ -5782,7 +5277,11 @@ function MemberApp({
               writesDisabled={mutationsDisabled}
               spaceKind={verifiedHealth?.space_kind ?? "personal"}
               onRefreshReadiness={refreshReadiness}
-              readinessRequest={providerReadinessRequests[project.id]}
+              readinessRequest={{
+                pending: settingsResource.loading,
+                providerError: settingsResource.error ? String(settingsResource.error) : null,
+                computeError: settingsResource.error ? String(settingsResource.error) : null,
+              }}
               onMovePersonalProjectToTeam={movePersonalProjectToTeam}
               consolidation={consolidation}
               consolidationError={consolidationError}
@@ -5793,11 +5292,7 @@ function MemberApp({
                 );
               }}
               onSaved={(saved, retention = RETAIN_ALL_PROJECT_READINESS) => {
-                invalidateProjectReadinessGenerations(
-                  projectReadinessGenerations.current,
-                  saved.id,
-                  retention,
-                );
+                store.invalidate(resourceKeyId(settingsProfile(saved.id).key));
                 beginProjectSnapshotRequest(saved.id);
                 if (graphTarget.kind === "main")
                   updateProject((current) =>
@@ -6144,6 +5639,9 @@ function MemberApp({
             mutationsDisabled && inspectedTask && taskMayMutateGraph(inspectedTask),
           )}
           onSelect={selectTaskInspector}
+          onStop={() => {
+            if (inspectedTask?.episode_id) void requestEpisodeStop(inspectedTask.episode_id);
+          }}
           onPause={() => inspectedTask && void operateTask(inspectedTask, "pause")}
           onResume={() => inspectedTask && void operateTask(inspectedTask, "resume")}
           onRetry={() => inspectedTask && requestRetry(inspectedTask)}

@@ -1,17 +1,15 @@
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
 import { graphTargetFromHash } from "../core/graphTarget";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { MessageCircle, PanelRight, X } from "lucide-react";
-import { api, ApiError } from "../core/api";
+import { MessageCircle, PanelRight, RefreshCw, X } from "lucide-react";
+import { api } from "../core/api";
 import {
-  announceArtifactVersionChange,
   closeArtifactViewer,
   openArtifact,
   openEpisodeReport,
   publishDockedArtifact,
   useArtifactViewerHidden,
   useArtifactViewerTarget,
-  type ArtifactViewerTarget,
 } from "./artifactViewerModel";
 import {
   acceptsArtifactEditMessage,
@@ -21,14 +19,15 @@ import {
   parseViewerPlacement,
   type ViewerPlacement,
 } from "./artifactViewerLayout";
-import { artifactPopupTarget, isPermanentArtifactError } from "./artifactViewerRequests";
+import { artifactPopupTarget } from "./artifactViewerRequests";
 import { parseProjectHash } from "../experiments/experimentBoardModel";
 import { listenDesktopEvent } from "../core/desktopRuntime";
 import { StoredArtifactDownload } from "./StoredArtifactDownload";
 import { errorMessage } from "../core/errors";
-import { startLiveEpisodePolling } from "../experiments/useEpisodeDialogs";
+import { useResource, useRefreshRuntime } from "../core/useResource";
+import { resourceKeyId } from "../core/resourceStore";
+import { artifactStateProfile } from "./artifactResources";
 import { repositoryFilePreviewUrl } from "../core/repositoryFileLinks";
-import type { ArtifactViewerState } from "../core/types";
 import { DraggableWindow } from "../ui/DraggableWindow";
 import "../styles/artifact-viewer.css";
 
@@ -53,17 +52,19 @@ export function ArtifactViewer() {
   const target = useArtifactViewerTarget();
   const hidden = useArtifactViewerHidden();
   const [placement, setPlacement] = useState(readPlacement);
-  const [loaded, setLoaded] = useState<{
-    target: ArtifactViewerTarget;
-    state: ArtifactViewerState;
-  } | null>(null);
-  const state = loaded?.target === target ? loaded.state : null;
+  const { store } = useRefreshRuntime();
+  const profile =
+    target?.kind === "artifact" ? artifactStateProfile(target.projectId, target.artifactId) : null;
+  const resource = useResource("artifact-viewer", profile);
+  const state = resource.value;
   const [error, setError] = useState("");
   const [editing, setEditing] = useState(false);
   const [undoing, setUndoing] = useState(false);
   const [reload, setReload] = useState(0);
   const iframe = useRef<HTMLIFrameElement>(null);
-  const refresh = useRef<() => Promise<void>>(async () => {});
+  const refresh = () => {
+    if (profile) store.invalidate(resourceKeyId(profile.key));
+  };
   const requestGeneration = useRef(0);
   const updatePlacement = (next: ViewerPlacement) => {
     setPlacement(next);
@@ -78,7 +79,8 @@ export function ArtifactViewer() {
   }, []);
 
   useEffect(() => {
-    setLoaded(null);
+    requestGeneration.current += 1;
+    previousVersion.current = null;
     setError("");
     setEditing(false);
     setUndoing(false);
@@ -112,57 +114,15 @@ export function ArtifactViewer() {
   }, []);
 
   const collapsed = placement.collapsed;
+  const previousVersion = useRef<string | null>(null);
   useEffect(() => {
-    const generation = ++requestGeneration.current;
-    if (!target || target.kind !== "artifact" || collapsed || hidden) return;
-    let disposed = false;
-    let permanentError = false;
-    const controller = new AbortController();
-    let pending: Promise<void> | null = null;
-    let latest: ArtifactViewerState | null = null;
-    let editStarted = false;
-    let editSignal = 0;
-    const url = `/api/projects/${encodeURIComponent(target.projectId)}/artifacts/${encodeURIComponent(target.artifactId)}`;
-    const load = (): Promise<void> => {
-      if (disposed || permanentError || document.visibilityState !== "visible")
-        return Promise.resolve();
-      if (pending) return pending;
-      const signalAtStart = editSignal;
-      pending = api<ArtifactViewerState>(`${url}/state`, { signal: controller.signal })
-        .then((next) => {
-          if (disposed || generation !== requestGeneration.current) return;
-          if (artifactVersionChanged(latest?.current_version ?? null, next.current_version)) {
-            setReload((value) => value + 1);
-            announceArtifactVersionChange(target.artifactId);
-          }
-          latest = next;
-          if (signalAtStart === editSignal) editStarted = Boolean(next.editing_operation_id);
-          setLoaded({ target, state: next });
-          setEditing(editStarted);
-          setError("");
-        })
-        .catch((failure) => {
-          if (disposed) return;
-          if (failure instanceof ApiError)
-            permanentError = isPermanentArtifactError(failure.status);
-          throw failure;
-        })
-        .finally(() => {
-          pending = null;
-        });
-      return pending;
-    };
-    refresh.current = async () => {
-      await pending?.catch(() => {});
-      permanentError = false;
-      await load();
-    };
-    const showError = (failure: unknown) => {
-      if (!disposed) setError(errorMessage(failure));
-    };
-    const visible = () => {
-      void load().catch(showError);
-    };
+    if (state && artifactVersionChanged(previousVersion.current, state.current_version))
+      setReload((value) => value + 1);
+    previousVersion.current = state?.current_version ?? null;
+    setEditing(Boolean(state?.editing_operation_id));
+  }, [state]);
+  useEffect(() => {
+    if (!target || target.kind !== "artifact") return;
     const message = (event: MessageEvent) => {
       if (
         !acceptsArtifactEditMessage(
@@ -173,27 +133,14 @@ export function ArtifactViewer() {
         )
       )
         return;
-      editSignal += 1;
-      editStarted = true;
       setEditing(true);
-      // The following poll observes publication even when the shell's Send response
-      // arrived while a previous state request was still in flight.
+      store.invalidate(
+        resourceKeyId(artifactStateProfile(target.projectId, target.artifactId).key),
+      );
     };
     window.addEventListener("message", message);
-    document.addEventListener("visibilitychange", visible);
-    visible();
-    const stop = startLiveEpisodePolling(window, load, showError, () => {});
-    return () => {
-      disposed = true;
-      controller.abort();
-      stop();
-      window.removeEventListener("message", message);
-      document.removeEventListener("visibilitychange", visible);
-      // The shell's own Keep changes nothing an inline copy watches, so the copies
-      // reread their state when the panel lets go of the artifact.
-      announceArtifactVersionChange(target.artifactId);
-    };
-  }, [target, collapsed, hidden]);
+    return () => window.removeEventListener("message", message);
+  }, [target, store]);
 
   const title = !target
     ? null
@@ -221,10 +168,7 @@ export function ArtifactViewer() {
         { method: "POST" },
       );
       if (generation !== requestGeneration.current) return;
-      await refresh.current();
-      if (generation !== requestGeneration.current) return;
-      setReload((value) => value + 1);
-      announceArtifactVersionChange(target.artifactId);
+      refresh();
     } catch (failure) {
       if (generation === requestGeneration.current) setError(errorMessage(failure));
     } finally {
@@ -239,6 +183,9 @@ export function ArtifactViewer() {
       focusRequestToken={target.kind === "artifact" ? target.artifactId : target.path}
     >
       <header
+        style={
+          error || resource.error ? { borderBottom: "2px solid var(--danger, #b42318)" } : undefined
+        }
         className="artifact-viewer-header"
         data-drag-handle
         tabIndex={0}
@@ -250,6 +197,19 @@ export function ArtifactViewer() {
           updatePlacement(toggleViewerFullscreen(placement));
         }}
       >
+        {Boolean(error || resource.error) && (
+          <button
+            className="artifact-viewer-control"
+            aria-label="Retry artifact"
+            title={error || errorMessage(resource.error)}
+            onClick={() => {
+              setError("");
+              refresh();
+            }}
+          >
+            <RefreshCw size={16} />
+          </button>
+        )}
         <strong title={title}>{title}</strong>
         {state?.live && (
           <span className={`artifact-viewer-status ${state.live}`}>
@@ -297,18 +257,6 @@ export function ArtifactViewer() {
           <X size={16} />
         </button>
       </header>
-      {error && (
-        <div className="artifact-viewer-error" role="alert">
-          {error}
-          <button
-            onClick={() =>
-              void refresh.current().catch((failure) => setError(errorMessage(failure)))
-            }
-          >
-            Retry
-          </button>
-        </div>
-      )}
       {source ? (
         <iframe
           ref={iframe}

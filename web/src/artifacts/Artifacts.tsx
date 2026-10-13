@@ -2,7 +2,7 @@ import { parseProjectHash } from "../experiments/experimentBoardModel";
 import { graphTargetFromHash } from "../core/graphTarget";
 import { setReferenceDrag } from "../core/projectReferences";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
-import { useEffect, useState, type MouseEvent } from "react";
+import { useState, type MouseEvent } from "react";
 import {
   Download,
   ExternalLink,
@@ -11,15 +11,15 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { openArtifact } from "./artifactViewerModel";
-import { api } from "../core/api";
+import { resourceKeyId } from "../core/resourceStore";
+import { useRefreshRuntime } from "../core/useResource";
+import { useProjectResource } from "../projects/projectResources";
+import { artifactsProfile } from "./artifactResources";
 import { isDesktopRuntime, openDesktopArtifactPdf } from "../core/desktopRuntime";
 import { StoredArtifactDownload } from "./StoredArtifactDownload";
 import { EpisodeAuthor } from "../experiments/EpisodeRunControls";
 import type { GraphRef, ProjectArtifact } from "../core/types";
 import { BranchTag } from "../core/BranchTag";
-
-// The last list per project survives tab switches; a revisit refreshes it in place.
-const cachedEntries = new Map<string, ProjectArtifact[]>();
 
 export function Artifacts({
   projectId,
@@ -33,42 +33,13 @@ export function Artifacts({
   nodeTitle: (nodeId: string) => string | null;
   onOpenNode: (nodeId: string) => void;
 }) {
-  const [entries, setEntries] = useState<ProjectArtifact[] | null>(
-    () => cachedEntries.get(projectId) ?? null,
-  );
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [refresh, setRefresh] = useState(0);
-  // Names are resolved by the server, so a rename rereads the inventory.
-  const branchNamesKey = (graphRefs ?? []).map((ref) => `${ref.branch_id}:${ref.name}`).join();
-
-  useEffect(() => {
-    const controller = new AbortController();
-    setLoading(true);
-    setError(null);
-    void api<ProjectArtifact[]>(`/api/projects/${encodeURIComponent(projectId)}/artifacts`, {
-      signal: controller.signal,
-    })
-      .then((result) => {
-        if (controller.signal.aborted) return;
-        cachedEntries.set(projectId, result);
-        setEntries(result);
-      })
-      .catch((cause) => {
-        if (!controller.signal.aborted)
-          setError(cause instanceof Error ? cause.message : String(cause));
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
-      });
-    return () => controller.abort();
-  }, [projectId, refresh, branchNamesKey]);
-
-  useEffect(() => {
-    const onFocus = () => setRefresh((value) => value + 1);
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
-  }, []);
+  const { store } = useRefreshRuntime();
+  const profile = artifactsProfile(projectId);
+  const resource = useProjectResource(profile);
+  const entries = resource.value ?? null;
+  const loading = resource.loading;
+  const [actionError, setError] = useState<string | null>(null);
+  const error = actionError || (resource.error ? String(resource.error) : null);
 
   const open = async (
     event: MouseEvent<HTMLAnchorElement | HTMLButtonElement>,
@@ -96,18 +67,26 @@ export function Artifacts({
   };
 
   return (
-    <section className="view-panel artifacts-view" aria-label="Artifacts">
+    <section
+      className="view-panel artifacts-view"
+      aria-label="Artifacts"
+      style={error ? { border: "1px solid var(--danger, #b42318)" } : undefined}
+    >
       <div className="view-heading artifacts-heading">
         <h2>Artifacts</h2>
         <button
           className="button compact secondary"
-          disabled={loading}
-          onClick={() => setRefresh((value) => value + 1)}
+          disabled={loading && !error}
+          aria-label="Refresh artifacts"
+          title={error ?? "Refresh artifacts"}
+          onClick={() => {
+            setError(null);
+            store.invalidate(resourceKeyId(profile.key));
+          }}
         >
-          <RefreshCw size={14} /> Refresh
+          <RefreshCw size={14} />
         </button>
       </div>
-      {error && <p role="alert">{error}</p>}
       {entries === null ? (
         loading && <p role="status">Loading artifacts…</p>
       ) : !error && entries.length === 0 ? (

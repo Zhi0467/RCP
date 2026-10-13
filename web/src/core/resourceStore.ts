@@ -53,6 +53,8 @@ interface ResourceState {
   profile: ResourceProfile<unknown>;
   /** Registrations per owner; one owner may register a key more than once. */
   owners: Map<string, number>;
+  /** Owners keeping a visited view cached without polling it. */
+  dormant: Set<string>;
   value: unknown;
   hasValue: boolean;
   committed: string | undefined;
@@ -141,6 +143,7 @@ export class ResourceStore {
       state = {
         profile: profile as ResourceProfile<unknown>,
         owners: new Map(),
+        dormant: new Set(),
         value: undefined,
         hasValue: false,
         committed: undefined,
@@ -163,6 +166,7 @@ export class ResourceStore {
       state.profile = profile as ResourceProfile<unknown>;
     }
     state.owners.set(owner, (state.owners.get(owner) ?? 0) + 1);
+    state.dormant.delete(owner);
     this.pump();
     return id;
   }
@@ -179,13 +183,41 @@ export class ResourceStore {
       const count = state?.owners.get(owner);
       if (!state || count === undefined) continue;
       if (ids && count > 1) state.owners.set(owner, count - 1);
-      else state.owners.delete(owner);
+      else {
+        state.owners.delete(owner);
+        state.dormant.delete(owner);
+      }
       if (state.owners.size > 0) continue;
       state.inFlight?.abort();
       this.states.delete(id);
       removed = true;
     }
     if (removed) this.notify();
+  }
+
+  /**
+   * Keeps `owner`'s views of `ids` cached without polling them; `register`
+   * resumes them, and a resumed view rereads before it counts as current.
+   */
+  suspend(owner: string, ids: Iterable<string>): void {
+    for (const id of ids) {
+      const state = this.states.get(id);
+      if (!state?.owners.has(owner)) continue;
+      state.dormant.add(owner);
+      if (this.watched(state)) continue;
+      this.fence(state);
+      state.generation += 1;
+      state.observed = undefined;
+      state.owed = true;
+    }
+  }
+
+  private watched(state: ResourceState): boolean {
+    return state.owners.size > state.dormant.size;
+  }
+
+  isActiveProject(project: string): boolean {
+    return this.activeProject === project;
   }
 
   /** Every resource of a project the member can no longer read. */
@@ -218,7 +250,7 @@ export class ResourceStore {
     const seen = new Map<string, ResourceRequest>();
     for (const state of this.states.values()) {
       const key = state.profile.key;
-      if (key.project !== project) continue;
+      if (key.project !== project || !this.watched(state)) continue;
       const entry: ResourceRequest = { name: key.name };
       if (key.ref !== undefined) entry.ref = key.ref;
       if (key.entity !== undefined) entry.entity = key.entity;
@@ -253,7 +285,7 @@ export class ResourceStore {
     );
     for (const state of this.states.values()) {
       const key = state.profile.key;
-      if (key.project !== project) continue;
+      if (key.project !== project || !this.watched(state)) continue;
       const version = versions.get(watermarkId(project, key));
       if (version !== undefined) state.observed = version;
     }
@@ -261,7 +293,7 @@ export class ResourceStore {
   }
 
   private owes(state: ResourceState): boolean {
-    if (state.inFlight || state.retryAt > this.now()) return false;
+    if (!this.watched(state) || state.inFlight || state.retryAt > this.now()) return false;
     return !state.hasValue || state.owed || state.committed !== state.observed;
   }
 
@@ -425,6 +457,11 @@ export class ResourceStore {
     state.owed = true;
     state.retryAt = 0;
     this.pump();
+  }
+
+  /** Accepted data only, for response merges that must not persist other overlays. */
+  committedValue<T>(id: string): T | undefined {
+    return this.states.get(id)?.value as T | undefined;
   }
 
   view<T>(id: string): ResourceView<T> {

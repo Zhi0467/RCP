@@ -1,12 +1,12 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { FileX, Maximize2, MessageSquarePlus } from "lucide-react";
-import { api } from "../core/api";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { FileX, Maximize2, MessageSquarePlus, RefreshCw } from "lucide-react";
+import { useResource, useRefreshRuntime } from "../core/useResource";
+import { resourceKeyId } from "../core/resourceStore";
+import { artifactStateProfile } from "./artifactResources";
 import { errorMessage } from "../core/errors";
-import type { AgentArtifactDescriptor, ArtifactViewerState } from "../core/types";
-import { onArtifactVersionChange } from "./artifactViewerModel";
+import type { AgentArtifactDescriptor } from "../core/types";
 import {
   INLINE_ARTIFACT_INITIAL_HEIGHT,
-  INLINE_ARTIFACT_LIVE_STATE_REFRESH_MS,
   inlineViewerUrl,
   readInlineShellMessage,
   type InlineSelection,
@@ -51,7 +51,6 @@ export function InlineArtifact({
   projectId,
   artifact,
   title,
-  refreshToken,
   canComment,
   keeping,
   actionError,
@@ -65,14 +64,17 @@ export function InlineArtifact({
   const host = useRef<HTMLSpanElement>(null);
   const frame = useRef<HTMLIFrameElement>(null);
   const [near, setNear] = useState(false);
-  const [state, setState] = useState<ArtifactViewerState | null>(null);
-  const [error, setError] = useState("");
+  const { store } = useRefreshRuntime();
+  const owner = useId();
+  const resource = useResource(
+    `${projectId}:inline:${owner}`,
+    near ? artifactStateProfile(projectId, artifact.artifact_id) : null,
+  );
+  const state = resource.value;
+  const error = resource.error ? errorMessage(resource.error) : "";
   const [pageError, setPageError] = useState<{ message: string; count: number } | null>(null);
   const [height, setHeight] = useState(INLINE_ARTIFACT_INITIAL_HEIGHT);
   const [commentMode, setCommentMode] = useState(false);
-  // Bumped when a version moves without a turn settling: Undo in the viewer, or
-  // a return to this page after another member's edit.
-  const [stateGeneration, setStateGeneration] = useState(0);
   const commentModeRef = useRef(commentMode);
   commentModeRef.current = commentMode;
   const onSelectionRef = useRef(onSelection);
@@ -102,23 +104,6 @@ export function InlineArtifact({
     return () => observer.disconnect();
   }, [near]);
 
-  useEffect(() => {
-    if (!near) return;
-    const controller = new AbortController();
-    api<ArtifactViewerState>(
-      `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact.artifact_id)}/state`,
-      { signal: controller.signal },
-    )
-      .then((next) => {
-        setState(next);
-        setError("");
-      })
-      .catch((failure) => {
-        if (!controller.signal.aborted) setError(errorMessage(failure));
-      });
-    return () => controller.abort();
-  }, [near, projectId, artifact.artifact_id, refreshToken, stateGeneration]);
-
   // A new version replaces the frame, so a comment staged on the old one has no
   // region left to point at.
   const shownVersion = useRef<string | null>(null);
@@ -130,32 +115,6 @@ export function InlineArtifact({
     shownVersion.current = currentVersion;
     setPageError(null);
   }, [currentVersion]);
-
-  // A live page saves its final snapshot without settling a turn or moving its
-  // version, so while live the caption rechecks on a slow beat to read Finished.
-  const live = state?.live === "live";
-  useEffect(() => {
-    if (!live) return;
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") setStateGeneration((value) => value + 1);
-    }, INLINE_ARTIFACT_LIVE_STATE_REFRESH_MS);
-    return () => window.clearInterval(timer);
-  }, [live]);
-
-  useEffect(() => {
-    const bump = () => setStateGeneration((value) => value + 1);
-    const stop = onArtifactVersionChange((artifactId) => {
-      if (artifactId === artifact.artifact_id) bump();
-    });
-    const visible = () => {
-      if (document.visibilityState === "visible") bump();
-    };
-    document.addEventListener("visibilitychange", visible);
-    return () => {
-      stop();
-      document.removeEventListener("visibilitychange", visible);
-    };
-  }, [artifact.artifact_id]);
 
   useEffect(() => {
     const message = (event: MessageEvent) => {
@@ -229,6 +188,7 @@ export function InlineArtifact({
     <span
       ref={host}
       className={`chat-inline-artifact ${artifact.view}${commentMode ? " commenting" : ""}`}
+      style={error ? { border: "1px solid var(--danger, #b42318)" } : undefined}
       data-artifact-id={artifact.artifact_id}
     >
       {source ? (
@@ -247,7 +207,19 @@ export function InlineArtifact({
           style={{ height: error ? undefined : INLINE_ARTIFACT_INITIAL_HEIGHT }}
           role={error ? "alert" : "status"}
         >
-          {error ? `${title}: ${error}` : null}
+          {error && (
+            <button
+              aria-label="Retry artifact"
+              title={error}
+              onClick={() =>
+                store.invalidate(
+                  resourceKeyId(artifactStateProfile(projectId, artifact.artifact_id).key),
+                )
+              }
+            >
+              <RefreshCw size={14} />
+            </button>
+          )}
         </span>
       )}
       <span className="chat-inline-artifact-bar">

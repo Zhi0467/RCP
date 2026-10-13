@@ -2417,6 +2417,10 @@ export interface ArtifactContextRequest {
 }
 
 export interface AgentTask {
+  /** Local command feedback; never sent to the backend. */
+  action_error?: string;
+  action_error_action?: "pause" | "resume" | "retry" | "stop";
+  action_pending?: "pause" | "resume" | "retry" | "stop";
   operation_id: string;
   project_id: string;
   kind: AgentTaskKind;

@@ -20,10 +20,6 @@ export const CONSOLIDATION_SETTINGS_ANCHOR = "project-consolidation";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export function loadConsolidation(apiBase: string): Promise<ConsolidationView> {
-  return api<ConsolidationView>(`${apiBase}/consolidation`);
-}
-
 export function enableConsolidation(
   apiBase: string,
   localTime: string,
@@ -49,10 +45,6 @@ export function resolveConsolidationRun(
     method: "POST",
     body: JSON.stringify({}),
   });
-}
-
-export function loadLessons(apiBase: string): Promise<{ lessons: Lesson[] }> {
-  return api(`${apiBase}/lessons`);
 }
 
 export function addLesson(apiBase: string, text: string): Promise<{ lesson: Lesson }> {
