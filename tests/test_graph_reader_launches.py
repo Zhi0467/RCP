@@ -50,11 +50,12 @@ def history_handlers(monkeypatch):
 
 
 class _HistoryLauncher:
-    def __init__(self, service, handlers, *, kind, succeed=True):
+    def __init__(self, service, handlers, *, kind, succeed=True, during_provider=None):
         self.service = service
         self.handlers = handlers
         self.kind = kind
         self.succeed = succeed
+        self.during_provider = during_provider
         self.calls = 0
         self.masters = []
         self.prompts = []
@@ -87,6 +88,8 @@ class _HistoryLauncher:
         if self.kind in {"discuss", "paper_coach"}:
             response = await handler(_apply_request("forbidden"), identity)
             assert response.status == "invalid", response
+        if self.during_provider is not None:
+            self.during_provider()
         yield AgentEvent(event="session", session_id="reader-session")
         if not self.succeed:
             yield AgentEvent(event="error", text="provider failed")
@@ -175,92 +178,93 @@ def test_graph_reader_master_commands_and_committed_observation(
     assert (seen is not None) == succeed
 
 
+@pytest.fixture
+def seeded_app(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    append_fixture_patch(app.state.service, seed_patch())
+    return app
+
+
+async def _check_launch(launcher, frames):
+    events = [
+        AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
+        async for frame in frames
+    ]
+    assert launcher.calls == 1
+    assert not [event.text for event in events if event.event == "error"]
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["consolidation", "experiment", "auto_actor", "auto_child"])
-async def test_episode_and_consolidation_history_launches(
-    manifest, tmp_path, history_handlers, kind
-):
-    from rcp.runs.tasks.auto_research_child_work import stream_auto_research_child_work_run
+async def test_consolidation_history_launch(seeded_app, tmp_path, history_handlers):
+    from .test_consolidation_work import _admit
+
+    service = seeded_app.state.service
+    request, execution = _admit(seeded_app)
+    launcher = _HistoryLauncher(service, history_handlers, kind="consolidation")
+    await _check_launch(
+        launcher,
+        stream_work_run(service, launcher, request, tmp_path / "data", execution=execution),
+    )
+
+
+@pytest.mark.asyncio
+async def test_experiment_history_launch(seeded_app, tmp_path, history_handlers):
     from rcp.runs.tasks.experiment_loop import stream_experiment_loop_task
+
+    from .test_experiment_loop_agent_io import _execution, _experiment_patch, _loop_request
+
+    service = seeded_app.state.service
+    append_fixture_patch(service, _experiment_patch())
+    request = _loop_request(str(uuid4()), str(uuid4()), invocation=1)
+    execution = _execution(
+        seeded_app.state.background_tasks.store,
+        seeded_app.state.default_project_id,
+        "history-experiment",
+        request,
+    )
+    launcher = _HistoryLauncher(service, history_handlers, kind="experiment")
+    await _check_launch(
+        launcher,
+        stream_experiment_loop_task(
+            service, launcher, request, tmp_path / "data", execution=execution
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_child_history_launch(manifest, tmp_path, history_handlers):
+    from rcp.runs.tasks.auto_research_child_work import stream_auto_research_child_work_run
     from rcp.service import RunRequest, resolve_dispatch_authority
 
     from .test_auto_research_children_storage import _work_pair
-    from .test_auto_research_stream import (
-        _execution as auto_execution,
-    )
-    from .test_auto_research_stream import (
-        _orchestrator_events,
-        _service,
-        _setup_branch_auto_research,
-    )
-    from .test_consolidation_work import _admit
-    from .test_experiment_loop_agent_io import _execution, _experiment_patch, _loop_request
+    from .test_auto_research_stream import _execution, _service, _setup_branch_auto_research
 
-    if kind.startswith("auto_"):
-        service, store, episode, actor, _child = _setup_branch_auto_research(
-            _service(manifest, tmp_path), tmp_path / "store"
-        )
-        launcher = _HistoryLauncher(service, history_handlers, kind=kind)
-        if kind == "auto_actor":
-            events = await _orchestrator_events(service, launcher, store, actor, tmp_path / "data")
-        else:
-            route, task = _work_pair(store, episode, actor, worker_id=str(uuid4()))
-            request = RunRequest.model_validate(
-                {
-                    **task.request,
-                    "run_on": "laptop",
-                    "run_truth_scope": ["repo-a"],
-                    "node_id": "blk/check-result",
-                    "chat_id": route.worker_id,
-                    "isolation_owner_episode_id": episode.episode_id,
-                }
-            )
-            route = route.model_copy(update={"control_node_id": request.node_id})
-            task = task.model_copy(
-                update={
-                    "request": request.model_dump(mode="json"),
-                    "dispatch_authority": resolve_dispatch_authority("node_chat", request),
-                }
-            )
-            store.create_auto_research_child_work(route, task)
-            events = [
-                AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
-                async for frame in stream_auto_research_child_work_run(
-                    service,
-                    launcher,
-                    request,
-                    tmp_path / "data",
-                    auto_execution(store, task),
-                    route=route,
-                )
-            ]
-    else:
-        app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-        service = app.state.service
-        append_fixture_patch(service, seed_patch())
-        if kind == "consolidation":
-            request, execution = _admit(app)
-            run = stream_work_run
-        else:
-            append_fixture_patch(service, _experiment_patch())
-            request = _loop_request(str(uuid4()), str(uuid4()), invocation=1)
-            execution = _execution(
-                app.state.background_tasks.store,
-                app.state.default_project_id,
-                "history-experiment",
-                request,
-            )
-            run = stream_experiment_loop_task
-        launcher = _HistoryLauncher(service, history_handlers, kind=kind)
-        events = [
-            AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
-            async for frame in run(
-                service,
-                cast(AgentLauncher, launcher),
-                request,
-                tmp_path / "data",
-                execution=execution,
-            )
-        ]
-    assert launcher.calls == 1
-    assert not [event.text for event in events if event.event == "error"]
+    service, store, episode, actor, _child = _setup_branch_auto_research(
+        _service(manifest, tmp_path), tmp_path / "store"
+    )
+    route, task = _work_pair(store, episode, actor, worker_id=str(uuid4()))
+    request = RunRequest.model_validate(
+        {
+            **task.request,
+            "run_on": "laptop",
+            "run_truth_scope": ["repo-a"],
+            "node_id": "blk/check-result",
+            "chat_id": route.worker_id,
+            "isolation_owner_episode_id": episode.episode_id,
+        }
+    )
+    route = route.model_copy(update={"control_node_id": request.node_id})
+    task = task.model_copy(
+        update={
+            "request": request.model_dump(mode="json"),
+            "dispatch_authority": resolve_dispatch_authority("node_chat", request),
+        }
+    )
+    store.create_auto_research_child_work(route, task)
+    launcher = _HistoryLauncher(service, history_handlers, kind="auto_child")
+    await _check_launch(
+        launcher,
+        stream_auto_research_child_work_run(
+            service, launcher, request, tmp_path / "data", _execution(store, task), route=route
+        ),
+    )

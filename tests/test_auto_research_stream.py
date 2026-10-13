@@ -22,7 +22,7 @@ from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.invocation_broker import ProviderInvocationGate
-from rcp.agents.prompts import PromptFactory
+from rcp.agents.prompts import PromptFactory, render_graph_history
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.config import load_manifest
 from rcp.core.authority import (
@@ -84,6 +84,7 @@ from .helpers import (
     write_local_test_manifest,
 )
 from .test_conversation_worktree_git import repository, repository_template  # noqa: F401
+from .test_graph_reader_launches import _HistoryLauncher, history_handlers  # noqa: F401
 
 
 def test_refreshed_orchestrator_paths_return_the_staged_context_revision(monkeypatch) -> None:
@@ -2748,6 +2749,8 @@ async def test_worker_reply_command_uses_one_auto_research_mailbox_and_stable_al
         (reply_key,) = [
             line.split("`")[1] for line in read.splitlines() if line.startswith("- Reply key: `")
         ]
+        scope = GraphReadScope(project_id="project", target=service.history.graph_target)
+        assert render_graph_history(scope, shlex.join(_command_argv(read))) in read
         argv = [*_command_argv(read), "message", "--key", reply_key, "Recovered worker result"]
         process = await asyncio.create_subprocess_exec(
             *argv,
@@ -3356,60 +3359,12 @@ def test_child_profile_choices_list_at_most_the_capped_models_per_provider():
     assert listed == list(models)[:CHILD_PROFILE_PROMPT_MAX_MODELS]
 
 
-@pytest.mark.parametrize("role", ["orchestrator", "worker"])
-def test_actor_master_history_verbs_follow_scope(role: str) -> None:
-    from rcp.agents.auto_research_prompt import (
-        auto_research_orchestrator_task_contract,
-        auto_research_worker_task_contract,
-    )
-    from rcp.agents.graph_read_scope import GraphReadScope
-    from rcp.agents.write_scope import ProjectWriteScope
-
-    scope = GraphReadScope(
-        project_id="project", target=GraphTargetRef(), verbs=frozenset({"graph_log"})
-    )
-    common: dict[str, Any] = dict(
-        project_name="project",
-        graph_path="/stage/graph.json",
-        research_path="/stage/research.md",
-        repositories=[],
-        patch_path="/stage/patch.json",
-        output_schema_path="/stage/schema.json",
-        command_client="/stage/client",
-        graph_read_scope=scope,
-        write_scope=ProjectWriteScope.create(
-            project_id="project",
-            execution_machine="local",
-            execution_host="",
-            capability="orchestrate" if role == "orchestrator" else "work_auto",
-            stage_root="/stage",
-            workspace_root="/stage",
-            repositories=[],
-            protected_write_paths=[],
-        ),
-    )
-    rendered = (
-        auto_research_orchestrator_task_contract(**common)
-        if role == "orchestrator"
-        else auto_research_worker_task_contract(
-            seat_node_type="node",
-            seat_node_id="node/one",
-            seat_difficulty="assignment",
-            instruction_path="/stage/instruction",
-            reply_key="reply",
-            **common,
-        )
-    )
-    assert "/stage/client graph_log " in rendered
-    assert "/stage/client graph_diff " not in rendered
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider_fails", [False, True])
 async def test_orchestrator_observes_snapshot_only_after_success(
     manifest,
     tmp_path,
-    monkeypatch,
+    history_handlers,  # noqa: F811
     provider_fails: bool,
 ) -> None:
     service, store, _episode, root, _worker = _setup_branch_auto_research(
@@ -3417,37 +3372,22 @@ async def test_orchestrator_observes_snapshot_only_after_success(
         tmp_path / "store",
     )
     snapshot = service.history.head_ref()
-
-    class SnapshotEngine:
-        def resolve(self, spec, *, default_target):
-            assert spec.revision == snapshot.revision
-            assert default_target == snapshot.target
-            return snapshot
-
-    monkeypatch.setattr(
-        ProjectService, "history_engine", property(lambda _self: SnapshotEngine()), raising=False
-    )
     owner = f"auto-root:{root.operation_id}"
-    session = "orchestrator-session"
+    session = "reader-session"
 
-    def during_provider(_contract: str, _workspace: Path) -> None:
+    def during_provider() -> None:
         assert store.graph_seen_head(root.project_id, owner, session, snapshot.target) is None
         if provider_fails:
             raise OSError("provider failed before completing its turn")
 
-    class ObservationLauncher(_WorkerLauncher):
-        async def stream(self, *args, **kwargs):
-            kwargs["invocation_gate"] = None
-            async for event in super().stream(*args, **kwargs):
-                yield event
-
-    events = await _orchestrator_events(
+    launcher = _HistoryLauncher(
         service,
-        ObservationLauncher(session_id=session, writer=during_provider),
-        store,
-        root,
-        tmp_path / "data",
+        history_handlers,
+        kind="auto_actor",
+        during_provider=during_provider,
     )
+    events = await _orchestrator_events(service, launcher, store, root, tmp_path / "data")
+    assert launcher.calls == 1
     observed = store.graph_seen_head(root.project_id, owner, session, snapshot.target)
     assert observed == (None if provider_fails else snapshot)
     assert events[-1].event == ("error" if provider_fails else "done")

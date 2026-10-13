@@ -2453,7 +2453,7 @@ async def test_history_verbs_round_trip_through_staged_client_and_broker(
             for arguments in (
                 ("graph_diff", "main@0", "@head", "node-1", "--cursor", "previous"),
                 ("graph_log", "node-1", "--at", "branch:b@head"),
-                ("graph-diff", "--branch-changes", "b", "--ids", "node-1"),
+                ("graph-diff", "--branch-changes", "b", "--ids", "node-1", "node-2"),
             ):
                 code, output = await _run_client(staged, *arguments)
                 assert code == 0, output
@@ -2470,29 +2470,11 @@ async def test_history_verbs_round_trip_through_staged_client_and_broker(
             "branch_changes": None,
         },
         {"id": "node-1", "at": "branch:b@head", "cursor": None},
-        {"from": None, "to": None, "ids": ["node-1"], "cursor": None, "branch_changes": "b"},
+        {
+            "from": None,
+            "to": None,
+            "ids": ["node-1", "node-2"],
+            "cursor": None,
+            "branch_changes": "b",
+        },
     ]
-
-
-def test_branch_changes_client_accepts_id_filter() -> None:
-    from rcp.agents import staged_command_client as client
-
-    namespace = client._parser().parse_args(
-        [
-            "--broker",
-            "/tmp/broker",
-            "--workspace",
-            "/tmp",
-            "--timeout",
-            "1",
-            "graph_diff",
-            "--branch-changes",
-            "b",
-            "--ids",
-            "node-1",
-            "node-2",
-        ]
-    )
-    verb, key, arguments = client._request_arguments(namespace, "/tmp")
-    assert (verb, key) == ("graph_diff", None)
-    assert arguments == {"branch_changes": "b", "ids": ["node-1", "node-2"]}
