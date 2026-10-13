@@ -37,26 +37,23 @@ from rcp.storage.models import (
     _required_timestamp,
 )
 
+# The one selection a Harvest consumes and the pending counts report.
+_PENDING_NOTICES = """FROM auto_research_lifecycle_notices
+    WHERE episode_id = ? AND delivered_at IS NULL AND acknowledged_at IS NULL"""
+_PENDING_MAIL = """FROM auto_research_messages
+    WHERE episode_id = ? AND recipient_task_id = ? AND delivered_at IS NULL"""
+
 
 def _pending_inbox_rows(
     connection: sqlite3.Connection, episode_id: str, root_operation_id: str | None
 ) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
-    """The one selection a Harvest consumes: pending notices and root-addressed mail."""
+    """Pending notices and root-addressed mail, oldest first."""
 
     notices = connection.execute(
-        """
-        SELECT * FROM auto_research_lifecycle_notices
-        WHERE episode_id = ? AND delivered_at IS NULL AND acknowledged_at IS NULL
-        ORDER BY created_at, notice_id
-        """,
-        (episode_id,),
+        f"SELECT * {_PENDING_NOTICES} ORDER BY created_at, notice_id", (episode_id,)
     ).fetchall()
     mail = connection.execute(
-        """
-        SELECT * FROM auto_research_messages
-        WHERE episode_id = ? AND recipient_task_id = ? AND delivered_at IS NULL
-        ORDER BY created_at, message_id
-        """,
+        f"SELECT * {_PENDING_MAIL} ORDER BY created_at, message_id",
         (episode_id, root_operation_id),
     ).fetchall()
     return notices, mail
@@ -1693,8 +1690,14 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
             root = connection.execute(
                 "SELECT root_operation_id FROM episodes WHERE episode_id = ?", (episode_id,)
             ).fetchone()
-            notices, mail = _pending_inbox_rows(connection, episode_id, root[0] if root else None)
-        return {"notices": len(notices), "mail": len(mail)}
+            # Counts only: never load the bodies a routine command does not show.
+            notices = connection.execute(
+                f"SELECT COUNT(*) {_PENDING_NOTICES}", (episode_id,)
+            ).fetchone()[0]
+            mail = connection.execute(
+                f"SELECT COUNT(*) {_PENDING_MAIL}", (episode_id, root[0] if root else None)
+            ).fetchone()[0]
+        return {"notices": notices, "mail": mail}
 
     def process_auto_research_lifecycle_inbox(
         self,
