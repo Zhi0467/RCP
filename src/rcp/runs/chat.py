@@ -1660,7 +1660,7 @@ def question_answer_text(question: QuestionRecord) -> str:
     return question.answer or "\n".join(question.chosen_choices)
 
 
-def _question_answer_message_id(question: QuestionRecord) -> str:
+def question_answer_message_id(question: QuestionRecord) -> str:
     return str(
         uuid.uuid5(
             uuid.NAMESPACE_URL,
@@ -1723,7 +1723,7 @@ def project_chat_question_answer(
             path,
             [
                 {
-                    "uuid": _question_answer_message_id(question),
+                    "uuid": question_answer_message_id(question),
                     "sessionId": request.chat_id,
                     "nativeSessionId": question.origin.native_session_id,
                     "nodeId": request.node_id,
@@ -1789,7 +1789,20 @@ def reconcile_chat_question_answers(
                 service = project_service(question.origin.project_id).for_graph_target(
                     question.origin.graph_target
                 )
-                project_chat_question_answer(service, store, question)
+                from rcp.runs.steering import steer_question_answer
+
+                # Steer over a new turn: a running turn in the same binding takes the
+                # answer now. The steer is the answer's transcript projection.
+                if (
+                    question.client_receipt_revision is None
+                    and question.followup_operation_id is None
+                    and steer_question_answer(service, store, background_tasks, question)
+                ):
+                    store.mark_question_answer_projected(
+                        question.question_id, question.answer_revision
+                    )
+                else:
+                    project_chat_question_answer(service, store, question)
             if question.origin.owner_kind != "chat":
                 # Experiment's owner admits its paid invocation after projection.
                 statuses[question.question_id] = "projected"
@@ -1869,7 +1882,7 @@ def _append_chat_exchange(
                 {
                     **common,
                     "uuid": (
-                        _question_answer_message_id(question)
+                        question_answer_message_id(question)
                         if question is not None
                         else str(uuid.uuid4())
                     ),

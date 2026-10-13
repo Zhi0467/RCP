@@ -7,7 +7,12 @@ from datetime import UTC, datetime
 from rcp.background import BackgroundAgentTasks
 from rcp.limits import PROVIDER_STEER_ACK_TIMEOUT_SECONDS
 from rcp.providers import ProviderRuntime, ProviderSteeringState, ProviderSteerReceipt, profile_for
-from rcp.runs.chat import _append_chat_records, _chat_path
+from rcp.runs.chat import (
+    _append_chat_records,
+    _chat_path,
+    question_answer_message_id,
+    question_answer_text,
+)
 from rcp.runs.task_policy import load_stored_request
 from rcp.service import (
     ChatMessage,
@@ -18,6 +23,8 @@ from rcp.service import (
     _StoredChatRecord,
 )
 from rcp.storage import AgentTaskRecord, AppStore
+from rcp.storage.question_models import QuestionRecord
+from rcp.storage.questions import question_receiver_binds
 
 
 def chat_steering_visible(store: AppStore, record: AgentTaskRecord) -> bool:
@@ -254,3 +261,63 @@ def finish_chat_steer(
     # The final receipt replaces the queued one other members may already show.
     background.bump_steer_revision(record.operation_id, record.project_id)
     return _message(stored)
+
+
+def steer_question_answer(
+    service: ProjectService,
+    store: AppStore,
+    background: BackgroundAgentTasks,
+    question: QuestionRecord,
+) -> bool:
+    """Deliver a chat answer into the chat's running turn instead of queueing a new one.
+
+    Only a turn bound exactly like the asker can receive it, so the receipt rule that
+    retires the follow-up accepts it. A provider acknowledgment becomes that turn's
+    answer acknowledgment; its successful settlement records receipt. Refused or
+    unknown delivery leaves the answer eligible for its ordinary follow-up turn.
+    Returns whether the answer was recorded in the transcript as a steer.
+    """
+    origin = question.origin
+    if origin.owner_kind != "chat" or question.state != "answered":
+        return False
+    target = store.running_chat_task(origin.project_id, origin.owner_id)
+    if (
+        target is None
+        or not question_receiver_binds(origin, target)
+        # A live ask call returns the answer itself.
+        or (
+            target.operation_id == origin.operation_id
+            and store.question_activity.is_waiting(question.question_id)
+        )
+    ):
+        return False
+    state = chat_steering_state(background, target)
+    if not state.can_steer or state.turn_id is None:
+        return False
+    message_id = question_answer_message_id(question)
+    message = finish_chat_steer(
+        service,
+        background,
+        target,
+        begin_chat_steer(
+            service,
+            background,
+            target,
+            message_id=message_id,
+            attempt=target.attempt,
+            expected_turn_id=state.turn_id,
+            text=question_answer_text(question),
+        ),
+    )
+    if message.steering is not None and message.steering.status == "delivered":
+        store.record_agent_task_receipt(
+            target.operation_id,
+            "question_answer_acknowledged",
+            {
+                "question_id": question.question_id,
+                "answer_revision": question.answer_revision,
+                "request_id": message_id,
+            },
+            tier="diagnostic",
+        )
+    return True

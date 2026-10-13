@@ -281,6 +281,13 @@ polling an unfinished command, use waits of about five minutes.
 An answered response counts as received only after the client acknowledges its
 response token and the receiving task settles successfully on the original native
 session and authority binding.
+Steering comes before a new turn: when the chat has a running turn bound exactly
+like the asking turn (the continuation-receipt binding below), able to receive
+input, and not itself waiting on that question, the answer is steered into it as
+the answer's projection. The provider's acknowledgment counts as that turn's
+answer acknowledgment, so its successful settlement records receipt and no
+follow-up runs. A refused or unknown steer leaves the answer eligible for its
+ordinary follow-up.
 Failed or disconnected turns retain delivery eligibility. After full settlement
 and at startup, an unreceived chat answer admits at most one same-mode follow-up, transactionally claimed
 with task insertion, pinned to the asking turn's native session, authority, write

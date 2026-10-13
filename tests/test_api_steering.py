@@ -600,3 +600,56 @@ time.sleep(120)
             assert len(capture.read_text().splitlines()) == 2
     finally:
         client.close()
+
+
+@pytest.mark.parametrize("delivery", ["delivered", "refused"])
+def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(running_chat, delivery):
+    from rcp.storage.question_models import QuestionOrigin
+
+    run = running_chat
+    store = run.background.store
+    task = store.agent_task(run.operation_id)
+    store.checkpoint_agent_task(
+        run.operation_id, native_session_id="live-session", stage_root=task.stage_root or "/stage"
+    )
+    task = store.agent_task(run.operation_id)
+    # The turn asked, then stopped waiting and kept working.
+    question = store.create_or_get_question(
+        origin=QuestionOrigin(
+            owner_kind="chat",
+            project_id=run.project_id,
+            owner_id=run.chat_id,
+            operation_id=run.operation_id,
+            provider="codex",
+            native_session_id="live-session",
+            stage_root=task.stage_root,
+            stage_host=task.stage_host,
+            capability=task.dispatch_authority.task_contract,
+            graph_target=task.graph_target,
+        ),
+        key="route",
+        question="Which route?",
+    )
+    if delivery == "refused":
+        run.defer().set_result(ProviderSteerReceipt("refused", "Turn ended."))
+
+    response = run.client.post(
+        f"/api/projects/{run.project_id}/questions/{question.question_id}/answer",
+        json={"answer": "Use route A", "choices": []},
+    )
+
+    assert response.status_code == 200, response.text
+    assert [(turn, text) for turn, _id, text in run.receipts] == [("owned-turn", "Use route A")]
+    answer = run.app.state.service.chat_transcript(run.chat_id).messages[-1]
+    assert (answer.text, answer.operation_id) == ("Use route A", run.operation_id)
+    assert answer.steering.status == delivery
+    run.finish()
+    settled = store.get_question(question.question_id)
+    if delivery == "delivered":
+        assert (settled.client_receipt_operation_id, settled.followup_operation_id) == (
+            run.operation_id,
+            None,
+        )
+    else:
+        assert settled.client_receipt_revision is None
+        assert settled.followup_operation_id is not None
