@@ -14,7 +14,6 @@ const {
   canonicalRevisionNeedsReload,
   humanSyncSuccessNotice,
   latestSnapshotRequestCanApply,
-  loadGraphRevision,
   openProjectSequence,
   persistProjectHumanDraft,
   proposalChoicesClearedNotice,
@@ -22,18 +21,12 @@ const {
   reconcileInactiveProjectTabState,
 } = await server.ssrLoadModule("/src/App.tsx");
 const {
-  ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS,
-  OPEN_PROJECT_HEARTBEAT_INTERVAL_MS,
   cacheProjectTabState,
   experimentLoopRefreshIsCurrent,
   inactiveProjectTabState,
   mergeProjectExperimentLoops,
-  projectIdsForCacheHeartbeat,
   projectReturnHash,
   projectTabStateForOpen,
-  singleFlightProjectCacheHeartbeat,
-  startProjectCachePolling,
-  updateInactiveProjectTabStates,
 } = await server.ssrLoadModule("/src/projects/useProjectTabs.ts");
 const { emptyProjectSessionState, serializeProjectSessionTabState } = await server.ssrLoadModule(
   "/src/graph/projectSession.ts",
@@ -55,25 +48,14 @@ function projectSessionCacheFields(project, humanDraft = null) {
   };
 }
 
-test("canonical revision polling uses only the lightweight project endpoint", async () => {
-  const requested = [];
-  const revision = await loadGraphRevision(async (path) => {
-    requested.push(path);
-    return { revision: 12 };
-  }, "/api/projects/project-1");
-
-  assert.deepEqual(revision, { revision: 12 });
-  assert.deepEqual(requested, ["/api/projects/project-1/cached/revision"]);
-});
-
-test("the per-project display cache is bounded and refreshed as an LRU", () => {
+test("retained project views have no count cap", () => {
   const cache = new Map();
-  cacheProjectTabState(cache, "alpha", { revision: 1 }, 2);
-  cacheProjectTabState(cache, "beta", { revision: 2 }, 2);
-  cacheProjectTabState(cache, "alpha", { revision: 3 }, 2);
-  cacheProjectTabState(cache, "gamma", { revision: 4 }, 2);
+  cacheProjectTabState(cache, "alpha", { revision: 1 });
+  cacheProjectTabState(cache, "beta", { revision: 2 });
+  cacheProjectTabState(cache, "alpha", { revision: 3 });
+  cacheProjectTabState(cache, "gamma", { revision: 4 });
 
-  assert.deepEqual([...cache.keys()], ["alpha", "gamma"]);
+  assert.deepEqual([...cache.keys()], ["beta", "alpha", "gamma"]);
   assert.deepEqual(cache.get("alpha"), { revision: 3 });
 });
 
@@ -231,141 +213,6 @@ test("canonical state reloads only after the accepted revision advances", () => 
   assert.equal(canonicalRevisionNeedsReload(8, 7), true);
   assert.equal(canonicalRevisionNeedsReload(7, 7), false);
   assert.equal(canonicalRevisionNeedsReload(6, 7), false);
-});
-
-test("visible cache polling schedules every open tab and observes the active tab every second", () => {
-  const intervals = new Map();
-  const cleared = [];
-  let nextIntervalId = 1;
-  let hidden = false;
-  let visibilityListener = null;
-  let listenerRemoved = false;
-  let sweeps = 0;
-  let activeObservations = 0;
-  const stop = startProjectCachePolling(
-    {
-      setInterval(callback, delay) {
-        const id = nextIntervalId++;
-        intervals.set(id, { callback, delay });
-        return id;
-      },
-      clearInterval(id) {
-        cleared.push(id);
-      },
-    },
-    {
-      isHidden: () => hidden,
-      listen(callback) {
-        visibilityListener = callback;
-        return () => {
-          listenerRemoved = true;
-        };
-      },
-    },
-    () => {
-      sweeps += 1;
-    },
-    () => {
-      activeObservations += 1;
-    },
-  );
-
-  const scheduled = [...intervals.values()];
-  assert.deepEqual(
-    scheduled.map((entry) => entry.delay).sort((left, right) => left - right),
-    [ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS, OPEN_PROJECT_HEARTBEAT_INTERVAL_MS],
-  );
-  assert.equal(OPEN_PROJECT_HEARTBEAT_INTERVAL_MS, 3_000);
-  assert.equal(ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS, 1_000);
-  assert.equal(sweeps, 0, "installing or switching must not synchronously heartbeat");
-  scheduled.find((entry) => entry.delay === OPEN_PROJECT_HEARTBEAT_INTERVAL_MS).callback();
-  scheduled.find((entry) => entry.delay === ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS).callback();
-  assert.equal(sweeps, 1);
-  assert.equal(activeObservations, 1);
-
-  hidden = true;
-  scheduled.forEach((entry) => entry.callback());
-  assert.equal(sweeps, 1);
-  assert.equal(activeObservations, 1);
-  hidden = false;
-  visibilityListener();
-  assert.equal(sweeps, 2, "visibility resume immediately sweeps every open tab");
-  assert.equal(activeObservations, 1);
-
-  stop();
-  assert.deepEqual(cleared.sort(), [1, 2]);
-  assert.equal(listenerRemoved, true);
-});
-
-test("heartbeat targets are unique and stale inactive results cannot update closed or active tabs", () => {
-  const tabs = [
-    { id: "alpha", name: "Alpha" },
-    { id: "beta", name: "Beta" },
-    { id: "alpha", name: "Alpha duplicate" },
-  ];
-  const alpha = { project: { id: "alpha" } };
-  const beta = { project: { id: "beta" } };
-  const cache = new Map([
-    ["alpha", alpha],
-    ["beta", beta],
-  ]);
-
-  assert.deepEqual(projectIdsForCacheHeartbeat(tabs), ["alpha", "beta"]);
-  assert.strictEqual(inactiveProjectTabState(cache, tabs, "alpha", "beta"), beta);
-  assert.equal(inactiveProjectTabState(cache, tabs, "alpha", "alpha"), null);
-  assert.equal(inactiveProjectTabState(cache, tabs.slice(0, 1), "alpha", "beta"), null);
-});
-
-test("an inactive project's task refresh reaches every retained ref, branches included", () => {
-  const tabs = [
-    { id: "alpha", name: "Alpha" },
-    { id: "beta", name: "Beta" },
-  ];
-  const cache = new Map([
-    ["beta", { state: { tasks: ["old"] } }],
-    ["beta:branch:b1", { state: { tasks: ["old"] } }],
-    ["beta:branch:b2", { state: null }],
-    ["betamax", { state: { tasks: ["old"] } }],
-  ]);
-  const withNew = (state) => ({ ...state, tasks: ["new"] });
-
-  assert.equal(updateInactiveProjectTabStates(cache, tabs, "alpha", "beta", withNew), true);
-  assert.deepEqual(
-    [...cache].map(([key, entry]) => [key, entry.state?.tasks ?? null]),
-    [
-      ["beta", ["new"]],
-      ["beta:branch:b1", ["new"]],
-      ["beta:branch:b2", null],
-      ["betamax", ["old"]],
-    ],
-  );
-  assert.equal(updateInactiveProjectTabStates(cache, tabs, "beta", "beta", withNew), false);
-});
-
-test("overlapping active and all-tab heartbeats are single-flight per project", async () => {
-  const inFlight = new Map();
-  let calls = 0;
-  let finish;
-  const run = () => {
-    calls += 1;
-    return new Promise((resolve) => {
-      finish = resolve;
-    });
-  };
-
-  const first = singleFlightProjectCacheHeartbeat(inFlight, "alpha", run);
-  const overlapping = singleFlightProjectCacheHeartbeat(inFlight, "alpha", run);
-  assert.strictEqual(overlapping, first);
-  assert.equal(calls, 1);
-  finish();
-  await first;
-  assert.equal(inFlight.has("alpha"), false);
-
-  const next = singleFlightProjectCacheHeartbeat(inFlight, "alpha", async () => {
-    calls += 1;
-  });
-  await next;
-  assert.equal(calls, 2);
 });
 
 test("inactive advancement rebases only snapshot and draft while retaining the tab workspace", () => {

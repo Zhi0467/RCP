@@ -1,3 +1,5 @@
+import { RefreshRuntimeContext } from "../../src/core/useResource";
+import { runtime } from "./resourceRuntime";
 import React from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
@@ -13,7 +15,7 @@ testWindow.openedNodes = [];
 
 function renderArtifacts() {
   root.render(
-    <>
+    <RefreshRuntimeContext.Provider value={runtime}>
       <Artifacts
         projectId="project"
         graphRefs={[
@@ -27,7 +29,7 @@ function renderArtifacts() {
         onOpenNode={(nodeId) => testWindow.openedNodes.push(nodeId)}
       />
       <ArtifactViewer />
-    </>,
+    </RefreshRuntimeContext.Provider>,
   );
 }
 renderArtifacts();

@@ -181,11 +181,19 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
     });
     assert.equal(await report.evaluate((row) => getComputedStyle(row).boxShadow), classicShadow);
     failure = true;
-    await page.getByRole("button", { name: "Refresh", exact: true }).click();
-    await page.getByRole("alert").waitFor();
+    await page.getByRole("button", { name: "Refresh artifacts", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Refresh artifacts" })
+      .filter({ has: page.locator("svg") })
+      .waitFor();
+    await page.waitForFunction(() =>
+      document.querySelector(".artifacts-view button")?.title.includes("Storage unavailable"),
+    );
     failure = false;
-    await page.getByRole("button", { name: "Refresh", exact: true }).click();
-    await page.getByRole("alert").waitFor({ state: "detached" });
+    await page.getByRole("button", { name: "Refresh artifacts", exact: true }).click();
+    await page.waitForFunction(
+      () => document.querySelector(".artifacts-view button")?.title === "Refresh artifacts",
+    );
     await page.getByRole("link", { name: "Open Saved plot" }).waitFor();
     await page.evaluate(() => {
       window.previewCalls = [];
@@ -834,7 +842,14 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
     assert.deepEqual(requests, []);
     state = viewerState("plot", 2);
     await page.evaluate(async () =>
-      (await import("/src/artifacts/artifactViewerModel.ts")).announceArtifactVersionChange("plot"),
+      (await import("/tests/fixtures/resourceRuntime.ts")).store.invalidate(
+        (await import("/src/core/resourceStore.ts")).resourceKeyId(
+          (await import("/src/artifacts/artifactResources.ts")).artifactStateProfile(
+            "project",
+            "plot",
+          ).key,
+        ),
+      ),
     );
     await notice.waitFor({ state: "detached" });
     await page.locator(".chat-annotation-composer textarea").waitFor({ state: "detached" });

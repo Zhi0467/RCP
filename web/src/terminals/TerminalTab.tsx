@@ -1,14 +1,11 @@
-import { useEffect, useState } from "react";
 import { SquareTerminal } from "lucide-react";
-import { api } from "../core/api";
-import type { TerminalRepository, TerminalSession } from "../core/types";
+import { useProjectResource } from "../projects/projectResources";
+import { terminalsProfile } from "./terminalResources";
 
 export function TerminalTab({
   projectId,
-  refreshKey,
   active,
   onClick,
-  onError,
 }: {
   projectId: string;
   refreshKey: string;
@@ -16,43 +13,13 @@ export function TerminalTab({
   onClick: () => void;
   onError: (message: string) => void;
 }) {
-  const [available, setAvailable] = useState(false);
-  useEffect(() => {
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout>;
-    const load = async () => {
-      try {
-        const base = `/api/projects/${encodeURIComponent(projectId)}/terminals`;
-        const [repositories, sessions] = await Promise.all([
-          api<TerminalRepository[]>(`${base}/repositories`, { signal: controller.signal }),
-          api<TerminalSession[]>(base, { signal: controller.signal }),
-        ]);
-        if (controller.signal.aborted) return;
-        // Remote failures remain reachable here so members can read the reason
-        // and explicitly refresh after repairing the machine. An open session
-        // keeps the tab regardless: a machine that can no longer launch a
-        // shell still has one running, and it is reached and ended from here.
-        setAvailable(
-          sessions.length > 0 ||
-            repositories.some((repository) => repository.eligible || repository.probe_state),
-        );
-        if (repositories.some((repository) => repository.probe_state === "pending"))
-          timer = setTimeout(() => void load(), 1000);
-      } catch (error) {
-        if (!controller.signal.aborted) {
-          setAvailable(false);
-          onError(
-            `Terminal availability could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        }
-      }
-    };
-    void load();
-    return () => {
-      controller.abort();
-      clearTimeout(timer);
-    };
-  }, [projectId, refreshKey, onError]);
+  const resource = useProjectResource(terminalsProfile(projectId));
+  const available = Boolean(
+    resource.value?.sessions.length ||
+    resource.value?.repositories.some(
+      (repository) => repository.eligible || repository.probe_state,
+    ),
+  );
   if (!available) return null;
   return (
     <button

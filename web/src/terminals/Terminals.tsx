@@ -1,54 +1,38 @@
 import { useEffect, useRef, useState } from "react";
 import { TriangleAlert, RefreshCw, SquareTerminal, X } from "lucide-react";
 import { api } from "../core/api";
+import { resourceKeyId } from "../core/resourceStore";
+import { useRefreshRuntime } from "../core/useResource";
+import { useProjectResource } from "../projects/projectResources";
+import { terminalsProfile, type TerminalResources } from "./terminalResources";
 import { TerminalPane } from "./TerminalPane";
 import type { TerminalRepository, TerminalSession } from "../core/types";
 
 export function Terminals({ projectId }: { projectId: string }) {
   const base = `/api/projects/${encodeURIComponent(projectId)}/terminals`;
-  const [repositories, setRepositories] = useState<TerminalRepository[]>([]);
-  const [sessions, setSessions] = useState<TerminalSession[]>([]);
+  const { store } = useRefreshRuntime();
+  const profile = terminalsProfile(projectId);
+  const resource = useProjectResource(profile);
+  const resourceId = resourceKeyId(profile.key);
+  const repositories = resource.value?.repositories ?? [];
+  const sessions = resource.value?.sessions ?? [];
+  const setSessions = (update: (current: TerminalSession[]) => TerminalSession[]) => {
+    const current = store.view<TerminalResources>(resourceId).value;
+    store.write(resourceId, {
+      repositories: current?.repositories ?? [],
+      sessions: update(current?.sessions ?? []),
+    });
+  };
   const activeSnapshot = useRef<TerminalSession | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const loading = resource.loading;
   const [error, setError] = useState<string | null>(null);
   const [endedReason, setEndedReason] = useState<string | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [refresh, setRefresh] = useState(0);
-
+  const loadError = resource.error ? String(resource.error) : null;
   useEffect(() => {
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout>;
-    const load = async () => {
-      try {
-        const [repos, current] = await Promise.all([
-          api<TerminalRepository[]>(`${base}/repositories`, { signal: controller.signal }),
-          api<TerminalSession[]>(base, { signal: controller.signal }),
-        ]);
-        if (controller.signal.aborted) return;
-        setRepositories(repos);
-        setSessions(current);
-        // Keep the active socket mounted until it can deliver its final reason.
-        // The open-session rail still removes the missing session immediately.
-        setSelected((id) => id ?? current[0]?.session_id ?? null);
-        setLoadError(null);
-      } catch (cause) {
-        if (!controller.signal.aborted)
-          setLoadError(cause instanceof Error ? cause.message : String(cause));
-      } finally {
-        if (!controller.signal.aborted) {
-          setLoading(false);
-          timer = setTimeout(() => void load(), 5000);
-        }
-      }
-    };
-    void load();
-    return () => {
-      controller.abort();
-      clearTimeout(timer);
-    };
-  }, [base, refresh]);
+    setSelected((id) => id ?? resource.value?.sessions[0]?.session_id ?? null);
+  }, [resource.value]);
 
   const open = async (repository: TerminalRepository) => {
     setPending(true);
@@ -64,7 +48,7 @@ export function Terminals({ projectId }: { projectId: string }) {
         session,
       ]);
       setSelected(session.session_id);
-      setRefresh((value) => value + 1);
+      store.invalidate(resourceId);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -81,7 +65,7 @@ export function Terminals({ projectId }: { projectId: string }) {
         setSelected(null);
       }
       setSessions((current) => current.filter((item) => item.session_id !== session.session_id));
-      setRefresh((value) => value + 1);
+      store.invalidate(resourceId);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -93,7 +77,7 @@ export function Terminals({ projectId }: { projectId: string }) {
     setError(null);
     try {
       await api(`${base}/probe`, { method: "POST" });
-      setRefresh((value) => value + 1);
+      store.invalidate(resourceId);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -109,19 +93,23 @@ export function Terminals({ projectId }: { projectId: string }) {
   );
 
   return (
-    <section className="view-panel terminals-view" aria-label="Terminals">
+    <section
+      className="view-panel terminals-view"
+      aria-label="Terminals"
+      style={error || loadError ? { border: "1px solid var(--danger, #b42318)" } : undefined}
+    >
       <div className="view-heading">
         <h2>Terminals</h2>
         <button
           className="button compact secondary"
           aria-label="Refresh terminals"
-          disabled={loading || pending}
+          title={error || loadError || "Refresh terminals"}
+          disabled={(loading && !loadError) || pending}
           onClick={() => void refreshProbes()}
         >
           <RefreshCw size={14} />
         </button>
       </div>
-      {(error || loadError) && <p role="alert">{error || loadError}</p>}
       {endedReason && <p role="status">{endedReason}</p>}
       {loading && <p role="status">Loading terminals…</p>}
       <div className={`terminals-layout${sessions.length || active ? " has-sessions" : ""}`}>
@@ -210,7 +198,7 @@ export function Terminals({ projectId }: { projectId: string }) {
                 setSessions((current) =>
                   current.filter((session) => session.session_id !== active.session_id),
                 );
-                setRefresh((value) => value + 1);
+                store.invalidate(resourceId);
               }}
             />
           </div>

@@ -27,9 +27,7 @@ const {
   isInlineViewable,
   readInlineShellMessage,
 } = await server.ssrLoadModule("/src/artifacts/inlineArtifacts.ts");
-const { announceArtifactVersionChange, onArtifactVersionChange } = await server.ssrLoadModule(
-  "/src/artifacts/artifactViewerModel.ts",
-);
+
 after(() => server.close());
 
 const dir = "/stage/chats/c/turns/op-1/artifacts";
@@ -237,15 +235,6 @@ test("a link around an embedded artifact renders without the link, so its action
     ),
     /<a href="https:\/\/example.com"><img/,
   );
-});
-
-test("a version the panel moves reaches every inline copy of that artifact", () => {
-  const seen = [];
-  const stop = onArtifactVersionChange((id) => seen.push(id));
-  announceArtifactVersionChange("a");
-  stop();
-  announceArtifactVersionChange("b");
-  assert.deepEqual(seen, ["a"]);
 });
 
 test("inline errors accept only the current shell's bounded exact payload", () => {

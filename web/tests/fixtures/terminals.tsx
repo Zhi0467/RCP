@@ -1,3 +1,7 @@
+import { RefreshRuntimeContext } from "../../src/core/useResource";
+import { resourceKeyId } from "../../src/core/resourceStore";
+import { terminalsProfile } from "../../src/terminals/terminalResources";
+import { runtime } from "./resourceRuntime";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { TerminalTab } from "../../src/terminals/TerminalTab";
@@ -21,7 +25,14 @@ function Fixture() {
           onClick={() => setVisible(true)}
           onError={setError}
         />
-        <button onClick={() => setRefresh((value) => value + 1)}>Refresh project</button>
+        <button
+          onClick={() => {
+            setRefresh((value) => value + 1);
+            runtime.store.invalidate(resourceKeyId(terminalsProfile("alpha").key));
+          }}
+        >
+          Refresh project
+        </button>
         <button onClick={() => setTheme("aqua")}>Aqua</button>
         <button onClick={() => setTheme("classic")}>Classic</button>
         <button onClick={() => setMode("system")}>System</button>
@@ -33,4 +44,8 @@ function Fixture() {
     </main>
   );
 }
-createRoot(document.getElementById("root")!).render(<Fixture />);
+createRoot(document.getElementById("root")!).render(
+  <RefreshRuntimeContext.Provider value={runtime}>
+    <Fixture />
+  </RefreshRuntimeContext.Provider>,
+);

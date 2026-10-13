@@ -3,7 +3,7 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
-test("served viewer observes static edits and Undo, stops permanent errors, retries and aborts on close", async () => {
+test("served viewer observes watermark changes and Undo, retries errors and aborts on close", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "silent",
@@ -35,6 +35,15 @@ test("served viewer observes static edits and Undo, stops permanent errors, retr
     let version = 1;
     let status = 200;
     let requests = 0;
+    let token = 0;
+    const validate = () =>
+      page.evaluate(
+        async (version) =>
+          (await import("/tests/fixtures/resourceRuntime.ts")).store.observe("project", [
+            { name: "artifacts", version },
+          ]),
+        String(++token),
+      );
     let release;
     await page.route("**/api/projects/project/artifacts", (route) => route.fulfill({ json: [] }));
     await page.route("**/api/projects/project/artifacts/a/state", async (route) => {
@@ -100,11 +109,11 @@ test("served viewer observes static edits and Undo, stops permanent errors, retr
     );
     threadHref = null;
     version = 2;
-    await page.clock.runFor(1600);
+    await validate();
     await page.locator('iframe[src$="v=2"]').waitFor();
     assert.equal(await source.count(), 0);
     version = 1; // Another member's Undo.
-    await page.clock.runFor(1600);
+    await validate();
     await page.locator('iframe[src$="v=1"]').waitFor();
 
     const title = page.getByLabel("Artifact title bar", { exact: true });
@@ -135,20 +144,18 @@ test("served viewer observes static edits and Undo, stops permanent errors, retr
     await page.locator('iframe[src$="v=1"]').waitFor();
 
     status = 404;
-    await page.clock.runFor(1600);
-    await page.getByRole("alert").waitFor();
+    await validate();
+    await page.getByRole("button", { name: "Retry artifact", exact: true }).waitFor();
     const stoppedAt = requests;
-    await page.clock.runFor(5000);
-    assert.equal(requests, stoppedAt);
     status = 200;
     version = 3;
-    await page.getByRole("button", { name: "Retry", exact: true }).click();
+    await page.getByRole("button", { name: "Retry artifact", exact: true }).click();
     await page.locator('iframe[src$="v=3"]').waitFor();
     assert.equal(requests, stoppedAt + 1);
 
     status = 0;
     const requestStarted = page.waitForRequest("**/api/projects/project/artifacts/a/state");
-    await page.clock.runFor(1600);
+    await validate();
     await requestStarted;
     const aborts = await page.evaluate(() => window.stateAborts);
     await page.getByRole("button", { name: "Close viewer", exact: true }).click();

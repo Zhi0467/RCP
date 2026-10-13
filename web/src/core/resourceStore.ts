@@ -52,6 +52,7 @@ export interface ResourceView<T> {
 interface ResourceState {
   profile: ResourceProfile<unknown>;
   owners: Set<string>;
+  retainedBy: Set<string>;
   value: unknown;
   hasValue: boolean;
   committed: string | undefined;
@@ -135,6 +136,7 @@ export class ResourceStore {
       state = {
         profile: profile as ResourceProfile<unknown>,
         owners: new Set(),
+        retainedBy: new Set(),
         value: undefined,
         hasValue: false,
         committed: undefined,
@@ -154,6 +156,7 @@ export class ResourceStore {
       // The newest profile owns fetch; its key is the same by construction.
       state.profile = profile as ResourceProfile<unknown>;
     }
+    state.retainedBy.add(owner);
     state.owners.add(owner);
     this.pump();
     return id;
@@ -165,12 +168,26 @@ export class ResourceStore {
     let removed = false;
     for (const id of targets) {
       const state = this.states.get(id);
-      if (!state || !state.owners.delete(owner) || state.owners.size > 0) continue;
+      if (!state) continue;
+      state.owners.delete(owner);
+      if (!state.retainedBy.delete(owner) || state.retainedBy.size > 0) continue;
       state.inFlight?.abort();
       this.states.delete(id);
       removed = true;
     }
     if (removed) this.notify();
+  }
+
+  /** Retains a visited view without requesting its tokens or payloads. */
+  suspend(owner: string, ids: Iterable<string>): void {
+    for (const id of ids) {
+      const state = this.states.get(id);
+      if (!state || !state.owners.delete(owner) || state.owners.size > 0) continue;
+      this.fence(state);
+      state.generation += 1;
+      state.observed = undefined;
+      state.owed = true;
+    }
   }
 
   /** Every resource of a project the member can no longer read. */
@@ -198,12 +215,16 @@ export class ResourceStore {
     this.pump();
   }
 
+  isActiveProject(project: string): boolean {
+    return this.activeProject === project;
+  }
+
   /** The watermark request body for each open project: what its owners watch. */
   requests(project: string): ResourceRequest[] {
     const seen = new Map<string, ResourceRequest>();
     for (const state of this.states.values()) {
       const key = state.profile.key;
-      if (key.project !== project) continue;
+      if (key.project !== project || state.owners.size === 0) continue;
       const entry: ResourceRequest = { name: key.name };
       if (key.ref !== undefined) entry.ref = key.ref;
       if (key.entity !== undefined) entry.entity = key.entity;
@@ -238,7 +259,7 @@ export class ResourceStore {
     );
     for (const state of this.states.values()) {
       const key = state.profile.key;
-      if (key.project !== project) continue;
+      if (key.project !== project || state.owners.size === 0) continue;
       const version = versions.get(watermarkId(project, key));
       if (version !== undefined) state.observed = version;
     }
@@ -246,7 +267,7 @@ export class ResourceStore {
   }
 
   private owes(state: ResourceState): boolean {
-    if (state.inFlight || state.retryAt > this.now()) return false;
+    if (state.owners.size === 0 || state.inFlight || state.retryAt > this.now()) return false;
     return !state.hasValue || state.owed || state.committed !== state.observed;
   }
 
@@ -398,6 +419,11 @@ export class ResourceStore {
     state.owed = true;
     state.retryAt = 0;
     this.pump();
+  }
+
+  /** Accepted data only, for response merges that must not persist other overlays. */
+  committedValue<T>(id: string): T | undefined {
+    return this.states.get(id)?.value as T | undefined;
   }
 
   view<T>(id: string): ResourceView<T> {

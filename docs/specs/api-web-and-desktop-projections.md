@@ -643,23 +643,28 @@ actions are labelled historical and never rendered as current guidance.
 
 ## Revision observation and drafts
 
-Visible clients notice canonical main changes without browser reload or
-repurposing the Seed/Refresh action. Every open project tab sends a cache-only
-heartbeat on the bounded visible cadence; the active tab observes completed
-cached revision updates more frequently, and visibility resume sweeps all tabs.
-A teammate's action can change state without moving the graph revision, so the
-main heartbeat also carries signals for it. It names the newest visible task
-and the newest watcher; one the active tab has not loaded makes it reload that
-list. A task status digest moves when any visible task changes status or
-finishes, not on progress; a moved digest rereads the task list, and an
-inactive tab stores it in its retained state, so returning to the tab shows
-each agent's current status before the reload. It also carries digests of the
-settings fields and of each Experiment's lifecycle fields (not its progress); a
-changed digest reloads the project.
-A steer lives only in the chat history, so each chat task also reports a steer
-revision, bumped when a steer is queued and again when its final receipt is
-written. A changed revision makes other members' pages refresh chat summaries,
-which reloads an open transcript. A composer draft never leaves its page.
+Open Web tabs share one resource store and one watermark scheduler per backend
+and member. The scheduler sends the complete open set with each tab's current
+ref to `POST /api/resource-watermarks`: the active project every second, hidden
+projects every third beat, and expired resource deadlines as due. Contact
+failures back off while retaining the last accepted data and showing a small
+accessible stale marker. Remote sync health remains a separate per-project
+marker. Unavailable projects lose their route, tab, resource data, and viewport.
+
+Tasks are project-wide: every open tab watches status; only the active tab
+watches progress and displayed task details. Usage, readiness, questions,
+consolidation, digest, lessons, members, terminal metadata, and artifact metadata
+have their own profiles and tokens. Task completion does not launch a reload
+bundle. The store commits the watermark observed before each payload read;
+failed or superseded reads do not acknowledge newer versions. Backend/member
+changes reset the store. A visited ref can remain cached without subscriptions;
+closing its tab releases its resources.
+
+Task commands fence reads and install pending overlays immediately. A definite
+failure removes its overlay and marks the card for retry. An ambiguous chat
+send retains its pending card and exact idempotency key for Resend. Terminal
+sockets, artifact iframe execution, and viewer-owned live data stay outside the
+resource refresh loop.
 
 A heartbeat may schedule one bounded lock-free, single-flight remote-head probe
 per project. A temporarily unavailable head does not replay or copy the graph.

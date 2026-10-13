@@ -210,13 +210,23 @@ test("an unavailable project loses its data and its tab", async () => {
   const { profile } = manualProfile("chats", "gone");
   const id = store.register("tab", profile);
   const lost = [];
+  const { closeProjectTab } = await server.ssrLoadModule("/src/projects/projectTabs.ts");
+  let tabs = [{ id: "gone", name: "Gone" }];
+  let active = "gone";
+  const viewports = new Map([["gone", {}]]);
   const scheduler = new RefreshScheduler({
     store,
     clientId: "c",
     openProjects: () => [{ projectId: "gone", currentRef: "main" }],
     activeProjectId: () => "gone",
     send: async () => ({ epoch: "e", as_of: "", projects: [], unavailable: ["gone"] }),
-    onLostAccess: (projectId) => lost.push(projectId),
+    onLostAccess: (projectId) => {
+      lost.push(projectId);
+      const closed = closeProjectTab(tabs, active, projectId);
+      tabs = closed.tabs;
+      active = closed.activeProjectId;
+      viewports.delete(projectId);
+    },
     clock: time.clock,
     visibility: { isHidden: () => false, listen: () => () => {} },
   });
@@ -224,5 +234,8 @@ test("an unavailable project loses its data and its tab", async () => {
   await time.advance(1);
   scheduler.stop();
   assert.deepEqual(lost, ["gone"]);
+  assert.deepEqual(tabs, []);
+  assert.equal(active, null);
+  assert.equal(viewports.has("gone"), false);
   assert.equal(store.view(id).loading, true);
 });

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { withTaskAnswers } from "./taskAnswers.mjs";
 import { after, test } from "node:test";
 import { createServer } from "vite";
 
@@ -10,186 +9,210 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const {
-  activeBranchMergeTask,
-  experimentControlsNeedWrapupPolling,
-  taskActionNeedsAuthoritativeProjectReload,
-  loadExperimentWatcherPoll,
-  terminalTaskNeedsAuthoritativeProjectReload,
-} = await server.ssrLoadModule("/src/App.tsx");
-const { cloneAgentTasksSnapshot, mergeTaskListRead, reconcileKnownActiveTasks } =
-  await server.ssrLoadModule("/src/agents/useAgentTasks.ts");
-
+const { ResourceStore } = await server.ssrLoadModule("/src/core/resourceStore.ts");
+const { taskStatusProfile, selectTasks } = await server.ssrLoadModule(
+  "/src/agents/taskResources.ts",
+);
 after(() => server.close());
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+function manual(project = "p", name = "tasks.status") {
+  const reads = [];
+  return {
+    reads,
+    profile: {
+      ...taskStatusProfile(project),
+      key: { ...taskStatusProfile(project).key, name },
+      fetch: () => new Promise((resolve, reject) => reads.push({ resolve, reject })),
+    },
+  };
+}
+const task = (status) => ({ operation_id: "task", status, updated_at: "1" });
 
-test("agent task snapshots do not retain dismissed notification state", () => {
-  const snapshot = cloneAgentTasksSnapshot({
-    retryTask: null,
-    tasks: [],
-    taskInspectorId: "task-1",
-    inspectedTask: null,
-    activityTaskId: "task-1",
-    dismissedTaskIds: new Set(["task-1"]),
-  });
-
-  assert.equal("dismissedTaskIds" in snapshot, false);
-  assert.deepEqual(snapshot.tasks, []);
+test("branch-retained views share project task state and one completion reader", async () => {
+  const store = new ResourceStore();
+  const { profile, reads } = manual();
+  const main = store.register("main", profile);
+  const branch = store.register("branch", profile);
+  assert.equal(main, branch);
+  assert.equal(reads.length, 1);
+  reads[0].resolve([task("running")]);
+  await flush();
+  store.observe("p", [{ name: "tasks.status", version: "done" }]);
+  assert.equal(reads.length, 2);
+  reads[1].resolve([task("succeeded")]);
+  await flush();
+  assert.equal(store.view(branch).value[0].status, "succeeded");
 });
 
-test("a task list read never drops or reverts a task recorded after it was requested", () => {
-  const old = withTaskAnswers({ operation_id: "old", status: "succeeded" });
-  const started = withTaskAnswers({ operation_id: "new", status: "running" });
-  const current = [started, old];
-  // Read 1 was requested before the start was recorded as write 2.
-  const stale = mergeTaskListRead(current, [old], new Map([["new", 2]]), 1);
-  assert.deepEqual(
-    stale.map((task) => task.operation_id),
-    ["new", "old"],
+test("activation during a hidden task read accepts it without a restore write", async () => {
+  const store = new ResourceStore();
+  const { profile, reads } = manual();
+  const id = store.register("tab", profile);
+  store.setActiveProject("p");
+  reads[0].resolve([task("succeeded")]);
+  await flush();
+  assert.equal(reads.length, 1);
+  assert.equal(store.view(id).value[0].status, "succeeded");
+});
+
+test("task read failure does not block independent resources", async () => {
+  const store = new ResourceStore();
+  const tasks = manual();
+  const usage = manual("p", "usage");
+  store.setActiveProject("p");
+  const taskId = store.register("tab", tasks.profile);
+  const usageId = store.register("tab", usage.profile);
+  tasks.reads[0].reject(new Error("offline"));
+  usage.reads[0].resolve({ total: 42 });
+  await flush();
+  assert.equal(store.view(taskId).stale, true);
+  assert.deepEqual(store.view(usageId).value, { total: 42 });
+});
+
+test("pending rollback preserves newer state and fences competing completion reads", async () => {
+  const store = new ResourceStore();
+  const { profile, reads } = manual();
+  const id = store.register("tab", profile);
+  reads[0].resolve([task("running")]);
+  await flush();
+  store.invalidate(id);
+  const mutation = store.beginMutation(
+    "pause",
+    new Map([[id, (rows) => rows.map((row) => ({ ...row, paused: true }))]]),
   );
-  const queued = mergeTaskListRead(
-    current,
-    [{ ...started, status: "queued" }, old],
-    new Map([["new", 2]]),
-    1,
-  );
-  assert.equal(queued.find((task) => task.operation_id === "new").status, "running");
-  // A read requested after the record is the server's answer, even without the task.
+  assert.equal(store.view(id).value[0].paused, true);
+  store.write(id, [task("succeeded")]);
+  mutation.fail();
+  reads[1].resolve([task("running")]);
+  await flush();
+  assert.equal(store.view(id).value[0].status, "succeeded");
+  assert.equal(store.view(id).value[0].paused, undefined);
+  assert.deepEqual(store.view(id).pending, []);
+});
+
+test("progress cannot regress status or overwrite a pending action", () => {
+  const status = { ...task("succeeded"), paused: true, progress: 0 };
+  const progress = { ...task("running"), paused: false, progress: 1, updated_at: "2" };
+  const [selected] = selectTasks([status], [progress]);
+  assert.equal(selected.status, "succeeded");
+  assert.equal(selected.paused, true);
+  assert.equal(selected.progress, 0);
+  assert.equal(selectTasks([status], [{ ...progress, status: "succeeded" }])[0].progress, 1);
+  assert.deepEqual(selectTasks([], [progress]), []);
+});
+
+test("task commands paint intent, settle a retry and retain failure on the task", async () => {
+  const { beginTaskMutation } = await server.ssrLoadModule("/src/agents/taskActions.ts");
+  const store = new ResourceStore();
+  const { profile, reads } = manual();
+  const id = store.register("tab", profile);
+  const original = { ...task("running"), can_pause: true };
+  reads[0].resolve([original]);
+  await flush();
+  const pause = beginTaskMutation(store, "p", original, "pause");
+  assert.equal(store.view(id).value[0].pausing, true);
+  store.write(id, [{ ...original, status: "succeeded", updated_at: "2" }]);
+  pause.fail(new Error("refused"));
+  assert.equal(store.view(id).value[0].status, "succeeded");
+  assert.equal(store.view(id).value[0].pausing, undefined);
+  assert.equal(store.view(id).value[0].action_error, "refused");
+  const retry = beginTaskMutation(store, "p", original, "retry");
+  assert.equal(store.view(id).value[0].action_error, undefined);
+  retry.settle({ ...task("queued"), operation_id: "retry" });
   assert.deepEqual(
-    mergeTaskListRead(current, [old], new Map(), 3).map((task) => task.operation_id),
+    store.view(id).value.map((row) => row.operation_id),
+    ["retry", "task"],
+  );
+  assert.equal(store.view(id).value[1].status, "succeeded");
+  assert.deepEqual(store.view(id).pending, []);
+});
+
+async function chatStore() {
+  const store = new ResourceStore();
+  store.setActiveProject("p");
+  const tasks = manual();
+  const taskId = store.register("tab", tasks.profile);
+  const chat = manual("p", "chat");
+  chat.profile.key = { ...chat.profile.key, entity: "c", query: "branch:b" };
+  const chatId = store.register("tab", chat.profile);
+  tasks.reads[0].resolve([]);
+  chat.reads[0].resolve({ messages: [{ message_id: "old", text: "Earlier" }] });
+  await flush();
+  return { store, taskId, chatId, chat };
+}
+
+test("ambiguous chat sends retain admission key and resend settles one card", async () => {
+  const { beginChatSend } = await server.ssrLoadModule("/src/agents/chatSendMutation.ts");
+  const { ApiError } = await server.ssrLoadModule("/src/core/api.ts");
+  const { store, taskId, chatId, chat } = await chatStore();
+  const send = () =>
+    beginChatSend(
+      store,
+      "p",
+      { kind: "branch", branch_id: "b" },
+      "project_chat",
+      { chat_id: "c", message: "Hello" },
+      "admission",
+    );
+  const first = send();
+  first.fail(new TypeError("response lost"));
+  assert.deepEqual(store.view(taskId).pending, ["admission"]);
+  assert.equal(store.view(taskId).value[0].operation_id, "pending-admission");
+  assert.equal(store.view(taskId).value[0].active, true);
+  assert.equal(store.view(chatId).value.messages.at(-1).text, "Hello");
+  const resend = send();
+  resend.fail(new ApiError("unavailable", 503));
+  assert.equal(store.view(taskId).value.length, 1);
+  assert.equal(store.view(chatId).value.messages.length, 2);
+  resend.settle({ ...task("queued"), operation_id: "accepted" });
+  assert.deepEqual(
+    store.view(taskId).value.map((row) => row.operation_id),
+    ["accepted"],
+  );
+  assert.deepEqual(store.view(taskId).pending, []);
+  assert.deepEqual(store.view(chatId).pending, []);
+  chat.reads[1].resolve({ messages: [{ message_id: "accepted-message", text: "Hello" }] });
+  await flush();
+  assert.equal(store.view(chatId).value.messages.length, 1);
+});
+
+test("definite chat rejection removes task and transcript overlays", async () => {
+  const { beginChatSend } = await server.ssrLoadModule("/src/agents/chatSendMutation.ts");
+  const { ApiError } = await server.ssrLoadModule("/src/core/api.ts");
+  const { store, taskId, chatId } = await chatStore();
+  const send = beginChatSend(
+    store,
+    "p",
+    { kind: "branch", branch_id: "b" },
+    "project_chat",
+    { chat_id: "c", message: "Hello" },
+    "admission",
+  );
+  assert.equal(store.view(taskId).value.length, 1);
+  send.fail(new ApiError("forbidden", 403));
+  assert.deepEqual(store.view(taskId).value, []);
+  assert.deepEqual(
+    store.view(chatId).value.messages.map((message) => message.message_id),
     ["old"],
   );
+  assert.deepEqual(store.view(chatId).pending, []);
 });
 
-test("terminal Experiment work refetches control state even without a graph revision", () => {
-  const completedLoop = {
-    status: "succeeded",
-    applied_revision: null,
-    request: {
-      patch_kind: "experiment_loop",
-      control_node_id: "experiment/demo",
-    },
-  };
-  const pausedLoop = {
-    ...completedLoop,
-    status: "paused",
-  };
-  const ordinaryChat = {
-    kind: "project_chat",
-    status: "succeeded",
-    applied_revision: null,
-    request: { patch_kind: "work" },
-  };
-  const branchMerge = {
-    ...ordinaryChat,
-    kind: "branch_merge",
-  };
-
-  assert.equal(terminalTaskNeedsAuthoritativeProjectReload(completedLoop), true);
-  assert.equal(terminalTaskNeedsAuthoritativeProjectReload(pausedLoop), true);
-  assert.equal(terminalTaskNeedsAuthoritativeProjectReload(ordinaryChat), false);
-  assert.equal(terminalTaskNeedsAuthoritativeProjectReload(branchMerge), true);
-  assert.equal(
-    terminalTaskNeedsAuthoritativeProjectReload({ ...ordinaryChat, applied_revision: 7 }),
-    true,
-  );
-});
-
-test("hidden Experiment report wrap-up keeps authoritative polling alive", () => {
-  assert.equal(
-    experimentControlsNeedWrapupPolling({
-      "experiment/demo": { health: "wrapping_up" },
-    }),
-    true,
-  );
-  assert.equal(
-    experimentControlsNeedWrapupPolling({
-      "experiment/demo": { health: "completed" },
-      "experiment/other": { health: "needs_action" },
-    }),
-    false,
-  );
-});
-
-test("a fast merge completion remains observable while another task keeps polling active", () => {
-  const main = withTaskAnswers({ operation_id: "main", kind: "auto_research", status: "running" });
-  const merge = withTaskAnswers({ operation_id: "merge", kind: "branch_merge", status: "queued" });
-  const responseEpisode = {
-    graph_branch: { active_merge_task_id: merge.operation_id },
-    tasks: [merge],
-  };
-  const knownActive = new Map();
-
-  assert.deepEqual(reconcileKnownActiveTasks(knownActive, [main]), []);
-  const started = activeBranchMergeTask(responseEpisode);
-  assert.equal(started, merge);
-  knownActive.set(started.operation_id, started);
-  // A concurrent project reload may still return the pre-commit graph here.
-  assert.deepEqual(reconcileKnownActiveTasks(knownActive, [main, merge]), []);
-  // Its task request may then observe the terminal merge and must force another reload.
-  const terminal = reconcileKnownActiveTasks(knownActive, [
-    main,
-    withTaskAnswers({ ...merge, status: "succeeded" }),
-  ]);
-
-  assert.deepEqual(
-    terminal.map((task) => task.operation_id),
-    ["merge"],
-  );
-  assert.equal(terminal.some(terminalTaskNeedsAuthoritativeProjectReload), true);
-});
-
-test("Experiment Resume and Retry refetch authoritative control state", () => {
-  const experimentLoop = {
-    request: { patch_kind: "experiment_loop" },
-  };
-  const ordinaryWork = {
-    request: { patch_kind: "work" },
-  };
-
-  assert.equal(taskActionNeedsAuthoritativeProjectReload(experimentLoop, "resume"), true);
-  assert.equal(taskActionNeedsAuthoritativeProjectReload(experimentLoop, "retry"), true);
-  assert.equal(taskActionNeedsAuthoritativeProjectReload(experimentLoop, "pause"), false);
-  assert.equal(taskActionNeedsAuthoritativeProjectReload(ordinaryWork, "retry"), false);
-});
-
-test("pending Experiment watcher polling always refreshes control state", async () => {
-  const watcher = {
-    watcher_id: "watcher-1",
-    status: "active",
-    notified: false,
-    notification_operation_id: null,
-    continuation: { patch_kind: "experiment_loop" },
-  };
-  const requested = [];
-  const base = "/api/projects/project-1";
-  const result = await loadExperimentWatcherPoll(async (path) => {
-    requested.push(path);
-    if (path.endsWith("/watchers")) return [watcher];
-    if (path.endsWith("/tasks")) return [];
-    return { experiment_control: { "experiment/demo": { operational: {} } } };
-  }, base);
-
-  assert.deepEqual(requested, [`${base}/watchers`, `${base}/tasks`, base]);
-  assert.deepEqual(result.watchers, [watcher]);
-  assert.ok(result.project.experiment_control);
-});
-
-test("branch polling retains all-target watchers and tasks while scoping the graph", async () => {
-  const requested = [];
-  const base = "/api/projects/project-1";
-  const watchers = ["main", "branch-one", "branch-two"].map((watcher_id) => ({ watcher_id }));
-  const result = await loadExperimentWatcherPoll(
-    async (path) => {
-      requested.push(path);
-      return new URL(path, "http://localhost").pathname.endsWith("/watchers") ? watchers : {};
-    },
-    base,
-    { kind: "branch", branch_id: "episode-branch" },
-  );
-  assert.deepEqual(result.watchers, watchers);
-  assert.deepEqual(requested, [
-    `${base}/watchers?all_targets=true&branch_id=episode-branch`,
-    `${base}/tasks`,
-    `${base}?branch_id=episode-branch`,
-  ]);
+test("settling one task command never persists another command's overlay", async () => {
+  const { beginTaskMutation } = await server.ssrLoadModule("/src/agents/taskActions.ts");
+  const store = new ResourceStore();
+  const source = manual();
+  const id = store.register("tab", source.profile);
+  const first = task("running");
+  const second = { ...task("running"), operation_id: "second" };
+  source.reads[0].resolve([first, second]);
+  await flush();
+  const pauseFirst = beginTaskMutation(store, "p", first, "pause");
+  const pauseSecond = beginTaskMutation(store, "p", second, "pause");
+  pauseFirst.fail(new Error("refused"));
+  assert.equal(store.view(id).value[1].action_pending, "pause");
+  pauseSecond.fail(new Error("refused too"));
+  assert.equal(store.view(id).value[1].action_pending, undefined);
+  assert.equal(store.view(id).value[1].pausing, second.pausing);
+  assert.deepEqual(store.view(id).pending, []);
 });

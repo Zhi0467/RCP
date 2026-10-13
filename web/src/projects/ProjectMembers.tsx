@@ -1,6 +1,10 @@
-import { Users } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
-import type { IdentityResponse, ProjectMember, SpaceUserSummary } from "../core/types";
+import { Users, RotateCw } from "lucide-react";
+import { useCallback, useState } from "react";
+import type { IdentityResponse, SpaceUserSummary } from "../core/types";
+
+import { resourceKeyId } from "../core/resourceStore";
+import { useRefreshRuntime } from "../core/useResource";
+import { membersProfile, useProjectResource } from "./projectResources";
 
 interface Props {
   projectId: string;
@@ -37,9 +41,14 @@ export function inviteUnavailableReason(
  * identical to every other member's.
  */
 export function ProjectMembers({ projectId, identity, api, onLeft }: Props) {
-  const [members, setMembers] = useState<ProjectMember[] | null>(null);
-  const [spaceUsers, setSpaceUsers] = useState<SpaceUserSummary[] | null>(null);
-  const [candidates, setCandidates] = useState<SpaceUserSummary[]>([]);
+  const { store } = useRefreshRuntime();
+  const profile = membersProfile(projectId);
+  const resource = useProjectResource(profile);
+  const resourceId = resourceKeyId(profile.key);
+  const members = resource.value?.members ?? null;
+  const spaceUsers = resource.value?.spaceUsers ?? null;
+  const seatedIds = new Set((members ?? []).map((member) => member.user_id));
+  const candidates = (spaceUsers ?? []).filter((user) => !seatedIds.has(user.user_id));
   const [selected, setSelected] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -47,28 +56,17 @@ export function ProjectMembers({ projectId, identity, api, onLeft }: Props) {
 
   const base = `/api/projects/${encodeURIComponent(projectId)}`;
 
-  const reload = useCallback(async () => {
-    const [seated, everyone] = await Promise.all([
-      api<ProjectMember[]>(`${base}/members`),
-      api<SpaceUserSummary[]>("/api/space/users"),
-    ]);
-    setMembers(seated);
-    setSpaceUsers(everyone);
-    const seatedIds = new Set(seated.map((member) => member.user_id));
-    setCandidates(everyone.filter((user) => !seatedIds.has(user.user_id)));
-  }, [api, base]);
-
-  useEffect(() => {
-    void reload().catch((failure) =>
-      setError(failure instanceof Error ? failure.message : String(failure)),
-    );
-  }, [reload]);
+  const reload = useCallback(async () => store.invalidate(resourceId), [store, resourceId]);
 
   const invite = async () => {
     if (!selected) return;
     setBusy(true);
     setError(null);
     setInvited(null);
+    const mutation = store.beginMutation(
+      crypto.randomUUID(),
+      new Map([[resourceId, (value: unknown) => value]]),
+    );
     try {
       await api(`${base}/invitations`, {
         method: "POST",
@@ -77,8 +75,9 @@ export function ProjectMembers({ projectId, identity, api, onLeft }: Props) {
       const name = candidates.find((user) => user.user_id === selected)?.display_name;
       setInvited(name || selected);
       setSelected("");
-      await reload();
+      mutation.settle();
     } catch (failure) {
+      mutation.fail();
       setError(failure instanceof Error ? failure.message : String(failure));
     } finally {
       setBusy(false);
@@ -105,12 +104,29 @@ export function ProjectMembers({ projectId, identity, api, onLeft }: Props) {
   const inviteBlocked = inviteUnavailableReason(spaceUsers, candidates);
 
   return (
-    <section className="settings-section project-members">
+    <section
+      className="settings-section project-members"
+      style={{ borderColor: error || resource.error ? "var(--danger, #d84c4c)" : undefined }}
+    >
       <header>
         <span>
           <Users size={16} />
         </span>
         <h2>Members</h2>
+        {error || resource.error ? (
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="Retry refresh"
+            title={error ?? String(resource.error)}
+            onClick={() => {
+              setError(null);
+              void reload();
+            }}
+          >
+            <RotateCw size={14} />
+          </button>
+        ) : null}
       </header>
 
       <ul className="project-member-list">
@@ -124,7 +140,6 @@ export function ProjectMembers({ projectId, identity, api, onLeft }: Props) {
         ))}
       </ul>
 
-      {error ? <p className="project-member-error">{error}</p> : null}
       {invited ? <p className="project-member-invited">Invited {invited}.</p> : null}
 
       {canInvite && inviteBlocked ? <p className="project-member-note">{inviteBlocked}</p> : null}

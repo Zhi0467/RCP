@@ -26,20 +26,6 @@ import type {
 
 const PROJECT_HEADER_COLLAPSED_KEY = "rcp:project-header-collapsed";
 export const EXPERIMENT_BOARD_POLL_DELAY_MS = 5_000;
-export const PROJECT_TAB_CACHE_LIMIT = 8;
-export const OPEN_PROJECT_HEARTBEAT_INTERVAL_MS = 3_000;
-export const ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS = 1_000;
-
-interface ProjectCachePollingClock {
-  setInterval(callback: () => void, delay: number): number;
-  clearInterval(intervalId: number): void;
-}
-
-interface ProjectCachePollingVisibility {
-  isHidden(): boolean;
-  listen(callback: () => void): () => void;
-}
-
 interface UseProjectTabsOptions {
   initialProjectId: string | null;
   initialSetupOpen: boolean;
@@ -48,19 +34,9 @@ interface UseProjectTabsOptions {
   reportError: (message: string) => void;
 }
 
-export function cacheProjectTabState<T>(
-  cache: Map<string, T>,
-  projectId: string,
-  state: T,
-  limit = PROJECT_TAB_CACHE_LIMIT,
-): void {
+export function cacheProjectTabState<T>(cache: Map<string, T>, projectId: string, state: T): void {
   cache.delete(projectId);
   cache.set(projectId, state);
-  while (cache.size > limit) {
-    const oldest = cache.keys().next().value;
-    if (oldest === undefined) break;
-    cache.delete(oldest);
-  }
 }
 
 /** The route that reopens a project on the graph target its human last left it on. */
@@ -99,10 +75,6 @@ export function projectTabStateForOpen<T>(
   return { state, loading: false };
 }
 
-export function projectIdsForCacheHeartbeat(tabs: ProjectTab[]): string[] {
-  return [...new Set(tabs.map((tab) => tab.id))];
-}
-
 export function inactiveProjectTabState<T>(
   cache: Map<string, T>,
   tabs: ProjectTab[],
@@ -112,65 +84,6 @@ export function inactiveProjectTabState<T>(
   if (activeProjectId === requestedProjectId || !tabs.some((tab) => tab.id === requestedProjectId))
     return null;
   return cache.get(requestedProjectId) ?? null;
-}
-
-/** Rewrites every retained ref of an open, inactive project: main and each visited branch. */
-export function updateInactiveProjectTabStates<T>(
-  cache: Map<string, { state: T | null }>,
-  tabs: ProjectTab[],
-  activeProjectId: string | null,
-  requestedProjectId: string,
-  update: (state: T) => T,
-): boolean {
-  if (activeProjectId === requestedProjectId || !tabs.some((tab) => tab.id === requestedProjectId))
-    return false;
-  let updated = false;
-  for (const [key, entry] of cache) {
-    if (!entry.state) continue;
-    if (key !== requestedProjectId && !key.startsWith(`${requestedProjectId}:branch:`)) continue;
-    entry.state = update(entry.state);
-    updated = true;
-  }
-  return updated;
-}
-
-export function startProjectCachePolling(
-  clock: ProjectCachePollingClock,
-  visibility: ProjectCachePollingVisibility,
-  sweepOpenProjects: () => void,
-  observeActiveProject: () => void,
-): () => void {
-  const runWhenVisible = (callback: () => void) => () => {
-    if (!visibility.isHidden()) callback();
-  };
-  const sweepInterval = clock.setInterval(
-    runWhenVisible(sweepOpenProjects),
-    OPEN_PROJECT_HEARTBEAT_INTERVAL_MS,
-  );
-  const activeInterval = clock.setInterval(
-    runWhenVisible(observeActiveProject),
-    ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS,
-  );
-  const stopListening = visibility.listen(runWhenVisible(sweepOpenProjects));
-  return () => {
-    clock.clearInterval(sweepInterval);
-    clock.clearInterval(activeInterval);
-    stopListening();
-  };
-}
-
-export function singleFlightProjectCacheHeartbeat(
-  inFlight: Map<string, Promise<void>>,
-  projectId: string,
-  heartbeat: () => Promise<void>,
-): Promise<void> {
-  const pending = inFlight.get(projectId);
-  if (pending) return pending;
-  const request = heartbeat().finally(() => {
-    if (inFlight.get(projectId) === request) inFlight.delete(projectId);
-  });
-  inFlight.set(projectId, request);
-  return request;
 }
 
 export function useProjectTabs<T extends { project: ProjectSnapshot }>({
@@ -206,7 +119,6 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
   );
   // Where the human left each project; background cache writes never change it.
   const leftGraphTargetsRef = useRef(new Map<string, GraphTargetRef>());
-  const projectCacheHeartbeatInFlight = useRef(new Map<string, Promise<void>>());
   const experimentLoopRefreshGeneration = useRef(0);
   const spaceRunRefreshGeneration = useRef(0);
   activeProjectId.current = projectId;
@@ -425,14 +337,6 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     const key = graphSessionKey(id, state.project.graph_target);
     cache.delete(key);
     cache.set(key, { project: state.project, state });
-    // Speculative snapshots must not evict a visited ref's draft and UI state.
-    const visited = [...cache].filter(([, entry]) => entry.state !== null);
-    for (const [oldest] of visited.slice(
-      0,
-      Math.max(0, visited.length - PROJECT_TAB_CACHE_LIMIT),
-    )) {
-      cache.delete(oldest);
-    }
   }, []);
   const clearProjectCache = useCallback(() => projectTabStatesRef.current.clear(), []);
   const cacheProjectSnapshot = useCallback((snapshot: ProjectSnapshot) => {
@@ -472,33 +376,13 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
       )?.state ?? null,
     [],
   );
-  const updateInactiveProjectStates = useCallback(
-    (id: string, update: (state: T) => T) =>
-      updateInactiveProjectTabStates(
-        projectTabStatesRef.current,
-        openProjectTabsRef.current,
-        activeProjectId.current,
-        id,
-        update,
-      ),
-    [],
-  );
   const isProjectTabOpen = useCallback(
     (id: string) => openProjectTabsRef.current.some((tab) => tab.id === id),
-    [],
-  );
-  const projectIdsForHeartbeat = useCallback(
-    () => projectIdsForCacheHeartbeat(openProjectTabsRef.current),
     [],
   );
   const adjacentProjectId = useCallback(
     (offset: -1 | 1) =>
       adjacentProjectTabId(openProjectTabsRef.current, activeProjectId.current, offset),
-    [],
-  );
-  const runProjectHeartbeat = useCallback(
-    (id: string, heartbeat: () => Promise<void>) =>
-      singleFlightProjectCacheHeartbeat(projectCacheHeartbeatInFlight.current, id, heartbeat),
     [],
   );
 
@@ -595,11 +479,8 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     rememberLeftGraphTarget,
     cachedProjectStateForOpen,
     inactiveCachedProjectState,
-    updateInactiveProjectStates,
     isProjectTabOpen,
-    projectIdsForHeartbeat,
     adjacentProjectId,
-    runProjectHeartbeat,
   };
 }
 
