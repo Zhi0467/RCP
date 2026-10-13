@@ -5,6 +5,31 @@ revision reconciliation, navigation and tab state, and desktop-shell lifecycle.
 It does not grant graph authority; mutation routes delegate to the state
 workspace and transition manager.
 
+## Resource watermarks
+
+`POST /api/resource-watermarks` accepts a client's complete `open` project
+set, subscribed resource keys, `due` project ids, and optional `activated` id.
+It resolves aliases and active membership before reading counters or renewing
+remote-sync demand. Unknown and forbidden ids both appear in `unavailable`.
+Only due projects receive tokens; sync activation is non-blocking.
+
+One SQLite read transaction performs three set-based reads: authorization and
+aliases, transactional resource counters, and indexed deadlines. The route
+never opens a project, replays history, completes a snapshot, or waits for a
+snapshot lock. File families use published catalog content generations;
+terminal runtime changes use the terminal owner's per-project generation.
+`tasks.status` excludes progress-only changes; `tasks.progress` includes them.
+Entity counters are keyed by project, and chat read/pin counters by member.
+
+Each response captures one `as_of`. Tokens fold in the latest elapsed deadline,
+and `valid_until` names the earliest future boundary (finished-chat task
+visibility, question liveness, artifact expiry, consolidation authorization,
+or readiness recheck). `epoch` fences process restart, offline restore, and
+projection-contract changes. Payload and mutation response bodies keep their
+existing shapes: a client records the watermark observed before its payload
+read, so a subsequent changed token requests another read. The legacy
+`/cached/revision` endpoint remains until the Web migration is integrated.
+
 ## Project graph-ref inventory
 
 `GET /api/projects/{project_id}/graph-refs` returns a list of graph refs,

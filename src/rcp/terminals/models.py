@@ -66,3 +66,4 @@ class TerminalRuntime:
     # stays in `sessions` so the stop can be retried, and stops being one a
     # member can reach.
     retiring: str | None = None
+    output_closed: bool = False

@@ -855,7 +855,7 @@ async def test_lifecycle_ends_each_session(manifest, manager, membership, double
     if reason == "idle_timeout":
         expire(runtime)
         os.write(doubles.slaves[0], b"noisy forgotten command")
-        read_ready(runtime)
+        read_ready(manager, runtime)
     elif reason == "membership_lost":
         membership.allowed = False
     else:
@@ -879,7 +879,7 @@ async def test_a_viewer_that_falls_behind_is_detached_not_ended(manifest, manage
     while not queue.full():
         queue.put_nowait(b"backlog")
     os.write(doubles.slaves[0], b"one more chunk")
-    while read_ready(runtime):
+    while read_ready(manager, runtime):
         pass
     assert queue.get_nowait() is DETACHED
     assert queue not in runtime.subscribers
@@ -893,7 +893,7 @@ async def test_replay_is_bounded_and_never_saved(manifest, manager, doubles):
     runtime = manager.sessions[session.session_id]
     runtime.replay.extend(b"x" * TERMINAL_OUTPUT_BUFFER_BYTES)
     os.write(doubles.slaves[0], b"new-output")
-    read_ready(runtime)
+    read_ready(manager, runtime)
     assert len(runtime.replay) == TERMINAL_OUTPUT_BUFFER_BYTES
     assert runtime.replay.endswith(b"new-output")
     assert all(

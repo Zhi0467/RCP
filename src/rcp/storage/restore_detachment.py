@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import _required_timestamp
 
@@ -27,6 +29,13 @@ class RestoreDetachmentStoreMixin(StoreMixinBase):
         _required_timestamp(now)
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            # A restore request retains detached_at across retries. Keep that
+            # operation idempotent while fencing every distinct restore.
+            restore_epoch = uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:resource-restore:{now}")
+            connection.execute(
+                "UPDATE resource_watermark_epoch SET epoch=? WHERE singleton=1",
+                (str(restore_epoch),),
+            )
             self.detach_agent_tasks_for_restore(connection, diagnostic=recorded_detail, now=now)
             self.detach_episode_reports_for_restore(connection, diagnostic=recorded_detail, now=now)
             self.detach_experiment_episodes_for_restore(

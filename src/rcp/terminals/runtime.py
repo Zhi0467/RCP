@@ -53,7 +53,9 @@ async def end_runtime(manager: TerminalManager, runtime: TerminalRuntime, reason
         # attempt. It stops being one a member can reach: this session has
         # been decided to end, and a stop that failed does not unmake that.
         # A plain cancellation is not a failed stop; `_abandon_opening` owns it.
-        runtime.retiring = reason
+        if runtime.retiring != reason:
+            runtime.retiring = reason
+            manager._bump_resource_generation(runtime.session.project_id)
         # Refusing the next attach is not enough for a viewer already
         # attached: their socket reads its queue without consulting the
         # manager again, and its own recheck is of membership. They would go
@@ -125,7 +127,8 @@ async def release_runtime(manager: TerminalManager, runtime: TerminalRuntime) ->
     its descriptor and process are not, and repeated cancellations against a
     broken service manager would otherwise spend the server's descriptors.
     """
-    manager.sessions.pop(runtime.session.session_id, None)
+    if manager.sessions.pop(runtime.session.session_id, None) is not None:
+        manager._bump_resource_generation(runtime.session.project_id)
     asyncio.get_running_loop().remove_reader(runtime.master_fd)
     with contextlib.suppress(OSError):
         # Releasing is the last thing either caller can do for this runtime, so
@@ -170,7 +173,7 @@ async def _confirm_remote_stop(manager: TerminalManager, session: TerminalSessio
     return True
 
 
-def read_ready(runtime: TerminalRuntime) -> bool:
+def read_ready(manager: TerminalManager, runtime: TerminalRuntime) -> bool:
     try:
         chunk = os.read(runtime.master_fd, TERMINAL_IO_CHUNK_BYTES)
     except BlockingIOError:
@@ -178,6 +181,9 @@ def read_ready(runtime: TerminalRuntime) -> bool:
     except OSError:
         chunk = b""
     if not chunk:
+        if not runtime.output_closed:
+            runtime.output_closed = True
+            manager._bump_resource_generation(runtime.session.project_id)
         asyncio.get_running_loop().remove_reader(runtime.master_fd)
         if runtime.completion is not None:
             chunk = runtime.completion.finish()
@@ -200,8 +206,9 @@ def read_ready(runtime: TerminalRuntime) -> bool:
             queue.put_nowait(DETACHED)
         else:
             queue.put_nowait(chunk)
-    if not runtime.subscribers:
+    if not runtime.subscribers and runtime.session.state != "idle":
         runtime.session.state = "idle"
+        manager._bump_resource_generation(runtime.session.project_id)
     return True
 
 
