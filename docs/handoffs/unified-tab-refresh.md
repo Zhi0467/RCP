@@ -57,9 +57,11 @@ remote-state projects.
 5. **Instant pending state** for every task action (retry, pause, resume,
    stop, send a chat message) through the shared store. The server's answer
    replaces it; a definite failure rolls back and shows the error on the card.
-   An ambiguous chat send, Retry, or Resume (timeout or lost response) keeps
-   its card pending with its idempotency key; repeating the action reuses that
-   key, so a lost response never starts a second turn or recovery.
+   An ambiguous chat send (timeout or lost response) keeps its card pending
+   with its idempotency key. An ambiguous task action shows no failure: its
+   task is reread, since the card already exists on the server. Both keep the
+   key; repeating the action reuses it, so a lost response never starts a
+   second turn or recovery.
 6. **Kept current:** each open tab's current view (project plus the ref it is
    on; project-wide data once). Other visited branch views stay cached and are
    validated only when reopened. Closing a tab frees its data. No count cap.

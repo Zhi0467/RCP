@@ -18,10 +18,11 @@ class RecordingWorkspace(StateWorkspace):
         self.refreshes = 0
         self.transactions = 0
         self.published: list[list[str]] = []
+        self.generation = None
 
     @contextmanager
     def read_snapshot(self):
-        yield self.root
+        yield self.generation or self.root
 
     def refresh(self) -> bool:
         self.refreshes += 1
@@ -101,6 +102,25 @@ def test_create_preserves_synced_cached_canonical_without_workspace_io(manifest,
     assert workspace.refreshes == 0
     assert workspace.transactions == 0
     assert workspace.published == []
+
+
+def test_create_seeds_from_the_published_generation_not_the_mirror(manifest, tmp_path) -> None:
+    workspace = RecordingWorkspace(manifest.research_dir)
+    mirror = manifest.research_dir / "paper" / "introduction.md"
+    mirror.parent.mkdir(parents=True)
+    mirror.write_text("# Older mirror\n", encoding="utf-8")
+    workspace.generation = tmp_path / "generation"
+    (workspace.generation / "paper").mkdir(parents=True)
+    (workspace.generation / "paper" / "introduction.md").write_text(
+        "# Published\n", encoding="utf-8"
+    )
+    service = PaperService(manifest, AppStore(tmp_path / "app.sqlite3"), workspace)
+
+    created = service.create()
+
+    assert created.content == "# Published\n"
+    assert created.sync_state == "synced"
+    assert service.snapshot().sync_state == "synced"
 
 
 def test_last_good_canonical_remains_readable_while_remote_is_unavailable(

@@ -1740,8 +1740,10 @@ class ProjectCatalog:
                     snapshot = deepcopy(cached[1])
                 snapshot["canonical_state"] = workspace.status().model_dump(mode="json")
         else:
+            # Open before taking the read lock: opening a service takes the same
+            # workspace lock on another thread, which would wait on this one.
+            service = self.open_display(project_id)
             with workspace.read_snapshot():
-                service = self.open_display(project_id)
                 snapshot = _snapshot_payload(service.project_snapshot())
         self._stamp_snapshot_identity(snapshot, project_id)
         self.mark_snapshot_fresh(snapshot)

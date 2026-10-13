@@ -48,15 +48,15 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
         # Transactional resource watermarks (v49), fresh, immutable fixture
         # upgrades, and in-place upgrades.
-        "0ad8e994bcd2b1a3f416979ea72e3dd88f7db20110e91c0473d37fc5e8a54e88",
-        "34d40e167bb8ec8adce8aa9ddb72534baae434678f67babf70217499238d0402",
-        "1ead8d115d972e4b9d044e6648b1ae43c41e354eea9bd10ee553d00915af3fb8",
-        "abf567e04f511535f2a4ed9617683336c6360341d65643d394e2b0168ce254c5",
-        "e126e06f3e71a5014d6cb6cc69fcda10c4a3e67d8ed076731088075faf3402c7",
-        "3c0c2874a93d860234c40638a9a985b9cbe017fd3e4ef173c7e67fc489081134",
-        "5033777e9451be744d1a300b3811757d17859206081ced9b803b6374b16afbe5",
-        "3e2f2451dd9d7f21a122ececeb43ebc88b87bc782ccc8d0716e4ae4108128bbe",
-        "2817b1eaf003c2d9b459a95e51e4165b3b0794955be8ca246f742dd1ce03fdae",
+        "0e1a068986b4cc21d79b6ccd5afa2f4bb0e9c57aa4a8b8d1f0cb409797dc9650",
+        "6716abe541ce6a56bd8f6b43fad28f37fa6e5601db2113bf9f90b7f37ce5b4c4",
+        "94ca4942623497e848bc19989869357986ef1cf1ade54dc8ff63b3ca0ee43afe",
+        "971ac40bb3127dd200fb09df561383194dbf97455524439c01ae4d70bc736323",
+        "9f6fa7b1c83bd261bf1c70ad2c1d1cd41b8bbde7da7bfa56608a8c7a54359017",
+        "a67e1df0c573b1ab3d7c113b8d468f243609030402f176951712c602899dca8e",
+        "ceb18718f9ab79978b04dce46f23bac4ce26a11d933aceda5ec01b5520f94cb9",
+        "e583b7975da418280bf3703a1167794fc6c6464834a6c4ea31cd9489bdf57784",
+        "f74d93dc97eed126aff51995c8f7475a60aff3ccb68bfff30c220b6c65273e79",
         # Graph seen heads (v48), fresh plus the immutable fixture upgrades
         # and in-place upgrades.
         "005c7faf995666de703a7d5fa51e41ad8aaa0514c345f8c6289aeb93a52ddb25",

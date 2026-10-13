@@ -183,15 +183,19 @@ class PaperService:
     def create(self) -> PaperSnapshot:
         with self.workspace.snapshot_lock:
             draft = self._draft()
+            # Seed from the published generation, the same one snapshot() compares
+            # against; a remote mirror can lag it. No generation yet refuses.
+            with self.workspace.read_snapshot() as root:
+                path = root / "paper" / "introduction.md"
+                canonical_content = path.read_text(encoding="utf-8") if path.exists() else None
             if draft is None:
-                canonical_content = self._read_cached_canonical()
                 content = (
                     canonical_content if canonical_content is not None else INTRODUCTION_TEMPLATE
                 )
                 base_hash = _hash(canonical_content) if canonical_content is not None else None
                 self._save_draft(content, base_hash, canonical_content)
                 draft = self._draft()
-            return self._local_draft_snapshot(draft)
+            return self._draft_snapshot(draft, canonical_content, True)
 
     def save(self, content: str, base_hash: str | None, draft_version: str | None) -> PaperSnapshot:
         # One data-directory owner and one workspace lock serialize draft writers.
@@ -306,10 +310,6 @@ class PaperService:
                 """,
                 (self.project_id, content, base_hash, ancestor_content, self.store.now()),
             )
-
-    def _local_draft_snapshot(self, draft) -> PaperSnapshot:
-        canonical_content = self._read_cached_canonical()
-        return self._draft_snapshot(draft, canonical_content, self.workspace.reachable)
 
     def _draft_snapshot(
         self,

@@ -30,6 +30,7 @@ from rcp.storage import AppStore
 from rcp.storage.digest import append_digest_event
 from tests.helpers import isolated_template_build, reset_from_template, signed_in_client
 from tests.legacy_artifacts import insert_legacy_view
+from tests.storage_helpers import downgrade_resource_watermarks
 from tests.test_application_deployment import (  # noqa: F401 - shared fixture
     build_captured,
     socket_root,
@@ -536,6 +537,7 @@ def test_restore_legacy_migrated_artifact_can_be_archived_again(
         ).fetchone()[0]
     with sqlite3.connect(database) as connection:
         project_id = connection.execute("SELECT project_id FROM projects LIMIT 1").fetchone()[0]
+        downgrade_resource_watermarks(connection)
         for table in ("artifacts", "artifact_versions", "artifact_operations", "artifact_imports"):
             connection.execute(f"DROP TABLE {table}")
         for table in (

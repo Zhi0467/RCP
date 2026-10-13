@@ -121,6 +121,7 @@ test("progress cannot regress status or overwrite a pending action", () => {
 
 test("task commands paint intent, settle a retry and retain failure on the task", async () => {
   const { beginTaskMutation } = await server.ssrLoadModule("/src/agents/taskActions.ts");
+  const { ApiError } = await server.ssrLoadModule("/src/core/api.ts");
   const store = new ResourceStore();
   const { profile, reads } = manual();
   const id = store.register("tab", profile);
@@ -130,10 +131,22 @@ test("task commands paint intent, settle a retry and retain failure on the task"
   const pause = beginTaskMutation(store, "p", original, "pause");
   assert.equal(store.view(id).value[0].pausing, true);
   store.write(id, [{ ...original, status: "succeeded", updated_at: "2" }]);
-  pause.fail(new Error("refused"));
+  pause.fail(new ApiError("refused", 409));
   assert.equal(store.view(id).value[0].status, "succeeded");
   assert.equal(store.view(id).value[0].pausing, undefined);
   assert.equal(store.view(id).value[0].action_error, "refused");
+  // A lost answer shows no failure; the server's reread task replaces the overlay.
+  const lost = beginTaskMutation(store, "p", original, "resume");
+  lost.fail(new TypeError("response lost"));
+  assert.deepEqual(store.view(id).pending, []);
+  assert.notEqual(store.view(id).value[0].action_error_action, "resume");
+  const admitted = { ...original, status: "succeeded", updated_at: "3" };
+  for (let settled = 0; settled < reads.length; settled += 1) {
+    reads[settled].resolve([admitted]);
+    await flush();
+  }
+  assert.equal(store.view(id).value[0].updated_at, "3");
+  assert.equal(store.view(id).value[0].action_error, undefined);
   const retry = beginTaskMutation(store, "p", original, "retry");
   assert.equal(store.view(id).value[0].action_error, undefined);
   retry.settle({ ...task("queued"), operation_id: "retry" });

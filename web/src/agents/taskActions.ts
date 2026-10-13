@@ -1,3 +1,4 @@
+import { ApiError } from "../core/api";
 import type { ResourceStore } from "../core/resourceStore";
 import type { AgentTask } from "../core/types";
 import { tasksResourceKey } from "./taskResources";
@@ -61,6 +62,13 @@ export function beginTaskMutation(
       );
     },
     fail(error: unknown) {
+      // A missing answer is not a rejection: the server may have admitted the
+      // action, so reread the task instead of showing it failed. The caller
+      // keeps the admission key, so a repeat cannot start a second recovery.
+      if (!(error instanceof ApiError) || error.status >= 500) {
+        mutation.settle();
+        return;
+      }
       mutation.fail();
       const rows = store.committedValue<AgentTask[]>(id) ?? [];
       const message = error instanceof Error ? error.message : String(error);

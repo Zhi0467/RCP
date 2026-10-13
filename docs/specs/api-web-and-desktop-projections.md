@@ -714,7 +714,9 @@ closing its tab releases its resources.
 
 Task commands fence reads and install pending overlays immediately. A definite
 failure removes its overlay and marks the card for retry. An ambiguous chat
-send retains its pending card and exact idempotency key for Resend. Terminal
+send retains its pending card and exact idempotency key for Resend. An
+ambiguous task action rereads its task instead of showing a failure, and keeps
+its key for a repeat. Terminal
 sockets, artifact iframe execution, and viewer-owned live data stay outside the
 resource refresh loop.
 
