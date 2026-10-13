@@ -448,6 +448,9 @@ export class ResourceStore {
       : value;
     state.hasValue = true;
     state.error = undefined;
+    // A response may be older than a read accepted while it was in flight, so
+    // one read confirms it.
+    state.owed = true;
     this.changed(state);
     this.pump();
   }

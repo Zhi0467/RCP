@@ -97,6 +97,7 @@ export async function openEpisodeReport(input: {
   const store = resourceStore;
   if (!store) throw new Error("Artifact refresh runtime is unavailable.");
   const id = store.register(input.projectId, runArtifactsProfile(input.projectId, input.episodeId));
+  // A one-shot lookup: its registration ends with the lookup.
   const artifacts = await new Promise<RunArtifactEntry[]>((resolve, reject) => {
     const read = () => {
       const view = store.view<RunArtifactEntry[]>(id);
@@ -114,7 +115,7 @@ export async function openEpisodeReport(input: {
     };
     const unsubscribe = store.subscribe(read);
     read();
-  });
+  }).finally(() => store.release(input.projectId, [id]));
   if (generation !== requestGeneration || resourceStore !== store) return;
   const report = artifacts.find((artifact) => artifact.supplier === "episode_ending");
   if (!report) throw new Error("The episode report is unavailable.");

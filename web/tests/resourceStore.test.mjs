@@ -209,6 +209,20 @@ test("a command response from before an epoch change is not accepted", async () 
   assert.equal(store.view(id).value, "v0");
 });
 
+test("a direct write is confirmed by one read", async () => {
+  const store = new ResourceStore();
+  const { reads, profile } = manualProfile("episodes");
+  const id = store.register("tab", profile);
+  reads[0].resolve("v0");
+  await settle();
+  store.write(id, "late response");
+  assert.equal(store.view(id).value, "late response");
+  assert.equal(reads.length, 2);
+  reads[1].resolve("current");
+  await settle();
+  assert.equal(store.view(id).value, "current");
+});
+
 test("releasing the last owner forgets the resource", () => {
   const store = new ResourceStore();
   const { profile } = manualProfile("questions");
