@@ -307,7 +307,7 @@ export function useChatState({
   // canonical selection an explicit chat link uses, so it shows its history and
   // title. A 404 means no turn has been captured yet; the task alone is the chat.
   const selectListedConversation = useCallback(
-    (chatId: string) => {
+    (chatId: string, target?: GraphTargetRef) => {
       const summary = chatSummariesRef.current.find((item) => item.chat_id === chatId);
       if (
         summary &&
@@ -318,7 +318,8 @@ export function useChatState({
       selectChat(chatId);
       if (!apiBase || summary) return;
       const generation = chatSummaryRefreshGeneration.current;
-      void loadChatTranscript(apiBase, chatId, api, graphTarget)
+      // A task-backed orchestrator listed on main loads from its own branch.
+      void loadChatTranscript(apiBase, chatId, api, target ?? graphTarget)
         .then((transcript) => {
           if (
             generation === chatSummaryRefreshGeneration.current &&

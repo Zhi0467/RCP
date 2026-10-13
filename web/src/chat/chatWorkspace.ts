@@ -7,6 +7,7 @@ import type {
   AgentTaskKind,
   AgentTaskRequest,
   AgentTaskStatus,
+  Episode,
   ArtifactContextRequest,
   ChatMessage,
   ChatReads,
@@ -560,11 +561,33 @@ export function chatIndicator(
   if (
     conversations.some(
       (conversation) =>
-        !orchestratorOwnsChild(conversation) && conversation.tasks.some(chatTaskNeedsAttention),
+        conversation.needsHuman ||
+        (!orchestratorOwnsChild(conversation) && conversation.tasks.some(chatTaskNeedsAttention)),
     )
   )
     return "active";
   return unreadChatIds.size > 0 ? "unread" : null;
+}
+
+/** The episode currently writing an orchestrator conversation's branch. */
+export function chainEpisode(
+  conversation: ChatConversation,
+  episodes: readonly Episode[],
+): Episode | null {
+  if (conversation.conversationKind !== "auto_research") return null;
+  return episodes.find((episode) => episode.graph_target.branch_id === conversation.chatId) ?? null;
+}
+
+/** An orchestrator whose chain needs action needs the human even with settled, read turns. */
+export function withEpisodeAttention(
+  conversations: ChatConversation[],
+  episodes: readonly Episode[],
+): ChatConversation[] {
+  return conversations.map((conversation) =>
+    chainEpisode(conversation, episodes)?.health === "needs_action"
+      ? { ...conversation, needsHuman: true }
+      : conversation,
+  );
 }
 
 export function chatTaskNeedsAttention(task: AgentTask): boolean {

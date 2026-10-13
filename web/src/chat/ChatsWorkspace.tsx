@@ -24,6 +24,8 @@ import {
   orchestratorCanUnlock,
   orchestratorChatTurns,
   type StartConversationTask,
+  chainEpisode,
+  withEpisodeAttention,
 } from "./chatWorkspace";
 import { OrchestratorComposer, type SendOrchestratorMessage } from "./OrchestratorComposer";
 import {
@@ -203,14 +205,6 @@ const NO_NODES: Record<string, GraphNode> = {};
 const NO_GLOSSARY = buildGlossaryIndex({});
 
 /** The orchestrator card's episode comes from the server's projection, not its tasks. */
-function chainEpisode(
-  conversation: ChatConversation,
-  episodes: readonly Episode[],
-): Episode | null {
-  if (conversation.conversationKind !== "auto_research") return null;
-  return episodes.find((episode) => episode.graph_target.branch_id === conversation.chatId) ?? null;
-}
-
 function agentTypeLabel(conversation: ChatConversation): string {
   if (conversation.conversationKind === "auto_research") return "Orchestrator";
   return conversation.kind === "project_chat" ? "Project chat" : "Node chat";
@@ -412,14 +406,14 @@ export function ChatsWorkspace({
   // A human-given name replaces the derived one everywhere in this workspace.
   const conversations = useMemo(
     () =>
-      storedConversations.map((conversation) => {
-        const named = display.titles[conversation.chatId]
-          ? { ...conversation, title: display.titles[conversation.chatId] }
-          : conversation;
-        return chainEpisode(named, orchestratorEpisodes)?.health === "needs_action"
-          ? { ...named, needsHuman: true }
-          : named;
-      }),
+      withEpisodeAttention(
+        storedConversations.map((conversation) =>
+          display.titles[conversation.chatId]
+            ? { ...conversation, title: display.titles[conversation.chatId] }
+            : conversation,
+        ),
+        orchestratorEpisodes,
+      ),
     [storedConversations, display.titles, orchestratorEpisodes],
   );
   const filteredConversations = listedAgentConversations(

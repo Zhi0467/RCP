@@ -84,7 +84,7 @@ export function ChangedFields({
                 : next,
             null,
           );
-        const conflict = paths.find((path) => path.conflict);
+        const conflicts = paths.filter((path) => path.conflict);
         const label = mark && MERGE_MARK_LABELS[mark];
         return (
           <div className="branch-change-field" key={key}>
@@ -100,14 +100,18 @@ export function ChangedFields({
             <p className="branch-change-value branch">
               <span>Branch</span> {after ? readableValue(afterFields[key]) : "Removed"}
             </p>
-            {conflict && (
-              <p className="branch-change-value main-now">
-                <span>Main now</span>{" "}
+            {conflicts.map((conflict) => (
+              <p className="branch-change-value main-now" key={conflict.field_path}>
+                <span>
+                  Main now
+                  {conflict.field_path.startsWith(`${key}/`) &&
+                    ` · ${conflict.field_path.slice(key.length + 1)}`}
+                </span>{" "}
                 {readableValue(
                   conflict.field_path === "" ? fieldOf(conflict.main, key) : conflict.main,
                 )}
               </p>
-            )}
+            ))}
           </div>
         );
       })}

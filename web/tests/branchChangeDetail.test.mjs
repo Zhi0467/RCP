@@ -72,7 +72,14 @@ test("edited fields omit internals and empty pairs unless the merge names them",
     mergePaths: [path("extension_fields/x", 2)],
   });
   assert.equal((html.match(/class="branch-diff-word diff-conflict"/g) ?? []).length, 1);
-  assert.ok(html.includes("Main now</span> 2"));
+  assert.ok(html.includes("Main now · x</span> 2"));
+  // Each conflicting key of one field keeps its own competing value.
+  const keys = render(ChangedFields, {
+    before,
+    after: { ...after, extension_fields: { x: 1, y: 1 } },
+    mergePaths: [path("extension_fields/x", 2), path("extension_fields/y", 3)],
+  });
+  assert.equal((keys.match(/class="branch-change-value main-now"/g) ?? []).length, 2);
 });
 
 test("a created node the merge must decide shows the competing main values", () => {

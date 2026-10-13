@@ -10,6 +10,7 @@ import {
   conversationAgentStatus,
   chatIdForTask,
   chatIndicator,
+  withEpisodeAttention,
   chatEntryConversationId,
   chatReadThrough,
   chatModeStorageKey,
@@ -716,4 +717,17 @@ test("locked children stay visible without human attention across turn states", 
     assert.equal(conversationHasUnread(unlocked, unread), true);
     assert.notEqual(conversationAgentStatus(unlocked, unread).group, "done");
   }
+});
+
+test("an orchestrator whose chain needs action lights the Agents indicator", () => {
+  const orchestrator = { chatId: "b", conversationKind: "auto_research", tasks: [] };
+  const episode = (health) => ({ graph_target: { kind: "branch", branch_id: "b" }, health });
+  assert.equal(
+    chatIndicator(withEpisodeAttention([orchestrator], [episode("ok")]), new Set()),
+    null,
+  );
+  assert.equal(
+    chatIndicator(withEpisodeAttention([orchestrator], [episode("needs_action")]), new Set()),
+    "active",
+  );
 });
