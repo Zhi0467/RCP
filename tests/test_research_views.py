@@ -257,6 +257,8 @@ def test_expired_artifact_pins_only_while_an_edit_protects_it(views):
             ),
         )
     body = {"artifact_id": artifact.artifact_id}
+    expired = store.artifact(artifact.artifact_id)
+    assert not store.research_view_offers(expired, store.local_owner.user_id).can_pin
     assert client.post(url, json=body).status_code == 410
     _task(
         store,

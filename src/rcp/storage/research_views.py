@@ -92,6 +92,15 @@ class ResearchViewStoreMixin(ArtifactStoreMixin):
             _require_member(connection, project_id, user_id)
             return _pins(connection, project_id, user_id, branch_id or "")
 
+    def _pin_expired(self, connection: sqlite3.Connection, artifact: Artifact) -> bool:
+        """Expired and unkept, unless an active edit still protects it (as Keep allows)."""
+        return bool(
+            artifact.expires_at
+            and not artifact.kept_at
+            and datetime.fromisoformat(artifact.expires_at) <= datetime.fromisoformat(self.now())
+            and artifact.artifact_id not in self._protected_edit_artifact_ids(connection)
+        )
+
     def research_view_offers(self, artifact: Artifact, user_id: str) -> ResearchViewOffers:
         with self.connection() as connection:
             _require_member(connection, artifact.project_id, user_id)
@@ -104,6 +113,7 @@ class ResearchViewStoreMixin(ArtifactStoreMixin):
             return ResearchViewOffers(
                 pin_branch_id=target or None,
                 can_pin=artifact.media_type == "text/html"
+                and not self._pin_expired(connection, artifact)
                 and (pinned or len(pins) < RESEARCH_VIEW_PIN_LIMIT),
                 pinned=pinned,
             )
@@ -127,13 +137,7 @@ class ResearchViewStoreMixin(ArtifactStoreMixin):
             if row is None:
                 raise ResearchViewConflict("artifact_not_found", 404)
             artifact = Artifact.model_validate_json(row[0])
-            if (
-                artifact.expires_at
-                and not artifact.kept_at
-                and datetime.fromisoformat(artifact.expires_at)
-                <= datetime.fromisoformat(self.now())
-                and artifact_id not in self._protected_edit_artifact_ids(connection)
-            ):
+            if self._pin_expired(connection, artifact):
                 raise ResearchViewConflict("artifact_expired", 410)
             if artifact.media_type != "text/html":
                 raise ResearchViewConflict("not_html")

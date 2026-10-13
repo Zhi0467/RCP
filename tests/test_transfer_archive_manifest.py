@@ -140,6 +140,7 @@ PROJECT_LINKED_TABLES = {
     "project_transfer_uploads",
     "projects",
     "questions",
+    "research_view_pins",
     "artifacts",
     "artifact_versions",
     "artifact_operations",
