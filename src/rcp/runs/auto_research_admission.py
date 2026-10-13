@@ -1713,19 +1713,16 @@ def retry_auto_research_task(
         original,
         execution_host=(previous.stage_host or "") if previous.stage_root else None,
     )
-    session_limit = tasks._failure_is_session_limit(previous)
     continuation_unavailable = tasks._continuation_context_is_unavailable(previous)
     owned_checkpoint = bool(
         previous.native_session_id and previous.stage_root and tasks._session_is_rcp_owned(previous)
     )
     clean_orchestrator_retry = original.role == "orchestrator" and (
-        session_limit or continuation_unavailable or not owned_checkpoint
+        continuation_unavailable or not owned_checkpoint
     )
     starts_fresh = bool(rebound) or clean_orchestrator_retry
     logical_problem = (
-        "the native provider session reached its limit"
-        if session_limit
-        else "the saved continuation context is unavailable"
+        "the saved continuation context is unavailable"
         if continuation_unavailable
         else "the prior task has no complete RCP-owned session and stage"
         if not owned_checkpoint
@@ -1782,9 +1779,7 @@ def retry_auto_research_task(
     if starts_fresh:
         session_id = None
         classification = (
-            "session_limit"
-            if session_limit
-            else "continuation_unavailable"
+            "continuation_unavailable"
             if continuation_unavailable
             else "checkpoint_missing"
             if not owned_checkpoint
@@ -2591,8 +2586,6 @@ def _exact_child_resume_problem(tasks: BackgroundAgentTasks, record: AgentTaskRe
         return tasks.store.experiment_episode_resume_binding_problem(record.operation_id)
     if record.status not in {"paused", "interrupted", "failed"}:
         return "only a paused, interrupted, or failed attempt can be resumed"
-    if tasks._failure_is_session_limit(record):
-        return "the saved provider session reached its limit"
     if tasks._continuation_context_is_unavailable(record):
         return "the saved continuation context is unavailable"
     if (

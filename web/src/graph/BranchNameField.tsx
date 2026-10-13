@@ -1,4 +1,3 @@
-import { GitBranch } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
 import { ApiError } from "../core/api";
 import { branchNameProblem } from "../core/branchNames";
@@ -81,7 +80,6 @@ export function BranchNameField({
     <div className="branch-name-field">
       <div className="branch-name-row">
         <label className="branch-name-label">
-          <GitBranch size={14} aria-hidden="true" />
           <span>Branch</span>
           <input
             type="text"

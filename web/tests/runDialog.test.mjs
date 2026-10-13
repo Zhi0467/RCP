@@ -1238,7 +1238,7 @@ test("an isolated closed experiment stays disabled with its server reason", () =
   }
 });
 
-test("a branch hides the new-branch toggle and keeps Code worktree", () => {
+test("isolation choices live in the agent picker, not beside it", () => {
   const node = {
     id: "experiment/toggles",
     type: "experiment",
@@ -1276,19 +1276,19 @@ test("a branch hides the new-branch toggle and keeps Code worktree", () => {
         onRunExperiment() {},
       }),
     );
-    const group = html.match(/<div class="experiment-isolation"[^>]*>(.*?)<\/div>/s)?.[1] ?? "";
-    return (group.match(/type="checkbox"/g) ?? []).length;
+    // The folded picker holds On a new branch and Code worktree, so no checkbox shows.
+    return (html.match(/type="checkbox"/g) ?? []).length;
   };
   const previousWindow = globalThis.window;
   globalThis.window = { innerWidth: 1440, innerHeight: 900 };
   try {
-    assert.equal(toggles({ kind: "main" }, null), 2);
+    assert.equal(toggles({ kind: "main" }, null), 0);
     assert.equal(
       toggles(
         { kind: "branch", branch_id: "branch-1" },
         { graph_isolation: true, code_worktree: false },
       ),
-      1,
+      0,
     );
   } finally {
     if (previousWindow === undefined) delete globalThis.window;

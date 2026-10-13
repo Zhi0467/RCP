@@ -53,7 +53,13 @@ forward.
 
 Every orchestrator turn, worker turn, mail wake, graph-condition wake, and other
 Auto-research operational continuation spends one unit of B. Exact recovery of
-the same allocation spends none. Current turns finish at exhaustion; new work
+the same allocation spends none. Recovery restages the allocation's mail and
+lifecycle input from the durable claim, over any copy a failed attempt left, and
+includes the mail and lifecycle notices any attempt of the allocation harvested,
+since a retry may run in a clean session; what an attempt cleared stays unread.
+When that union exceeds one handoff, the oldest that fit are staged and the
+dropped count is logged.
+Current turns finish at exhaustion; new work
 does not start.
 
 The same authorization derives a shared child-Experiment allowance **E = 5 ×
@@ -249,7 +255,11 @@ A running orchestrator may harvest or clear its inbox without a separate wake;
 the harvest returns and consumes, in one transaction, the pending lifecycle
 notices and the pending mail addressed to the orchestrator, attributing the
 consumption to the running turn, so mail that arrives before a turn's last
-harvest never costs a wake. Budget exhaustion retains notices but cannot create
+harvest never costs a wake. Every orchestrator command result except the inbox
+command's own carries `inbox_pending` with the pending notice and mail counts,
+whenever either is nonzero, so a running turn learns of new input without
+polling; a harvest takes a bounded batch, so large counts may take several.
+Budget exhaustion retains notices but cannot create
 an unauthorized turn. Clear refuses before acknowledgment if even its compact
 full response exceeds the bound.
 

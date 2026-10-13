@@ -1,6 +1,6 @@
 # Active implementation handoffs
 
-No implementation handoff is active.
+- [Provider account monitor](provider-account-monitor.md): design only; waits for an explicit start.
 
 Unfinished agent-link work is tracked in issue #280.
 

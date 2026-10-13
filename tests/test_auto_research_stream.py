@@ -1608,15 +1608,15 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
 
 
 @pytest.mark.parametrize("recovery", ["rebind", "session_limit"])
-def test_an_orchestrator_wake_retry_launches_on_the_clean_session_it_needs(
+def test_an_orchestrator_wake_retry_launches_on_the_session_it_needs(
     manifest,
     tmp_path,
     recovery,
 ) -> None:
     """A wake names the delivery attached to the turn, never the session running it.
 
-    Both reasons a human meets in practice start clean: changing the binding,
-    and a provider that reported its limit on the turn that failed.
+    Changing the binding starts clean; a provider that reported a limit of any
+    kind resumes the same session, which rechecks the limit.
     """
 
     service = _service(manifest, tmp_path)
@@ -1701,7 +1701,8 @@ def test_an_orchestrator_wake_retry_launches_on_the_clean_session_it_needs(
             encoding="utf-8",
         )
 
-    launcher = _WorkerLauncher(session_id="replacement-session", writer=writer)
+    resumed = "live-session" if recovery == "session_limit" else None
+    launcher = _WorkerLauncher(session_id=resumed or "replacement-session", writer=writer)
 
     async def stream(_project_id, kind, request, execution):
         assert kind == "auto_research"
@@ -1717,8 +1718,6 @@ def test_an_orchestrator_wake_retry_launches_on_the_clean_session_it_needs(
 
     tasks = BackgroundAgentTasks(store, stream)
     tasks.recover_at_startup()
-    # A limit recovery changes nothing about the binding; only the retired
-    # session makes it start clean.
     retry = tasks.retry(
         wake.operation_id, **({"reasoning": "high"} if recovery == "rebind" else {})
     )
@@ -1727,17 +1726,17 @@ def test_an_orchestrator_wake_retry_launches_on_the_clean_session_it_needs(
     retried = AutoResearchRunRequest.model_validate(retry.request)
     assert retried.reasoning == ("high" if recovery == "rebind" else "medium")
     assert retried.wake_cause == "lifecycle"
-    assert retried.session_id is None
-    assert launcher.requested_session_ids == [None]
-    assert retry.native_session_id == "replacement-session"
-    # The delivery follows the paid allocation, not the session, so the clean
+    assert retried.session_id == resumed
+    assert launcher.requested_session_ids == [resumed]
+    assert retry.native_session_id == (resumed or "replacement-session")
+    # The delivery follows the paid allocation, not the session, so either
     # turn still receives the fact that woke it.
     assert staged_notice_ids == [[notice.notice_id]]
 
 
 @pytest.mark.parametrize(
     "failure_point",
-    ["session-limit", "saved-stage", "pre-stage", "rebind"],
+    ["saved-stage", "pre-stage", "rebind"],
 )
 def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream(
     manifest,
@@ -1756,13 +1755,7 @@ def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream
         stage.mkdir(parents=True)
         store.checkpoint_agent_task(
             root.operation_id,
-            native_session_id=(
-                "spent-session"
-                if failure_point == "session-limit"
-                else "live-session"
-                if failure_point == "rebind"
-                else None
-            ),
+            native_session_id="live-session" if failure_point == "rebind" else None,
             stage_host=None,
             stage_root=str(stage),
         )
@@ -1775,9 +1768,7 @@ def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream
         )
     store.fail_agent_task(
         root.operation_id,
-        "provider session limit"
-        if failure_point == "session-limit"
-        else "The provider exited before finishing its turn."
+        "The provider exited before finishing its turn."
         if failure_point == "rebind"
         else "Network connection failed before session creation.",
     )
@@ -1829,11 +1820,7 @@ def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream
     )
     assert clean_retry_receipt.payload == {
         "classification": (
-            "session_limit"
-            if failure_point == "session-limit"
-            else "binding_changed"
-            if failure_point == "rebind"
-            else "checkpoint_missing"
+            "binding_changed" if failure_point == "rebind" else "checkpoint_missing"
         ),
         "same_allocation": True,
         "actor_operation_id": root.operation_id,
@@ -2592,8 +2579,34 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
         continuation="lifecycle_wake",
     )
     assert events[-1].event == "done"
-    retained_lifecycle = (stage / "lifecycle.json").read_text(encoding="utf-8")
-    retained_mail = (stage / "messages.json").read_text(encoding="utf-8")
+    # A second answer arrives mid-turn and this turn harvests it before failing.
+    second = record_auto_research_message(
+        store,
+        episode_id=auto_research.episode_id,
+        sender_role="human",
+        sender_task_id=None,
+        authorized_by=auto_research.authorized_by,
+        recipient_task_id=root.operation_id,
+        body="A second answer, harvested during the turn.",
+    )
+    later = store.record_auto_research_lifecycle_notice(
+        AutoResearchLifecycleNoticeRecord(
+            notice_id="worker-failed",
+            episode_id=auto_research.episode_id,
+            source_kind="worker",
+            source_id="worker",
+            source_event="failed",
+            payload={"kind": "work", "status": "failed"},
+            created_at=store.now(),
+        )
+    )
+    store.process_auto_research_lifecycle_inbox(
+        auto_research.episode_id,
+        effect_id="mid-turn-harvest",
+        mode="harvest",
+        acknowledged_by=root.operation_id,
+        delivery_operation_id=wake.operation_id,
+    )
     store.fail_agent_task(wake.operation_id, "provider connection interrupted")
     retry = _recovery_task(
         store,
@@ -2601,10 +2614,39 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
         wake,
         operation_id="lifecycle-wake-retry",
     )
+    # That retry harvests a third answer and fails too; the next retry gets it as well.
+    third = record_auto_research_message(
+        store,
+        episode_id=auto_research.episode_id,
+        sender_role="human",
+        sender_task_id=None,
+        authorized_by=auto_research.authorized_by,
+        recipient_task_id=root.operation_id,
+        body="A third answer, harvested by the first retry.",
+    )
+    store.process_auto_research_lifecycle_inbox(
+        auto_research.episode_id,
+        effect_id="retry-harvest",
+        mode="harvest",
+        acknowledged_by=root.operation_id,
+        delivery_operation_id=retry.operation_id,
+    )
+    store.fail_agent_task(retry.operation_id, "provider connection interrupted")
+    retry = _recovery_task(store, auto_research, retry, operation_id="lifecycle-wake-retry-2")
 
     def recovery_writer(_contract_text, workspace):
-        assert (workspace / "lifecycle.json").read_text(encoding="utf-8") == (retained_lifecycle)
-        assert (workspace / "messages.json").read_text(encoding="utf-8") == retained_mail
+        # The retry gets the claimed facts and answer plus those harvested before the failures.
+        lifecycle = parse_auto_research_lifecycle_delivery(
+            (workspace / "lifecycle.json").read_text(encoding="utf-8")
+        )
+        assert [item.notice_id for item in lifecycle.notices] == [
+            notice.notice_id,
+            later.notice_id,
+        ]
+        mail = parse_auto_research_mail_delivery(
+            (workspace / "messages.json").read_text(encoding="utf-8")
+        )
+        assert mail.message_ids == [message.message_id, second.message_id, third.message_id]
 
     recovery_events = await _orchestrator_events(
         service,
@@ -2614,22 +2656,13 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
         data_dir,
         continuation="retry",
     )
-    assert recovery_events[-1].event == "done"
+    assert recovery_events[-1].event == "done", recovery_events[-1].text
 
 
-@pytest.mark.parametrize(
-    ("retained_kind", "error_match"),
-    [
-        ("valid", None),
-        ("mismatch", "differs from its durable claimed batch"),
-        ("oversize", "exceeds .* bytes"),
-        ("non_regular", "not a regular file"),
-    ],
-)
-def test_retained_claimed_mail_is_validated_directly_before_recovery(
+@pytest.mark.parametrize("retained_kind", ["valid", "mismatch", "oversize"])
+def test_recovery_restages_the_durable_claimed_mail_over_any_left_copy(
     tmp_path,
     retained_kind,
-    error_match,
 ) -> None:
     execution, turn, stage, delivery = _claimed_mail_recovery(tmp_path)
     retained_path = stage.workspace / "messages.json"
@@ -2639,24 +2672,16 @@ def test_retained_claimed_mail_is_validated_directly_before_recovery(
         payload = delivery.model_dump(mode="json")
         payload["messages"][0]["body"] = "Different retained hearsay."
         retained_path.write_text(json.dumps(payload), encoding="utf-8")
-    elif retained_kind == "oversize":
+    else:
         retained_path.write_text(
             " " * (auto_research_mail_module.AUTO_RESEARCH_MAIL_MAX_BYTES + 1),
             encoding="utf-8",
         )
-    else:
-        retained_path.mkdir()
 
-    if error_match is None:
-        assert auto_research_stream_module._stage_claimed_mail(execution, turn, stage) == str(
-            retained_path
-        )
-        assert (
-            parse_auto_research_mail_delivery(retained_path.read_text(encoding="utf-8")) == delivery
-        )
-    else:
-        with pytest.raises(ValueError, match=error_match):
-            auto_research_stream_module._stage_claimed_mail(execution, turn, stage)
+    assert auto_research_stream_module._stage_claimed_mail(execution, turn, stage) == str(
+        retained_path
+    )
+    assert parse_auto_research_mail_delivery(retained_path.read_text(encoding="utf-8")) == delivery
 
 
 @pytest.mark.asyncio
@@ -3391,3 +3416,15 @@ async def test_orchestrator_observes_snapshot_only_after_success(
     observed = store.graph_seen_head(root.project_id, owner, session, snapshot.target)
     assert observed == (None if provider_fails else snapshot)
     assert events[-1].event == ("error" if provider_fails else "done")
+
+
+def test_a_recovery_handoff_keeps_what_fits_and_still_refuses_a_bad_first_item(caplog) -> None:
+    def build(batch):
+        if len(batch) > 2 or "bad" in batch:
+            raise ValueError("over the handoff limit")
+
+    fit = auto_research_stream_module._fit_handoff
+    assert fit(["a", "b", "c"], build, kind="mail messages", allocation="wake") == ["a", "b"]
+    assert [record.levelname for record in caplog.records] == ["WARNING"]
+    with pytest.raises(ValueError):
+        fit(["bad", "a"], build, kind="mail messages", allocation="wake")

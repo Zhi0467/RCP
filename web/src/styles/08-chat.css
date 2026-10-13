@@ -1862,6 +1862,15 @@
 .episode-questions:empty {
   display: none;
 }
+/* Same pill as an open card's state, so a folded section still shows it needs you. */
+.episode-questions-open {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--amber-soft);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+}
 
 .chat-reference-chip a,
 .chat-input-reference a {

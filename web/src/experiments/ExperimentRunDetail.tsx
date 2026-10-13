@@ -365,6 +365,7 @@ export function ExperimentRunDetail({
               disabled={runDisabled || startDisabled || runBusy}
               label="Experiment agent"
               workLike={launchProfile?.work_like_capable}
+              optionCount={Number(browserRequested)}
               onToggle={() => setLaunchOpen((open) => !open)}
             />
           )}
@@ -397,13 +398,6 @@ export function ExperimentRunDetail({
         </div>
       </div>
 
-      {allowStart && !control.node_closed && (
-        <BrowserToggle
-          checked={browserRequested}
-          disabled={runDisabled || startDisabled || runBusy}
-          onChange={setBrowserRequested}
-        />
-      )}
       {launchOpen &&
         allowStart &&
         !control.node_closed &&
@@ -419,7 +413,15 @@ export function ExperimentRunDetail({
             locked={runDisabled || startDisabled || runBusy}
             showRunOn={false}
             compact
-          />
+          >
+            <div className="agent-config-options" role="group" aria-label="Launch options">
+              <BrowserToggle
+                checked={browserRequested}
+                disabled={runDisabled || startDisabled || runBusy}
+                onChange={setBrowserRequested}
+              />
+            </div>
+          </AgentConfigControls>
         )}
 
       {episode && (

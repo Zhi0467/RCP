@@ -18,7 +18,6 @@ from rcp.limits import (
     QUESTION_SNAPSHOT_MAX_RECORDS,
     SPACE_RUNS_COMPLETED_TTL,
 )
-from rcp.providers import classify_terminal_error
 from rcp.storage.digest import append_question_attention
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
 from rcp.storage.mixin_base import StoreMixinBase
@@ -2337,20 +2336,13 @@ class ExperimentStoreMixin(StoreMixinBase):
             "('provider_terminal_error', 'continuation_context_unavailable')",
             (operation_id,),
         ).fetchall()
-        session_limit = classify_terminal_error(task["error"] or "") == "session_limit"
         context_unavailable = False
         for receipt in receipts:
             payload = json.loads(receipt["payload_json"])
-            session_limit |= (
-                receipt["category"] == "provider_terminal_error"
-                and payload.get("classification") == "session_limit"
-            )
             context_unavailable |= (
                 receipt["category"] == "continuation_context_unavailable"
                 and payload.get("retry_required") is True
             )
-        if session_limit:
-            return "the saved provider session reached its limit"
         if context_unavailable:
             return "the saved continuation context is unavailable"
         # Experiment episodes are node chats: a persisted native session is RCP-owned.

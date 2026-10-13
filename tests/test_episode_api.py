@@ -625,8 +625,8 @@ def test_stopping_episode_unusable_checkpoint_is_abandoned_and_settled(
         if unusable == "clean_session":
             store.record_agent_task_receipt(
                 root.operation_id,
-                "provider_terminal_error",
-                {"classification": "session_limit"},
+                "continuation_context_unavailable",
+                {"retry_required": True},
             )
         stopped = client.post(
             f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop", json={}
@@ -666,7 +666,7 @@ def test_stopping_episode_known_failure_precedes_remote_retry_probes(
     service.manifest.machine_map["laptop"].host = host
     monkeypatch.setattr(service.history, "_reload_manifest", lambda: None)
     store = app.state.background_tasks.store
-    stage = tmp_path / "remote-session-limit-stage"
+    stage = tmp_path / "remote-known-failure-stage"
     stage.mkdir()
 
     with signed_in_client(app) as client:
@@ -674,15 +674,15 @@ def test_stopping_episode_known_failure_precedes_remote_retry_probes(
             store,
             service.history,
             project_id,
-            episode_id="session-limit-remote-outage",
+            episode_id="known-failure-remote-outage",
             status="failed",
             stage=stage,
             stage_host=host,
         )
         store.record_agent_task_receipt(
             root.operation_id,
-            "provider_terminal_error",
-            {"classification": "session_limit"},
+            "continuation_context_unavailable",
+            {"retry_required": True},
         )
         request = AutoResearchRunRequest.model_validate(root.request)
         assert request.run_on == "laptop"
@@ -713,7 +713,6 @@ def test_stopping_episode_known_failure_precedes_remote_retry_probes(
         )
 
     assert refused.status_code == 409, refused.text
-    assert "native provider session reached its limit" in refused.json()["detail"]
     assert stage_probes == []
     assert readiness_probes == []
     settled = store.episode(episode.episode_id)
@@ -829,8 +828,8 @@ def test_clean_retry_stop_during_final_admission_abandons_and_settles(
         )
         store.record_agent_task_receipt(
             root.operation_id,
-            "provider_terminal_error",
-            {"classification": "session_limit"},
+            "continuation_context_unavailable",
+            {"retry_required": True},
         )
         retry_url = f"/api/projects/{project_id}/tasks/{root.operation_id}/retry"
         stop_url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop"

@@ -1706,8 +1706,11 @@ that reached its limit, because the remedy differs: a session that is simply
 gone cannot be resumed at all, so recovery starts the turn clean instead of
 resuming into the same failure. A session-bound episode is the same case: its
 binding names a session the provider has dropped, so recovery hands the episode
-to a clean session on the record rather than refusing and stranding it. Every
-other failure keeps its existing behaviour.
+to a clean session on the record rather than refusing and stranding it. A
+reached limit of any kind (`session_limit` is the umbrella name) keeps its
+session: Retry, Resume, and Auto-research recovery resume it, and whether the
+limit has lifted is the provider's answer on that attempt. Every other failure
+keeps its existing behaviour.
 
 A reattempt that failed the same way as the attempt before it ends the ladder
 whatever the failure was named, because the remaining waits would only reproduce

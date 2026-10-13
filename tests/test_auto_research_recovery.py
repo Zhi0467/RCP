@@ -357,7 +357,7 @@ def test_only_the_orchestrator_recovery_can_be_rebound(tmp_path: Path) -> None:
         tasks.retry_auto_research(worker.operation_id, service=None, run_on="cluster")
 
 
-def test_session_limit_uses_clean_orchestrator_retry_even_after_checkpoint(tmp_path: Path) -> None:
+def test_session_limit_recovery_resumes_its_checkpoint(tmp_path: Path) -> None:
     store = _store(tmp_path)
     stage = tmp_path / "orchestrator-stage"
     stage.mkdir()
@@ -373,7 +373,8 @@ def test_session_limit_uses_clean_orchestrator_retry_even_after_checkpoint(tmp_p
     wait_for_task(store, root.operation_id, expect="failed")
     recovery = _wait_for_recovery(store, "task:root")
     assert recovery.failure_kind == "session_limit"
-    assert recovery.retry_mode == "clean"
+    # A reached limit keeps its session.
+    assert recovery.retry_mode == "exact"
 
 
 def test_repeated_provider_failures_share_one_bounded_allocation_recovery(

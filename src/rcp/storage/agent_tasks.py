@@ -1783,6 +1783,20 @@ class AgentTaskStoreMixin(StoreMixinBase):
         ).fetchone()
         return active is not None
 
+    def running_chat_task(self, project_id: str, chat_id: str) -> AgentTaskRecord | None:
+        """The chat's running turn, if any; chat overlap admits at most one."""
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM graph_runs
+                WHERE project_id = ? AND kind IN ('node_chat', 'project_chat')
+                  AND json_extract(request_json, '$.chat_id') = ? AND status = 'running'
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (project_id, chat_id),
+            ).fetchone()
+        return self._agent_task_record(row) if row else None
+
     def agent_task(self, operation_id: str) -> AgentTaskRecord | None:
         with self.connection() as connection:
             row = connection.execute(
