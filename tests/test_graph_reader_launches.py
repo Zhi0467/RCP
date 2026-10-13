@@ -138,7 +138,7 @@ def test_graph_reader_master_commands_and_committed_observation(
     chat_id = str(uuid4())
     continue_session = succeed and kind in {"discuss", "work", "paper_coach"}
     task_kind = "project_chat" if kind in {"discuss", "work"} else kind
-    payload = (
+    payload: dict[str, object] = (
         {"message": "Read the graph."} if kind == "paper_coach" else {"run_truth_scope": ["repo-a"]}
     )
     if kind in {"discuss", "work"}:
@@ -203,7 +203,9 @@ async def test_consolidation_history_launch(seeded_app, tmp_path, history_handle
     launcher = _HistoryLauncher(service, history_handlers, kind="consolidation")
     await _check_launch(
         launcher,
-        stream_work_run(service, launcher, request, tmp_path / "data", execution=execution),
+        stream_work_run(
+            service, cast(AgentLauncher, launcher), request, tmp_path / "data", execution=execution
+        ),
     )
 
 
@@ -226,7 +228,7 @@ async def test_experiment_history_launch(seeded_app, tmp_path, history_handlers)
     await _check_launch(
         launcher,
         stream_experiment_loop_task(
-            service, launcher, request, tmp_path / "data", execution=execution
+            service, cast(AgentLauncher, launcher), request, tmp_path / "data", execution=execution
         ),
     )
 
@@ -265,6 +267,115 @@ async def test_child_history_launch(manifest, tmp_path, history_handlers):
     await _check_launch(
         launcher,
         stream_auto_research_child_work_run(
-            service, launcher, request, tmp_path / "data", _execution(store, task), route=route
+            service,
+            cast(AgentLauncher, launcher),
+            request,
+            tmp_path / "data",
+            _execution(store, task),
+            route=route,
         ),
     )
+
+
+@pytest.mark.parametrize("has_scope", [False, True])
+def test_session_master_adds_history_without_an_owner_splice(tmp_path, monkeypatch, has_scope):
+    from rcp.agents import prompts
+    from rcp.agents.continuation_prompt import LaunchPhase, classify, compose
+    from rcp.background import AgentTaskExecution
+    from rcp.runs.questions import discuss_command_handler
+    from rcp.runs.session_master import continuation_session_master, start_session_master
+    from rcp.storage import AppStore
+
+    from .test_auto_research_children_storage import _project
+    from .test_session_master import _task
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    scope = (
+        GraphReadScope(
+            project_id="project", target=GraphTargetRef(), verbs=frozenset({"graph_log"})
+        )
+        if has_scope
+        else None
+    )
+    dispatcher = discuss_command_handler(None, graph_read_scope=scope)
+    rendered_scopes = []
+    original = prompts.render_graph_history
+
+    def capture(rendered_scope, command):
+        rendered_scopes.append(rendered_scope)
+        assert rendered_scope is dispatcher.graph_read_scope
+        return original(rendered_scope, command)
+
+    monkeypatch.setattr(prompts, "render_graph_history", capture)
+    values = {"history_client": "client"}
+    master = start_session_master(
+        cast(AgentTaskExecution, _task(store, "start", stage)),
+        local_stage=stage,
+        remote_stage=None,
+        label_prefix="new-owner",
+        key="key",
+        content="owner contract",
+        values=values,
+        graph_read_scope=scope,
+        command_client="client",
+    )
+    content = Path(master.path).read_text()
+    assert master.values == values
+    assert len(rendered_scopes) == int(has_scope)
+    if has_scope:
+        assert "`project`" in content
+        assert "`main`" in content
+        assert "`client graph_log " in content
+        assert "`client graph_diff " not in content
+    else:
+        assert content == "owner contract"
+
+    def unexpected_render():
+        pytest.fail("An unchanged session must retain its master")
+
+    kept = continuation_session_master(
+        cast(AgentTaskExecution, _task(store, "next", stage)),
+        local_stage=stage,
+        remote_stage=None,
+        native_session_id="session",
+        label_prefix="new-owner",
+        key="key",
+        render=unexpected_render,
+        values={"history_client": "next-client"},
+        graph_read_scope=scope,
+        command_client="next-client",
+    )
+    assert not kept.bootstrap
+    assert kept.values == values
+    assert Path(kept.path).read_text() == content
+    assert len(rendered_scopes) == int(has_scope)
+    continuation = compose(
+        classify(LaunchPhase(session_id="session", phase="turn")), parts=[], master=kept, delta=None
+    )
+    assert "`client graph_log " not in continuation
+    assert "`next-client graph_log " not in continuation
+
+
+def test_embedded_work_and_correction_leave_history_in_the_master():
+    from rcp.agents.auto_research_prompt import auto_research_patch_correction_parts
+
+    from .test_prompts import _work_contract
+
+    scope = GraphReadScope(project_id="project", target=GraphTargetRef())
+    standalone = _work_contract(graph_read_scope=scope, command_client="client")
+    embedded = _work_contract(graph_read_scope=scope, command_client="client", embedded=True)
+    correction = "\n".join(
+        auto_research_patch_correction_parts(
+            actor="worker",
+            diagnostics_path="diagnostics.json",
+            graph_read_scope=scope,
+            command_client="client",
+        )
+    )
+    for verb in scope.verbs:
+        assert standalone.count(f"`client {verb} ") == 1
+        assert f"`client {verb} " not in embedded
+        assert f"`client {verb} " not in correction

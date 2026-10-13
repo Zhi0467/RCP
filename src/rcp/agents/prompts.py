@@ -122,10 +122,15 @@ def chat_master_contract_key(*, ontology_extensions: bool, owner: str | None = N
     )
 
 
-def _tidy(text: str) -> str:
+def _tidy(
+    text: str,
+    *,
+    graph_read_scope: GraphReadScope | None = None,
+    command_client: str = "",
+) -> str:
     """Collapse the blank runs that empty optional sections leave behind."""
 
-    return re.sub(r"\n{3,}", "\n\n", text)
+    return graph_read_contract(re.sub(r"\n{3,}", "\n\n", text), graph_read_scope, command_client)
 
 
 def _pointer(label: str, path: str | None) -> str:
@@ -238,6 +243,18 @@ def _command_client_rule(command_client: str) -> str:
         f"  Every staged RCP command below starts with it where it shows `{COMMAND_CLIENT}`. A later\n"
         "  turn that changes it sends `patch.command_client`."
     )
+
+
+def graph_read_contract(content: str, scope: GraphReadScope | None, command_client: str) -> str:
+    """Finish a master with the same resolved grant its command dispatcher enforces.
+
+    Owners use this when their contract does not pass through ``_tidy``. Retained
+    masters and inline continuations bypass finalization; they keep delta semantics.
+    """
+
+    if scope is None:
+        return content
+    return content + "\n\n" + render_graph_history(scope, command_client)
 
 
 def render_graph_history(scope: GraphReadScope, command_client: str) -> str:
@@ -1011,7 +1028,8 @@ class PromptFactory:
             compute_connections=compute_connections,
             graph_edits=True,
         )
-        return _tidy(f"""# RCP chat master context v{CHAT_MASTER_CONTEXT_VERSION}
+        return _tidy(
+            f"""# RCP chat master context v{CHAT_MASTER_CONTEXT_VERSION}
 
 {_WHAT_IS_RCP_CONVERSATION}
 
@@ -1026,8 +1044,6 @@ Turn protocol:
 
 {_CHANGED_VALUES_RULE}
 
-{render_graph_history(graph_read_scope, command_client) if graph_read_scope else ""}
-
 {context}
 {_focused_node_snapshot(graph_revision, focused_node, focused_relations)}
 ## Discuss contract
@@ -1038,7 +1054,10 @@ Turn protocol:
 
 {work}
 {auto_research_child_boundary}
-""")
+""",
+            graph_read_scope=graph_read_scope,
+            command_client=command_client,
+        )
 
     # Bumped when the Seed and Refresh task contract's stable policy prose changes.
     GRAPH_TASK_POLICY_VERSION = "ingestion-v2"
@@ -1353,8 +1372,8 @@ Optional watcher handoff:
             + "\n\n"
             + _patch_validator_rules(f"{COMMAND_CLIENT} {shlex.join(['validate', patch_path])}")
         )
-        return _tidy(f"""# RCP Work task contract
-{render_graph_history(graph_read_scope, command_client) if graph_read_scope and not embedded else ""}
+        return _tidy(
+            f"""# RCP Work task contract
 {"" if embedded else chr(10) + _WHAT_IS_RCP_CONVERSATION + chr(10)}
 {PROVIDER_NATIVE_SUBAGENT_LIFETIME}
 
@@ -1417,7 +1436,10 @@ Graph Patch (optional):
 
 {render_agent_graph_authority_contract()}
 
-{watch_rules}""")
+{watch_rules}""",
+            graph_read_scope=None if embedded else graph_read_scope,
+            command_client=command_client,
+        )
 
     # Bumped when the paper-coach task contract's stable policy prose changes.
     PAPER_COACH_POLICY_VERSION = "paper-coach-v2"

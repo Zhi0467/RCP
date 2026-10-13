@@ -25,10 +25,10 @@ from rcp.agents.prompts import (
     DISCUSS_POLICY_VERSION,
     _command_client_rule,
     chat_master_contract_key,
+    graph_read_contract,
     invoked_package_pointers,
     live_ask_contract,
     render_chat_read_context,
-    render_graph_history,
 )
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskExecution
@@ -984,9 +984,9 @@ async def stream_discuss_run(
                             else ""
                         ),
                     )
-                    if graph_read_scope is not None and patch_inputs is not None:
-                        contract += "\n\n" + render_graph_history(
-                            graph_read_scope, patch_inputs.command_client
+                    if patch_inputs is not None:
+                        contract = graph_read_contract(
+                            contract, graph_read_scope, patch_inputs.command_client
                         )
                     return contract + "\n\n" + browser_prompt_line(browser_grant)
 

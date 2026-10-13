@@ -33,7 +33,7 @@ from rcp.agents.continuation_prompt import (
     master_key,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
-from rcp.agents.prompts import render_graph_history
+from rcp.agents.prompts import graph_read_contract
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.core.transition_models import GraphTargetRef
@@ -886,8 +886,8 @@ async def stream_graph_run(
                 validator_command=validator_command,
                 skill_pointers=skill_pointers,
             )
-            base_contract_content += "\n\n" + render_graph_history(
-                graph_read_scope, validator_staged.client_command()
+            base_contract_content = graph_read_contract(
+                base_contract_content, graph_read_scope, validator_staged.client_command()
             )
             refresh_head = next(
                 (

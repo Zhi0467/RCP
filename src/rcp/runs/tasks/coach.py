@@ -21,9 +21,9 @@ from rcp.agents.continuation_prompt import (
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.prompts import (
     _invoked_package_section,
+    graph_read_contract,
     invoked_package_pointers,
     invoked_provider_skill_section,
-    render_graph_history,
 )
 from rcp.background import AgentTaskExecution
 from rcp.core.transition_models import GraphTargetRef
@@ -266,7 +266,7 @@ async def stream_coach(
         )
 
         def render_contract() -> str:
-            return (
+            return graph_read_contract(
                 PromptFactory.paper_coach_task_contract(
                     introduction_path=str(pointers["introduction"]),
                     graph_path=str(pointers["graph"]),
@@ -277,9 +277,9 @@ async def stream_coach(
                     skill_pointers=skill_pointers,
                     invoked_skill_pointers=invoked_skill_pointers,
                     invoked_provider_skills=request.resolved_provider_skills,
-                )
-                + "\n\n"
-                + render_graph_history(graph_read_scope, history_staged.client_command())
+                ),
+                graph_read_scope,
+                history_staged.client_command(),
             )
 
         node = classify(
