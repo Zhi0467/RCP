@@ -518,15 +518,14 @@ def serialize_episode(
     )
 
 
-def serialize_episodes(
+def listed_episodes(
     store: AppStore,
     project_id: str,
     *,
     mode: EpisodeMode | None = None,
-    branch_summaries: BranchSummariesResolver | None = None,
     include_archived_branches: bool = False,
-) -> list[EpisodeResponse]:
-    """Serialize the ordered project list, optionally limited to one episode mode."""
+) -> list[EpisodeRecord]:
+    """The recent bounded list, plus retained archives and each orchestrator's current member."""
 
     bounded_limit = 50
 
@@ -544,18 +543,39 @@ def serialize_episodes(
         return state is None or not state.graph_archived
 
     # Filter before the limit so hidden archived branches do not shrink the list.
-    selected = [episode for episode in store.episodes(project_id, limit=None) if listed(episode)][
-        :bounded_limit
-    ]
+    every = [episode for episode in store.episodes(project_id, limit=None) if listed(episode)]
+    selected = every[:bounded_limit]
     # Retained archives remain discoverable after newer episodes fill the recent list.
     selected_by_id = {episode.episode_id: episode for episode in selected}
+    # Agents lists every Auto-research orchestrator, so each chain's current
+    # member stays listed however many newer episodes there are.
+    for root in every:
+        if root.mode == "auto_research" and root.graph_target.branch_id == root.episode_id:
+            current = store.episode_chain(root.episode_id)[-1]
+            if listed(current):
+                selected_by_id[current.episode_id] = current
     for episode in store.archived_episodes(project_id):
         if listed(episode):
             selected_by_id[episode.episode_id] = episode
-    selected = sorted(
+    return sorted(
         selected_by_id.values(),
         key=lambda episode: (episode.created_at, episode.episode_id),
         reverse=True,
+    )
+
+
+def serialize_episodes(
+    store: AppStore,
+    project_id: str,
+    *,
+    mode: EpisodeMode | None = None,
+    branch_summaries: BranchSummariesResolver | None = None,
+    include_archived_branches: bool = False,
+) -> list[EpisodeResponse]:
+    """Serialize the ordered project list, optionally limited to one episode mode."""
+
+    selected = listed_episodes(
+        store, project_id, mode=mode, include_archived_branches=include_archived_branches
     )
     archive_states = store.episode_archive_states(project_id)
     branch_summary: BranchSummaryResolver | None = None

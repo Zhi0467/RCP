@@ -7,6 +7,7 @@ import type {
   AgentTaskKind,
   AgentTaskRequest,
   AgentTaskStatus,
+  Episode,
   ArtifactContextRequest,
   ChatMessage,
   ChatReads,
@@ -407,6 +408,10 @@ export function conversationAgentStatus(
   const latest = conversation.tasks.at(-1) ?? null;
   const unread = conversationHasUnread(conversation, unreadChatIds);
   const result = { latest, unread };
+  if (orchestratorOwnsChild(conversation)) {
+    const state = latest?.active ? "working" : "done";
+    return { ...result, state, group: state };
+  }
   if (latest?.failed) return { ...result, state: "failed", group: "failed" };
   // After failures, the backend attention flag covers paused and interrupted turns.
   if (latest?.paused || latest?.awaiting_human || conversation.needsHuman) {
@@ -533,12 +538,56 @@ export function latestConversation(
   );
 }
 
+export function listedAgentConversations(
+  conversations: ChatConversation[],
+  graphTarget: GraphTargetRef,
+  orchestratorBranchIds: ReadonlySet<string> = new Set(),
+): ChatConversation[] {
+  // Main also lists each branch orchestrator whose current episode is known, so its
+  // card keeps attention and a composer; a branch lists only its own agents.
+  return conversations.filter(
+    (conversation) =>
+      sameGraphTarget(conversation.graphTarget, graphTarget) ||
+      (graphTarget.kind === "main" &&
+        conversation.conversationKind === "auto_research" &&
+        orchestratorBranchIds.has(conversation.chatId)),
+  );
+}
+
 export function chatIndicator(
-  tasks: AgentTask[],
+  conversations: ChatConversation[],
   unreadChatIds: ReadonlySet<string>,
 ): "active" | "unread" | null {
-  if (tasks.some((task) => chatIdForTask(task) && chatTaskNeedsAttention(task))) return "active";
+  if (
+    conversations.some(
+      (conversation) =>
+        conversation.needsHuman ||
+        (!orchestratorOwnsChild(conversation) && conversation.tasks.some(chatTaskNeedsAttention)),
+    )
+  )
+    return "active";
   return unreadChatIds.size > 0 ? "unread" : null;
+}
+
+/** The episode currently writing an orchestrator conversation's branch. */
+export function chainEpisode(
+  conversation: ChatConversation,
+  episodes: readonly Episode[],
+): Episode | null {
+  if (conversation.conversationKind !== "auto_research") return null;
+  return episodes.find((episode) => episode.graph_target.branch_id === conversation.chatId) ?? null;
+}
+
+/** An orchestrator whose chain needs action needs the human even with settled, read turns. */
+export function withEpisodeAttention(
+  conversations: ChatConversation[],
+  episodes: readonly Episode[],
+): ChatConversation[] {
+  return conversations.map((conversation) =>
+    chainEpisode(conversation, episodes)?.health === "needs_action"
+      ? { ...conversation, needsHuman: true }
+      : conversation,
+  );
 }
 
 export function chatTaskNeedsAttention(task: AgentTask): boolean {
@@ -651,7 +700,15 @@ export function conversationHasUnread(
   conversation: ChatConversation,
   unreadChatIds: ReadonlySet<string>,
 ): boolean {
-  return unreadChatIds.has(conversation.chatId);
+  return !orchestratorOwnsChild(conversation) && unreadChatIds.has(conversation.chatId);
+}
+
+/** A child's attention belongs to its orchestrator only while the lineage keeps it read-only. */
+function orchestratorOwnsChild(conversation: ChatConversation): boolean {
+  return (
+    conversation.conversationKind === "auto_research_child" &&
+    conversation.humanTurnRefusal?.code === "auto_research_child_read_only"
+  );
 }
 
 function comparableTime(value: string): number {

@@ -12,6 +12,8 @@ const MERGE_MARK_LABELS: Record<MergeDiffMark, string | null> = {
   conflict: "Conflict",
 };
 
+const DECISION_MARKS = new Set<MergeDiffMark>(["conflict", "needs_agent", "proposal"]);
+
 export function BranchChangeDetail({
   change,
   mergePaths,
@@ -23,11 +25,29 @@ export function BranchChangeDetail({
 }) {
   return (
     <section className="branch-change-detail" aria-label="Branch changes">
-      <ChangedFields before={change.before} after={change.after} mergePaths={mergePaths} />
+      {(change.before === null || change.change === "created") &&
+      // A plain addition is just a tag; an addition the merge must decide shows its fields.
+      !mergePaths?.some((path) => DECISION_MARKS.has(mergePathMark(path))) ? (
+        <span className="eyebrow">New on this branch</span>
+      ) : (
+        <ChangedFields before={change.before} after={change.after} mergePaths={mergePaths} />
+      )}
       <ChangeHistory history={change.history} onInspectTask={onInspectTask} />
     </section>
   );
 }
+
+const INTERNAL_FIELDS = new Set([
+  "id",
+  "created_rev",
+  "updated_rev",
+  "draft_touched",
+  "current_summary_stale",
+  "next_action_stale",
+  "extension_type",
+  "source_refs",
+  "type",
+]);
 
 /** Each changed field as main before, branch, and main now beside a conflict. */
 export function ChangedFields({
@@ -41,19 +61,31 @@ export function ChangedFields({
 }) {
   const beforeFields: Record<string, unknown> = Object.fromEntries(Object.entries(before ?? {}));
   const afterFields: Record<string, unknown> = Object.fromEntries(Object.entries(after ?? {}));
+  // A whole-entity conflict shows any field where main's competing value differs.
+  const mainDiffers = (key: string) =>
+    mergePaths.some(
+      (path) =>
+        path.field_path === "" &&
+        path.conflict &&
+        JSON.stringify(fieldOf(path.main, key)) !== JSON.stringify(afterFields[key]),
+    );
   const fields = [...new Set([...Object.keys(beforeFields), ...Object.keys(afterFields)])]
-    .filter((key) => !["id", "created_rev", "updated_rev", "draft_touched"].includes(key))
+    // Internal fields stay out unless the merge names one, so a mark always shows its values.
+    .filter(
+      (key) =>
+        !INTERNAL_FIELDS.has(key) ||
+        mainDiffers(key) ||
+        mergePaths.some((path) => path.field_path !== "" && pathCovers(path, key)),
+    )
+    .filter(
+      (key) => mainDiffers(key) || !(emptyValue(beforeFields[key]) && emptyValue(afterFields[key])),
+    )
     .filter((key) => JSON.stringify(beforeFields[key]) !== JSON.stringify(afterFields[key]));
   return (
     <div className="branch-change-fields">
       {fields.map((key) => {
         // A whole-entity path ("") covers every field; a nested path covers its parent field.
-        const paths = mergePaths.filter(
-          (path) =>
-            path.field_path === "" ||
-            path.field_path === key ||
-            path.field_path.startsWith(`${key}.`),
-        );
+        const paths = mergePaths.filter((path) => pathCovers(path, key));
         const mark = paths
           .map(mergePathMark)
           .reduce<MergeDiffMark | null>(
@@ -63,7 +95,7 @@ export function ChangedFields({
                 : next,
             null,
           );
-        const conflict = paths.find((path) => path.conflict);
+        const conflicts = paths.filter((path) => path.conflict);
         const label = mark && MERGE_MARK_LABELS[mark];
         return (
           <div className="branch-change-field" key={key}>
@@ -79,16 +111,34 @@ export function ChangedFields({
             <p className="branch-change-value branch">
               <span>Branch</span> {after ? readableValue(afterFields[key]) : "Removed"}
             </p>
-            {conflict && (
-              <p className="branch-change-value main-now">
-                <span>Main now</span> {readableValue(conflict.main)}
+            {conflicts.map((conflict) => (
+              <p className="branch-change-value main-now" key={conflict.field_path}>
+                <span>
+                  Main now
+                  {conflict.field_path.startsWith(`${key}/`) &&
+                    ` · ${conflict.field_path.slice(key.length + 1)}`}
+                </span>{" "}
+                {readableValue(
+                  conflict.field_path === "" ? fieldOf(conflict.main, key) : conflict.main,
+                )}
               </p>
-            )}
+            ))}
           </div>
         );
       })}
     </div>
   );
+}
+
+/** Merge paths are slash-delimited; the whole-entity path ("") covers every field. */
+function pathCovers(path: MergeDiffPath, key: string): boolean {
+  return path.field_path === "" || path.field_path === key || path.field_path.startsWith(`${key}/`);
+}
+
+function fieldOf(entity: unknown, key: string): unknown {
+  return entity && typeof entity === "object"
+    ? (entity as Record<string, unknown>)[key]
+    : undefined;
 }
 
 export function ChangeHistory({
@@ -130,4 +180,10 @@ function readableValue(value: unknown): string {
       .map(([key, item]) => `${humanize(key)}: ${readableValue(item)}`)
       .join("\n");
   return String(value);
+}
+
+function emptyValue(value: unknown): boolean {
+  return (
+    value == null || value === "" || (typeof value === "object" && Object.keys(value).length === 0)
+  );
 }

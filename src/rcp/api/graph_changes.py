@@ -12,7 +12,7 @@ from rcp.core.materialize import MaterializationResult
 from rcp.core.models import Edge, GraphState, ProjectNode
 from rcp.core.transition_models import GraphHeadRef, GraphMutationAvailability, GraphTargetRef
 from rcp.history.branches import BranchHistoryManager
-from rcp.history.delta import render_revision_summary, semantic_delta
+from rcp.history.delta import semantic_delta
 from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AppStore
 
 
@@ -67,26 +67,21 @@ def branch_changes(
         result, boundaries = history.accepted_patch_boundaries()
         head = history.head_ref(result)
         delta = semantic_delta(base, result.state)
-        sources = [
-            (
-                semantic_delta(before, after),
-                GraphChangeSource(
-                    revision=patch.revision,
-                    producer=patch.producer,
-                    summary=" ".join(render_revision_summary(before, patch, after).sentences),
-                    task_id=patch.task_id,
-                    episode_id=patch.episode_id,
-                ),
-            )
-            for before, patch, after in boundaries
-        ]
+        sources = [(semantic_delta(before, after), patch) for before, patch, after in boundaries]
         nodes = [
             NodeChange(
                 **item.model_dump(mode="python"),
                 history=[
-                    source
-                    for change, source in sources
-                    if any(node.node_id == item.node_id for node in change.nodes)
+                    GraphChangeSource(
+                        revision=patch.revision,
+                        producer=patch.producer,
+                        summary=_entity_summary(node.before, node.after),
+                        task_id=patch.task_id,
+                        episode_id=patch.episode_id,
+                    )
+                    for change, patch in sources
+                    for node in change.nodes
+                    if node.node_id == item.node_id
                 ],
             )
             for item in delta.nodes
@@ -95,9 +90,16 @@ def branch_changes(
             EdgeChange(
                 **item.model_dump(mode="python"),
                 history=[
-                    source
-                    for change, source in sources
-                    if any(edge.edge_id == item.edge_id for edge in change.edges)
+                    GraphChangeSource(
+                        revision=patch.revision,
+                        producer=patch.producer,
+                        summary=_entity_summary(edge.before, edge.after),
+                        task_id=patch.task_id,
+                        episode_id=patch.episode_id,
+                    )
+                    for change, patch in sources
+                    for edge in change.edges
+                    if edge.edge_id == item.edge_id
                 ],
             )
             for item in delta.edges
@@ -124,6 +126,30 @@ def branch_changes(
             changed_node_ids=sorted(changed_ids),
             context_node_ids=sorted(context_ids),
         )
+
+
+def _entity_summary(before: ProjectNode | Edge | None, after: ProjectNode | Edge | None) -> str:
+    if before is None:
+        return "Created"
+    if after is None:
+        return "Removed"
+    before_fields = before.model_dump(mode="json")
+    after_fields = after.model_dump(mode="json")
+    fields = [
+        key.replace("_", " ")
+        for key in sorted(before_fields.keys() | after_fields.keys())
+        if key
+        not in {
+            "id",
+            "created_rev",
+            "updated_rev",
+            "draft_touched",
+            "current_summary_stale",
+            "next_action_stale",
+        }
+        and before_fields.get(key) != after_fields.get(key)
+    ]
+    return "Edited " + ", ".join(fields)
 
 
 def active_merge(store: AppStore, project_id: str, target: GraphTargetRef) -> bool:

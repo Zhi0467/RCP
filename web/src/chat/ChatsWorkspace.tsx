@@ -15,6 +15,7 @@ import {
   AGENT_LIST_SECTIONS,
   CONVERSATION_AGENT_GROUPS,
   conversationAgentStatus,
+  listedAgentConversations,
   groupConversationAgents,
   type ChatConversation,
   type AgentListSection,
@@ -23,6 +24,8 @@ import {
   orchestratorCanUnlock,
   orchestratorChatTurns,
   type StartConversationTask,
+  chainEpisode,
+  withEpisodeAttention,
 } from "./chatWorkspace";
 import { OrchestratorComposer, type SendOrchestratorMessage } from "./OrchestratorComposer";
 import {
@@ -35,7 +38,7 @@ import {
   type AgentBoardColumn,
   type AgentBoardDrop,
 } from "./agentBoardModel";
-import type { GlossaryIndex } from "../graph/glossary";
+import { buildGlossaryIndex, type GlossaryIndex } from "../graph/glossary";
 import {
   CHAT_LIST_DEFAULT_WIDTH,
   CHAT_LIST_COLLAPSED_WIDTH,
@@ -98,7 +101,8 @@ interface Props {
   /** Archive moves a chat in or out of the unread count, which the server derives. */
   onArchiveChange?: () => void;
   /** The newest Auto-research episode owning the viewed branch, for its orchestrator card. */
-  orchestratorEpisode?: Episode | null;
+  /** Each branch's current Auto-research episode, so every listed orchestrator keeps its attention. */
+  orchestratorEpisodes?: readonly Episode[];
   episodeAction?: string | null;
   onSendOrchestratorMessage?: SendOrchestratorMessage;
 }
@@ -196,14 +200,11 @@ function agentMeta(status: ConversationAgentStatus, conversation: ChatConversati
   return parts.filter(Boolean).join(" · ");
 }
 
-/** The orchestrator card's episode comes from the server's projection, not its tasks. */
-function chainEpisode(conversation: ChatConversation, episode: Episode | null): Episode | null {
-  return conversation.conversationKind === "auto_research" &&
-    episode?.graph_target.branch_id === conversation.chatId
-    ? episode
-    : null;
-}
+const NO_EPISODES: readonly Episode[] = [];
+const NO_NODES: Record<string, GraphNode> = {};
+const NO_GLOSSARY = buildGlossaryIndex({});
 
+/** The orchestrator card's episode comes from the server's projection, not its tasks. */
 function agentTypeLabel(conversation: ChatConversation): string {
   if (conversation.conversationKind === "auto_research") return "Orchestrator";
   return conversation.kind === "project_chat" ? "Project chat" : "Node chat";
@@ -379,7 +380,7 @@ export function ChatsWorkspace({
   onStopWatcher,
   onNewSession,
   onRemoveDraft,
-  orchestratorEpisode = null,
+  orchestratorEpisodes = NO_EPISODES,
   episodeAction = null,
   onSendOrchestratorMessage,
 }: Props) {
@@ -405,19 +406,20 @@ export function ChatsWorkspace({
   // A human-given name replaces the derived one everywhere in this workspace.
   const conversations = useMemo(
     () =>
-      storedConversations.map((conversation) => {
-        const named = display.titles[conversation.chatId]
-          ? { ...conversation, title: display.titles[conversation.chatId] }
-          : conversation;
-        return chainEpisode(named, orchestratorEpisode)?.health === "needs_action"
-          ? { ...named, needsHuman: true }
-          : named;
-      }),
-    [storedConversations, display.titles, orchestratorEpisode],
+      withEpisodeAttention(
+        storedConversations.map((conversation) =>
+          display.titles[conversation.chatId]
+            ? { ...conversation, title: display.titles[conversation.chatId] }
+            : conversation,
+        ),
+        orchestratorEpisodes,
+      ),
+    [storedConversations, display.titles, orchestratorEpisodes],
   );
-  // Agents follows the selected branch; another target's chats are not listed.
-  const filteredConversations = conversations.filter((conversation) =>
-    sameGraphTarget(conversation.graphTarget ?? MAIN_GRAPH, graphTarget),
+  const filteredConversations = listedAgentConversations(
+    conversations,
+    graphTarget,
+    new Set(orchestratorEpisodes.map((episode) => episode.graph_target.branch_id ?? "")),
   );
   const [menuChatId, setMenuChatId] = useState<string | null>(null);
   const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
@@ -673,8 +675,10 @@ export function ChatsWorkspace({
   }, [project.id, narrow, board]);
 
   const selectedStatus = selected ? conversationAgentStatus(selected, unreadChatIds) : null;
-  const selectedChainEpisode = selected ? chainEpisode(selected, orchestratorEpisode) : null;
+  const selectedChainEpisode = selected ? chainEpisode(selected, orchestratorEpisodes) : null;
   const selectedHistory = selected ? chatTranscripts.get(selected.chatId)?.messages : undefined;
+  const selectedOffGraph =
+    selected !== null && !sameGraphTarget(selected.graphTarget ?? MAIN_GRAPH, graphTarget);
   const selectedOrchestratorTurns = useMemo(
     () =>
       selected?.conversationKind === "auto_research"
@@ -1090,17 +1094,16 @@ export function ChatsWorkspace({
             <PanelLeft size={16} />
           </button>
         )}
-        {selected &&
-        sameGraphTarget(selected.graphTarget ?? MAIN_GRAPH, graphTarget) &&
-        selected.conversationKind === "auto_research" ? (
+        {selected && selected.conversationKind === "auto_research" ? (
           <NodeChat
             key={selected.chatId}
             project={project}
             actorId={actorId}
-            graphTarget={graphTarget}
+            graphTarget={selected.graphTarget ?? graphTarget}
             node={null}
-            nodes={nodes}
-            glossaryIndex={glossaryIndex}
+            // From another graph, main's nodes would link the wrong version.
+            nodes={selectedOffGraph ? NO_NODES : nodes}
+            glossaryIndex={selectedOffGraph ? NO_GLOSSARY : glossaryIndex}
             header={conversationHeading}
             headerState={selectedStatus?.state}
             runScope={runScope}

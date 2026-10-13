@@ -64,6 +64,9 @@ import {
 } from "./artifacts/artifactViewerModel";
 import {
   chatIndicator,
+  conversationHasUnread,
+  listedAgentConversations,
+  withEpisodeAttention,
   unreadChatIdsFromReads,
   conversationHref,
   chatEntryConversationId,
@@ -159,6 +162,7 @@ import {
   projectDraftPreviewEffectInputs,
   projectHeartbeatSnapshotDisposition,
   heartbeatNamesUnknownId,
+  heartbeatTaskStatusMoved,
   projectHeartbeatMetadataChanged,
   projectSettingsSavedProject,
   RETAIN_ALL_PROJECT_READINESS,
@@ -755,6 +759,7 @@ function MemberApp({
     rememberLeftGraphTarget,
     cachedProjectStateForOpen,
     inactiveCachedProjectState,
+    updateInactiveProjectStates,
     isProjectTabOpen,
     projectIdsForHeartbeat,
     adjacentProjectId,
@@ -927,6 +932,7 @@ function MemberApp({
     activityTask,
     beginTasksRead,
     replaceTasks,
+    replaceTasksReadBeforeRestore,
     consumeTerminalTasks,
     upsertTask,
     recordStartedTask,
@@ -948,6 +954,8 @@ function MemberApp({
   const chatRefreshOwedRef = useRef(new Map<string, object>());
   // The last steer epoch each project's heartbeat reported.
   const steerEpochsRef = useRef(new Map<string, number>());
+  // The task status signal each project's task list was last read under.
+  const taskStatusSignalsRef = useRef(new Map<string, string>());
   const tasks = useMemo(
     () => projectTasks.filter((task) => sameGraphTarget(task.graph_target, graphTarget)),
     [projectTasks, graphTarget],
@@ -1044,6 +1052,16 @@ function MemberApp({
     runsVisible: view === "execution",
   });
   const activeBranchEpisode = branchOwnerEpisode(graphTarget, episodes, experimentLoops);
+  // Agents lists every branch's orchestrator, so each needs its branch's current episode.
+  const orchestratorEpisodes = useMemo(
+    () =>
+      episodes.filter(
+        (episode) =>
+          episode.mode === "auto_research" &&
+          episode.episode_id === episode.graph_branch?.current_episode_id,
+      ),
+    [episodes],
+  );
   // undefined while loading; null when the list could not be read.
   const [graphRefs, setGraphRefs] = useState<{
     projectId: string;
@@ -1422,6 +1440,42 @@ function MemberApp({
     [getActiveProjectId, isActiveProject],
   );
 
+  // What a finished task changes beyond its own row. The task poll or the
+  // heartbeat, whichever reads the finish first, settles it once.
+  const settleTerminalTasks = useCallback(
+    async (
+      requestedProjectId: string,
+      target: GraphTargetRef,
+      terminalTasks: AgentTask[],
+      stillCurrent: () => boolean,
+    ) => {
+      if (terminalTasks.length === 0) return;
+      const base = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
+      const report = (error: unknown) => {
+        if (stillCurrent())
+          setNotice({
+            kind: "error",
+            text: error instanceof Error ? error.message : String(error),
+          });
+      };
+      void api<AgentUsageSnapshot>(`${base}/usage`).then((nextUsage) => {
+        if (stillCurrent() && isActiveProject(requestedProjectId)) setUsage(nextUsage);
+      });
+      if (terminalTasks.some(terminalTaskNeedsAuthoritativeProjectReload)) {
+        await reloadAuthoritativeProject().catch(report);
+      } else if (
+        terminalTasks.some((task) => task.kind === "node_chat" || task.kind === "project_chat")
+      ) {
+        await api<WatcherRecord[]>(projectWatchersPath(base, target))
+          .then((nextWatchers) => {
+            if (stillCurrent()) setWatchers(nextWatchers);
+          })
+          .catch(report);
+      }
+    },
+    [isActiveProject, reloadAuthoritativeProject],
+  );
+
   const heartbeatProjectCache = useCallback(
     (requestedProjectId: string): Promise<void> => {
       const requestedTarget = isActiveProject(requestedProjectId)
@@ -1465,22 +1519,48 @@ function MemberApp({
           // this page's task load and its first heartbeat.
           const steerMoved =
             observation.steer_epoch !== undefined && seenSteerEpoch !== observation.steer_epoch;
-          if (steerMoved || heartbeatNamesUnknownId(observation.latest_task_id, loadedTaskIds)) {
+          // A teammate's task can finish while no task poll runs here.
+          const taskStatusMoved = heartbeatTaskStatusMoved(
+            observation.task_status_signal,
+            taskStatusSignalsRef.current.get(requestedProjectId),
+          );
+          let tasksCurrent = true;
+          if (
+            steerMoved ||
+            taskStatusMoved ||
+            heartbeatNamesUnknownId(observation.latest_task_id, loadedTaskIds)
+          ) {
             const tasksRead = beginTasksRead();
-            const nextTasks = await api<AgentTask[]>(`${base}/tasks`);
+            // A failed read retries next beat; this one still checks the graph below.
+            const nextTasks = await api<AgentTask[]>(`${base}/tasks`).catch(() => null);
+            if (nextTasks && isActiveProject(requestedProjectId))
+              await settleTerminalTasks(
+                requestedProjectId,
+                requestedTarget,
+                consumeTerminalTasks(nextTasks),
+                () =>
+                  isActiveProject(requestedProjectId) &&
+                  sameGraphTarget(requestedTarget, activeGraphTargetRef.current),
+              );
+            // Left mid-read: this list may predate the one saved on leaving, so it is
+            // dropped; the signal stays unrecorded and the background sweep rereads.
             if (!isActiveProject(requestedProjectId)) return;
-            replaceTasks(nextTasks, tasksRead);
-            // A teammate's turn may have started and finished between heartbeats;
-            // its chat history then changed without any status change seen here.
-            if (
-              nextTasks.some(
-                (task) => chatIdForTask(task) && !loadedTaskIds.includes(task.operation_id),
+            if (nextTasks) {
+              replaceTasks(nextTasks, tasksRead);
+              // A teammate's turn may have started and finished between heartbeats;
+              // its chat history then changed without any status change seen here.
+              if (
+                nextTasks.some(
+                  (task) => chatIdForTask(task) && !loadedTaskIds.includes(task.operation_id),
+                )
               )
-            )
-              chatRefreshOwedRef.current.set(requestedProjectId, {});
+                chatRefreshOwedRef.current.set(requestedProjectId, {});
+            } else tasksCurrent = false;
           }
-          if (observation.steer_epoch !== undefined)
+          if (tasksCurrent && observation.steer_epoch !== undefined)
             steerEpochsRef.current.set(requestedProjectId, observation.steer_epoch);
+          if (tasksCurrent && observation.task_status_signal !== undefined)
+            taskStatusSignalsRef.current.set(requestedProjectId, observation.task_status_signal);
           // Owed until it succeeds: the task is already listed, so no later
           // heartbeat would notice it again.
           const owed = chatRefreshOwedRef.current.get(requestedProjectId);
@@ -1529,6 +1609,33 @@ function MemberApp({
           return;
         }
 
+        // A background tab keeps its saved task list current, so switching back
+        // shows each agent's real status at once instead of after the reload.
+        const taskStatusSignal = observation.task_status_signal;
+        // Tasks are project-wide, so every retained ref, branches included, takes them.
+        if (
+          taskStatusSignal !== undefined &&
+          heartbeatTaskStatusMoved(
+            taskStatusSignal,
+            taskStatusSignalsRef.current.get(requestedProjectId),
+          )
+        ) {
+          // A failed read retries next beat; this one still checks the graph below.
+          const nextTasks = await api<AgentTask[]>(`${base}/tasks`).catch(() => null);
+          if (nextTasks && isActiveProject(requestedProjectId)) {
+            // Activated mid-read: the restored list is older than this one.
+            if (replaceTasksReadBeforeRestore(nextTasks))
+              taskStatusSignalsRef.current.set(requestedProjectId, taskStatusSignal);
+            return;
+          }
+          if (nextTasks) {
+            updateInactiveProjectStates(requestedProjectId, (state) => ({
+              ...state,
+              tasks: nextTasks,
+            }));
+            taskStatusSignalsRef.current.set(requestedProjectId, taskStatusSignal);
+          }
+        }
         const retained = inactiveCachedProjectState(requestedProjectId);
         if (
           !retained ||
@@ -1587,8 +1694,12 @@ function MemberApp({
       refreshChatSummaries,
       removeProject,
       beginTasksRead,
+      consumeTerminalTasks,
       replaceTasks,
+      replaceTasksReadBeforeRestore,
       runProjectHeartbeat,
+      settleTerminalTasks,
+      updateInactiveProjectStates,
     ],
   );
 
@@ -2895,11 +3006,28 @@ function MemberApp({
     () => unreadChatIdsFromReads(projectTasks, chatReads),
     [chatReads, projectTasks],
   );
-  const unreadChatIds = useMemo(() => {
-    const listed = new Set(inventoryConversations.map((conversation) => conversation.chatId));
-    return new Set([...readUnreadChatIds].filter((chatId) => listed.has(chatId)));
-  }, [inventoryConversations, readUnreadChatIds]);
-  const chatsIndicator = chatIndicator(projectTasks, unreadChatIds);
+  const listedConversations = useMemo(
+    () =>
+      withEpisodeAttention(
+        listedAgentConversations(
+          inventoryConversations,
+          graphTarget,
+          new Set(orchestratorEpisodes.map((episode) => episode.graph_target.branch_id ?? "")),
+        ),
+        orchestratorEpisodes,
+      ),
+    [inventoryConversations, graphTarget, orchestratorEpisodes],
+  );
+  const unreadChatIds = useMemo(
+    () =>
+      new Set(
+        listedConversations
+          .filter((conversation) => conversationHasUnread(conversation, readUnreadChatIds))
+          .map((conversation) => conversation.chatId),
+      ),
+    [listedConversations, readUnreadChatIds],
+  );
+  const chatsIndicator = chatIndicator(listedConversations, unreadChatIds);
   const hasActiveTasks = projectTasks.some(isActiveTask);
 
   const changeAppTextScale = (action: TextScaleAction) => {
@@ -3046,15 +3174,16 @@ function MemberApp({
       selectedExperimentChatId,
       agentsBoard,
     );
-    markVisibleChatRead(tasks, visibleChatId);
+    // Project-wide, as unread is: an orchestrator opened from main has its turns on its branch.
+    markVisibleChatRead(projectTasks, visibleChatId);
     // chatReads is a dependency so a chat already open when the markers load is marked.
   }, [
     agentsBoard,
     chatReads,
     markVisibleChatRead,
+    projectTasks,
     selectedChatId,
     selectedExperimentChatId,
-    tasks,
     view,
   ]);
 
@@ -3087,42 +3216,7 @@ function MemberApp({
       const recoveredAfterFailure = consecutiveFailures > 0;
       consecutiveFailures = 0;
       if (recoveredAfterFailure) void reverifyIdentity("active-task-poll-recovered");
-      const terminalTasks = consumeTerminalTasks(next);
-      if (terminalTasks.length > 0) {
-        void api<AgentUsageSnapshot>(`/api/projects/${encodeURIComponent(projectId)}/usage`).then(
-          (nextUsage) => {
-            if (!stopped && isActiveProject(projectId)) setUsage(nextUsage);
-          },
-        );
-        if (terminalTasks.some(terminalTaskNeedsAuthoritativeProjectReload)) {
-          try {
-            await reloadAuthoritativeProject();
-          } catch (error) {
-            if (!stopped) {
-              setNotice({
-                kind: "error",
-                text: error instanceof Error ? error.message : String(error),
-              });
-            }
-          }
-        } else if (
-          terminalTasks.some((task) => task.kind === "node_chat" || task.kind === "project_chat")
-        ) {
-          try {
-            const nextWatchers = await api<WatcherRecord[]>(
-              projectWatchersPath(`/api/projects/${encodeURIComponent(projectId)}`, graphTarget),
-            );
-            if (!stopped) setWatchers(nextWatchers);
-          } catch (error) {
-            if (!stopped) {
-              setNotice({
-                kind: "error",
-                text: error instanceof Error ? error.message : String(error),
-              });
-            }
-          }
-        }
-      }
+      await settleTerminalTasks(projectId, graphTarget, consumeTerminalTasks(next), () => !stopped);
       // The awaits above can outlive this effect; a stopped poll applies nothing.
       if (stopped) return;
       replaceTasks(next, tasksRead);
@@ -3140,10 +3234,10 @@ function MemberApp({
     isActiveProject,
     projectId,
     graphTarget,
-    reloadAuthoritativeProject,
     beginTasksRead,
     replaceTasks,
     reverifyIdentity,
+    settleTerminalTasks,
   ]);
 
   useEffect(() => {
@@ -5736,11 +5830,16 @@ function MemberApp({
               chatTranscripts={chatTranscripts}
               onSelect={(chatId) => {
                 const conversation = inventoryConversations.find((item) => item.chatId === chatId);
-                if (conversation && !sameGraphTarget(conversation.graphTarget, graphTarget)) {
+                // An orchestrator opens in place from main; other chats open on their own graph.
+                if (
+                  conversation &&
+                  conversation.conversationKind !== "auto_research" &&
+                  !sameGraphTarget(conversation.graphTarget, graphTarget)
+                ) {
                   window.location.hash = conversationHref(project.id, conversation);
                   return;
                 }
-                selectListedConversation(chatId);
+                selectListedConversation(chatId, conversation?.graphTarget);
               }}
               onOpenNode={openNodeById}
               onStartTask={startAgentTask}
@@ -5752,9 +5851,7 @@ function MemberApp({
               onRepairGraphUpdate={repairGraphUpdate}
               onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
               onRemoveDraft={discardDraft}
-              orchestratorEpisode={
-                activeBranchEpisode?.mode === "auto_research" ? activeBranchEpisode : null
-              }
+              orchestratorEpisodes={orchestratorEpisodes}
               episodeAction={episodeAction}
               onSendOrchestratorMessage={messageEpisodeOrchestrator}
               onArchiveChange={() =>

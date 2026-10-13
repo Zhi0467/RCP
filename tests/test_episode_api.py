@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 import uuid
 from collections.abc import AsyncIterator
@@ -1105,3 +1106,56 @@ def test_report_save_is_retired_without_repository_writes(manifest, tmp_path) ->
     assert download.status_code == 200
     assert download.content == store.read_artifact_bytes(report.artifact_id)
     assert not (manifest.path.parent.parent / "artifacts").exists()
+
+
+def test_episode_list_keeps_every_auto_research_chain_current_member(manifest, tmp_path) -> None:
+    from rcp.api.episodes import listed_episodes
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store = app.state.background_tasks.store
+    as_of = datetime.now(UTC)
+    root_id = str(uuid.uuid4())
+    branch = json.dumps({"kind": "branch", "branch_id": root_id})
+    base = json.dumps({"target": {"kind": "main"}, "revision": 0})
+    current_id = str(uuid.uuid4())
+    rows = [
+        (root_id, "auto_research", branch, base, None, (as_of - timedelta(hours=3)).isoformat()),
+        (
+            current_id,
+            "auto_research",
+            branch,
+            base,
+            root_id,
+            (as_of - timedelta(hours=2)).isoformat(),
+        ),
+    ]
+    rows += [
+        (
+            str(uuid.uuid4()),
+            "auto_research",
+            '{"kind": "main"}',
+            None,
+            None,
+            (as_of - timedelta(minutes=i)).isoformat(),
+        )
+        for i in range(60)
+    ]
+    with store.connection() as connection:
+        connection.executemany(
+            """
+            INSERT INTO episodes (
+                episode_id, project_id, mode, control_node_id, status, graph_target_json,
+                graph_base_head_json, continues_episode_id, invocation_ceiling,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, NULL, 'completed', ?, ?, ?, 1, ?, ?)
+            """,
+            [(row[0], project_id, *row[1:], row[-1]) for row in rows],
+        )
+
+    listed = {episode.episode_id for episode in listed_episodes(store, project_id)}
+    # The chain's current member stays listed; its older root does not need to.
+    assert len(listed) == 51
+    assert current_id in listed
+    assert root_id not in listed

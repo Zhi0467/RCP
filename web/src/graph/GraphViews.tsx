@@ -131,7 +131,7 @@ import type {
   TrustView,
   WatcherRecord,
 } from "../core/types";
-import { nodeTypeLabel } from "./nodePresentation";
+import { humanize, nodeTypeLabel } from "./nodePresentation";
 import { RESEARCH, TYPE_LENS, isControlNode, isQuestion } from "./researchType";
 import { useNarrowViewport } from "../ui/useNarrowViewport";
 
@@ -762,7 +762,7 @@ export function DagView({
               <option value="">All changes</option>
               {changeTasks.map((source) => (
                 <option key={source.task_id} value={source.task_id!}>
-                  {source.summary || `Revision ${source.revision}`}
+                  {`${humanize(source.producer)} · revision ${source.revision}`}
                 </option>
               ))}
             </select>
