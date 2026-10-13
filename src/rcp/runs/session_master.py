@@ -353,11 +353,13 @@ def commit_prepared_graph_observation(
         or candidate["native_session_id"] not in (None, native_session_id)
     ):
         raise ValueError("Graph observation recovery changed its owner, session, or target.")
-    applied = (
-        staged_graph_head(service, head.target, applied_revision)
-        if applied_revision is not None
-        else None
-    )
+    applied: GraphHeadRef | None = None
+    if applied_revision is not None:
+        try:
+            applied = staged_graph_head(service, head.target, applied_revision)
+        except (KeyError, ValueError):
+            # An unprovable Apply is not absorbed: the next turn is told about it again.
+            applied = None
     head = _own_applied_head(service, head, applied, execution.operation_id)
     execution.store.commit_graph_seen_head(
         project_id=candidate["project_id"],

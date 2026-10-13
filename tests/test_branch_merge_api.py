@@ -342,7 +342,8 @@ def test_episode_list_reads_all_branches_from_one_snapshot_without_publishing(
 
     assert listed.status_code == 200, listed.text
     assert len(listed.json()) == 2
-    assert calls == {"refresh": 1, "main_replay": 1}
+    # One snapshot: at most one main replay (none once the shared engine is warm).
+    assert calls["refresh"] == 1 and calls["main_replay"] <= 1
     assert refresh_bounds == [REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS]
 
 

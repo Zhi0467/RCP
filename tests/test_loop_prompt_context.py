@@ -18,7 +18,6 @@ from rcp.storage import EpisodeRecord
 
 from .helpers import create_named_app
 from .test_api import ScriptedLauncher
-from .test_chat_prompt_protocol import _history_engine_contract as _history_engine_contract
 from .test_experiment_loop_agent_io import _events, _execution
 from .test_experiment_stop import EXPERIMENT_ID, _Loop
 
@@ -358,6 +357,7 @@ def test_loop_interference_prompt_uses_resolved_launch_verbs(manifest, tmp_path,
             request=request,
             context=service.assemble_chat(request),
             compute_commands=None,
+            service=service,
             graph_read_scope=None,
         ),
     )
