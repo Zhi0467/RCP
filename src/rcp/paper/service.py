@@ -184,10 +184,14 @@ class PaperService:
         with self.workspace.snapshot_lock:
             draft = self._draft()
             # Seed from the published generation, the same one snapshot() compares
-            # against; a remote mirror can lag it. No generation yet refuses.
-            with self.workspace.read_snapshot() as root:
-                path = root / "paper" / "introduction.md"
-                canonical_content = path.read_text(encoding="utf-8") if path.exists() else None
+            # against; a remote mirror can lag it. Before the first generation
+            # exists the mirror is the only copy.
+            try:
+                with self.workspace.read_snapshot() as root:
+                    path = root / "paper" / "introduction.md"
+                    canonical_content = path.read_text(encoding="utf-8") if path.exists() else None
+            except StateUnavailable:
+                canonical_content = self._read_cached_canonical()
             if draft is None:
                 content = (
                     canonical_content if canonical_content is not None else INTRODUCTION_TEMPLATE

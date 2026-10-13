@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from rcp.api.dependencies import (
     get_catalog,
     get_project_service,
+    get_project_writer,
     require_project_membership,
     require_project_write_admission,
 )
@@ -52,7 +53,7 @@ def create_paper(
     project_id: str,
     catalog: Annotated[ProjectCatalog, Depends(get_catalog)],
 ):
-    paper = get_project_service(catalog, project_id).paper
+    paper = get_project_writer(catalog, project_id).paper
     created = paper.create()
     _refresh_cached_paper(catalog, project_id, paper)
     return created.model_dump(mode="json")
@@ -67,7 +68,7 @@ def save_paper(
     body: PaperSaveRequest,
     catalog: Annotated[ProjectCatalog, Depends(get_catalog)],
 ):
-    paper = get_project_service(catalog, project_id).paper
+    paper = get_project_writer(catalog, project_id).paper
     try:
         saved = paper.save(body.content, body.base_hash, body.draft_version)
     except PaperDraftConflict as exc:

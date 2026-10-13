@@ -144,3 +144,28 @@ def test_a_late_cache_refresh_keeps_the_newer_paper(manifest, tmp_path) -> None:
     refresh(*delayed[0])
 
     assert catalog.cached_snapshot(project_id)["paper"]["content"] == second["content"]
+
+
+def test_paper_writes_do_not_need_a_display_generation(manifest, tmp_path, monkeypatch) -> None:
+    from rcp.transport import StateUnavailable
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = signed_in_client(app)
+    project_id = app.state.default_project_id
+
+    def no_generation(*_args, **_kwargs):
+        raise StateUnavailable("Remote state is loading; no completed display generation.")
+
+    monkeypatch.setattr(app.state.services.catalog, "open_display", no_generation)
+    assert client.get(f"/api/projects/{project_id}/paper").status_code == 503
+    created = client.post(f"/api/projects/{project_id}/paper/create", json={})
+    assert created.status_code == 200
+    saved = client.put(
+        f"/api/projects/{project_id}/paper",
+        json={
+            "content": "# Written before any generation\n",
+            "base_hash": created.json()["base_hash"],
+            "draft_version": created.json()["draft_version"],
+        },
+    )
+    assert saved.status_code == 200

@@ -190,6 +190,16 @@ def get_project_service(catalog: ProjectCatalog, project_id: str) -> ProjectServ
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+def get_project_writer(catalog: ProjectCatalog, project_id: str) -> ProjectService:
+    """Open the authoritative owner for a write; it never needs a display generation."""
+    try:
+        return catalog.open(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+    except (FileNotFoundError, OSError, ValueError, StateUnavailable) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 def get_graph_service(
     catalog: ProjectCatalog,
     project_id: str,
@@ -197,10 +207,11 @@ def get_graph_service(
     *,
     initialize: bool = True,
     refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
+    write: bool = False,
 ) -> ProjectService:
     """Resolve the normal graph owner on an exact project-owned branch or main."""
 
-    service = get_project_service(catalog, project_id)
+    service = (get_project_writer if write else get_project_service)(catalog, project_id)
     if branch_id is None:
         return service
     try:
