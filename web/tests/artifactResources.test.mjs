@@ -13,6 +13,7 @@ const { ResourceStore, resourceKeyId } = await server.ssrLoadModule("/src/core/r
 const { artifactStateProfile, artifactsProfile, runArtifactsProfile } = await server.ssrLoadModule(
   "/src/artifacts/artifactResources.ts",
 );
+const { researchViewsProfile } = await server.ssrLoadModule("/src/graph/researchViewResources.ts");
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 test("one artifact watermark refreshes inventory, run inventory, and shared viewer metadata", async () => {
@@ -22,18 +23,21 @@ test("one artifact watermark refreshes inventory, run inventory, and shared view
     artifactsProfile("p"),
     runArtifactsProfile("p", "run"),
     artifactStateProfile("p", "a"),
+    researchViewsProfile("p", null),
+    researchViewsProfile("p", "branch"),
   ];
-  const reads = [0, 0, 0];
+  const reads = profiles.map(() => 0);
+  assert.notEqual(resourceKeyId(profiles[3].key), resourceKeyId(profiles[4].key));
   const ids = profiles.map((profile, i) =>
     store.register("p", { ...profile, fetch: async () => ++reads[i] }),
   );
   store.register("viewer", { ...profiles[2], fetch: async () => ++reads[2] });
   await settle();
-  assert.deepEqual(reads, [1, 1, 1]);
+  assert.deepEqual(reads, [1, 1, 1, 1, 1]);
   assert.deepEqual(store.requests("p"), [{ name: "artifacts" }]);
   store.observe("p", [{ name: "artifacts", version: "moved" }]);
   await settle();
-  assert.deepEqual(reads, [2, 2, 2]);
+  assert.deepEqual(reads, [2, 2, 2, 2, 2]);
   store.write(ids[2], "undo");
   assert.equal(store.view(resourceKeyId(artifactStateProfile("p", "a").key)).value, "undo");
   store.release("viewer");

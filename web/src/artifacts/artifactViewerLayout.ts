@@ -109,3 +109,24 @@ export function acceptsArtifactEditMessage(
 export function artifactVersionChanged(previous: string | null, current: string): boolean {
   return previous !== null && previous !== current;
 }
+
+/** Only the active pinned shell may open an existing node in the presented graph. */
+export function acceptsArtifactOpenNodeMessage(
+  event: { source: unknown; origin: string; data: unknown },
+  frame: unknown,
+  origin: string,
+  artifactId: string,
+  ready: boolean,
+  nodes: Record<string, unknown>,
+): boolean {
+  if (!ready || !frame || event.source !== frame || event.origin !== origin) return false;
+  const data = event.data as Record<string, unknown> | null;
+  return Boolean(
+    data &&
+    data.type === "rcp-open-node" &&
+    data.version === 1 &&
+    data.artifact_id === artifactId &&
+    typeof data.node_id === "string" &&
+    Object.hasOwn(nodes, data.node_id),
+  );
+}
