@@ -11,7 +11,6 @@ import uuid
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -19,7 +18,6 @@ from rcp.core.authority import refused_authorizer
 from rcp.core.materialize import (
     AcceptedPatchObserver,
     MaterializationResult,
-    materialize_patches,
 )
 from rcp.core.models import (
     AuthorizedHuman,
@@ -28,17 +26,15 @@ from rcp.core.models import (
     GraphBranchMetadata,
     GraphState,
     Patch,
-    ReplayFailure,
 )
 from rcp.core.operations import SetProjectTruthScopeOperation
 from rcp.core.research_md import render_research_md
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef, TransitionTrace
 from rcp.core.transitions import (
     PreparedTransition,
-    accepted_transition_head_chain_failure,
     project_transition_projection,
 )
-from rcp.core.validation import ValidationReport, build_validation_context
+from rcp.core.validation import ValidationReport
 from rcp.history.delta import build_revision_summaries
 from rcp.limits import REMOTE_STATE_RECONCILE_WINDOW_SECONDS
 from rcp.transport import BatchPublishFailed, StateUnavailable
@@ -174,9 +170,10 @@ class BranchHistoryManager:
             self.parent._reload_manifest()
             self.manifest = self.parent.manifest
             self._metadata = self._read_metadata()
-            result = self._materialize_base()
-            self.require_writable(result.state)
-            return result.state
+            generation = self.history_engine.snapshot(
+                self.graph_target, refresh=False, use_store=False
+            )
+            return generation.initial
 
     def current_materialization(
         self,
@@ -464,7 +461,10 @@ class BranchHistoryManager:
         accepted_patch_observer: AcceptedPatchObserver | None = None,
     ) -> MaterializationResult:
         with self._process_lock:
-            result = self._replay(accepted_patch_observer=accepted_patch_observer)
+            self._metadata = self._read_metadata()
+            result = self.history_engine.materialization(
+                self.graph_target, refresh=False, accepted_patch_observer=accepted_patch_observer
+            )
             if write_outputs and result.state.replay_status == "complete":
                 self.ensure_layout()
                 self._write_materialized_outputs(result)
@@ -728,158 +728,6 @@ class BranchHistoryManager:
             created_at=patch.created_at,
         )
         return self.write_merge_receipt(receipt)
-
-    def _replay(
-        self,
-        *,
-        accepted_patch_observer: AcceptedPatchObserver | None = None,
-        through_revision: int | None = None,
-    ) -> MaterializationResult:
-        base_result = self._materialize_base()
-        initial_scope, scope_failure = self._initial_truth_scope()
-        base_patches = list(base_result.patches)
-        failure = (
-            base_result.state.replay_failure
-            if base_result.state.replay_status == "degraded"
-            else None
-        )
-        branch_paths = [
-            path
-            for path in self._patch_paths()
-            if through_revision is None or int(path.stem) <= through_revision
-        ]
-        branch_patches: list[Patch] = []
-        branch_failure: ReplayFailure | None = None
-        if failure is None:
-            branch_patches, branch_failure = self._decode_paths(branch_paths)
-            failure = branch_failure
-        if failure is None:
-            failure = self._validate_revision_sequence(
-                branch_paths,
-                branch_patches,
-                start=self._metadata.base_head.revision + 1,
-            )
-        if failure is None:
-            failure = accepted_transition_head_chain_failure(
-                branch_patches,
-                target=self.graph_target,
-                initial_transition_id=self._metadata.base_head.transition_id,
-            )
-        replayable = [] if scope_failure is not None else [*base_patches, *branch_patches]
-        result = materialize_patches(
-            replayable,
-            context=build_validation_context(
-                self.manifest, GraphState(project_truth_scope=initial_scope), mode="replay"
-            ),
-            accepted_patch_observer=accepted_patch_observer,
-        )
-        if failure is not None:
-            result.state = result.state.model_copy(
-                update={"replay_status": "degraded", "replay_failure": failure}
-            )
-        return result
-
-    def _materialize_base(self) -> MaterializationResult:
-        initial_scope, scope_failure = self._initial_truth_scope()
-        base_paths = [
-            path
-            for path in self.parent._patch_paths()
-            if int(path.stem) <= self._metadata.base_head.revision
-        ]
-        base_patches, base_failure = self._decode_paths(base_paths)
-        failure = scope_failure or base_failure
-        if failure is None:
-            failure = self._validate_revision_sequence(base_paths, base_patches, start=1)
-        if failure is None:
-            failure = accepted_transition_head_chain_failure(
-                base_patches,
-                target=GraphTargetRef(),
-                initial_transition_id=None,
-            )
-        base_result = materialize_patches(
-            [] if scope_failure is not None else base_patches,
-            context=build_validation_context(
-                self.manifest, GraphState(project_truth_scope=initial_scope), mode="replay"
-            ),
-        )
-        if failure is None and base_result.state.replay_status == "complete":
-            actual_base = _head_for_patches(
-                base_result,
-                target=GraphTargetRef(),
-                initial_transition_id=None,
-            )
-            if actual_base != self._metadata.base_head:
-                failure = ReplayFailure(
-                    revision=self._metadata.base_head.revision,
-                    created_at=self._metadata.created_at,
-                    code="branch-base-mismatch",
-                    message=(
-                        "Graph branch immutable main base does not match the accepted main prefix."
-                    ),
-                )
-        if failure is not None:
-            base_result.state = base_result.state.model_copy(
-                update={"replay_status": "degraded", "replay_failure": failure}
-            )
-        return base_result
-
-    def _decode_paths(self, paths: list[Path]) -> tuple[list[Patch], ReplayFailure | None]:
-        patches: list[Patch] = []
-        for path in paths:
-            try:
-                _require_regular_file(path, "branch patch")
-                patch = self.parent._decode_persisted_patch(path.read_text(encoding="utf-8"))
-            except OSError as exc:
-                return patches, _path_failure(path, "patch-read-failed", str(exc))
-            except ValueError as exc:
-                return patches, _path_failure(path, "patch-schema-invalid", str(exc))
-            patches.append(patch)
-        return patches, None
-
-    def _validate_revision_sequence(
-        self,
-        paths: list[Path],
-        patches: list[Patch],
-        *,
-        start: int,
-    ) -> ReplayFailure | None:
-        for offset, (path, patch) in enumerate(zip(paths, patches, strict=True)):
-            expected = start + offset
-            if int(path.stem) != expected or patch.revision != expected:
-                return ReplayFailure(
-                    revision=expected,
-                    created_at=patch.created_at,
-                    code="patch-revision-discontinuous",
-                    message=(
-                        f"Graph branch history expected revision {expected}, but found "
-                        f"{path.name} carrying revision {patch.revision}."
-                    ),
-                )
-        return None
-
-    def _initial_truth_scope(self) -> tuple[list[str], ReplayFailure | None]:
-        path = self.parent.root / "scope-base.json"
-        if path.is_file():
-            try:
-                scope = json.loads(path.read_text(encoding="utf-8"))["truth_scope"]
-                if not isinstance(scope, list) or not all(isinstance(item, str) for item in scope):
-                    raise ValueError("truth_scope must be a list of repository aliases")
-                return scope, None
-            except (OSError, KeyError, TypeError, ValueError) as exc:
-                return list(self.manifest.project.truth_scope), ReplayFailure(
-                    revision=self._metadata.base_head.revision,
-                    created_at=self._metadata.created_at,
-                    code="scope-provenance-invalid",
-                    message=f"Canonical scope provenance {path} is invalid: {exc}",
-                )
-        if self._metadata.base_head.revision:
-            return list(self.manifest.project.truth_scope), ReplayFailure(
-                revision=self._metadata.base_head.revision,
-                created_at=self._metadata.created_at,
-                code="scope-provenance-missing",
-                message=f"Canonical scope provenance {path} is absent for a non-empty branch base.",
-            )
-        return list(self.manifest.project.truth_scope), None
 
     def _require_branch_patch(self, patch: Patch) -> None:
         if patch.kind == "identity" or patch.project_identity is not None:
@@ -1492,35 +1340,6 @@ def _safe_branch_root(root: Path, branch_id: str, *, create: bool) -> Path:
     elif create:
         branch.mkdir(mode=0o700)
     return branch
-
-
-def _head_for_patches(
-    result: MaterializationResult,
-    *,
-    target: GraphTargetRef,
-    initial_transition_id: str | None,
-) -> GraphHeadRef:
-    transition_id = initial_transition_id
-    for patch in result.patches:
-        if patch.admission == "accepted" and patch.transition is not None:
-            transition_id = patch.transition.transition_id
-    return GraphHeadRef(
-        target=target,
-        revision=result.state.revision,
-        transition_id=transition_id,
-    )
-
-
-def _path_failure(path: Path, code: str, message: str) -> ReplayFailure:
-    created_at = datetime.fromtimestamp(0, UTC)
-    with suppress(OSError):
-        created_at = datetime.fromtimestamp(path.stat().st_mtime, UTC)
-    return ReplayFailure(
-        revision=int(path.stem),
-        created_at=created_at,
-        code=code,
-        message=message,
-    )
 
 
 def _require_regular_file(path: Path, label: str) -> None:

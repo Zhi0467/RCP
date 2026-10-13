@@ -189,8 +189,8 @@ def test_project_revision_probe_is_small_and_does_not_replay_history(
         ),
     )
     monkeypatch.setattr(
-        history,
-        "_replay",
+        history.history_engine,
+        "_build",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("revision probe must not replay history")
         ),

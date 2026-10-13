@@ -13,12 +13,18 @@ import threading
 import weakref
 from collections import OrderedDict
 from collections.abc import Iterator
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
 from rcp import limits
-from rcp.core.materialize import MaterializationResult, materialize_patches_from_state
+from rcp.core.materialize import (
+    AcceptedPatchObserver,
+    MaterializationResult,
+    materialize_patches_from_state,
+)
 from rcp.core.models import GraphBranchMetadata, GraphState, Patch, ReplayFailure
 from rcp.core.operations import SetProjectTruthScopeOperation
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
@@ -37,7 +43,7 @@ if TYPE_CHECKING:
     from rcp.config import Manifest
     from rcp.history.manager import HistoryManager
 
-_VERSION = "graph-history-4"
+_VERSION = "graph-history-5"
 _LOGGER = logging.getLogger(__name__)
 _PATCH_NAME = re.compile(r"[0-9]{6}\.json")
 _MEMORY_LOCK = threading.RLock()
@@ -65,7 +71,7 @@ def _inventory(
     directories = [directory]
     for root in directories:
         if root.is_symlink():
-            raise ValueError("retained Patch directory must not be a symlink")
+            raise ValueError("retained Patch directory is not a regular directory")
         try:
             descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         except FileNotFoundError:
@@ -145,6 +151,7 @@ class _Generation:
     pending: list[GraphHeadRef] = field(default_factory=list)
     start: int = 0
     saved: bool = False
+    store_start: int = 0
 
     def head(self, revision: int) -> GraphHeadRef:
         offset = revision - self.initial_head.revision
@@ -155,9 +162,27 @@ class _Generation:
         raise ValueError("history revision is absent or precedes the branch base")
 
     def prefix(self, head: GraphHeadRef) -> str:
+        if (
+            self.source.metadata is not None
+            and head.revision < self.source.metadata.base_head.revision
+        ):
+            raise ValueError("history revision is absent or precedes the branch base")
         if self.head(head.revision) != head:
             raise ValueError("history head transition identity does not match")
         return self.digests[head.revision - self.initial_head.revision]
+
+
+def _patch_failure_created_at(path: Path) -> datetime:
+    """Retain useful failure chronology even when the Patch schema cannot load."""
+
+    with suppress(OSError, TypeError, ValueError):
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and isinstance(raw.get("created_at"), str):
+            created_at = datetime.fromisoformat(raw["created_at"])
+            return created_at if created_at.tzinfo is not None else created_at.replace(tzinfo=UTC)
+    with suppress(OSError):
+        return datetime.fromtimestamp(path.stat().st_mtime, UTC)
+    return datetime.fromtimestamp(0, UTC)
 
 
 class ProjectHistoryEngine:
@@ -192,6 +217,7 @@ class ProjectHistoryEngine:
         targets: list[GraphTargetRef],
         *,
         refresh: bool = True,
+        pending_patch_paths: list[Path] | None = None,
         refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
     ) -> dict[str, _Source]:
         from rcp.history.branches import (
@@ -208,20 +234,48 @@ class ProjectHistoryEngine:
         with _MEMORY_LOCK:
             inventories = {key: value.source.inventory for key, value in self._generations.items()}
         main_inventory = _inventory(parent.patches_dir, inventories.get("main", ()), batches=True)
+        if pending_patch_paths:
+            tail = []
+            last_revision = main_inventory[-1].revision if main_inventory else 0
+            for path in sorted(pending_patch_paths, key=lambda path: int(path.stem)):
+                info = path.stat(follow_symlinks=False)
+                revision = int(path.stem)
+                if not stat.S_ISREG(info.st_mode) or revision <= last_revision:
+                    raise ValueError("pending Patches must be a regular, unpublished tail")
+                tail.append(
+                    _PatchFile(
+                        revision,
+                        str(path),
+                        info.st_size,
+                        info.st_mtime_ns,
+                        info.st_ino,
+                        info.st_ctime_ns,
+                    )
+                )
+                last_revision = revision
+            main_inventory += tuple(tail)
         scope_path = parent.root / "scope-base.json"
-        if scope_path.exists():
-            scope = json.loads(scope_path.read_bytes())["truth_scope"]
-            if not isinstance(scope, list) or any(not isinstance(item, str) for item in scope):
-                raise ValueError("invalid canonical scope provenance")
-        else:
-            scope = list(manifest.project.truth_scope)
+        scope = list(manifest.project.truth_scope)
         scope_failure = None
-        if not scope_path.exists() and main_inventory:
-            from rcp.history.manager import _patch_failure_created_at
-
+        failure_revision = main_inventory[0].revision if main_inventory else 0
+        failure_path = Path(main_inventory[0].path) if main_inventory else scope_path
+        if scope_path.is_file():
+            try:
+                scope = json.loads(scope_path.read_text(encoding="utf-8"))["truth_scope"]
+                if not isinstance(scope, list) or not all(isinstance(item, str) for item in scope):
+                    raise ValueError("truth_scope must be a list of repository aliases")
+            except (OSError, KeyError, TypeError, ValueError) as exc:
+                scope = list(manifest.project.truth_scope)
+                scope_failure = ReplayFailure(
+                    revision=failure_revision,
+                    created_at=_patch_failure_created_at(failure_path),
+                    code="scope-provenance-invalid",
+                    message=f"Canonical scope provenance {scope_path} is invalid: {exc}",
+                )
+        elif main_inventory:
             scope_failure = ReplayFailure(
-                revision=main_inventory[0].revision,
-                created_at=_patch_failure_created_at(Path(main_inventory[0].path)),
+                revision=failure_revision,
+                created_at=_patch_failure_created_at(failure_path),
                 code="scope-provenance-missing",
                 message=(
                     f"Canonical scope provenance {scope_path} is absent while Patch history "
@@ -237,6 +291,7 @@ class ProjectHistoryEngine:
                 parent.project_id,
                 str(parent.root.resolve()),
                 scope,
+                scope_failure.model_dump(mode="json") if scope_failure else None,
                 sorted(context.repository_aliases or ()),
                 sorted(context.machine_aliases or ()),
                 sorted(context.default_run_truth_scope or ()),
@@ -282,7 +337,9 @@ class ProjectHistoryEngine:
             )
         return sources
 
-    def _build(self, source: _Source, main: _Generation | None) -> _Generation:
+    def _build(
+        self, source: _Source, main: _Generation | None, *, use_store: bool = True
+    ) -> _Generation:
         initial = GraphState(project_truth_scope=source.scope)
         initial_head = GraphHeadRef(target=source.target, revision=0)
         inherited: tuple[IndexedStep, ...] = ()
@@ -292,22 +349,70 @@ class ProjectHistoryEngine:
             assert main is not None
             from rcp.history.branches import _require_parent_identity
 
+            identity = source.metadata.model_dump_json(exclude={"head"})
+            known = self._branch_identities.get(source.target.key)
+            if known is not None and known != identity:
+                raise ValueError("graph branch immutable metadata changed")
+            base = source.metadata.base_head
+            if main.source.scope_failure is not None or base.revision > main.result.state.revision:
+                base_result = main.result
+            elif main.head(base.revision) != base:
+                base_result = self._prefix_result(
+                    main, main.head(base.revision), use_store=use_store
+                )
+            else:
+                base_result = None
+            if base_result is not None:
+                # A broken inherited prefix is readable, but cannot admit branch work.
+                if base_result.state.replay_status == "complete":
+                    base_result = replace(
+                        base_result,
+                        state=base_result.state.model_copy(
+                            update={
+                                "replay_status": "degraded",
+                                "replay_failure": ReplayFailure(
+                                    revision=base.revision,
+                                    created_at=source.metadata.created_at,
+                                    code="branch-base-mismatch",
+                                    message="Graph branch immutable main base does not match the accepted main prefix.",
+                                ),
+                            }
+                        ),
+                    )
+                initial = base_result.state
+                initial_head = main.head(initial.revision).model_copy(
+                    update={"target": source.target}
+                )
+                context_key += identity + main.digests[-1]
+                return _Generation(
+                    source.target,
+                    context_key,
+                    (_digest("", context_key.encode()),),
+                    source.manifest,
+                    initial,
+                    initial_head,
+                    (),
+                    base_result,
+                    source,
+                    inherited=main.index[: initial.revision],
+                )
             _require_parent_identity(
                 self.manager,
                 source.metadata,
                 allow_historical_home=True,
                 materialization=main.result,
             )
-            identity = source.metadata.model_dump_json(exclude={"head"})
-            known = self._branch_identities.get(source.target.key)
-            if known is not None and known != identity:
-                raise ValueError("graph branch immutable metadata changed")
-            base = source.metadata.base_head
             initial_head = base.model_copy(update={"target": source.target})
             context_key += identity + main.prefix(base)
+            base_result = MaterializationResult(state=initial)
         with _MEMORY_LOCK:
             old = self._generations.get(source.target.key)
-        if old is not None and old.context_key == context_key and old.source == source:
+        if (
+            old is not None
+            and old.result.state.replay_status == "complete"
+            and old.context_key == context_key
+            and old.source == source
+        ):
             return old
         unchanged_prefix = (
             old is not None
@@ -320,8 +425,19 @@ class ProjectHistoryEngine:
             list(old.digests) if unchanged_prefix and old else [_digest("", context_key.encode())]
         )
         contents = []
+        structural_failure = source.scope_failure
         for entry in source.inventory[verified:]:
-            revision, content = entry.revision, Path(entry.path).read_bytes()
+            revision = entry.revision
+            try:
+                content = Path(entry.path).read_bytes()
+            except OSError as exc:
+                structural_failure = ReplayFailure(
+                    revision=revision,
+                    created_at=_patch_failure_created_at(Path(entry.path)),
+                    code="patch-read-failed",
+                    message=str(exc),
+                )
+                break
             contents.append((revision, content))
             digests.append(_digest(digests[-1], str(revision).encode() + b"\0" + content))
         reusable = (
@@ -330,11 +446,11 @@ class ProjectHistoryEngine:
             and old.context_key == context_key
             and tuple(digests[: len(old.digests)]) == old.digests
         )
-        if reusable and old and len(digests) == len(old.digests):
+        if reusable and old and len(digests) == len(old.digests) and structural_failure is None:
             return replace(old, source=source, start=len(old.index))
         if source.metadata is not None and not reusable:
             assert main is not None
-            base_result = self._prefix_result(main, source.metadata.base_head)
+            base_result = self._prefix_result(main, source.metadata.base_head, use_store=use_store)
             initial = base_result.state
             inherited = main.index[: source.metadata.base_head.revision]
         elif reusable and old:
@@ -347,7 +463,6 @@ class ProjectHistoryEngine:
             states = OrderedDict(old.states) if reusable and old else OrderedDict()
             state_costs = dict(old.state_costs) if reusable and old else {}
         patches: list[Patch] = []
-        structural_failure: ReplayFailure | None = source.scope_failure
         for entry, (_, content) in zip(
             [] if source.scope_failure else source.inventory[start:],
             contents[start - verified :],
@@ -356,8 +471,6 @@ class ProjectHistoryEngine:
             try:
                 patches.append(self.manager._decode_persisted_patch(content.decode()))
             except ValueError as exc:
-                from rcp.history.manager import _patch_failure_created_at
-
                 structural_failure = ReplayFailure(
                     revision=entry.revision,
                     created_at=_patch_failure_created_at(Path(entry.path)),
@@ -369,8 +482,19 @@ class ProjectHistoryEngine:
             zip(patches, source.inventory[start : start + len(patches)], strict=True)
         ):
             revision = entry.revision
-            if revision != initial_head.revision + start + offset + 1 or patch.revision != revision:
-                raise ValueError("retained Patch revision sequence is invalid")
+            expected = initial_head.revision + start + offset + 1
+            if revision != expected or patch.revision != revision:
+                structural_failure = ReplayFailure(
+                    revision=expected,
+                    created_at=patch.created_at,
+                    code="patch-revision-discontinuous",
+                    message=(
+                        f"Graph history expected revision {expected}, but found "
+                        f"{Path(entry.path).name} carrying revision {patch.revision}."
+                    ),
+                )
+                patches = patches[:offset]
+                break
         before_head = index[-1].after_head if index else initial_head
         failure = accepted_transition_head_chain_failure(
             patches, target=source.target, initial_transition_id=before_head.transition_id
@@ -383,7 +507,7 @@ class ProjectHistoryEngine:
         stride = self.checkpoint_interval or limits.GRAPH_HISTORY_CHECKPOINT_INTERVAL
         stored_index = (
             self.store.load_step_segments(tuple(digests), stride)
-            if self.store and not reusable and structural_failure is None
+            if use_store and self.store and not reusable and structural_failure is None
             else None
         )
         if stored_index is not None and (
@@ -422,7 +546,7 @@ class ProjectHistoryEngine:
                 patches = [step.patch for step in index[start:]]
         else:
             stored_index = None
-        pending: list[GraphHeadRef] = []
+        pending = list(old.pending) if reusable and old else []
         # Work in checkpoint intervals, releasing replay boundary dictionaries
         # once their compact semantic facts have been extracted.
         first = stride - previous.state.revision % stride
@@ -507,15 +631,17 @@ class ProjectHistoryEngine:
                 break
             if tail.state.revision % stride == 0:
                 checkpoints[tail.state.revision] = tail.state
-                if self.store and self.checkpoint_interval:
+                if self.checkpoint_interval:
                     pending.append(before_head)
-        if structural_failure is not None:
+        structural_failure = source.scope_failure or structural_failure
+        if structural_failure is not None and previous.state.replay_status == "complete":
             previous = replace(
                 previous,
                 state=previous.state.model_copy(
                     update={"replay_status": "degraded", "replay_failure": structural_failure}
                 ),
             )
+        previous = replace(previous, patches=all_patches)
         return _Generation(
             source.target,
             context_key,
@@ -533,6 +659,9 @@ class ProjectHistoryEngine:
             pending,
             len(old.index) if reusable and old else 0,
             saved=stored_index is not None,
+            store_start=(old.store_start if not old.saved else len(old.index))
+            if reusable and old
+            else 0,
         )
 
     def _remember(self, built: dict[str, _Generation], serial: int) -> None:
@@ -602,11 +731,17 @@ class ProjectHistoryEngine:
                         owner._generations.pop(victim[1], None)
                     owner._recount_memory()
 
-    def _build_sources(self, sources: dict[str, _Source]) -> dict[str, _Generation]:
-        main = self._build(sources["main"], None)
+    def _build_sources(
+        self, sources: dict[str, _Source], *, use_store: bool = True
+    ) -> dict[str, _Generation]:
+        main = self._build(sources["main"], None, use_store=use_store)
         return {
             "main": main,
-            **{key: self._build(source, main) for key, source in sources.items() if key != "main"},
+            **{
+                key: self._build(source, main, use_store=use_store)
+                for key, source in sources.items()
+                if key != "main"
+            },
         }
 
     def _extends_verified(self, source: _Source) -> bool:
@@ -625,33 +760,43 @@ class ProjectHistoryEngine:
         targets: list[GraphTargetRef],
         *,
         refresh: bool = True,
+        use_store: bool = True,
+        pending_patch_paths: list[Path] | None = None,
         refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
     ) -> dict[str, _Generation]:
         self._resolved.generations = None
+        use_store = use_store and not pending_patch_paths
         while True:
             built: dict[str, _Generation] | None = None
             serial: int | None = None
             with self.manager.workspace.snapshot_lock:
                 sources = self._capture(
-                    targets, refresh=refresh, refresh_max_age_seconds=refresh_max_age_seconds
+                    targets,
+                    refresh=refresh,
+                    pending_patch_paths=pending_patch_paths,
+                    refresh_max_age_seconds=refresh_max_age_seconds,
                 )
                 incremental = all(self._extends_verified(source) for source in sources.values())
                 if incremental:
                     # A bounded tail can stay inside the canonical fence. No second inventory
                     # scan is needed: neither append nor mirror refresh can race its replay.
-                    built = self._build_sources(sources)
+                    built = self._build_sources(sources, use_store=False)
                     self._verified_serial += 1
                     serial = self._verified_serial
             if not incremental:
                 try:
-                    built = self._build_sources(sources)
+                    built = self._build_sources(sources, use_store=use_store)
                 except (OSError, ValueError):
                     with self.manager.workspace.snapshot_lock:
-                        if sources != self._capture(targets, refresh=False):
+                        if sources != self._capture(
+                            targets, refresh=False, pending_patch_paths=pending_patch_paths
+                        ):
                             continue
                     raise
                 with self.manager.workspace.snapshot_lock:
-                    if sources != self._capture(targets, refresh=False):
+                    if sources != self._capture(
+                        targets, refresh=False, pending_patch_paths=pending_patch_paths
+                    ):
                         continue
                     for key, source in sources.items():
                         if source.metadata is not None:
@@ -661,10 +806,12 @@ class ProjectHistoryEngine:
                     self._verified_serial += 1
                     serial = self._verified_serial
             assert built is not None and serial is not None
+            if pending_patch_paths:
+                return built
             self._remember(built, serial)
             # Optional cache writes happen only after canonical confirmation,
             # outside its lock; append never depends on checkpoint publication.
-            if self.store:
+            if use_store and self.store:
                 for generation in built.values():
                     if generation.result.state.replay_status == "complete":
                         for head in generation.pending:
@@ -678,18 +825,20 @@ class ProjectHistoryEngine:
                                 list(generation.index),
                                 self.checkpoint_interval
                                 or limits.GRAPH_HISTORY_CHECKPOINT_INTERVAL,
-                                start=generation.start,
+                                start=generation.store_start,
                             )
                         generation.pending.clear()
                         generation.saved = True
             return built
 
-    def _state(self, generation: _Generation, head: GraphHeadRef) -> GraphState:
+    def _state(
+        self, generation: _Generation, head: GraphHeadRef, *, use_store: bool = True
+    ) -> GraphState:
         generation.prefix(head)
-        if head.revision == generation.initial_head.revision:
-            return generation.initial
         if head.revision == generation.result.state.revision:
             return generation.result.state
+        if head.revision == generation.initial_head.revision:
+            return generation.initial
         with _MEMORY_LOCK:
             if head.revision in generation.states:
                 generation.states.move_to_end(head.revision)
@@ -704,7 +853,7 @@ class ProjectHistoryEngine:
                 default=generation.initial,
             )
         stride = self.checkpoint_interval or limits.GRAPH_HISTORY_CHECKPOINT_INTERVAL
-        if self.store and self.checkpoint_interval:
+        if use_store and self.store and self.checkpoint_interval:
             revision = head.revision - head.revision % stride
             while revision > state.revision:
                 offset = revision - generation.initial_head.revision
@@ -715,16 +864,8 @@ class ProjectHistoryEngine:
                 revision -= stride
         start = state.revision - generation.initial_head.revision
         stop = head.revision - generation.initial_head.revision
-        if start < stop:
-            result = materialize_patches_from_state(
-                [item.patch for item in generation.index[start:stop]],
-                initial_state=state,
-                context=build_validation_context(
-                    generation.manifest, generation.initial, mode="replay"
-                ),
-            )
-            self.manager.require_writable(result.state)
-            state = result.state
+        for item in generation.index[start:stop]:
+            state = apply_state_delta(state, item.state_delta)
         size = retained_size(state)
         with _MEMORY_LOCK:
             generation.states[head.revision] = state
@@ -747,6 +888,7 @@ class ProjectHistoryEngine:
         generation = generations[target.key]
         revision = generation.result.state.revision if spec.revision == "head" else spec.revision
         head = generation.head(revision)
+        generation.prefix(head)
         self._resolved.generations = {key: weakref.ref(value) for key, value in generations.items()}
         self._resolved.head = head
         return head
@@ -766,13 +908,18 @@ class ProjectHistoryEngine:
         return prefix + [r for r in generation.index if r.after_head.revision <= head.revision]
 
     def _steps(
-        self, generation: _Generation, head: GraphHeadRef, *, from_revision: int = 1
+        self,
+        generation: _Generation,
+        head: GraphHeadRef,
+        *,
+        from_revision: int = 1,
+        use_store: bool = True,
     ) -> Iterator[StepRecord]:
         generation.prefix(head)
         start = max(generation.initial_head.revision, from_revision - 1)
         if start >= head.revision:
             return
-        state = self._state(generation, generation.head(start))
+        state = self._state(generation, generation.head(start), use_store=use_store)
         for item in generation.index[
             start - generation.initial_head.revision : head.revision
             - generation.initial_head.revision
@@ -811,11 +958,15 @@ class ProjectHistoryEngine:
         target: GraphTargetRef,
         *,
         refresh: bool = True,
+        use_store: bool = True,
         refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
     ) -> _Generation:
         """Capture metadata, base, index and head as one verified generation."""
         return self._pin(
-            [target], refresh=refresh, refresh_max_age_seconds=refresh_max_age_seconds
+            [target],
+            refresh=refresh,
+            use_store=use_store,
+            refresh_max_age_seconds=refresh_max_age_seconds,
         )[target.key]
 
     def projection(
@@ -827,12 +978,21 @@ class ProjectHistoryEngine:
         return generation.result, generation.index[max(0, from_revision - base - 1) : stop]
 
     def _prefix_result(
-        self, generation: _Generation, head: GraphHeadRef, *, state: GraphState | None = None
+        self,
+        generation: _Generation,
+        head: GraphHeadRef,
+        *,
+        state: GraphState | None = None,
+        use_store: bool = True,
     ) -> MaterializationResult:
+        if state is None:
+            state = self._state(generation, head, use_store=use_store)
+        if state.replay_failure is not None and state.replay_failure.revision > head.revision:
+            state = state.model_copy(update={"replay_status": "complete", "replay_failure": None})
         patches = [p for p in generation.result.patches if p.revision <= head.revision]
         accepted = [p for p in patches if p.admission == "accepted"]
         return MaterializationResult(
-            state if state is not None else self._state(generation, head),
+            state,
             {r: v for r, v in generation.result.reports.items() if r <= head.revision},
             [
                 op.repository.model_dump(mode="python", exclude_unset=True)
@@ -850,10 +1010,33 @@ class ProjectHistoryEngine:
         *,
         refresh: bool = True,
         refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
+        pending_patch_paths: list[Path] | None = None,
+        accepted_patch_observer: AcceptedPatchObserver | None = None,
     ) -> MaterializationResult:
-        return self._pin(
-            [target], refresh=refresh, refresh_max_age_seconds=refresh_max_age_seconds
-        )[target.key].result
+        """Write-side projection: optional cache I/O never delays canonical publication.
+
+        A pending tail uses the same replay core but is not retained or cached until
+        it appears in canonical inventory. Callers own the workspace publication fence.
+        """
+        generations = self._pin(
+            [target],
+            refresh=refresh,
+            refresh_max_age_seconds=refresh_max_age_seconds,
+            use_store=False,
+            pending_patch_paths=pending_patch_paths,
+        )
+        generation = generations[target.key]
+        if accepted_patch_observer is not None:
+            boundaries = []
+            if generation.inherited:
+                boundaries.append((generations["main"], generation.inherited[-1].after_head))
+            if generation.index:
+                boundaries.append((generation, generation.head(generation.result.state.revision)))
+            for source, head in boundaries:
+                for step in self._steps(source, head, use_store=False):
+                    if step.accepted:
+                        accepted_patch_observer(step.before_state, step.patch, step.after_state)
+        return generation.result
 
     def snapshots(
         self,

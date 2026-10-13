@@ -376,8 +376,14 @@ def test_branch_base_state_fails_closed_when_accepted_main_prefix_is_tampered(ma
         encoding="utf-8",
     )
 
+    state = branch.base_state()
+    assert state.replay_status == "degraded"
+    assert state.revision == 0
+    assert state.replay_failure is not None
+    assert state.replay_failure.code == "transition-head-mismatch"
+    assert branch.current_materialization().state == state
     with pytest.raises(ReplayHalted):
-        branch.base_state()
+        branch.append(_branch_patch("ev/refused"))
 
 
 def test_branch_open_rejects_identity_mismatch_and_unsafe_paths(manifest, tmp_path) -> None:

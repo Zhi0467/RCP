@@ -99,7 +99,6 @@ def test_append_hashes_only_new_patch_and_reuses_resolved_pin(history, monkeypat
 
     engine = history.history_engine
     engine.state_at(head(engine, "main@head"))
-    history.append(_branch_patch("ev/next"))
     reads = []
     original = Path.read_bytes
 
@@ -117,8 +116,12 @@ def test_append_hashes_only_new_patch_and_reuses_resolved_pin(history, monkeypat
 
     monkeypatch.setattr(Path, "read_bytes", read)
     monkeypatch.setattr(engine, "_capture", observe)
-    assert engine.state_at(head(engine, "main@head")).revision == 2
+    history.append(_branch_patch("ev/next"))
     assert reads == [history._patch_paths()[-1]]
+    reads.clear()
+    captures.clear()
+    assert engine.state_at(head(engine, "main@head")).revision == 2
+    assert reads == []
     assert len(captures) == 1
 
 
@@ -238,6 +241,7 @@ def test_checkpoint_restart_corruption_and_projection_parity(history, tmp_path, 
 def test_build_is_rechecked_before_publication(history, monkeypatch):
     import rcp.history.engine as module
 
+    history._history_engine = module.ProjectHistoryEngine(history)
     engine = history.history_engine
     original = module.materialize_patches_from_state
     appended = False
@@ -411,6 +415,7 @@ def test_canonical_append_lock_is_free_during_cold_publication(
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
     branch.append(_branch_patch("ev/branch"))
+    history._history_engine = module.ProjectHistoryEngine(history)
     engine = history.history_engine
     engine.configure_store(tmp_path / "cache", "project")
     engine.checkpoint_interval = 2
