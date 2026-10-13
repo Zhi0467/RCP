@@ -34,11 +34,8 @@ Extend that account owner rather than add a parallel one.
    Add a `limited` state beside `signed_in` and `signed_out`, with the same
    generation fence.
 2. **Passive observation first.** A turn that fails with `session_limit` marks
-   its account `limited`, as `provider_auth` marks it `signed_out` today. A
-   profile may also report account facts from its own structured stream (Claude
-   emits `rate_limit_event` with window utilization and `resetsAt`); profiles
-   that report nothing simply leave those fields empty. No provider prose is
-   parsed.
+   its account `limited`, as `provider_auth` marks it `signed_out` today. No
+   provider prose is parsed beyond the existing classification.
 3. **Park the same way.** While `limited`, the existing admission fence parks
    paid work for that account exactly as for `signed_out`.
 4. **Active probe only while limited.** One background loop in the backend
@@ -51,8 +48,8 @@ Extend that account owner rather than add a parallel one.
 6. **Opt-in auto-recover.** With auto-recover off, a successful probe only
    updates the account state the UI shows; parked work waits for the human.
    With it on, release runs automatically.
-7. **Projection.** The provider card shows the account state, and any usage
-   facts the profile reported, from the same owner.
+7. **Projection.** The provider card shows the account state from the same
+   owner. Usage numbers are out of scope for now.
 
 The monitor never calls RCP's HTTP API. It lives in the backend process, talks
 to the provider only by running its CLI on the execution host, and releases work
@@ -62,7 +59,10 @@ owner (Verify, sign-in, sign-out).
 ## Open decisions
 
 - Probe interval and whether it backs off.
-- Where auto-recover lives: per space, per account, or per project.
+- Where auto-recover lives in the UI. Candidates: one switch on the provider
+  account card (an account fact, set once), or a per-launch choice at the
+  entrypoints that spend budget (Experiment and Auto-research start, Agents,
+  the chat composer).
 - Whether a turn that succeeds while an account is `limited` (another task got
   through) clears the state without a probe.
 
