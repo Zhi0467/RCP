@@ -1,4 +1,5 @@
 import { BrowserToggle } from "../core/BrowserControls";
+import { OptionsFold } from "../core/OptionsFold";
 import {
   AgentConfigChip,
   AgentConfigControls,
@@ -398,11 +399,13 @@ export function ExperimentRunDetail({
       </div>
 
       {allowStart && !control.node_closed && (
-        <BrowserToggle
-          checked={browserRequested}
-          disabled={runDisabled || startDisabled || runBusy}
-          onChange={setBrowserRequested}
-        />
+        <OptionsFold count={Number(browserRequested)} label="Launch options" placement="inline">
+          <BrowserToggle
+            checked={browserRequested}
+            disabled={runDisabled || startDisabled || runBusy}
+            onChange={setBrowserRequested}
+          />
+        </OptionsFold>
       )}
       {launchOpen &&
         allowStart &&

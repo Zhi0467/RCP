@@ -2110,6 +2110,29 @@
     right: 0;
   }
 }
+/* A launch form opens the same menu in place, under its chip. */
+.options-fold-inline {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+.options-fold-inline > .chat-options-menu {
+  border-radius: 5px;
+  box-shadow: none;
+  justify-self: stretch;
+  min-width: 0;
+  position: static;
+}
+/* A host form's field styles must not stretch or restack an option row. */
+.chat-options-menu .chat-option > label {
+  display: flex;
+}
+.chat-options-menu input[type="checkbox"] {
+  flex: none;
+  margin: 0;
+  padding: 0;
+  width: auto;
+}
 .chat-options-menu > * {
   border-bottom: 1px solid var(--line);
   padding: 9px 10px;

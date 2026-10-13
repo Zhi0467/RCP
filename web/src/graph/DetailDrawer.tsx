@@ -5,6 +5,7 @@ import {
   experimentStartOverlap,
 } from "../experiments/experimentStart";
 import { BrowserToggle } from "../core/BrowserControls";
+import { OptionsFold } from "../core/OptionsFold";
 import {
   AgentConfigChip,
   AgentConfigControls,
@@ -764,9 +765,9 @@ export function DetailDrawer({
                           : "Start episode"}
                     </button>
                   </div>
-                  <div className="experiment-isolation" role="group" aria-label="Isolation">
-                    {/* On a branch the Experiment runs there; there is no branch from a branch. */}
-                    {graphTarget.kind === "main" && (
+                  {/* On a branch the Experiment runs there; there is no branch from a branch. */}
+                  {graphTarget.kind === "main" && (
+                    <div className="experiment-isolation" role="group" aria-label="Isolation">
                       <label>
                         <input
                           type="checkbox"
@@ -777,27 +778,33 @@ export function DetailDrawer({
                         />
                         On a new branch
                       </label>
-                    )}
-                    {graphTarget.kind === "main" && isolation.graph_isolation ? (
-                      <BranchNameField
-                        mode="experiment_loop"
-                        value={experimentBranch}
-                        disabled={nodeMutationDisabled || experimentRunBusy}
-                        refusal={experimentBranchNameRefusal}
-                        namesInUse={graphRefs?.map((ref) => ref.name)}
-                        onChange={setExperimentBranch}
-                      >
-                        {codeWorktreeToggle}
-                      </BranchNameField>
-                    ) : (
-                      codeWorktreeToggle
-                    )}
-                  </div>
-                  <BrowserToggle
-                    checked={browserRequested}
-                    disabled={nodeMutationDisabled || experimentRunBusy}
-                    onChange={setBrowserRequested}
-                  />
+                      {isolation.graph_isolation && (
+                        <BranchNameField
+                          mode="experiment_loop"
+                          value={experimentBranch}
+                          disabled={nodeMutationDisabled || experimentRunBusy}
+                          refusal={experimentBranchNameRefusal}
+                          namesInUse={graphRefs?.map((ref) => ref.name)}
+                          onChange={setExperimentBranch}
+                        />
+                      )}
+                    </div>
+                  )}
+                  <OptionsFold
+                    count={
+                      Number(browserRequested) +
+                      Number((inheritedIsolation ?? isolation).code_worktree)
+                    }
+                    label="Launch options"
+                    placement="inline"
+                  >
+                    <BrowserToggle
+                      checked={browserRequested}
+                      disabled={nodeMutationDisabled || experimentRunBusy}
+                      onChange={setBrowserRequested}
+                    />
+                    <div className="chat-option">{codeWorktreeToggle}</div>
+                  </OptionsFold>
                   {launchOpen && project && launchProfile && launchConfig && (
                     <AgentConfigControls
                       project={project}

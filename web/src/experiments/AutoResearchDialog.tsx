@@ -1,4 +1,5 @@
 import { BrowserToggle } from "../core/BrowserControls";
+import { OptionsFold } from "../core/OptionsFold";
 import {
   AgentConfigChip,
   AgentConfigControls,
@@ -333,11 +334,6 @@ export function AutoResearchDialog({
                   onChange={(event) => setInstruction(event.target.value)}
                 />
               </label>
-              <BrowserToggle
-                checked={browserRequested}
-                disabled={busy}
-                onChange={setBrowserRequested}
-              />
               <div className="campaign-isolation" role="group" aria-label="Isolation">
                 <BranchNameField
                   mode="auto_research"
@@ -346,7 +342,19 @@ export function AutoResearchDialog({
                   refusal={branchNameRefusal}
                   namesInUse={branchNamesInUse}
                   onChange={setBranch}
-                >
+                />
+              </div>
+              <OptionsFold
+                count={Number(browserRequested) + Number(codeWorktree)}
+                label="Launch options"
+                placement="inline"
+              >
+                <BrowserToggle
+                  checked={browserRequested}
+                  disabled={busy}
+                  onChange={setBrowserRequested}
+                />
+                <div className="chat-option">
                   <label>
                     <input
                       type="checkbox"
@@ -356,8 +364,8 @@ export function AutoResearchDialog({
                     />
                     Code worktree
                   </label>
-                </BranchNameField>
-              </div>
+                </div>
+              </OptionsFold>
             </>
           )}
           {!continued && launchOpen && project && launchProfile && launchConfig && (
