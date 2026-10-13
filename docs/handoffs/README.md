@@ -1,6 +1,6 @@
 # Active implementation handoffs
 
-No implementation handoff is active.
+- [Unified tab refresh](unified-tab-refresh.md): design only; waits for an explicit start.
 
 Unfinished agent-link work is tracked in issue #280.
 
