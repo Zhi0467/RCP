@@ -72,6 +72,7 @@ export function StagedNodeEditor({
       <label className="node-edit-field">
         <span>{base.primaryLabel}</span>
         <textarea
+          aria-label={base.primaryLabel}
           rows={3}
           value={text}
           disabled={disabled}
