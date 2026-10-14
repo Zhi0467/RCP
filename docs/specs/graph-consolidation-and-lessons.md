@@ -152,7 +152,9 @@ The row then offers **Open chat**, **Open Evidence**, **Open source** only when 
 source is a URL (opened in a new tab) or resolves to a configured repository file, and icon-only **Dismiss**. Addressing does not close it; Dismiss
 closes it for all members. Open or addressing flags give the Evidence node a red
 left edge and one icon-only flag action opening Inbox. Dismissed flags cannot be
-addressed; a missing Evidence node on main also refuses Address.
+addressed. Address also refuses when main's authoritative state, read at
+admission, holds no current Evidence node with that id. Like any node chat, it
+does not fence a transition that lands while the chat is being admitted.
 
 ## Operational lessons
 
