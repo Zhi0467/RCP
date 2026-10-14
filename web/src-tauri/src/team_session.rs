@@ -39,9 +39,10 @@ pub(crate) const MAX_SESSION_COOKIE_BYTES: usize = 4 * 1024;
 const SESSION_COOKIE_PREFIX: &str = "__Host-rcp_session=";
 const TEAM_SHELL_PROTOCOL_HEADER: &str = "RCP-Team-Shell-Protocol";
 // Protocol 3 carries reviewed commits; protocol 4 also preserves episode archive
-// state. A protocol-3 peer refuses that optional extension before source release.
+// state; protocol 5 also carries archived graph branches and branch names. Native
+// transfer preparation refuses record versions the negotiated protocol lacks.
 const TEAM_SHELL_PROTOCOL_MINIMUM: u32 = 3;
-const TEAM_SHELL_PROTOCOL_MAXIMUM: u32 = 4;
+pub(crate) const TEAM_SHELL_PROTOCOL_MAXIMUM: u32 = 5;
 const TEAM_ENROLLMENT_PATH: &str = "/api/team/enroll";
 const TEAM_SESSION_EXCHANGE_PATH: &str = "/api/team/session/exchange";
 const TEAM_PROJECT_CARDS_PATH: &str = "/api/projects";
@@ -147,6 +148,9 @@ pub struct EstablishedTeamSession {
     pub connection: TeamConnectionMetadata,
     pub identity: TeamIdentity,
     pub status: DesktopStatus,
+    /// Negotiated when the session was established; native relay gates on it.
+    #[serde(skip)]
+    pub protocol: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -821,7 +825,7 @@ impl TeamSessionState {
         install_team_session_cookie(window, &ready.local_origin, cookie).await?;
         self.acquire_cookies()?
             .insert(connection_id.to_string(), native_cookie);
-        self.record(connection, identity, &health)
+        self.record(connection, identity, &health, protocol)
     }
 
     /// Resume the session this desktop already holds for the connection, and
@@ -905,7 +909,7 @@ impl TeamSessionState {
             .await?;
         self.acquire_cookies()?
             .insert(connection_id.to_string(), request_cookie(&cookie)?);
-        self.record(connection, identity, &health)
+        self.record(connection, identity, &health, protocol)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1011,7 +1015,7 @@ impl TeamSessionState {
         install_team_session_cookie(window, &connection.local_origin, cookie).await?;
         self.acquire_cookies()?
             .insert(connection.connection_id.clone(), native_cookie);
-        self.record(connection, identity, &health)
+        self.record(connection, identity, &health, protocol)
     }
 
     fn record(
@@ -1019,11 +1023,13 @@ impl TeamSessionState {
         connection: TeamConnectionMetadata,
         identity: TeamIdentity,
         health: &TeamHealth,
+        protocol: u32,
     ) -> Result<EstablishedTeamSession, String> {
         let established = EstablishedTeamSession {
             status: desktop_status(&connection.local_origin, health),
             connection,
             identity,
+            protocol,
         };
         self.acquire()?.insert(
             established.connection.connection_id.clone(),
@@ -1970,7 +1976,7 @@ mod tests {
             assert!(error.contains(DESKTOP_SOURCE_COMMIT));
             assert!(error.contains(installed_server_commit(&older_server)));
         }
-        assert_eq!(select_team_shell_protocol(&health()).unwrap(), 4);
+        assert_eq!(select_team_shell_protocol(&health()).unwrap(), 5);
 
         let mut stale_desktop = health();
         stale_desktop.team_shell_protocol = Some(TeamShellProtocolRange {
@@ -2073,10 +2079,7 @@ mod tests {
         assert_eq!(fixture["selection_header"], TEAM_SHELL_PROTOCOL_HEADER);
         assert_eq!(
             fixture["desktop_range"],
-            serde_json::json!({
-                "minimum": TEAM_SHELL_PROTOCOL_MINIMUM,
-                "maximum": TEAM_SHELL_PROTOCOL_MAXIMUM,
-            })
+            serde_json::json!({"minimum": 3, "maximum": 4})
         );
         let mut server = health();
         server.team_shell_protocol =
@@ -2087,6 +2090,32 @@ mod tests {
             maximum: 3,
         });
         assert_eq!(validate_health(&server, None).unwrap(), 3);
+    }
+
+    #[test]
+    fn protocol_five_fixture_preserves_protocol_four_connectivity() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/team_shell_protocol_v5.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture["protocol_version"], 5);
+        assert_eq!(fixture["selection_header"], TEAM_SHELL_PROTOCOL_HEADER);
+        assert_eq!(
+            fixture["desktop_range"],
+            serde_json::json!({
+                "minimum": TEAM_SHELL_PROTOCOL_MINIMUM,
+                "maximum": TEAM_SHELL_PROTOCOL_MAXIMUM,
+            })
+        );
+        let mut server = health();
+        server.team_shell_protocol =
+            Some(serde_json::from_value(fixture["server_range"].clone()).unwrap());
+        assert_eq!(validate_health(&server, None).unwrap(), 5);
+        server.team_shell_protocol = Some(TeamShellProtocolRange {
+            minimum: 1,
+            maximum: 4,
+        });
+        assert_eq!(validate_health(&server, None).unwrap(), 4);
     }
 
     #[test]
