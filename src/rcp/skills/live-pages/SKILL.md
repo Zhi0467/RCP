@@ -2,7 +2,7 @@
 id: live-pages
 kind: skill
 label: Live pages
-version: 1.4.0
+version: 1.5.0
 description: Build self-contained HTML artifacts that redraw from bounded graph, job, node, episode, file, and folder snapshots delivered by RCP.
 dependencies:
 ---
@@ -28,6 +28,14 @@ unavailable reads explicitly, and retain the last successful display while a
 source has an error. A truncated file is a bounded window, not the entire run.
 Never turn a missing observation into a zero. Data sent to this page may leave
 through frame navigation; the sandbox does not promise zero network access.
+
+## Growing sources
+
+For sources that keep growing during a run, append records and read the tail,
+or maintain a small downsampled summary. Never have the page read an
+ever-growing file whole. Keep each read within the limits listed in the
+artifact contract. Label a recent window or downsampled view so the reader
+knows what it shows.
 
 ## Inside the reply
 
