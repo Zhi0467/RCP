@@ -1696,7 +1696,9 @@ bindings.
 (`POST {artifact_id, branch_id}`), and unpins (`DELETE /{artifact_id}?branch_id=`)
 the acting member's pinned views for one graph target. Writes are idempotent and
 recheck membership; pin eligibility, the limit, and Keep commit together. Artifact
-state reports `pin_branch_id`, `can_pin`, and `pinned` for the acting member.
+state reports `pin_branch_id`, its display name `pin_branch_name`, `can_pin`,
+and `pinned` for the acting member. A project route with `view=artifacts` may
+carry `pin=<artifact_id>`; the shell opens that pin once its target's pins load.
 Pin lists refresh through the `artifacts` watermark family.
 
 The authenticated artifact shell pins both HTML and live reads to one version,

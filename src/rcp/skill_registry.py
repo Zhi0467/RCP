@@ -23,6 +23,8 @@ _OFFICIAL_PACKAGE_SPECS: tuple[tuple[SkillKind, str, str], ...] = (
     ("skill", "experiment-causality", "experiment-causality/SKILL.md"),
     ("skill", "episode-report", "episode-report/SKILL.md"),
     ("skill", "live-pages", "live-pages/SKILL.md"),
+    ("skill", "ml-run-preflight", "ml-run-preflight/SKILL.md"),
+    ("skill", "ml-result-rigor", "ml-result-rigor/SKILL.md"),
     ("workflow", "research-graph-audit", "workflows/research-graph-audit/WORKFLOW.md"),
     ("workflow", "graph-consolidation", "workflows/graph-consolidation/WORKFLOW.md"),
 )

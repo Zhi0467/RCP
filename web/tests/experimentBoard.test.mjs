@@ -204,6 +204,19 @@ test("experiment links round-trip through the project hash parser", () => {
   assert.equal(projectHashAfterViewChange("#/projects/project-one", "attention"), null);
 });
 
+test("a pin link opens Artifacts on the pin's own target", async () => {
+  const { projectViewHash, graphTargetFromHash } = await server.ssrLoadModule(
+    "/src/core/graphTarget.ts",
+  );
+  const href = projectViewHash("p", { kind: "branch", branch_id: "b1" }, "artifacts", {
+    pinId: "a",
+  });
+  assert.equal(parseProjectHash(href).pinId, "a");
+  assert.equal(parseProjectHash(href).view, "artifacts");
+  assert.deepEqual(graphTargetFromHash(href), { kind: "branch", branch_id: "b1" });
+  assert.equal(parseProjectHash("#/projects/p?view=overview&pin=a").pinId, undefined);
+});
+
 test("branch Experiment links carry the exact child episode and target identity", () => {
   const branchId = "parent/episode";
   const childEpisode = episode({

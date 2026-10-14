@@ -52,7 +52,19 @@ The workflow consolidates and rewrites unreadable asserted nodes under graph
 writing rules, and defines shared terms in the glossary. It only suggests accepted
 node rewrites, since editing resets standing. Existing protected beliefs still
 require [Proposals](authority-and-proposals.md#protected-belief-proposals).
+
+Its charter is "Tidy; do not run experiments." After the audit, a literature
+pass uses the turn's web search for recent work bearing on open
+ResearchQuestions and Hypotheses, recording each query, date, source, and
+whether the full text or only the abstract was read. It prefers changes to
+existing records and Suggestions over new nodes; qualifying an existing
+Evidence edge to a protected belief, or undermining that belief, goes through
+a Proposal. It may add `external_publication`
+Evidence with assessed edges. Its authority is otherwise unchanged.
+
 It finishes with `consolidation-report.html` in the ordinary artifact root.
+A **Literature** heading lists every literature change, new paper, search
+record, and access gap, and says when nothing new was found.
 
 **Why:** expiring standing authorization makes routine maintenance possible while
 bounding each night to one invocation. Ordinary Work on main avoids a new episode
