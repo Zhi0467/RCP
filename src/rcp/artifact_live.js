@@ -8,6 +8,8 @@ let lastLive = null;
 // A shell is bound to one artifact/version/target; a new shell starts cacheless.
 let graphCache = null;
 let graphIds = new Set();
+// Set when a cached graph would push a delivery past the message cap.
+let graphFullRead = false;
 let liveDelay = defaultLiveDelay;
 function markGraphStale(stale) {
   liveFrame.dataset.graphStale = String(stale);
@@ -19,9 +21,10 @@ async function refreshLive() {
   if (document.hidden || liveBusy || !liveReady || liveFinished) return;
   liveBusy = true;
   try {
-    const url = graphCache
-      ? `${liveUrl}${liveUrl.includes("?") ? "&" : "?"}head=${encodeURIComponent(graphCache.head)}`
-      : liveUrl;
+    const url =
+      graphCache && !graphFullRead
+        ? `${liveUrl}${liveUrl.includes("?") ? "&" : "?"}head=${encodeURIComponent(graphCache.head)}`
+        : liveUrl;
     const response = await fetch(url, { credentials: "same-origin", cache: "no-store" });
     if (!response.ok) throw new Error("Live data unavailable");
     const value = await response.json();
@@ -37,6 +40,12 @@ async function refreshLive() {
         value.snapshots = value.snapshots.map((snapshot) =>
           snapshot === graph ? graphCache : snapshot,
         );
+        // The server measured the unchanged marker; re-measure with the cached
+        // graph and let a full read decide (it fits, or is message_too_large).
+        if (new TextEncoder().encode(JSON.stringify(value)).length > liveMessageMaxBytes) {
+          graphFullRead = true;
+          throw new Error("message_too_large");
+        }
         markGraphStale(false);
       } else if (
         typeof graph.head === "string" &&
@@ -45,6 +54,7 @@ async function refreshLive() {
       ) {
         graphCache = graph;
         graphIds = new Set(graph.nodes.map((node) => node.id));
+        graphFullRead = false;
         markGraphStale(false);
       } else throw new Error("Invalid graph snapshot");
     }

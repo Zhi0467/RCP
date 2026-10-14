@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import test from "node:test";
 
 const script = readFileSync(new URL("../../src/rcp/artifact_live.js", import.meta.url), "utf8");
-function shell() {
+function shell(liveMessageMaxBytes = 4 * 1024 * 1024) {
   const delivered = [],
     forwarded = [],
     requests = [],
@@ -27,6 +27,8 @@ function shell() {
     liveArtifactId: "trusted",
     liveUrl: "/live",
     defaultLiveDelay: 2000,
+    liveMessageMaxBytes,
+    TextEncoder,
     clearTimeout() {},
     setTimeout() {},
     document: {
@@ -80,6 +82,22 @@ test("only complete graph caches advance heads; errors retain polling and stale 
   await fresh.refresh(message({ kind: "graph", head: "two", unchanged: true }));
   assert.equal(fresh.requests[0].includes("head="), false);
   assert.equal(fresh.delivered.length, 0);
+});
+
+test("a cached graph that pushes a delivery past the cap forces a full read instead", async () => {
+  const s = shell(400);
+  await s.refresh(message(full("one")));
+  const rows = { kind: "file", path: "/f", rows: ["x".repeat(300)] };
+  await s.refresh({
+    ...message({ kind: "graph", head: "one", unchanged: true }),
+    snapshots: [{ kind: "graph", head: "one", unchanged: true }, rows],
+  });
+  assert.equal(s.delivered.length, 1);
+  assert.equal(s.frame.dataset.graphStale, "true");
+  await s.refresh(message(full("one")));
+  assert.equal(s.requests.at(-1), "/live");
+  await s.refresh(message(full("one")));
+  assert.equal(s.requests.at(-1), "/live?head=one");
 });
 
 test("shell accepts only its child and cached ids, supplies trusted identity and exact app origin", async () => {

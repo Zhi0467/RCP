@@ -32,6 +32,7 @@ from rcp.limits import (
     ARTIFACT_INLINE_MAX_HEIGHT_PX,
     ARTIFACT_PREVIEW_MAX_BYTES,
     ARTIFACT_PREVIEW_MAX_LINES,
+    LIVE_ARTIFACT_MESSAGE_MAX_BYTES,
     LIVE_ARTIFACT_REFRESH_SECONDS,
 )
 
@@ -249,6 +250,7 @@ def artifact_viewer_document(
             + json.dumps(descriptor.artifact_id)
             + ";\n"
             + f"const defaultLiveDelay={LIVE_ARTIFACT_REFRESH_SECONDS * 1000};\n"
+            + f"const liveMessageMaxBytes={LIVE_ARTIFACT_MESSAGE_MAX_BYTES};\n"
             + importlib.resources.files("rcp").joinpath("artifact_live.js").read_text("utf-8")
         )
     # The RCP panel shows the name and state; the shell keeps a bar only for its actions.
@@ -338,6 +340,7 @@ def _inline_viewer_document(
             + json.dumps(descriptor.artifact_id)
             + ";\n"
             + f"const defaultLiveDelay={LIVE_ARTIFACT_REFRESH_SECONDS * 1000};\n"
+            + f"const liveMessageMaxBytes={LIVE_ARTIFACT_MESSAGE_MAX_BYTES};\n"
             + resources.joinpath("artifact_live.js").read_text("utf-8")
         )
     script_markup = "".join(f"<script>(()=>{{{script}}})();</script>" for script in scripts)

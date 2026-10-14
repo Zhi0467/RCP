@@ -134,7 +134,9 @@ filters and draws it, so no query language exists. A declaration has at most one
 Each graph snapshot is full, unchanged, or an error. It carries an opaque head
 for its target that also changes across restart and restore. The shell sends the
 head of the last complete graph it cached, and the server omits graph data when
-it is unchanged. Byte caps in `limits.py` bound the graph and the whole message.
+it is unchanged. Byte caps in `limits.py` bound the graph and the whole message;
+the shell re-measures a delivery rebuilt from its cache and, if it would exceed
+the message cap, drops the head so a full read decides.
 Over a cap, the read is an error: the shell keeps its last complete graph, marks
 it stale, and keeps polling until the graph fits again. Nodes and edges are never
 silently dropped. An oversized saved final, or declared identities that alone
