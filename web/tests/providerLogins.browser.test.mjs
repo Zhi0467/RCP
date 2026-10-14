@@ -59,6 +59,46 @@ test("a pending sign-in keeps polling past a transient status failure", async ()
   }
 });
 
+test("a pending sign-in keeps polling while the app re-renders", async () => {
+  const liveServer = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 0, hmr: false },
+  });
+  let browser;
+  try {
+    await liveServer.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    let polls = 0;
+    await page.route("**/api/providers/codex/logins/sign-in/login-1", (route) => {
+      polls += 1;
+      return route.fulfill({
+        json: {
+          login_id: "login-1",
+          provider: "codex",
+          host: "",
+          state: "succeeded",
+          user_code: null,
+          verification_url: null,
+          detail: null,
+          started_at: "2026-09-14T00:00:00Z",
+        },
+      });
+    });
+    await page.goto(
+      `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/providerLoginRow.html`,
+    );
+    // Re-render faster than the poll interval, as the app's scheduler does.
+    await page.evaluate(() => window.rerenderEvery(300));
+    await page.waitForFunction(() => window.loginChanges === 1, null, { timeout: 8000 });
+    assert.equal(polls, 1);
+  } finally {
+    await browser?.close();
+    await liveServer.close();
+  }
+});
+
 test("a settled sign-in stops contradicting the account state the row now shows", async () => {
   const liveServer = await createServer({
     root: new URL("..", import.meta.url).pathname,

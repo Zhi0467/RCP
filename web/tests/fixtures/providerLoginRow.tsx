@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ProviderLoginRow } from "../../src/projects/ProviderLogins";
 import type { ProviderLoginAccount } from "../../src/core/types";
@@ -8,6 +8,7 @@ declare global {
   interface Window {
     loginChanges: number;
     setLoginAccount: (patch: Partial<ProviderLoginAccount>) => void;
+    rerenderEvery: (ms: number) => void;
   }
 }
 
@@ -43,7 +44,16 @@ const initial: ProviderLoginAccount = {
 
 function Harness() {
   const [account, setAccount] = useState(initial);
+  const [rerenderMs, setRerenderMs] = useState(0);
+  const [, setTick] = useState(0);
   window.setLoginAccount = (patch) => setAccount((current) => ({ ...current, ...patch }));
+  // Stands in for the app's once-a-second scheduler re-render.
+  window.rerenderEvery = setRerenderMs;
+  useEffect(() => {
+    if (!rerenderMs) return;
+    const timer = setInterval(() => setTick((tick) => tick + 1), rerenderMs);
+    return () => clearInterval(timer);
+  }, [rerenderMs]);
   return (
     <ProviderLoginRow
       account={account}

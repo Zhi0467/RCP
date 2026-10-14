@@ -433,17 +433,16 @@ episodes on the same Experiment, graph target, and execution host. Their origin
 remains intact, but a later episode cannot revive their delivery. Reconciliation
 of a historical Stop never retires a replacement episode's observations.
 
-If no unresolved task remains, Stop settles immediately. While the current turn
-is queued, running, or pausing, Runs shows **Stopping gracefully** and recommends
-waiting. If that turn pauses, fails, or is interrupted, the episode shows
-**Needs action** and only the exact available Resume, Retry, or Switch-provider
-recovery. Recovery cannot clear Stop or reenable watcher delivery.
+If no live task remains, Stop settles immediately. While the current turn is
+queued, running, or pausing, Runs shows **Stopping gracefully** and recommends
+waiting. A turn that is paused, failed, or interrupted has nothing in flight to
+finish, and nobody resumes a turn they asked to stop: Stop durably abandons its
+recovery, keeps its history, and settles. An Auto-research orchestrator's Stop
+of a child that hit a provider limit therefore frees the Experiment at once.
 
 Stop and pause do not cancel compute jobs. Stop does not cancel external work,
 delete watcher history, edit Experiment status, create or close an attempt, or
-discard a valid Patch. If the exact saved
-session is unusable, Stop may durably abandon only recovery of that already
-terminal task while preserving history, then settle.
+discard a valid Patch.
 
 Budget exhaustion starts no automatic wake. Pending completion remains visible
 and unconsumed. Once the final operational turn settles, non-Stop endings enter

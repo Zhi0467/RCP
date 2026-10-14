@@ -99,12 +99,19 @@ export function runsEpisodeCards(
   episodes: Episode[],
   currentExperimentEpisodeIds: ReadonlySet<string>,
   showArchived = false,
+  openedEpisodeId: string | null = null,
 ): Episode[] {
   // A continuation chain is one run whose newest member is the card, so the
   // newest member decides the chain's visibility; archiving it hides the run.
+  // An Auto-research child is listed on its orchestrator's card; it gets its
+  // own card only while a route opens it from there.
   return [...episodes]
     .sort(compareEpisodesNewestFirst)
     .filter((episode) => !episode.continued_by_episode_id)
+    .filter(
+      (episode) =>
+        !episode.auto_research_parent_episode_id || episode.episode_id === openedEpisodeId,
+    )
     .filter(
       (episode) =>
         (!episode.archived || showArchived) &&

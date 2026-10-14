@@ -113,6 +113,12 @@ export function ProviderLoginRow({
   const [token, setToken] = useState("");
   const [signIn, setSignIn] = useState<ProviderSignInStatus | null>(account.sign_in);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The parent passes a new callback on every render, and the app re-renders
+  // about once a second; depending on it restarted the poll before it ever fired.
+  const onChangedRef = useRef(onChanged);
+  useEffect(() => {
+    onChangedRef.current = onChanged;
+  }, [onChanged]);
 
   // A sign-in another member started is running too; follow it the same way.
   // A settled one is history once the server stops reporting it: the account
@@ -139,7 +145,7 @@ export function ProviderLoginRow({
         if (status.state === "pending") {
           pollTimer.current = setTimeout(() => void poll(), SIGN_IN_POLL_MS);
         } else {
-          await onChanged();
+          await onChangedRef.current();
         }
       } catch (failure) {
         if (cancelled) return;
@@ -159,7 +165,7 @@ export function ProviderLoginRow({
       cancelled = true;
       if (pollTimer.current) clearTimeout(pollTimer.current);
     };
-  }, [account.provider, onChanged, signIn]);
+  }, [account.provider, signIn]);
 
   async function run(kind: NonNullable<typeof busy>, action: () => Promise<string | null>) {
     setBusy(kind);

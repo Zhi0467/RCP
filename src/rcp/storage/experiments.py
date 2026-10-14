@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import sqlite3
 import uuid
 from collections.abc import Iterable
@@ -2763,6 +2762,7 @@ class ExperimentStoreMixin(StoreMixinBase):
         """Reconcile a persisted stop once its authorized turn is no longer live."""
 
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             selected = self._experiment_episode_for_stop(
                 connection,
                 project_id,
@@ -2772,59 +2772,12 @@ class ExperimentStoreMixin(StoreMixinBase):
             )
             if selected is None:
                 return None
-            selected_episode_id, selected_target = selected
-            requested = self._experiment_episode_row(connection, selected_episode_id)
-            bindings: dict[str, _ExperimentResumeBinding] = {}
-            if (
-                requested is not None
-                and requested["stop_requested_at"] is not None
-                and not requested["session_diagnostic"]
-            ):
-                for row in self._experiment_stop_unresolved_tasks(
-                    connection, project_id, control_node_id, selected_episode_id
-                ):
-                    operation_id = str(row["operation_id"])
-                    if self._experiment_episode_recovery_context_problem(connection, operation_id):
-                        break
-                    if row["status"] in {"paused", "failed", "interrupted"}:
-                        binding = self._experiment_episode_resume_binding(connection, operation_id)
-                        if isinstance(binding, str):
-                            break
-                        bindings[operation_id] = binding
-        # A host probe may take longer than SQLite's writer timeout. Hold no
-        # transaction while checking, then match each result to its current binding.
-        checked_bindings: dict[str, tuple[_ExperimentResumeBinding, str | None]] = {}
-        for operation_id, binding in bindings.items():
-            try:
-                diagnostic = binding.workspace_problem()
-                checked_bindings[operation_id] = (binding, diagnostic)
-                if diagnostic:
-                    break
-            except OSError:
-                logging.getLogger(__name__).warning(
-                    "Stop settlement could not check task %s's saved workspace; "
-                    "its recovery remains pending.",
-                    operation_id,
-                    exc_info=True,
-                )
-                return self.experiment_episode(selected_episode_id)
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            selected = self._experiment_episode_for_stop(
-                connection,
-                project_id,
-                control_node_id,
-                episode_id=selected_episode_id,
-                graph_target=selected_target,
-            )
-            if selected is None:
-                return None
+            selected_episode_id = selected[0]
             quiescent = self._settle_experiment_loop_stop(
                 connection,
                 project_id,
                 control_node_id,
                 selected_episode_id,
-                checked_bindings,
             )
             if quiescent:
                 self._mark_episode_stop_skipped_in_connection(
@@ -2868,15 +2821,15 @@ class ExperimentStoreMixin(StoreMixinBase):
         project_id: str,
         control_node_id: str,
         episode_id: str,
-        checked_bindings: dict[str, tuple[_ExperimentResumeBinding, str | None]],
     ) -> bool:
-        """Terminalize this episode's observers once its authorized turn is resolved.
+        """Terminalize this episode's observers once its authorized turn is no longer live.
 
-        "Resolved" is the same predicate the runtime calls `task_active`, not just
-        "not running": a turn that paused or failed is still the authorized turn
-        the human may Resume, so the loop keeps reading Stopping until it reaches
-        a terminal state. A claimed watcher keeps its notification provenance,
-        but becomes stopped once the task it woke has finished successfully.
+        Stop waits only for a turn that is queued, running, or pausing. A turn that
+        already paused, failed, or was interrupted has nothing in flight to finish,
+        and nobody resumes a turn they asked to stop, so Stop abandons its recovery
+        (history stays inspectable) and settles. A claimed watcher keeps its
+        notification provenance, but becomes stopped once the task it woke has
+        finished successfully.
         """
 
         requested = self._experiment_episode_row(connection, episode_id)
@@ -2891,37 +2844,7 @@ class ExperimentStoreMixin(StoreMixinBase):
             connection, project_id, control_node_id, episode_id
         )
         if unresolved:
-            diagnostic = requested["session_diagnostic"]
-            if not diagnostic:
-                for row in unresolved:
-                    diagnostic = self._experiment_episode_recovery_context_problem(
-                        connection, str(row["operation_id"])
-                    )
-                    if not diagnostic and row["status"] in {"paused", "failed", "interrupted"}:
-                        operation_id = str(row["operation_id"])
-                        binding = self._experiment_episode_resume_binding(connection, operation_id)
-                        if isinstance(binding, str):
-                            diagnostic = binding
-                        else:
-                            checked = checked_bindings.get(operation_id)
-                            if checked is None or checked[0] != binding:
-                                # Resume changed the session/stage during the probe;
-                                # leave Stop pending for a check of that exact binding.
-                                return False
-                            diagnostic = checked[1]
-                    if diagnostic:
-                        break
-                if diagnostic:
-                    now = self.now()
-                    connection.execute(
-                        "UPDATE experiment_episode_state "
-                        "SET session_diagnostic = ?, updated_at = ? WHERE episode_id = ?",
-                        (diagnostic, now, episode_id),
-                    )
-            abandonable = bool(diagnostic) and all(
-                row["status"] in {"paused", "failed", "interrupted"} for row in unresolved
-            )
-            if not abandonable:
+            if any(row["status"] not in {"paused", "failed", "interrupted"} for row in unresolved):
                 return False
             now = self.now()
             for row in unresolved:
@@ -2936,15 +2859,14 @@ class ExperimentStoreMixin(StoreMixinBase):
                 if already_abandoned is not None:
                     continue
                 detail = (
-                    "Stop loop abandoned recovery of this terminal task because its saved "
-                    "episode session cannot be continued. The task and all history remain "
-                    "inspectable."
+                    "Stop loop abandoned recovery of this stopped task. The task and all "
+                    "history remain inspectable."
                 )
                 self._insert_agent_task_receipt(
                     connection,
                     str(row["operation_id"]),
                     "experiment_recovery_abandoned",
-                    self._bounded_receipt_payload({"episode_id": episode_id, "reason": diagnostic}),
+                    self._bounded_receipt_payload({"episode_id": episode_id, "reason": "stopped"}),
                     tier="summary",
                     created_at=now,
                 )
@@ -3080,7 +3002,12 @@ class ExperimentStoreMixin(StoreMixinBase):
                   AND episode.ending IS NULL
                   AND state.session_diagnostic IS NULL
                   AND task.visible = 1
-                  AND task.status IN ('paused', 'failed', 'interrupted')
+                  -- Only a turn the restart interrupted after Stop was still live
+                  -- then; one already paused or failed settles instead (Stop). Both
+                  -- stamps are AppStoreBase.now() UTC ISO text, which orders losslessly;
+                  -- julianday() would round microseconds away.
+                  AND task.status = 'interrupted'
+                  AND task.finished_at >= episode.stop_requested_at
                   AND NOT EXISTS (
                       SELECT 1 FROM graph_runs AS child
                       WHERE child.parent_operation_id = task.operation_id
