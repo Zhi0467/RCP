@@ -11,6 +11,7 @@ from rcp.limits import EVIDENCE_FLAG_FINDING_MAX_CHARS
 from rcp.service import ProjectService
 from rcp.storage import AppStore
 from rcp.storage.evidence_flags import EvidenceFlagError
+from rcp.transport import StateUnavailable
 
 RCP_FLAG_KEY_PREFIX = "rcp:"
 
@@ -100,8 +101,17 @@ def hold_consolidation_additions(
     task = store.agent_task(operation_id)
     if task is None:
         return
-    state = service.history.state()
-    for receipt in store.list_consolidation_apply_receipts(operation_id):
+    try:
+        state = service.history.state()
+        receipts = store.list_consolidation_apply_receipts(operation_id)
+    except (OSError, StateUnavailable, ValueError) as exc:
+        store.record_agent_task_event(
+            operation_id,
+            f"Added Evidence could not be held for review yet: {exc}",
+            level="warning",
+        )
+        return
+    for receipt in receipts:
         result = receipt["result"] or {}
         if result.get("status") != "ok" or result["result"].get("disposition") != "applied":
             continue

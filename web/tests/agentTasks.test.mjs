@@ -811,6 +811,27 @@ test("omission-only turns survive reconstruction and persisted history reconcili
   }
 });
 
+test("a failed turn with a persisted human message keeps its error row", () => {
+  const failed = task({
+    operation_id: "failed",
+    request: {},
+    status: "failed",
+    error: "Provider disconnected.",
+  });
+  const human = {
+    message_id: "human",
+    role: "user",
+    operation_id: "failed",
+    text: "Run it",
+    timestamp: failed.created_at,
+  };
+  const lines = reconcileChatHistoryArtifacts([human], [failed]);
+  assert.deepEqual(
+    lines.map(({ role }) => role),
+    ["human", "error"],
+  );
+});
+
 test("artifact edit tasks follow their resolved chat and exclude the orchestrator thread", () => {
   const tasks = [
     task({

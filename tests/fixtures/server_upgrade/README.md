@@ -104,3 +104,7 @@ by the exact boundary source from the preceding immutable fixture.
 `pre-research-view-pins-v23-0b85be8` retains the last shape before personal
 Research view pins (storage migration 50), ending at migration 49. It is built
 by the exact boundary source from the preceding immutable fixture.
+
+`pre-evidence-flags-v24-b063a21` retains the last shape before nightly
+consolidation gained Evidence flags (storage migration 51), ending at migration
+50. It is built by the exact boundary source from the preceding immutable fixture.

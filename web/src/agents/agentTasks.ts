@@ -237,7 +237,9 @@ export function reconcileChatHistoryArtifacts(
         artifacts.length > 0 ||
         artifactOmissions !== undefined ||
         artifactEditOutcomes.length > 0 ||
-        task.result?.turn_outcome)
+        task.result?.turn_outcome ||
+        // A failed turn keeps its error row, which carries its Retry.
+        (task.failed && task.error))
     ) {
       lines.push(...reconstructTaskTranscript([task]).filter((line) => line.role !== "human"));
     }
