@@ -484,6 +484,11 @@ class EpisodeStoreMixin(StoreMixinBase):
                       AND status IN ('completed', 'stopped')
                       AND wrapup_state NOT IN ('pending', 'running')
                       AND julianday(COALESCE(ended_at, updated_at)) >= julianday(?)
+                ) AS member
+                -- A continuation chain is one run; only its newest member is listed.
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM episodes AS next
+                    WHERE next.continues_episode_id = member.episode_id
                 )
                 ORDER BY created_at DESC, episode_id DESC
                 """,

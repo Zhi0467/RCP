@@ -612,30 +612,24 @@ export function ProjectSettings({
     <section className="settings-page" data-settings-level="project">
       <AgentUsageWidgets usage={usage} providers={project.providers} />
 
-      {spaceKind === "personal" && onMovePersonalProjectToTeam ? (
-        <section className="settings-section project-home-settings">
-          <header>
-            <span>
-              <GitBranch size={16} />
-            </span>
-            <h2>Project home</h2>
-          </header>
-          <button
-            className="button secondary"
-            type="button"
-            disabled={writesDisabled}
-            onClick={() => onMovePersonalProjectToTeam(project.id)}
-          >
-            <Server size={14} /> Move to team space
-          </button>
-        </section>
-      ) : null}
       <ProjectMembers
         key={project.id}
         projectId={project.id}
         identity={identity}
         api={api}
         onLeft={onLeftProject}
+        headerAction={
+          spaceKind === "personal" && onMovePersonalProjectToTeam ? (
+            <button
+              className="button secondary project-move-to-team"
+              type="button"
+              disabled={writesDisabled}
+              onClick={() => onMovePersonalProjectToTeam(project.id)}
+            >
+              <Server size={14} /> Move to team space
+            </button>
+          ) : null
+        }
       />
       <article className="settings-section boundary-settings">
         <header>

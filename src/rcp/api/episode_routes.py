@@ -767,8 +767,9 @@ def episode_messages(
     store: StoreDependency,
 ) -> list[AutoResearchMessageRecord]:
     episode = _episode_for_http(store, catalog, project_id, episode_id)
+    # Every Runs card reads its episode with its mail; an Experiment loop has none.
     if episode.mode != "auto_research":
-        raise HTTPException(status_code=409, detail="This episode has no Auto-research mail.")
+        return []
     return store.auto_research_messages(episode.episode_id)
 
 

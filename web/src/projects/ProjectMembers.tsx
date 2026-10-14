@@ -1,5 +1,5 @@
 import { Users, RotateCw } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import type { IdentityResponse, SpaceUserSummary } from "../core/types";
 
 import { resourceKeyId } from "../core/resourceStore";
@@ -11,6 +11,8 @@ interface Props {
   identity: IdentityResponse | null;
   api: <T>(path: string, init?: RequestInit) => Promise<T>;
   onLeft: () => void;
+  /** A project-level control that sits at the header's trailing edge. */
+  headerAction?: ReactNode;
 }
 
 /**
@@ -40,7 +42,7 @@ export function inviteUnavailableReason(
  * the one refusal that has to explain itself, because the control is otherwise
  * identical to every other member's.
  */
-export function ProjectMembers({ projectId, identity, api, onLeft }: Props) {
+export function ProjectMembers({ projectId, identity, api, onLeft, headerAction }: Props) {
   const { store } = useRefreshRuntime();
   const profile = membersProfile(projectId);
   const resource = useProjectResource(profile);
@@ -113,6 +115,7 @@ export function ProjectMembers({ projectId, identity, api, onLeft }: Props) {
           <Users size={16} />
         </span>
         <h2>Members</h2>
+        {headerAction}
         {error || resource.error ? (
           <button
             type="button"

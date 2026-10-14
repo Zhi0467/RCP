@@ -952,6 +952,34 @@ def test_exact_episode_query_reaches_a_parent_beyond_the_interleaved_list_bound(
     assert [episode["episode_id"] for episode in exact.json()] == [target_id]
 
 
+def test_an_experiment_loop_reads_empty_mail_and_refuses_new_mail(manifest, tmp_path) -> None:
+    # Runs reads every episode with its mail, so a loop's empty inbox is not an error.
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    episode_id = str(uuid.uuid4())
+    now = datetime.now(UTC).isoformat()
+    with store.connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO episodes (
+                episode_id, project_id, mode, control_node_id, status,
+                invocation_ceiling, created_at, updated_at
+            ) VALUES (?, ?, 'experiment_loop', 'experiment/loop', 'running', 1, ?, ?)
+            """,
+            (episode_id, project_id, now, now),
+        )
+    client = signed_in_client(app)
+    route = f"/api/projects/{project_id}/episodes/{episode_id}/messages"
+
+    inbox = client.get(route)
+    sent = client.post(route, json={"body": "Hello"})
+
+    assert inbox.status_code == 200, inbox.text
+    assert inbox.json() == []
+    assert sent.status_code == 409
+
+
 def test_episode_mail_is_durable_when_immediate_delivery_fails(
     manifest,
     tmp_path,

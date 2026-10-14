@@ -1304,10 +1304,16 @@ export function ExecutionView({
   // current archive preference, including for main cards built from that cache.
   const episodesById = new Map(episodes.map((episode) => [episode.episode_id, episode]));
   indexedEntries.forEach((entry) => episodesById.set(entry.episode.episode_id, entry.episode));
+  const selectedExperimentEpisodeId = selectedExperimentId
+    ? (exactExperimentRoute?.episode_id ??
+      experimentControl[selectedExperimentId]?.episode_id ??
+      null)
+    : null;
   const orderedEpisodes = runsEpisodeCards(
     [...episodesById.values()],
     new Set(experimentRuns.keys()),
     showArchived,
+    selectedExperimentEpisodeId,
   );
   const selectedAutoResearchEpisodeId =
     orderedEpisodes.find(
@@ -1318,11 +1324,6 @@ export function ExecutionView({
     )?.episode_id ?? requestedAutoResearchEpisodeId;
   const visibleEpisodes = orderedEpisodes.filter((episode) => !episode.archived);
   const archivedEpisodes = orderedEpisodes.filter((episode) => episode.archived);
-  const selectedExperimentEpisodeId = selectedExperimentId
-    ? (exactExperimentRoute?.episode_id ??
-      experimentControl[selectedExperimentId]?.episode_id ??
-      null)
-    : null;
   const requestedEpisodeId =
     selectedAutoResearchEpisodeId ?? exactExperimentRoute?.episode_id ?? null;
   const requestedEpisode = requestedEpisodeId ? episodesById.get(requestedEpisodeId) : undefined;

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import rcp.storage.models as storage_models
 from rcp.server_ops.backup_capture import BackupCaptureCoordinator
 from rcp.server_runtime import ServerMetadata
+from rcp.storage import AppStore
 from tests.helpers import create_named_app, signed_in_client
 from tests.server_installed_upgrade import seed_question_followup, seed_turn_artifact
 from tests.supervisor_reboot_data import prepare_data
@@ -108,3 +109,30 @@ def test_installed_upgrade_followup_is_capturable_until_injected_rejection(tmp_p
     hook.reject_backup_inventory(fixture["project_id"])
     (rejected,) = backup_capture.reinspect_uncaptured_projects(receipt).projects
     assert rejected.status == "uncaptured"
+
+
+def test_a_project_registered_beside_a_running_server_is_readable(tmp_path, monkeypatch):
+    # The installed-upgrade journey seeds its project from another process
+    # while the server runs; the server must not need a restart to read it.
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(mode=0o700)
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    monkeypatch.setattr(
+        storage_models,
+        "DEFAULT_SERVER_LAYOUT",
+        SimpleNamespace(service_account=account, projects_root=tmp_path / "projects"),
+    )
+    store, code = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Running server")
+    _member, token = store.enroll_team_member(code, "Researcher")
+    app = create_named_app(data_dir=data_dir)
+    with signed_in_client(app, base_url="https://testserver") as client:
+        protocol = client.get("/api/health").json()["team_shell_protocol"]["maximum"]
+        client.headers["RCP-Team-Shell-Protocol"] = str(protocol)
+        exchange = client.post("/api/team/session/exchange", json={"token": token})
+        assert exchange.status_code == 200, exchange.text
+        assert client.get("/api/projects").status_code == 200
+        fixture = prepare_data(data_dir, tmp_path / "projects", account=account, member_token=token)
+
+        response = client.get(f"/api/projects/{fixture['project_id']}")
+
+        assert response.status_code == 200, response.text

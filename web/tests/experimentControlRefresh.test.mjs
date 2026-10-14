@@ -215,6 +215,12 @@ test("ambiguous chat sends retain admission key and resend settles one card", as
       "admission",
     );
   const first = send();
+  // The composer's own pending line steps aside for this overlay: one sent card.
+  const { pendingTurnShownByHistory } = await server.ssrLoadModule("/src/chat/NodeChat.tsx");
+  assert.equal(
+    pendingTurnShownByHistory("pending-admission", store.view(chatId).value.messages),
+    true,
+  );
   first.fail(new TypeError("response lost"));
   assert.deepEqual(store.view(taskId).pending, ["admission"]);
   assert.equal(store.view(taskId).value[0].operation_id, "pending-admission");
@@ -256,6 +262,12 @@ test("definite chat rejection removes task and transcript overlays", async () =>
     ["old"],
   );
   assert.deepEqual(store.view(chatId).pending, []);
+  // With the overlay gone, the composer's pending line carries the Resend.
+  const { pendingTurnShownByHistory } = await server.ssrLoadModule("/src/chat/NodeChat.tsx");
+  assert.equal(
+    pendingTurnShownByHistory("pending-admission", store.view(chatId).value.messages),
+    false,
+  );
 });
 
 test("settling one task command never persists another command's overlay", async () => {

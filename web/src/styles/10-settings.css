@@ -1533,6 +1533,22 @@ button.agent-provider-label {
   grid-template-columns: 28px minmax(0, 1fr);
   padding: 18px 20px;
 }
+.project-members > header {
+  grid-auto-columns: max-content;
+  grid-auto-flow: column;
+}
+@media (max-width: 560px) {
+  /* Phones give the project action its own row so the title and Retry keep room. */
+  .project-members > header {
+    grid-auto-flow: row;
+    grid-template-columns: 28px minmax(0, 1fr) auto;
+  }
+  .project-members > header > .project-move-to-team {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: start;
+  }
+}
 .project-members > header > span:first-child,
 .project-notifications > header > span:first-child,
 .project-consolidation > header > span:first-child,

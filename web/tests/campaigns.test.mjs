@@ -392,6 +392,20 @@ test("a continuation chain is one run card listing each member's ceiling, ending
 
   assert.deepEqual(runsEpisodeCards([source, continuation], new Set()), [continuation]);
   assert.deepEqual(runsEpisodeCards([continuation], new Set()), [continuation]);
+  // An Auto-research child is listed on the chain card unless a route opens it.
+  const child = {
+    ...episode,
+    episode_id: "episode/child",
+    mode: "experiment_loop",
+    auto_research_parent_episode_id: "episode/source",
+  };
+  assert.deepEqual(runsEpisodeCards([continuation, child], new Set([child.episode_id])), [
+    continuation,
+  ]);
+  assert.deepEqual(
+    runsEpisodeCards([continuation, child], new Set([child.episode_id]), false, child.episode_id),
+    [continuation, child],
+  );
   // Archiving the displayed newest member removes the whole run from default Runs.
   const archivedContinuation = { ...continuation, archived: true };
   assert.deepEqual(runsEpisodeCards([source, archivedContinuation], new Set()), []);

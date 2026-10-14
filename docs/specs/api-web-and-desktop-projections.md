@@ -1169,8 +1169,9 @@ diagnostic rows without hiding healthy loops; historical failures log and skip.
 Required invalid project caches return 503; `/api/space/runs` returns 503 on the
 first unavailable detail. Task rows publish role/depth rather than client parsing.
 Project lists paint cached data, share in-flight reads, and refresh while Runs
-is visible. Child Experiments appear as their own cards plus one subordinate
-navigation actor on the parent timeline, never a second budget/lifecycle.
+is visible. A child Experiment appears as one subordinate navigation actor on
+its orchestrator's timeline, never a second budget/lifecycle; it gets a Runs card
+of its own only while a route opens it, and the space ledger never lists it.
 
 ### Episode timeline
 

@@ -908,6 +908,6 @@ test("Project Settings opens the move route only for a personal project", () => 
   const personal = renderSettings("personal", () => {});
   const team = renderSettings("team", () => {});
 
-  assert.match(personal, /project-home-settings/);
-  assert.doesNotMatch(team, /project-home-settings/);
+  assert.match(personal, /project-move-to-team/);
+  assert.doesNotMatch(team, /project-move-to-team/);
 });
