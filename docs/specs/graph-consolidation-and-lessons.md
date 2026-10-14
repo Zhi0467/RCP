@@ -56,9 +56,10 @@ require [Proposals](authority-and-proposals.md#protected-belief-proposals).
 Its charter is "Tidy; do not run experiments." After the audit, a literature
 pass uses the turn's web search for recent work bearing on open
 ResearchQuestions and Hypotheses, recording each query, date, source, and
-whether the full text or only the abstract was read. It prefers qualifying
-existing Evidence edges and leaving Suggestions; a paper that undermines a
-protected belief gets a Proposal. It may add `external_publication`
+whether the full text or only the abstract was read. It prefers changes to
+existing records and Suggestions over new nodes; qualifying an existing
+Evidence edge to a protected belief, or undermining that belief, goes through
+a Proposal. It may add `external_publication`
 Evidence with assessed edges. Its authority is otherwise unchanged.
 
 It finishes with `consolidation-report.html` in the ordinary artifact root.

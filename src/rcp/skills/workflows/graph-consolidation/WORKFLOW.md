@@ -35,10 +35,12 @@ published versions, including papers already in the graph. Finding nothing
 new is a valid result; report it. If search or source access fails, report that
 gap rather than claiming there was nothing new.
 
-Prefer improving existing records. When a paper limits what an existing
-Evidence edge shows, add that limit to the edge's assessment qualifications;
-this is the one qualification change consolidation makes. Otherwise tidy
-within the rules below, or leave a Suggestion in the report. When a paper
+Prefer improving existing records. An edge's assessment cannot be edited in
+place, and replacing an edge to an existing ResearchQuestion or Hypothesis is a
+protected change. So when a paper limits what an existing Evidence edge shows,
+raise one protected-relation Proposal that replaces the edge with the added
+qualification. Otherwise tidy within the rules below, or leave a Suggestion in
+the report. When a paper
 undermines a protected belief, propose the needed change rather than editing
 the ResearchQuestion or Hypothesis directly. The authority rules in Pass 3
 and the accepted-node rule in Pass 4 still apply.
