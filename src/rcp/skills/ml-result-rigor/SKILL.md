@@ -14,8 +14,9 @@ current task's authority and output contract; this skill grants no permission.
 
 ## Check the traps
 
-For each trap, record `clear`, `concern`, `unknown`, or `not applicable`, with an
-artifact pointer and reason. Use `clear` only within the check's tested scope;
+For each trap, write a status in the comparison record, not in the graph:
+`clear`, `concern`, `unknown`, or `not applicable`, with an artifact pointer
+and reason. Use `clear` only within the check's tested scope;
 missing information is `unknown`, not a failed check. Explain non-applicability.
 Carry unresolved concerns and unknowns into the result's qualifications.
 
@@ -61,10 +62,10 @@ If the ledger is incomplete, say selection bias is unresolved; retain failures a
 
 **Adaptive search presented as confirmation.**
 Trace tested candidates, metrics, and keep/discard decisions; seek evaluation unused by selection.
-Without independent confirmation or justified statistical treatment of repeated testing, label the result exploratory.
+Unless a separate evaluation, unused during selection, confirms it, label the result exploratory.
 
 **Misleading spread or averages.**
-Check task weights, per-task values, and whether spread means standard deviation, standard error, or a confidence interval; name its computation and independent unit.
+Check task weights and per-task values. Say whether the spread is a standard deviation, a standard error, or a confidence interval, and name the independent unit it counts.
 If raw values or the method are missing, mark uncertainty unverified rather than inventing an interval.
 
 **A score gain mistaken for a mechanism.**

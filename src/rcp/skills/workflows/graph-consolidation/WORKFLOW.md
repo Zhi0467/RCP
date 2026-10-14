@@ -28,14 +28,16 @@ Keep the findings as working notes; they feed passes 2, 3, 4, and 6.
 ## Pass 2: literature
 
 Use the turn's web search to find recent work bearing on open ResearchQuestions
-and Hypotheses. For each search, record the query, date, sources and versions,
+and Hypotheses. For each search, record the query, date, each source and its version (preprint or published),
 and whether you read full text or only an abstract. Mark unread hits as unread;
 search snippets alone do not establish Evidence. Deduplicate preprint and
 published versions, including papers already in the graph. Finding nothing
 new is a valid result; report it. If search or source access fails, report that
 gap rather than claiming there was nothing new.
 
-Prefer improving existing records: qualify an existing Evidence edge, tidy
+Prefer improving existing records. When a paper limits what an existing
+Evidence edge shows, add that limit to the edge's assessment qualifications;
+this is the one qualification change consolidation makes. Otherwise tidy
 within the rules below, or leave a Suggestion in the report. When a paper
 undermines a protected belief, propose the needed change rather than editing
 the ResearchQuestion or Hypothesis directly. The authority rules in Pass 3
@@ -76,9 +78,9 @@ You may also add what the graph already implies but never wrote down:
 
 Never choose a Decision, never create Experiments, and never change standing.
 A change to an existing ResearchQuestion or Hypothesis is a Proposal; raise one
-only when the audit or literature shows a reader would otherwise be misled.
-Prefer one clear Proposal to many small ones. When in doubt, leave the graph alone and
-put the idea under Suggestions in the report.
+only when the audit or a paper you read shows a reader would otherwise be
+misled. Prefer one clear Proposal to many small ones. When in doubt, leave the
+graph alone and put the idea under Suggestions in the report.
 
 ## Pass 4: readability and glossary
 

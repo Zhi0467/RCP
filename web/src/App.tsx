@@ -1103,12 +1103,14 @@ function MemberApp({
       setPinSelection(null);
     }
   }, [pinSelection, pinScope, pinsResource.value, activePin]);
+  // A cached list can predate the pin, so the request waits for a list holding
+  // it; the next route change replaces the request.
   useEffect(() => {
     if (requestedPin?.scope !== pinScope || !pinsResource.value) return;
     if (pinsResource.value.pins.some((pin) => pin.artifact_id === requestedPin.id)) {
       setPinSelection(requestedPin);
+      setRequestedPin(null);
     }
-    setRequestedPin(null);
   }, [requestedPin, pinScope, pinsResource.value]);
   const graphPath = useCallback((path: string) => graphTargetUrl(path, graphTarget), [graphTarget]);
   const isActiveGraph = useCallback(

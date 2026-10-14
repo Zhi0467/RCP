@@ -209,6 +209,7 @@ export function ArtifactViewer() {
       window.location.hash = projectViewHash(target.projectId, pinTarget, "artifacts", {
         pinId: target.artifactId,
       });
+      closeArtifactViewer();
       return;
     }
     const generation = requestGeneration.current;

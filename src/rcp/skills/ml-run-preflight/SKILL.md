@@ -36,9 +36,9 @@ cannot be compared or repeated later. Capture:
   Include search and selection rules; equal trial counts need not cost the same.
   Record actual use, including failed work, alongside these budgets later.
 
-Point the Experiment attempt's `configuration` at this run folder or record
-through the current task's authorized graph output. Keep the record with the
-outputs even when the task cannot update the graph. These are file contents,
+When the task may write the graph, set the Experiment attempt's
+`configuration` to this record's path. Keep the record with the outputs even
+when the task cannot update the graph. These are file contents,
 not new graph fields.
 
 ## Prove the metric path
@@ -56,16 +56,10 @@ If metrics are missing, repair the path and repeat the smoke before proceeding.
 ## Keep live reads bounded
 
 Write an exporter from whatever the tracker stores, such as event logs, a local
-database, or an API. No particular tracker is required. Append metric records
-and have the page read only the tail, or maintain a small downsampled summary
-that stays within the live read limits rendered in the artifact contract.
-Never read one ever-growing file whole. Keep full-resolution results separately
-for analysis; a recent window or reduced summary is not the full run record.
-
-Include run identity, update time, completion state, and the retained window or
-summary method. Preserve failures and make missing values explicit. Check the
-exported output through its intended reader during the smoke. Apply Live pages
-for page construction and admitted source paths.
+database, or an API. No particular tracker is required. Apply Live pages, under
+Growing sources, for how the page reads it. Keep full-resolution results
+separately for analysis; a recent window or summary is not the full run record.
+Check the exported output through its intended reader during the smoke.
 
 Read the [provenance example and sources](references/provenance.md) when choosing
 what to record beside a run.

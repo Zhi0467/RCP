@@ -119,6 +119,8 @@ test("pins share refresh, mount only the active version, open native nodes, and 
       branch_id: "b1",
       pin: "a",
     });
+    // The viewer gets out of the way of the pin it opened.
+    await page.locator(".artifact-viewer").waitFor({ state: "detached" });
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();
