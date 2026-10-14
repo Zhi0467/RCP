@@ -27,6 +27,7 @@ from .helpers import (
     seed_patch,
     store_test_claude_token,
     wait_for_task_response,
+    write_turn_outcome,
 )
 from .helpers import create_named_app as create_app
 
@@ -82,6 +83,7 @@ class _FailThenSucceedLauncher:
                 (workspace / name).write_text(content, encoding="utf-8")
             yield AgentEvent(event="error", text=self.failure)
             return
+        write_turn_outcome(workspace)
         for name, content in self.retry_files.items():
             (workspace / name).write_text(content, encoding="utf-8")
         yield AgentEvent(event="answer", text="The Retry completed.")
@@ -378,12 +380,13 @@ def test_work_recovery_in_a_committed_session_points_to_its_chat_master(manifest
     prompts: list[str] = []
 
     class Launcher:
-        async def stream(self, _provider, prompt, **_kwargs):
+        async def stream(self, _provider, prompt, **kwargs):
             prompts.append(prompt)
             yield AgentEvent(event="session", session_id=session)
             if len(prompts) == 2:
                 yield AgentEvent(event="error", text="Work provider disconnected.")
                 return
+            write_turn_outcome(Path(kwargs["cwd"]))
             yield AgentEvent(event="answer", text="Done.")
             yield AgentEvent(event="done")
 
@@ -799,6 +802,7 @@ def test_browser_grant_precedes_persisted_prompt_and_turns_off(
             if len(grants) > 1:
                 assert kwargs["session_id"] == native_session_id
             yield AgentEvent(event="session", session_id=native_session_id)
+            write_turn_outcome(Path(kwargs["cwd"]))
             yield AgentEvent(event="answer", text="done")
             yield AgentEvent(event="done")
 

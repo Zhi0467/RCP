@@ -21,6 +21,7 @@ from .helpers import (
     create_named_app,
     seed_patch,
     wait_for_task_response,
+    write_turn_outcome,
 )
 
 
@@ -65,6 +66,7 @@ class _ChatLauncher:
                 "session": kwargs.get("session_id"),
             }
         )
+        write_turn_outcome(Path(kwargs["cwd"]))
         yield AgentEvent(event="session", session_id=session)
         yield AgentEvent(event="answer", text=(root / "notes.txt").read_text())
         yield AgentEvent(event="done")

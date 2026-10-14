@@ -400,6 +400,8 @@ class AcceptanceAgentLauncher(AgentLauncher):
                 answer = "Inspected both completed fixture jobs; no graph Patch was needed."
             state["completed"] = True
             _write_state(resolved_cwd, state)
+        if scenario == "generic_watchers":
+            _write_json(resolved_cwd / "outcome.json", {"status": "done"})
 
         self._record(
             AcceptanceLaunchRecord(

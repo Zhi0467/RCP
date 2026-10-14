@@ -23,6 +23,7 @@ from .helpers import (
     seed_patch,
     shape_invalid_patch,
     wait_for_task,
+    write_turn_outcome,
 )
 from .test_api import ScriptedLauncher, _experiment_fixture_patch
 from .test_branch_history import _branch_patch
@@ -277,6 +278,7 @@ def test_branch_chat_recovery_uses_original_graph_target(manifest, tmp_path, mon
         (Path(kwargs["cwd"]) / "patch.json").write_text(
             agent_patch_json(_branch_patch("ev/recovered-branch-work"))
         )
+        write_turn_outcome(Path(kwargs["cwd"]))
         yield AgentEvent(event="answer", text="The branch work is complete.")
         yield AgentEvent(event="done")
 

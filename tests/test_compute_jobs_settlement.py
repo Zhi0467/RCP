@@ -13,7 +13,7 @@ from rcp.core.transition_models import GraphTargetRef
 from rcp.runs.tasks import experiment_loop, work
 from rcp.service import RunRequest
 
-from .helpers import append_fixture_patch, create_named_app, seed_patch
+from .helpers import append_fixture_patch, create_named_app, seed_patch, write_turn_outcome
 from .test_api import _chat_task_execution
 from .test_compute_jobs_commands import commands as commands
 from .test_experiment_loop_agent_io import (
@@ -90,6 +90,7 @@ class _ComputeTurnLauncher:
             (workspace / "watch.json").write_text(
                 json.dumps({"external": [self.watcher], "graph": []})
             )
+        write_turn_outcome(workspace)
         yield AgentEvent(event="session", session_id=self.native_session_id)
         yield AgentEvent(event="answer", text="Handed off computation.")
         yield AgentEvent(event="done")
