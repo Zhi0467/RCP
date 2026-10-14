@@ -1,5 +1,6 @@
 import type { MachineSettingsRecord } from "../projects/spaceMachines";
 import type {
+  EvidenceFlag,
   ChatBrowserPreference,
   MachineBrowserReadiness,
   DependencyStatus,
@@ -1081,4 +1082,24 @@ export function loadClientRequest(
   return api(
     `/api/projects/${encodeURIComponent(projectId)}/client-requests/${encodeURIComponent(requestId)}`,
   );
+}
+
+export function dismissEvidenceFlag(
+  apiBase: string,
+  flagId: string,
+): Promise<{ flag: EvidenceFlag }> {
+  return api(`${apiBase}/consolidation/evidence-flags/${encodeURIComponent(flagId)}/dismiss`, {
+    method: "POST",
+  });
+}
+
+export function addressEvidenceFlag(
+  apiBase: string,
+  flagId: string,
+  requestId: string,
+): Promise<{ flag: EvidenceFlag; chat_id: string; operation_id: string }> {
+  return api(`${apiBase}/consolidation/evidence-flags/${encodeURIComponent(flagId)}/address`, {
+    method: "POST",
+    body: JSON.stringify({ request_id: requestId }),
+  });
 }

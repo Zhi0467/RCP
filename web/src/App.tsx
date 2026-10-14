@@ -1,3 +1,6 @@
+import { EvidenceFlagProvider } from "./graph/EvidenceFlagContext";
+import { EvidenceFlagInbox } from "./projects/EvidenceFlagInbox";
+import { evidenceFlagRows } from "./projects/evidenceFlags";
 import { errorMessage } from "./core/errors";
 import { PinnedView, PinnedViewTab } from "./graph/PinnedView";
 import { researchViewsProfile } from "./graph/researchViewResources";
@@ -93,6 +96,7 @@ import {
 import {
   lazy,
   Suspense,
+  createElement,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -1821,6 +1825,7 @@ function MemberApp({
     consolidation,
     error: consolidationError,
     refresh: refreshConsolidation,
+    updateFlag: updateEvidenceFlag,
   } = useConsolidation(backendSessionReady ? apiBase : "", String(graph.revision));
   const refreshProjectIndexQuietly = useCallback(() => {
     // The landing count follows Caught up; a failed index read keeps the old list.
@@ -4132,10 +4137,13 @@ function MemberApp({
     consolidation?.schedule ?? null,
     Date.now(),
   );
-  const consolidationCount = consolidationAttentionCount(
-    openConsolidation,
-    needsConsolidationRenewal,
+  const flagRows = evidenceFlagRows(
+    graphTarget.kind === "main" ? (consolidation?.evidence_flags ?? []) : [],
+    graph.nodes,
   );
+  const flaggedNodeIds = new Set(flagRows.map((row) => row.node.id));
+  const consolidationCount =
+    consolidationAttentionCount(openConsolidation, needsConsolidationRenewal) + flagRows.length;
   const attentionCount =
     pendingProposals.length + attentionDecisions.length + openBlockers.length + consolidationCount;
   const showTrustFilter = view === "scientific" || view === "dag";
@@ -4531,7 +4539,15 @@ function MemberApp({
       )}
     </>
   );
-  return (
+  return createElement(
+    EvidenceFlagProvider,
+    {
+      nodeIds: flaggedNodeIds,
+      onOpenInbox: () => {
+        clearNodeSelections();
+        changeView("attention");
+      },
+    },
     <div className="app-shell overview-shell">
       {acceptanceAgentSurface}
       {voiceSurface}
@@ -4839,6 +4855,25 @@ function MemberApp({
                       stageProposalDecision(draft, graph, proposal.id, decision),
                     )
                   }
+                />
+                <EvidenceFlagInbox
+                  key={project.id}
+                  apiBase={apiBase}
+                  projectId={project.id}
+                  rows={flagRows}
+                  repositories={project.repositories}
+                  writesDisabled={!consolidation?.can_write}
+                  onChanged={updateEvidenceFlag}
+                  onOpenNode={openNode}
+                  onOpenChat={(chatId) => {
+                    openChats(chatId);
+                    setRequestedChat({
+                      hash: window.location.hash,
+                      projectId: project.id,
+                      chatId,
+                      graphTarget: { kind: "main" },
+                    });
+                  }}
                 />
                 <ConsolidationInbox
                   items={openConsolidation}
@@ -5432,7 +5467,7 @@ function MemberApp({
       {desktopAccessSurface}
       {actorNameSurface}
       {reverificationSurface}
-    </div>
+    </div>,
   );
 }
 

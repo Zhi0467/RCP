@@ -98,6 +98,22 @@ commits. Node removal removes incident edges, not history. Accepted-node and
 active-Experiment safeguards apply. Artifact selections are not graph editing
 or Evidence shortcuts.
 
+Open or addressing Evidence flags mark their current main-graph nodes with a red
+left edge in graph and research cards. Node detail adds one icon-only flag action
+that opens the Inbox. Retired or absent nodes have no flag row or marker.
+
+## Evidence to check
+
+The Inbox uses the consolidation load for an **Evidence to check** section and
+includes its rows in the open total. Each row shows the kind, night, current
+Evidence title, and finding. **Address** starts the backend-authorized node Work
+chat and opens the returned chat in Agents; **Open chat** replaces it while the
+flag is addressing. The row stays until its icon-only **Dismiss** action succeeds.
+**Open Evidence** opens node detail; **Open source**, offered only for a recorded
+source, resolves a repository alias or absolute cited path into the existing file
+preview. A failed action marks the row with a red edge and replaces that action
+with one icon-only retry. Controls wrap and retain phone-sized targets at 390px.
+
 ## DAG controls
 
 At <=560px controls start behind a chevron; wider views show them. Provide
@@ -224,6 +240,12 @@ Cancel independently of graph read-only state; watcher refresh owns observation.
 Actions sit at the right. Hide removes completed watcher rows/cards only for this
 browser/project; Show hidden watchers restores them, and renewed activity overrides
 hiding. Records and other viewers are unaffected.
+
+Work replies show the recorded turn outcome as a neutral chip beside the graph
+receipt, including replies without a graph update: **Done**, **Partial · reason**,
+**Couldn't do it · reason**, or **No outcome stated**. Missing outcome metadata on
+non-Work turns produces no chip. Outcome chips never use failure coloring and
+wrap long reasons within the reply width.
 
 ## Terminals
 

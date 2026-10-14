@@ -1335,6 +1335,23 @@
   overflow-wrap: anywhere;
   margin: 6px 0 8px;
 }
+.evidence-flag-row.has-error {
+  border-left: 3px solid var(--red);
+}
+.evidence-flag-finding {
+  overflow-wrap: anywhere;
+  margin: 0 0 12px;
+}
+.evidence-flag-row .card-actions,
+.evidence-flag-row .proposal-topline {
+  flex-wrap: wrap;
+}
+@media (max-width: 560px) {
+  .evidence-flag-row .card-actions > button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
 .consolidation-row.failure h3 {
   color: var(--oxblood);
 }

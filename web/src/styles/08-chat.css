@@ -919,6 +919,28 @@
   font-weight: 650;
   padding: 2px 0;
 }
+.chat-turn-receipts {
+  align-items: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.chat-turn-receipts .chat-graph-receipt {
+  margin-top: 0;
+  min-width: 0;
+}
+.chat-turn-outcome {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--walnut);
+  font-size: var(--type-2xs);
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  padding: 5px 8px;
+  white-space: normal;
+}
 .chat-graph-receipt {
   background: var(--surface);
   border: 1px solid var(--line);
