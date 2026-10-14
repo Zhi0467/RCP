@@ -3,7 +3,7 @@ import { EvidenceFlagInbox } from "./projects/EvidenceFlagInbox";
 import { evidenceFlagRows } from "./projects/evidenceFlags";
 import { errorMessage } from "./core/errors";
 import { PinnedView, PinnedViewTab } from "./graph/PinnedView";
-import { researchViewsProfile } from "./graph/researchViewResources";
+import { pinRequest, pinScopeKey, researchViewsProfile } from "./graph/researchViewResources";
 import { useProjectTabResources } from "./projects/projectTabResources";
 import { beginTaskMutation, beginTaskPublication } from "./agents/taskActions";
 import { beginChatSend } from "./agents/chatSendMutation";
@@ -829,8 +829,16 @@ function MemberApp({
     reportError: reportErrorNotice,
   });
   const pinBranchId = graphTarget.kind === "branch" ? graphTarget.branch_id : null;
-  const pinScope = JSON.stringify([projectId, pinBranchId]);
+  const pinScope = pinScopeKey(projectId, pinBranchId);
   const [pinSelection, setPinSelection] = useState<{ scope: string; id: string } | null>(null);
+  // A route naming a pin opens it once that target's pins have loaded.
+  const [requestedPin, setRequestedPin] = useState(() =>
+    pinRequest(
+      initialRoute.project.projectId,
+      initialRoute.graphTarget,
+      initialRoute.project.pinId,
+    ),
+  );
   const graphView = useResource(
     `${projectId}:graph-view`,
     backendSessionReady && projectId ? graphProfile(projectId, graphTarget) : null,
@@ -1092,13 +1100,25 @@ function MemberApp({
   const apiBase = projectId ? `/api/projects/${encodeURIComponent(projectId)}` : "";
   useEffect(() => setPinSelection(null), [pinScope]);
   useEffect(() => {
-    if (view !== "artifacts") setPinSelection(null);
+    if (view !== "artifacts") {
+      setPinSelection(null);
+      setRequestedPin(null);
+    }
   }, [view]);
   useEffect(() => {
     if (pinSelection?.scope === pinScope && pinsResource.value && !activePin) {
       setPinSelection(null);
     }
   }, [pinSelection, pinScope, pinsResource.value, activePin]);
+  // A cached list can predate the pin, so the request waits for a list holding
+  // it; the next route change or explicit tab choice replaces the request.
+  useEffect(() => {
+    if (requestedPin?.scope !== pinScope || !pinsResource.value) return;
+    if (pinsResource.value.pins.some((pin) => pin.artifact_id === requestedPin.id)) {
+      setPinSelection(requestedPin);
+      setRequestedPin(null);
+    }
+  }, [requestedPin, pinScope, pinsResource.value]);
   const graphPath = useCallback((path: string) => graphTargetUrl(path, graphTarget), [graphTarget]);
   const isActiveGraph = useCallback(
     (id: string) =>
@@ -1645,6 +1665,7 @@ function MemberApp({
         chatId: route.chatId,
         graphTarget: nextTarget,
       });
+      setRequestedPin(pinRequest(route.projectId, nextTarget, route.pinId));
       // A route that names a chat opens it; any other entry shows the board.
       setAgentsBoard(!route.chatId);
       if (
@@ -4525,6 +4546,7 @@ function MemberApp({
           active={activePin?.artifact_id === pin.artifact_id}
           onSelect={() => {
             setPinSelection({ scope: pinScope, id: pin.artifact_id });
+            setRequestedPin(null);
             changeView("artifacts");
           }}
         />
@@ -4930,6 +4952,7 @@ function MemberApp({
                 failed={Boolean(pinsResource.error)}
                 onChange={(next) => {
                   setPinSelection(null);
+                  setRequestedPin(null);
                   changeView(next);
                 }}
               >

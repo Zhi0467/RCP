@@ -109,6 +109,7 @@ def test_pin_keep_current_version_undo_and_unpin(served_views):
     store, project, client, url = served_views
     artifact = page(store, project)
     assert _state(client, artifact)["can_pin"]
+    assert _state(client, artifact)["pin_branch_name"] == "main"
     before = generation(store, project)
     result = client.post(url, json={"artifact_id": artifact.artifact_id, "branch_id": None})
     assert result.status_code == 200
@@ -138,6 +139,8 @@ def test_personal_target_and_membership_isolation(tmp_path):
     artifact = page(store, project, "branch-a")
     url = f"/api/projects/{project}/research-views"
     assert _state(client, artifact)["pin_branch_id"] == "branch-a"
+    store.rename_branch(project, "branch-a", "matrix-run")
+    assert _state(client, artifact)["pin_branch_name"] == "matrix-run"
     assert (
         client.post(url, json={"artifact_id": artifact.artifact_id}).json()["detail"]["code"]
         == "target_mismatch"

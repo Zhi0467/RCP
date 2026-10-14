@@ -52,20 +52,33 @@ The workflow consolidates and rewrites unreadable asserted nodes under graph
 writing rules, and defines shared terms in the glossary. It only suggests accepted
 node rewrites, since editing resets standing. Existing protected beliefs still
 require [Proposals](authority-and-proposals.md#protected-belief-proposals).
-After the audit, a fact-check pass reads Evidence created or changed since the
-covered head against the sources themselves: cited artifacts, producing
-Experiment job logs, and repository files on the execution host, and papers or
-web pages through the provider's web and network tools, never conversation
-transcripts. Provider-native subagents may check batches in parallel inside the
-turn. Prose problems and missing or wrong citations are fixed directly in the
-Patch when the right source is found. Scientific or semantic problems raise
-`overclaim`, `underclaim`, `no_source`, or `unverified` flags: `no_source` means
-the sources read do not contain the claim, `unverified` that a named source could
-not be read. Consolidation may add Evidence for a result a source it read states,
-and fact-checks the Evidence it added after applying. The workflow never changes the flagged claim,
-validity, or standing to resolve such a finding.
+
+Its charter is "Tidy and check sources; do not run experiments." After the
+audit, a fact-check reads Evidence created or changed since the covered head
+against the sources themselves: cited artifacts, producing Experiment job logs,
+and repository files on the execution host, and papers or web pages through the
+provider's web and network tools, never conversation transcripts.
+Provider-native subagents may check batches in parallel inside the turn. Prose
+problems and missing or wrong citations are fixed directly in the Patch when
+the right source is found. Scientific or semantic problems raise `overclaim`,
+`underclaim`, `no_source`, or `unverified` flags: `no_source` means the sources
+read do not contain the claim, `unverified` that a named source could not be
+read. The workflow never changes the flagged claim, validity, or standing to
+resolve such a finding.
+
+The same pass then uses the turn's web search for recent work bearing on open
+ResearchQuestions and Hypotheses, recording each query, date, source, and
+whether the full text or only the abstract was read. It prefers changes to
+existing records and Suggestions over new nodes; qualifying an existing
+Evidence edge to a protected belief, or undermining that belief, goes through
+a Proposal. It may add Evidence for a result a source it read states, including
+`external_publication` Evidence with assessed edges, and fact-checks the
+Evidence it added after applying. Its authority is otherwise unchanged.
+
 It finishes with `consolidation-report.html` in the ordinary artifact root,
-listing flags raised alongside applied changes.
+listing flags raised alongside applied changes. A **Literature** heading lists
+every literature change, new paper, search record, and access gap, and says
+when nothing new was found.
 
 **Why:** expiring standing authorization makes routine maintenance possible while
 bounding each night to one invocation. Ordinary Work on main avoids a new episode
