@@ -16,7 +16,7 @@ from rcp.core.models import AuthorizedHuman
 from rcp.storage import AppStore
 from rcp.storage.research_views import ResearchViewConflict, ResearchViewPin
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_project_membership)])
 StoreDependency = Annotated[AppStore, Depends(get_store)]
 IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
 ProjectDependency = Annotated[str, Depends(require_project_membership)]
