@@ -972,7 +972,7 @@ function MemberApp({
   });
   // Pins are fetched only where their tabs are shown.
   const pinsProfile =
-    backendSessionReady && projectId && view === "artifacts"
+    backendSessionReady && projectId && (view === "artifacts" || view === "paper")
       ? researchViewsProfile(projectId, pinBranchId)
       : null;
   const pinsResource = useResource("research-view-pins", pinsProfile);
@@ -1086,7 +1086,10 @@ function MemberApp({
     [dispatchProjectSession, getProjectSessionState],
   );
   const apiBase = projectId ? `/api/projects/${encodeURIComponent(projectId)}` : "";
-  useEffect(() => setPinSelection(null), [pinScope, view]);
+  useEffect(() => setPinSelection(null), [pinScope]);
+  useEffect(() => {
+    if (view !== "artifacts") setPinSelection(null);
+  }, [view]);
   useEffect(() => {
     if (pinSelection?.scope === pinScope && pinsResource.value && !activePin) {
       setPinSelection(null);
@@ -4494,6 +4497,33 @@ function MemberApp({
     />
   );
 
+  // Pinned pages follow Files | Paper in both Artifacts sections.
+  const pinTabs = (
+    <>
+      {pins.map((pin) => (
+        <PinnedViewTab
+          key={`${pinScope}:${pin.artifact_id}`}
+          projectId={project.id}
+          branchId={pinBranchId}
+          pin={pin}
+          active={activePin?.artifact_id === pin.artifact_id}
+          onSelect={() => {
+            setPinSelection({ scope: pinScope, id: pin.artifact_id });
+            changeView("artifacts");
+          }}
+        />
+      ))}
+      {Boolean(pinsResource.error) && (
+        <button
+          aria-label="Retry pinned views"
+          title={errorMessage(pinsResource.error)}
+          onClick={() => pinsProfile && store.invalidate(resourceKeyId(pinsProfile.key))}
+        >
+          <RefreshCw size={14} />
+        </button>
+      )}
+    </>
+  );
   return (
     <div className="app-shell overview-shell">
       {acceptanceAgentSurface}
@@ -4871,25 +4901,7 @@ function MemberApp({
                   changeView(next);
                 }}
               >
-                {pins.map((pin) => (
-                  <PinnedViewTab
-                    key={`${pinScope}:${pin.artifact_id}`}
-                    projectId={project.id}
-                    branchId={pinBranchId}
-                    pin={pin}
-                    active={activePin?.artifact_id === pin.artifact_id}
-                    onSelect={() => setPinSelection({ scope: pinScope, id: pin.artifact_id })}
-                  />
-                ))}
-                {Boolean(pinsResource.error) && (
-                  <button
-                    aria-label="Retry pinned views"
-                    title={errorMessage(pinsResource.error)}
-                    onClick={() => pinsProfile && store.invalidate(resourceKeyId(pinsProfile.key))}
-                  >
-                    <RefreshCw size={14} />
-                  </button>
-                )}
+                {pinTabs}
               </ArtifactsSubnav>
               {activePin ? (
                 <PinnedView
@@ -5002,8 +5014,11 @@ function MemberApp({
               <ArtifactsSubnav
                 view={view}
                 paperUnsynced={paper.sync_state !== "synced"}
+                failed={Boolean(pinsResource.error)}
                 onChange={changeView}
-              />
+              >
+                {pinTabs}
+              </ArtifactsSubnav>
               <LoadedPaperWorkspace
                 graphTarget={graphTarget}
                 key={project.id}
