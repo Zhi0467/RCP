@@ -28,7 +28,8 @@ from rcp_supervisor.checkpoint import (
 import rcp.storage.models as storage_models
 from rcp.api import create_app
 from rcp.core.models import GraphState, upgrade_graph_projection
-from rcp.server_ops.application_validation import _canonical_sha256
+from rcp.history.branches import BranchHistoryManager
+from rcp.server_ops.application_validation import CandidateRehearsalRefused, _canonical_sha256
 from rcp.server_ops.backup_capture import (
     BackupCaptureCoordinator,
     read_backup_sqlite_capture_receipt,
@@ -74,7 +75,7 @@ def use_captured_layout(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
 def build_captured(root: Path, monkeypatch: pytest.MonkeyPatch, socket_root: Path):
     use_captured_layout(monkeypatch, root)
     account = pwd.getpwuid(os.geteuid()).pw_name
-    state = prepare_data(root / "data", root / "projects", account=account)
+    state = prepare_data(root / "data", root / "projects", account=account, empty_branch=True)
     data = root / "data"
     (data / "run-stage").chmod(0o700)
     metadata = ServerMetadata.create(
@@ -268,6 +269,7 @@ def test_real_project_payload_restores_schema_graph_stage_and_attachment(
     for name in ("facts", "paper"):
         (research / name).mkdir(mode=0o700, exist_ok=True)
         assert not list((research / name).iterdir())
+    assert not list(Path(state["empty_patches"]).iterdir())
     before = {root: _tree_state(root) for root in (data, research)}
     # Candidate root discovery must work before any old-code prepare and without
     # initializing even a read-only AppStore against the stopped installation.
@@ -391,6 +393,26 @@ def test_candidate_worker_crosses_real_forward_migration_without_touching_live(
         AppStore(Path(request.data_dir) / "rcp.sqlite3").storage_schema_ledger_head()
         == state["ledger_head"]
     )
+
+
+def test_validation_replays_every_captured_branch_head(captured, monkeypatch, tmp_path) -> None:
+    request, _state, _metadata = captured
+    prepared = prepare(request)
+    replayed = BranchHistoryManager.head_ref
+    monkeypatch.setattr(
+        BranchHistoryManager,
+        "head_ref",
+        lambda self, result=None: replayed(self, result).model_copy(update={"revision": 99}),
+    )
+    with pytest.raises(CandidateRehearsalRefused):
+        validate(
+            ValidateRequest(
+                version=1,
+                proof_path=prepared["proof_path"],
+                proof_sha256=prepared["proof_sha256"],
+                output_dir=str(tmp_path / "validated"),
+            )
+        )
 
 
 def test_changed_proof_and_existing_output_fail_closed(captured, tmp_path: Path) -> None:
