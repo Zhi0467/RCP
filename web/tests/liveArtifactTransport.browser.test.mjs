@@ -16,7 +16,7 @@ from rcp.artifacts import AgentArtifactDescriptor
 from rcp.artifact_views import artifact_viewer_document, artifact_content
 d = AgentArtifactDescriptor(artifact_id="a"*24,name="board.html",media_type="text/html",size_bytes=1)
 page = b'''<!doctype html><button id="node">Node</button><script>
-addEventListener('message', e => { if(e.data?.kind === 'rcp-live-data') document.body.dataset.delivered='yes'; });
+addEventListener('message', e => { if(e.source === parent && e.data?.kind === 'rcp-live-data') document.body.dataset.delivered='yes'; });
 document.getElementById('node').onclick=()=>parent.postMessage({type:'rcp-open-node',version:1,id:'n'},'*');
 </script>'''
 print(json.dumps([artifact_viewer_document(d,content_url="/content",state="task",live_url="/live"), artifact_content("board.html","text/html",page)]))

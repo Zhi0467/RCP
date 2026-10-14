@@ -511,9 +511,11 @@ def live_frame_addon() -> FrameAddon:
         frame_script="""
 const dispatchLive=Function.prototype.call.bind(EventTarget.prototype.dispatchEvent);
 const LiveMessage=MessageEvent;
+// Pages may check event.source===parent, as for any message from their embedder.
+const liveSource=window.parent;
 listen(privatePort,'message',(event)=>{
   if(event.data?.kind==='rcp-live-data' && event.data.version===1)
-    dispatchLive(window,new LiveMessage('message',{data:event.data}));
+    dispatchLive(window,new LiveMessage('message',{data:event.data,source:liveSource}));
 });
 """,
         wrapper_script="""
