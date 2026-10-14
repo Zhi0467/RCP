@@ -2500,6 +2500,14 @@ export function NodeChat({
             !continuedTaskIds.has(task.operation_id)
               ? task
               : null;
+          // A failed turn's error row carries its Retry; the header shows no second one.
+          const retryLineTask =
+            line.role === "error" &&
+            task?.can_retry &&
+            !task.can_resume &&
+            !continuedTaskIds.has(task.operation_id)
+              ? task
+              : null;
           const pendingLine = pendingTurn?.clientId === line.taskId;
           const failedTurn = pendingLine && pendingTurn?.error ? pendingTurn : null;
           const collapsible =
@@ -2654,6 +2662,18 @@ export function NodeChat({
                 </>
               ) : pausedLineTask ? null : (
                 <span className="node-chat-text">{line.text}</span>
+              )}
+              {retryLineTask && (
+                <button
+                  type="button"
+                  className="icon-button chat-error-retry"
+                  aria-label="Retry"
+                  title="Retry"
+                  disabled={readOnly}
+                  onClick={() => onRetryTask(retryLineTask)}
+                >
+                  <RotateCcw size={14} />
+                </button>
               )}
               {lineArtifacts(line)?.map((artifact) => {
                 // A reply that embeds an artifact shows it in place, with its actions.

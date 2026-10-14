@@ -1023,6 +1023,16 @@
   color: var(--red);
   padding: 10px 12px;
 }
+.node-chat-line.error:has(.chat-error-retry) {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+.chat-error-retry {
+  color: var(--red);
+  flex: none;
+}
 .node-chat-line.meta {
   background: var(--amber-soft);
   border-radius: 8px;
