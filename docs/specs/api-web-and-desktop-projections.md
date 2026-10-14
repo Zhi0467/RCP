@@ -1062,12 +1062,12 @@ after that reply or the next agent response. Nothing opens on its own.
 consolidation `inbox` rows, `recent_nights`, and `evidence_flags`. The last array
 contains only open and addressing flags. Each flag has `flag_id`, nullable
 `run_id` and `occurrence_date`, `evidence_id`, `evidence_revision` (the main
-revision when flagged), `kind` (`overclaim`, `underclaim`, `no_source`, `unverified`, or
-`consolidation_added`),
-`finding`, nullable `source`, `state` (`open`, `addressing`, or `dismissed`),
-nullable `chat_id`, and `created_at`. Findings are non-blank single lines of at
-most 400 characters; sources are at most 1000 characters and use an absolute
-host path or `<alias>/<relative path>` with optional `:LINE`.
+revision when flagged), `kind` (`overclaim`, `underclaim`, `no_source`,
+`unverified`, or `consolidation_added`), `finding`, nullable `source`, `state`
+(`open`, `addressing`, or `dismissed`), nullable `chat_id`, and `created_at`.
+Findings are non-blank single lines of at most 400 characters; sources are at
+most 1000 characters and use an absolute host path or `<alias>/<relative path>`
+with optional `:LINE`, or an `http(s)` URL.
 
 Both Evidence flag mutations require project write admission and a patch-capable
 identity:
