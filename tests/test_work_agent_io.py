@@ -32,6 +32,7 @@ from .helpers import (
     launch_contract_path,
     seed_patch,
     shape_invalid_patch,
+    write_turn_outcome,
 )
 from .test_api import ScriptedLauncher, _chat_task_execution
 
@@ -930,6 +931,7 @@ async def _delivered_from_record(
     execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
     await work_module._prepare_work_prompt_context(primed, _staged)
     await primed.validator_lifecycle.close()
+    write_turn_outcome(primed.workspace)
 
     frames = [
         frame
@@ -1150,6 +1152,7 @@ async def test_work_correction_disconnect_waits_and_recovers_original_reply(
     # Exercise the owner's remote opt-in while keeping filesystem I/O local.
     # The actual SSH supervisor is covered by the remote provider journey.
     primed.supervise_remote = True
+    write_turn_outcome(primed.workspace)
     primed.outcome.completed = True
     primed.outcome.session_id = "recorded-thread"
     original_answer = "The research work is complete."

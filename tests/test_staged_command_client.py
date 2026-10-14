@@ -871,12 +871,13 @@ def test_turn_handoff_cleanup_includes_messages_and_fails_closed(tmp_path) -> No
     workspace = tmp_path / "stage"
     workspace.mkdir()
     mailbox = RunStageMailbox.for_stage(local_stage=workspace, remote_stage=None)
-    for name in ("patch.json", "watch.json", "messages.json"):
+    for name in ("patch.json", "watch.json", "messages.json", "outcome.json"):
         (workspace / name).write_text("stale", encoding="utf-8")
 
     clear_turn_handoff_files(mailbox)
     assert not any(
-        (workspace / name).exists() for name in ("patch.json", "watch.json", "messages.json")
+        (workspace / name).exists()
+        for name in ("patch.json", "watch.json", "messages.json", "outcome.json")
     )
 
     (workspace / "patch.json").write_text("stale", encoding="utf-8")

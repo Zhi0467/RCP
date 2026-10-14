@@ -65,6 +65,7 @@ from rcp.transport import (
     StateUnreachable,
 )
 from rcp.transport.run_stage import RemoteStageTransportFailure
+from rcp.turn_outcomes import TurnOutcome
 
 
 @dataclass(frozen=True)
@@ -351,6 +352,7 @@ class SettledWorkDeliverables:
     graph_update: GraphUpdateResult = field(
         default_factory=lambda: GraphUpdateResult(status="none")
     )
+    turn_outcome: TurnOutcome | None = None
     watch_correction_rounds: int = 0
     stop: bool = False
 

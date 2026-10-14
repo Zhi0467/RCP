@@ -725,3 +725,8 @@ def resource_watermark_tokens(
     project = response.json()["projects"][0]
     assert project["requested_id"] == project_id
     return [item["version"] for item in project["resources"]]
+
+
+def write_turn_outcome(workspace: Path, outcome: str = '{"status":"done"}') -> None:
+    """Complete a scripted Work turn with a valid file-backed outcome."""
+    (workspace / "outcome.json").write_text(outcome, encoding="utf-8")

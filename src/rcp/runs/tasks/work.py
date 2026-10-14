@@ -59,6 +59,7 @@ from rcp.history.queries import format_head
 from rcp.limits import (
     PATCH_CORRECTION_MAX_ROUNDS,
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
+    TURN_OUTCOME_CORRECTION_MAX_ROUNDS,
     ask_hold_seconds,
 )
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
@@ -75,6 +76,7 @@ from rcp.runs.chat import (
     _prepare_local_chat_workspace,
     _project_write_scope,
     _read_chat_patch,
+    _read_turn_outcome,
     _read_watch_request,
     _record_artifact_discovery_receipt,
     _stage_chat_patch_inputs,
@@ -129,6 +131,7 @@ from rcp.runs.recorded_turn import (
 from rcp.runs.session_artifacts import publish_session_artifacts, sync_session_artifacts
 from rcp.runs.session_master import (
     commit_prepared_graph_observation,
+    continuation_session_master,
     merge_prepared_graph_observation_delta,
     prepare_graph_observation,
     record_inline_prompt,
@@ -207,6 +210,7 @@ from rcp.storage import (
 )
 from rcp.storage.lessons import lesson_edit_authorized
 from rcp.transport import RemoteRunStage, RunLockCancelled, StateUnavailable
+from rcp.turn_outcomes import TurnOutcome, WorkTurnOutcome
 from rcp.watchers import (
     WatcherBinding,
     WatcherInitialCheckError,
@@ -931,6 +935,23 @@ def _work_continuation_master(
 
     if session_id is None or render is None:
         raise ValueError("A Work continuation needs its native session and its start contract.")
+    if is_consolidation(turn.execution):
+        assert turn.execution is not None
+        # Consolidation owns a task session, not a member's chat-session binding.
+        return continuation_session_master(
+            turn.execution,
+            local_stage=turn.local_stage,
+            remote_stage=turn.remote_stage,
+            native_session_id=session_id,
+            label_prefix=WORK_POLICY_VERSION,
+            key=master_key(
+                chat_master_label(WORK_POLICY_VERSION, turn.execution),
+                ontology_extensions=turn.context.ontology_extensions,
+            ),
+            render=render,
+            values=values,
+            force_bootstrap=force_bootstrap,
+        )
     return chat_continuation_master(
         turn.execution,
         turn.request,
@@ -1821,6 +1842,7 @@ async def _settle_watch_deliverable(
     staged: _StagedWorkInputs | None = None,
     composed: _ComposedWorkPrompt | None = None,
     maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
+    collect_outcome: bool = False,
 ) -> AsyncGenerator[str, None]:
     initial = _read_initial_watch_deliverable(turn, predecessor_digest)
     if is_consolidation(turn.execution):
@@ -1831,17 +1853,14 @@ async def _settle_watch_deliverable(
                 _DeliverableFailure("consolidation_watchers_forbidden", correctable=False),
                 0,
             )
-        return
+        initial = _DeliverableRead(text=None)
     text = initial.text
     failure = initial.failure
-    if text is None and failure is None:
-        if turn.compute_commands is not None:
-            try:
-                await asyncio.to_thread(turn.compute_commands.validate_handoff, set())
-            except ValueError as exc:
-                failure = _DeliverableFailure(str(exc), correctable=True)
-        if failure is None:
-            return
+    if text is None and failure is None and turn.compute_commands is not None:
+        try:
+            await asyncio.to_thread(turn.compute_commands.validate_handoff, set())
+        except ValueError as exc:
+            failure = _DeliverableFailure(str(exc), correctable=True)
 
     correction_rounds = 0
     while True:
@@ -1859,13 +1878,30 @@ async def _settle_watch_deliverable(
                 return
             failure = step.failure
             if failure is None:
-                return
-        assert failure is not None
+                text = None
+        outcome_failure = None
+        # The outcome shares the first handoff correction; later watcher rounds
+        # cannot turn an unstated outcome into a fresh request or an error.
+        if collect_outcome and correction_rounds <= TURN_OUTCOME_CORRECTION_MAX_ROUNDS:
+            try:
+                raw = _read_turn_outcome(turn.workspace, turn.remote_stage)
+                parsed = WorkTurnOutcome.model_validate_json(raw or "null")
+                settled.turn_outcome = TurnOutcome.model_validate(parsed.model_dump())
+            except (ValueError, OSError, StateUnavailable) as exc:
+                settled.turn_outcome = TurnOutcome(status="not_stated")
+                if correction_rounds < TURN_OUTCOME_CORRECTION_MAX_ROUNDS:
+                    outcome_failure = f"Write a valid outcome.json for the completed turn: {exc}"
+        if failure is None and outcome_failure is None:
+            return
+        watch_failure = failure
+        failure = failure or _DeliverableFailure(outcome_failure or "", correctable=True)
         if (
             not failure.correctable
             or correction_rounds >= maximum_corrections
             or not settled.native_session_id
         ):
+            if watch_failure is None:
+                return
             required_handoff = False
             if turn.compute_commands is not None:
                 try:
@@ -1881,19 +1917,25 @@ async def _settle_watch_deliverable(
                 settled.stop = True
             return
 
+        problem = "\n".join(
+            item
+            for item in (watch_failure.message if watch_failure else None, outcome_failure)
+            if item
+        )
         correction_rounds += 1
+        settled.watch_correction_rounds = correction_rounds
         if launch_turn is None or staged is None or composed is None:
             raise RuntimeError("A watcher correction requires its live launch context.")
         assert turn.execution is not None
         turn.execution.store.record_agent_task_receipt(
             turn.execution.operation_id,
             "watcher_correction_requested",
-            {"round": correction_rounds, "problem": failure.message[:400]},
+            {"round": correction_rounds, "problem": problem[:400]},
             tier="diagnostic",
         )
         turn.execution.store.update_agent_task_message(
             turn.execution.operation_id,
-            "Correcting watcher handoff.",
+            "Correcting turn handoff.",
             phase="correcting",
             event=True,
         )
@@ -1927,7 +1969,7 @@ async def _settle_watch_deliverable(
                 launch_turn.remote_stage,
                 f"task-{staged.token}-watch-correction-{correction_rounds}.json",
                 {
-                    "problem": failure.message,
+                    "problem": problem,
                     "validator_command": correction_validator.client_command(
                         "validate", launch_turn.patch_inputs.patch_path
                     ),
@@ -1937,7 +1979,7 @@ async def _settle_watch_deliverable(
                 launch_turn,
                 composed,
                 session_id=settled.native_session_id,
-                contract=_watch_correction_contract(diagnostics_path, failure.message),
+                contract=_watch_correction_contract(diagnostics_path, problem),
                 command_client=correction_validator.client_command(),
                 label=f"task-{staged.token}-watch-correction-{correction_rounds}.md",
                 role=f"watch_correction_{correction_rounds}",
@@ -1969,6 +2011,7 @@ async def _settle_watch_deliverable(
                 correction_prompt,
                 browser_grant=composed.browser_grant,
                 session_id=settled.native_session_id,
+                required_session_id=settled.native_session_id if collect_outcome else None,
                 outcome=correction_outcome,
                 validator_staged=correction_validator,
                 validator_lifecycle=correction_lifecycle,
@@ -1995,18 +2038,24 @@ async def _settle_watch_deliverable(
             detail = correction_error or (
                 f"{turn.request.provider} produced no watcher correction result."
             )
+            if watch_failure is None:
+                return
             failure = _DeliverableFailure(
                 detail,
                 correctable=True,
-                change_summary=failure.change_summary,
-                proposal_ids=failure.proposal_ids,
+                change_summary=watch_failure.change_summary,
+                proposal_ids=watch_failure.proposal_ids,
             )
             text = None
             correction_rounds = maximum_corrections
             continue
-        corrected = _read_corrected_watch_deliverable(launch_turn)
-        text = corrected.text
-        failure = corrected.failure
+        if watch_failure is not None:
+            corrected = _read_corrected_watch_deliverable(launch_turn)
+            text = corrected.text
+            failure = corrected.failure
+        else:
+            text = None
+            failure = None
 
 
 async def _apply_work_turn(
@@ -2099,6 +2148,7 @@ def _finalize_work_turn(
     turn: WorkFinalizationContext,
     answer: str,
     graph_update: GraphUpdateResult,
+    turn_outcome: TurnOutcome | None = None,
 ) -> tuple[str, str]:
     try:
         _append_chat_exchange(
@@ -2108,6 +2158,7 @@ def _finalize_work_turn(
             turn.outcome.session_id,
             graph_update.applied_revision,
             graph_update=graph_update,
+            turn_outcome=turn_outcome,
             execution=turn.execution,
         )
     except (OSError, StateUnavailable, ValueError) as exc:
@@ -2127,6 +2178,8 @@ def _finalize_work_turn(
     payload: dict[str, object] = {
         "graph_update": graph_update.model_dump(mode="json"),
     }
+    if turn_outcome is not None:
+        payload["turn_outcome"] = turn_outcome.model_dump(mode="json")
     if graph_update.applied_revision is not None:
         payload["applied_revision"] = graph_update.applied_revision
     return (
@@ -2394,6 +2447,7 @@ async def finalize_work_result(
             launcher,
             retry_baseline.watch_digest,
             settled,
+            collect_outcome=True,
             launch_turn=launch_turn,
             staged=staged,
             composed=composed,
@@ -2426,7 +2480,7 @@ async def finalize_work_result(
     for artifact in _finalize_work_artifacts(turn):
         yield _sse(AgentEvent(event="artifact", artifact=artifact))
 
-    for frame in _finalize_work_turn(turn, answer, applied.graph_update):
+    for frame in _finalize_work_turn(turn, answer, applied.graph_update, settled.turn_outcome):
         yield frame
 
 

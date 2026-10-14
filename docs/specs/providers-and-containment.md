@@ -619,7 +619,9 @@ the one its session began with.
 ## One graph output channel
 
 The collection boundary is [invariant 4b](../../AGENTS.md#stable-invariants).
-Conversation turns collect only `patch.json` from their exact task stage.
+Conversation graph changes collect only `patch.json` from their exact task stage.
+Ordinary Work also collects `watch.json` and the required `outcome.json` there;
+the latter reports the turn outcome and grants no graph authority.
 Ingestion and branch merge prefer it, then accept exactly one patch-shaped JSON
 file if it is missing or not Patch-shaped. They inspect at most eight files,
 `patch.json` first then filename order; multiple candidates are refused.

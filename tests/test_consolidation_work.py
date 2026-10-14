@@ -243,18 +243,30 @@ def test_consolidation_queued_launch_rechecks_authorization(
 
 
 @pytest.mark.asyncio
-async def test_consolidation_bound_owner_pins_workflow_and_refuses_watchers(manifest, tmp_path):
+@pytest.mark.parametrize("outcome", ['{"status":"done"}', None])
+async def test_consolidation_bound_owner_pins_workflow_and_refuses_watchers(
+    manifest, tmp_path, outcome
+):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     append_fixture_patch(app.state.service, seed_patch())
     request, execution = _admit(app)
     assert work_command_handler(execution, None).allowed_verbs == {"validate", "apply", "lesson"}
-    launcher = ScriptedLauncher([{"watch.json": "{}"}], message="Consolidation finished.")
-    async for _ in stream_work_run(
+    launcher = ScriptedLauncher(
+        [{"watch.json": "{}"}], message="Consolidation finished.", outcome=outcome
+    )
+    frames = []
+    async for frame in stream_work_run(
         app.state.service, launcher, request, tmp_path / "data", execution=execution
     ):
-        pass
-    assert launcher.calls == 1
-    assert launcher.resumed_sessions == [None]
+        frames.append(frame)
+    calls = 1 if outcome else 2
+    assert launcher.calls == calls
+    assert launcher.resumed_sessions == [None] + [launcher.native_session_id] * (calls - 1)
+    assert all(item["capability"] == "work_auto" for item in launcher.launch_kwargs)
+    payloads = [json.loads(frame.removeprefix("data: ")) for frame in frames]
+    assert not any(item["event"] == "error" for item in payloads)
+    results = [json.loads(item["text"]) for item in payloads if item["event"] == "message"]
+    assert results[-1]["turn_outcome"]["status"] == ("done" if outcome else "not_stated")
     # The task contract invokes the staged workflow, not just the request field.
     contract = Path(re.search(r"(/\S+-initial\.md)", launcher.prompts[0]).group(1))
     invoked = [
