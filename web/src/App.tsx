@@ -1481,12 +1481,17 @@ function MemberApp({
       const activeId = getActiveProjectId();
       if (activeId) {
         const visibleProjectId = activeId;
+        const visibleTarget = activeGraphTargetRef.current;
         scheduler.activate(visibleProjectId);
         setProjectReconciliation("reconciling");
         // An unchanged read keeps the snapshot's identity, so no effect settles it.
         void reloadRef.current(false).then(
           () => {
-            if (isActiveProject(visibleProjectId) && !stopped)
+            if (
+              isActiveProject(visibleProjectId) &&
+              sameGraphTarget(visibleTarget, activeGraphTargetRef.current) &&
+              !stopped
+            )
               setProjectReconciliation("authoritative");
           },
           (error) => {
