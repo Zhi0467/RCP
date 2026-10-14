@@ -2263,7 +2263,16 @@ export interface AgentTaskResult {
   [key: string]: unknown;
 }
 
-export type ArtifactView = "html" | "image" | "video" | "markdown" | "text" | "pdf" | "file";
+export const ARTIFACT_VIEWS = [
+  "html",
+  "image",
+  "video",
+  "markdown",
+  "text",
+  "pdf",
+  "file",
+] as const;
+export type ArtifactView = (typeof ARTIFACT_VIEWS)[number];
 
 /** What a turn did to one artifact of its session: a new version, or why not. */
 export interface ArtifactEditOutcome {

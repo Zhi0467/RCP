@@ -1,3 +1,4 @@
+import { ARTIFACT_VIEWS } from "../core/types.ts";
 import type {
   AgentArtifactDescriptor,
   ArtifactEditOutcome,
@@ -437,7 +438,7 @@ export function taskArtifacts(task: AgentTask): AgentArtifactDescriptor[] {
       typeof item.artifact_id === "string" &&
       typeof item.name === "string" &&
       typeof item.media_type === "string" &&
-      ["html", "image", "markdown", "text", "pdf", "file"].includes(item.view) &&
+      (ARTIFACT_VIEWS as readonly string[]).includes(item.view) &&
       typeof item.available === "boolean" &&
       (item.unavailable_reason === null || typeof item.unavailable_reason === "string") &&
       typeof item.can_open === "boolean" &&
