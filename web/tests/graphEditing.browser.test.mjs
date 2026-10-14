@@ -32,16 +32,24 @@ test("canvas gestures stage atomic updates, retain pending previews, and guard r
     const card = (id) => page.locator(`.dag-node[data-node-id="${id}"]`);
     const select = (id) => card(id).locator(".dag-node-inspect").click();
     const selectEdge = async (id) => {
-      // Wait until the link's own hit path is under its midpoint: the layout may still be settling.
-      const handle = await page.waitForFunction((edgeId) => {
-        const path = document.querySelector(`.dag-edge-hit[data-edge-id="${edgeId}"]`);
-        if (!path) return null;
-        const p = path.getPointAtLength(path.getTotalLength() / 2);
-        const screen = new DOMPoint(p.x, p.y).matrixTransform(path.getScreenCTM());
-        return document.elementFromPoint(screen.x, screen.y) === path
-          ? { x: screen.x, y: screen.y }
-          : null;
-      }, id);
+      // Wait until the link's own hit path has sat under its midpoint for several
+      // frames: a preview or layout pass may still be moving it.
+      const handle = await page.waitForFunction(
+        (edgeId) => {
+          const path = document.querySelector(`.dag-edge-hit[data-edge-id="${edgeId}"]`);
+          const p = path?.getPointAtLength(path.getTotalLength() / 2);
+          const screen = p && new DOMPoint(p.x, p.y).matrixTransform(path.getScreenCTM());
+          const key =
+            screen && document.elementFromPoint(screen.x, screen.y) === path
+              ? `${Math.round(screen.x)},${Math.round(screen.y)}`
+              : null;
+          const probe = window.__edgeProbe;
+          window.__edgeProbe = { key, frames: key && probe?.key === key ? probe.frames + 1 : 0 };
+          return window.__edgeProbe.frames >= 10 ? { x: screen.x, y: screen.y } : null;
+        },
+        id,
+        { polling: "raf" },
+      );
       const point = await handle.jsonValue();
       await page.mouse.click(point.x, point.y);
     };
@@ -98,13 +106,22 @@ test("canvas gestures stage atomic updates, retain pending previews, and guard r
     await page.locator('[data-relation="supports"]').first().click();
     await page.getByRole("button", { name: "Direct", exact: true }).click();
     await page.getByRole("button", { name: "Moderate", exact: true }).click();
-    await page.locator(".dag-edit-menu").getByRole("button", { name: "Link", exact: true }).click();
+    const linkButton = page
+      .locator(".dag-edit-menu")
+      .getByRole("button", { name: "Link", exact: true });
+    await page.getByRole("button", { name: "Matched", exact: true }).click();
+    await page.getByLabel("Explanation", { exact: true }).fill("");
+    assert.equal(await linkButton.isDisabled(), true);
+    await page.getByLabel("Explanation", { exact: true }).fill("Same direction as planned");
+    await linkButton.click();
     await page.waitForFunction(() =>
       JSON.parse(document.querySelector('output[aria-label="Canvas calls"]').textContent).some(
         (call) => call.method === "onReplaceEdge",
       ),
     );
     const replaced = (await calls()).find((call) => call.method === "onReplaceEdge");
+    assert.equal(replaced.args[1].expectation, "matched");
+    assert.ok(replaced.args[1].explanation.length > 0);
     await selectEdge(replaced.args[1].id);
     await page.getByRole("button", { name: "Unlink", exact: true }).click();
     // Hold the duplicate over the keeper until the merge ring arms.

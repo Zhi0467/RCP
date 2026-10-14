@@ -1162,7 +1162,8 @@ test("merge copies drafted links with payload and direction, deduplicates and un
   const unstaged = unstageMerge(merged, canonical, "duplicate");
   assert.deepEqual(unstaged.added_edges, [incoming]);
   assert.deepEqual(unstaged.removed_node_ids, []);
-  assert.deepEqual(stageEdgeRemoval(merged, canonical, copy.id).merges, []);
+  const unlinked = stageEdgeRemoval(merged, canonical, copy.id);
+  assert.deepEqual(unlinked.merges, [{ duplicate: "duplicate", canonical: "kept", edge_ids: [] }]);
   const restored = unstageNodeRemoval(merged, "duplicate");
   assert.deepEqual(restored.merges, []);
   assert.deepEqual(restored.added_edges, [incoming]);

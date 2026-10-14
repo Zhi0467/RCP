@@ -1761,6 +1761,17 @@ a.digest-title:hover {
   color: var(--muted);
   border-top: 1px solid var(--line);
 }
+.dag-menu-explanation {
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  font: var(--type-2xs) var(--ui);
+  min-height: 30px;
+  padding: 4px 8px;
+  width: 100%;
+}
+.dag-menu-explanation.is-required {
+  border-color: var(--red);
+}
 .dag-assessment-row {
   flex-wrap: wrap;
 }

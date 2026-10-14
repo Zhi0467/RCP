@@ -140,11 +140,15 @@ export function normalizeHumanDraft(draft: HumanDraft, graph: GraphState): Human
     removed_node_ids: removedNodeIds,
     ...(next.merges
       ? {
-          merges: next.merges.filter(
-            (merge) =>
-              removedNodeIds.includes(merge.duplicate) &&
-              merge.edge_ids.every((id) => next.added_edges.some((edge) => edge.id === id)),
-          ),
+          // A merge stays one item while its duplicate is removed; unlinked copies drop out of it.
+          merges: next.merges
+            .filter((merge) => removedNodeIds.includes(merge.duplicate))
+            .map((merge) => ({
+              ...merge,
+              edge_ids: merge.edge_ids.filter((id) =>
+                next.added_edges.some((edge) => edge.id === id),
+              ),
+            })),
         }
       : {}),
     ontology,

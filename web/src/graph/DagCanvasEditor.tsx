@@ -24,6 +24,7 @@ import {
 } from "react";
 import type {
   Edge,
+  EdgeExpectation,
   EvidenceAssessment,
   GraphNode,
   GraphState,
@@ -59,8 +60,13 @@ type Menu = {
   choice?: RelationChoice;
   relevance?: EvidenceAssessment["relevance"];
   weight?: EvidenceAssessment["weight"];
+  expectation?: EdgeExpectation | null;
+  explanation?: string;
   node?: NewNode;
 };
+/** Matched and diverged outcomes must say why (backend rule). */
+const explanationRequired = (menu: Menu) =>
+  (menu.expectation === "matched" || menu.expectation === "diverged") && !menu.explanation?.trim();
 function automaticRelation(choices: RelationChoice[]): RelationChoice | undefined {
   const ontology = choices.filter((choice) => !choice.meta);
   return ontology.length === 1 ? ontology[0] : choices.length === 1 ? choices[0] : undefined;
@@ -197,11 +203,12 @@ export function useDagCanvasEditor({
     typeof window !== "undefined" && window.matchMedia("(max-width: 560px)").matches ? 1 / zoom : 1;
   // Menus and toolbars render at screen size at every zoom (CSS counter-scales them).
   const overlayScale = 1 / zoom;
-  const clamped = (at: Point, width = 260): CSSProperties => {
+  // `height` is the overlay's approximate screen height, so it opens upward near the bottom.
+  const clamped = (at: Point, width = 260, height = 112): CSSProperties => {
     const rect = scrollRef.current?.getBoundingClientRect();
     if (!rect) return { left: at.x, top: at.y };
     const min = world(rect.left + 8, rect.top + 8),
-      max = world(rect.right - 8, rect.bottom - 120);
+      max = world(rect.right - 8, rect.bottom - 8 - height);
     const top = Math.max(min.y, Math.min(at.y, max.y));
     return {
       left: Math.max(min.x, Math.min(at.x, max.x - width * overlayScale)),
@@ -270,16 +277,26 @@ export function useDagCanvasEditor({
       setMenu(null);
       return;
     }
-    if (choice.needsAssessment && (!relevance || !weight)) {
-      setMenu({ ...context, choice });
+    // Assessed and result links open the details step before staging.
+    if (
+      (choice.needsAssessment && (!relevance || !weight)) ||
+      (choice.acceptsExpectation && !context.choice)
+    ) {
+      setMenu({
+        ...context,
+        choice,
+        expectation: context.expectation ?? context.replace?.expectation ?? null,
+        explanation: context.explanation ?? context.replace?.explanation ?? "",
+      });
       return;
     }
+    if (explanationRequired(context)) return;
     const next: NewEdge = {
       id: `edge/${crypto.randomUUID()}`,
       source: choice.source,
       target: choice.target,
       relation: choice.relation,
-      explanation: context.replace?.explanation ?? "",
+      explanation: (context.explanation ?? context.replace?.explanation ?? "").trim(),
       ...(choice.needsAssessment && relevance && weight
         ? {
             assessment: {
@@ -290,8 +307,8 @@ export function useDagCanvasEditor({
             },
           }
         : {}),
-      ...(choice.acceptsExpectation && context.replace?.expectation
-        ? { expectation: context.replace.expectation }
+      ...(choice.acceptsExpectation && context.expectation
+        ? { expectation: context.expectation }
         : {}),
     };
     if (context.node) {
@@ -850,37 +867,83 @@ export function useDagCanvasEditor({
         </div>
       )}
       {menu && (
-        <div className="dag-edit-menu" data-canvas-ui style={clamped(menu.at)}>
+        <div
+          className="dag-edit-menu"
+          data-canvas-ui
+          style={clamped(
+            menu.at,
+            260,
+            menu.choice
+              ? 110 +
+                  (menu.choice.needsAssessment ? 76 : 0) +
+                  (menu.choice.acceptsExpectation ? 38 : 0)
+              : menu.choices.length * 32 + 10,
+          )}
+        >
           {menu.choice ? (
             <>
               <strong>{humanize(menu.choice.relation)}</strong>
-              <div className="dag-assessment-row">
-                {(["direct", "indirect", "contextual"] as const).map((value) => (
-                  <button
-                    type="button"
-                    key={value}
-                    aria-pressed={menu.relevance === value}
-                    onClick={() => setMenu({ ...menu, relevance: value })}
-                  >
-                    {humanize(value)}
-                  </button>
-                ))}
-              </div>
-              <div className="dag-assessment-row">
-                {(["limited", "moderate", "strong"] as const).map((value) => (
-                  <button
-                    type="button"
-                    key={value}
-                    aria-pressed={menu.weight === value}
-                    onClick={() => setMenu({ ...menu, weight: value })}
-                  >
-                    {humanize(value)}
-                  </button>
-                ))}
-              </div>
+              {menu.choice.needsAssessment && (
+                <>
+                  <div className="dag-assessment-row">
+                    {(["direct", "indirect", "contextual"] as const).map((value) => (
+                      <button
+                        type="button"
+                        key={value}
+                        aria-pressed={menu.relevance === value}
+                        onClick={() => setMenu({ ...menu, relevance: value })}
+                      >
+                        {humanize(value)}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="dag-assessment-row">
+                    {(["limited", "moderate", "strong"] as const).map((value) => (
+                      <button
+                        type="button"
+                        key={value}
+                        aria-pressed={menu.weight === value}
+                        onClick={() => setMenu({ ...menu, weight: value })}
+                      >
+                        {humanize(value)}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+              {menu.choice.acceptsExpectation && (
+                <div className="dag-assessment-row" role="group" aria-label="Expectation">
+                  {(["matched", "diverged", "no_expectation"] as const).map((value) => (
+                    <button
+                      type="button"
+                      key={value}
+                      aria-pressed={menu.expectation === value}
+                      onClick={() =>
+                        setMenu({ ...menu, expectation: menu.expectation === value ? null : value })
+                      }
+                    >
+                      {humanize(value)}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <input
+                className={`dag-menu-explanation ${explanationRequired(menu) ? "is-required" : ""}`}
+                aria-label="Explanation"
+                placeholder="Explanation"
+                value={menu.explanation ?? ""}
+                onChange={(event) => setMenu({ ...menu, explanation: event.target.value })}
+                onKeyDown={(event) => {
+                  event.stopPropagation();
+                  if (event.key === "Escape") setMenu(null);
+                }}
+              />
               <button
                 type="button"
-                disabled={!menu.relevance || !menu.weight}
+                disabled={
+                  (menu.choice.needsAssessment && (!menu.relevance || !menu.weight)) ||
+                  explanationRequired(menu)
+                }
                 onClick={() => stageChoice(menu.choice!, menu)}
               >
                 Link

@@ -76,7 +76,8 @@ const editOptions: GraphEditOptions = {
       target_types: ["hypothesis"],
       same_type: false,
       assessment_required_for: [{ source_type: "evidence", target_type: "hypothesis" }],
-      accepts_expectation: false,
+      // Lets the canvas test drive the expectation step on an assessed link.
+      accepts_expectation: true,
     },
     {
       name: "contradicts",
