@@ -45,13 +45,16 @@ def graph_edit_options(
         "relations": [
             {
                 "name": name,
+                "source_types": sorted(spec.source_types),
+                "target_types": sorted(spec.target_types),
+                "same_type": spec.same_type,
                 "assessment_required_for": [
                     {"source_type": source, "target_type": target}
                     for source, target in sorted(ASSESSMENT_REQUIRED_FOR.get(name, ()))
                 ],
                 "accepts_expectation": name in EXPECTATION_RELATIONS,
             }
-            for name in RELATION_SPEC
+            for name, spec in RELATION_SPEC.items()
         ],
     }
 

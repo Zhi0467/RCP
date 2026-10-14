@@ -128,6 +128,20 @@ export function useProjectSession(initialProjectId: string | null) {
     [dispatch, getState],
   );
 
+  const undoHumanDraft = useCallback((): ProjectSessionTransition => {
+    const previous = getState();
+    return previous.projectId
+      ? dispatch({ kind: "human_draft_undo", project_id: previous.projectId })
+      : { previous, next: previous };
+  }, [dispatch, getState]);
+
+  const redoHumanDraft = useCallback((): ProjectSessionTransition => {
+    const previous = getState();
+    return previous.projectId
+      ? dispatch({ kind: "human_draft_redo", project_id: previous.projectId })
+      : { previous, next: previous };
+  }, [dispatch, getState]);
+
   const beginSync = useCallback(
     (projectId: string, expectedHead: GraphHeadRef): TransitionSyncFence | null => {
       const current = getState();
@@ -166,8 +180,16 @@ export function useProjectSession(initialProjectId: string | null) {
     [dispatch],
   );
 
+  const history = state.projectId
+    ? state.draftHistory[graphSessionKey(state.projectId, state.graphTarget)]
+    : undefined;
+
   return {
     state,
+    undoHumanDraft,
+    redoHumanDraft,
+    canUndo: Boolean(history?.past.length),
+    canRedo: Boolean(history?.future.length),
     dispatchProjectSession: dispatch,
     getProjectSessionState: getState,
     beginProjectSnapshotRequest: beginSnapshotRequest,

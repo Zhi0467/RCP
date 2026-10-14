@@ -43,6 +43,7 @@ export interface HumanDraft {
   added_edges: NewEdge[];
   removed_edge_ids: string[];
   edge_base_revision: number | null;
+  merges?: Array<{ duplicate: string; canonical: string; edge_ids: string[] }>;
 }
 
 export interface HumanSyncRequest {
@@ -137,6 +138,15 @@ export function normalizeHumanDraft(draft: HumanDraft, graph: GraphState): Human
     base_revision: graph.revision,
     nodes,
     removed_node_ids: removedNodeIds,
+    ...(next.merges
+      ? {
+          merges: next.merges.filter(
+            (merge) =>
+              removedNodeIds.includes(merge.duplicate) &&
+              merge.edge_ids.every((id) => next.added_edges.some((edge) => edge.id === id)),
+          ),
+        }
+      : {}),
     ontology,
     edge_base_revision:
       next.added_edges.length || next.removed_edge_ids.length
@@ -311,12 +321,16 @@ export function stageNodeRemoval(
     return draft;
   const next = cloneDraft(draft);
   next.removed_node_ids.push(nodeId);
-  return next;
+  next.added_edges = next.added_edges.filter(
+    (edge) => edge.source !== nodeId && edge.target !== nodeId,
+  );
+  return normalizeHumanDraft(next, graph);
 }
 
 export function unstageNodeRemoval(draft: HumanDraft, nodeId: string): HumanDraft {
   const next = cloneDraft(draft);
   next.removed_node_ids = next.removed_node_ids.filter((id) => id !== nodeId);
+  if (next.merges) next.merges = next.merges.filter((merge) => merge.duplicate !== nodeId);
   return next;
 }
 
@@ -379,6 +393,101 @@ export function stageCustomNode(draft: HumanDraft, node: NewNode): HumanDraft {
   return next;
 }
 
+export function stageCanvasNode(
+  draft: HumanDraft,
+  graph: GraphState,
+  node: NewNode,
+  edges: NewEdge[],
+): HumanDraft {
+  const next = stageCustomNode(draft, node);
+  next.added_edges.push(...edges);
+  return normalizeHumanDraft(next, graph);
+}
+
+export function updateStagedNode(draft: HumanDraft, node: NewNode): HumanDraft {
+  return draft.custom_nodes[node.id] ? stageCustomNode(draft, node) : draft;
+}
+
+export function stageNodesRemoval(
+  draft: HumanDraft,
+  graph: GraphState,
+  nodeIds: string[],
+  experimentActive = false,
+): HumanDraft {
+  return nodeIds.reduce(
+    (next, id) =>
+      next.custom_nodes[id]
+        ? unstageCustomNode(next, graph, id)
+        : stageNodeRemoval(next, graph, id, experimentActive),
+    draft,
+  );
+}
+
+export function stageMerge(
+  draft: HumanDraft,
+  graph: GraphState,
+  duplicateId: string,
+  canonicalId: string,
+  experimentActive = false,
+): HumanDraft {
+  const duplicate = draft.custom_nodes[duplicateId] ?? graph.nodes[duplicateId];
+  const canonical = draft.custom_nodes[canonicalId] ?? graph.nodes[canonicalId];
+  if (
+    !duplicate ||
+    !canonical ||
+    duplicateId === canonicalId ||
+    duplicate.type !== canonical.type ||
+    (duplicate.extension_type ?? null) !== (canonical.extension_type ?? null) ||
+    draft.removed_node_ids.includes(canonicalId)
+  )
+    return draft;
+  const next = stageNodesRemoval(draft, graph, [duplicateId], experimentActive);
+  if (next === draft) return draft;
+
+  const removedNodes = new Set(draft.removed_node_ids);
+  const removedEdges = new Set(draft.removed_edge_ids);
+  const edges = [
+    ...Object.values(graph.edges).filter((edge) => !removedEdges.has(edge.id)),
+    ...draft.added_edges,
+  ].filter((edge) => !removedNodes.has(edge.source) && !removedNodes.has(edge.target));
+  const edgeKey = (edge: NewEdge) => JSON.stringify([edge.source, edge.relation, edge.target]);
+  const existing = new Set(edges.map(edgeKey));
+  const edgeIds: string[] = [];
+  for (const edge of edges) {
+    if (edge.source !== duplicateId && edge.target !== duplicateId) continue;
+    const copy: NewEdge = {
+      id: `edge/${crypto.randomUUID()}`,
+      source: edge.source === duplicateId ? canonicalId : edge.source,
+      target: edge.target === duplicateId ? canonicalId : edge.target,
+      relation: edge.relation,
+      explanation: edge.explanation,
+      ...("assessment" in edge ? { assessment: edge.assessment } : {}),
+      ...("expectation" in edge ? { expectation: edge.expectation } : {}),
+    };
+    if (copy.source === copy.target || existing.has(edgeKey(copy))) continue;
+    existing.add(edgeKey(copy));
+    edgeIds.push(copy.id);
+    next.added_edges.push(copy);
+  }
+  next.merges = [
+    ...(next.merges ?? []),
+    {
+      duplicate: duplicateId,
+      canonical: canonicalId,
+      edge_ids: edgeIds,
+    },
+  ];
+  return normalizeHumanDraft(next, graph);
+}
+
+export function unstageMerge(draft: HumanDraft, graph: GraphState, duplicate: string): HumanDraft {
+  const merge = draft.merges?.find((entry) => entry.duplicate === duplicate);
+  if (!merge) return draft;
+  const next = unstageNodeRemoval(draft, duplicate);
+  next.added_edges = next.added_edges.filter((edge) => !merge.edge_ids.includes(edge.id));
+  return normalizeHumanDraft(next, graph);
+}
+
 export function unstageCustomNode(
   draft: HumanDraft,
   graph: GraphState,
@@ -410,6 +519,15 @@ export function stageEdgeRemoval(draft: HumanDraft, graph: GraphState, edgeId: s
     next.removed_edge_ids = [...new Set([...next.removed_edge_ids, edgeId])];
   }
   return normalizeHumanDraft(next, graph);
+}
+
+export function stageEdgeReplacement(
+  draft: HumanDraft,
+  graph: GraphState,
+  edgeId: string,
+  edge: NewEdge,
+): HumanDraft {
+  return stageEdgeAddition(stageEdgeRemoval(draft, graph, edgeId), graph, edge);
 }
 
 export function unstageEdgeRemoval(
@@ -480,7 +598,8 @@ export function humanDraftChangeCount(draft: HumanDraft | null): number {
     (draft.ontology ? 1 : 0) +
     Object.keys(draft.custom_nodes).length +
     draft.added_edges.length +
-    draft.removed_edge_ids.length
+    draft.removed_edge_ids.length -
+    (draft.merges ?? []).reduce((count, merge) => count + merge.edge_ids.length, 0)
   );
 }
 
@@ -631,6 +750,18 @@ export function deserializeHumanDraft(value: string | null): HumanDraft | null {
       removed_edge_ids: Array.isArray(parsed.removed_edge_ids)
         ? parsed.removed_edge_ids.filter((id): id is string => typeof id === "string")
         : [],
+      ...(Array.isArray(parsed.merges)
+        ? {
+            merges: parsed.merges.filter(
+              (merge): merge is NonNullable<HumanDraft["merges"]>[number] =>
+                isRecord(merge) &&
+                typeof merge.duplicate === "string" &&
+                typeof merge.canonical === "string" &&
+                Array.isArray(merge.edge_ids) &&
+                merge.edge_ids.every((id: unknown) => typeof id === "string"),
+            ),
+          }
+        : {}),
       edge_base_revision: Number.isInteger(parsed.edge_base_revision)
         ? (parsed.edge_base_revision as number)
         : (Array.isArray(parsed.added_edges) && parsed.added_edges.length) ||
@@ -646,6 +777,9 @@ export function deserializeHumanDraft(value: string | null): HumanDraft | null {
 function cloneDraft(draft: HumanDraft): HumanDraft {
   return {
     ...draft,
+    ...(draft.merges
+      ? { merges: draft.merges.map((merge) => ({ ...merge, edge_ids: [...merge.edge_ids] })) }
+      : {}),
     added_edges: draft.added_edges.map((edge) => ({
       ...edge,
       ...(edge.assessment
