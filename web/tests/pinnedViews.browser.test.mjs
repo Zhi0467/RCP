@@ -21,10 +21,13 @@ test("pins share refresh, mount only the active version, open native nodes, and 
       { artifact_id: "b", title: "B", position: 1 },
     ];
     let version = "v1";
+    let pinFields = { pin_branch_id: null, pin_branch_name: "main", pinned: false };
     await page.route("**/api/projects/project/research-views**", async (route) => {
       if (route.request().method() === "DELETE") pins = pins.filter((p) => p.artifact_id !== "a");
-      if (route.request().method() === "POST")
-        assert.deepEqual(route.request().postDataJSON(), { artifact_id: "a", branch_id: null });
+      if (route.request().method() === "POST") {
+        assert.deepEqual(route.request().postDataJSON(), { artifact_id: "a", branch_id: "b1" });
+        pinFields = { ...pinFields, pinned: true };
+      }
       await route.fulfill({ json: { pins } });
     });
     await page.route("**/api/projects/project/artifacts/*/state", (route) =>
@@ -32,9 +35,8 @@ test("pins share refresh, mount only the active version, open native nodes, and 
         json: {
           artifact_id: "a",
           current_version: version,
-          pin_branch_id: null,
+          ...pinFields,
           can_pin: true,
-          pinned: false,
           name: "A",
           viewer_url: "/api/projects/project/artifacts/a/viewer",
         },
@@ -87,6 +89,8 @@ test("pins share refresh, mount only the active version, open native nodes, and 
     await page.locator(".pinned-view-unpin").first().click();
     await page.waitForFunction(() => !document.querySelector(".pinned-view"));
     assert.equal(await page.locator('.artifacts-subnav button[aria-pressed="true"]').count(), 1);
+    // A page bound to a branch names that branch while another target is in view.
+    pinFields = { ...pinFields, pin_branch_id: "b1", pin_branch_name: "running-the-main-matrix" };
     await page.evaluate(async () =>
       (await import("/src/artifacts/artifactViewerModel.ts")).openArtifact({
         projectId: "project",
@@ -100,6 +104,21 @@ test("pins share refresh, mount only the active version, open native nodes, and 
       ),
       page.locator(".pin-view-action").click(),
     ]);
+    // Pinned stays usable: it goes to the pin on its own branch.
+    const pinned = page.locator('.pin-view-action[aria-pressed="true"]');
+    await pinned.waitFor();
+    assert.equal(await pinned.locator(".branch-tag").innerText(), "running-the-main-matrix");
+    const box = await pinned.boundingBox();
+    assert.ok(box.x + box.width <= 390);
+    await pinned.click();
+    await page.waitForFunction(() => location.hash.includes("pin="));
+    const [path, query] = (await page.evaluate(() => location.hash)).split("?");
+    assert.equal(path, "#/projects/project");
+    assert.deepEqual(Object.fromEntries(new URLSearchParams(query)), {
+      view: "artifacts",
+      branch_id: "b1",
+      pin: "a",
+    });
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

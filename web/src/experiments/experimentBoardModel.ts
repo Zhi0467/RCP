@@ -35,6 +35,8 @@ export interface ProjectHashRoute {
   view: AppView;
   projectViewSpecified: boolean;
   chatId?: string;
+  /** A pinned page to open in Artifacts. */
+  pinId?: string;
   experimentId: string | null;
   experimentRoute: ExperimentRouteIdentity | null;
   autoResearchEpisodeId: string | null;
@@ -248,6 +250,9 @@ export function parseProjectHash(hash: string): ProjectHashRoute {
       projectViewSpecified: params.has("view"),
       ...(params.get("view") === "chats" && params.get("chat")
         ? { chatId: params.get("chat")! }
+        : {}),
+      ...(params.get("view") === "artifacts" && params.get("pin")
+        ? { pinId: params.get("pin")! }
         : {}),
       experimentId: null,
       experimentRoute: null,

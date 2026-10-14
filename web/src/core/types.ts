@@ -2341,6 +2341,8 @@ export interface ResearchViewPins {
  *  viewer's RCP chrome. Every `can_*` is an offer; the endpoint still decides. */
 export interface ArtifactViewerState {
   pin_branch_id: string | null;
+  /** Display name of the graph target a pin lands on; "main" for main. */
+  pin_branch_name: string;
   can_pin: boolean;
   pinned: boolean;
   artifact_id: string;

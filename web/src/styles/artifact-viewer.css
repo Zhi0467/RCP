@@ -35,6 +35,21 @@
   padding: 5px;
   color: inherit;
 }
+.pin-view-action {
+  min-width: 0;
+}
+.pin-view-action[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--cobalt) 12%, transparent);
+  color: var(--cobalt-dark);
+}
+.pin-view-action .branch-tag {
+  max-width: 12rem;
+}
+@media (max-width: 480px) {
+  .pin-view-action .branch-tag {
+    max-width: 6.5rem;
+  }
+}
 .artifact-viewer-status.live {
   color: var(--green);
 }

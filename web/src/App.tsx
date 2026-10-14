@@ -1,6 +1,6 @@
 import { errorMessage } from "./core/errors";
 import { PinnedView, PinnedViewTab } from "./graph/PinnedView";
-import { researchViewsProfile } from "./graph/researchViewResources";
+import { pinRequest, pinScopeKey, researchViewsProfile } from "./graph/researchViewResources";
 import { useProjectTabResources } from "./projects/projectTabResources";
 import { beginTaskMutation, beginTaskPublication } from "./agents/taskActions";
 import { beginChatSend } from "./agents/chatSendMutation";
@@ -825,8 +825,16 @@ function MemberApp({
     reportError: reportErrorNotice,
   });
   const pinBranchId = graphTarget.kind === "branch" ? graphTarget.branch_id : null;
-  const pinScope = JSON.stringify([projectId, pinBranchId]);
+  const pinScope = pinScopeKey(projectId, pinBranchId);
   const [pinSelection, setPinSelection] = useState<{ scope: string; id: string } | null>(null);
+  // A route naming a pin opens it once that target's pins have loaded.
+  const [requestedPin, setRequestedPin] = useState(() =>
+    pinRequest(
+      initialRoute.project.projectId,
+      initialRoute.graphTarget,
+      initialRoute.project.pinId,
+    ),
+  );
   const graphView = useResource(
     `${projectId}:graph-view`,
     backendSessionReady && projectId ? graphProfile(projectId, graphTarget) : null,
@@ -1095,6 +1103,13 @@ function MemberApp({
       setPinSelection(null);
     }
   }, [pinSelection, pinScope, pinsResource.value, activePin]);
+  useEffect(() => {
+    if (requestedPin?.scope !== pinScope || !pinsResource.value) return;
+    if (pinsResource.value.pins.some((pin) => pin.artifact_id === requestedPin.id)) {
+      setPinSelection(requestedPin);
+    }
+    setRequestedPin(null);
+  }, [requestedPin, pinScope, pinsResource.value]);
   const graphPath = useCallback((path: string) => graphTargetUrl(path, graphTarget), [graphTarget]);
   const isActiveGraph = useCallback(
     (id: string) =>
@@ -1641,6 +1656,7 @@ function MemberApp({
         chatId: route.chatId,
         graphTarget: nextTarget,
       });
+      setRequestedPin(pinRequest(route.projectId, nextTarget, route.pinId));
       // A route that names a chat opens it; any other entry shows the board.
       setAgentsBoard(!route.chatId);
       if (
