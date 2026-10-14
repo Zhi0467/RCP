@@ -2,7 +2,7 @@
 id: graph-consolidation
 kind: workflow
 label: Graph consolidation
-version: 1.3.0
+version: 1.4.0
 description: Consolidate a project's main research graph and operational lessons while nobody is watching, apply the result inside the turn, and leave one short visual report of every change for the human to read in the morning.
 dependencies:
 - graph-audit@3.4.0
@@ -21,9 +21,32 @@ every change must be one they would make themselves after a careful read.
 
 Apply Graph audit to main, reading `research.md` before `graph.json`. Use
 Experiment causality and Evidence triage only on the nodes the audit flags.
-Keep the findings as working notes; they feed passes 2, 3, and 5.
+Keep the findings as working notes for the following passes.
 
-## Pass 2: consolidate
+## Pass 2: fact-check Evidence
+
+Check Evidence created or changed on main since the covered head supplied for
+this run; if there is no covered head yet, check all current Evidence. Read
+the cited source bytes on the execution host: artifact refs,
+producing Experiment job logs, and repository files. Conversation transcripts
+and earlier agent summaries are pointers, not substitutes for reading sources.
+
+Fix prose problems and missing or wrong citations directly in your Patch when
+you find the right source, preserving the claim, scope, and qualifications.
+For scientific or semantic problems, use the command client's keyed `flag`:
+
+- `overclaim`: the Evidence claims more than the source supports;
+- `underclaim`: the Evidence omits or understates a result the source supports;
+- `no_source`: no source you can find contains the claim.
+
+Give a one-line finding and, when available, the source path with an optional
+line number. Use an absolute execution-host path or a repository alias followed
+by its relative path. Do not edit the flagged claim, validity, or standing to
+resolve the finding, including in later passes. A human addresses it from Inbox.
+Do not treat inability to read a source as proof the claim is false; state what
+you could not verify in the finding.
+
+## Pass 3: consolidate
 
 Fix only what the audit proved, smallest change first:
 
@@ -55,7 +78,7 @@ only when the audit shows a reader would otherwise be misled, and prefer one
 clear Proposal to many small ones. When in doubt, leave the graph alone and
 put the idea under Suggestions in the report.
 
-## Pass 3: readability and glossary
+## Pass 4: readability and glossary
 
 Read the graph as a newcomer would, against the "Writing for a reader" rules
 in your graph rules.
@@ -70,7 +93,7 @@ in your graph rules.
   without defining it and sharpen entries that are vague or out of date. List
   glossary entries for terms the graph no longer uses under Suggestions.
 
-Put the Pass 2 and Pass 3 changes in one Patch. Validate, then `apply` with a
+Put the Pass 2, Pass 3, and Pass 4 changes in one Patch. Validate, then `apply` with a
 key. Read the returned revision. If validation rejects the Patch, fix it or
 drop the offending operation; never broaden the change to make it pass.
 
@@ -80,14 +103,14 @@ inside the same Patch stays stale. Rewrite each such field from what the graph
 now shows and `apply` that as one more validated Patch. When you cannot tell
 what is now true, leave the field and list the Experiment under Suggestions.
 
-## Pass 4: lessons
+## Pass 5: lessons
 
 Read `lessons.md`. Merge agent-written lessons that say the same thing, rewrite
 unclear ones, and delete ones the graph or later lessons show are wrong or no
 longer apply, using `lesson update` and `lesson delete`. Never touch a
 human-owned lesson. Add a lesson only for operational know-how you met tonight.
 
-## Pass 5: report
+## Pass 6: report
 
 Write one self-contained HTML file named `consolidation-report.html` in the
 turn's artifact folder. Give it a `<title>` naming what changed most, such as
@@ -97,7 +120,8 @@ Lead with one sentence on the state of the graph. Then list every change you
 applied, grouped as merged, superseded, rewritten, refreshed, readability,
 glossary, and relations, each with the node titles before and after and one line of reason.
 Then list the nodes you added, every Decision you queued or reopened, every
-Proposal you raised and why, and the lesson changes. End with **Suggestions**:
+Proposal you raised and why, and the lesson changes. List the Evidence flags
+you raised with each Evidence title, flag kind, and finding. End with **Suggestions**:
 next steps, possible experiments, and audit findings you chose not to act on,
 each one line the human can act on. Use a small before-and-after diagram when a
 merge or supersession changes the shape of a question's path. Keep it to a few

@@ -95,6 +95,7 @@ from rcp.runs.consolidation import (
     require_consolidation_launch,
     settlement_source_effect_id,
 )
+from rcp.runs.evidence_flag_commands import flag_command_usage
 from rcp.runs.experiment_loop import (
     StagedExperimentWatcherResource,
     read_experiment_watcher_outputs,
@@ -360,6 +361,10 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
 
     handler = _work_turn_command_handler(turn)
     instructions = []
+    if "flag" in handler.allowed_verbs:
+        instructions.append(
+            flag_command_usage(client or turn.patch_inputs.validator_staged.client_command())
+        )
     if "lesson" in handler.allowed_verbs:
         instructions.append(
             lesson_command_usage(
@@ -3067,7 +3072,7 @@ def _resume_work_command_handler(
         handler = _work_command_handler(
             execution,
             None,
-            service=service() if context.graph_read_scope is not None else None,
+            service=service(),
             graph_read_scope=context.graph_read_scope,
             consolidation_apply=consolidation_apply_handler(
                 service, execution, mailbox, context.run_truth_scope

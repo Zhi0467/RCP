@@ -1,0 +1,152 @@
+from __future__ import annotations
+
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
+
+from rcp.agents import AgentEvent
+from rcp.api.consolidation import evidence_flag_message
+from rcp.core.models import Patch
+from tests.helpers import append_fixture_patch, create_named_app, signed_in_client, wait_for_task
+from tests.test_api_tasks import _event_frame
+from tests.test_consolidation_work import _admit
+
+
+@pytest.fixture
+def flagged(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    append_fixture_patch(
+        app.state.service,
+        Patch(
+            kind="seed",
+            author="agent",
+            summary="Observation",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[
+                {
+                    "op": "create_nodes",
+                    "nodes": [
+                        {
+                            "id": "ev/result",
+                            "type": "evidence",
+                            "title": "Measured result",
+                            "observation": "Measured result",
+                            "origin": "analytic",
+                        }
+                    ],
+                }
+            ],
+        ),
+    )
+    _, execution = _admit(app)
+    store = execution.store
+    project = app.state.default_project_id
+    flag = store.execute_evidence_flag_command(
+        project,
+        execution.operation_id,
+        key="claim",
+        evidence_id="ev/result",
+        validate_evidence=lambda: app.state.service.history.state().revision,
+        kind="overclaim",
+        finding="The record supports a narrower claim.",
+        source="repo-a/results.txt:3",
+    )["flag"]
+    return app, signed_in_client(app), store, project, flag
+
+
+def test_flags_get_and_dismiss_disposition(flagged):
+    _, client, _, project, flag = flagged
+    base = f"/api/projects/{project}/consolidation"
+    assert client.get(base).json()["evidence_flags"] == [flag]
+    url = f"{base}/evidence-flags/{flag['flag_id']}"
+    assert client.post(url + "/dismiss", json={}).json()["flag"]["state"] == "dismissed"
+    assert client.get(base).json()["evidence_flags"] == []
+    assert client.post(url + "/dismiss", json={}).status_code == 409
+    assert client.post(url + "/address", json={"request_id": "closed"}).status_code == 409
+    assert client.post(f"{base}/evidence-flags/missing/dismiss", json={}).status_code == 404
+
+
+def test_address_admits_one_ordinary_work_turn_and_replays(flagged):
+    app, client, store, project, flag = flagged
+    launches = []
+
+    async def stream(project_id, kind, request, execution):
+        launches.append((project_id, kind, request, execution))
+        yield _event_frame(AgentEvent(event="done"))
+
+    app.state.background_tasks.stream = stream
+    base = f"/api/projects/{project}/consolidation"
+    url = f"{base}/evidence-flags/{flag['flag_id']}/address"
+    request_id = str(uuid.uuid4())
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(
+            pool.map(lambda _: client.post(url, json={"request_id": request_id}), range(2))
+        )
+    assert [response.status_code for response in responses] == [200, 200]
+    result = responses[0].json()
+    assert responses[1].json() == result
+    task = wait_for_task(store, result["operation_id"], expect="succeeded")
+    assert task.kind == "node_chat"
+    assert task.request["mode"] == "work"
+    assert task.request["node_id"] == flag["evidence_id"]
+    assert task.request["message"] == evidence_flag_message(flag)
+    assert task.request["chat_id"] == result["chat_id"]
+    assert task.authorized_by.user_id == store.local_owner.user_id
+    assert task.dispatch_authority.task_contract == "work_auto"
+    assert task.graph_target.branch_id is None
+    assert len(launches) == 1
+    assert client.post(url, json={"request_id": "another-click"}).json() == result
+    assert client.get(base).json()["evidence_flags"] == [result["flag"]]
+
+
+@pytest.mark.parametrize("state", ["open", "addressing"])
+def test_address_missing_node_does_not_bind_chat(flagged, state):
+    _, client, store, project, flag = flagged
+    # An operational flag can outlive the graph node it named.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE evidence_flags SET evidence_id='ev/missing',state=? WHERE flag_id=?",
+            (state, flag["flag_id"]),
+        )
+    response = client.post(
+        f"/api/projects/{project}/consolidation/evidence-flags/{flag['flag_id']}/address",
+        json={"request_id": "missing-node"},
+    )
+    assert response.status_code == 409
+    current = store.evidence_flag(project, flag["flag_id"])
+    assert current["state"] == state and current["chat_id"] is None
+
+
+@pytest.mark.parametrize("action", ["address", "dismiss"])
+@pytest.mark.parametrize("guard", ["membership", "identity", "admission"])
+def test_flag_actions_use_human_write_guards(flagged, monkeypatch, action, guard):
+    _, client, store, project, flag = flagged
+    from fastapi import HTTPException
+
+    from rcp.api.identity import IdentityAccess
+
+    if guard == "membership":
+        monkeypatch.setattr(store, "is_project_member", lambda *args: False)
+        status = 404
+    elif guard == "identity":
+
+        def refuse(*args):
+            raise HTTPException(status_code=428)
+
+        monkeypatch.setattr(IdentityAccess, "require_patch_capable_identity", refuse)
+        status = 428
+    else:
+
+        def refuse(*args):
+            raise ValueError("closed")
+
+        monkeypatch.setattr(store, "require_project_accepts_new_work", refuse)
+        status = 409
+    response = client.post(
+        f"/api/projects/{project}/consolidation/evidence-flags/{flag['flag_id']}/{action}",
+        json={"request_id": "guard"} if action == "address" else {},
+    )
+    assert response.status_code == status
+    assert store.evidence_flag(project, flag["flag_id"])["state"] == "open"

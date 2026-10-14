@@ -1039,6 +1039,19 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         ("inbox", "--clear", "--key", "k-inbox-clear"),
         ("finish", "--key", "k-finish"),
         ("lesson", "add", "--key", "k-lesson", "--text", "Use the environment"),
+        (
+            "flag",
+            "--key",
+            "k-flag",
+            "--evidence",
+            "ev/result",
+            "--kind",
+            "overclaim",
+            "--finding",
+            "Claim exceeds source",
+            "--source",
+            "repo-a/result.txt:4",
+        ),
     ]
 
     stop = asyncio.Event()
@@ -1075,6 +1088,7 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         "inbox",
         "finish",
         "lesson",
+        "flag",
     ]
     applied = next(arguments for verb, arguments in seen if verb == "apply")
     assert applied == {"patch_file": "patch.json"}

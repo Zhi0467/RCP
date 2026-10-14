@@ -16,6 +16,8 @@ from rcp.limits import (
     ASK_CHOICE_MAX_LENGTH,
     ASK_QUESTION_MAX_LENGTH,
     COMMAND_ASK_POLL_SECONDS,
+    EVIDENCE_FLAG_FINDING_MAX_CHARS,
+    EVIDENCE_FLAG_SOURCE_MAX_CHARS,
     GRAPH_HISTORY_COMMAND_CURSOR_MAX_LENGTH,
     GRAPH_HISTORY_COMMAND_IDS_MAX_COUNT,
     LESSON_TEXT_MAX_CHARS,
@@ -46,6 +48,7 @@ CommandVerb = Literal[
     "launch",
     "ask",
     "lesson",
+    "flag",
 ]
 CommandStatus = Literal["ok", "invalid", "unavailable"]
 MutatingCommandVerb = Literal[
@@ -62,6 +65,7 @@ MutatingCommandVerb = Literal[
     "launch",
     "ask",
     "lesson",
+    "flag",
 ]
 
 MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
@@ -79,6 +83,7 @@ MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
         "launch",
         "ask",
         "lesson",
+        "flag",
     }
 )
 
@@ -345,6 +350,22 @@ class AskArguments(BaseModel):
         return self
 
 
+class FlagArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    evidence_id: str = Field(min_length=1, max_length=200)
+    kind: Literal["overclaim", "underclaim", "no_source"]
+    finding: str = Field(min_length=1, max_length=EVIDENCE_FLAG_FINDING_MAX_CHARS)
+    source: str | None = Field(default=None, max_length=EVIDENCE_FLAG_SOURCE_MAX_CHARS)
+
+    @field_validator("finding")
+    @classmethod
+    def single_line_finding(cls, value: str) -> str:
+        if not value.strip() or value.splitlines() != [value]:
+            raise ValueError("finding must be non-blank and single line")
+        return value
+
+
 class LessonArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -495,6 +516,17 @@ class AskCommandRequest(_CommandRequest):
     arguments: AskArguments
 
 
+class FlagCommandRequest(_CommandRequest):
+    verb: Literal["flag"]
+    arguments: FlagArguments
+
+    @model_validator(mode="after")
+    def mutation_is_keyed(self) -> FlagCommandRequest:
+        if self.idempotency_key is None:
+            raise ValueError("flag requires an idempotency key")
+        return self
+
+
 class LessonCommandRequest(_CommandRequest):
     verb: Literal["lesson"]
     arguments: LessonArguments
@@ -523,7 +555,8 @@ CommandRequest: TypeAlias = Annotated[
     | FinishCommandRequest
     | LaunchCommandRequest
     | AskCommandRequest
-    | LessonCommandRequest,
+    | LessonCommandRequest
+    | FlagCommandRequest,
     Field(discriminator="verb"),
 ]
 COMMAND_REQUEST_ADAPTER = TypeAdapter(CommandRequest)
