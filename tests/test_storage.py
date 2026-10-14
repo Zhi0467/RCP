@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import tempfile
 import threading
 import uuid
 from collections.abc import Iterator
@@ -21,6 +22,7 @@ from rcp.core.models import DISPLAY_NAME_MAX_LENGTH, AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES, AGENT_TASK_RECEIPT_RETENTION_COUNTS
 from rcp.providers import ProviderUsage
+from rcp.rcp_home import rcp_temp_dir
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     ACTIVE_AGENT_TASK_STATUSES,
@@ -163,6 +165,28 @@ def test_connection_cache_bounds_fds_for_retained_stores_and_finished_threads(tm
             retained.close()
         if gc_enabled:
             gc.enable()
+
+
+def test_new_database_schema_capture_keeps_scratch_out_of_system_temp(tmp_path, monkeypatch):
+    AppStore(tmp_path / "primed.sqlite3").close()
+    monkeypatch.setattr(AppStore, "_baseline_storage_sql", ())
+    roots: list[Path] = []
+    migrate_artifacts = storage_base_module.migrate_artifacts
+
+    def recording_migrate_artifacts(connection, file_root):
+        roots.append(file_root)
+        migrate_artifacts(connection, file_root)
+
+    monkeypatch.setattr(storage_base_module, "migrate_artifacts", recording_migrate_artifacts)
+    # An agent may be granted system temp, so the capture must never reach it.
+    system_temp = tmp_path / "system-temp"
+    system_temp.touch()
+    monkeypatch.setattr(tempfile, "tempdir", str(system_temp))
+
+    AppStore(tmp_path / "fresh.sqlite3").close()
+
+    assert [root.parent for root in roots] == [rcp_temp_dir()]
+    assert not roots[0].exists()
 
 
 @pytest.mark.parametrize("kind,bootstrap", [("personal", False), ("team", False), ("team", True)])
