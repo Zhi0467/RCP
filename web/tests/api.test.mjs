@@ -174,6 +174,16 @@ test("a read that loses its transport reports it; an abort or a parse error does
       throw new DOMException("The operation was aborted.", "AbortError");
     };
     await assert.rejects(api("/api/projects/demo/episodes"), DOMException);
+    // A deadline or a caller's own abort reason is not an outage either.
+    for (const reason of [
+      new DOMException("The operation timed out.", "TimeoutError"),
+      new Error("Resource read timed out"),
+    ]) {
+      globalThis.fetch = async () => {
+        throw reason;
+      };
+      await assert.rejects(api("/api/projects/demo/episodes"));
+    }
     assert.equal(failures, 1);
     globalThis.fetch = async () =>
       new Response(

@@ -3667,6 +3667,7 @@ _PROJECT_ID_TABLES = (
     "consolidation_schedules",
     "consolidation_runs",
     "consolidation_apply_receipts",
+    "research_view_pins",
     "notification_preferences",
     "notification_outbox",
     "notification_graph_markers",

@@ -53,7 +53,10 @@ def live(tmp_path, manifest):
     graph = GraphState()
     service = SimpleNamespace(manifest=manifest, history=SimpleNamespace(state=lambda: graph))
     service.for_graph_target = lambda target, **kwargs: service
-    catalog = SimpleNamespace(open=lambda project_id: service)
+    catalog = SimpleNamespace(
+        open=lambda project_id: service,
+        content_generations=lambda project_id, families: dict.fromkeys(families, "generation"),
+    )
 
     def create(
         needs, *, artifact_id="page", supplier="turn", live_data_allowed=True, episode_id=None
@@ -390,7 +393,7 @@ def test_discovery_from_real_branch_service_resolves_own_node(manifest, tmp_path
     directory = tmp_path.resolve() / "artifacts"
     directory.mkdir()
     (directory / "live.html").write_text(
-        '<html><script type="application/json" id="rcp-live">{"version":1,"needs":[{"kind":"node","id":"rq/learning-after-shift"}]}</script></html>'
+        '<html><script type="application/json" id="rcp-live">{"version":1,"needs":[{"kind":"node","id":"rq/learning-after-shift"},{"kind":"graph"}]}</script></html>'
     )
     execution = AgentTaskExecution(
         operation_id=task.operation_id, store=store, control=AgentProcessControl()
@@ -405,6 +408,14 @@ def test_discovery_from_real_branch_service_resolves_own_node(manifest, tmp_path
         store, app.state.catalog, artifact.artifact_id, artifact.current_version
     )
     assert snapshot.complete and snapshot.snapshots[0].id == "rq/learning-after-shift"
+    from rcp.api.resource_watermarks import live_graph_head
+
+    assert snapshot.snapshots[1].head == live_graph_head(
+        store, app.state.catalog, task.project_id, episode.graph_target.branch_id
+    )
+    assert snapshot.snapshots[1].head != live_graph_head(
+        store, app.state.catalog, task.project_id, None
+    )
 
 
 @pytest.mark.parametrize("supplier", ["turn", "episode_ending"])
@@ -708,3 +719,137 @@ def test_remote_folder_uses_one_shipped_reader_call_per_snapshot(live, monkeypat
         snapshot = read(live, artifact)
         assert snapshot.complete and snapshot.snapshots[0].files[0].rows == ["ready"]
         assert len(calls) == count
+
+
+def test_graph_projection_is_complete_lean_and_never_final(live):
+    from rcp.core.models import Edge, Hypothesis
+    from rcp.live_artifacts import GRAPH_TITLE_MAX_CHARS
+
+    graph = live.service.history.state()
+    node_id = "n" * (GRAPH_TITLE_MAX_CHARS + 1)
+    graph.nodes[node_id] = Hypothesis(
+        id=node_id,
+        type="hypothesis",
+        title="界" * (GRAPH_TITLE_MAX_CHARS + 1),
+        statement="private body",
+    )
+    graph.edges["edge"] = Edge(id="edge", source=node_id, target=node_id, relation="supports")
+    artifact = live.create([{"kind": "graph"}])
+    message = read(live, artifact)
+    snapshot = message.model_dump()["snapshots"][0]
+    assert snapshot["nodes"] == [
+        dict(
+            id=node_id,
+            type="hypothesis",
+            title="界" * GRAPH_TITLE_MAX_CHARS,
+            title_truncated=True,
+            status="proposed",
+            standing="asserted",
+        )
+    ]
+    assert snapshot["edges"] == [dict(source=node_id, target=node_id, relation="supports")]
+    assert set(snapshot) == {"kind", "head", "nodes", "edges"}
+    capture(live)
+    assert not version(live, artifact).live_snapshot and not message.final
+
+
+def test_graph_head_gates_only_graph_and_validates_binding(live, monkeypatch):
+    from rcp.api import resource_watermarks
+
+    metrics = live.root / "values"
+    metrics.write_text("first")
+    artifact = live.create([{"kind": "graph"}, file_need(metrics, format="text")])
+    head = read(live, artifact).snapshots[0].head
+    metrics.write_text("second")
+
+    def cached():
+        return artifact_live_snapshot(
+            live.store, live.catalog, artifact.artifact_id, artifact.current_version, head=head
+        )
+
+    assert cached().snapshots[0].model_dump() == dict(kind="graph", head=head, unchanged=True)
+    assert cached().snapshots[1].rows == ["second"]
+    monkeypatch.setattr(resource_watermarks, "_PROCESS_EPOCH", "restart")
+    assert cached().snapshots[0].head != head
+    head = read(live, artifact).snapshots[0].head
+    with live.store.connection() as connection:
+        connection.execute("UPDATE resource_watermark_epoch SET epoch='restore'")
+    assert cached().snapshots[0].head != head
+    head = read(live, artifact).snapshots[0].head
+    monkeypatch.setattr(resource_watermarks, "_PROJECTION_VERSION", 2)
+    assert cached().snapshots[0].head != head
+    # Sampling precedes graph reads, even if publication happens during the read.
+    head = read(live, artifact).snapshots[0].head
+    graph = live.service.history.state()
+
+    def advancing_read():
+        live.catalog.content_generations = lambda project_id, families: dict.fromkeys(
+            families, "new"
+        )
+        return graph
+
+    live.service.history.state = advancing_read
+    assert read(live, artifact).snapshots[0].head == head
+    assert cached().snapshots[0].head != head
+    with live.store.connection() as connection:
+        connection.execute("UPDATE graph_runs SET history_only=1 WHERE operation_id='turn'")
+    live.store.keep_artifact(artifact.artifact_id)
+    with pytest.raises(ValueError):
+        cached()
+
+
+@pytest.mark.parametrize(
+    "cap,code",
+    [
+        ("LIVE_ARTIFACT_GRAPH_MAX_BYTES", "graph_too_large"),
+        ("LIVE_ARTIFACT_MESSAGE_MAX_BYTES", "message_too_large"),
+    ],
+)
+def test_graph_byte_caps_return_bounded_errors_and_recover(live, monkeypatch, cap, code):
+    from rcp import live_artifact_runtime as runtime
+    from rcp.core.models import Hypothesis
+
+    graph = live.service.history.state()
+    graph.nodes["n"] = Hypothesis(id="n", type="hypothesis", title="界" * 200, statement="body")
+    artifact = live.create([{"kind": "graph"}])
+    full = read(live, artifact)
+    payload = full.snapshots[0] if cap == "LIVE_ARTIFACT_GRAPH_MAX_BYTES" else full
+    # UTF-8 bytes, not character count, cross this boundary.
+    limit = len(payload.model_dump_json()) + 1
+    monkeypatch.setattr(runtime, cap, limit)
+    message = read(live, artifact)
+    assert message.snapshots[0].model_dump() == dict(kind="graph", error=code)
+    assert not message.static and not message.final and not message.complete
+    assert len(message.model_dump_json().encode()) < limit
+    if cap == "LIVE_ARTIFACT_MESSAGE_MAX_BYTES":
+        # Declaration order still names every slot when the envelope is too large.
+        mixed = read(
+            live, live.create([{"kind": "node", "id": "n"}, {"kind": "graph"}], artifact_id="mixed")
+        )
+        assert [(s.kind, getattr(s, "id", None), s.error) for s in mixed.snapshots] == [
+            ("node", "n", code),
+            ("graph", None, code),
+        ]
+    graph.nodes.clear()
+    assert read(live, artifact).complete
+
+
+def test_unrecoverable_oversized_messages_stop_polling(monkeypatch):
+    from rcp import live_artifact_runtime as runtime
+    from rcp.live_artifacts import FileSnapshot, LiveDataMessage
+
+    message = LiveDataMessage(
+        snapshots=[FileSnapshot(path="/" + "p" * 300, rows=["x" * 2000])],
+        complete=True,
+        refresh_seconds=2,
+    )
+    monkeypatch.setattr(runtime, "LIVE_ARTIFACT_MESSAGE_MAX_BYTES", 1000)
+    # A saved final is immutable: its slotted error is terminal, not retried.
+    saved = runtime._bounded_message(message, saved=True)
+    assert (saved.static, saved.snapshots[0].error) == (True, "message_too_large")
+    assert not runtime._bounded_message(message).static
+    # Declared identities alone over the cap still yield a bounded, terminal reply.
+    monkeypatch.setattr(runtime, "LIVE_ARTIFACT_MESSAGE_MAX_BYTES", 200)
+    bare = runtime._bounded_message(message)
+    assert (bare.snapshots, bare.static, bare.reason) == ([], True, "message_too_large")
+    assert len(bare.model_dump_json().encode()) <= 200

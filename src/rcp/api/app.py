@@ -2378,6 +2378,7 @@ def create_app(
     app.include_router(index_router)
     app.include_router(index_membership_router)
     app.include_router(project_provisioning_router)
+    from rcp.api.research_views import router as research_views_router
     from rcp.api.resource_watermarks import router as resource_watermarks_router
 
     app.include_router(resource_watermarks_router)
@@ -2391,6 +2392,7 @@ def create_app(
     app.include_router(paper_router)
     app.include_router(result_views_router)
     app.include_router(artifacts_router)
+    app.include_router(research_views_router)
     app.include_router(sync_router)
     app.include_router(tasks_router)
     app.include_router(watchers_router)

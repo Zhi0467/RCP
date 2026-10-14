@@ -46,6 +46,16 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Personal research view pins (v50), fresh and immutable fixture upgrades.
+        "1b40b67a9194af261a13b165130a6885cd61177cac5894ba642b0e56f08f0dfe",
+        "4283a05535b3723919dd83760835a4c1f1856a1afddf95b8128c41b9cc454eaa",
+        "7414bcd5379228faf3fd8abb7e1f2ef17a8e3b4a8c2207f73359301bf807636f",
+        "7df4e2c8b6888d1556d3e11f6d722c43eb71a61729557032dd313199c7674e19",
+        "85b334e5b2a647a2e9a95c5584960e651a005c8a4dee7a15c839421f574bc01a",
+        "c489b9986134690203d17ae5c6c6bb20e6b095f013d0ac7f08827c1424af7add",
+        "c4bb62c104b30ab84d7877b4afdab4a553a48eb885c7e1535160a5070e61ca27",
+        "d613ddd85137c3a9c1963831e4bd5c23ca1362568cefcb5058d7a79dcf9eafd7",
+        "d75783004c21dacb1c8409bde691b8c60113e3db7a0504d5161cb94c9153a3a2",
         # Transactional resource watermarks (v49), fresh, immutable fixture
         # upgrades, and in-place upgrades.
         "2ac59846e73c9850643d4930f28cab997b43703c02972d43c7bb4328466f0dc4",

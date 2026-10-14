@@ -2204,6 +2204,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "chat_browser_preferences": 0,
         "browser_turn_status": 0,
         "chat_reads": 0,
+        "research_view_pins": 0,
         "notification_preferences": 0,
         "notification_outbox": 0,
         "notification_graph_markers": 0,

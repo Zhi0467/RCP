@@ -1,7 +1,8 @@
+import { researchViewsProfile } from "../graph/researchViewResources";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
 import { graphTargetFromHash } from "../core/graphTarget";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { MessageCircle, PanelRight, RefreshCw, X } from "lucide-react";
+import { MessageCircle, PanelRight, Pin, RefreshCw, X } from "lucide-react";
 import { api } from "../core/api";
 import {
   closeArtifactViewer,
@@ -58,7 +59,9 @@ export function ArtifactViewer() {
   const resource = useResource("artifact-viewer", profile);
   const state = resource.value;
   const [error, setError] = useState("");
+  const [pinFailed, setPinFailed] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [pinning, setPinning] = useState(false);
   const [undoing, setUndoing] = useState(false);
   const [reload, setReload] = useState(0);
   const iframe = useRef<HTMLIFrameElement>(null);
@@ -84,6 +87,8 @@ export function ArtifactViewer() {
     setError("");
     setEditing(false);
     setUndoing(false);
+    setPinning(false);
+    setPinFailed(false);
     if (target) setPlacement((current) => collapseViewer(current, false));
   }, [target]);
 
@@ -175,6 +180,28 @@ export function ArtifactViewer() {
       if (generation === requestGeneration.current) setUndoing(false);
     }
   };
+  const pin = async () => {
+    if (target.kind !== "artifact" || !state?.can_pin || pinning) return;
+    const generation = requestGeneration.current;
+    setPinning(true);
+    try {
+      await api(`/api/projects/${encodeURIComponent(target.projectId)}/research-views`, {
+        method: "POST",
+        body: JSON.stringify({ artifact_id: target.artifactId, branch_id: state.pin_branch_id }),
+      });
+      store.invalidate(
+        resourceKeyId(researchViewsProfile(target.projectId, state.pin_branch_id).key),
+      );
+      store.invalidate(
+        resourceKeyId(artifactStateProfile(target.projectId, target.artifactId).key),
+      );
+      if (generation === requestGeneration.current) setPinFailed(false);
+    } catch {
+      if (generation === requestGeneration.current) setPinFailed(true);
+    } finally {
+      if (generation === requestGeneration.current) setPinning(false);
+    }
+  };
   return (
     <DraggableWindow
       className="artifact-viewer"
@@ -227,6 +254,21 @@ export function ArtifactViewer() {
             reference={{ kind: "artifact", artifact_id: target.artifactId }}
             className="artifact-viewer-control"
           />
+        )}
+        {state?.can_pin && (
+          <button
+            className="artifact-viewer-control pin-view-action"
+            aria-label="Pin in Artifacts"
+            title="Pin in Artifacts"
+            aria-pressed={state.pinned}
+            style={
+              pinFailed && !state.pinned ? { borderColor: "var(--danger, #b42318)" } : undefined
+            }
+            disabled={pinning || state.pinned}
+            onClick={() => void pin()}
+          >
+            <Pin size={16} />
+          </button>
         )}
         {editing && <span role="status">Editing</span>}
         {state?.can_undo && (

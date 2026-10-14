@@ -669,6 +669,7 @@ class ProjectStoreMixin(StoreMixinBase):
                 for table in (
                     "operational_lessons",
                     "lesson_command_receipts",
+                    "research_view_pins",
                     "notification_preferences",
                     "notification_outbox",
                     "notification_graph_markers",
@@ -1086,6 +1087,7 @@ class ProjectStoreMixin(StoreMixinBase):
                 "consolidation_schedules",
                 "consolidation_runs",
                 "consolidation_apply_receipts",
+                "research_view_pins",
                 "notification_preferences",
                 "notification_outbox",
                 "notification_graph_markers",

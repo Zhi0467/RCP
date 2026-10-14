@@ -240,6 +240,9 @@ test("sessions reconnect after navigating, resize and type, expose Work on both 
   await page.getByRole("button", { name: "Research", exact: true }).click();
   await page.getByRole("button", { name: "Terminals", exact: true }).click();
   await page.getByRole("button", { name: "End code terminal" }).waitFor();
+  // Returning to Terminals reconnects asynchronously; wait for the socket itself.
+  for (const deadline = Date.now() + 5000; connections() < 3 && Date.now() < deadline;)
+    await page.waitForTimeout(50);
   await page.waitForFunction(() => !document.querySelector(".terminal-connection"));
   assert.equal(opens(), 2);
   assert.ok(connections() >= 3);

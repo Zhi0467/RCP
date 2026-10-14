@@ -1,3 +1,6 @@
+import { errorMessage } from "./core/errors";
+import { PinnedView, PinnedViewTab } from "./graph/PinnedView";
+import { researchViewsProfile } from "./graph/researchViewResources";
 import { useProjectTabResources } from "./projects/projectTabResources";
 import { beginTaskMutation, beginTaskPublication } from "./agents/taskActions";
 import { beginChatSend } from "./agents/chatSendMutation";
@@ -462,15 +465,25 @@ function navItemActive(item: AppView, view: AppView): boolean {
 
 function ArtifactsSubnav({
   view,
+  filesActive = true,
   paperUnsynced,
+  failed = false,
   onChange,
+  children,
 }: {
   view: AppView;
+  filesActive?: boolean;
   paperUnsynced: boolean;
+  failed?: boolean;
   onChange: (view: AppView) => void;
+  children?: React.ReactNode;
 }) {
   return (
-    <div className="artifacts-subnav" role="group" aria-label="Artifacts sections">
+    <div
+      className={`artifacts-subnav${failed ? " failed" : ""}`}
+      role="group"
+      aria-label="Artifacts sections"
+    >
       {(
         [
           ["artifacts", "Files"],
@@ -480,7 +493,7 @@ function ArtifactsSubnav({
         <button
           key={target}
           type="button"
-          aria-pressed={view === target}
+          aria-pressed={view === target && (target !== "artifacts" || filesActive)}
           onClick={() => onChange(target)}
         >
           {target === "paper" ? <FileText size={14} /> : <Files size={14} />}
@@ -488,6 +501,7 @@ function ArtifactsSubnav({
           {target === "paper" && paperUnsynced && <small>1</small>}
         </button>
       ))}
+      {children}
     </div>
   );
 }
@@ -810,6 +824,9 @@ function MemberApp({
     project: sessionProject,
     reportError: reportErrorNotice,
   });
+  const pinBranchId = graphTarget.kind === "branch" ? graphTarget.branch_id : null;
+  const pinScope = JSON.stringify([projectId, pinBranchId]);
+  const [pinSelection, setPinSelection] = useState<{ scope: string; id: string } | null>(null);
   const graphView = useResource(
     `${projectId}:graph-view`,
     backendSessionReady && projectId ? graphProfile(projectId, graphTarget) : null,
@@ -953,6 +970,17 @@ function MemberApp({
     loading,
     getActiveProjectId,
   });
+  // Pins are fetched only where their tabs are shown.
+  const pinsProfile =
+    backendSessionReady && projectId && (view === "artifacts" || view === "paper")
+      ? researchViewsProfile(projectId, pinBranchId)
+      : null;
+  const pinsResource = useResource("research-view-pins", pinsProfile);
+  const pins = pinsResource.value?.pins ?? [];
+  const activePin =
+    pinSelection?.scope === pinScope
+      ? pins.find((pin) => pin.artifact_id === pinSelection.id)
+      : undefined;
   const tabRefs = useRef(new Map<string, string>());
   const currentRef = graphTarget.kind === "main" ? "main" : `branch:${graphTarget.branch_id}`;
   if (projectId) tabRefs.current.set(projectId, currentRef);
@@ -1058,6 +1086,15 @@ function MemberApp({
     [dispatchProjectSession, getProjectSessionState],
   );
   const apiBase = projectId ? `/api/projects/${encodeURIComponent(projectId)}` : "";
+  useEffect(() => setPinSelection(null), [pinScope]);
+  useEffect(() => {
+    if (view !== "artifacts") setPinSelection(null);
+  }, [view]);
+  useEffect(() => {
+    if (pinSelection?.scope === pinScope && pinsResource.value && !activePin) {
+      setPinSelection(null);
+    }
+  }, [pinSelection, pinScope, pinsResource.value, activePin]);
   const graphPath = useCallback((path: string) => graphTargetUrl(path, graphTarget), [graphTarget]);
   const isActiveGraph = useCallback(
     (id: string) =>
@@ -1444,16 +1481,28 @@ function MemberApp({
       const activeId = getActiveProjectId();
       if (activeId) {
         const visibleProjectId = activeId;
+        const visibleTarget = activeGraphTargetRef.current;
         scheduler.activate(visibleProjectId);
         setProjectReconciliation("reconciling");
-        void reloadRef.current(false).catch((error) => {
-          if (!isActiveProject(visibleProjectId) || stopped) return;
-          setProjectReconciliation("failed");
-          setNotice({
-            kind: "error",
-            text: error instanceof Error ? error.message : String(error),
-          });
-        });
+        // An unchanged read keeps the snapshot's identity, so no effect settles it.
+        void reloadRef.current(false).then(
+          () => {
+            if (
+              isActiveProject(visibleProjectId) &&
+              sameGraphTarget(visibleTarget, activeGraphTargetRef.current) &&
+              !stopped
+            )
+              setProjectReconciliation("authoritative");
+          },
+          (error) => {
+            if (!isActiveProject(visibleProjectId) || stopped) return;
+            setProjectReconciliation("failed");
+            setNotice({
+              kind: "error",
+              text: error instanceof Error ? error.message : String(error),
+            });
+          },
+        );
       } else {
         const nextProjects = await api<ProjectCard[]>("/api/projects");
         if (!stopped) replaceProjects(nextProjects);
@@ -4444,11 +4493,6 @@ function MemberApp({
       </select>
     </label>
   );
-  const reconcilingStatus = projectReconciliation === "reconciling" && (
-    <span className="project-reconciliation" role="status" aria-label="Refreshing project state">
-      <LoaderCircle className="spin" size={14} aria-hidden="true" />
-    </span>
-  );
   const phonePrimaryViews = new Set<AppView>(["overview", "attention", "scientific", "execution"]);
   const projectDock = (
     <ProjectDock
@@ -4460,6 +4504,33 @@ function MemberApp({
     />
   );
 
+  // Pinned pages follow Files | Paper in both Artifacts sections.
+  const pinTabs = (
+    <>
+      {pins.map((pin) => (
+        <PinnedViewTab
+          key={`${pinScope}:${pin.artifact_id}`}
+          projectId={project.id}
+          branchId={pinBranchId}
+          pin={pin}
+          active={activePin?.artifact_id === pin.artifact_id}
+          onSelect={() => {
+            setPinSelection({ scope: pinScope, id: pin.artifact_id });
+            changeView("artifacts");
+          }}
+        />
+      ))}
+      {Boolean(pinsResource.error) && (
+        <button
+          aria-label="Retry pinned views"
+          title={errorMessage(pinsResource.error)}
+          onClick={() => pinsProfile && store.invalidate(resourceKeyId(pinsProfile.key))}
+        >
+          <RefreshCw size={14} />
+        </button>
+      )}
+    </>
+  );
   return (
     <div className="app-shell overview-shell">
       {acceptanceAgentSurface}
@@ -4469,7 +4540,6 @@ function MemberApp({
           projectName={project.name}
           branchPicker={branchPicker}
           hasDraft={draftChangeCount > 0 || behindDraftCount > 0}
-          status={reconcilingStatus}
           onBack={returnToProjects}
           dock={projectDock}
           sync={syncControls}
@@ -4489,7 +4559,6 @@ function MemberApp({
               <ArrowLeft size={16} />
             </button>
             {projectDock}
-            {reconcilingStatus}
           </div>
           <div className="project-header-actions" id="project-header-actions">
             <div
@@ -4829,16 +4898,39 @@ function MemberApp({
             <div className="artifacts-shell">
               <ArtifactsSubnav
                 view={view}
+                filesActive={!activePin}
                 paperUnsynced={paper.sync_state !== "synced"}
-                onChange={changeView}
-              />
-              <Artifacts
-                graphRefs={projectGraphRefs ?? null}
-                key={project.id}
-                projectId={project.id}
-                nodeTitle={(nodeId) => presentedGraph.nodes[nodeId]?.title ?? null}
-                onOpenNode={openNodeById}
-              />
+                failed={Boolean(pinsResource.error)}
+                onChange={(next) => {
+                  setPinSelection(null);
+                  changeView(next);
+                }}
+              >
+                {pinTabs}
+              </ArtifactsSubnav>
+              {activePin ? (
+                <PinnedView
+                  key={`${pinScope}:${activePin.artifact_id}`}
+                  projectId={project.id}
+                  branchId={pinBranchId}
+                  pin={activePin}
+                  nodes={presentedGraph.nodes}
+                  ready={
+                    projectReconciliation === "authoritative" &&
+                    project.id === projectId &&
+                    sameGraphTarget(project.graph_target, graphTarget)
+                  }
+                  onOpenNode={openNodeById}
+                />
+              ) : (
+                <Artifacts
+                  graphRefs={projectGraphRefs ?? null}
+                  key={project.id}
+                  projectId={project.id}
+                  nodeTitle={(nodeId) => presentedGraph.nodes[nodeId]?.title ?? null}
+                  onOpenNode={openNodeById}
+                />
+              )}
             </div>
           )}
           {view === "terminals" && <Terminals key={project.id} projectId={project.id} />}
@@ -4927,8 +5019,11 @@ function MemberApp({
               <ArtifactsSubnav
                 view={view}
                 paperUnsynced={paper.sync_state !== "synced"}
+                failed={Boolean(pinsResource.error)}
                 onChange={changeView}
-              />
+              >
+                {pinTabs}
+              </ArtifactsSubnav>
               <LoadedPaperWorkspace
                 graphTarget={graphTarget}
                 key={project.id}

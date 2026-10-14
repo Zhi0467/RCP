@@ -2327,9 +2327,22 @@ export interface AgentArtifactDescriptor {
   turn_folder?: string | null;
 }
 
+export interface ResearchViewPin {
+  artifact_id: string;
+  title: string;
+  position: number;
+}
+
+export interface ResearchViewPins {
+  pins: ResearchViewPin[];
+}
+
 /** `GET /api/projects/{project_id}/artifacts/{artifact_id}/state`: the in-app
  *  viewer's RCP chrome. Every `can_*` is an offer; the endpoint still decides. */
 export interface ArtifactViewerState {
+  pin_branch_id: string | null;
+  can_pin: boolean;
+  pinned: boolean;
   artifact_id: string;
   name: string;
   media_type: AgentArtifactMediaType;

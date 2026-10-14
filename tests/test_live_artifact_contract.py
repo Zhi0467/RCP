@@ -31,10 +31,11 @@ def test_skill_examples_validate_against_live_schema() -> None:
     assert_frozen_backend_ships("skills/live-pages/SKILL.md")
     body = official_registry().package_body("skill", "live-pages")
     examples = re.findall(r"```html\n(.*?)\n```", body, re.DOTALL)
-    assert len(examples) == 3
+    assert len(examples) == 4
     parsed = [parse_live_tag(example, allow_episode=True) for example in examples]
     assert all(isinstance(tag, LiveTag) for tag in parsed)
     assert {need.kind for tag in parsed for need in tag.needs} == {
+        "graph",
         "job",
         "file",
         "files",
@@ -59,6 +60,10 @@ def test_static_page_has_no_live_declaration() -> None:
         [{"kind": "file", "path": "/project/a", "read": "tail", "format": "binary"}],
         [{"kind": "episode", "id": "another-episode"}],
         [{"kind": "unknown"}],
+        [{"kind": "graph", "id": "extra"}],
+        [{"kind": "graph"}, {"kind": "graph"}],
+        [{"kind": "graph"}, {"kind": "job", "key": "a"}],
+        [{"kind": "graph"}, {"kind": "episode"}],
         [],
         [{"kind": "job", "key": "one"}] * (LIVE_ARTIFACT_MAX_NEEDS + 1),
     ],
@@ -110,3 +115,15 @@ def test_folder_patterns_refuse_unbounded_or_unsafe_paths(pattern):
                 ]
             )
         )
+
+
+def test_graph_snapshot_forms_are_exclusive():
+    from rcp.live_artifacts import GraphSnapshot
+
+    for payload in [
+        dict(error="error", head="h"),
+        dict(head="h", nodes=[], edges=[], unchanged=True),
+        dict(head="h", nodes=[]),
+    ]:
+        with pytest.raises(ValueError):
+            GraphSnapshot(**payload)

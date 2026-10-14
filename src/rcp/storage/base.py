@@ -40,6 +40,7 @@ from rcp.storage.models import (
 from rcp.storage.notifications import migrate_notifications, migrate_question_notifications
 from rcp.storage.question_activity import QuestionActivity
 from rcp.storage.questions import migrate_questions
+from rcp.storage.research_views import migrate_research_views
 from rcp.storage.resource_deadlines import record_question_activity
 from rcp.storage.resource_versions import migrate_resource_versions
 
@@ -111,6 +112,7 @@ class AppStoreBase:
         (47, "branch_names_v1"),
         (48, "graph_seen_heads_v1"),
         (49, "resource_watermarks_v1"),
+        (50, "research_view_pins_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -856,6 +858,9 @@ class AppStoreBase:
             version=49,
             name="resource_watermarks_v1",
             migration=migrate_resource_versions,
+        )
+        self._run_storage_schema_migration(
+            connection, version=50, name="research_view_pins_v1", migration=migrate_research_views
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

@@ -92,7 +92,11 @@ def request(path: str, *, body: dict | None = None, method: str = "GET", cookie:
             "RCP-Team-Shell-Protocol": protocol,
         },
     )
-    return urllib.request.urlopen(query, timeout=30)
+    try:
+        return urllib.request.urlopen(query, timeout=30)
+    except urllib.error.HTTPError as exc:
+        # Keep the server's diagnostic; the bare status hides why a route refused.
+        raise AssertionError(f"{method} {path} -> {exc.code}: {exc.read()[:2000]!r}") from exc
 
 
 def session(fixture: dict) -> str:

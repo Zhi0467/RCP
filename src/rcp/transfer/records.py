@@ -88,6 +88,7 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "browser_turn_status",
         # Pins and read markers belong to source-space users.
         "chat_pins",
+        "research_view_pins",
         "chat_reads",
         # Backend handles and job paths remain owned by the source machine.
         "compute_jobs",

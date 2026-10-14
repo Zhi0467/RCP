@@ -44,6 +44,7 @@ from rcp.storage.question_models import (
     QuestionStateConflict,
 )
 from rcp.storage.questions import QuestionStoreMixin
+from rcp.storage.research_views import ResearchViewStoreMixin
 from rcp.storage.restore_detachment import RestoreDetachmentStoreMixin
 from rcp.storage.rows import RowMappingMixin
 from rcp.storage.space_machines import SpaceMachineStoreMixin
@@ -53,6 +54,7 @@ from rcp.storage.watchers import WatcherStoreMixin
 
 
 class AppStore(
+    ResearchViewStoreMixin,
     BranchNameStoreMixin,
     ClientRequestStoreMixin,
     OwnerAuthStoreMixin,

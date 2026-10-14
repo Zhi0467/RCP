@@ -32,6 +32,7 @@ from rcp.limits import (
     ARTIFACT_INLINE_MAX_HEIGHT_PX,
     ARTIFACT_PREVIEW_MAX_BYTES,
     ARTIFACT_PREVIEW_MAX_LINES,
+    LIVE_ARTIFACT_MESSAGE_MAX_BYTES,
     LIVE_ARTIFACT_REFRESH_SECONDS,
 )
 
@@ -267,7 +268,11 @@ def artifact_viewer_document(
             "const liveUrl="
             + json.dumps(live_url).replace("<", "\\u003c")
             + ";\n"
+            + "const liveArtifactId="
+            + json.dumps(descriptor.artifact_id)
+            + ";\n"
             + f"const defaultLiveDelay={LIVE_ARTIFACT_REFRESH_SECONDS * 1000};\n"
+            + f"const liveMessageMaxBytes={LIVE_ARTIFACT_MESSAGE_MAX_BYTES};\n"
             + importlib.resources.files("rcp").joinpath("artifact_live.js").read_text("utf-8")
         )
     # The RCP panel shows the name and state; the shell keeps a bar only for its actions.
@@ -360,7 +365,11 @@ def _inline_viewer_document(
             "const liveUrl="
             + json.dumps(live_url).replace("<", "\\u003c")
             + ";\n"
+            + "const liveArtifactId="
+            + json.dumps(descriptor.artifact_id)
+            + ";\n"
             + f"const defaultLiveDelay={LIVE_ARTIFACT_REFRESH_SECONDS * 1000};\n"
+            + f"const liveMessageMaxBytes={LIVE_ARTIFACT_MESSAGE_MAX_BYTES};\n"
             + resources.joinpath("artifact_live.js").read_text("utf-8")
         )
     script_markup = "".join(f"<script>(()=>{{{script}}})();</script>" for script in scripts)
@@ -537,13 +546,23 @@ def live_frame_addon() -> FrameAddon:
         frame_script="""
 const dispatchLive=Function.prototype.call.bind(EventTarget.prototype.dispatchEvent);
 const LiveMessage=MessageEvent;
+// Pages may check event.source===parent, as for any message from their embedder.
+const liveSource=window.parent;
 listen(privatePort,'message',(event)=>{
   if(event.data?.kind==='rcp-live-data' && event.data.version===1)
-    dispatchLive(window,new LiveMessage('message',{data:event.data}));
+    dispatchLive(window,new LiveMessage('message',{data:event.data,source:liveSource}));
 });
 """,
         wrapper_script="""
 let pendingLive=null;
+let deliveredGraphIds=new Set();
+listen(window,'message',(event)=>{
+  const frame=artifact();
+  const value=event.data;
+  if(!frame || event.source!==frame.contentWindow || value?.type!=='rcp-open-node' ||
+     value.version!==1 || typeof value.id!=='string' || !deliveredGraphIds.has(value.id)) return;
+  parentPost({type:'rcp-open-node',version:1,id:value.id},'*');
+});
 channelReady.push(()=>{
   if(pendingLive) portPost(artifactPort,pendingLive);
   if(window.parent!==window) parentPost({type:'rcp-live-ready',version:1},'*');
@@ -551,6 +570,9 @@ channelReady.push(()=>{
 listen(window,'message',(event)=>{
   if(window.parent===window || event.source!==window.parent) return;
   if(event.data?.kind!=='rcp-live-data' || event.data.version!==1) return;
+  const graph=event.data.snapshots?.find(snapshot=>snapshot.kind==='graph');
+  if(graph && !graph.error && !graph.unchanged && Array.isArray(graph.nodes))
+    deliveredGraphIds=new Set(graph.nodes.map(node=>node.id));
   pendingLive=event.data;
   if(artifactPort) portPost(artifactPort,pendingLive);
 });

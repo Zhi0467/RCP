@@ -55,6 +55,7 @@ from rcp.storage import (
     Artifact,
     EpisodeMode,
 )
+from rcp.storage.research_views import ResearchViewConflict
 from rcp.transport import StateUnavailable
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -421,6 +422,9 @@ class ArtifactViewerState(BaseModel):
     download_url: str
     can_keep: bool
     expires_at: str | None
+    pin_branch_id: str | None
+    can_pin: bool
+    pinned: bool
 
 
 class RunArtifactEntry(BaseModel):
@@ -441,7 +445,9 @@ class RunArtifactEntry(BaseModel):
 def stored_artifact_state(
     project_id: str,
     artifact_id: str,
+    request: Request,
     *,
+    identity_access: Annotated[IdentityAccess, Depends(get_identity_access)],
     catalog: Annotated[ProjectCatalog, Depends(get_catalog)],
     store: Annotated[AppStore, Depends(get_store)],
 ) -> ArtifactViewerState:
@@ -470,7 +476,14 @@ def stored_artifact_state(
     live = None
     if artifact.live_data_allowed and current.live is not None and not current.live.invalid_reason:
         live = "finished" if current.live_snapshot else "live"
+    try:
+        offers = store.research_view_offers(artifact, identity_access.acting_user(request).user_id)
+    except ResearchViewConflict as exc:
+        raise HTTPException(exc.status, detail={"code": exc.code}) from exc
     return ArtifactViewerState(
+        pin_branch_id=offers.pin_branch_id,
+        can_pin=offers.can_pin,
+        pinned=offers.pinned,
         artifact_id=artifact_id,
         name=artifact.display_title or artifact.source_name,
         media_type=artifact.media_type,
@@ -644,6 +657,7 @@ def stored_artifact_live(
     artifact_id: str,
     version_id: str,
     *,
+    head: str | None = None,
     catalog: Annotated[ProjectCatalog, Depends(get_catalog)],
     store: Annotated[AppStore, Depends(get_store)],
 ):
@@ -652,7 +666,7 @@ def stored_artifact_live(
     require_registered_project(catalog, project_id)
     _stored_artifact(store, project_id, artifact_id)
     try:
-        snapshot = artifact_live_snapshot(store, catalog, artifact_id, version_id)
+        snapshot = artifact_live_snapshot(store, catalog, artifact_id, version_id, head=head)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Artifact version not found") from exc
     except ValueError as exc:

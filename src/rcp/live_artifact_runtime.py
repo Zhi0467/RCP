@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 from rcp.artifacts import read_local_regular_file
 from rcp.core.project_types import project_type_of
 from rcp.limits import (
+    LIVE_ARTIFACT_GRAPH_MAX_BYTES,
     LIVE_ARTIFACT_LOG_TAIL_LINES,
     LIVE_ARTIFACT_MAX_BYTES,
     LIVE_ARTIFACT_MAX_CAPTURE_ATTEMPTS,
@@ -25,14 +26,19 @@ from rcp.limits import (
     LIVE_ARTIFACT_MAX_ROWS,
     LIVE_ARTIFACT_MAX_SCANNED_ENTRIES,
     LIVE_ARTIFACT_MAX_TOTAL_BYTES,
+    LIVE_ARTIFACT_MESSAGE_MAX_BYTES,
     LIVE_ARTIFACT_REFRESH_SECONDS,
     LIVE_ARTIFACT_RETRY_SECONDS,
     LIVE_ARTIFACT_SSH_REFRESH_SECONDS,
 )
 from rcp.live_artifacts import (
+    GRAPH_TITLE_MAX_CHARS,
     EpisodeSnapshot,
     FileSnapshot,
     FilesSnapshot,
+    GraphEdge,
+    GraphNode,
+    GraphSnapshot,
     JobSnapshot,
     LiveDataMessage,
     LiveEvidence,
@@ -209,6 +215,8 @@ def resolve_artifact_live_version(
                         not in compute_recovery_lineage(store, task.operation_id)
                     ):
                         raise ValueError("Launch key names a job outside this artifact's lineage.")
+                elif need.kind == "graph":
+                    binding.graph_branch_id = task.graph_target.branch_id
                 elif need.kind == "node":
                     graph = graph or graph_history.state()
                     if need.id not in graph.nodes:
@@ -351,7 +359,7 @@ def _validate_read(store, service, artifact, version):
             )
         ):
             raise ValueError("The live file's readable root changed.")
-        if need.kind == "node" and binding.graph_branch_id != live.graph_branch_id:
+        if need.kind in {"node", "graph"} and binding.graph_branch_id != live.graph_branch_id:
             raise ValueError("The live node's graph target changed.")
         if need.kind == "episode" and (episode is None or binding.episode_id != episode.episode_id):
             raise ValueError("The live episode binding changed.")
@@ -368,14 +376,44 @@ def _validate_read(store, service, artifact, version):
     return graph_history
 
 
-def _snapshot(store, service, artifact, version, *, final=False):
+def _snapshot(store, service, artifact, version, *, final=False, head=None, graph_head=None):
     graph_history = _validate_read(store, service, artifact, version)
     snapshots = []
     graph = None
     for binding in version.live.needs:
         need = binding.need
         try:
-            if need.kind == "file":
+            if need.kind == "graph":
+                if head == graph_head and graph_head is not None:
+                    snapshot = GraphSnapshot(head=graph_head, unchanged=True)
+                else:
+                    graph = graph or graph_history.state()
+                    snapshot = GraphSnapshot(
+                        head=graph_head,
+                        nodes=[
+                            GraphNode(
+                                id=node.id,
+                                type=node.type,
+                                title=node.title[:GRAPH_TITLE_MAX_CHARS],
+                                title_truncated=len(node.title) > GRAPH_TITLE_MAX_CHARS,
+                                status=getattr(node, "status", None),
+                                standing=getattr(node, "standing", None),
+                            )
+                            for node in graph.nodes.values()
+                        ],
+                        edges=[
+                            GraphEdge(
+                                source=edge.source, relation=edge.relation, target=edge.target
+                            )
+                            for edge in graph.edges.values()
+                        ],
+                    )
+                    if (
+                        len(snapshot.model_dump_json().encode("utf-8"))
+                        > LIVE_ARTIFACT_GRAPH_MAX_BYTES
+                    ):
+                        snapshot = GraphSnapshot(error="graph_too_large")
+            elif need.kind == "file":
                 snapshot = _file_snapshot(binding, final=final)
             elif need.kind == "files":
                 snapshot = _files_snapshot(binding, final=final)
@@ -429,6 +467,7 @@ def _snapshot(store, service, artifact, version, *, final=False):
             # Keep the failing source visible and never turn an outage into an
             # empty successful final capture.
             cls = {
+                "graph": GraphSnapshot,
                 "file": FileSnapshot,
                 "files": FilesSnapshot,
                 "job": JobSnapshot,
@@ -440,9 +479,11 @@ def _snapshot(store, service, artifact, version, *, final=False):
                 for key in ("path", "dir", "key", "id")
                 if hasattr(need, key)
             }
-            snapshot = cls(**identity, error=str(exc))
+            snapshot = cls(
+                **identity, error="graph_unavailable" if need.kind == "graph" else str(exc)
+            )
         snapshots.append(snapshot)
-    return LiveDataMessage(
+    message = LiveDataMessage(
         snapshots=snapshots,
         complete=all(item.error is None for item in snapshots),
         refresh_seconds=LIVE_ARTIFACT_SSH_REFRESH_SECONDS
@@ -450,21 +491,77 @@ def _snapshot(store, service, artifact, version, *, final=False):
         else LIVE_ARTIFACT_REFRESH_SECONDS,
     )
 
+    return _bounded_message(message)
 
-def artifact_live_snapshot(store, catalog, artifact_id: str, version_id: str) -> LiveDataMessage:
+
+_SNAPSHOT_IDENTITY = {"key", "id", "path", "dir"}
+
+
+def _message_fits(message: LiveDataMessage) -> bool:
+    return len(message.model_dump_json().encode("utf-8")) <= LIVE_ARTIFACT_MESSAGE_MAX_BYTES
+
+
+def _bounded_message(message: LiveDataMessage, *, saved: bool = False) -> LiveDataMessage:
+    """Keep the live envelope under its byte cap; a saved final can never recover."""
+    if _message_fits(message):
+        return message
+    # Pages read snapshots by declaration order, so every slot stays, reduced
+    # to its declared identity and an error; no source data is clipped.
+    slotted = LiveDataMessage(
+        snapshots=[
+            type(snapshot).model_validate(
+                {
+                    "kind": snapshot.kind,
+                    **snapshot.model_dump(include=_SNAPSHOT_IDENTITY),
+                    "error": "message_too_large",
+                }
+            )
+            for snapshot in message.snapshots
+        ],
+        complete=False,
+        reason="message_too_large",
+        static=message.static or saved,
+        refresh_seconds=message.refresh_seconds,
+    )
+    if _message_fits(slotted):
+        return slotted
+    # Declared identities alone overflow; the declaration is immutable, so stop.
+    return LiveDataMessage(
+        snapshots=[],
+        complete=False,
+        reason="message_too_large",
+        static=True,
+        refresh_seconds=message.refresh_seconds,
+    )
+
+
+def artifact_live_snapshot(
+    store, catalog, artifact_id: str, version_id: str, *, head: str | None = None
+) -> LiveDataMessage:
     artifact, version = _version(store, artifact_id, version_id)
     if not artifact.live_data_allowed or version.live is None or version.live.invalid_reason:
-        return LiveDataMessage(
-            snapshots=[],
-            refresh_seconds=LIVE_ARTIFACT_REFRESH_SECONDS,
-            static=True,
-            reason=(
-                _LIVE_DISABLED_REASON
-                if not artifact.live_data_allowed and version.live is not None
-                else version.live.invalid_reason
-                if version.live
-                else None
-            ),
+        return _bounded_message(
+            LiveDataMessage(
+                snapshots=[],
+                refresh_seconds=LIVE_ARTIFACT_REFRESH_SECONDS,
+                static=True,
+                reason=(
+                    _LIVE_DISABLED_REASON
+                    if not artifact.live_data_allowed and version.live is not None
+                    else version.live.invalid_reason
+                    if version.live
+                    else None
+                ),
+            )
+        )
+    graph_head = None
+    if any(binding.need.kind == "graph" for binding in version.live.needs):
+        from rcp.api.resource_watermarks import live_graph_head
+
+        # Sample before opening/reading: never attach a later generation to
+        # earlier data. A concurrent publication will force the next full read.
+        graph_head = live_graph_head(
+            store, catalog, artifact.project_id, version.live.graph_branch_id
         )
     service = catalog.open(artifact.project_id)
     task, _ = _owner(store, artifact)
@@ -472,12 +569,14 @@ def artifact_live_snapshot(store, catalog, artifact_id: str, version_id: str) ->
         raise ValueError("The artifact's graph target changed.")
     _graph_history(service, task)
     saved = store.read_artifact_live_snapshot(artifact_id, version_id)
-    if saved is not None:
-        return LiveDataMessage.model_validate_json(saved)
-    return _snapshot(store, service, artifact, version)
+    if saved is not None and graph_head is None:
+        return _bounded_message(LiveDataMessage.model_validate_json(saved), saved=True)
+    return _snapshot(store, service, artifact, version, head=head, graph_head=graph_head)
 
 
 def _ended(store, live):
+    if any(binding.need.kind == "graph" for binding in live.needs):
+        return False
     terminal = [binding for binding in live.needs if binding.need.kind in {"job", "episode"}]
     if not terminal:
         return False

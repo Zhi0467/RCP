@@ -269,24 +269,34 @@ class ArtifactStoreMixin(StoreMixinBase):
             artifact = self.artifact(artifact_id)
             if artifact is None:
                 raise KeyError(artifact_id)
-            artifact = artifact.model_copy(
-                update={"kept_at": artifact.kept_at or self.now(), "expires_at": None}
-            )
             with self.connection() as connection:
-                connection.execute(
-                    "UPDATE artifacts SET metadata = ? WHERE artifact_id = ?",
-                    (artifact.model_dump_json(), artifact_id),
-                )
-                connection.execute(
-                    "UPDATE consolidation_runs SET state='kept', resolved_by_json=?, resolved_at=? "
-                    "WHERE report_artifact_id=? AND kind='report' AND state='open'",
-                    (
-                        resolved_by.model_dump_json() if resolved_by else None,
-                        self.now(),
-                        artifact_id,
-                    ),
-                )
-            return artifact
+                return self._keep_artifact(connection, artifact, resolved_by=resolved_by)
+
+    def _keep_artifact(
+        self,
+        connection: sqlite3.Connection,
+        artifact: Artifact,
+        *,
+        resolved_by: AuthorizedHuman | None = None,
+    ) -> Artifact:
+        """Keep and attribute an artifact within the caller's transaction and lock."""
+        artifact = artifact.model_copy(
+            update={"kept_at": artifact.kept_at or self.now(), "expires_at": None}
+        )
+        connection.execute(
+            "UPDATE artifacts SET metadata = ? WHERE artifact_id = ?",
+            (artifact.model_dump_json(), artifact.artifact_id),
+        )
+        connection.execute(
+            "UPDATE consolidation_runs SET state='kept', resolved_by_json=?, resolved_at=? "
+            "WHERE report_artifact_id=? AND kind='report' AND state='open'",
+            (
+                resolved_by.model_dump_json() if resolved_by else None,
+                self.now(),
+                artifact.artifact_id,
+            ),
+        )
+        return artifact
 
     def session_artifacts(
         self, project_id: str, stage_host: str, stage_root: str
@@ -356,14 +366,18 @@ class ArtifactStoreMixin(StoreMixinBase):
 
     def protected_edit_artifact_ids(self) -> frozenset[str]:
         with self.connection() as connection:
-            # A rebound answer turn carries its edit without an artifact context.
-            rows = connection.execute(
-                "SELECT json_extract(request_json, '$.artifact_context.artifact_id'), "
-                "json_extract(request_json, '$.artifact_edit.artifact_id') "
-                "FROM graph_runs WHERE status IN "
-                f"({','.join('?' for _ in _EDIT_RETENTION_STATUSES)})",
-                _EDIT_RETENTION_STATUSES,
-            ).fetchall()
+            return self._protected_edit_artifact_ids(connection)
+
+    @staticmethod
+    def _protected_edit_artifact_ids(connection: sqlite3.Connection) -> frozenset[str]:
+        # A rebound answer turn carries its edit without an artifact context.
+        rows = connection.execute(
+            "SELECT json_extract(request_json, '$.artifact_context.artifact_id'), "
+            "json_extract(request_json, '$.artifact_edit.artifact_id') "
+            "FROM graph_runs WHERE status IN "
+            f"({','.join('?' for _ in _EDIT_RETENTION_STATUSES)})",
+            _EDIT_RETENTION_STATUSES,
+        ).fetchall()
         return frozenset(value for row in rows for value in row if isinstance(value, str))
 
     @staticmethod

@@ -56,6 +56,26 @@ _TIMED = frozenset({"tasks.progress", "task"})
 StoreDependency = Annotated[AppStore, Depends(get_store)]
 
 
+def watermark_epoch(database_epoch: str) -> str:
+    """Shared restart, restore, and projection epoch for display caches."""
+    return f"{_PROCESS_EPOCH}:{_PROJECTION_VERSION}:{database_epoch}"
+
+
+def graph_head_token(epoch: str, project_id: str, ref: str, generation: str) -> str:
+    """Identity of a published graph target, shared by watermarks and live pages."""
+    return hashlib.sha256(json.dumps([epoch, project_id, ref, generation]).encode()).hexdigest()
+
+
+def live_graph_head(
+    store: AppStore, catalog: ProjectCatalog, project_id: str, branch_id: str | None
+) -> str:
+    with store.connection() as connection:
+        epoch = connection.execute("SELECT epoch FROM resource_watermark_epoch").fetchone()[0]
+    ref = f"branch:{branch_id}" if branch_id else "main"
+    generation = catalog.content_generations(project_id, {f"graph:{ref}"})[f"graph:{ref}"]
+    return graph_head_token(watermark_epoch(epoch), project_id, ref, generation)
+
+
 class ResourceKey(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -184,7 +204,7 @@ def resource_watermarks(
         aliases = {
             row["requested_id"]: row["project_id"] for row in authorized if row["project_id"]
         }
-        epoch = f"{_PROCESS_EPOCH}:{_PROJECTION_VERSION}:{authorized[0]['epoch']}"
+        epoch = watermark_epoch(authorized[0]["epoch"])
         due = list(dict.fromkeys(body.due))
         keys = [
             (requested_id, aliases[requested_id], key)
@@ -283,6 +303,9 @@ def resource_watermarks(
         elapsed, upcoming = boundaries[index]
         family = key.content_family()
         file_version = content[project_id][family] if family is not None else ""
+        if key.name == "graph":
+            assert key.ref is not None
+            file_version = graph_head_token(epoch, project_id, key.ref, file_version)
         if key.name == "terminals":
             runtime_version = _api_services(request).terminals.resource_generation(project_id)
         elif key.name in _TIMED and project_id in running:
