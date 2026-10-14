@@ -310,19 +310,12 @@
   min-width: 0;
   overflow: hidden;
 }
-.project-header-navigation > .project-back,
-.project-header-navigation > .project-reconciliation {
+.project-header-navigation > .project-back {
   flex: none;
 }
 .project-header-navigation > .project-dock {
   flex-basis: min(620px, 52vw);
   max-width: min(620px, 52vw);
-}
-.project-reconciliation {
-  align-items: center;
-  color: var(--muted);
-  display: inline-flex;
-  flex: none;
 }
 .project-header-actions {
   align-items: center;

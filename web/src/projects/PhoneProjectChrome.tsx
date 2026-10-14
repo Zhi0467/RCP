@@ -34,7 +34,6 @@ export function PhoneProjectBar({
   projectName,
   branchPicker,
   hasDraft,
-  status,
   onBack,
   dock,
   sync,
@@ -43,7 +42,6 @@ export function PhoneProjectBar({
   projectName: string;
   branchPicker?: ReactNode;
   hasDraft: boolean;
-  status?: ReactNode;
   onBack: () => void;
   dock: ReactNode;
   sync: ReactNode;
@@ -79,7 +77,6 @@ export function PhoneProjectBar({
         )}
       </div>
       {branchPicker}
-      {status}
       {hasDraft && <div className="phone-bar-sync">{sync}</div>}
       <div className="phone-bar-more" ref={more.root}>
         <button

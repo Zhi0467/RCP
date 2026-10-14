@@ -539,7 +539,6 @@ test(
     );
     await reverify(page);
     await refused;
-    await page.locator(".project-reconciliation").waitFor({ state: "detached" });
     await page.getByRole("alertdialog").waitFor({ state: "detached" });
     assert.equal(await shellStillMounted(page), true);
     assert.equal(await page.locator(".project-panel[inert]").count(), 0);

@@ -4488,11 +4488,6 @@ function MemberApp({
       </select>
     </label>
   );
-  const reconcilingStatus = projectReconciliation === "reconciling" && (
-    <span className="project-reconciliation" role="status" aria-label="Refreshing project state">
-      <LoaderCircle className="spin" size={14} aria-hidden="true" />
-    </span>
-  );
   const phonePrimaryViews = new Set<AppView>(["overview", "attention", "scientific", "execution"]);
   const projectDock = (
     <ProjectDock
@@ -4540,7 +4535,6 @@ function MemberApp({
           projectName={project.name}
           branchPicker={branchPicker}
           hasDraft={draftChangeCount > 0 || behindDraftCount > 0}
-          status={reconcilingStatus}
           onBack={returnToProjects}
           dock={projectDock}
           sync={syncControls}
@@ -4560,7 +4554,6 @@ function MemberApp({
               <ArrowLeft size={16} />
             </button>
             {projectDock}
-            {reconcilingStatus}
           </div>
           <div className="project-header-actions" id="project-header-actions">
             <div
