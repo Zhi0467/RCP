@@ -130,11 +130,8 @@ export function relationChoices(
       const matches = (types: string[], node: GraphNode) =>
         types.includes(relation.custom ? (node.extension_type ?? node.type) : node.type);
       if (!matches(relation.source_types, start) || !matches(relation.target_types, end)) continue;
-      if (
-        relation.same_type &&
-        (start.type !== end.type || (start.extension_type ?? null) !== (end.extension_type ?? null))
-      )
-        continue;
+      // Built-in same-type relations compare base types only, as backend validation does.
+      if (relation.same_type && start.type !== end.type) continue;
       if (
         edges.some(
           (edge) =>

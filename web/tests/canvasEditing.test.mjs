@@ -62,7 +62,7 @@ test("existing relations are excluded only for the same orientation", () => {
   );
 });
 
-test("meta relations require identical base and extension types and sort last", () => {
+test("meta relations compare base types only and sort last", () => {
   const pair = { a: node("a", "hypothesis", "claim"), b: node("b", "hypothesis", "claim") };
   const ontology = {
     ...empty,
@@ -84,7 +84,7 @@ test("meta relations require identical base and extension types and sort last", 
   pair.b.extension_type = "other";
   assert.equal(
     relationChoices(options, ontology, pair, [], "a", "b").some((c) => c.meta),
-    false,
+    true,
   );
 });
 

@@ -356,7 +356,7 @@ export function DetailDrawer({
   };
   const close = () => {
     if (editing && standingBeforeEdit.current && standingBeforeEdit.current !== "asserted") {
-      onStanding(standingBeforeEdit.current);
+      onStanding(standingBeforeEdit.current, !stagedNewNode);
     }
     standingBeforeEdit.current = null;
     onClose();
