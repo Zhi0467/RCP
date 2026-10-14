@@ -98,8 +98,9 @@ or Evidence shortcuts.
 
 The DAG canvas is the only graph-editing surface; there are no side forms. Every
 gesture is one human-draft update, so one undo step (⌘Z / ⇧⌘Z, session-only,
-cleared by Sync or a rebasing reconcile). Backend preview validates the batch;
-Sync commits.
+cleared by Sync or a rebasing reconcile). A node-detail edit is one step too:
+its provisional standing reset folds into Done or Cancel. Backend preview
+validates the batch; Sync commits.
 
 - Create: double-click empty canvas, `+ Node`, N, or long-press places a staged
   card with a title field and type dots. The id, the type's main text, and an

@@ -120,10 +120,11 @@ export function useProjectSession(initialProjectId: string | null) {
       projectId: string,
       graph: GraphState,
       update: (draft: HumanDraft) => HumanDraft,
+      amend = false,
     ): ProjectSessionTransition => {
       const updated = update(getState().humanDraft ?? emptyHumanDraft(graph.revision));
       const draft = humanDraftChangeCount(updated) > 0 ? updated : null;
-      return dispatch({ kind: "human_draft_updated", project_id: projectId, draft });
+      return dispatch({ kind: "human_draft_updated", project_id: projectId, draft, amend });
     },
     [dispatch, getState],
   );

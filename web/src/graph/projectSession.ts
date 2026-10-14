@@ -127,7 +127,13 @@ export type ProjectSessionAction =
       paper: PaperSnapshot;
     }
   | { kind: "human_draft_loaded"; draft: HumanDraft | null }
-  | { kind: "human_draft_updated"; project_id: string; draft: HumanDraft | null }
+  | {
+      kind: "human_draft_updated";
+      project_id: string;
+      draft: HumanDraft | null;
+      /** Fold into the previous undo step instead of adding one (finishing a node-detail edit). */
+      amend?: boolean;
+    }
   | { kind: "human_draft_undo"; project_id: string }
   | { kind: "human_draft_redo"; project_id: string }
   | { kind: "discarded_proposals_consumed" }
@@ -340,7 +346,8 @@ export function projectSessionReducer(
         past = [...past, state.humanDraft].slice(-100);
       } else {
         draft = action.draft;
-        past = [...past, state.humanDraft].slice(-100);
+        if (!(action.kind === "human_draft_updated" && action.amend && past.length))
+          past = [...past, state.humanDraft].slice(-100);
         future = [];
       }
       const nextGeneration =

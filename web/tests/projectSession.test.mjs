@@ -827,6 +827,22 @@ test("draft undo and redo restore null, advance generations, and branch after a 
   assert.equal(Object.values(state.draftHistory)[0].past.length, 100);
 });
 
+test("an amended draft update folds into the previous undo step", () => {
+  let state = emptyProjectSessionState("alpha");
+  const update = (draft, amend) =>
+    projectSessionReducer(state, {
+      kind: "human_draft_updated",
+      project_id: "alpha",
+      draft,
+      amend,
+    });
+  state = update(humanDraft(0, "Before"));
+  state = update(humanDraft(0, "Provisional"));
+  state = update(humanDraft(0, "Finished"), true);
+  state = projectSessionReducer(state, { kind: "human_draft_undo", project_id: "alpha" });
+  assert.deepEqual(state.humanDraft, humanDraft(0, "Before"));
+});
+
 test("draft history stays scoped to its project and graph target across tab restores", () => {
   const canonical = snapshot(1, {
     graph: graph(1, {

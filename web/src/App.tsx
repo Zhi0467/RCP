@@ -2509,10 +2509,10 @@ function MemberApp({
     [dismissedHistoryNoticeIds, graph.revision, graph.validation_messages],
   );
 
-  const updateHumanDraft = (update: (draft: HumanDraft) => HumanDraft) => {
+  const updateHumanDraft = (update: (draft: HumanDraft) => HumanDraft, amend = false) => {
     if (!projectId || mutationsDisabled) return;
     setNotice(null);
-    const { next } = updateProjectHumanDraft(projectId, graph, update);
+    const { next } = updateProjectHumanDraft(projectId, graph, update, amend);
     try {
       persistProjectHumanDraft(localStorage, draftActorId, projectId, next.humanDraft, graphTarget);
     } catch (error) {
@@ -5326,11 +5326,11 @@ function MemberApp({
             onBeginEdit={() =>
               updateHumanDraft((draft) => stageNodeEditStart(draft, graph, node.id))
             }
-            onStanding={(standing) =>
-              updateHumanDraft((draft) => stageNodeStanding(draft, graph, node.id, standing))
+            onStanding={(standing, amend) =>
+              updateHumanDraft((draft) => stageNodeStanding(draft, graph, node.id, standing), amend)
             }
-            onStage={(changes) =>
-              updateHumanDraft((draft) => stageNodeEdit(draft, graph, node.id, changes))
+            onStage={(changes, amend) =>
+              updateHumanDraft((draft) => stageNodeEdit(draft, graph, node.id, changes), amend)
             }
             onApplyField={(changes, fieldKey) =>
               updateHumanDraft((draft) => stageNodeEdit(draft, graph, node.id, changes, [fieldKey]))

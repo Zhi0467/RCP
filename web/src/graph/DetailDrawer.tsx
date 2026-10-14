@@ -99,8 +99,9 @@ interface Props {
   onClose: () => void;
   onDock: () => void;
   onBeginEdit: () => void;
-  onStanding: (standing: GraphNode["standing"]) => void;
-  onStage: (changes: Record<string, DraftNodeValue>) => void;
+  /** `amend` folds the update into the edit's start, so one edit is one undo step. */
+  onStanding: (standing: GraphNode["standing"], amend?: boolean) => void;
+  onStage: (changes: Record<string, DraftNodeValue>, amend?: boolean) => void;
   onApplyField?: (changes: Record<string, DraftNodeValue>, fieldKey: string) => void;
   onDecisionChoice?: (selectedOption: string) => void;
   /** Offers the Experiment agent picker, defaulting from the Node chat profile. */
@@ -322,7 +323,7 @@ export function DetailDrawer({
   };
   const cancelEditing = () => {
     if (standingBeforeEdit.current && standingBeforeEdit.current !== "asserted") {
-      onStanding(standingBeforeEdit.current);
+      onStanding(standingBeforeEdit.current, !stagedNewNode);
     }
     standingBeforeEdit.current = null;
     setEditBase(node);
@@ -331,7 +332,11 @@ export function DetailDrawer({
   };
   const stage = () => {
     if (changeCount === 0 || nodeMutationDisabled || editInvalid) return;
-    onStage(changes);
+    // A non-asserted node's edit began with a provisional standing step; finish it in place.
+    onStage(
+      changes,
+      !stagedNewNode && !!standingBeforeEdit.current && standingBeforeEdit.current !== "asserted",
+    );
     standingBeforeEdit.current = null;
     setEditing(false);
   };
