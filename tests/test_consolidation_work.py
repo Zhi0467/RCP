@@ -149,6 +149,22 @@ def test_consolidation_apply_holds_added_evidence_for_review(manifest, tmp_path)
     )
     mailbox.write_text("patch.json", agent_patch_json(patch))
     assert apply("add").status == "ok"
+    # A process lost before the hold, and another writer's Evidence landing meanwhile.
+    with execution.store.connection() as connection:
+        connection.execute("DELETE FROM evidence_flags")
+        connection.execute("DELETE FROM evidence_flag_command_receipts")
+    other = {**evidence, "id": "ev/other-writer", "title": "Another writer's result"}
+    append_fixture_patch(
+        app.state.service,
+        Patch(
+            kind="seed",
+            author="agent",
+            summary="Another writer",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[{"op": "create_nodes", "nodes": [other]}],
+        ),
+    )
     assert apply("add").status == "ok"
     flags = execution.store.list_evidence_flags(app.state.default_project_id)
     assert [(item["evidence_id"], item["kind"], item["finding"]) for item in flags] == [

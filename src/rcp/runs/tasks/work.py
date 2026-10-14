@@ -97,7 +97,7 @@ from rcp.runs.consolidation import (
     require_consolidation_launch,
     settlement_source_effect_id,
 )
-from rcp.runs.evidence_flag_commands import flag_command_usage
+from rcp.runs.evidence_flag_commands import flag_command_usage, hold_consolidation_additions
 from rcp.runs.experiment_loop import (
     StagedExperimentWatcherResource,
     read_experiment_watcher_outputs,
@@ -2190,6 +2190,12 @@ def _finalize_work_turn(
                 f"The reply was delivered but could not be written to the chat transcript: {exc}",
                 level="warning",
             )
+    if is_consolidation(turn.execution):
+        assert turn.execution is not None
+        # Settlement reruns the keyed holds, recovering one an interrupted apply missed.
+        hold_consolidation_additions(
+            turn.service, turn.execution.store, turn.execution.operation_id
+        )
     if graph_update.status in {"applied", "none"}:
         commit_prepared_graph_observation(
             turn.execution,

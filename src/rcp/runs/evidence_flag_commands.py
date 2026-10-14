@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from rcp.agents.command_protocol import CommandResponse, FlagCommandRequest
 from rcp.core.models import GraphState
 from rcp.core.project_types import project_type_of
@@ -85,40 +87,49 @@ def flag_command_usage(client: str) -> str:
     )
 
 
-def flag_consolidation_additions(
-    service: ProjectService,
-    store: AppStore,
-    operation_id: str,
-    before: GraphState,
-    summary: str,
+def hold_consolidation_additions(
+    service: ProjectService, store: AppStore, operation_id: str
 ) -> None:
-    """Hold every Evidence node a consolidation apply created for human review.
+    """Hold every Evidence node this consolidation run's applied Patches created.
 
     RCP raises these, not the agent, so new Evidence never reaches the graph unseen.
-    A failure is recorded on the task; the applied Patch stands.
+    The created ids come from each applied Patch receipt, never a graph diff, and the
+    keyed flags replay, so rerunning after any apply or at settlement recovers a hold
+    an interrupted process missed. A failure is recorded on the task; the Patch stands.
     """
     task = store.agent_task(operation_id)
     if task is None:
         return
-    after = service.history.state()
-    project_type = project_type_of(after)
-    finding = (summary.strip().splitlines() or ["Consolidation added this Evidence."])[0]
-    for node_id, node in after.nodes.items():
-        if node_id in before.nodes or not project_type.is_outcome(node.type):
+    state = service.history.state()
+    for receipt in store.list_consolidation_apply_receipts(operation_id):
+        result = receipt["result"] or {}
+        if result.get("status") != "ok" or result["result"].get("disposition") != "applied":
             continue
-        try:
-            store.execute_evidence_flag_command(
-                task.project_id,
-                operation_id,
-                key=f"{RCP_FLAG_KEY_PREFIX}consolidation_added:{node_id}",
-                evidence_id=node_id,
-                kind="consolidation_added",
-                finding=finding[:EVIDENCE_FLAG_FINDING_MAX_CHARS],
-                validate_evidence=lambda: after.revision,
-            )
-        except (EvidenceFlagError, ValueError) as exc:
-            store.record_agent_task_event(
-                operation_id,
-                f"Evidence {node_id} was added but could not be held for review: {exc}",
-                level="warning",
-            )
+        patch = json.loads(receipt["patch_text"])
+        summary = patch.get("summary") if isinstance(patch.get("summary"), str) else ""
+        finding = (summary.strip().splitlines() or ["Consolidation added this Evidence."])[0]
+        created = [
+            node["id"]
+            for operation in patch.get("ops", [])
+            if operation.get("op") == "create_nodes"
+            for node in operation.get("nodes", [])
+        ]
+        for node_id in created:
+            if not is_current_evidence(state, node_id):
+                continue
+            try:
+                store.execute_evidence_flag_command(
+                    task.project_id,
+                    operation_id,
+                    key=f"{RCP_FLAG_KEY_PREFIX}consolidation_added:{node_id}",
+                    evidence_id=node_id,
+                    kind="consolidation_added",
+                    finding=finding[:EVIDENCE_FLAG_FINDING_MAX_CHARS],
+                    validate_evidence=lambda: state.revision,
+                )
+            except (EvidenceFlagError, ValueError) as exc:
+                store.record_agent_task_event(
+                    operation_id,
+                    f"Evidence {node_id} was added but could not be held for review: {exc}",
+                    level="warning",
+                )
