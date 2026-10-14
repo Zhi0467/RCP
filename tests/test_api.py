@@ -4918,6 +4918,7 @@ def test_resumed_chat_patch_is_applied_to_live_current_state(app, tmp_path) -> N
             (Path(kwargs["cwd"]) / "patch.json").write_text(
                 agent_patch_json(patch), encoding="utf-8"
             )
+            write_turn_outcome(Path(kwargs["cwd"]))
             yield AgentEvent(event="answer", text="Recorded.")
             yield AgentEvent(event="done")
 

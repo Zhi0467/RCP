@@ -4865,15 +4865,7 @@ function MemberApp({
                   writesDisabled={!consolidation?.can_write}
                   onChanged={updateEvidenceFlag}
                   onOpenNode={openNode}
-                  onOpenChat={(chatId) => {
-                    openChats(chatId);
-                    setRequestedChat({
-                      hash: window.location.hash,
-                      projectId: project.id,
-                      chatId,
-                      graphTarget: { kind: "main" },
-                    });
-                  }}
+                  onOpenChat={openChats}
                 />
                 <ConsolidationInbox
                   items={openConsolidation}
