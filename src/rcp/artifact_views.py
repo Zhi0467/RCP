@@ -197,6 +197,26 @@ window.addEventListener('message',(event)=>{
     )
 
 
+_VIDEO_PREVIEW = (
+    '<div id="videoPreview"><button id="videoPlay" type="button" aria-label="Play video">'
+    '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+    'stroke-width="2" aria-hidden="true"><path d="M8 5l11 7-11 7z"/></svg></button></div>'
+)
+_VIDEO_STYLE = """
+#videoPreview{display:grid;place-items:center;width:100%;max-width:100%;min-height:160px;aspect-ratio:16/9;border:1px solid var(--rule);border-radius:var(--radius);overflow:hidden}
+#videoPreview.failed{border-color:var(--danger,#b42318)}
+#videoPlay{display:grid;place-items:center;padding:12px;color:var(--ink);background:transparent;border:0;cursor:pointer}
+#videoPreview video{display:block;width:100%;max-width:100%;max-height:100%;object-fit:contain}
+"""
+
+
+def _video_script(content_url: str) -> str:
+    config = json.dumps(content_url).replace("<", "\\u003c")
+    return f"const videoContentUrl={config};\n" + importlib.resources.files("rcp").joinpath(
+        "artifact_video.js"
+    ).read_text("utf-8")
+
+
 def artifact_viewer_document(
     descriptor: AgentArtifactDescriptor,
     *,
@@ -226,12 +246,14 @@ def artifact_viewer_document(
         else f'<iframe id="preview" sandbox="{"allow-scripts" if kind == "html" else ""}" '
         f'src="{url}" title="{title}"></iframe>'
     )
+    if kind == "video":
+        preview = _VIDEO_PREVIEW
     keep = (
         '<button id="keep" type="button">Keep</button>'
         if keep_url and not descriptor.is_kept()
         else ""
     )
-    scripts: list[str] = []
+    scripts: list[str] = [_video_script(content_url)] if kind == "video" else []
     if keep:
         config = json.dumps({"keepUrl": keep_url}).replace("<", "\\u003c")
         scripts.append(
@@ -261,7 +283,7 @@ def artifact_viewer_document(
         else ""
     )
     rows = "48px minmax(0,1fr)" if header else "minmax(0,1fr)"
-    # Only the Keep and comment scripts call RCP; the error notice needs no connection.
+    # Keep, comments, live data, and video fetches call RCP.
     connects = bool(scripts)
     if kind == "html":
         scripts.insert(0, _error_shell_script(error_channel, inline=False))
@@ -277,12 +299,15 @@ main{{display:grid;grid-template-rows:minmax(0,1fr) auto;min-height:0}}
 #pageError{{padding:6px 72px 6px 12px;min-width:0}}#pageError:not([hidden]){{display:flex;align-items:center;gap:8px}}
 #pageErrorMessage{{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}#askFix{{flex-shrink:0}}.canvas{{position:relative;min-width:0;min-height:0;background:white}}
 iframe{{display:block;border:0;width:100%;height:100%}}.canvas>img{{display:block;width:100%;height:100%;object-fit:contain}}
+{_VIDEO_STYLE if kind == "video" else ""}
 {panel.style if panel else ""}</style></head><body>
 {header}<main><div class="canvas">{preview}</div>{page_error}{panel.markup if panel else ""}</main>{script_markup}</body></html>"""
     csp = "default-src 'none'; script-src 'unsafe-inline'; "
     if connects:
         csp += "connect-src 'self'; "
     csp += "style-src 'unsafe-inline'; frame-src 'self'; img-src 'self' data: blob:; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'self'"
+    if kind == "video":
+        csp += "; media-src blob:"
     return document, csp
 
 
@@ -310,6 +335,8 @@ def _inline_viewer_document(
         if kind == "image"
         else f'<iframe id="preview" sandbox="allow-scripts" title="{title}"></iframe>'
     )
+    if kind == "video":
+        preview = _VIDEO_PREVIEW
     config = json.dumps(
         {
             "contentUrl": content_url,
@@ -326,6 +353,8 @@ def _inline_viewer_document(
         + "\n"
         + resources.joinpath("artifact_inline.js").read_text("utf-8")
     ]
+    if kind == "video":
+        scripts.append(_video_script(content_url))
     if live_url and kind == "html":
         scripts.append(
             "const liveUrl="
@@ -342,6 +371,7 @@ def _inline_viewer_document(
 .canvas{{position:relative}}iframe{{display:block;border:0;width:100%;height:{ARTIFACT_INLINE_INITIAL_HEIGHT_PX}px;background:transparent}}
 #previewImage{{display:block;max-width:100%;height:auto;border-radius:var(--radius)}}
 .canvas:has(#previewImage){{display:inline-block;max-width:100%}}#boxLayer{{position:absolute;inset:0;cursor:crosshair}}
+{_VIDEO_STYLE if kind == "video" else ""}
 </style></head><body><main class="canvas">{preview}</main>{script_markup}</body></html>"""
     csp = (
         "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
@@ -350,6 +380,8 @@ def _inline_viewer_document(
     )
     if live_url and kind == "html":
         csp += "; connect-src 'self'"
+    if kind == "video":
+        csp += "; media-src blob:; connect-src 'self'"
     return document, csp
 
 
@@ -490,7 +522,7 @@ def artifact_content(
             document, csp = markdown_document(data, inline)
         elif view == "text":
             document, csp = text_document(name, data, inline)
-        elif view == "image":
+        elif view in {"image", "video"}:
             return data, media_type, "default-src 'none'; sandbox"
         else:
             raise ValueError("Artifact has no viewer")

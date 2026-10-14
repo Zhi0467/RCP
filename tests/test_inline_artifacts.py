@@ -231,3 +231,23 @@ def test_stored_routes_serve_the_inline_presentation(manifest, tmp_path: Path) -
             ).status_code
             == 422
         )
+
+
+@pytest.mark.parametrize("presentation", ["inline", "panel"])
+def test_video_shell_adds_only_its_media_and_fetch_permissions(presentation):
+    assert_frozen_backend_ships("artifact_video.js")
+    policies = {}
+    for kind, media in [("video", "video/mp4"), ("image", "image/png"), ("html", "text/html")]:
+        document, policies[kind] = artifact_viewer_document(
+            _descriptor("clip", media),
+            content_url="/content",
+            state="temporary",
+            presentation=presentation,
+        )
+        if kind == "video":
+            assert 'id="videoPlay"' in document and 'id="videoPreview"' in document
+            assert '<iframe id="preview"' not in document
+    assert policies["image"] == policies["html"]
+    assert "media-src" not in policies["image"] and "connect-src" not in policies["image"]
+    assert "media-src blob:" in policies["video"]
+    assert "connect-src 'self'" in policies["video"]

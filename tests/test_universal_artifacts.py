@@ -19,6 +19,12 @@ from .helpers import create_named_app
     ("name", "data", "media_type", "view"),
     [
         ("unknown.bin", b"bytes", "application/octet-stream", "file"),
+        ("clip.mp4", b"0000ftypisom", "video/mp4", "video"),
+        ("clip.m4v", b"0000ftypisom", "video/mp4", "video"),
+        ("clip.mov", b"0000ftypqt  ", "video/quicktime", "video"),
+        ("clip.webm", b"\x1aE\xdf\xa3webm", "video/webm", "video"),
+        ("bad.mp4", b"not video", "application/octet-stream", "file"),
+        ("bad.webm", b"\x1aE\xdf\xa3matroska", "application/octet-stream", "file"),
         ("bad.png", b"not PNG", "application/octet-stream", "file"),
         ("bad.html", b"\xff", "application/octet-stream", "file"),
         ("nul.md", b"a\0b", "application/octet-stream", "file"),
@@ -123,6 +129,9 @@ def _seed(app, tmp_path: Path, name: str, data: bytes, *, media_type=None, chat=
         ("image.gif", b"GIF89a"),
         ("image.webp", b"RIFF0000WEBP"),
         ("image.svg", b"<svg/>"),
+        ("clip.mp4", b"0000ftypisom"),
+        ("clip.mov", b"0000ftypqt  "),
+        ("clip.webm", b"\x1aE\xdf\xa3webm"),
     ],
 )
 def test_routes_capabilities_and_server_context_gate(tmp_path, manifest, name, data):
@@ -148,8 +157,20 @@ def test_routes_capabilities_and_server_context_gate(tmp_path, manifest, name, d
             assert content.status_code == viewer.status_code == 404
             assert not projected["can_open"]
         else:
+            assert projected["can_open"]
+            state = client.get(
+                f"/api/projects/{task.project_id}/artifacts/{descriptor.artifact_id}/state"
+            ).json()
+            assert state["viewer_url"].endswith("/viewer")
             assert content.status_code == viewer.status_code == 200
             assert ('id="composer"' in viewer.text) is commentable
+            if projected["view"] == "video":
+                assert content.content == data
+                assert content.headers["content-type"] == descriptor.media_type
+                assert content.headers["x-content-type-options"] == "nosniff"
+                ranged = client.get(base + "/content", headers={"Range": "bytes=0-3"})
+                assert ranged.status_code == 200 and ranged.content == data
+                assert '"selectionEnabled": false' in viewer.text
             if projected["view"] in {"markdown", "text"}:
                 assert "<script" not in content.text and "<img" not in content.text
                 assert "href=" not in content.text and "&lt;script&gt;" in content.text
