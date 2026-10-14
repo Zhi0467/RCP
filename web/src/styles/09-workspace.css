@@ -233,10 +233,6 @@
   .repository-path-field.wide {
     grid-column: auto;
   }
-  .path-picker > header {
-    align-items: stretch;
-    flex-direction: column;
-  }
   .repository-editor > footer {
     align-items: flex-start;
     flex-direction: column;
