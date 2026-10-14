@@ -33,10 +33,13 @@ ArtifactMediaType = Literal[
     "text/csv",
     "application/json",
     "application/pdf",
+    "video/mp4",
+    "video/quicktime",
+    "video/webm",
     "application/octet-stream",
 ]
 
-ArtifactView = Literal["html", "image", "markdown", "text", "pdf", "file"]
+ArtifactView = Literal["html", "image", "video", "markdown", "text", "pdf", "file"]
 
 # Supported file types are an artifact contract, not an operational tuning knob.
 ARTIFACT_MEDIA_TYPES: dict[str, ArtifactMediaType] = {
@@ -48,6 +51,10 @@ ARTIFACT_MEDIA_TYPES: dict[str, ArtifactMediaType] = {
     ".gif": "image/gif",
     ".webp": "image/webp",
     ".svg": "image/svg+xml",
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
 }
 
 ARTIFACT_MEDIA_TYPES.update(
@@ -103,6 +110,8 @@ ARTIFACT_MEDIA_TYPES.update(
 
 
 def artifact_view(media_type: ArtifactMediaType) -> ArtifactView:
+    if media_type.startswith("video/"):
+        return "video"
     if media_type.startswith("image/"):
         return "image"
     return {
@@ -225,6 +234,9 @@ def classify_artifact_bytes(name: str, data: bytes) -> ArtifactMediaType:
         "image/gif": data.startswith((b"GIF87a", b"GIF89a")),
         "image/webp": len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP",
         "application/pdf": data.startswith(b"%PDF-"),
+        "video/mp4": data[4:8] == b"ftyp",
+        "video/quicktime": data[4:8] == b"ftyp",
+        "video/webm": data.startswith(b"\x1aE\xdf\xa3") and b"webm" in data[:64],
     }
     return media_type if valid.get(media_type, False) else "application/octet-stream"
 

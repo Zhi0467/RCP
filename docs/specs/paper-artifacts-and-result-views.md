@@ -75,10 +75,16 @@ Type recognition fixes each artifact's presentation:
 | --- | --- |
 | HTML | Sandboxed viewer, no card thumbnail. |
 | Raster/SVG | Viewer and small inline picture. |
+| MP4/M4V, MOV, WebM | Native video in chat and the viewer; whole-file comments. |
 | Markdown | Script-free rendered HTML; raw HTML visible, links inert, images not fetched. |
 | Text/data/code/notebook | Escaped numbered text; valid JSON/notebooks pretty-printed. |
 | PDF | Desktop system viewer; browser Download only. |
 | Other/unrecognized bytes | Download and Keep only, even if bytes/support later change. |
+
+Video downloads on Play, then uses a blob URL in the native player. The byte
+route returns the whole file without Range support: WebKit refuses full-body 200
+responses to media range probes, and blobs avoid those probes within the 16 MiB
+artifact cap. Leaving the viewer aborts downloads and releases the blob.
 
 Text/Markdown previews label bounded prefixes; Download returns full bytes.
 A broken preview never hides Download/Keep or the reply. Keep refreshes the task
@@ -181,10 +187,11 @@ change clears it. Ask to fix prefills a comment for the human to send.
 ### Artifacts inside a reply
 
 Markdown image syntax embeds a registered artifact using its producing turn's
-absolute file path. It cannot name another turn's output. HTML, images, Markdown,
-and text run/render in the inline viewer; the card becomes Comment/Expand/Keep/
-Download actions beneath it. Surrounding links are dropped. Unembedded artifacts
-keep cards; PDFs/download-only embeds point to their cards. Unknown names report
+absolute file path. It cannot name another turn's output. HTML, images, video,
+Markdown, and text run/render in the inline viewer; the card becomes
+Comment/Expand/Keep/Download actions beneath it. Surrounding links are dropped.
+Unembedded videos show the same player below the reply; other artifacts keep
+cards. PDFs/download-only embeds point to their cards. Unknown names report
 unavailable without navigating. Old turns fetch their exact task before declaring
 absence and retain it across list refreshes.
 

@@ -2311,13 +2311,21 @@ export function NodeChat({
       return <InlineArtifactMissing name={found.name} attached />;
     if (!artifact || !artifact.available || !artifact.can_open)
       return <InlineArtifactMissing name={found.name} />;
+    return renderArtifactPlayer(taskId, artifact, alt.trim() || artifact.name);
+  };
+
+  const renderArtifactPlayer = (
+    taskId: string,
+    artifact: AgentArtifactDescriptor,
+    title: string,
+  ) => {
     const key = `${taskId}:${artifact.artifact_id}`;
     return (
       <InlineArtifact
         key={key}
         projectId={project.id}
         artifact={artifact}
-        title={alt.trim() || artifact.name}
+        title={title}
         refreshToken={inlineArtifactRefreshToken}
         canComment={!readOnly || allowArtifactComments}
         keeping={keepingArtifacts.has(key)}
@@ -2656,6 +2664,8 @@ export function NodeChat({
                   inlineArtifactNames(line.text, line.taskId).has(artifact.name)
                 )
                   return null;
+                if (artifact.view === "video" && artifact.available && artifact.can_open)
+                  return renderArtifactPlayer(line.taskId, artifact, artifact.name);
                 const taskUpdatedAt =
                   relatedTasks.find((task) => task.operation_id === line.taskId)?.updated_at ?? "";
                 const previewFailed = failedArtifactPreviews.has(

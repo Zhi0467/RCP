@@ -714,13 +714,16 @@ test("a steer receipt preserves the original turn and the unfinished answer", ()
 
 test("artifact view validation retains download-only files and rejects unknown views", () => {
   const file = artifact({ view: "file", media_type: "application/octet-stream", can_open: false });
+  const video = artifact({ view: "video", media_type: "video/mp4" });
   assert.deepEqual(
     taskArtifacts(
       task({
-        result: { artifacts: [file, artifact({ view: "unknown" }), artifact({ view: undefined })] },
+        result: {
+          artifacts: [file, video, artifact({ view: "unknown" }), artifact({ view: undefined })],
+        },
       }),
     ),
-    [file],
+    [file, video],
   );
 });
 
