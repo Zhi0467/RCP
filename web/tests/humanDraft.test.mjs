@@ -1122,10 +1122,12 @@ test("canvas creation, editing, replacement and batch deletion preserve draft gu
   assert.deepEqual(draft.custom_nodes, {});
   assert.deepEqual(draft.added_edges, []);
   assert.deepEqual(draft.removed_node_ids, []);
-  draft = stageEdgeAddition(draft, canonical, draftEdge("edge/temp", "other", "kept"));
+  const temp = draftEdge("edge/temp", "other", "kept");
+  draft = stageEdgeAddition(draft, canonical, temp);
   draft = stageNodesRemoval(draft, canonical, ["other"], []);
-  assert.deepEqual(draft.added_edges, []);
   assert.deepEqual(draft.removed_node_ids, ["other"]);
+  assert.deepEqual(toHumanSyncRequest(draft, canonical).added_edges, []);
+  assert.deepEqual(unstageNodeRemoval(draft, "other").added_edges, [temp]);
 });
 
 test("merge copies drafted links with payload and direction, deduplicates and unstages as one", () => {
@@ -1146,8 +1148,8 @@ test("merge copies drafted links with payload and direction, deduplicates and un
   draft = stageEdgeRemoval(draft, canonical, "removed");
   const merged = stageMerge(draft, canonical, "duplicate", "kept", []);
   assert.deepEqual(draft.added_edges, [incoming]);
-  assert.equal(merged.added_edges.length, 1);
-  const copy = merged.added_edges[0];
+  assert.deepEqual(toHumanSyncRequest(merged, canonical).added_edges.length, 1);
+  const copy = toHumanSyncRequest(merged, canonical).added_edges[0];
   assert.match(copy.id, /^edge\/[0-9a-f-]{36}$/);
   assert.deepEqual({ ...copy, id: incoming.id, target: "duplicate" }, incoming);
   assert.deepEqual(merged.removed_node_ids, ["duplicate"]);
@@ -1158,7 +1160,7 @@ test("merge copies drafted links with payload and direction, deduplicates and un
   assert.deepEqual(deserializeHumanDraft(serializeHumanDraft(merged)).merges, merged.merges);
   assert.equal("merges" in toHumanSyncRequest(merged, canonical), false);
   const unstaged = unstageMerge(merged, canonical, "duplicate");
-  assert.deepEqual(unstaged.added_edges, []);
+  assert.deepEqual(unstaged.added_edges, [incoming]);
   assert.deepEqual(unstaged.removed_node_ids, []);
   assert.deepEqual(stageEdgeRemoval(merged, canonical, copy.id).merges, []);
   assert.deepEqual(unstageNodeRemoval(merged, "duplicate").merges, []);

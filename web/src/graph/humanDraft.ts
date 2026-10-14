@@ -321,10 +321,16 @@ export function stageNodeRemoval(
     return draft;
   const next = cloneDraft(draft);
   next.removed_node_ids.push(nodeId);
-  next.added_edges = next.added_edges.filter(
-    (edge) => edge.source !== nodeId && edge.target !== nodeId,
-  );
   return normalizeHumanDraft(next, graph);
+}
+
+/**
+ * Draft links whose endpoints are both kept. A link on a node staged for removal
+ * stays in the draft, so undoing the removal brings it back, but is never sent.
+ */
+function liveAddedEdges(draft: HumanDraft): NewEdge[] {
+  const removed = new Set(draft.removed_node_ids);
+  return draft.added_edges.filter((edge) => !removed.has(edge.source) && !removed.has(edge.target));
 }
 
 export function unstageNodeRemoval(draft: HumanDraft, nodeId: string): HumanDraft {
@@ -597,7 +603,7 @@ export function humanDraftChangeCount(draft: HumanDraft | null): number {
     Object.keys(draft.proposals).length +
     (draft.ontology ? 1 : 0) +
     Object.keys(draft.custom_nodes).length +
-    draft.added_edges.length +
+    liveAddedEdges(draft).length +
     draft.removed_edge_ids.length -
     (draft.merges ?? []).reduce((count, merge) => count + merge.edge_ids.length, 0)
   );
@@ -678,7 +684,7 @@ export function toHumanSyncRequest(draft: HumanDraft, graph: GraphState): HumanS
     })),
     ontology: draft.ontology,
     custom_nodes: Object.values(draft.custom_nodes),
-    added_edges: draft.added_edges,
+    added_edges: liveAddedEdges(draft),
     removed_edge_ids: draft.removed_edge_ids,
   };
 }
