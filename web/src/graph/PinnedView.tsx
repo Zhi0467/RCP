@@ -108,7 +108,7 @@ export function PinnedViewTab({
     }
   };
   return (
-    <div className={`pinned-view-tab${error ? " failed" : ""}`}>
+    <div className={`pinned-view-tab${active ? " active" : ""}${error ? " failed" : ""}`}>
       <button type="button" aria-pressed={active} title={pin.title} onClick={onSelect}>
         <span>{pin.title}</span>
       </button>

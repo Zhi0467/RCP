@@ -1589,10 +1589,20 @@ a.digest-title:hover {
 .pinned-view-tab {
   display: flex;
   align-items: center;
-  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.pinned-view-tab.active {
+  background: var(--surface);
+  border-color: var(--line-strong);
+}
+.artifacts-subnav .pinned-view-tab > button {
+  background: transparent;
+  border: 0;
 }
 .pinned-view-tab > button:first-child {
   max-width: 200px;
+  padding-right: 2px;
 }
 .pinned-view-tab > button:first-child span {
   overflow: hidden;
@@ -1600,8 +1610,7 @@ a.digest-title:hover {
   white-space: nowrap;
 }
 .pinned-view-tab .pinned-view-unpin {
-  border-color: transparent;
-  padding: 4px 6px;
+  padding: 4px 8px 4px 4px;
 }
 .artifacts-subnav.failed,
 .pinned-view-tab.failed,
