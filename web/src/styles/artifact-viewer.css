@@ -45,7 +45,7 @@
 .pin-view-action .branch-tag {
   max-width: 12rem;
 }
-@media (max-width: 480px) {
+@media (max-width: 560px) {
   .pin-view-action .branch-tag {
     max-width: 6.5rem;
   }
