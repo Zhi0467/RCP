@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import get_args
 
 from fastapi.testclient import TestClient
 
 from rcp import __version__
+from rcp.api.project_provisioning import ProjectTransferSourceConfigurationRequest
 from rcp.api.team_shell_protocol import (
     TEAM_SHELL_PROTOCOL_HEADER,
     TEAM_SHELL_PROTOCOL_MAXIMUM,
@@ -15,6 +17,7 @@ from rcp.api.team_shell_protocol import (
 )
 from rcp.server_runtime import ServerMetadata, data_dir_identity
 from rcp.storage import AppStore
+from rcp.transfer.records import TRANSFER_RECORD_SCHEMA_VERSION
 from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
@@ -91,7 +94,7 @@ def test_health_reports_the_server_identity_version_data_and_activity(tmp_path) 
         "owner_kind": "desktop",
         "running_commit": None,
         "web_build_id": None,
-        "team_shell_protocol": {"minimum": 1, "maximum": 4},
+        "team_shell_protocol": {"minimum": 1, "maximum": 5},
         "active_agent_tasks": 0,
         "projects": 0,
         "agent_mode": "provider",
@@ -161,15 +164,28 @@ def test_team_shell_protocol_one_fixture_remains_supported(tmp_path) -> None:
     ]
 
 
-def test_team_shell_protocol_four_fixture_matches_server_range(tmp_path) -> None:
+def test_team_shell_protocol_five_fixture_matches_server_range(tmp_path) -> None:
     fixture = json.loads(
-        (Path(__file__).parent / "fixtures" / "team_shell_protocol_v4.json").read_text()
+        (Path(__file__).parent / "fixtures" / "team_shell_protocol_v5.json").read_text()
     )
     with signed_in_client(create_app(data_dir=tmp_path)) as client:
         assert client.get("/api/health").json()["team_shell_protocol"] == fixture["server_range"]
     assert fixture["schema_version"] == 1
     assert fixture["protocol_version"] == TEAM_SHELL_PROTOCOL_MAXIMUM
     assert fixture["selection_header"] == TEAM_SHELL_PROTOCOL_HEADER
+
+
+def test_latest_native_transfer_protocol_carries_every_writable_record_version() -> None:
+    # The desktop relays only the record versions its negotiated protocol lists,
+    # so a new transfer record version also needs a new team-shell protocol.
+    native = json.loads(
+        (Path(__file__).parent / "fixtures" / "team_shell_protocol_v5.json").read_text()
+    )["native_transfer"]
+    field = ProjectTransferSourceConfigurationRequest.model_fields["record_schema_version"]
+    accepted = [version for member in get_args(field.annotation) for version in get_args(member)]
+    assert native["record_schema_field"] == "record_schema_version"
+    assert native["record_schema_versions"] == accepted
+    assert accepted == list(range(2, TRANSFER_RECORD_SCHEMA_VERSION + 1))
 
 
 def test_health_projects_team_creation_eligibility_without_member_authority(tmp_path) -> None:

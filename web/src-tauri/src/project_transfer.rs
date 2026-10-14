@@ -964,7 +964,7 @@ pub async fn prepare(
     request: ProjectTransferPrepareRequest,
 ) -> Result<ProjectTransferBundle, String> {
     validate_prepare_request(&request)?;
-    let target = resolve_prepare_target(&request, connections, sessions)?;
+    let (target, target_protocol) = resolve_prepare_target(&request, connections, sessions)?;
     let request = coordinator.save_or_validate(&request, &target.expected_space_id)?;
     let status = lifecycle.status()?;
     let pinned = pin_personal_backend(lifecycle, &status).await?;
@@ -972,7 +972,12 @@ pub async fn prepare(
     let source_value = create_source_request(&pinned, &request, &target.expected_space_id).await?;
     let source =
         parse_transfer_mutation_record(&source_value, &request.source_request_id, "source")?;
-    validate_source_for_prepare(&source, &request, &target.expected_space_id)?;
+    validate_source_for_prepare(
+        &source,
+        &request,
+        &target.expected_space_id,
+        target_protocol,
+    )?;
 
     let configuration = source
         .source_configuration
@@ -1654,6 +1659,7 @@ fn validate_source_for_prepare(
     source: &ProjectTransferRecord,
     request: &ProjectTransferPrepareRequest,
     target_space_id: &str,
+    target_protocol: u32,
 ) -> Result<(), String> {
     if source.project_id != request.source_project_id
         || source.target_space_id != target_space_id
@@ -1673,6 +1679,18 @@ fn validate_source_for_prepare(
         .as_ref()
         .ok_or_else(|| "the source transfer omitted its public configuration".to_string())?;
     validate_source_configuration(configuration)?;
+    // Refuse before any target mutation, so an older team server never receives
+    // a provisioning reservation for history it cannot import.
+    if configuration
+        .record_schema_version
+        .is_some_and(|version| !target_record_schema_versions(target_protocol).contains(&version))
+    {
+        return Err(
+            "the target team server cannot receive this project's history; have the server \
+             operator install a newer promoted RCP release, then reconnect"
+                .into(),
+        );
+    }
     if configuration.repositories.iter().any(|repository| {
         repository.repository.is_some()
             && repository.source_commit.is_some() != request.include_local_commits
@@ -1696,10 +1714,10 @@ fn resolve_prepare_target(
     request: &ProjectTransferPrepareRequest,
     connections: &TeamConnectionState,
     sessions: &TeamSessionState,
-) -> Result<TeamConnectionMetadata, String> {
+) -> Result<(TeamConnectionMetadata, u32), String> {
     let target = resolve_prepare_target_metadata(request, connections)?;
-    sessions.established(&target.connection_id)?;
-    Ok(target)
+    let session = sessions.established(&target.connection_id)?;
+    Ok((target, session.protocol))
 }
 
 fn resolve_prepare_target_metadata(
@@ -2350,11 +2368,24 @@ fn optional_digest(
     Ok(value)
 }
 
+/// Every transfer record version this desktop relays. The negotiated
+/// team-shell protocol narrows it to the versions the target server accepts.
+const RELAYED_RECORD_SCHEMA_VERSIONS: [u64; 3] = [2, 3, 4];
+
+fn target_record_schema_versions(protocol: u32) -> &'static [u64] {
+    match protocol {
+        0..=3 => &[],
+        4 => &RELAYED_RECORD_SCHEMA_VERSIONS[..1],
+        _ => &RELAYED_RECORD_SCHEMA_VERSIONS,
+    }
+}
+
 fn validate_source_configuration(
     configuration: &ProjectTransferSourceConfiguration,
 ) -> Result<(), String> {
-    if configuration.record_schema_version.is_some()
-        && configuration.record_schema_version != Some(2)
+    if configuration
+        .record_schema_version
+        .is_some_and(|version| !RELAYED_RECORD_SCHEMA_VERSIONS.contains(&version))
     {
         return Err("the desktop does not support the source transfer record schema".into());
     }
@@ -4105,6 +4136,7 @@ fn format_digest(digest: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::team_session::TEAM_SHELL_PROTOCOL_MAXIMUM;
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -4256,7 +4288,7 @@ mod tests {
     #[test]
     fn archived_record_capability_round_trips_and_rejects_unsupported_versions() {
         let protocol: Value = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/team_shell_protocol_v4.json"
+            "../../../tests/fixtures/team_shell_protocol_v5.json"
         ))
         .unwrap();
         let legacy = safe_transfer_payload()["source_configuration"].clone();
@@ -4264,17 +4296,22 @@ mod tests {
             serde_json::from_value(legacy.clone()).unwrap();
         validate_source_configuration(&parsed).unwrap();
         assert_eq!(serde_json::to_value(parsed).unwrap(), legacy);
-        let mut included = legacy;
-        included["record_schema_version"] = serde_json::json!(2);
-        let parsed = serde_json::from_value(included.clone()).unwrap();
-        validate_source_configuration(&parsed).unwrap();
-        assert_eq!(serde_json::to_value(parsed).unwrap(), included);
         assert_eq!(
             protocol["native_transfer"]["record_schema_field"],
             "record_schema_version"
         );
-        assert_eq!(protocol["native_transfer"]["record_schema_version"], 2);
-        for unsupported in [1, 3] {
+        assert_eq!(
+            protocol["native_transfer"]["record_schema_versions"],
+            serde_json::json!(RELAYED_RECORD_SCHEMA_VERSIONS)
+        );
+        let mut included = legacy;
+        for version in RELAYED_RECORD_SCHEMA_VERSIONS {
+            included["record_schema_version"] = serde_json::json!(version);
+            let parsed = serde_json::from_value(included.clone()).unwrap();
+            validate_source_configuration(&parsed).unwrap();
+            assert_eq!(serde_json::to_value(parsed).unwrap(), included);
+        }
+        for unsupported in [1, 5] {
             included["record_schema_version"] = serde_json::json!(unsupported);
             let parsed = serde_json::from_value(included.clone()).unwrap();
             assert!(validate_source_configuration(&parsed).is_err());
@@ -4282,18 +4319,90 @@ mod tests {
     }
 
     #[test]
+    fn preparation_relays_only_record_versions_the_target_protocol_accepts() {
+        let four: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/team_shell_protocol_v4.json"
+        ))
+        .unwrap();
+        let five: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/team_shell_protocol_v5.json"
+        ))
+        .unwrap();
+        assert_eq!(five["protocol_version"], TEAM_SHELL_PROTOCOL_MAXIMUM);
+        let accepted = |protocol: u32| -> Vec<u64> {
+            match protocol {
+                3 => Vec::new(),
+                4 => vec![four["native_transfer"]["record_schema_version"]
+                    .as_u64()
+                    .unwrap()],
+                _ => serde_json::from_value(
+                    five["native_transfer"]["record_schema_versions"].clone(),
+                )
+                .unwrap(),
+            }
+        };
+        let request = prepare_request();
+        let mut source = decision_record("source", REQUEST_ID);
+        for protocol in 3..=TEAM_SHELL_PROTOCOL_MAXIMUM {
+            source
+                .source_configuration
+                .as_mut()
+                .unwrap()
+                .record_schema_version = None;
+            validate_source_for_prepare(&source, &request, TARGET_SPACE_ID, protocol).unwrap();
+            for version in 2..=4 {
+                source
+                    .source_configuration
+                    .as_mut()
+                    .unwrap()
+                    .record_schema_version = Some(version);
+                assert_eq!(
+                    validate_source_for_prepare(&source, &request, TARGET_SPACE_ID, protocol)
+                        .is_ok(),
+                    accepted(protocol).contains(&version),
+                    "protocol {protocol}, record version {version}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn preparation_refuses_a_source_that_changes_local_commit_inclusion() {
         let mut request = prepare_request();
         let mut source = decision_record("source", REQUEST_ID);
-        validate_source_for_prepare(&source, &request, TARGET_SPACE_ID).unwrap();
+        validate_source_for_prepare(
+            &source,
+            &request,
+            TARGET_SPACE_ID,
+            TEAM_SHELL_PROTOCOL_MAXIMUM,
+        )
+        .unwrap();
         request.include_local_commits = true;
-        assert!(validate_source_for_prepare(&source, &request, TARGET_SPACE_ID).is_err());
+        assert!(validate_source_for_prepare(
+            &source,
+            &request,
+            TARGET_SPACE_ID,
+            TEAM_SHELL_PROTOCOL_MAXIMUM
+        )
+        .is_err());
         let configuration = source.source_configuration.as_mut().unwrap();
         configuration.repositories[0].source_commit = Some("a".repeat(40));
         configuration.supported_archive_codecs = vec!["rcp-transfer-v2".into()];
-        validate_source_for_prepare(&source, &request, TARGET_SPACE_ID).unwrap();
+        validate_source_for_prepare(
+            &source,
+            &request,
+            TARGET_SPACE_ID,
+            TEAM_SHELL_PROTOCOL_MAXIMUM,
+        )
+        .unwrap();
         request.include_local_commits = false;
-        assert!(validate_source_for_prepare(&source, &request, TARGET_SPACE_ID).is_err());
+        assert!(validate_source_for_prepare(
+            &source,
+            &request,
+            TARGET_SPACE_ID,
+            TEAM_SHELL_PROTOCOL_MAXIMUM
+        )
+        .is_err());
         let configuration = source.source_configuration.as_mut().unwrap();
         let mut second = configuration.repositories[0].clone();
         second.alias = "analysis".into();
@@ -4316,7 +4425,13 @@ mod tests {
         validate_source_configuration(configuration).unwrap();
         let intents = serde_json::to_value(derive_repository_intents(configuration)).unwrap();
         assert!(intents[1]["source"].is_null());
-        validate_source_for_prepare(&source, &prepare_request(), TARGET_SPACE_ID).unwrap();
+        validate_source_for_prepare(
+            &source,
+            &prepare_request(),
+            TARGET_SPACE_ID,
+            TEAM_SHELL_PROTOCOL_MAXIMUM,
+        )
+        .unwrap();
         source.source_configuration.as_mut().unwrap().repositories[1].source_commit = None;
         assert!(
             validate_source_configuration(source.source_configuration.as_ref().unwrap()).is_err()
