@@ -1056,6 +1056,11 @@ export interface GraphEditOptions {
     name: string;
     assessment_required_for: Array<{ source_type: string; target_type: string }>;
     accepts_expectation: boolean;
+    /** Base node types the relation may start and end at. */
+    source_types: string[];
+    target_types: string[];
+    /** Both endpoints must share one type (meta relations). */
+    same_type: boolean;
   }>;
 }
 
