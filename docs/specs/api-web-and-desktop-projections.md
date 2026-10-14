@@ -719,7 +719,9 @@ sharing/backgrounding, and one loopback forward to the configured server port.
 Existing SSH config/agent supplies host and key policy; RCP never prompts for an
 SSH password. A dual-stack loopback TLS listener forwards only to that private
 SSH listener. Healthy tunnels are reused only while origin, target, and port
-match; failed/changed tunnels back off before replacement.
+match; failed/changed tunnels back off before replacement. A team page starts
+that reconnect only when fetch itself fails to reach the server; a timed-out or
+cancelled request is not an outage.
 
 Each saved connection has a stable origin:
 `https://rcp-<connection-id-without-hyphens>.rcp.localhost:<local-port>`.

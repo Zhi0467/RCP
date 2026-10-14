@@ -208,7 +208,9 @@ export function registerTransportFailureHandler(handler: TransportFailureHandler
 }
 
 function notifyTransportFailure(error: unknown): void {
-  if (error instanceof DOMException && error.name === "AbortError") return;
+  // fetch reports an unreachable server as TypeError; an abort rejects with its
+  // reason (AbortError, TimeoutError, or the caller's own error) and is no outage.
+  if (!(error instanceof TypeError)) return;
   transportFailureHandler?.();
 }
 
