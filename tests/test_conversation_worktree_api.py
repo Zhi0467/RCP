@@ -324,6 +324,8 @@ def test_retry_resumes_interrupted_integration_on_its_persisted_target(harness):
             if event.event == "answer" and not interrupted:
                 _git(worktree, "checkout", "release")
                 interrupted = True
+                # A turn cut off mid-integration never stated an outcome.
+                (Path(kwargs["cwd"]) / "outcome.json").unlink()
                 yield AgentEvent(event="error", text="Disconnected during integration")
                 return
             if event.event == "answer":

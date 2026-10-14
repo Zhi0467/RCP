@@ -306,7 +306,7 @@ def address_evidence_flag(
         ) as flag:
             # Replaying an addressing flag returns its bound chat whatever main now holds.
             if flag["state"] == "open":
-                service = get_graph_service(catalog, project_id, initialize=False)
+                service = get_graph_service(catalog, project_id, initialize=False, write=True)
                 if not is_current_evidence(service.history.state(), flag["evidence_id"]):
                     raise EvidenceFlagError("flag_evidence_unavailable")
                 try:
