@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, ClassVar, cast
 from rcp.artifacts import html_document_title
 from rcp.limits import BACKUP_SQLITE_BUSY_SLEEP_SECONDS, BACKUP_SQLITE_PAGES_PER_STEP
 from rcp.providers import PROVIDER_IDS, legacy_runtime_id
+from rcp.rcp_home import rcp_temp_dir
 from rcp.storage.artifact_imports import migrate_artifact_imports
 from rcp.storage.artifacts import migrate_artifacts
 from rcp.storage.auto_research import migrate_legacy_auto_research
@@ -333,7 +334,7 @@ class AppStoreBase:
 
         probe = sqlite3.connect(":memory:", timeout=30.0)
         probe.row_factory = sqlite3.Row
-        temporary_root = tempfile.TemporaryDirectory(prefix="rcp-migration-")
+        temporary_root = tempfile.TemporaryDirectory(prefix="rcp-migration-", dir=rcp_temp_dir())
         try:
             connection.backup(probe)
             probe.execute("PRAGMA foreign_keys = OFF")
@@ -3115,7 +3116,7 @@ class AppStoreBase:
                 connection = sqlite3.connect(":memory:")
                 connection.row_factory = sqlite3.Row
                 # An empty chain writes no files; keep any future one out of real data.
-                file_root = tempfile.TemporaryDirectory(prefix="rcp-migration-")
+                file_root = tempfile.TemporaryDirectory(prefix="rcp-migration-", dir=rcp_temp_dir())
                 try:
                     connection.execute("PRAGMA legacy_alter_table = ON")
                     connection.execute("BEGIN IMMEDIATE")
