@@ -91,12 +91,39 @@ size across close/minimize, remains reachable after viewport changes, and closes
 on entry to Agents.
 
 Literal prose edits stage in the project draft and reset draft standing to
-asserted; they do not start chat. New node offers all built-in/active custom types.
-Connection gestures and keyboard select controls share one source/target/relation
-editor; removal/replacement is staged. Backend preview validates the batch; Sync
-commits. Node removal removes incident edges, not history. Accepted-node and
-active-Experiment safeguards apply. Artifact selections are not graph editing
+asserted; they do not start chat. Artifact selections are not graph editing
 or Evidence shortcuts.
+
+## Canvas editing
+
+The DAG canvas is the only graph-editing surface; there are no side forms. Every
+gesture is one human-draft update, so one undo step (⌘Z / ⇧⌘Z, session-only,
+cleared by Sync or a rebasing reconcile). Backend preview validates the batch;
+Sync commits.
+
+- Create: double-click empty canvas, `+ Node`, N, or long-press places a staged
+  card with a title field and type dots. The id, the type's main text, and an
+  explicit `unknown` origin derive from the title; refine them in node detail.
+  An unknown origin is a red card edge with one icon action. Custom types with
+  required fields add one field row.
+- Link: drag a card's handle. The wire starts at the handle, eligible cards and
+  handles light up, and the wire snaps to an eligible handle nearby. One valid
+  relation stages at once; several open one inline menu that also takes a
+  required Evidence assessment. Dropping on empty canvas creates a linked card.
+  Clicking the handle (or L) enters pick mode for touch and keyboard.
+- Links are selectable. One chip shows the relation and Unlink; the relation
+  opens in place, never as a second box.
+- Merge: hold a card over one of the same type, or select two and press M.
+  The kept node receives copies of the duplicate's links and the duplicate is
+  removed, in one draft update.
+- Delete and rename work on the selection. Node removal removes incident edges,
+  not history. Accepted-node, staged-edit, and active-Experiment guards refuse
+  by shaking or disabling, never by caption.
+- Edits never refit or recenter the view; new cards stay pinned where placed.
+
+**Why:** forms detached editing from the graph and made every structural edit a
+multi-field round trip. One update per gesture keeps preview, undo, and Sync
+on the existing draft path.
 
 ## DAG controls
 
