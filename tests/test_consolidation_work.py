@@ -270,8 +270,8 @@ async def test_consolidation_bound_owner_pins_workflow_and_refuses_watchers(
     assert all(item["capability"] == "work_auto" for item in launcher.launch_kwargs)
     payloads = [json.loads(frame.removeprefix("data: ")) for frame in frames]
     assert not any(item["event"] == "error" for item in payloads)
-    results = [json.loads(item["text"]) for item in payloads if item["event"] == "message"]
-    assert results[-1]["turn_outcome"]["status"] == ("done" if outcome else "not_stated")
+    assert execution.turn_outcome is not None
+    assert execution.turn_outcome.status == ("done" if outcome else "not_stated")
     # The task contract invokes the staged workflow, not just the request field.
     contract = Path(re.search(r"(/\S+-initial\.md)", launcher.prompts[0]).group(1))
     invoked = [

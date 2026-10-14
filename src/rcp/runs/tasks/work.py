@@ -1243,6 +1243,7 @@ def _capture_retry_deliverable_baseline(turn: WorkTurn) -> _RetryDeliverableBase
     assert turn.execution is not None
     predecessor_patch = _read_chat_patch(turn.workspace, turn.remote_stage)
     predecessor_watch = _read_watch_request(turn.workspace, turn.remote_stage)
+    predecessor_outcome = _read_turn_outcome(turn.workspace, turn.remote_stage)
     experiment_watch_digests = {
         name: hashlib.sha256(text.encode("utf-8")).hexdigest()
         for name, text in read_experiment_watcher_outputs(
@@ -1260,12 +1261,18 @@ def _capture_retry_deliverable_baseline(turn: WorkTurn) -> _RetryDeliverableBase
         if predecessor_watch is not None
         else None
     )
+    outcome_digest = (
+        hashlib.sha256(predecessor_outcome.encode("utf-8")).hexdigest()
+        if predecessor_outcome is not None
+        else None
+    )
     turn.execution.store.record_agent_task_receipt(
         turn.execution.operation_id,
         "retry_deliverable_baseline",
         {
             "patch_sha256": patch_digest,
             "watch_sha256": watch_digest,
+            "outcome_sha256": outcome_digest,
             "experiment_watch_sha256": experiment_watch_digests,
         },
         tier="diagnostic",
@@ -1274,6 +1281,7 @@ def _capture_retry_deliverable_baseline(turn: WorkTurn) -> _RetryDeliverableBase
         patch_digest=patch_digest,
         watch_digest=watch_digest,
         experiment_watch_digests=experiment_watch_digests,
+        outcome_digest=outcome_digest,
     )
 
 
@@ -1848,6 +1856,7 @@ async def _settle_watch_deliverable(
     composed: _ComposedWorkPrompt | None = None,
     maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
     collect_outcome: bool = False,
+    predecessor_outcome_digest: str | None = None,
 ) -> AsyncGenerator[str, None]:
     initial = _read_initial_watch_deliverable(turn, predecessor_digest)
     if is_consolidation(turn.execution):
@@ -1890,6 +1899,14 @@ async def _settle_watch_deliverable(
         if collect_outcome and correction_rounds <= TURN_OUTCOME_CORRECTION_MAX_ROUNDS:
             try:
                 raw = _read_turn_outcome(turn.workspace, turn.remote_stage)
+                # A Retry reuses its stage; the predecessor's outcome is not this turn's.
+                if _retry_deliverable_is_unchanged(
+                    turn.execution,
+                    filename="outcome.json",
+                    predecessor_digest=predecessor_outcome_digest,
+                    current_text=raw,
+                ):
+                    raw = None
                 parsed = WorkTurnOutcome.model_validate_json(raw or "null")
                 settled.turn_outcome = TurnOutcome.model_validate(parsed.model_dump())
             except (ValueError, OSError, StateUnavailable) as exc:
@@ -2180,11 +2197,11 @@ def _finalize_work_turn(
             native_session_id=turn.outcome.session_id,
             applied_revision=_work_observed_apply_revision(turn.execution, graph_update),
         )
+    if turn.execution is not None:
+        turn.execution.turn_outcome = turn_outcome
     payload: dict[str, object] = {
         "graph_update": graph_update.model_dump(mode="json"),
     }
-    if turn_outcome is not None:
-        payload["turn_outcome"] = turn_outcome.model_dump(mode="json")
     if graph_update.applied_revision is not None:
         payload["applied_revision"] = graph_update.applied_revision
     return (
@@ -2453,6 +2470,7 @@ async def finalize_work_result(
             retry_baseline.watch_digest,
             settled,
             collect_outcome=True,
+            predecessor_outcome_digest=retry_baseline.outcome_digest,
             launch_turn=launch_turn,
             staged=staged,
             composed=composed,
@@ -3376,6 +3394,9 @@ def _recorded_retry_deliverable_baseline(
             patch_digest=payload.get("patch_sha256"),
             watch_digest=payload.get("watch_sha256"),
             experiment_watch_digests=digests if isinstance(digests, dict) else {},
+            outcome_digest=(
+                outcome if isinstance(outcome := payload.get("outcome_sha256"), str) else None
+            ),
         )
     return _RetryDeliverableBaseline(None, None, {})
 

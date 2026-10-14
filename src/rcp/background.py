@@ -247,6 +247,9 @@ class AgentTaskExecution:
     applied_revision: int | None = None
     applied_graph_state: GraphState | None = None
     armed_graph_watchers: bool = False
+    #: Set only by the ordinary Work owner from its validated stage file; provider
+    #: event text can never supply it.
+    turn_outcome: TurnOutcome | None = None
     compatible_related_write_scope_fingerprints: frozenset[str] = frozenset()
     #: Set when a stage read or host probe during this run failed because the
     #: host could not be reached, rather than because a deliverable was bad or a
@@ -2865,7 +2868,6 @@ class BackgroundAgentTasks:
         messages: list[str] = []
         artifacts: list[AgentArtifactDescriptor] = []
         graph_update: GraphUpdateResult | None = None
-        turn_outcome: TurnOutcome | None = None
         graph_updates: list[GraphUpdateResult] = []
         awaiting_remote_result: str | None = None
         # `aclosing` so an error or a pause closes the run generator here rather
@@ -2982,9 +2984,6 @@ class BackgroundAgentTasks:
                         graph_updates = graph_updates[-GRAPH_UPDATE_HISTORY_MAX_COUNT:]
                         if parsed_graph_updates:
                             graph_update = parsed_graph_updates[-1]
-                    parsed_turn_outcome = _turn_outcome(event.text)
-                    if parsed_turn_outcome is not None:
-                        turn_outcome = parsed_turn_outcome
                     parsed_graph_update = _graph_update(event.text)
                     if parsed_graph_update is not None:
                         graph_update = parsed_graph_update
@@ -3016,7 +3015,6 @@ class BackgroundAgentTasks:
                     elif (
                         parsed_graph_update is None
                         and parsed_graph_updates is None
-                        and parsed_turn_outcome is None
                         and event.text.strip()
                         and len(messages) < 32
                     ):
@@ -3056,7 +3054,7 @@ class BackgroundAgentTasks:
             messages=messages,
             artifacts=artifacts,
             graph_update=graph_update,
-            turn_outcome=turn_outcome,
+            turn_outcome=execution.turn_outcome,
             graph_updates=graph_updates,
         )
 
@@ -3260,15 +3258,5 @@ def _graph_updates(text: str) -> list[GraphUpdateResult] | None:
         return None
     try:
         return [GraphUpdateResult.model_validate(item) for item in raw_updates]
-    except (TypeError, ValueError):
-        return None
-
-
-def _turn_outcome(text: str) -> TurnOutcome | None:
-    try:
-        value = json.loads(text)
-        if not isinstance(value, dict) or "turn_outcome" not in value:
-            return None
-        return TurnOutcome.model_validate(value["turn_outcome"])
     except (TypeError, ValueError):
         return None

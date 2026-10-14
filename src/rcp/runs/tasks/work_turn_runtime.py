@@ -344,6 +344,7 @@ class RetryDeliverableBaseline:
     patch_digest: str | None
     watch_digest: str | None
     experiment_watch_digests: dict[str, str]
+    outcome_digest: str | None = None
 
 
 @dataclass
