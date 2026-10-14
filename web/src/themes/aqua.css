@@ -233,9 +233,9 @@
     var(--shadow);
 }
 
-:root[data-theme="aqua"] .dag-controls {
+:root[data-theme="aqua"] .dag-toolbar {
   background: var(--aqua-toolbar);
-  border-radius: 12px 12px 0 0;
+  border-radius: 12px;
   box-shadow: inset 1px 1px 0 var(--aqua-highlight);
 }
 

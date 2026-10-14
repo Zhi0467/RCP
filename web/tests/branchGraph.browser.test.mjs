@@ -73,7 +73,9 @@ test("branch graph keeps detail and chat while canvas editing stays read-only", 
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/branchGraph.html`,
     );
+    await page.getByRole("button", { name: "Layout", exact: true }).click();
     await page.getByRole("button", { name: "Research flow", exact: true }).click();
+    await page.keyboard.press("Escape");
     assert.equal(await page.locator('.dag-node[data-node-id="hyp/distant"]').count(), 0);
     assert.equal(await page.locator(".dag-connect-handle").count(), 0);
     assert.equal(await page.locator(".dag-edit-controls").count(), 0);

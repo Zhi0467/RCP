@@ -478,9 +478,13 @@
   .dag-edit-controls {
     gap: 2px;
   }
+  .dag-toolbar-group > button > span {
+    display: none;
+  }
   .dag-edit-float button,
   .dag-edit-menu button,
-  .dag-edit-controls button {
+  .dag-edit-controls button,
+  .dag-toolbar-group > button {
     min-height: 36px;
     min-width: 36px;
   }
@@ -513,8 +517,6 @@
     transform: translateY(-50%) scale(calc(1 / var(--dag-canvas-zoom, 1)));
     transform-origin: center;
   }
-  .dag-edit-float,
-  .dag-edit-menu,
   .dag-staged-card {
     transform: scale(calc(1 / var(--dag-canvas-zoom, 1)));
     transform-origin: top left;

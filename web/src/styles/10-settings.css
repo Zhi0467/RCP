@@ -2688,12 +2688,6 @@ button.agent-provider-label {
   .research-path-stage:nth-child(2) {
     border-top: 0;
   }
-  .dag-controls {
-    grid-template-columns: 1fr;
-  }
-  .dag-physics-controls {
-    justify-content: flex-start;
-  }
 }
 
 @media (max-width: 560px) {
@@ -2828,9 +2822,6 @@ button.agent-provider-label {
   .conversation-surface {
     grid-column: 1;
     grid-row: 3;
-  }
-  .dag-controls-disclosure > .view-disclosure-summary {
-    border-bottom: 0;
   }
   .conversation-list [role="option"] {
     padding: 9px 6px;
@@ -2976,13 +2967,6 @@ button.agent-provider-label {
   .dag-panel {
     padding-left: 10px;
     padding-right: 10px;
-  }
-  .dag-layout-controls {
-    align-items: flex-start;
-    flex-wrap: wrap;
-  }
-  .dag-control-label {
-    flex-basis: 100%;
   }
   .dag-lens {
     flex: 1 1 auto;

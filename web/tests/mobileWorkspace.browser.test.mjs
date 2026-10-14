@@ -275,14 +275,13 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       await page.setViewportSize(viewport);
       await page.goto(`${base}/dagViewport.html?representative`);
       await page.locator(".dag-node").last().waitFor();
-      const dagToggle = page.locator(".dag-controls-disclosure > summary");
-      const controls = page.locator(".dag-controls");
-      assert.equal(await controls.isVisible(), false, "DAG controls start closed on mobile");
+      const toolbar = page.locator(".dag-toolbar");
+      const menu = page.locator(".dag-toolbar-menu");
       const canvasTop = (await page.locator(".dag-scroll").boundingBox()).y;
       assert.ok(canvasTop < viewport.height / 3, "Canvas begins in the top third of the fixture");
-      await dagToggle.focus();
-      await page.keyboard.press("Enter");
-      await controls.waitFor();
+      const bar = await toolbar.boundingBox();
+      assert.ok(bar.x >= 0 && bar.x + bar.width <= viewport.width, "Toolbar fits the phone width");
+      await page.getByRole("button", { name: "Layout", exact: true }).click();
       await page.getByRole("button", { name: "Research flow", exact: true }).click();
       assert.equal(
         await page
@@ -290,13 +289,12 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
           .getAttribute("aria-pressed"),
         "true",
       );
-      await dagToggle.click();
-      await controls.waitFor({ state: "hidden" });
+      const open = await menu.boundingBox();
+      assert.ok(open.x >= 0 && open.x + open.width <= viewport.width, "Menu fits the phone width");
+      await page.keyboard.press("Escape");
+      await menu.waitFor({ state: "hidden" });
       assert.equal((await page.locator(".dag-scroll").boundingBox()).y, canvasTop);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), viewport.width);
-      await page.setViewportSize({ width: 1100, height: 900 });
-      await controls.waitFor();
-      assert.equal(await dagToggle.isVisible(), false, "Desktop controls remain directly visible");
       assert.deepEqual(errors, []);
       t.diagnostic(
         `${viewport.width}x${viewport.height}: composer ${composerWidth}px; canvas top ${canvasTop}px (component fixtures).`,

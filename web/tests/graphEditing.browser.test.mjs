@@ -32,14 +32,22 @@ test("canvas gestures stage atomic updates, retain pending previews, and guard r
     const card = (id) => page.locator(`.dag-node[data-node-id="${id}"]`);
     const select = (id) => card(id).locator(".dag-node-inspect").click();
     const selectEdge = async (id) => {
-      const point = await page.locator(`[data-edge-id="${id}"]`).evaluate((path) => {
+      // Wait until the link's own hit path is under its midpoint: the layout may still be settling.
+      const handle = await page.waitForFunction((edgeId) => {
+        const path = document.querySelector(`.dag-edge-hit[data-edge-id="${edgeId}"]`);
+        if (!path) return null;
         const p = path.getPointAtLength(path.getTotalLength() / 2);
         const screen = new DOMPoint(p.x, p.y).matrixTransform(path.getScreenCTM());
-        return { x: screen.x, y: screen.y };
-      });
+        return document.elementFromPoint(screen.x, screen.y) === path
+          ? { x: screen.x, y: screen.y }
+          : null;
+      }, id);
+      const point = await handle.jsonValue();
       await page.mouse.click(point.x, point.y);
     };
+    await page.getByRole("button", { name: "Layout", exact: true }).click();
     await page.getByRole("button", { name: "Research flow", exact: true }).click();
+    await page.keyboard.press("Escape");
     await page.getByRole("button", { name: "Fit", exact: true }).click();
     await page.getByLabel("Hold preview").check();
     const scroll = await page.locator(".dag-scroll").boundingBox();
@@ -351,7 +359,9 @@ test("Research flow fits six type columns to width with vertical scrolling and a
       `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/dagViewport.html?representative`,
     );
     await page.locator(".dag-node").last().waitFor();
+    await page.getByRole("button", { name: "Layout", exact: true }).click();
     await page.getByRole("button", { name: "Research flow", exact: true }).click();
+    await page.keyboard.press("Escape");
     await page.waitForFunction(() => {
       const nodes = [...document.querySelectorAll(".dag-node")];
       const columns = new Map();

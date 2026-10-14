@@ -127,9 +127,13 @@ on the existing draft path.
 
 ## DAG controls
 
-At <=560px controls start behind a chevron; wider views show them. Provide
-boundary-aware scroll chaining, brighten/dim-all, fullscreen with node detail,
-Release all pins, and individual pin release. Repulsion visibly changes spacing;
+One floating toolbar inside the canvas holds every control: + Node, Undo,
+Redo, a Layout menu (layout mode, repulsion, Release all pins, Reset layout), a
+View menu (projection, per-type brightness, brighten/dim-all), Fit, and full
+screen. Menus close on an outside click or Escape; at <=560px the menu buttons
+show icons only. Floating edit menus keep screen size at every zoom. Provide
+boundary-aware scroll chaining, fullscreen with node detail, and individual pin
+release. Repulsion visibly changes spacing;
 manual dragging has room beyond auto-layout. Touchpad pinch anchors at its focal
 point without turning ordinary two-finger scroll into zoom.
 

@@ -192,6 +192,8 @@ export function useDagCanvasEditor({
   const port = (id: string) => ({ x: (positions[id]?.x ?? 0) + W / 2, y: positions[id]?.y ?? 0 });
   const controlScale =
     typeof window !== "undefined" && window.matchMedia("(max-width: 560px)").matches ? 1 / zoom : 1;
+  // Menus and toolbars render at screen size at every zoom (CSS counter-scales them).
+  const overlayScale = 1 / zoom;
   const clamped = (at: Point, width = 260): CSSProperties => {
     const rect = scrollRef.current?.getBoundingClientRect();
     if (!rect) return { left: at.x, top: at.y };
@@ -199,9 +201,9 @@ export function useDagCanvasEditor({
       max = world(rect.right - 8, rect.bottom - 120);
     const top = Math.max(min.y, Math.min(at.y, max.y));
     return {
-      left: Math.max(min.x, Math.min(at.x, max.x - width * controlScale)),
+      left: Math.max(min.x, Math.min(at.x, max.x - width * overlayScale)),
       top,
-      maxHeight: Math.max(40, (world(rect.right, rect.bottom - 8).y - top) / controlScale),
+      maxHeight: Math.max(40, (world(rect.right, rect.bottom - 8).y - top) / overlayScale),
       overflowY: "auto",
     };
   };
@@ -765,7 +767,13 @@ export function useDagCanvasEditor({
         <div
           className="dag-edit-float"
           data-canvas-ui
-          style={clamped({ x: selectedPosition.x - 80, y: selectedPosition.y - H / 2 - 44 }, 160)}
+          style={clamped(
+            {
+              x: selectedPosition.x - 80 * overlayScale,
+              y: selectedPosition.y - H / 2 - 44 * overlayScale,
+            },
+            160,
+          )}
         >
           {selected.length === 1 && (
             <>
