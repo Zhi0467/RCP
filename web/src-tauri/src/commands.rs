@@ -1279,6 +1279,7 @@ mod tests {
                 },
             },
             connection,
+            protocol: crate::team_session::TEAM_SHELL_PROTOCOL_MAXIMUM,
         }
     }
 

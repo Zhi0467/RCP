@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import gzip
 import sqlite3
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
+import rcp.storage.base as storage_base_module
+from rcp.rcp_home import rcp_temp_dir
 from rcp.storage import AgentTaskRecord, AppStore, Artifact, ArtifactVersionConflict
 from tests.helpers import wait_until
 from tests.legacy_artifacts import insert_legacy_view
@@ -147,7 +150,7 @@ def test_capture_allows_reads_and_creation_but_holds_pruned_files(store, tmp_pat
     assert writer.read_artifact_bytes("two") == b"new artifact"
 
 
-def test_migration_check_uses_throwaway_files_and_relocation(tmp_path):
+def test_migration_check_uses_throwaway_files_and_relocation(tmp_path, monkeypatch):
     fixture = (
         Path(__file__).parent
         / "fixtures/server_upgrade/pre-artifacts-v15-ff090e1/data/rcp.sqlite3.gz"
@@ -159,9 +162,25 @@ def test_migration_check_uses_throwaway_files_and_relocation(tmp_path):
         insert_legacy_view(connection)
     connection.close()
     before = path.read_bytes()
+    rehearsed: list[Path] = []
+    migrate_artifacts = storage_base_module.migrate_artifacts
+
+    def recording_migrate_artifacts(connection, file_root):
+        migrate_artifacts(connection, file_root)
+        if not rehearsed:
+            assert (file_root / "artifacts").is_dir()
+        rehearsed.append(file_root)
+
+    monkeypatch.setattr(storage_base_module, "migrate_artifacts", recording_migrate_artifacts)
+    # An agent may be granted system temp, so the rehearsal must never reach it.
+    system_temp = tmp_path / "system-temp"
+    system_temp.touch()
+    monkeypatch.setattr(tempfile, "tempdir", str(system_temp))
     AppStore.open_read_only_snapshot(path).check_storage_schema_migrations()
     assert path.read_bytes() == before
     assert not (tmp_path / "artifacts").exists()
+    assert [root.parent for root in rehearsed] == [rcp_temp_dir()]
+    assert not rehearsed[0].exists()
     store = AppStore(path)
     assert store.read_artifact_bytes("a" * 24) == b"page"
     with store.connection() as connection:

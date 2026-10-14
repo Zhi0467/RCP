@@ -1069,7 +1069,7 @@ def test_enrollment_exchange_and_session_cookie_make_the_team_api_usable(tmp_pat
     assert AppStore(store.path).space_user(member["user_id"]) is not None
 
 
-@pytest.mark.parametrize("selected", ["1", "2", "3", "4"])
+@pytest.mark.parametrize("selected", ["1", "2", "3", "4", "5"])
 def test_native_team_handshake_echoes_one_protocol_and_rejects_another(tmp_path, selected) -> None:
     store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team Lab")
     metadata = ServerMetadata.create(
@@ -1092,11 +1092,11 @@ def test_native_team_handshake_echoes_one_protocol_and_rejects_another(tmp_path,
     mismatch = client.post(
         "/api/team/enroll",
         json={"code": bootstrap, "display_name": "Alice"},
-        headers={header: "5"},
+        headers={header: "6"},
     )
     assert mismatch.status_code == 426
     assert mismatch.json()["detail"]["code"] == "team_shell_protocol_mismatch"
-    assert mismatch.json()["detail"]["server_protocol"] == {"minimum": 1, "maximum": 4}
+    assert mismatch.json()["detail"]["server_protocol"] == {"minimum": 1, "maximum": 5}
 
     enrolled = client.post(
         "/api/team/enroll",
