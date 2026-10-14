@@ -100,9 +100,8 @@ instructions.
   references file.
 - **B.** `live-pages` growing-sources section and the `graph-consolidation`
   literature pass, with version bumps.
-- **Integration (Claude).** Registry entries, version pins in tests,
-  and the spec line in `providers-and-containment.md` that names the optional
-  packages.
+- **Integration (Claude).** Registry entries. The registry tests already
+  cover every official skill generically; no spec lists packages by name.
 
 ## Checks
 
