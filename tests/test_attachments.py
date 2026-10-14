@@ -4,22 +4,25 @@ import io
 import json
 import re
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 
 import pytest
 
 import rcp.attachments as attachments_module
+import rcp.storage.rows as rows_module
 from rcp.agents import AgentEvent, PromptFactory
 from rcp.attachments import ChatAttachmentStore, ProjectReferenceSource
+from rcp.limits import RUN_STAGE_RETENTION_DAYS
 from rcp.project_references import ResolvedProjectReference
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
 from rcp.service import RunRequest
 from tests.helpers import signed_in_client
 
-from .helpers import append_fixture_patch, seed_patch
+from .helpers import append_fixture_patch, seed_patch, wait_for_task_response
 from .helpers import create_named_app as create_app
-from .test_api import _chat_task_execution
+from .test_api import _chat_task_execution, _event_frame
 
 
 def _ids() -> tuple[str, str, str, str]:
@@ -396,6 +399,54 @@ def test_attachment_api_claims_set_into_server_owned_task_metadata(
             },
         )
         assert removed.status_code == 422
+
+
+def test_retry_is_withdrawn_and_refused_once_the_claimed_batch_expires(
+    manifest, tmp_path: Path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    append_fixture_patch(app.state.service, seed_patch())
+    project_id = app.state.default_project_id
+    chat_id = str(uuid.uuid4())
+    client_id = str(uuid.uuid4())
+
+    async def failed_stream(_project_id, _kind, _request, _execution):
+        yield _event_frame(AgentEvent(event="error", text="provider connection dropped"))
+
+    app.state.background_tasks.stream = failed_stream
+    with signed_in_client(app) as client:
+        uploaded = client.post(
+            f"/api/projects/{project_id}/chats/{chat_id}/attachments",
+            data={"client_id": client_id},
+            files={"file": ("notes.txt", b"temporary input", "text/plain")},
+        ).json()
+        started = client.post(
+            f"/api/projects/{project_id}/tasks/project_chat",
+            json={
+                "chat_id": chat_id,
+                "message": "Read the note.",
+                "attachment_set_id": uploaded["attachment_set_id"],
+                "attachment_client_id": client_id,
+                "run_truth_scope": ["repo-a"],
+            },
+        )
+        operation_id = started.json()["operation_id"]
+        assert wait_for_task_response(client, project_id, operation_id, expect="failed")[
+            "can_retry"
+        ]
+
+        class _AfterRetention(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.now(tz) + timedelta(days=RUN_STAGE_RETENTION_DAYS + 1)
+
+        monkeypatch.setattr(rows_module, "datetime", _AfterRetention)
+        failed = client.get(f"/api/projects/{project_id}/tasks/{operation_id}").json()
+        assert failed["can_retry"] is False
+        retried = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/retry", json={})
+        assert retried.status_code == 409
+        tasks = client.get(f"/api/projects/{project_id}/tasks").json()
+        assert [task["operation_id"] for task in tasks] == [operation_id]
 
 
 def test_attachment_claim_rolls_back_when_task_creation_fails(
