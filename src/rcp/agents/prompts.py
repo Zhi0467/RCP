@@ -5,6 +5,7 @@ import re
 import shlex
 import textwrap
 from datetime import datetime
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Literal
 
 from rcp.agents.artifact_contract import artifact_contract
@@ -33,6 +34,7 @@ from rcp.limits import (
     COMMAND_CLIENT_WAIT_SECONDS,
 )
 from rcp.providers import ProviderSkillReference, profile_for
+from rcp.turn_outcomes import work_turn_outcome_contract
 
 
 def render_chat_read_context(context: ChatContext) -> str:
@@ -103,7 +105,7 @@ REPLY_STYLE = """Writing the reply:
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
 
-CHAT_MASTER_CONTEXT_VERSION = 17
+CHAT_MASTER_CONTEXT_VERSION = 18
 
 # Staged RCP commands are written against this placeholder; the contract names the current
 # command client once, and a continuation that changes it sends `patch.command_client`.
@@ -789,7 +791,7 @@ _INLINE_CONTINUATION_REASONS = {
         "operational result stands."
     ),
     "watch_correction": (
-        "RCP rejected the watcher request this turn wrote. Correct only that file; the completed "
+        "RCP needs a corrected turn handoff. Correct only the files named in the diagnostic; the completed "
         "operational result stands."
     ),
 }
@@ -805,10 +807,11 @@ _INLINE_CONTINUATION_RULES = {
         "change the reply or artifacts; your final response only confirms the rewrite."
     ),
     "watch_correction": (
-        "Rewrite `watch.json` as one object with exactly `external` and `graph` lists, keeping\n"
-        "literal identifiers. If the diagnostic names running work without observers, recover its\n"
+        "If requested, rewrite `outcome.json` using the Work contract schema. If requested, rewrite\n"
+        "`watch.json` as one object with exactly `external` and `graph` lists, keeping literal\n"
+        "identifiers. If the diagnostic names running work without observers, recover its\n"
         "watcher from the launch receipt or real state. Do not change `patch.json` or repeat an\n"
-        "external effect; your final response only confirms the rewrite."
+        "external effect. Preserve the reply and artifacts; your final response only confirms the rewrite."
     ),
 }
 
@@ -816,7 +819,7 @@ _INLINE_CONTINUATION_RULES = {
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
 DISCUSS_POLICY_VERSION = "discuss-v5"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v5"
+WORK_POLICY_VERSION = "work-v6"
 
 
 class PromptFactory:
@@ -1384,6 +1387,9 @@ useful work remains within the available tools and authority. Continue feasible 
 instead of treating an incomplete first attempt as completion. Finish when the outcome is achieved,
 when ongoing work needs the watcher handoff described below, or when further useful progress
 requires a concrete unavailable prerequisite or new authority. State what remains and why.
+An honest partial or couldn't-do-it outcome is a good result; a done outcome not backed by what
+this turn ran or read is the worst result.
+State what is unknown once and plainly, without hedging every sentence.
 
 Keep the work tied to the request; do not sweep the corpus, re-derive the graph, or invent
 adjacent work.
@@ -1398,6 +1404,7 @@ Required objective:
 {_pointer("Prior-attempt diagnostics", retry_diagnostics_path)}
 
 Required and optional outputs:
+{work_turn_outcome_contract(str(PurePosixPath(patch_path).with_name("outcome.json")))}
 - Optional graph Patch: `{patch_path}`
 - Patch JSON Schema: `{output_schema_path}`
 {watch_output}- Optional preview artifact directory: `{artifact_path}`

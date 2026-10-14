@@ -137,6 +137,7 @@ from rcp.sources import (
 from rcp.storage import AppStore
 from rcp.transport import repository_access as build_repository_access
 from rcp.transport.state_transfer import diagnostics as state_transfer_diagnostics
+from rcp.turn_outcomes import TurnOutcome
 
 _SETTINGS_SURFACES: tuple[AgentExecutionProfile, ...] = (
     "seed",
@@ -345,6 +346,7 @@ class ChatMessage(BaseModel):
     applied_revision: int | None = Field(default=None, ge=0)
     mode: ConversationMode | None = None
     graph_update: GraphUpdateResult | None = None
+    turn_outcome: TurnOutcome | None = None
     trigger: TaskTrigger = "human"
     steering: SteeringReceipt | None = None
     attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
@@ -411,6 +413,7 @@ class _StoredChatRecord(BaseModel):
     applied_revision: int | None = Field(default=None, alias="appliedRevision", ge=0)
     mode: ConversationMode | None = None
     graph_update: GraphUpdateResult | None = Field(default=None, alias="graphUpdate")
+    turn_outcome: TurnOutcome | None = Field(default=None, alias="turnOutcome")
     trigger: TaskTrigger = "human"
     steering: SteeringReceipt | None = None
     attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
@@ -1552,6 +1555,11 @@ class ProjectService:
                     applied_revision=record.applied_revision,
                     mode=record.mode,
                     graph_update=record.graph_update,
+                    turn_outcome=(
+                        record.turn_outcome
+                        if record.role == "assistant" and record.mode == "work"
+                        else None
+                    ),
                     trigger=record.trigger,
                     steering=record.steering,
                     attachments=record.attachments,

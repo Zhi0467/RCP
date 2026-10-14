@@ -88,6 +88,7 @@ from rcp.storage.models import (
     _retention_reference_time,
 )
 from rcp.storage.question_models import QuestionRecord
+from rcp.turn_outcomes import TurnOutcome
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
@@ -4038,6 +4039,11 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     continue
                 artifacts.append(descriptor.model_dump(mode="json"))
         payload: dict[str, object] = {"messages": []}
+        if result.get("turn_outcome") is not None:
+            with suppress(TypeError, ValueError):
+                payload["turn_outcome"] = TurnOutcome.model_validate(
+                    result["turn_outcome"]
+                ).model_dump(mode="json")
         if artifacts:
             payload["artifacts"] = artifacts
 

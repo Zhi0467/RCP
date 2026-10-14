@@ -103,6 +103,7 @@ from rcp.storage import (
 from rcp.storage.models import AgentTaskAlreadyContinued
 from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable, StateUnreachable
 from rcp.transport.state_transfer import warning_context
+from rcp.turn_outcomes import TurnOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -346,6 +347,7 @@ class AgentTaskOutcome:
     messages: list[str]
     artifacts: list[AgentArtifactDescriptor]
     graph_update: GraphUpdateResult | None = None
+    turn_outcome: TurnOutcome | None = None
     graph_updates: list[GraphUpdateResult] = field(default_factory=list)
 
 
@@ -2248,6 +2250,8 @@ class BackgroundAgentTasks:
         result: dict[str, object] = {"messages": outcome.messages}
         if outcome.artifacts:
             result["artifacts"] = [item.model_dump(mode="json") for item in outcome.artifacts]
+        if outcome.turn_outcome is not None:
+            result["turn_outcome"] = outcome.turn_outcome.model_dump(mode="json")
         if outcome.graph_update is not None:
             result["graph_update"] = outcome.graph_update.model_dump(mode="json")
         if outcome.graph_updates:
@@ -2861,6 +2865,7 @@ class BackgroundAgentTasks:
         messages: list[str] = []
         artifacts: list[AgentArtifactDescriptor] = []
         graph_update: GraphUpdateResult | None = None
+        turn_outcome: TurnOutcome | None = None
         graph_updates: list[GraphUpdateResult] = []
         awaiting_remote_result: str | None = None
         # `aclosing` so an error or a pause closes the run generator here rather
@@ -2977,6 +2982,9 @@ class BackgroundAgentTasks:
                         graph_updates = graph_updates[-GRAPH_UPDATE_HISTORY_MAX_COUNT:]
                         if parsed_graph_updates:
                             graph_update = parsed_graph_updates[-1]
+                    parsed_turn_outcome = _turn_outcome(event.text)
+                    if parsed_turn_outcome is not None:
+                        turn_outcome = parsed_turn_outcome
                     parsed_graph_update = _graph_update(event.text)
                     if parsed_graph_update is not None:
                         graph_update = parsed_graph_update
@@ -3008,6 +3016,7 @@ class BackgroundAgentTasks:
                     elif (
                         parsed_graph_update is None
                         and parsed_graph_updates is None
+                        and parsed_turn_outcome is None
                         and event.text.strip()
                         and len(messages) < 32
                     ):
@@ -3047,6 +3056,7 @@ class BackgroundAgentTasks:
             messages=messages,
             artifacts=artifacts,
             graph_update=graph_update,
+            turn_outcome=turn_outcome,
             graph_updates=graph_updates,
         )
 
@@ -3250,5 +3260,15 @@ def _graph_updates(text: str) -> list[GraphUpdateResult] | None:
         return None
     try:
         return [GraphUpdateResult.model_validate(item) for item in raw_updates]
+    except (TypeError, ValueError):
+        return None
+
+
+def _turn_outcome(text: str) -> TurnOutcome | None:
+    try:
+        value = json.loads(text)
+        if not isinstance(value, dict) or "turn_outcome" not in value:
+            return None
+        return TurnOutcome.model_validate(value["turn_outcome"])
     except (TypeError, ValueError):
         return None

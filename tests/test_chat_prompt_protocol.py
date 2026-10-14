@@ -38,6 +38,7 @@ from .helpers import (
     refresh_patch,
     seed_patch,
     wait_for_task_response,
+    write_turn_outcome,
 )
 from .helpers import create_named_app as create_app
 
@@ -60,6 +61,7 @@ class _RecordingLauncher:
             assert argv[: len(prefix)] == prefix
             assert argv[len(prefix) : len(prefix) + len(authority)] == authority
         if kwargs["capability"] == "work_auto":
+            write_turn_outcome(Path(kwargs["cwd"]))
             # This turn's launches run through its own gate, named by the current client.
             argv = shlex.split(current_command_client(prompt))
             gate = kwargs["invocation_gate"]

@@ -29,6 +29,7 @@ from rcp.transfer.archive import (
     TransferGraphHead,
     TransferGraphTarget,
 )
+from rcp.turn_outcomes import TurnOutcome
 
 TRANSFER_RECORD_SCHEMA_VERSION = 4
 
@@ -629,6 +630,7 @@ class TransferTaskRecord(_StrictTransferRecord):
     error: str | None = None
     applied_revision: int | None = Field(default=None, ge=0)
     graph_updates: tuple[TransferJsonDocument, ...] = ()
+    turn_outcome: TurnOutcome | None = None
     attempt: int = Field(ge=1)
     parent_operation_id: str | None = None
     episode_id: str | None = None

@@ -115,6 +115,7 @@ from .helpers import (
     store_test_claude_token,
     wait_for_entry,
     wait_until,
+    write_turn_outcome,
 )
 from .helpers import wait_for_task_response as _wait_for_run
 
@@ -634,7 +635,9 @@ class ScriptedLauncher:
         *,
         message: str = "",
         usage: ProviderUsage | None = None,
+        outcome: str | None = '{"status":"done"}',
     ) -> None:
+        self.outcome = outcome
         self.turns = turns
         self.message = message
         self.usage = usage
@@ -667,6 +670,8 @@ class ScriptedLauncher:
             if inputs.is_dir()
             else {}
         )
+        if self.outcome is not None and "outcome.json" not in turn:
+            write_turn_outcome(workspace, self.outcome)
         for name, content in turn.items():
             (workspace / name).write_text(content, encoding="utf-8")
         yield AgentEvent(event="session", session_id=self.native_session_id)
@@ -8163,7 +8168,8 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
     invalid = json.dumps({"external": [{**common, "check_command": "exit 2"}], "graph": graph})
     corrected = json.dumps({"external": [{**common, "check_command": "exit 1"}], "graph": graph})
     launcher = ScriptedLauncher(
-        [{"watch.json": invalid}, {"watch.json": corrected}],
+        [{"watch.json": invalid}, {"watch.json": corrected, "outcome.json": '{"status":"done"}'}],
+        outcome=None,
         message="The fixture was launched once.",
     )
 
