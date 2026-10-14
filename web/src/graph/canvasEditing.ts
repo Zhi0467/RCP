@@ -9,6 +9,13 @@ import type {
   BaseNodeType,
 } from "../core/types";
 import type { HumanDraft } from "./humanDraft";
+import {
+  activeCustomTypes,
+  activeFieldsForNode,
+  humanNodeId,
+  normalizeSlug,
+} from "./ontologyEditing.ts";
+import { carriesOrigin, FLOW_ORDER, primaryField } from "./researchType.ts";
 
 /**
  * Everything the DAG canvas needs to edit the human draft. App owns the draft;
@@ -87,36 +94,140 @@ export function nodeRemovalRefusal(
   return null;
 }
 
-/* The helpers below are declared here as the contract; slice 2 implements them. */
-
 /** Valid relations between two nodes in either direction, ontology ones first, existing links excluded. */
-export declare function relationChoices(
+export function relationChoices(
   options: GraphEditOptions,
   ontology: OntologyState,
   nodes: Record<string, GraphNode>,
   edges: NewEdge[],
   a: string,
   b: string,
-): RelationChoice[];
+): RelationChoice[] {
+  if (a === b || !nodes[a] || !nodes[b]) return [];
+  const definitions = [
+    ...options.relations.map((relation) => ({ ...relation, custom: false })),
+    ...ontology.relations
+      .filter((relation) => !relation.deprecated)
+      .map((relation) => ({
+        ...relation,
+        custom: true,
+        same_type: false,
+        assessment_required_for: [],
+        accepts_expectation: false,
+      })),
+  ];
+  const choices: RelationChoice[] = [];
+  for (const [source, target] of [
+    [a, b],
+    [b, a],
+  ]) {
+    const start = nodes[source];
+    const end = nodes[target];
+    for (const relation of definitions) {
+      const matches = (types: string[], node: GraphNode) =>
+        types.includes(node.type) ||
+        (relation.custom && !!node.extension_type && types.includes(node.extension_type));
+      if (!matches(relation.source_types, start) || !matches(relation.target_types, end)) continue;
+      if (
+        relation.same_type &&
+        (start.type !== end.type || (start.extension_type ?? null) !== (end.extension_type ?? null))
+      )
+        continue;
+      if (
+        edges.some(
+          (edge) =>
+            edge.source === source && edge.target === target && edge.relation === relation.name,
+        )
+      )
+        continue;
+      choices.push({
+        relation: relation.name,
+        source,
+        target,
+        meta: relation.same_type,
+        needsAssessment: relation.assessment_required_for.some(
+          (pair) => pair.source_type === start.type && pair.target_type === end.type,
+        ),
+        acceptsExpectation: relation.accepts_expectation,
+      });
+    }
+  }
+  return choices.sort((left, right) => Number(left.meta) - Number(right.meta));
+}
 
 /** Types a new node may take: all active types, or those linkable from `from`. */
-export declare function newNodeTypeChoices(
+export function newNodeTypeChoices(
   options: GraphEditOptions,
   ontology: OntologyState,
   from?: GraphNode,
-): NewNodeTypeChoice[];
+): NewNodeTypeChoice[] {
+  const types = [
+    ...FLOW_ORDER.map((name) => ({ name, base_type: name })),
+    ...activeCustomTypes(ontology),
+  ];
+  return types.flatMap<NewNodeTypeChoice>(({ name, base_type }) => {
+    if (!from) return [{ name, base_type, relation: null, outgoing: true }];
+    // A synthetic endpoint only distinguishes orientation; it is never persisted.
+    const id = `${from.id}/canvas-new`;
+    const target: GraphNode = {
+      ...from,
+      id,
+      type: base_type,
+      extension_type: name === base_type ? null : name,
+    };
+    const relation = relationChoices(
+      options,
+      ontology,
+      { [from.id]: from, [id]: target },
+      [],
+      from.id,
+      id,
+    )[0];
+    return relation
+      ? [
+          {
+            name,
+            base_type,
+            relation: relation.relation,
+            outgoing: relation.source === from.id,
+          },
+        ]
+      : [];
+  });
+}
 
 /** A committable node from a title alone: generated unique slug, main text = title, explicit origin where required. */
-export declare function buildCanvasNode(
+export function buildCanvasNode(
   choice: NewNodeTypeChoice,
   options: GraphEditOptions,
   title: string,
   takenIds: Set<string>,
   fields?: NewNode["extension_fields"],
-): NewNode;
+): NewNode {
+  const slug = normalizeSlug(title).slice(0, 60).replace(/-+$/, "") || "node";
+  let id = humanNodeId(choice, options.node_prefixes, slug);
+  for (let suffix = 2; takenIds.has(id); suffix += 1) {
+    id = humanNodeId(choice, options.node_prefixes, `${slug}-${suffix}`);
+  }
+  return {
+    id,
+    type: choice.base_type,
+    title: title.trim(),
+    [primaryField(choice.base_type)]: title.trim(),
+    ...(carriesOrigin(choice.base_type) ? { origin: "unknown" as const } : {}),
+    extension_type: choice.name === choice.base_type ? null : choice.name,
+    extension_fields: fields ?? {},
+  };
+}
 
 /** Required custom fields the staged card must collect for a custom type. */
-export declare function requiredCanvasFields(
+export function requiredCanvasFields(
   ontology: OntologyState,
   choice: NewNodeTypeChoice,
-): OntologyFieldDefinition[];
+): OntologyFieldDefinition[] {
+  return activeFieldsForNode(
+    ontology,
+    choice.base_type,
+    choice.name === choice.base_type ? null : choice.name,
+  ).filter((field) => field.required);
+}

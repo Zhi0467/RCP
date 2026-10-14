@@ -473,3 +473,50 @@
     margin: 0;
   }
 }
+
+@media (max-width: 560px) {
+  .dag-edit-controls {
+    gap: 2px;
+  }
+  .dag-edit-float button,
+  .dag-edit-menu button,
+  .dag-edit-controls button {
+    min-height: 36px;
+    min-width: 36px;
+  }
+  .dag-node .dag-connect-handle {
+    width: 30px;
+    height: 30px;
+    right: -15px;
+    opacity: 0;
+  }
+  .dag-node.is-canvas-selected .dag-connect-handle,
+  .dag-node.is-link-candidate .dag-connect-handle {
+    opacity: 1;
+  }
+  .dag-type-dots > button {
+    width: 30px;
+    height: 30px;
+    border-width: 9px;
+  }
+  .dag-edit-menu {
+    max-width: calc(100vw - 24px);
+  }
+  .dag-pick-chip {
+    max-width: 180px;
+    overflow: hidden;
+  }
+}
+
+@media (max-width: 560px) {
+  .dag-node .dag-connect-handle {
+    transform: translateY(-50%) scale(calc(1 / var(--dag-canvas-zoom, 1)));
+    transform-origin: center;
+  }
+  .dag-edit-float,
+  .dag-edit-menu,
+  .dag-staged-card {
+    transform: scale(calc(1 / var(--dag-canvas-zoom, 1)));
+    transform-origin: top left;
+  }
+}
