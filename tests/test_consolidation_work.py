@@ -250,7 +250,12 @@ async def test_consolidation_bound_owner_pins_workflow_and_refuses_watchers(
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     append_fixture_patch(app.state.service, seed_patch())
     request, execution = _admit(app)
-    assert work_command_handler(execution, None).allowed_verbs == {"validate", "apply", "lesson"}
+    assert work_command_handler(execution, None).allowed_verbs == {
+        "validate",
+        "apply",
+        "lesson",
+        "flag",
+    }
     launcher = ScriptedLauncher(
         [{"watch.json": "{}"}], message="Consolidation finished.", outcome=outcome
     )

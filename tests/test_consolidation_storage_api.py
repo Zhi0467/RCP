@@ -93,6 +93,7 @@ def test_schedule_contract_renewal_validation_and_delete(setup):
         "inbox": [],
         "can_write": True,
         "recent_nights": [],
+        "evidence_flags": [],
     }
     body = {"local_time": "02:30", "timezone": "America/New_York"}
     first = client.put(base + "/schedule", json=body)

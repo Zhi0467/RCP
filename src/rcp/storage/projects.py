@@ -669,6 +669,8 @@ class ProjectStoreMixin(StoreMixinBase):
                 for table in (
                     "operational_lessons",
                     "lesson_command_receipts",
+                    "evidence_flags",
+                    "evidence_flag_command_receipts",
                     "research_view_pins",
                     "notification_preferences",
                     "notification_outbox",
@@ -1081,6 +1083,8 @@ class ProjectStoreMixin(StoreMixinBase):
             for table in (
                 "operational_lessons",
                 "lesson_command_receipts",
+                "evidence_flags",
+                "evidence_flag_command_receipts",
                 "digest_events",
                 "digest_marks",
                 "digest_heads",

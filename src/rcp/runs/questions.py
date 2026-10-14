@@ -14,12 +14,14 @@ from rcp.agents.command_protocol import (
     AskResult,
     CommandRequest,
     CommandResponse,
+    FlagCommandRequest,
     GraphDiffCommandRequest,
     GraphLogCommandRequest,
     LessonCommandRequest,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.limits import ASK_MAX_ATTEMPTS
+from rcp.runs.evidence_flag_commands import handle_flag
 from rcp.runs.graph_history_queries import handle_graph_history_command
 from rcp.runs.lesson_commands import handle_lesson
 from rcp.storage import AppStore
@@ -318,6 +320,16 @@ class WorkCommandHandler:
             if self.execution is not None and identity.task_id != self.execution.operation_id:
                 return refuse("Graph history requires this turn's broker authority.")
             return handle_graph_history_command(self.service, self.graph_read_scope, request)
+        if isinstance(request, FlagCommandRequest):
+            execution = self.execution
+            if (
+                execution is None
+                or self.service is None
+                or identity.authority != "broker"
+                or identity.task_id != execution.operation_id
+            ):
+                return refuse("Evidence flags require this consolidation turn's broker authority.")
+            return handle_flag(self.service, execution.store, execution.operation_id, request)
         if isinstance(request, LessonCommandRequest):
             execution = self.execution
             if (
@@ -461,7 +473,7 @@ def work_command_handler(
         return WorkCommandHandler(
             execution,
             None,
-            frozenset({"validate", "apply", "lesson"})
+            frozenset({"validate", "apply", "lesson", "flag"})
             | (graph_read_scope.verbs if graph_read_scope else frozenset()),
             consolidation_apply,
             service,

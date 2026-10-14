@@ -566,6 +566,10 @@ MACHINE_POWER_COMMAND_TIMEOUT_SECONDS = 5
 MACHINE_POWER_ADMIN_TIMEOUT_SECONDS = 120
 MACHINE_POWER_WATCHDOG_INTERVAL_SECONDS = 1
 
+# Evidence flags retain bounded findings and execution-host source locators.
+EVIDENCE_FLAG_FINDING_MAX_CHARS = 400
+EVIDENCE_FLAG_SOURCE_MAX_CHARS = 1000
+
 # Operational lessons are bounded context, independent of graph authority.
 LESSON_TEXT_MAX_CHARS = 600
 LESSONS_PER_PROJECT_MAX = 200
