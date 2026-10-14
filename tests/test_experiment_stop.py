@@ -1602,7 +1602,7 @@ def test_graph_repair_recovery_remains_patch_only(manifest, tmp_path, status, ac
     assert recovered.native_session_id == "repair-session"
 
 
-@pytest.mark.parametrize("status", ["paused", "failed"])
+@pytest.mark.parametrize("status", ["paused", "failed", "interrupted"])
 def test_restart_settles_a_stop_whose_turn_was_already_terminal(manifest, tmp_path, status) -> None:
     # The process died after Stop was written and before it settled; a turn that
     # was already paused or failed then must settle, never relaunch provider work.
@@ -1616,6 +1616,16 @@ def test_restart_settles_a_stop_whose_turn_was_already_terminal(manifest, tmp_pa
     )
     loop.record_context_candidate("loop-root")
     loop.store.request_episode_stop(loop.episode_id)
+    with loop.store.connection() as connection:
+        # Interrupted 100 microseconds before Stop: julianday() would round these equal.
+        connection.execute(
+            "UPDATE graph_runs SET finished_at = ? WHERE operation_id = 'loop-root'",
+            ("2026-01-01T00:00:00.000100+00:00",),
+        )
+        connection.execute(
+            "UPDATE episodes SET stop_requested_at = ? WHERE episode_id = ?",
+            ("2026-01-01T00:00:00.000200+00:00", loop.episode_id),
+        )
 
     async def stream(*_args):
         raise AssertionError("a terminal turn behind Stop must not relaunch")

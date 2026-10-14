@@ -3003,9 +3003,11 @@ class ExperimentStoreMixin(StoreMixinBase):
                   AND state.session_diagnostic IS NULL
                   AND task.visible = 1
                   -- Only a turn the restart interrupted after Stop was still live
-                  -- then; one already paused or failed settles instead (Stop).
+                  -- then; one already paused or failed settles instead (Stop). Both
+                  -- stamps are AppStoreBase.now() UTC ISO text, which orders losslessly;
+                  -- julianday() would round microseconds away.
                   AND task.status = 'interrupted'
-                  AND julianday(task.finished_at) >= julianday(episode.stop_requested_at)
+                  AND task.finished_at >= episode.stop_requested_at
                   AND NOT EXISTS (
                       SELECT 1 FROM graph_runs AS child
                       WHERE child.parent_operation_id = task.operation_id
