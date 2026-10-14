@@ -499,15 +499,25 @@ def _prepare_overlay_project(
         _render_overlay_manifest(configuration, repository_roots, project_root).encode("utf-8"),
     )
     if capture.status == "captured":
-        expected_graph = HistoryManager(
+        history = HistoryManager(
             load_manifest(manifest_path),
             expected_space_id=str(row["home_space_id"]),
             write_authority=WriteAuthority(),
-        ).state()
+        )
+        expected_graph = history.state()
         if expected_graph.revision != expected_revision:
             raise CandidateRehearsalRefused(
                 "The current release could not replay the captured canonical head."
             )
+        # Branch history is canonical too; protected restore proves it the same way.
+        for head in capture.branch_heads:
+            branch = history.branch(
+                str(head.target.branch_id), expected_project_id=history.project_id
+            )
+            if branch.head_ref(branch.initialize()) != head:
+                raise CandidateRehearsalRefused(
+                    "The current release could not replay a captured branch head."
+                )
         expected_graph_sha256 = _canonical_sha256(expected_graph.model_dump(mode="json"))
     expected_card = {
         "id": str(row["project_id"]),
