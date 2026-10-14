@@ -3,7 +3,7 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
-test("branch graph keeps normal edit and chat controls while removed nodes are historical", async () => {
+test("branch graph keeps detail and chat while canvas editing stays read-only", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "silent",
@@ -75,16 +75,8 @@ test("branch graph keeps normal edit and chat controls while removed nodes are h
     );
     await page.getByRole("button", { name: "Research flow", exact: true }).click();
     assert.equal(await page.locator('.dag-node[data-node-id="hyp/distant"]').count(), 0);
-    await page.getByRole("button", { name: "Connections", exact: true }).click();
-    assert.equal(
-      await page.locator('select[aria-label="To"] option[value="hyp/distant"]').count(),
-      1,
-    );
-    assert.equal(
-      await page.locator('select[aria-label="To"] option[value="hyp/removed"]').count(),
-      0,
-    );
-    await page.getByRole("button", { name: "Close connections" }).click();
+    assert.equal(await page.locator(".dag-connect-handle").count(), 0);
+    assert.equal(await page.locator(".dag-edit-controls").count(), 0);
     await page.getByRole("button", { name: "Expand context", exact: true }).click();
     await page.locator('.dag-node[data-node-id="hyp/distant"]').waitFor();
     await page.getByRole("button", { name: "Changes + context", exact: true }).click();
