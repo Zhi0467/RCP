@@ -43,11 +43,13 @@ import type {
   ExperimentLoopIndexEntry,
   UnavailableExperimentLoop,
   GraphNode,
+  NewNode,
   OntologyState,
   ValidationMessage,
 } from "../core/types";
 import { ProxyRowsEditor } from "./ProxyRowsEditor";
 import { RelationMap } from "./RelationMap";
+import { StagedNodeEditor } from "./NewCustomNode";
 
 interface Props {
   projectId?: string;
@@ -91,6 +93,7 @@ interface Props {
   experimentRunBusy?: boolean;
   decisionChoiceStaged?: boolean;
   onUnstage?: () => void;
+  onUpdateStagedNode?: (node: NewNode) => void;
   onRemove?: () => void;
   onUndoRemoval?: () => void;
   onClose: () => void;
@@ -178,6 +181,7 @@ export function DetailDrawer({
   experimentRunBusy = false,
   decisionChoiceStaged = false,
   onUnstage,
+  onUpdateStagedNode,
   onRemove,
   onUndoRemoval,
   onClose,
@@ -311,7 +315,7 @@ export function DetailDrawer({
   const beginEditing = () => {
     if (nodeMutationDisabled) return;
     standingBeforeEdit.current = node.standing;
-    if (node.standing !== "asserted") onBeginEdit();
+    if (!stagedNewNode && node.standing !== "asserted") onBeginEdit();
     setEditBase(node);
     setDraft(nodeEditDraft(node, ontology));
     setEditing(true);
@@ -495,7 +499,19 @@ export function DetailDrawer({
               </button>
             </section>
           )}
-          {editing ? (
+          {editing && stagedNewNode ? (
+            <StagedNodeEditor
+              key={node.id}
+              node={node}
+              ontology={ontology}
+              disabled={nodeMutationDisabled || !onUpdateStagedNode}
+              onSave={(updated) => {
+                onUpdateStagedNode?.(updated);
+                setEditing(false);
+              }}
+              onCancel={() => setEditing(false)}
+            />
+          ) : editing ? (
             <form
               className="node-edit-form"
               onSubmit={(event) => {
@@ -950,7 +966,7 @@ export function DetailDrawer({
         </div>
 
         <footer className="drawer-actions">
-          {editing ? (
+          {editing && !stagedNewNode ? (
             <>
               <span className="node-edit-status">
                 {behind && changeCount === 0
@@ -976,14 +992,24 @@ export function DetailDrawer({
           ) : stagedNewNode ? (
             <>
               <span className="node-edit-status">Staged node</span>
-              <button
-                className="button secondary compact"
-                type="button"
-                disabled={mutationsDisabled}
-                onClick={onUnstage}
-              >
-                <Trash2 size={14} /> Remove
-              </button>
+              <div className="node-detail-actions">
+                <button
+                  className="button secondary compact"
+                  type="button"
+                  disabled={nodeMutationDisabled || editing || !onUpdateStagedNode}
+                  onClick={beginEditing}
+                >
+                  <Pencil size={14} /> Edit node
+                </button>
+                <button
+                  className="button secondary compact"
+                  type="button"
+                  disabled={mutationsDisabled}
+                  onClick={onUnstage}
+                >
+                  <Trash2 size={14} /> Remove
+                </button>
+              </div>
             </>
           ) : (
             <>

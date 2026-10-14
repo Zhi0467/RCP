@@ -65,7 +65,8 @@ import {
   projectViewHash,
   sameGraphTarget,
 } from "./core/graphTarget";
-import type { GraphEditingProps } from "./graph/GraphEditingControls";
+import type { GraphEditingProps } from "./graph/canvasEditing";
+import type { GraphEditOptions } from "./core/types";
 import {
   TriangleAlert,
   ArrowLeft,
@@ -250,10 +251,13 @@ import {
   stageNodeRemoval,
   stageNodeStanding,
   stageProposalDecision,
-  stageCustomNode,
+  stageCanvasNode,
+  updateStagedNode,
+  stageEdgeReplacement,
+  stageNodesRemoval,
+  stageMerge,
   stageEdgeAddition,
   stageEdgeRemoval,
-  unstageEdgeRemoval,
   unstageCustomNode,
   unstageNodeRemoval,
   toHumanSyncRequest,
@@ -292,7 +296,7 @@ import { ProjectLanding } from "./projects/ProjectLanding";
 import { SpaceSettings } from "./projects/SpaceSettings";
 import { LandingIdentityMenu } from "./projects/LandingIdentityMenu";
 import { ProjectOverview } from "./projects/ProjectOverview";
-import { isControlNode } from "./graph/researchType";
+import { isControlNode, primaryField } from "./graph/researchType";
 import { ProjectSetup } from "./projects/ProjectSetup";
 import {
   parseProjectSetupRoute,
@@ -772,6 +776,10 @@ function MemberApp({
     getProjectSessionState,
     beginProjectSnapshotRequest,
     updateProjectHumanDraft,
+    undoHumanDraft,
+    redoHumanDraft,
+    canUndo,
+    canRedo,
     beginProjectSync,
     restoreProjectSessionTab,
   } = useProjectSession(initialRoute.project.projectId);
@@ -836,6 +844,31 @@ function MemberApp({
     projectId,
     graphTarget,
   );
+  const editOptionsKey = projectId ? graphSessionKey(projectId, graphTarget) : null;
+  const [loadedEditOptions, setLoadedEditOptions] = useState<{
+    key: string;
+    options: GraphEditOptions;
+  } | null>(null);
+  const editOptions = loadedEditOptions?.key === editOptionsKey ? loadedEditOptions.options : null;
+  useEffect(() => {
+    let cancelled = false;
+    setLoadedEditOptions(null);
+    if (backendSessionReady && projectId && editOptionsKey) {
+      void api<GraphEditOptions>(
+        graphTargetUrl(`/api/projects/${projectId}/graph-edit-options`, graphTarget),
+      ).then(
+        (options) => {
+          if (!cancelled) setLoadedEditOptions({ key: editOptionsKey, options });
+        },
+        () => {
+          if (!cancelled) setLoadedEditOptions(null);
+        },
+      );
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [backendSessionReady, projectId, graphTarget, editOptionsKey]);
   // Activation keeps the previous snapshot on screen, inert, until the target
   // paints. The held copy is never cached or drafted against.
   const [heldRefProject, setHeldRefProject] = useState<ProjectSnapshot | null>(null);
@@ -4209,19 +4242,56 @@ function MemberApp({
       </Suspense>
     ) : undefined;
 
+  const restoreDraftHistory = (direction: "undo" | "redo") => {
+    if (!projectId || mutationsDisabled) return;
+    setNotice(null);
+    const { next } = direction === "undo" ? undoHumanDraft() : redoHumanDraft();
+    try {
+      persistProjectHumanDraft(localStorage, draftActorId, projectId, next.humanDraft, graphTarget);
+    } catch (error) {
+      setNotice({ kind: "error", text: errorMessage(error) });
+    }
+  };
+  const experimentActive = Object.values(presentedExperimentControl).some((control) =>
+    Boolean(control.active),
+  );
   const graphEditingProps: GraphEditingProps = {
     projectId: project.id,
     mutationsDisabled,
-    onStageCustomNode: (node) => updateHumanDraft((draft) => stageCustomNode(draft, node)),
+    editOptions,
+    canonicalGraph: graph,
+    humanDraft,
+    experimentActive: experimentActive,
+    onStageNode: (node, edges) =>
+      updateHumanDraft((draft) => stageCanvasNode(draft, graph, node, edges)),
+    onUpdateStagedNode: (node) => updateHumanDraft((draft) => updateStagedNode(draft, node)),
     onStageEdge: (edge) => updateHumanDraft((draft) => stageEdgeAddition(draft, graph, edge)),
+    onReplaceEdge: (edgeId, edge) =>
+      updateHumanDraft((draft) => stageEdgeReplacement(draft, graph, edgeId, edge)),
     onRemoveEdge: (edgeId) => updateHumanDraft((draft) => stageEdgeRemoval(draft, graph, edgeId)),
-    onUndoRemoveEdge: (edgeId) =>
-      updateHumanDraft((draft) => unstageEdgeRemoval(draft, graph, edgeId)),
-    draftAddedNodeIds: Object.keys(humanDraft?.custom_nodes ?? {}),
-    draftAddedEdges: humanDraft?.added_edges,
-    draftRemovedEdgeIds: humanDraft?.removed_edge_ids,
-    draftRemovedNodeIds: humanDraft?.removed_node_ids,
-    canonicalEdges: graph.edges,
+    onRemoveNodes: (ids) =>
+      updateHumanDraft((draft) => stageNodesRemoval(draft, graph, ids, experimentActive)),
+    onMergeNodes: (duplicate, canonical) =>
+      updateHumanDraft((draft) => stageMerge(draft, graph, duplicate, canonical, experimentActive)),
+    onRenameNode: (id, title) =>
+      updateHumanDraft((draft) => {
+        const staged = draft.custom_nodes[id];
+        if (staged) {
+          const field = primaryField(staged.type) as keyof typeof staged;
+          return updateStagedNode(draft, {
+            ...staged,
+            title,
+            ...(staged[field] === staged.title ? { [field]: title } : {}),
+          });
+        }
+        const editable =
+          graph.nodes[id]?.standing !== "asserted" ? stageNodeEditStart(draft, graph, id) : draft;
+        return stageNodeEdit(editable, graph, id, { title });
+      }),
+    onUndo: () => restoreDraftHistory("undo"),
+    onRedo: () => restoreDraftHistory("redo"),
+    canUndo,
+    canRedo,
   };
 
   const askAboutProject = () => {
@@ -5209,6 +5279,7 @@ function MemberApp({
             focusRequestToken={detailFocusTokens[slot]}
             mutationsDisabled={mutationsDisabled}
             stagedNewNode={Boolean(humanDraft?.custom_nodes[node.id])}
+            onUpdateStagedNode={graphEditingProps.onUpdateStagedNode}
             stagedForRemoval={Boolean(humanDraft?.removed_node_ids.includes(node.id))}
             hasStagedNodeChange={Boolean(humanDraft?.nodes[node.id])}
             draftNodeChange={humanDraft?.nodes[node.id]}

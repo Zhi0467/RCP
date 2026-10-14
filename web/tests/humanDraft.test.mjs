@@ -34,6 +34,12 @@ const {
   stageNodeStanding,
   stageProposalDecision,
   stageCustomNode,
+  stageCanvasNode,
+  updateStagedNode,
+  stageEdgeReplacement,
+  stageNodesRemoval,
+  stageMerge,
+  unstageMerge,
   stageEdgeAddition,
   stageEdgeRemoval,
   unstageEdgeRemoval,
@@ -1076,4 +1082,116 @@ test("ontology keeps its own stale gate after ordinary draft rebasing", () => {
   assert.equal(rebased.base_revision, 5);
   assert.equal(rebased.ontology_base_revision, 4);
   assert.equal(humanDraftOntologyIsStale(rebased, moved), true);
+});
+
+function mergeGraph() {
+  const node = graph.nodes["hyp/example"];
+  return {
+    ...graph,
+    nodes: Object.fromEntries(
+      ["duplicate", "kept", "other"].map((id) => [id, { ...node, id, standing: "asserted" }]),
+    ),
+    edges: {},
+  };
+}
+
+function draftEdge(id, source, target, extras = {}) {
+  return { id, source, target, relation: "supports", explanation: id, ...extras };
+}
+
+test("canvas creation, editing, replacement and batch deletion preserve draft guards", () => {
+  const canonical = mergeGraph();
+  const node = { ...canonical.nodes.other, id: "new" };
+  const edge = draftEdge("edge/new", "new", "other");
+  let draft = stageCanvasNode(emptyHumanDraft(4), canonical, node, [edge]);
+  assert.deepEqual(draft.custom_nodes.new, node);
+  assert.deepEqual(draft.added_edges, [edge]);
+  assert.equal(updateStagedNode(draft, { ...node, id: "absent" }), draft);
+  draft = updateStagedNode(draft, { ...node, title: "Changed", origin: "external" });
+  assert.equal(draft.custom_nodes.new.title, "Changed");
+  const replacement = { ...edge, id: "edge/replaced", relation: "contradicts" };
+  draft = stageEdgeReplacement(draft, canonical, edge.id, replacement);
+  assert.deepEqual(draft.added_edges, [replacement]);
+  assert.deepEqual(draft.removed_edge_ids, []);
+  draft = stageEdgeReplacement(draft, canonical, "edge/canonical", edge);
+  assert.deepEqual(draft.removed_edge_ids, ["edge/canonical"]);
+  const edited = stageNodeEdit(draft, canonical, "other", { title: "Changed" });
+  const refused = stageNodesRemoval(edited, canonical, ["other"], false);
+  assert.equal(refused, edited);
+  draft = stageNodesRemoval(draft, canonical, ["new", "other"], true);
+  assert.deepEqual(draft.custom_nodes, {});
+  assert.deepEqual(draft.added_edges, []);
+  assert.deepEqual(draft.removed_node_ids, []);
+  draft = stageEdgeAddition(draft, canonical, draftEdge("edge/temp", "other", "kept"));
+  draft = stageNodesRemoval(draft, canonical, ["other"], false);
+  assert.deepEqual(draft.added_edges, []);
+  assert.deepEqual(draft.removed_node_ids, ["other"]);
+});
+
+test("merge copies drafted links with payload and direction, deduplicates and unstages as one", () => {
+  const canonical = mergeGraph();
+  canonical.edges = Object.fromEntries(
+    [
+      draftEdge("out", "duplicate", "other"),
+      draftEdge("existing", "kept", "other"),
+      draftEdge("self", "duplicate", "kept"),
+      draftEdge("removed", "other", "duplicate", { relation: "contradicts" }),
+    ].map((edge) => [edge.id, edge]),
+  );
+  const incoming = draftEdge("incoming", "other", "duplicate", {
+    assessment: { relevance: "direct", weight: "strong", qualifications: [] },
+    expectation: "matched",
+  });
+  let draft = stageEdgeAddition(emptyHumanDraft(4), canonical, incoming);
+  draft = stageEdgeRemoval(draft, canonical, "removed");
+  const merged = stageMerge(draft, canonical, "duplicate", "kept", false);
+  assert.deepEqual(draft.added_edges, [incoming]);
+  assert.equal(merged.added_edges.length, 1);
+  const copy = merged.added_edges[0];
+  assert.match(copy.id, /^edge\/[0-9a-f-]{36}$/);
+  assert.deepEqual({ ...copy, id: incoming.id, target: "duplicate" }, incoming);
+  assert.deepEqual(merged.removed_node_ids, ["duplicate"]);
+  assert.deepEqual(merged.merges, [
+    { duplicate: "duplicate", canonical: "kept", edge_ids: [copy.id] },
+  ]);
+  assert.equal(humanDraftChangeCount(merged), 2); // merge + explicit unlink
+  assert.deepEqual(deserializeHumanDraft(serializeHumanDraft(merged)).merges, merged.merges);
+  assert.equal("merges" in toHumanSyncRequest(merged, canonical), false);
+  const unstaged = unstageMerge(merged, canonical, "duplicate");
+  assert.deepEqual(unstaged.added_edges, []);
+  assert.deepEqual(unstaged.removed_node_ids, []);
+  assert.deepEqual(stageEdgeRemoval(merged, canonical, copy.id).merges, []);
+  assert.deepEqual(unstageNodeRemoval(merged, "duplicate").merges, []);
+  assert.deepEqual(
+    reconcileHumanDraft(merged, { ...canonical, nodes: { kept: canonical.nodes.kept } }).draft
+      .merges,
+    [],
+  );
+  assert.equal(deserializeHumanDraft(serializeHumanDraft(emptyHumanDraft(4))).version, 1);
+});
+
+test("merge refuses guarded or differently typed duplicates and supports staged duplicates", () => {
+  const canonical = mergeGraph();
+  const draft = emptyHumanDraft(4);
+  for (const changes of [
+    { standing: "accepted" },
+    { type: "evidence" },
+    { extension_type: "Custom" },
+  ]) {
+    const changed = {
+      ...canonical,
+      nodes: { ...canonical.nodes, duplicate: { ...canonical.nodes.duplicate, ...changes } },
+    };
+    assert.equal(stageMerge(draft, changed, "duplicate", "kept", false), draft);
+  }
+  assert.equal(stageMerge(draft, canonical, "duplicate", "kept", true), draft);
+  const edited = stageNodeEdit(draft, canonical, "duplicate", { title: "Changed" });
+  assert.equal(stageMerge(edited, canonical, "duplicate", "kept", false), edited);
+  const staged = stageCanvasNode(draft, canonical, { ...canonical.nodes.duplicate, id: "new" }, [
+    draftEdge("new-link", "new", "other"),
+  ]);
+  const merged = stageMerge(staged, canonical, "new", "kept", true);
+  assert.deepEqual(merged.custom_nodes, {});
+  assert.equal(merged.added_edges[0].source, "kept");
+  assert.deepEqual(merged.merges, []); // Session undo restores a removed staged node.
 });
