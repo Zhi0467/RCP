@@ -337,6 +337,8 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
             "/api/projects/demo/terminals",
             // The graph picker lists the project's refs with the project.
             "/api/projects/demo/graph-refs",
+            // The canvas editor's relation rules load with the project.
+            "/api/projects/demo/graph-edit-options",
             // Project navigation and the opened card read their own resources.
             "/api/projects/demo/paper",
             "/api/projects/demo/paper/sessions",

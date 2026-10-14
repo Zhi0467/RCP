@@ -1163,7 +1163,11 @@ test("merge copies drafted links with payload and direction, deduplicates and un
   assert.deepEqual(unstaged.added_edges, [incoming]);
   assert.deepEqual(unstaged.removed_node_ids, []);
   assert.deepEqual(stageEdgeRemoval(merged, canonical, copy.id).merges, []);
-  assert.deepEqual(unstageNodeRemoval(merged, "duplicate").merges, []);
+  const restored = unstageNodeRemoval(merged, "duplicate");
+  assert.deepEqual(restored.merges, []);
+  assert.deepEqual(restored.added_edges, [incoming]);
+  // Removing the kept node too hides the copies: two removals plus the unlink.
+  assert.equal(humanDraftChangeCount(stageNodeRemoval(merged, canonical, "kept")), 3);
   assert.deepEqual(
     reconcileHumanDraft(merged, { ...canonical, nodes: { kept: canonical.nodes.kept } }).draft
       .merges,

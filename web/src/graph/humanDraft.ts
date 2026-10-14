@@ -336,7 +336,12 @@ function liveAddedEdges(draft: HumanDraft): NewEdge[] {
 export function unstageNodeRemoval(draft: HumanDraft, nodeId: string): HumanDraft {
   const next = cloneDraft(draft);
   next.removed_node_ids = next.removed_node_ids.filter((id) => id !== nodeId);
-  if (next.merges) next.merges = next.merges.filter((merge) => merge.duplicate !== nodeId);
+  // Restoring a merged-away duplicate also withdraws the links copied onto the kept node.
+  const merge = next.merges?.find((entry) => entry.duplicate === nodeId);
+  if (merge) {
+    next.added_edges = next.added_edges.filter((edge) => !merge.edge_ids.includes(edge.id));
+    next.merges = next.merges!.filter((entry) => entry !== merge);
+  }
   return next;
 }
 
@@ -487,11 +492,8 @@ export function stageMerge(
 }
 
 export function unstageMerge(draft: HumanDraft, graph: GraphState, duplicate: string): HumanDraft {
-  const merge = draft.merges?.find((entry) => entry.duplicate === duplicate);
-  if (!merge) return draft;
-  const next = unstageNodeRemoval(draft, duplicate);
-  next.added_edges = next.added_edges.filter((edge) => !merge.edge_ids.includes(edge.id));
-  return normalizeHumanDraft(next, graph);
+  if (!draft.merges?.some((entry) => entry.duplicate === duplicate)) return draft;
+  return normalizeHumanDraft(unstageNodeRemoval(draft, duplicate), graph);
 }
 
 export function unstageCustomNode(
@@ -597,15 +599,16 @@ export function humanDraftChangeCount(draft: HumanDraft | null): number {
       (entry.cancel_attempt_ids?.length ?? 0),
     0,
   );
+  // A merge counts once, as its duplicate's removal; its copied links are part of it.
+  const mergeCopies = new Set((draft.merges ?? []).flatMap((merge) => merge.edge_ids));
   return (
     nodeChanges +
     draft.removed_node_ids.length +
     Object.keys(draft.proposals).length +
     (draft.ontology ? 1 : 0) +
     Object.keys(draft.custom_nodes).length +
-    liveAddedEdges(draft).length +
-    draft.removed_edge_ids.length -
-    (draft.merges ?? []).reduce((count, merge) => count + merge.edge_ids.length, 0)
+    liveAddedEdges(draft).filter((edge) => !mergeCopies.has(edge.id)).length +
+    draft.removed_edge_ids.length
   );
 }
 
