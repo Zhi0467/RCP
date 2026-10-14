@@ -71,6 +71,7 @@ from rcp.runs.session_master import (
     stage_session_master,
 )
 from rcp.runs.shared import (
+    _read_local_workspace_file,
     _remove_local_tree,
     _safe_stage_name,
     _stage_or_reuse_task_input,
@@ -1179,10 +1180,7 @@ def _read_chat_patch(workspace: Path, remote_stage: RemoteRunStage | None) -> st
         if "patch.json" not in remote_stage.list_workspace_files():
             return None
         return remote_stage.read_text(remote_stage.workspace / "patch.json")
-    path = workspace / "patch.json"
-    if not path.is_file():
-        return None
-    return path.read_text(encoding="utf-8")
+    return _read_local_workspace_file(workspace / "patch.json")
 
 
 def _read_watch_request(workspace: Path, remote_stage: RemoteRunStage | None) -> str | None:
@@ -1192,10 +1190,7 @@ def _read_watch_request(workspace: Path, remote_stage: RemoteRunStage | None) ->
         if "watch.json" not in remote_stage.list_workspace_files():
             return None
         return remote_stage.read_text(remote_stage.workspace / "watch.json")
-    path = workspace / "watch.json"
-    if not path.is_file():
-        return None
-    return path.read_text(encoding="utf-8")
+    return _read_local_workspace_file(workspace / "watch.json")
 
 
 def _record_chat_context_receipt(

@@ -249,6 +249,9 @@ class CodexProfile(ProviderProfile):
     def project_write_enforcement_mode(self) -> str:
         return "codex.permission-profile.v1"
 
+    def canonical_state_boundary(self) -> str:
+        return "provider_enforced"
+
     def canonical_autocompact(self, value: str) -> str:
         value = value.strip()
         if value.isdigit() and int(value) > 0:

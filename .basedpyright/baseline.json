@@ -4168,14 +4168,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 72,
-                    "endColumn": 88,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 18,
                     "endColumn": 62,
                     "lineCount": 1

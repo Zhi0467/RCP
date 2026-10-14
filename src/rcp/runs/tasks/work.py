@@ -1753,7 +1753,6 @@ async def _settle_patch_deliverable(
                     "launch_kind": "graph_correction",
                     "correction_round": correction_rounds,
                     "write_directory_count": len(launch_turn.write_dirs),
-                    "canonical_state_boundary": "prompt_only",
                 },
             )
             correction_outcome = _ProviderOutcome(session_id=settled.native_session_id)
@@ -1960,7 +1959,6 @@ async def _settle_watch_deliverable(
                     "launch_kind": "watch_correction",
                     "correction_round": correction_rounds,
                     "write_directory_count": len(launch_turn.write_dirs),
-                    "canonical_state_boundary": "prompt_only",
                 },
             )
             correction_outcome = _ProviderOutcome(session_id=settled.native_session_id)
@@ -2195,7 +2193,6 @@ async def _launch_and_stream_work_turn(
                     else "initial"
                 ),
                 "write_directory_count": len(turn.write_dirs),
-                "canonical_state_boundary": "prompt_only",
             },
         )
     except BaseException as exc:
@@ -2890,7 +2887,6 @@ async def _stream_work_graph_repair(
                 "network_access": True,
                 "launch_kind": "graph_repair",
                 "write_directory_count": len(write_dirs),
-                "canonical_state_boundary": "prompt_only",
             },
         )
     except BaseException as exc:

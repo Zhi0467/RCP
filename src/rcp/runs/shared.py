@@ -30,7 +30,11 @@ from rcp.core.models import GraphState, HiddenReadScope, Patch
 from rcp.core.operations import CreateEdgesOperation, CreateNodesOperation
 from rcp.history.branches import BranchHistoryManager
 from rcp.limits import RUN_STAGE_RETENTION_DAYS
-from rcp.providers import AgentCapability, project_write_enforcement_mode
+from rcp.providers import (
+    AgentCapability,
+    canonical_state_boundary,
+    project_write_enforcement_mode,
+)
 from rcp.providers.browser_grant import BrowserGrant, BrowserTurnStatus
 from rcp.rcp_home import rcp_temp_dir
 from rcp.runs.provider_process import require_remote_provider_quiescence
@@ -174,6 +178,25 @@ def _existing_patch_digest(
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _is_local_workspace_file(path: Path) -> bool:
+    """Local twin of ``RemoteRunStage.list_workspace_files``: a regular file, never a link."""
+
+    try:
+        return stat.S_ISREG(path.lstat().st_mode)
+    except FileNotFoundError:
+        return False
+
+
+def _read_local_workspace_file(path: Path) -> str | None:
+    """Read one stage deliverable without following a link out of the stage (invariant 4b)."""
+
+    if not _is_local_workspace_file(path):
+        return None
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(descriptor, encoding="utf-8") as handle:
+        return handle.read()
+
+
 def _existing_exact_patch_digest(
     workspace: Path,
     remote_stage: RemoteRunStage | None,
@@ -186,10 +209,9 @@ def _existing_exact_patch_digest(
                 return None
             text = remote_stage.read_text(remote_stage.workspace / "patch.json")
         else:
-            path = workspace / "patch.json"
-            if not path.is_file():
+            text = _read_local_workspace_file(workspace / "patch.json")
+            if text is None:
                 return None
-            text = path.read_text(encoding="utf-8")
     except (OSError, StateUnavailable, ValueError):
         return None
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -244,10 +266,13 @@ def _collect_patch_text(
         def read(name: str) -> str:
             return reader(remote_stage.workspace / name)
     else:
-        names = sorted(item.name for item in workspace.iterdir() if item.is_file())
+        names = sorted(item.name for item in workspace.iterdir() if _is_local_workspace_file(item))
 
         def read(name: str) -> str:
-            return (workspace / name).read_text(encoding="utf-8")
+            text = _read_local_workspace_file(workspace / name)
+            if text is None:
+                raise FileNotFoundError(f"stage file {name} is no longer a regular file")
+            return text
 
     ordered = sorted(
         (name for name in names if name.casefold().endswith(".json")),
@@ -689,6 +714,9 @@ def _record_agent_launch_receipt(
                 write_scope,
                 resumes_native_session=bool(getattr(request, "session_id", None)),
             )
+        provider = request.provider
+        if provider is None:
+            raise ValueError(f"{capability} launch receipt requires a provider")
         scope_payload = {
             "project_id": write_scope.project_id,
             "execution_machine": write_scope.execution_machine,
@@ -698,8 +726,8 @@ def _record_agent_launch_receipt(
             "canonical_repository_roots": write_scope.repository_roots,
             "protected_write_paths": write_scope.protected_write_paths,
             "write_scope_fingerprint": write_scope.fingerprint,
-            "provider_enforcement_mode": project_write_enforcement_mode(request.provider),
-            "canonical_state_boundary": "provider_enforced",
+            "provider_enforcement_mode": project_write_enforcement_mode(provider),
+            "canonical_state_boundary": canonical_state_boundary(provider),
         }
     elif write_scope is not None:
         raise ValueError(f"{capability!r} launch cannot record a project write scope")
@@ -1088,7 +1116,7 @@ def _record_provider_exit(
         if remote_stage is not None:
             patch_exists = "patch.json" in remote_stage.list_workspace_files()
         else:
-            patch_exists = (workspace / "patch.json").is_file()
+            patch_exists = _is_local_workspace_file(workspace / "patch.json")
         payload["patch_json_exists"] = patch_exists
     except (OSError, StateUnavailable, ValueError) as exc:
         payload["patch_json_exists"] = None

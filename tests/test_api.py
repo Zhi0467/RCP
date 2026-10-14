@@ -5585,7 +5585,11 @@ def test_work_launch_receipt_names_the_canonical_state_boundary(
         receipt for receipt in completed["debug_receipts"] if receipt["category"] == "agent_launch"
     )
     repository_root = str(Path(manifest.repository_map["repo-a"].path).resolve())
-    assert launch["payload"]["canonical_state_boundary"] == "provider_enforced"
+    # Claude's Work shell is unbounded, so only its file tools keep canonical state read-only.
+    assert (
+        launch["payload"]["canonical_state_boundary"]
+        == {"codex": "provider_enforced", "claude": "file_tools_only"}[provider]
+    )
     assert (
         launch["payload"]["provider_enforcement_mode"]
         == {
