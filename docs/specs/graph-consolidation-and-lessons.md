@@ -104,8 +104,8 @@ consolidation run's mailbox offers and accepts
 [--source PATH[:LINE]]`. Prompt and handler share the owner's resolved verb set.
 The id must name a current, non-retired Evidence node on main. The finding is
 non-blank, single-line, and at most 400 characters; an optional source is at most
-1000 characters and names an absolute host path or `<alias>/<relative path>`,
-optionally followed by `:LINE`.
+1000 characters and must name an absolute host path or `<alias>/<relative path>`,
+optionally followed by `:LINE`; anything else, such as a URL, is refused.
 
 Flag creation checks live authorizer membership and records its keyed receipt
 transactionally. The same key and arguments replay; changed arguments refuse.
@@ -122,8 +122,8 @@ source, correct the Evidence only as far as the source supports, and use `ask`
 when unsure. The flag grants no authority. Replaying the request or addressing an
 already-addressing flag returns the existing chat without another turn.
 
-The row then offers **Open chat**, **Open Evidence**, **Open source** only when a
-source is set, and icon-only **Dismiss**. Addressing does not close it; Dismiss
+The row then offers **Open chat**, **Open Evidence**, **Open source** only when the
+source resolves to a configured repository file, and icon-only **Dismiss**. Addressing does not close it; Dismiss
 closes it for all members. Open or addressing flags give the Evidence node a red
 left edge and one icon-only flag action opening Inbox. Dismissed flags cannot be
 addressed; a missing Evidence node on main also refuses Address.

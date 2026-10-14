@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import uuid
 from collections.abc import Callable, Iterator
@@ -20,6 +21,9 @@ from rcp.storage.resource_versions import _bump, _install
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
+
+# An absolute execution-host path or `<alias>/<relative path>`, with an optional `:LINE`.
+_SOURCE_PATTERN = re.compile(r"(?:/|[A-Za-z0-9][A-Za-z0-9._-]*/)[^\r\n:]*[^\s/:](?::[1-9][0-9]*)?")
 
 
 class EvidenceFlagError(ValueError):
@@ -257,9 +261,9 @@ class EvidenceFlagStoreMixin(StoreMixinBase):
                     ):
                         raise EvidenceFlagError("flag_finding_invalid")
                     if source is not None and (
-                        not source.strip()
-                        or len(source) > EVIDENCE_FLAG_SOURCE_MAX_CHARS
+                        len(source) > EVIDENCE_FLAG_SOURCE_MAX_CHARS
                         or source.splitlines() != [source]
+                        or _SOURCE_PATTERN.fullmatch(source) is None
                     ):
                         raise EvidenceFlagError("flag_source_invalid")
                     revision = validate_evidence()

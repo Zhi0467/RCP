@@ -2500,12 +2500,12 @@ export function NodeChat({
             !continuedTaskIds.has(task.operation_id)
               ? task
               : null;
-          // A failed turn's error row carries its Retry; the header shows no second one.
+          // Only the newest turn's error row carries Retry; the header shows no second one.
           const retryLineTask =
             line.role === "error" &&
             task?.can_retry &&
             !task.can_resume &&
-            !continuedTaskIds.has(task.operation_id)
+            task.operation_id === relatedTasks.at(-1)?.operation_id
               ? task
               : null;
           const pendingLine = pendingTurn?.clientId === line.taskId;
