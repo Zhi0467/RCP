@@ -206,9 +206,12 @@ export function ArtifactViewer() {
   const pin = async () => {
     if (target.kind !== "artifact" || !state?.can_pin || pinning) return;
     if (state.pinned && pinTarget) {
-      window.location.hash = projectViewHash(target.projectId, pinTarget, "artifacts", {
+      const pinHash = projectViewHash(target.projectId, pinTarget, "artifacts", {
         pinId: target.artifactId,
       });
+      // Assigning the current hash fires no event, yet the pin may be unselected.
+      if (window.location.hash === pinHash) window.dispatchEvent(new HashChangeEvent("hashchange"));
+      else window.location.hash = pinHash;
       closeArtifactViewer();
       return;
     }

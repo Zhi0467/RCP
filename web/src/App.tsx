@@ -1096,7 +1096,10 @@ function MemberApp({
   const apiBase = projectId ? `/api/projects/${encodeURIComponent(projectId)}` : "";
   useEffect(() => setPinSelection(null), [pinScope]);
   useEffect(() => {
-    if (view !== "artifacts") setPinSelection(null);
+    if (view !== "artifacts") {
+      setPinSelection(null);
+      setRequestedPin(null);
+    }
   }, [view]);
   useEffect(() => {
     if (pinSelection?.scope === pinScope && pinsResource.value && !activePin) {
@@ -1104,7 +1107,7 @@ function MemberApp({
     }
   }, [pinSelection, pinScope, pinsResource.value, activePin]);
   // A cached list can predate the pin, so the request waits for a list holding
-  // it; the next route change replaces the request.
+  // it; the next route change or explicit tab choice replaces the request.
   useEffect(() => {
     if (requestedPin?.scope !== pinScope || !pinsResource.value) return;
     if (pinsResource.value.pins.some((pin) => pin.artifact_id === requestedPin.id)) {
@@ -4534,6 +4537,7 @@ function MemberApp({
           active={activePin?.artifact_id === pin.artifact_id}
           onSelect={() => {
             setPinSelection({ scope: pinScope, id: pin.artifact_id });
+            setRequestedPin(null);
             changeView("artifacts");
           }}
         />
@@ -4921,6 +4925,7 @@ function MemberApp({
                 failed={Boolean(pinsResource.error)}
                 onChange={(next) => {
                   setPinSelection(null);
+                  setRequestedPin(null);
                   changeView(next);
                 }}
               >
