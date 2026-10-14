@@ -821,5 +821,14 @@ def test_graph_byte_caps_return_bounded_errors_and_recover(live, monkeypatch, ca
     assert message.snapshots[0].model_dump() == dict(kind="graph", error=code)
     assert not message.static and not message.final and not message.complete
     assert len(message.model_dump_json().encode()) < limit
+    if cap == "LIVE_ARTIFACT_MESSAGE_MAX_BYTES":
+        # Declaration order still names every slot when the envelope is too large.
+        mixed = read(
+            live, live.create([{"kind": "node", "id": "n"}, {"kind": "graph"}], artifact_id="mixed")
+        )
+        assert [(s.kind, getattr(s, "id", None), s.error) for s in mixed.snapshots] == [
+            ("node", "n", code),
+            ("graph", None, code),
+        ]
     graph.nodes.clear()
     assert read(live, artifact).complete

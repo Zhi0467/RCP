@@ -494,14 +494,24 @@ def _snapshot(store, service, artifact, version, *, final=False, head=None, grap
     return _bounded_message(message)
 
 
+_SNAPSHOT_IDENTITY = {"key", "id", "path", "dir"}
+
+
 def _bounded_message(message: LiveDataMessage) -> LiveDataMessage:
     if len(message.model_dump_json().encode("utf-8")) > LIVE_ARTIFACT_MESSAGE_MAX_BYTES:
-        # Source identities and error strings can themselves be unbounded. Keep
-        # only the fixed envelope rather than clipping any declared source.
+        # Pages read snapshots by declaration order, so every slot stays, reduced
+        # to its declared identity and an error; no source data is clipped.
         return LiveDataMessage(
-            snapshots=[GraphSnapshot(error="message_too_large")]
-            if any(snapshot.kind == "graph" for snapshot in message.snapshots)
-            else [],
+            snapshots=[
+                type(snapshot).model_validate(
+                    {
+                        "kind": snapshot.kind,
+                        **snapshot.model_dump(include=_SNAPSHOT_IDENTITY),
+                        "error": "message_too_large",
+                    }
+                )
+                for snapshot in message.snapshots
+            ],
             complete=False,
             reason="message_too_large",
             static=message.static,
