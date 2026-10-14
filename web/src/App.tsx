@@ -847,9 +847,12 @@ function MemberApp({
   const editOptionsKey = projectId ? graphSessionKey(projectId, graphTarget) : null;
   const [loadedEditOptions, setLoadedEditOptions] = useState<{
     key: string;
-    options: GraphEditOptions;
+    options: GraphEditOptions | null;
   } | null>(null);
+  const [editOptionsReload, setEditOptionsReload] = useState(0);
   const editOptions = loadedEditOptions?.key === editOptionsKey ? loadedEditOptions.options : null;
+  const editOptionsFailed =
+    loadedEditOptions?.key === editOptionsKey && loadedEditOptions.options === null;
   useEffect(() => {
     let cancelled = false;
     setLoadedEditOptions(null);
@@ -861,14 +864,14 @@ function MemberApp({
           if (!cancelled) setLoadedEditOptions({ key: editOptionsKey, options });
         },
         () => {
-          if (!cancelled) setLoadedEditOptions(null);
+          if (!cancelled) setLoadedEditOptions({ key: editOptionsKey, options: null });
         },
       );
     }
     return () => {
       cancelled = true;
     };
-  }, [backendSessionReady, projectId, graphTarget, editOptionsKey]);
+  }, [backendSessionReady, projectId, graphTarget, editOptionsKey, editOptionsReload]);
   // Activation keeps the previous snapshot on screen, inert, until the target
   // paints. The held copy is never cached or drafted against.
   const [heldRefProject, setHeldRefProject] = useState<ProjectSnapshot | null>(null);
@@ -4259,6 +4262,9 @@ function MemberApp({
     projectId: project.id,
     mutationsDisabled,
     editOptions,
+    onRetryEditOptions: editOptionsFailed
+      ? () => setEditOptionsReload((count) => count + 1)
+      : undefined,
     canonicalGraph: graph,
     humanDraft,
     activeExperimentIds,

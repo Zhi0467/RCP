@@ -67,7 +67,8 @@ test("meta relations require identical base and extension types and sort last", 
   const ontology = {
     ...empty,
     relations: [
-      relation("connects", ["claim"], ["hypothesis"]),
+      relation("connects", ["claim"], ["claim"]),
+      relation("base_only", ["hypothesis"], ["hypothesis"]),
       relation("retired", ["claim"], ["claim"], { deprecated: true }),
     ],
   };

@@ -1696,6 +1696,9 @@ a.digest-title:hover {
 .dag-edit-controls {
   flex-wrap: wrap;
 }
+.dag-edit-controls.is-failed {
+  border-left: 3px solid var(--red);
+}
 .dag-edit-controls button,
 .dag-edit-float button,
 .dag-edit-menu button,

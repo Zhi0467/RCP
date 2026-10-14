@@ -26,6 +26,8 @@ export interface GraphEditingProps {
   mutationsDisabled?: boolean;
   /** Backend edit options; null while loading or after a failed load. */
   editOptions: GraphEditOptions | null;
+  /** Present only after the options failed to load: fetch them again. */
+  onRetryEditOptions?: () => void;
   /** Canonical graph without the draft: removal guards and edge identity read it. */
   canonicalGraph: GraphState;
   /** The member's current draft, or null when nothing is staged. */
@@ -124,9 +126,9 @@ export function relationChoices(
     const start = nodes[source];
     const end = nodes[target];
     for (const relation of definitions) {
+      // Custom relations name semantic types (the backend's edge_matches_relation); built-ins name base types.
       const matches = (types: string[], node: GraphNode) =>
-        types.includes(node.type) ||
-        (relation.custom && !!node.extension_type && types.includes(node.extension_type));
+        types.includes(relation.custom ? (node.extension_type ?? node.type) : node.type);
       if (!matches(relation.source_types, start) || !matches(relation.target_types, end)) continue;
       if (
         relation.same_type &&

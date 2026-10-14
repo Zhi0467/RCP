@@ -3,7 +3,7 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
-test("branch graph keeps detail and chat while canvas editing stays read-only", async () => {
+test("branch graph keeps canvas editing and chat while removed nodes are historical", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "silent",
@@ -77,8 +77,10 @@ test("branch graph keeps detail and chat while canvas editing stays read-only", 
     await page.getByRole("button", { name: "Research flow", exact: true }).click();
     await page.keyboard.press("Escape");
     assert.equal(await page.locator('.dag-node[data-node-id="hyp/distant"]').count(), 0);
-    assert.equal(await page.locator(".dag-connect-handle").count(), 0);
-    assert.equal(await page.locator(".dag-edit-controls").count(), 0);
+    assert.equal(await page.locator(".dag-edit-controls").count(), 1);
+    const handle = (id) => page.locator(`.dag-node[data-node-id="${id}"] .dag-connect-handle`);
+    assert.equal(await handle("hyp/changed").count(), 1);
+    assert.equal(await handle("hyp/removed").count(), 0);
     await page.getByRole("button", { name: "Expand context", exact: true }).click();
     await page.locator('.dag-node[data-node-id="hyp/distant"]').waitFor();
     await page.getByRole("button", { name: "Changes + context", exact: true }).click();

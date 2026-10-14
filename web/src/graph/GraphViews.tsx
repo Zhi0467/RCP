@@ -391,7 +391,7 @@ export function DagView({
     repulsion,
     mode: layoutMode,
   });
-  const canEdit = !branchChanges && !editing.mutationsDisabled && Boolean(editing.editOptions);
+  const canEdit = !editing.mutationsDisabled && Boolean(editing.editOptions);
   const editor = useDagCanvasEditor({
     graph,
     editing: { ...editing, projectId },
@@ -1039,14 +1039,18 @@ export function DagView({
                       key={edge.id}
                     >
                       <path className="dag-edge" d={geometry.path} markerEnd="url(#dag-arrow)" />
-                      {canEdit && (
-                        <path
-                          className="dag-edge-hit"
-                          data-edge-id={edge.id}
-                          d={geometry.path}
-                          onClick={(event) => editor.onEdgeClick(event, edge)}
-                        />
-                      )}
+                      {canEdit &&
+                        (editing.canonicalGraph.edges[edge.id] ||
+                          editing.humanDraft?.added_edges.some(
+                            (added) => added.id === edge.id,
+                          )) && (
+                          <path
+                            className="dag-edge-hit"
+                            data-edge-id={edge.id}
+                            d={geometry.path}
+                            onClick={(event) => editor.onEdgeClick(event, edge)}
+                          />
+                        )}
                       <text className="dag-edge-label" x={geometry.labelX} y={geometry.labelY}>
                         {edgeChanges.has(edge.id) ? `${edgeChanges.get(edge.id)!.change} · ` : ""}
                         {edge.relation.replaceAll("_", " ")}

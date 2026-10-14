@@ -10,16 +10,16 @@ import {
   applyHumanDraft,
   emptyHumanDraft,
   stageNodeEdit,
-  stageCustomNode,
+  stageCanvasNode,
   stageEdgeAddition,
   stageEdgeRemoval,
-  unstageEdgeRemoval,
   toHumanSyncRequest,
 } from "../../src/graph/humanDraft";
 import { buildGlossaryIndex } from "../../src/graph/glossary";
 import type {
   AgentTask,
   GraphBranchChanges,
+  GraphEditOptions,
   GraphNode,
   GraphState,
   ProjectSnapshot,
@@ -79,6 +79,19 @@ const graph = {
   replay_status: "complete",
   replay_failure: null,
 } as GraphState;
+const editOptions: GraphEditOptions = {
+  node_prefixes: { hypothesis: "hyp" },
+  relations: [
+    {
+      name: "relates_to",
+      source_types: ["hypothesis"],
+      target_types: ["hypothesis"],
+      same_type: false,
+      assessment_required_for: [],
+      accepts_expectation: false,
+    },
+  ],
+};
 const history = [
   {
     revision: 2,
@@ -180,16 +193,24 @@ function Fixture() {
         viewportRef={viewport}
         onSelectNode={setSelected}
         onInspectTask={setInspectedTask}
-        onStageCustomNode={(node) => setDraft((current) => stageCustomNode(current, node))}
-        onStageEdge={(edge) => setDraft((current) => stageEdgeAddition(current, graph, edge))}
-        onRemoveEdge={(edgeId) => setDraft((current) => stageEdgeRemoval(current, graph, edgeId))}
-        onUndoRemoveEdge={(edgeId) =>
-          setDraft((current) => unstageEdgeRemoval(current, graph, edgeId))
+        editOptions={editOptions}
+        canonicalGraph={graph}
+        humanDraft={draft}
+        activeExperimentIds={[]}
+        onStageNode={(node, edges) =>
+          setDraft((current) => stageCanvasNode(current, graph, node, edges))
         }
-        canonicalEdges={graph.edges}
-        draftAddedNodeIds={Object.keys(draft.custom_nodes)}
-        draftAddedEdges={draft.added_edges}
-        draftRemovedEdgeIds={draft.removed_edge_ids}
+        onUpdateStagedNode={() => undefined}
+        onStageEdge={(edge) => setDraft((current) => stageEdgeAddition(current, graph, edge))}
+        onReplaceEdge={() => undefined}
+        onRemoveEdge={(edgeId) => setDraft((current) => stageEdgeRemoval(current, graph, edgeId))}
+        onRemoveNodes={() => undefined}
+        onMergeNodes={() => undefined}
+        onRenameNode={() => undefined}
+        onUndo={() => undefined}
+        onRedo={() => undefined}
+        canUndo={false}
+        canRedo={false}
       />
       {selectedNode && (
         <DetailDrawer

@@ -6,6 +6,7 @@ import {
   Pencil,
   Plus,
   Redo2,
+  RotateCw,
   Scissors,
   Trash2,
   Undo2,
@@ -167,6 +168,8 @@ export function useDagCanvasEditor({
       : [];
   const sameType = (a: string, b: string) =>
     a !== b &&
+    !!graph.nodes[a] &&
+    !!graph.nodes[b] &&
     graph.nodes[a]?.type === graph.nodes[b]?.type &&
     (graph.nodes[a]?.extension_type ?? null) === (graph.nodes[b]?.extension_type ?? null);
   const refused = (id: string) =>
@@ -292,8 +295,12 @@ export function useDagCanvasEditor({
         : {}),
     };
     if (context.node) {
+      if (!fresh || fresh.pending) {
+        setMenu(null);
+        return;
+      }
       editing.onStageNode(context.node, [next]);
-      pinAt(context.node.id, fresh!.at.x, fresh!.at.y);
+      pinAt(context.node.id, fresh.at.x, fresh.at.y);
       setFresh((f) => (f ? { ...f, pending: context.node } : f));
     } else if (context.replace) editing.onReplaceEdge(context.replace.id, next);
     else editing.onStageEdge(next);
@@ -332,6 +339,11 @@ export function useDagCanvasEditor({
       editing.onRemoveNodes(selected);
       setSelected([]);
     }
+  };
+  // Cancelling a new card also drops the relation menu that would have staged it.
+  const discardFresh = () => {
+    setFresh(null);
+    setMenu((open) => (open?.node ? null : open));
   };
   const saveFresh = () => {
     if (!fresh || fresh.pending || !editing?.editOptions) return;
@@ -406,7 +418,8 @@ export function useDagCanvasEditor({
       ? sameType(pick.from, id)
       : !!(wire?.from || pick?.from) && choices(wire?.from ?? pick!.from, id).length > 0;
   const onNodeClick = (event: MouseEvent, node: GraphNode) => {
-    if (!active) return false;
+    // A branch diff shows removed nodes that are no longer in the graph; they stay inert.
+    if (!active || !graph.nodes[node.id]) return false;
     if (pick) {
       if (eligible(node.id)) {
         if (pick.kind === "merge") {
@@ -505,7 +518,7 @@ export function useDagCanvasEditor({
     });
   };
   const onNodeDragMove = (id: string, x: number, y: number) => {
-    if (!active) return;
+    if (!active || !graph.nodes[id]) return;
     const point = world(x, y),
       target = Object.keys(positions).find(
         (other) =>
@@ -663,7 +676,19 @@ export function useDagCanvasEditor({
       : null;
   const wirePath = (a: Point, b: Point) =>
     `M${a.x},${a.y} C${a.x + 80},${a.y} ${b.x + 80},${b.y} ${b.x},${b.y}`;
-  const controls = active ? (
+  const optionsFailed =
+    !!editing?.onRetryEditOptions && !editing.mutationsDisabled && !editing.editOptions;
+  const controls = optionsFailed ? (
+    <div className="dag-edit-controls is-failed" data-canvas-ui>
+      <button
+        type="button"
+        aria-label="Retry loading edit options"
+        onClick={editing?.onRetryEditOptions}
+      >
+        <RotateCw size={15} />
+      </button>
+    </div>
+  ) : active ? (
     <div className="dag-edit-controls" data-canvas-ui>
       <button type="button" onClick={() => create(center())}>
         <Plus size={15} /> Node
@@ -958,7 +983,7 @@ export function useDagCanvasEditor({
             }
             if (e.key === "Escape" && !visibleFresh.pending) {
               e.stopPropagation();
-              setFresh(null);
+              discardFresh();
             }
           }}
         >
@@ -988,7 +1013,7 @@ export function useDagCanvasEditor({
               onChange={(e) => setFresh({ ...visibleFresh, title: e.target.value })}
               onKeyDown={(e) => {
                 e.stopPropagation();
-                if (e.key === "Escape") setFresh(null);
+                if (e.key === "Escape") discardFresh();
                 if (e.key === "Tab") {
                   e.preventDefault();
                   const index = types.findIndex((t) => t.name === visibleFresh.type);
@@ -1074,7 +1099,7 @@ export function useDagCanvasEditor({
       }
     },
     onNodeDoubleClick: (node: GraphNode) => {
-      if (active) {
+      if (active && graph.nodes[node.id]) {
         setSelected([node.id]);
         setRename(node.id);
       }
