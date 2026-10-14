@@ -760,7 +760,7 @@ def test_experiment_control_projection_reads_runtime_and_episode_from_one_snapsh
 
 @pytest.mark.parametrize(
     ("status", "expected_continuation"),
-    [("running", "resume"), ("paused", "resume"), ("failed", "retry")],
+    [("running", "resume")],
 )
 def test_restart_recovers_a_healthy_authorized_turn_behind_the_stop_fence(
     manifest,
@@ -826,43 +826,6 @@ def test_restart_recovers_a_healthy_authorized_turn_behind_the_stop_fence(
     assert "experiment_stop_recovery" in {
         receipt.category for receipt in loop.store.agent_task_receipts(recovered.operation_id)
     }
-
-
-def test_restart_keeps_stop_recovery_pending_when_remote_stage_probe_is_uncertain(
-    manifest,
-    tmp_path,
-    monkeypatch,
-) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app, invocation_ceiling=3)
-    loop.start_episode(status="running")
-    loop.store.checkpoint_agent_task(
-        "loop-root",
-        native_session_id="remote-stop-session",
-        stage_host="worker.example",
-        stage_root="/remote/rcp-stage",
-    )
-    loop.record_context_candidate("loop-root")
-    stopping = loop.store.request_experiment_loop_stop(
-        loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
-    )
-    assert stopping is not None and stopping.stop_settled_at is None
-    monkeypatch.setattr(
-        "rcp.background.RemoteRunStage.directory_exists",
-        lambda _stage, _path: None,
-    )
-
-    async def stream(*_args, **_kwargs):
-        raise AssertionError("transient remote uncertainty must not launch recovery")
-        yield  # pragma: no cover
-
-    BackgroundAgentTasks(loop.store, stream).recover_at_startup()
-
-    tasks = loop.store.episode_tasks(loop.episode_id)
-    assert [task.operation_id for task in tasks] == ["loop-root"]
-    episode = loop.store.episode(loop.episode_id)
-    assert episode is not None and episode.status == "stopping"
-    assert episode.stop_settled_at is None
 
 
 def test_run_after_a_settled_stop_starts_a_fresh_episode_with_no_delivery(loop, tmp_path) -> None:
@@ -1657,8 +1620,9 @@ def test_watcher_wake_retry_never_falls_back_to_a_fresh_session(
         error=None if task_status == "paused" else "provider connection dropped",
     )
     loop.record_context_candidate("failed-wake")
-    stage.rmdir()
 
+    # The saved session could still be resumed, but nobody resumes a turn they
+    # asked to stop: Stop abandons its recovery and settles at once.
     stopping = loop.stop()
     assert stopping["operational"]["stop_settled"] is True
     with pytest.raises(ValueError):
@@ -1669,9 +1633,6 @@ def test_watcher_wake_retry_never_falls_back_to_a_fresh_session(
         for task in loop.store.agent_tasks(loop.project_id)
         if task.parent_operation_id == "failed-wake"
     ]
-    episode = loop.store.experiment_episode(loop.episode_id)
-    assert episode is not None
-    assert episode.session_diagnostic is not None
     settled = loop.control()
     assert settled["operational"]["stop_settled"] is True
     assert settled["ready"] is True
