@@ -269,9 +269,12 @@ chosen network service may send audio externally. Audio attachments are refused.
 
 One nonblank Discuss/Work message atomically claims bounded temporary attachments.
 They stage immutably on the execution host and recovery reuses the exact batch;
-partial transfer fails rather than dropping files. Chat retains display metadata
-and expiry, never bytes/hashes/paths. Attachments are untrusted context, not sole
-durable Evidence provenance.
+partial transfer fails rather than dropping files. The claimed batch expires
+`RUN_STAGE_RETENTION_DAYS` after send; from then on its task offers no Retry or
+Resume and both endpoints refuse, since recovery without the exact batch would
+change the turn. Chat retains display metadata and expiry, never
+bytes/hashes/paths. Attachments are untrusted context, not sole durable Evidence
+provenance.
 
 Project references may name stored artifacts/reports, graph nodes on their source
 target, or the saved paper introduction. Drag, pasted reference links and the

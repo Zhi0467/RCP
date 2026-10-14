@@ -48,6 +48,25 @@ def _agent_task_status_label(status: str, applied_revision: object) -> str:
     }.get(status, "Failed")
 
 
+def _chat_attachments_expired(row: Mapping[str, object]) -> bool:
+    """Whether a recovery would re-stage a claimed attachment batch already swept.
+
+    A claimed batch ages out at the expiry its descriptors carry, and Retry and Resume
+    both re-stage it, so neither is offered (or accepted) once that time has passed.
+    """
+
+    request = row.get("request")
+    attachments = request.get("attachments") if isinstance(request, Mapping) else None
+    if not isinstance(attachments, list):
+        return False
+    now = datetime.now(UTC)
+    return any(
+        datetime.fromisoformat(str(item["expires_at"])) <= now
+        for item in attachments
+        if isinstance(item, Mapping)
+    )
+
+
 def _agent_task_control_flags(
     row: Mapping[str, object],
     *,
@@ -59,6 +78,7 @@ def _agent_task_control_flags(
     visible = bool(row.get("visible", True))
     history_only = bool(row.get("history_only", False))
     stage_ready = not row.get("stage_host") or bool(row.get("stage_root"))
+    attachments_expired = _chat_attachments_expired(row)
     can_pause = visible and not history_only and status in AGENT_TASK_TRANSITIONS["pausing"]
     can_resume = (
         visible
@@ -67,6 +87,7 @@ def _agent_task_control_flags(
         and bool(row.get("native_session_id"))
         and stage_ready
         and not recovery_abandoned
+        and not attachments_expired
     )
     can_retry = (
         visible
@@ -74,6 +95,7 @@ def _agent_task_control_flags(
         and status in {"paused", "interrupted", "failed"}
         and status not in ACTIVE_AGENT_TASK_STATUSES
         and not recovery_abandoned
+        and not attachments_expired
         # A refused wake would replay the same refused policy.
         and row.get("failure_kind") != "session_refused"
     )
