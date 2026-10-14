@@ -99,24 +99,61 @@ def test_address_admits_one_ordinary_work_turn_and_replays(flagged):
     assert len(launches) == 1
     assert client.post(url, json={"request_id": "another-click"}).json() == result
     assert client.get(base).json()["evidence_flags"] == [result["flag"]]
-
-
-@pytest.mark.parametrize("state", ["open", "addressing"])
-def test_address_missing_node_does_not_bind_chat(flagged, state):
-    _, client, store, project, flag = flagged
-    # An operational flag can outlive the graph node it named.
+    # A lost response replays to the bound chat even after the Evidence leaves main.
     with store.connection() as connection:
         connection.execute(
-            "UPDATE evidence_flags SET evidence_id='ev/missing',state=? WHERE flag_id=?",
-            (state, flag["flag_id"]),
+            "UPDATE evidence_flags SET evidence_id='ev/missing' WHERE flag_id=?",
+            (flag["flag_id"],),
+        )
+    replay = client.post(url, json={"request_id": request_id})
+    assert replay.status_code == 200
+    assert replay.json()["chat_id"] == result["chat_id"]
+    assert len(launches) == 1
+
+
+@pytest.mark.parametrize("evidence", ["missing", "retired"])
+def test_address_refuses_absent_or_retired_evidence(flagged, evidence):
+    app, client, store, project, flag = flagged
+    evidence_id = f"ev/{evidence}"
+    if evidence == "retired":
+        append_fixture_patch(
+            app.state.service,
+            Patch(
+                kind="seed",
+                author="agent",
+                summary="Retired observation",
+                run_truth_scope=["repo-a"],
+                repositories_read=["repo-a"],
+                ops=[
+                    {
+                        "op": "create_nodes",
+                        "nodes": [
+                            {
+                                "id": evidence_id,
+                                "type": "evidence",
+                                "title": "Old result",
+                                "observation": "Old result",
+                                "origin": "analytic",
+                                "validity": "superseded",
+                            }
+                        ],
+                    }
+                ],
+            ),
+        )
+    # An operational flag can outlive the current graph node it named.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE evidence_flags SET evidence_id=? WHERE flag_id=?",
+            (evidence_id, flag["flag_id"]),
         )
     response = client.post(
         f"/api/projects/{project}/consolidation/evidence-flags/{flag['flag_id']}/address",
-        json={"request_id": "missing-node"},
+        json={"request_id": "stale-node"},
     )
     assert response.status_code == 409
     current = store.evidence_flag(project, flag["flag_id"])
-    assert current["state"] == state and current["chat_id"] is None
+    assert current["state"] == "open" and current["chat_id"] is None
 
 
 @pytest.mark.parametrize("action", ["address", "dismiss"])

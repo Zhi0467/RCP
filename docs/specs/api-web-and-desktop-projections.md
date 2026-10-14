@@ -1080,9 +1080,9 @@ identity:
   the human node-chat path and default node-chat provider profile. The first human
   message is composed on the backend from flag context and fixed instructions;
   it adds no authority. Replaying the same request id or addressing an addressing
-  flag returns the existing chat and operation without starting another turn.
-  Dismissed flags or Evidence no longer present on main return 409; unknown flags
-  return 404.
+  flag returns the existing chat and operation without starting another turn,
+  whatever main now holds. Addressing an open flag whose Evidence is absent or
+  retired on main, or a dismissed flag, returns 409; unknown flags return 404.
 
 The [consolidation spec](graph-consolidation-and-lessons.md#evidence-to-check)
 owns fact-check behavior, flag lifecycle, and the Evidence to check Inbox rows.

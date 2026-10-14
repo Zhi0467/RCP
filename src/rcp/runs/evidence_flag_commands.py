@@ -13,6 +13,17 @@ from rcp.storage.evidence_flags import EvidenceFlagError
 RCP_FLAG_KEY_PREFIX = "rcp:"
 
 
+def is_current_evidence(state: GraphState, node_id: str) -> bool:
+    """Flags are raised and addressed only on Evidence that is present and not retired."""
+    node = state.nodes.get(node_id)
+    project_type = project_type_of(state)
+    return (
+        node is not None
+        and project_type.is_outcome(node.type)
+        and getattr(node, project_type.lifecycle_field(node.type)) != project_type.retired_value
+    )
+
+
 def handle_flag(
     service: ProjectService, store: AppStore, operation_id: str, request: FlagCommandRequest
 ) -> CommandResponse:
@@ -34,13 +45,7 @@ def handle_flag(
 
     def validate_evidence() -> int:
         state = service.history.state()
-        node = state.nodes.get(request.arguments.evidence_id)
-        project_type = project_type_of(state)
-        if (
-            node is None
-            or not project_type.is_outcome(node.type)
-            or getattr(node, project_type.lifecycle_field(node.type)) == project_type.retired_value
-        ):
+        if not is_current_evidence(state, request.arguments.evidence_id):
             raise EvidenceFlagError("flag_evidence_invalid")
         return state.revision
 

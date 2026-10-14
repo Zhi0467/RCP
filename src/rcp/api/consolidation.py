@@ -30,6 +30,7 @@ from rcp.consolidation import next_occurrence
 from rcp.limits import CONSOLIDATION_RECENT_NIGHTS
 from rcp.projects import ProjectCatalog
 from rcp.runs.consolidation import CONSOLIDATION_PRELAUNCH_ERRORS
+from rcp.runs.evidence_flag_commands import is_current_evidence
 from rcp.storage import AppStore
 from rcp.storage.consolidation import ConsolidationRun, ConsolidationSchedule
 from rcp.storage.evidence_flags import EvidenceFlagError
@@ -303,7 +304,11 @@ def address_evidence_flag(
         with store.evidence_flag_admission(
             project_id, flag_id, user_id=human.user_id, request_id=body.request_id
         ) as flag:
+            # Replaying an addressing flag returns its bound chat whatever main now holds.
             if flag["state"] == "open":
+                service = get_graph_service(catalog, project_id, initialize=False)
+                if not is_current_evidence(service.history.state(), flag["evidence_id"]):
+                    raise EvidenceFlagError("flag_evidence_unavailable")
                 try:
                     start_agent_task(
                         project_id,
@@ -326,15 +331,11 @@ def address_evidence_flag(
                         raise HTTPException(
                             status_code=409,
                             detail={
-                                "code": "flag_evidence_missing",
-                                "message": "Evidence no longer exists on main.",
+                                "code": "flag_evidence_unavailable",
+                                "message": "The Evidence is absent or retired on main.",
                             },
                         ) from exc
                     raise
-            else:
-                service = get_graph_service(catalog, project_id, initialize=False)
-                if flag["evidence_id"] not in service.history.state().nodes:
-                    raise EvidenceFlagError("flag_evidence_missing")
             return store.evidence_flag_address_result(project_id, flag_id)
     except EvidenceFlagError as exc:
         raise _flag_error(exc) from exc
