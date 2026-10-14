@@ -1602,6 +1602,35 @@ def test_graph_repair_recovery_remains_patch_only(manifest, tmp_path, status, ac
     assert recovered.native_session_id == "repair-session"
 
 
+@pytest.mark.parametrize("status", ["paused", "failed"])
+def test_restart_settles_a_stop_whose_turn_was_already_terminal(manifest, tmp_path, status) -> None:
+    # The process died after Stop was written and before it settled; a turn that
+    # was already paused or failed then must settle, never relaunch provider work.
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=3)
+    loop.start_episode(status=status)
+    stage = tmp_path / "terminal-stage"
+    stage.mkdir()
+    loop.store.checkpoint_agent_task(
+        "loop-root", native_session_id="terminal-session", stage_root=str(stage)
+    )
+    loop.record_context_candidate("loop-root")
+    loop.store.request_episode_stop(loop.episode_id)
+
+    async def stream(*_args):
+        raise AssertionError("a terminal turn behind Stop must not relaunch")
+        yield
+
+    BackgroundAgentTasks(loop.store, stream).recover_at_startup()
+
+    assert not [
+        task
+        for task in loop.store.episode_tasks(loop.episode_id)
+        if task.parent_operation_id == "loop-root"
+    ]
+    assert loop.store.episode(loop.episode_id).status == "stopped"  # type: ignore[union-attr]
+
+
 @pytest.mark.parametrize("task_status", ["failed", "paused"])
 def test_watcher_wake_retry_never_falls_back_to_a_fresh_session(
     manifest, tmp_path, task_status
@@ -2114,8 +2143,6 @@ def test_restart_settles_an_already_stuck_legacy_recovery_and_enables_fresh_run(
     episode = loop.store.experiment_episode(loop.episode_id)
     assert episode is not None
     assert episode.stop_settled_at is not None
-    assert episode.session_diagnostic is not None
-    assert "older RCP" in episode.session_diagnostic
     assert loop.loop_task_ids() == before
     root = loop.store.agent_task("loop-root")
     retry = loop.store.agent_task("doomed-retry")

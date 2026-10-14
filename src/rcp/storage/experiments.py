@@ -3002,7 +3002,10 @@ class ExperimentStoreMixin(StoreMixinBase):
                   AND episode.ending IS NULL
                   AND state.session_diagnostic IS NULL
                   AND task.visible = 1
-                  AND task.status IN ('paused', 'failed', 'interrupted')
+                  -- Only a turn the restart interrupted after Stop was still live
+                  -- then; one already paused or failed settles instead (Stop).
+                  AND task.status = 'interrupted'
+                  AND julianday(task.finished_at) >= julianday(episode.stop_requested_at)
                   AND NOT EXISTS (
                       SELECT 1 FROM graph_runs AS child
                       WHERE child.parent_operation_id = task.operation_id
