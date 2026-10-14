@@ -697,7 +697,9 @@ Desktop supports `[3, 4]`, server `[1, 4]`. Protocol 1 forbids team deletion;
 2 permits deletion only with negotiated support and the exact confirmation;
 3 adds optional reviewed `source_commit` and `rcp-transfer-v2` Git archives,
 while accepting omitted commits/v1 archives; 4 adds optional
-`record_schema_version=2` for episode archives. Archive-free transfers retain
+`record_schema_version=2` for episode archives. The server accepts record
+versions 2 to 4, but the desktop refuses preparation for a source that needs 3
+(an archived graph branch) or 4 (branch names). Archive-free transfers retain
 prior bytes; incompatible peers refuse preparation before source release.
 Breaking contracts get a new immutable version; retirement is explicit.
 The range governs native bootstrap and relay, not server operations, provider
