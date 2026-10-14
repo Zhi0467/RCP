@@ -1483,14 +1483,21 @@ function MemberApp({
         const visibleProjectId = activeId;
         scheduler.activate(visibleProjectId);
         setProjectReconciliation("reconciling");
-        void reloadRef.current(false).catch((error) => {
-          if (!isActiveProject(visibleProjectId) || stopped) return;
-          setProjectReconciliation("failed");
-          setNotice({
-            kind: "error",
-            text: error instanceof Error ? error.message : String(error),
-          });
-        });
+        // An unchanged read keeps the snapshot's identity, so no effect settles it.
+        void reloadRef.current(false).then(
+          () => {
+            if (isActiveProject(visibleProjectId) && !stopped)
+              setProjectReconciliation("authoritative");
+          },
+          (error) => {
+            if (!isActiveProject(visibleProjectId) || stopped) return;
+            setProjectReconciliation("failed");
+            setNotice({
+              kind: "error",
+              text: error instanceof Error ? error.message : String(error),
+            });
+          },
+        );
       } else {
         const nextProjects = await api<ProjectCard[]>("/api/projects");
         if (!stopped) replaceProjects(nextProjects);
