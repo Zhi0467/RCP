@@ -188,7 +188,9 @@ def _parser():
     flag = subparsers.add_parser("flag")
     flag.add_argument("--key", required=True)
     flag.add_argument("--evidence", required=True)
-    flag.add_argument("--kind", required=True, choices=("overclaim", "underclaim", "no_source"))
+    flag.add_argument(
+        "--kind", required=True, choices=("overclaim", "underclaim", "no_source", "unverified")
+    )
     flag.add_argument("--finding", required=True)
     flag.add_argument("--source")
 

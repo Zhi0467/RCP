@@ -17,6 +17,7 @@ test("flag rows keep open records, mark only current Evidence, and offer resolva
     const rows = evidenceFlagRows(
       [
         { ...base, flag_id: "open", source: "/host/jobs/run.log" },
+        { ...base, flag_id: "paper", kind: "unverified", source: "https://example.org/paper" },
         {
           ...base,
           flag_id: "addressing",
@@ -35,12 +36,14 @@ test("flag rows keep open records, mark only current Evidence, and offer resolva
       rows.map(({ flag, node, actions }) => [flag.flag_id, node?.id ?? null, actions]),
       [
         ["open", "e1", ["address", "open_evidence", "dismiss"]],
+        ["paper", "e1", ["address", "open_evidence", "open_source", "dismiss"]],
         ["addressing", "e1", ["open_chat", "open_evidence", "open_source", "dismiss"]],
         ["missing", null, ["dismiss"]],
         ["retired", null, ["dismiss"]],
       ],
     );
-    assert.deepEqual(rows[1].source, { path: "/work/repo/log", line: 4 });
+    assert.deepEqual(rows[1].source, { kind: "url", href: "https://example.org/paper" });
+    assert.deepEqual(rows[2].source, { kind: "file", target: { path: "/work/repo/log", line: 4 } });
   } finally {
     await server.close();
   }

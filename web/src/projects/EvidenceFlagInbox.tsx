@@ -15,7 +15,13 @@ interface Props {
   onOpenChat: (chatId: string) => void;
 }
 
-const KIND_LABELS = { overclaim: "Overclaim", underclaim: "Underclaim", no_source: "No source" };
+const KIND_LABELS: Record<EvidenceFlag["kind"], string> = {
+  overclaim: "Overclaim",
+  underclaim: "Underclaim",
+  no_source: "No source",
+  unverified: "Unverified",
+  consolidation_added: "Added by consolidation",
+};
 
 export function EvidenceFlagInbox(props: Props) {
   if (!props.rows.length) return null;
@@ -66,8 +72,8 @@ function FlagRow({
         if (flag.chat_id) onOpenChat(flag.chat_id);
       } else if (action === "open_evidence" && node) {
         onOpenNode(node);
-      } else if (action === "open_source" && source) {
-        openRepositoryFile({ projectId, ...source });
+      } else if (action === "open_source" && source?.kind === "file") {
+        openRepositoryFile({ projectId, ...source.target });
       }
     } catch (error) {
       setFailure({ action, message: error instanceof Error ? error.message : String(error) });
@@ -111,6 +117,20 @@ function FlagRow({
             open_source: "Open source",
             dismiss: "Dismiss",
           }[action];
+          if (action === "open_source" && source?.kind === "url")
+            return (
+              <a
+                key={action}
+                data-action={action}
+                className="button secondary"
+                href={source.href}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <ExternalLink size={14} />
+                {label}
+              </a>
+            );
           return (
             <button
               key={action}

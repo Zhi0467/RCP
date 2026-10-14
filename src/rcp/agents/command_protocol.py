@@ -354,7 +354,7 @@ class FlagArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     evidence_id: str = Field(min_length=1, max_length=200)
-    kind: Literal["overclaim", "underclaim", "no_source"]
+    kind: Literal["overclaim", "underclaim", "no_source", "unverified"]
     finding: str = Field(min_length=1, max_length=EVIDENCE_FLAG_FINDING_MAX_CHARS)
     source: str | None = Field(default=None, max_length=EVIDENCE_FLAG_SOURCE_MAX_CHARS)
 

@@ -14,6 +14,7 @@ from rcp.agents.command_mailbox import CommandTurnIdentity
 from rcp.agents.command_protocol import ApplyArguments, ApplyCommandRequest
 from rcp.background import AgentTaskExecution
 from rcp.core.authority import AgentAuthorizerDeparted
+from rcp.core.models import Patch
 from rcp.core.transition_models import GraphTargetRef
 from rcp.runs.consolidation import consolidation_apply_handler, settlement_source_effect_id
 from rcp.runs.questions import work_command_handler
@@ -124,6 +125,35 @@ def test_consolidation_apply_keys_replay_and_settlement_matches_each_digest(mani
         assert failure is None
         assert result.status == "applied"
     assert service.history.state().revision == initial_revision + 3
+
+
+def test_consolidation_apply_holds_added_evidence_for_review(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    append_fixture_patch(app.state.service, seed_patch())
+    _, execution = _admit(app)
+    mailbox, apply = _command(app, execution, tmp_path)
+    evidence = {
+        "id": "ev/added-overnight",
+        "type": "evidence",
+        "title": "Seed 3 shows no spike",
+        "observation": "The seed 3 log has no step-200 spike.",
+        "origin": "analytic",
+    }
+    patch = Patch(
+        kind="work",
+        author="agent",
+        summary="Record the seed 3 result",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[{"op": "create_nodes", "nodes": [evidence]}],
+    )
+    mailbox.write_text("patch.json", agent_patch_json(patch))
+    assert apply("add").status == "ok"
+    assert apply("add").status == "ok"
+    flags = execution.store.list_evidence_flags(app.state.default_project_id)
+    assert [(item["evidence_id"], item["kind"], item["finding"]) for item in flags] == [
+        ("ev/added-overnight", "consolidation_added", "Record the seed 3 result")
+    ]
 
 
 def test_consolidation_apply_recovers_crash_after_canonical_append(manifest, tmp_path, monkeypatch):

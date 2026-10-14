@@ -111,10 +111,11 @@ includes its rows in the open total. Each row shows the kind, night, current
 Evidence title, and finding. **Address** starts the backend-authorized node Work
 chat and opens the returned chat in Agents; **Open chat** replaces it while the
 flag is addressing. The row stays until its icon-only **Dismiss** action succeeds.
-**Open Evidence** opens node detail; **Open source** is offered only when the
-recorded source, a repository alias or absolute path, resolves to a configured
-repository file, and opens the existing file preview. A failed action marks the row with a red edge and replaces that action
-with one icon-only retry. Controls wrap and retain phone-sized targets at 390px.
+**Open Evidence** opens node detail. **Open source** opens a URL source in a new
+tab, or a repository alias or absolute path in the existing file preview, and is
+offered only for a URL or a path that resolves to a configured repository file.
+A failed action marks the row with a red edge and replaces that action with one
+icon-only retry. Controls wrap and retain phone-sized targets at 390px.
 
 ## DAG controls
 

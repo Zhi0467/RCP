@@ -50,6 +50,7 @@ def test_flag_mailbox_authority_and_keyed_receipts(manifest, tmp_path):
     assert first.status == "ok"
     assert first.result["flag"]["evidence_revision"] == app.state.service.history.state().revision
     assert handler(request(), caller).result == first.result
+    assert handler(request(key="rcp:mine"), caller).result["code"] == "flag_key_invalid"
     assert handler(request(finding="Different"), caller).result["code"] == "flag_key_conflict"
     duplicate = handler(request(key="second"), caller)
     assert duplicate.result == {**first.result, "code": "flag_exists"}

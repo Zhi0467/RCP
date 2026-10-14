@@ -118,7 +118,7 @@ def test_flag_migration_preserves_existing_store_and_space_records(store):
         ("finding", "claim\n", "flag_finding_invalid"),
         ("finding", "claim\u2028other", "flag_finding_invalid"),
         ("source", "/source\n", "flag_source_invalid"),
-        ("source", "https://example.invalid", "flag_source_invalid"),
+        ("source", "ftp://example.invalid/paper.pdf", "flag_source_invalid"),
         ("source", "results.txt", "flag_source_invalid"),
     ],
 )

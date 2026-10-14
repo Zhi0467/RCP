@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from collections.abc import Callable
 from datetime import datetime
@@ -13,6 +14,7 @@ from rcp.core.authority import AgentAuthorizerDeparted
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history.queries import HeadSpec
 from rcp.limits import PATCH_SELF_CHECK_MAX_REQUEST_BYTES
+from rcp.runs.evidence_flag_commands import flag_consolidation_additions
 from rcp.skill_registry import official_registry
 from rcp.transport import StateUnavailable
 
@@ -166,6 +168,7 @@ def consolidation_apply_handler(
             if receipt["result"] is not None:
                 response = CommandResponse(request_id=request.request_id, **receipt["result"])
             else:
+                before = service().history.state()
                 result, failure = _apply_work_patch(
                     service(),
                     execution,
@@ -208,6 +211,14 @@ def consolidation_apply_handler(
                     key,
                     response.model_dump(mode="json", exclude={"request_id"}),
                 )
+                if result.status == "applied":
+                    flag_consolidation_additions(
+                        service(),
+                        execution.store,
+                        execution.operation_id,
+                        before,
+                        _patch_summary(text),
+                    )
             if response.status == "ok":
                 mailbox.remove_if_sha256("patch.json", digest)
             return response
@@ -225,3 +236,11 @@ def consolidation_apply_handler(
             )
 
     return apply
+
+
+def _patch_summary(text: str) -> str:
+    try:
+        summary = json.loads(text).get("summary")
+    except (ValueError, AttributeError):
+        return ""
+    return summary if isinstance(summary, str) else ""

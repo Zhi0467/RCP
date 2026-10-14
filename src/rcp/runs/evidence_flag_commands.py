@@ -3,16 +3,27 @@
 from __future__ import annotations
 
 from rcp.agents.command_protocol import CommandResponse, FlagCommandRequest
+from rcp.core.models import GraphState
 from rcp.core.project_types import project_type_of
+from rcp.limits import EVIDENCE_FLAG_FINDING_MAX_CHARS
 from rcp.service import ProjectService
 from rcp.storage import AppStore
 from rcp.storage.evidence_flags import EvidenceFlagError
+
+RCP_FLAG_KEY_PREFIX = "rcp:"
 
 
 def handle_flag(
     service: ProjectService, store: AppStore, operation_id: str, request: FlagCommandRequest
 ) -> CommandResponse:
     task = store.agent_task(operation_id)
+    if (request.idempotency_key or "").startswith(RCP_FLAG_KEY_PREFIX):
+        return CommandResponse(
+            request_id=request.request_id,
+            status="invalid",
+            message=f"Flag keys starting with {RCP_FLAG_KEY_PREFIX!r} are reserved for RCP.",
+            result={"code": "flag_key_invalid"},
+        )
     if task is None:
         return CommandResponse(
             request_id=request.request_id,
@@ -64,5 +75,45 @@ def handle_flag(
 def flag_command_usage(client: str) -> str:
     return (
         f"- `{client} flag --key <key> --evidence <evidence-id> "
-        "--kind overclaim|underclaim|no_source --finding <text> [--source <path[:line]>]`"
+        "--kind overclaim|underclaim|no_source|unverified --finding <text> "
+        "[--source <path[:line]>]`"
     )
+
+
+def flag_consolidation_additions(
+    service: ProjectService,
+    store: AppStore,
+    operation_id: str,
+    before: GraphState,
+    summary: str,
+) -> None:
+    """Hold every Evidence node a consolidation apply created for human review.
+
+    RCP raises these, not the agent, so new Evidence never reaches the graph unseen.
+    A failure is recorded on the task; the applied Patch stands.
+    """
+    task = store.agent_task(operation_id)
+    if task is None:
+        return
+    after = service.history.state()
+    project_type = project_type_of(after)
+    finding = (summary.strip().splitlines() or ["Consolidation added this Evidence."])[0]
+    for node_id, node in after.nodes.items():
+        if node_id in before.nodes or not project_type.is_outcome(node.type):
+            continue
+        try:
+            store.execute_evidence_flag_command(
+                task.project_id,
+                operation_id,
+                key=f"{RCP_FLAG_KEY_PREFIX}consolidation_added:{node_id}",
+                evidence_id=node_id,
+                kind="consolidation_added",
+                finding=finding[:EVIDENCE_FLAG_FINDING_MAX_CHARS],
+                validate_evidence=lambda: after.revision,
+            )
+        except (EvidenceFlagError, ValueError) as exc:
+            store.record_agent_task_event(
+                operation_id,
+                f"Evidence {node_id} was added but could not be held for review: {exc}",
+                level="warning",
+            )

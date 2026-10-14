@@ -22,8 +22,16 @@ from rcp.storage.resource_versions import _bump, _install
 if TYPE_CHECKING:
     from rcp.storage import AppStore
 
-# An absolute execution-host path or `<alias>/<relative path>`, with an optional `:LINE`.
-_SOURCE_PATTERN = re.compile(r"(?:/|[A-Za-z0-9][A-Za-z0-9._-]*/)[^\r\n:]*[^\s/:](?::[1-9][0-9]*)?")
+# Agent-raised kinds, plus the one RCP raises on Evidence a consolidation apply creates.
+EVIDENCE_FLAG_KINDS = frozenset(
+    {"overclaim", "underclaim", "no_source", "unverified", "consolidation_added"}
+)
+
+# An absolute execution-host path or `<alias>/<relative path>` with an optional `:LINE`,
+# or an external http(s) URL.
+_SOURCE_PATTERN = re.compile(
+    r"(?:/|[A-Za-z0-9][A-Za-z0-9._-]*/)[^\r\n:]*[^\s/:](?::[1-9][0-9]*)?|https?://[^\s]+"
+)
 
 
 class EvidenceFlagError(ValueError):
@@ -56,7 +64,8 @@ def migrate_evidence_flags(connection: sqlite3.Connection) -> None:
         "CREATE TABLE IF NOT EXISTS evidence_flags (flag_id TEXT PRIMARY KEY, "
         "project_id TEXT NOT NULL, run_id TEXT, occurrence_date TEXT, evidence_id TEXT NOT NULL, "
         "evidence_revision INTEGER NOT NULL, kind TEXT NOT NULL "
-        "CHECK(kind IN ('overclaim','underclaim','no_source')), finding TEXT NOT NULL, source TEXT, "
+        "CHECK(kind IN ('overclaim','underclaim','no_source','unverified','consolidation_added')), "
+        "finding TEXT NOT NULL, source TEXT, "
         "state TEXT NOT NULL CHECK(state IN ('open','addressing','dismissed')), chat_id TEXT, "
         "created_at TEXT NOT NULL, operation_id TEXT, address_request_id TEXT, "
         "UNIQUE(project_id,address_request_id))"
@@ -252,7 +261,7 @@ class EvidenceFlagStoreMixin(StoreMixinBase):
                 outcome = json.loads(receipt["result_json"])
             else:
                 try:
-                    if kind not in {"overclaim", "underclaim", "no_source"}:
+                    if kind not in EVIDENCE_FLAG_KINDS:
                         raise EvidenceFlagError("flag_kind_invalid")
                     if (
                         not finding.strip()

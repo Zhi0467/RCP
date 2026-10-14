@@ -53,12 +53,16 @@ writing rules, and defines shared terms in the glossary. It only suggests accept
 node rewrites, since editing resets standing. Existing protected beliefs still
 require [Proposals](authority-and-proposals.md#protected-belief-proposals).
 After the audit, a fact-check pass reads Evidence created or changed since the
-covered head against source bytes on the execution host: cited artifacts,
-producing Experiment job logs, and repository files, not conversation transcripts.
-Prose problems and missing or wrong citations are fixed directly in the Patch
-when the right source is found. Scientific or semantic problems raise
-`overclaim`, `underclaim`, or `no_source` flags; `no_source` means no source the
-agent can find contains the claim. The workflow never changes the flagged claim,
+covered head against the sources themselves: cited artifacts, producing
+Experiment job logs, and repository files on the execution host, and papers or
+web pages through the provider's web and network tools, never conversation
+transcripts. Provider-native subagents may check batches in parallel inside the
+turn. Prose problems and missing or wrong citations are fixed directly in the
+Patch when the right source is found. Scientific or semantic problems raise
+`overclaim`, `underclaim`, `no_source`, or `unverified` flags: `no_source` means
+the sources read do not contain the claim, `unverified` that a named source could
+not be read. Consolidation may add Evidence for a result a source it read states,
+and fact-checks the Evidence it added after applying. The workflow never changes the flagged claim,
 validity, or standing to resolve such a finding.
 It finishes with `consolidation-report.html` in the ordinary artifact root,
 listing flags raised alongside applied changes.
@@ -100,12 +104,19 @@ expiry or already expired. Closed rows and renewed/deleted grants invalidate not
 
 Evidence flags are SQLite attention records, never graph state. Only the
 consolidation run's mailbox offers and accepts
-`flag --key K --evidence ID --kind overclaim|underclaim|no_source --finding TEXT
-[--source PATH[:LINE]]`. Prompt and handler share the owner's resolved verb set.
+`flag --key K --evidence ID --kind overclaim|underclaim|no_source|unverified
+--finding TEXT [--source PATH[:LINE]|URL]`. Prompt and handler share the owner's resolved verb set.
 The id must name a current, non-retired Evidence node on main. The finding is
 non-blank, single-line, and at most 400 characters; an optional source is at most
 1000 characters and must name an absolute host path or `<alias>/<relative path>`,
-optionally followed by `:LINE`; anything else, such as a URL, is refused.
+optionally followed by `:LINE`, or an `http(s)` URL; anything else is refused.
+Keys starting with `rcp:` are reserved for RCP.
+
+After each consolidation `apply` that changes main, RCP itself raises a
+`consolidation_added` flag on every Evidence node the Patch created, keyed
+`rcp:consolidation_added:<id>` and carrying the Patch summary as its finding, so
+added Evidence waits for a human. The agent cannot raise that kind. A failure to
+record it is a task warning; the applied Patch stands.
 
 Flag creation checks live authorizer membership and records its keyed receipt
 transactionally. The same key and arguments replay; changed arguments refuse.
@@ -123,7 +134,7 @@ when unsure. The flag grants no authority. Replaying the request or addressing a
 already-addressing flag returns the existing chat without another turn.
 
 The row then offers **Open chat**, **Open Evidence**, **Open source** only when the
-source resolves to a configured repository file, and icon-only **Dismiss**. Addressing does not close it; Dismiss
+source is a URL (opened in a new tab) or resolves to a configured repository file, and icon-only **Dismiss**. Addressing does not close it; Dismiss
 closes it for all members. Open or addressing flags give the Evidence node a red
 left edge and one icon-only flag action opening Inbox. Dismissed flags cannot be
 addressed; a missing Evidence node on main also refuses Address.

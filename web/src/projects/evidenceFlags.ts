@@ -2,6 +2,8 @@ import type { EvidenceFlag, GraphNode, Repository } from "../core/types";
 import { resolveRepositoryFileHref, type RepositoryFileTarget } from "../core/repositoryFileLinks";
 import { isOutcome, lifecycleField, projectType } from "../graph/researchType";
 
+export type EvidenceFlagSource =
+  { kind: "file"; target: RepositoryFileTarget } | { kind: "url"; href: string };
 export type EvidenceFlagAction =
   "address" | "open_chat" | "open_evidence" | "open_source" | "dismiss";
 export interface EvidenceFlagRow {
@@ -9,7 +11,7 @@ export interface EvidenceFlagRow {
   /** The current Evidence node, or null once it is absent or retired. */
   node: GraphNode | null;
   title: string;
-  source: RepositoryFileTarget | null;
+  source: EvidenceFlagSource | null;
   actions: EvidenceFlagAction[];
 }
 
@@ -39,16 +41,17 @@ export function evidenceFlagRows(
   });
 }
 
-/** Resolve an alias-relative or absolute cited path to a repository file, if it is one. */
+/** An external URL, or a cited path that resolves to a repository file; otherwise null. */
 function flagSourceTarget(
   source: string,
   repositories: readonly Repository[],
-): RepositoryFileTarget | null {
+): EvidenceFlagSource | null {
+  if (/^https?:\/\//.test(source)) return { kind: "url", href: source };
   const repository = repositories.find((repo) => source.startsWith(`${repo.alias}/`));
   const href =
     !source.startsWith("/") && repository
       ? `${repository.path.replace(/\/+$/, "")}/${source.slice(repository.alias.length + 1)}`
       : source;
   const resolution = resolveRepositoryFileHref(href, repositories);
-  return resolution.kind === "resolved" ? resolution.target : null;
+  return resolution.kind === "resolved" ? { kind: "file", target: resolution.target } : null;
 }

@@ -3775,7 +3775,8 @@ export interface ConsolidationNight {
   outcome: "succeeded" | "failed" | "skipped" | "running";
 }
 
-export type EvidenceFlagKind = "overclaim" | "underclaim" | "no_source";
+export type EvidenceFlagKind =
+  "overclaim" | "underclaim" | "no_source" | "unverified" | "consolidation_added";
 
 export interface EvidenceFlag {
   flag_id: string;
