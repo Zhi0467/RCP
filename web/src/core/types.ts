@@ -2253,7 +2253,15 @@ export interface HistoryEpisodeDecoration {
   report: EpisodeReportSummary | null;
 }
 
+export type TurnOutcomeStatus = "done" | "partial" | "could_not" | "not_stated";
+
+export interface TurnOutcome {
+  status: TurnOutcomeStatus;
+  reason: string | null;
+}
+
 export interface AgentTaskResult {
+  turn_outcome?: TurnOutcome;
   messages?: string[];
   artifacts?: AgentArtifactDescriptor[];
   artifact_omissions?: ArtifactOmissions;
@@ -2922,6 +2930,7 @@ export interface SteerRequest {
 }
 
 export interface ChatMessage {
+  turn_outcome: TurnOutcome | null;
   browser_status?: BrowserTurnStatus | null;
   message_id: string;
   steering?: SteerReceipt | null;
@@ -3766,7 +3775,24 @@ export interface ConsolidationNight {
   outcome: "succeeded" | "failed" | "skipped" | "running";
 }
 
+export type EvidenceFlagKind = "overclaim" | "underclaim" | "no_source";
+
+export interface EvidenceFlag {
+  flag_id: string;
+  run_id: string | null;
+  occurrence_date: string | null;
+  evidence_id: string;
+  evidence_revision: number;
+  kind: EvidenceFlagKind;
+  finding: string;
+  source: string | null;
+  state: "open" | "addressing" | "dismissed";
+  chat_id: string | null;
+  created_at: string;
+}
+
 export interface ConsolidationView {
+  evidence_flags: EvidenceFlag[];
   can_write: boolean;
   schedule: ConsolidationSchedule | null;
   inbox: ConsolidationInboxItem[];

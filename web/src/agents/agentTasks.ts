@@ -12,6 +12,7 @@ import type {
   GraphUpdateResult,
   TaskTrigger,
   SteerReceipt,
+  TurnOutcome,
 } from "../core/types";
 
 export interface TaskTranscriptLine {
@@ -28,6 +29,7 @@ export interface TaskTranscriptLine {
   mode?: ConversationMode | null;
   trigger?: TaskTrigger;
   graphUpdate?: GraphUpdateResult | null;
+  turnOutcome?: TurnOutcome | null;
   steering?: SteerReceipt | null;
   /** Holds the live progress of a running turn the human did not type. */
   running?: boolean;
@@ -178,6 +180,7 @@ export function chatMessageTranscriptLine(message: ChatMessage): TaskTranscriptL
     mode: message.mode,
     trigger: message.trigger,
     graphUpdate: message.graph_update,
+    turnOutcome: message.turn_outcome,
     attachments: message.attachments,
     steering: message.steering,
     browserStatus: message.steering ? null : message.browser_status,
@@ -233,7 +236,8 @@ export function reconcileChatHistoryArtifacts(
       (operationMessages.some((message) => message.steering) ||
         artifacts.length > 0 ||
         artifactOmissions !== undefined ||
-        artifactEditOutcomes.length > 0)
+        artifactEditOutcomes.length > 0 ||
+        task.result?.turn_outcome)
     ) {
       lines.push(...reconstructTaskTranscript([task]).filter((line) => line.role !== "human"));
     }
@@ -248,6 +252,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
     const mode = conversationMode(task.request.mode);
     const trigger = taskTrigger(task.request.trigger);
     const graphUpdate = task.result?.graph_update ?? null;
+    const turnOutcome = task.result?.turn_outcome ?? null;
     if (message && trigger === "human") {
       const attachments = taskAttachments(task.request.attachments);
       lines.push({
@@ -284,6 +289,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
           ? { artifactEditOutcomes }
           : {}),
         ...(index === messages.length - 1 && graphUpdate ? { graphUpdate } : {}),
+        ...(index === messages.length - 1 && turnOutcome ? { turnOutcome } : {}),
       }),
     );
     if (
@@ -291,6 +297,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
       (artifacts.length ||
         artifactOmissions ||
         artifactEditOutcomes.length ||
+        turnOutcome ||
         (graphUpdate && graphUpdate.status !== "none"))
     ) {
       lines.push({
@@ -305,6 +312,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
         ...(artifactOmissions ? { artifactOmissions } : {}),
         ...(artifactEditOutcomes.length ? { artifactEditOutcomes } : {}),
         ...(graphUpdate ? { graphUpdate } : {}),
+        ...(turnOutcome ? { turnOutcome } : {}),
       });
     }
     const graphOnlyRejection = task.settled && graphUpdate?.status === "rejected";

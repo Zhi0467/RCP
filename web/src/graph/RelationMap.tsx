@@ -1,3 +1,4 @@
+import { useEvidenceFlags } from "./EvidenceFlagContext";
 import { TriangleAlert, ExternalLink, Maximize2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -460,6 +461,8 @@ interface NodeCardProps {
 }
 
 function NodeCard({ node, fallbackId, focused = false, onSelectNode }: NodeCardProps) {
+  const { nodeIds: flaggedNodeIds } = useEvidenceFlags();
+  const flagged = node && flaggedNodeIds.has(node.id);
   const content = (
     <>
       {node && <span className="eyebrow">{nodeTypeLabel(node)}</span>}
@@ -468,12 +471,18 @@ function NodeCard({ node, fallbackId, focused = false, onSelectNode }: NodeCardP
     </>
   );
   if (!node || !onSelectNode) {
-    return <div className={`relation-map-node${focused ? " is-focused" : ""}`}>{content}</div>;
+    return (
+      <div
+        className={`relation-map-node${flagged ? " has-evidence-flag" : ""}${focused ? " is-focused" : ""}`}
+      >
+        {content}
+      </div>
+    );
   }
   return (
     <button
       type="button"
-      className={`relation-map-node${focused ? " is-focused" : ""}`}
+      className={`relation-map-node${flagged ? " has-evidence-flag" : ""}${focused ? " is-focused" : ""}`}
       aria-label={`Open ${node.title}`}
       onClick={() => onSelectNode(node.id)}
     >
