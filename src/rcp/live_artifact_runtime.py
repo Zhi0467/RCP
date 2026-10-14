@@ -497,27 +497,42 @@ def _snapshot(store, service, artifact, version, *, final=False, head=None, grap
 _SNAPSHOT_IDENTITY = {"key", "id", "path", "dir"}
 
 
-def _bounded_message(message: LiveDataMessage) -> LiveDataMessage:
-    if len(message.model_dump_json().encode("utf-8")) > LIVE_ARTIFACT_MESSAGE_MAX_BYTES:
-        # Pages read snapshots by declaration order, so every slot stays, reduced
-        # to its declared identity and an error; no source data is clipped.
-        return LiveDataMessage(
-            snapshots=[
-                type(snapshot).model_validate(
-                    {
-                        "kind": snapshot.kind,
-                        **snapshot.model_dump(include=_SNAPSHOT_IDENTITY),
-                        "error": "message_too_large",
-                    }
-                )
-                for snapshot in message.snapshots
-            ],
-            complete=False,
-            reason="message_too_large",
-            static=message.static,
-            refresh_seconds=message.refresh_seconds,
-        )
-    return message
+def _message_fits(message: LiveDataMessage) -> bool:
+    return len(message.model_dump_json().encode("utf-8")) <= LIVE_ARTIFACT_MESSAGE_MAX_BYTES
+
+
+def _bounded_message(message: LiveDataMessage, *, saved: bool = False) -> LiveDataMessage:
+    """Keep the live envelope under its byte cap; a saved final can never recover."""
+    if _message_fits(message):
+        return message
+    # Pages read snapshots by declaration order, so every slot stays, reduced
+    # to its declared identity and an error; no source data is clipped.
+    slotted = LiveDataMessage(
+        snapshots=[
+            type(snapshot).model_validate(
+                {
+                    "kind": snapshot.kind,
+                    **snapshot.model_dump(include=_SNAPSHOT_IDENTITY),
+                    "error": "message_too_large",
+                }
+            )
+            for snapshot in message.snapshots
+        ],
+        complete=False,
+        reason="message_too_large",
+        static=message.static or saved,
+        refresh_seconds=message.refresh_seconds,
+    )
+    if _message_fits(slotted):
+        return slotted
+    # Declared identities alone overflow; the declaration is immutable, so stop.
+    return LiveDataMessage(
+        snapshots=[],
+        complete=False,
+        reason="message_too_large",
+        static=True,
+        refresh_seconds=message.refresh_seconds,
+    )
 
 
 def artifact_live_snapshot(
@@ -555,7 +570,7 @@ def artifact_live_snapshot(
     _graph_history(service, task)
     saved = store.read_artifact_live_snapshot(artifact_id, version_id)
     if saved is not None and graph_head is None:
-        return _bounded_message(LiveDataMessage.model_validate_json(saved))
+        return _bounded_message(LiveDataMessage.model_validate_json(saved), saved=True)
     return _snapshot(store, service, artifact, version, head=head, graph_head=graph_head)
 
 

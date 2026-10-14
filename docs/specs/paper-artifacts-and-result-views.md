@@ -137,7 +137,8 @@ head of the last complete graph it cached, and the server omits graph data when
 it is unchanged. Byte caps in `limits.py` bound the graph and the whole message.
 Over a cap, the read is an error: the shell keeps its last complete graph, marks
 it stale, and keeps polling until the graph fits again. Nodes and edges are never
-silently dropped.
+silently dropped. An oversized saved final, or declared identities that alone
+exceed the message cap, can never shrink, so that error is static.
 
 A page may post `rcp-open-node` with a node id. Each frame hop accepts it only
 from its exact child, and the shell forwards only ids in the last delivered

@@ -832,3 +832,24 @@ def test_graph_byte_caps_return_bounded_errors_and_recover(live, monkeypatch, ca
         ]
     graph.nodes.clear()
     assert read(live, artifact).complete
+
+
+def test_unrecoverable_oversized_messages_stop_polling(monkeypatch):
+    from rcp import live_artifact_runtime as runtime
+    from rcp.live_artifacts import FileSnapshot, LiveDataMessage
+
+    message = LiveDataMessage(
+        snapshots=[FileSnapshot(path="/" + "p" * 300, rows=["x" * 2000])],
+        complete=True,
+        refresh_seconds=2,
+    )
+    monkeypatch.setattr(runtime, "LIVE_ARTIFACT_MESSAGE_MAX_BYTES", 1000)
+    # A saved final is immutable: its slotted error is terminal, not retried.
+    saved = runtime._bounded_message(message, saved=True)
+    assert (saved.static, saved.snapshots[0].error) == (True, "message_too_large")
+    assert not runtime._bounded_message(message).static
+    # Declared identities alone over the cap still yield a bounded, terminal reply.
+    monkeypatch.setattr(runtime, "LIVE_ARTIFACT_MESSAGE_MAX_BYTES", 200)
+    bare = runtime._bounded_message(message)
+    assert (bare.snapshots, bare.static, bare.reason) == ([], True, "message_too_large")
+    assert len(bare.model_dump_json().encode()) <= 200
