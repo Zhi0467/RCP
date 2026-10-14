@@ -162,7 +162,7 @@ function Fixture() {
     editOptions,
     canonicalGraph: graph,
     humanDraft: snapshot.draft,
-    experimentActive: false,
+    activeExperimentIds: [],
     canUndo: undo.current.length > 0,
     canRedo: redo.current.length > 0,
     onStageNode: (node, edges) =>

@@ -1116,14 +1116,14 @@ test("canvas creation, editing, replacement and batch deletion preserve draft gu
   draft = stageEdgeReplacement(draft, canonical, "edge/canonical", edge);
   assert.deepEqual(draft.removed_edge_ids, ["edge/canonical"]);
   const edited = stageNodeEdit(draft, canonical, "other", { title: "Changed" });
-  const refused = stageNodesRemoval(edited, canonical, ["other"], false);
+  const refused = stageNodesRemoval(edited, canonical, ["other"], []);
   assert.equal(refused, edited);
-  draft = stageNodesRemoval(draft, canonical, ["new", "other"], true);
+  draft = stageNodesRemoval(draft, canonical, ["new", "other"], ["other"]);
   assert.deepEqual(draft.custom_nodes, {});
   assert.deepEqual(draft.added_edges, []);
   assert.deepEqual(draft.removed_node_ids, []);
   draft = stageEdgeAddition(draft, canonical, draftEdge("edge/temp", "other", "kept"));
-  draft = stageNodesRemoval(draft, canonical, ["other"], false);
+  draft = stageNodesRemoval(draft, canonical, ["other"], []);
   assert.deepEqual(draft.added_edges, []);
   assert.deepEqual(draft.removed_node_ids, ["other"]);
 });
@@ -1144,7 +1144,7 @@ test("merge copies drafted links with payload and direction, deduplicates and un
   });
   let draft = stageEdgeAddition(emptyHumanDraft(4), canonical, incoming);
   draft = stageEdgeRemoval(draft, canonical, "removed");
-  const merged = stageMerge(draft, canonical, "duplicate", "kept", false);
+  const merged = stageMerge(draft, canonical, "duplicate", "kept", []);
   assert.deepEqual(draft.added_edges, [incoming]);
   assert.equal(merged.added_edges.length, 1);
   const copy = merged.added_edges[0];
@@ -1182,15 +1182,15 @@ test("merge refuses guarded or differently typed duplicates and supports staged 
       ...canonical,
       nodes: { ...canonical.nodes, duplicate: { ...canonical.nodes.duplicate, ...changes } },
     };
-    assert.equal(stageMerge(draft, changed, "duplicate", "kept", false), draft);
+    assert.equal(stageMerge(draft, changed, "duplicate", "kept", []), draft);
   }
-  assert.equal(stageMerge(draft, canonical, "duplicate", "kept", true), draft);
+  assert.equal(stageMerge(draft, canonical, "duplicate", "kept", ["duplicate"]), draft);
   const edited = stageNodeEdit(draft, canonical, "duplicate", { title: "Changed" });
-  assert.equal(stageMerge(edited, canonical, "duplicate", "kept", false), edited);
+  assert.equal(stageMerge(edited, canonical, "duplicate", "kept", []), edited);
   const staged = stageCanvasNode(draft, canonical, { ...canonical.nodes.duplicate, id: "new" }, [
     draftEdge("new-link", "new", "other"),
   ]);
-  const merged = stageMerge(staged, canonical, "new", "kept", true);
+  const merged = stageMerge(staged, canonical, "new", "kept", ["new"]);
   assert.deepEqual(merged.custom_nodes, {});
   assert.equal(merged.added_edges[0].source, "kept");
   assert.deepEqual(merged.merges, []); // Session undo restores a removed staged node.

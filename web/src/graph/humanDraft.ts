@@ -412,13 +412,13 @@ export function stageNodesRemoval(
   draft: HumanDraft,
   graph: GraphState,
   nodeIds: string[],
-  experimentActive = false,
+  activeExperimentIds: string[] = [],
 ): HumanDraft {
   return nodeIds.reduce(
     (next, id) =>
       next.custom_nodes[id]
         ? unstageCustomNode(next, graph, id)
-        : stageNodeRemoval(next, graph, id, experimentActive),
+        : stageNodeRemoval(next, graph, id, activeExperimentIds.includes(id)),
     draft,
   );
 }
@@ -428,7 +428,7 @@ export function stageMerge(
   graph: GraphState,
   duplicateId: string,
   canonicalId: string,
-  experimentActive = false,
+  activeExperimentIds: string[] = [],
 ): HumanDraft {
   const duplicate = draft.custom_nodes[duplicateId] ?? graph.nodes[duplicateId];
   const canonical = draft.custom_nodes[canonicalId] ?? graph.nodes[canonicalId];
@@ -441,7 +441,7 @@ export function stageMerge(
     draft.removed_node_ids.includes(canonicalId)
   )
     return draft;
-  const next = stageNodesRemoval(draft, graph, [duplicateId], experimentActive);
+  const next = stageNodesRemoval(draft, graph, [duplicateId], activeExperimentIds);
   if (next === draft) return draft;
 
   const removedNodes = new Set(draft.removed_node_ids);

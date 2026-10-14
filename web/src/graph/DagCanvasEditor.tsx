@@ -171,7 +171,12 @@ export function useDagCanvasEditor({
     (graph.nodes[a]?.extension_type ?? null) === (graph.nodes[b]?.extension_type ?? null);
   const refused = (id: string) =>
     editing
-      ? nodeRemovalRefusal(editing.canonicalGraph, editing.humanDraft, id, editing.experimentActive)
+      ? nodeRemovalRefusal(
+          editing.canonicalGraph,
+          editing.humanDraft,
+          id,
+          editing.activeExperimentIds,
+        )
       : null;
   const world = (x: number, y: number): Point => {
     const rect = canvasRef.current?.getBoundingClientRect();

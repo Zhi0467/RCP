@@ -30,8 +30,8 @@ export interface GraphEditingProps {
   canonicalGraph: GraphState;
   /** The member's current draft, or null when nothing is staged. */
   humanDraft: HumanDraft | null;
-  /** Whether the project's Experiment loop is active (removal guard). */
-  experimentActive: boolean;
+  /** Experiments whose loop is active; they cannot be removed or merged away. */
+  activeExperimentIds: string[];
   /** Stage a new node together with the links drawn with it. */
   onStageNode: (node: NewNode, edges: NewEdge[]) => void;
   /** Replace a staged, not yet synced node (rename, origin, fields). */
@@ -82,14 +82,14 @@ export function nodeRemovalRefusal(
   canonicalGraph: GraphState,
   draft: HumanDraft | null,
   nodeId: string,
-  experimentActive: boolean,
+  activeExperimentIds: string[],
 ): RemovalRefusal | null {
   if (draft?.custom_nodes[nodeId]) return null;
   const node = canonicalGraph.nodes[nodeId];
   if (!node) return null;
-  // Mirrors stageNodeRemoval: the loop guard covers every node, as the drawer does.
+  // Mirrors stageNodeRemoval as node detail calls it: only the active Experiment itself.
   if (node.standing === "accepted") return "accepted";
-  if (experimentActive) return "active_experiment";
+  if (activeExperimentIds.includes(nodeId)) return "active_experiment";
   if (draft?.nodes[nodeId]) return "staged_edit";
   return null;
 }

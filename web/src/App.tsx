@@ -4252,16 +4252,16 @@ function MemberApp({
       setNotice({ kind: "error", text: errorMessage(error) });
     }
   };
-  const experimentActive = Object.values(presentedExperimentControl).some((control) =>
-    Boolean(control.active),
-  );
+  const activeExperimentIds = Object.entries(presentedExperimentControl)
+    .filter(([, control]) => control.active)
+    .map(([id]) => id);
   const graphEditingProps: GraphEditingProps = {
     projectId: project.id,
     mutationsDisabled,
     editOptions,
     canonicalGraph: graph,
     humanDraft,
-    experimentActive: experimentActive,
+    activeExperimentIds,
     onStageNode: (node, edges) =>
       updateHumanDraft((draft) => stageCanvasNode(draft, graph, node, edges)),
     onUpdateStagedNode: (node) => updateHumanDraft((draft) => updateStagedNode(draft, node)),
@@ -4270,9 +4270,11 @@ function MemberApp({
       updateHumanDraft((draft) => stageEdgeReplacement(draft, graph, edgeId, edge)),
     onRemoveEdge: (edgeId) => updateHumanDraft((draft) => stageEdgeRemoval(draft, graph, edgeId)),
     onRemoveNodes: (ids) =>
-      updateHumanDraft((draft) => stageNodesRemoval(draft, graph, ids, experimentActive)),
+      updateHumanDraft((draft) => stageNodesRemoval(draft, graph, ids, activeExperimentIds)),
     onMergeNodes: (duplicate, canonical) =>
-      updateHumanDraft((draft) => stageMerge(draft, graph, duplicate, canonical, experimentActive)),
+      updateHumanDraft((draft) =>
+        stageMerge(draft, graph, duplicate, canonical, activeExperimentIds),
+      ),
     onRenameNode: (id, title) =>
       updateHumanDraft((draft) => {
         const staged = draft.custom_nodes[id];
