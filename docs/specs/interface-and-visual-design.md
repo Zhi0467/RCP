@@ -100,7 +100,9 @@ or Evidence shortcuts.
 
 Open or addressing Evidence flags mark their current main-graph nodes with a red
 left edge in graph and research cards. Node detail adds one icon-only flag action
-that opens the Inbox. Retired or absent nodes have no flag row or marker.
+that opens the Inbox. A flag on retired or absent Evidence keeps its row, titled from
+the recorded node or id, with only Open chat, Open source, and Dismiss as they apply;
+it marks no node.
 
 ## Evidence to check
 
@@ -109,9 +111,9 @@ includes its rows in the open total. Each row shows the kind, night, current
 Evidence title, and finding. **Address** starts the backend-authorized node Work
 chat and opens the returned chat in Agents; **Open chat** replaces it while the
 flag is addressing. The row stays until its icon-only **Dismiss** action succeeds.
-**Open Evidence** opens node detail; **Open source**, offered only for a recorded
-source, resolves a repository alias or absolute cited path into the existing file
-preview. A failed action marks the row with a red edge and replaces that action
+**Open Evidence** opens node detail; **Open source** is offered only when the
+recorded source, a repository alias or absolute path, resolves to a configured
+repository file, and opens the existing file preview. A failed action marks the row with a red edge and replaces that action
 with one icon-only retry. Controls wrap and retain phone-sized targets at 390px.
 
 ## DAG controls

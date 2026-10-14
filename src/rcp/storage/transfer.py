@@ -64,7 +64,6 @@ from rcp.transfer.records import (
     capture_task_request_history,
     validate_transfer_table_policy,
 )
-from rcp.turn_outcomes import TurnOutcome
 
 if TYPE_CHECKING:
     from rcp.transfer.project_files import TransferLegacyKeptResultView, TransferProjectFileCapture
@@ -165,8 +164,6 @@ def _task_result_history(task: TransferTaskRecord) -> str | None:
         result["trace_messages"] = list(task.assistant.trace_messages)
     if task.assistant.legacy_unlabelled_lines:
         result["messages"] = list(task.assistant.legacy_unlabelled_lines)
-    if task.turn_outcome is not None:
-        result["turn_outcome"] = task.turn_outcome.model_dump(mode="json")
     if task.graph_updates:
         result["graph_updates"] = [item.value() for item in task.graph_updates]
     if task.artifacts:
@@ -519,11 +516,6 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                     error=row["error"],
                     applied_revision=row["applied_revision"],
                     graph_updates=cls._transfer_graph_updates(result),
-                    turn_outcome=(
-                        TurnOutcome.model_validate(result["turn_outcome"])
-                        if result.get("turn_outcome") is not None
-                        else None
-                    ),
                     attempt=row["attempt"],
                     parent_operation_id=row["parent_operation_id"],
                     episode_id=row["episode_id"],

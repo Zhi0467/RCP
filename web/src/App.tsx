@@ -4140,8 +4140,9 @@ function MemberApp({
   const flagRows = evidenceFlagRows(
     graphTarget.kind === "main" ? (consolidation?.evidence_flags ?? []) : [],
     graph.nodes,
+    project.repositories,
   );
-  const flaggedNodeIds = new Set(flagRows.map((row) => row.node.id));
+  const flaggedNodeIds = new Set(flagRows.flatMap((row) => (row.node ? [row.node.id] : [])));
   const consolidationCount =
     consolidationAttentionCount(openConsolidation, needsConsolidationRenewal) + flagRows.length;
   const attentionCount =
@@ -4861,7 +4862,6 @@ function MemberApp({
                   apiBase={apiBase}
                   projectId={project.id}
                   rows={flagRows}
-                  repositories={project.repositories}
                   writesDisabled={!consolidation?.can_write}
                   onChanged={updateEvidenceFlag}
                   onOpenNode={openNode}

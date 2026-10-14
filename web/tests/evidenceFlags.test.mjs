@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createServer } from "vite";
 
-test("flag rows expose state actions and omit absent, retired, and dismissed records", async () => {
+test("flag rows keep open records, mark only current Evidence, and offer resolvable sources", async () => {
   const server = await createServer({
     configFile: false,
     root: new URL("..", import.meta.url).pathname,
@@ -13,9 +13,10 @@ test("flag rows expose state actions and omit absent, retired, and dismissed rec
     const { evidenceFlagRows } = await server.ssrLoadModule("/src/projects/evidenceFlags.ts");
     const node = { id: "e1", type: "evidence", validity: "valid" };
     const base = { evidence_id: "e1", state: "open", source: null };
+    const repositories = [{ alias: "repo", path: "/work/repo" }];
     const rows = evidenceFlagRows(
       [
-        { ...base, flag_id: "open" },
+        { ...base, flag_id: "open", source: "/host/jobs/run.log" },
         {
           ...base,
           flag_id: "addressing",
@@ -28,22 +29,18 @@ test("flag rows expose state actions and omit absent, retired, and dismissed rec
         { ...base, flag_id: "retired", evidence_id: "e2" },
       ],
       { e1: node, e2: { ...node, id: "e2", validity: "superseded" } },
-    );
-    assert.equal(rows.length, 2);
-    assert.deepEqual(
-      rows.map(({ flag }) => [flag.flag_id, flag.state]),
-      [
-        ["open", "open"],
-        ["addressing", "addressing"],
-      ],
+      repositories,
     );
     assert.deepEqual(
-      rows.map(({ actions }) => actions),
+      rows.map(({ flag, node, actions }) => [flag.flag_id, node?.id ?? null, actions]),
       [
-        ["address", "open_evidence", "dismiss"],
-        ["open_chat", "open_evidence", "open_source", "dismiss"],
+        ["open", "e1", ["address", "open_evidence", "dismiss"]],
+        ["addressing", "e1", ["open_chat", "open_evidence", "open_source", "dismiss"]],
+        ["missing", null, ["dismiss"]],
+        ["retired", null, ["dismiss"]],
       ],
     );
+    assert.deepEqual(rows[1].source, { path: "/work/repo/log", line: 4 });
   } finally {
     await server.close();
   }

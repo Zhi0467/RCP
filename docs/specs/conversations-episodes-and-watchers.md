@@ -67,8 +67,9 @@ handoff correction loop, without another invocation, budget, or repeated operati
 work. If still invalid or absent, it records `not_stated` without failing the turn.
 Recorded-result recovery cannot launch a correction and records `not_stated` when
 no valid outcome is available. Task results and assistant transcript messages carry
-`turn_outcome`; user messages and non-Work turns have no outcome. The outcome is
-independent of the graph receipt. Honest partial or couldn't-do-it results are good
+`turn_outcome`; user messages and non-Work turns have no outcome. Project transfer
+carries it in the transcript only; transfer task records omit it so the record
+schema version stays unchanged. The outcome is independent of the graph receipt. Honest partial or couldn't-do-it results are good
 results; done must be backed by what the turn ran or read. Unknowns are stated once,
 plainly, rather than hedging every sentence.
 

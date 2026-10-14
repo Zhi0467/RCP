@@ -1,16 +1,14 @@
 import { ExternalLink, MessageSquare, RotateCw, X } from "lucide-react";
 import { useRef, useState } from "react";
-import type { EvidenceFlag, GraphNode, Repository } from "../core/types";
+import type { EvidenceFlag, GraphNode } from "../core/types";
 import { addressEvidenceFlag, dismissEvidenceFlag } from "../core/api";
 import { openRepositoryFile } from "../artifacts/artifactViewerModel";
-import { resolveRepositoryFileHref } from "../core/repositoryFileLinks";
 import type { EvidenceFlagAction, EvidenceFlagRow } from "./evidenceFlags";
 
 interface Props {
   apiBase: string;
   projectId: string;
   rows: EvidenceFlagRow[];
-  repositories: Repository[];
   writesDisabled: boolean;
   onChanged: (flag: EvidenceFlag) => void;
   onOpenNode: (node: GraphNode) => void;
@@ -38,13 +36,12 @@ function FlagRow({
   row,
   apiBase,
   projectId,
-  repositories,
   writesDisabled,
   onChanged,
   onOpenNode,
   onOpenChat,
 }: Props & { row: EvidenceFlagRow }) {
-  const { flag, node, actions } = row;
+  const { flag, node, title, source, actions } = row;
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<{ action: EvidenceFlagAction; message: string } | null>(
     null,
@@ -67,18 +64,10 @@ function FlagRow({
         onChanged((await dismissEvidenceFlag(apiBase, flag.flag_id)).flag);
       } else if (action === "open_chat") {
         if (flag.chat_id) onOpenChat(flag.chat_id);
-      } else if (action === "open_evidence") {
+      } else if (action === "open_evidence" && node) {
         onOpenNode(node);
-      } else if (action === "open_source" && flag.source) {
-        const source = flag.source;
-        const repository = repositories.find((repo) => source.startsWith(`${repo.alias}/`));
-        const href =
-          !source.startsWith("/") && repository
-            ? `${repository.path.replace(/\/+$/, "")}/${source.slice(repository.alias.length + 1)}`
-            : source;
-        const resolution = resolveRepositoryFileHref(href, repositories);
-        if (resolution.kind === "error") throw new Error(resolution.message);
-        openRepositoryFile({ projectId, ...resolution.target });
+      } else if (action === "open_source" && source) {
+        openRepositoryFile({ projectId, ...source });
       }
     } catch (error) {
       setFailure({ action, message: error instanceof Error ? error.message : String(error) });
@@ -96,7 +85,7 @@ function FlagRow({
         <span className="eyebrow">{KIND_LABELS[flag.kind]}</span>
         <span className="mono">{flag.occurrence_date}</span>
       </div>
-      <h3>{node.title}</h3>
+      <h3>{title}</h3>
       <p className="evidence-flag-finding">{flag.finding}</p>
       <div className="card-actions">
         {actions.map((action) => {
