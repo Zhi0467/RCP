@@ -13,11 +13,11 @@ function Fixture() {
   const pin = pins.find((p) => p.artifact_id === active);
   return (
     <>
-      <div className="research-subpanel" role="tablist">
-        <button role="tab" aria-selected={!pin} onClick={() => select(null)}>
-          Research
+      <div className="artifacts-subnav" role="group">
+        <button aria-pressed={!pin} onClick={() => select(null)}>
+          Files
         </button>
-        <button role="tab">DAG</button>
+        <button aria-pressed={false}>Paper</button>
         {pins.map((p) => (
           <PinnedViewTab
             key={p.artifact_id}
@@ -26,7 +26,6 @@ function Fixture() {
             pin={p}
             active={active === p.artifact_id}
             onSelect={() => select(p.artifact_id)}
-            onUnpin={() => select(null)}
           />
         ))}
       </div>

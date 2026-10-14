@@ -47,16 +47,16 @@ test("pins share refresh, mount only the active version, open native nodes, and 
       });
     });
     await page.goto("http://127.0.0.1:8433/tests/fixtures/pinnedViews.html");
-    const tabs = page.locator('.research-pinned-tab [role="tab"]');
+    const tabs = page.locator(".pinned-view-tab > button:first-child");
     await tabs.first().waitFor();
     assert.equal(await page.locator("iframe").count(), 0);
     await tabs.first().click();
-    await page.frameLocator(".pinned-research-view iframe").locator("button").click();
+    await page.frameLocator(".pinned-view iframe").locator("button").click();
     await page.waitForFunction(() => document.body.dataset.node === "n");
     assert.equal(await page.locator("iframe").count(), 1);
     for (const next of ["v2", "v1"]) {
       await page.evaluate(
-        () => (window.previousFrame = document.querySelector(".pinned-research-view iframe")),
+        () => (window.previousFrame = document.querySelector(".pinned-view iframe")),
       );
       version = next;
       await page.evaluate(
@@ -67,12 +67,12 @@ test("pins share refresh, mount only the active version, open native nodes, and 
         next,
       );
       await page.waitForFunction(
-        () => document.querySelector(".pinned-research-view iframe") !== window.previousFrame,
+        () => document.querySelector(".pinned-view iframe") !== window.previousFrame,
       );
-      await page.frameLocator(".pinned-research-view iframe").locator("button").waitFor();
+      await page.frameLocator(".pinned-view iframe").locator("button").waitFor();
     }
     const layout = await page.evaluate(() => {
-      const strip = document.querySelector(".research-subpanel");
+      const strip = document.querySelector(".artifacts-subnav");
       return {
         page: document.documentElement.scrollWidth,
         width: innerWidth,
@@ -84,9 +84,9 @@ test("pins share refresh, mount only the active version, open native nodes, and 
       };
     });
     assert.deepEqual(layout, { page: 390, width: 390, scroll: true, targets: true, nested: 0 });
-    await page.locator(".research-unpin").first().click();
-    await page.waitForFunction(() => !document.querySelector(".pinned-research-view"));
-    assert.equal(await page.locator('[role="tab"][aria-selected="true"]').count(), 1);
+    await page.locator(".pinned-view-unpin").first().click();
+    await page.waitForFunction(() => !document.querySelector(".pinned-view"));
+    assert.equal(await page.locator('.artifacts-subnav button[aria-pressed="true"]').count(), 1);
     await page.evaluate(async () =>
       (await import("/src/artifacts/artifactViewerModel.ts")).openArtifact({
         projectId: "project",
@@ -98,7 +98,7 @@ test("pins share refresh, mount only the active version, open native nodes, and 
         (response) =>
           response.request().method() === "POST" && response.url().endsWith("/research-views"),
       ),
-      page.locator(".research-pin-action").click(),
+      page.locator(".pin-view-action").click(),
     ]);
     assert.deepEqual(errors, []);
   } finally {

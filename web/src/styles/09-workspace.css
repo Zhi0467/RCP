@@ -599,8 +599,7 @@
   max-width: 1180px;
   padding: 0 42px;
 }
-.research-subpanel > button,
-.research-pinned-tab button {
+.research-subpanel > button {
   align-items: center;
   background: transparent;
   border: 1px solid transparent;
@@ -613,13 +612,11 @@
   min-height: 29px;
   padding: 0 9px;
 }
-.research-subpanel > button:hover,
-.research-pinned-tab button:hover {
+.research-subpanel > button:hover {
   background: var(--surface);
   color: var(--ink);
 }
-.research-subpanel > button.active,
-.research-pinned-tab button.active {
+.research-subpanel > button.active {
   background: var(--surface);
   border-color: var(--line-strong);
   color: var(--cobalt-dark);
@@ -1581,42 +1578,45 @@ a.digest-title:hover {
   min-height: 0;
 }
 
-.research-subpanel {
+.artifacts-subnav {
   overflow-x: auto;
   min-width: 0;
-  width: 100%;
-  box-sizing: border-box;
 }
-.research-subpanel > button,
-.research-pinned-tab {
+.artifacts-subnav > button,
+.pinned-view-tab {
   flex: 0 0 auto;
 }
-.research-pinned-tab {
+.pinned-view-tab {
   display: flex;
   align-items: center;
+  gap: 2px;
 }
-.research-pinned-tab [role="tab"] {
+.pinned-view-tab > button:first-child {
   max-width: 200px;
 }
-.research-pinned-tab [role="tab"] span {
+.pinned-view-tab > button:first-child span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.research-subpanel.failed,
-.research-pinned-tab.failed,
-.pinned-research-view.failed {
+.pinned-view-tab .pinned-view-unpin {
+  border-color: transparent;
+  padding: 4px 6px;
+}
+.artifacts-subnav.failed,
+.pinned-view-tab.failed,
+.pinned-view.failed {
   border: 1px solid var(--danger);
 }
-.pinned-research-view {
+.pinned-view {
   position: relative;
-  margin: 30px auto 0;
+  margin: 12px auto 0;
   width: 100%;
   max-width: 1180px;
-  height: max(240px, calc(100dvh - 240px));
+  height: max(240px, calc(100dvh - 200px));
   max-height: 100dvh;
 }
-.pinned-research-view iframe {
+.pinned-view iframe {
   display: block;
   width: 100%;
   height: 100%;
@@ -1629,14 +1629,14 @@ a.digest-title:hover {
   z-index: 1;
 }
 @media (max-width: 560px) {
-  .research-subpanel > button,
-  .research-pinned-tab button,
-  .research-pin-action,
+  .artifacts-subnav > button,
+  .pinned-view-tab button,
+  .pin-view-action,
   .pinned-view-retry {
     min-height: 44px;
     min-width: 44px;
   }
-  .pinned-research-view {
+  .pinned-view {
     height: max(240px, calc(100dvh - 220px));
   }
 }

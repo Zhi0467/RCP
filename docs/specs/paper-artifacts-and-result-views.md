@@ -144,8 +144,9 @@ from its exact child, and the shell forwards only ids in the last delivered
 graph. A pinned view opens RCP's own node panel; elsewhere it is ignored. The
 page never receives a reply.
 
-A member may pin an HTML artifact as a Research tab for its own bound graph
-target. Pins are personal, shown only while that target is selected, bounded by
+A member may pin an HTML artifact into the Artifacts switch, after Files | Paper,
+for its own bound graph target. Pins are personal, shown only while that target
+is selected, bounded by
 `RESEARCH_VIEW_PIN_LIMIT`, and always show the current version. Pinning keeps
 the artifact in the same transaction; unpinning deletes only the pin. Pins are
 not carried by cross-space transfer.

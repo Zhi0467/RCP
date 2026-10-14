@@ -465,15 +465,25 @@ function navItemActive(item: AppView, view: AppView): boolean {
 
 function ArtifactsSubnav({
   view,
+  filesActive = true,
   paperUnsynced,
+  failed = false,
   onChange,
+  children,
 }: {
   view: AppView;
+  filesActive?: boolean;
   paperUnsynced: boolean;
+  failed?: boolean;
   onChange: (view: AppView) => void;
+  children?: React.ReactNode;
 }) {
   return (
-    <div className="artifacts-subnav" role="group" aria-label="Artifacts sections">
+    <div
+      className={`artifacts-subnav${failed ? " failed" : ""}`}
+      role="group"
+      aria-label="Artifacts sections"
+    >
       {(
         [
           ["artifacts", "Files"],
@@ -483,7 +493,7 @@ function ArtifactsSubnav({
         <button
           key={target}
           type="button"
-          aria-pressed={view === target}
+          aria-pressed={view === target && (target !== "artifacts" || filesActive)}
           onClick={() => onChange(target)}
         >
           {target === "paper" ? <FileText size={14} /> : <Files size={14} />}
@@ -491,6 +501,7 @@ function ArtifactsSubnav({
           {target === "paper" && paperUnsynced && <small>1</small>}
         </button>
       ))}
+      {children}
     </div>
   );
 }
@@ -961,7 +972,7 @@ function MemberApp({
   });
   // Pins are fetched only where their tabs are shown.
   const pinsProfile =
-    backendSessionReady && projectId && (view === "scientific" || view === "dag")
+    backendSessionReady && projectId && view === "artifacts"
       ? researchViewsProfile(projectId, pinBranchId)
       : null;
   const pinsResource = useResource("research-view-pins", pinsProfile);
@@ -1079,9 +1090,8 @@ function MemberApp({
   useEffect(() => {
     if (pinSelection?.scope === pinScope && pinsResource.value && !activePin) {
       setPinSelection(null);
-      changeView("scientific");
     }
-  }, [pinSelection, pinScope, pinsResource.value, activePin, changeView]);
+  }, [pinSelection, pinScope, pinsResource.value, activePin]);
   const graphPath = useCallback((path: string) => graphTargetUrl(path, graphTarget), [graphTarget]);
   const isActiveGraph = useCallback(
     (id: string) =>
@@ -4723,54 +4733,25 @@ function MemberApp({
           }
         >
           {(view === "scientific" || view === "dag") && (
-            <div
-              className={`research-subpanel${pinsResource.error ? " failed" : ""}`}
-              role="tablist"
-              aria-label="Research panels"
-            >
+            <div className="research-subpanel" role="tablist" aria-label="Research panels">
               <button
                 type="button"
                 role="tab"
-                aria-selected={view === "scientific" && !activePin}
-                className={view === "scientific" && !activePin ? "active" : ""}
-                onClick={() => {
-                  setPinSelection(null);
-                  changeView("scientific");
-                }}
+                aria-selected={view === "scientific"}
+                className={view === "scientific" ? "active" : ""}
+                onClick={() => changeView("scientific")}
               >
                 <GitBranch size={14} /> Research
               </button>
               <button
                 type="button"
                 role="tab"
-                aria-selected={view === "dag" && !activePin}
-                className={view === "dag" && !activePin ? "active" : ""}
-                onClick={() => {
-                  setPinSelection(null);
-                  changeView("dag");
-                }}
+                aria-selected={view === "dag"}
+                className={view === "dag" ? "active" : ""}
+                onClick={() => changeView("dag")}
               >
                 <Network size={14} /> DAG
               </button>
-              {pins.map((pin) => (
-                <PinnedViewTab
-                  key={`${pinScope}:${pin.artifact_id}`}
-                  projectId={project.id}
-                  branchId={pinBranchId}
-                  pin={pin}
-                  active={activePin?.artifact_id === pin.artifact_id}
-                  onSelect={() => setPinSelection({ scope: pinScope, id: pin.artifact_id })}
-                />
-              ))}
-              {Boolean(pinsResource.error) && (
-                <button
-                  aria-label="Retry pinned views"
-                  title={errorMessage(pinsResource.error)}
-                  onClick={() => pinsProfile && store.invalidate(resourceKeyId(pinsProfile.key))}
-                >
-                  <RefreshCw size={14} />
-                </button>
-              )}
             </div>
           )}
           {view === "overview" && (
@@ -4852,22 +4833,7 @@ function MemberApp({
               />
             </div>
           )}
-          {(view === "scientific" || view === "dag") && activePin && (
-            <PinnedView
-              key={`${pinScope}:${activePin.artifact_id}`}
-              projectId={project.id}
-              branchId={pinBranchId}
-              pin={activePin}
-              nodes={presentedGraph.nodes}
-              ready={
-                projectReconciliation === "authoritative" &&
-                project.id === projectId &&
-                sameGraphTarget(project.graph_target, graphTarget)
-              }
-              onOpenNode={openNodeById}
-            />
-          )}
-          {view === "scientific" && !activePin && (
+          {view === "scientific" && (
             <ScientificView
               {...graphEditingProps}
               graph={presentedGraph}
@@ -4876,7 +4842,7 @@ function MemberApp({
               onSelectNode={openNode}
             />
           )}
-          {view === "dag" && !activePin && (
+          {view === "dag" && (
             <DagView
               key={graphSessionKey(project.id, graphTarget)}
               graphTarget={graphTarget}
@@ -4897,16 +4863,57 @@ function MemberApp({
             <div className="artifacts-shell">
               <ArtifactsSubnav
                 view={view}
+                filesActive={!activePin}
                 paperUnsynced={paper.sync_state !== "synced"}
-                onChange={changeView}
-              />
-              <Artifacts
-                graphRefs={projectGraphRefs ?? null}
-                key={project.id}
-                projectId={project.id}
-                nodeTitle={(nodeId) => presentedGraph.nodes[nodeId]?.title ?? null}
-                onOpenNode={openNodeById}
-              />
+                failed={Boolean(pinsResource.error)}
+                onChange={(next) => {
+                  setPinSelection(null);
+                  changeView(next);
+                }}
+              >
+                {pins.map((pin) => (
+                  <PinnedViewTab
+                    key={`${pinScope}:${pin.artifact_id}`}
+                    projectId={project.id}
+                    branchId={pinBranchId}
+                    pin={pin}
+                    active={activePin?.artifact_id === pin.artifact_id}
+                    onSelect={() => setPinSelection({ scope: pinScope, id: pin.artifact_id })}
+                  />
+                ))}
+                {Boolean(pinsResource.error) && (
+                  <button
+                    aria-label="Retry pinned views"
+                    title={errorMessage(pinsResource.error)}
+                    onClick={() => pinsProfile && store.invalidate(resourceKeyId(pinsProfile.key))}
+                  >
+                    <RefreshCw size={14} />
+                  </button>
+                )}
+              </ArtifactsSubnav>
+              {activePin ? (
+                <PinnedView
+                  key={`${pinScope}:${activePin.artifact_id}`}
+                  projectId={project.id}
+                  branchId={pinBranchId}
+                  pin={activePin}
+                  nodes={presentedGraph.nodes}
+                  ready={
+                    projectReconciliation === "authoritative" &&
+                    project.id === projectId &&
+                    sameGraphTarget(project.graph_target, graphTarget)
+                  }
+                  onOpenNode={openNodeById}
+                />
+              ) : (
+                <Artifacts
+                  graphRefs={projectGraphRefs ?? null}
+                  key={project.id}
+                  projectId={project.id}
+                  nodeTitle={(nodeId) => presentedGraph.nodes[nodeId]?.title ?? null}
+                  onOpenNode={openNodeById}
+                />
+              )}
             </div>
           )}
           {view === "terminals" && <Terminals key={project.id} projectId={project.id} />}

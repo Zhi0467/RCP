@@ -143,7 +143,7 @@ addEventListener('message', ({data}) => {
 ```
 
 A node click opens RCP's native node panel only when this artifact is the active
-pinned Research tab. Other viewers ignore it. This one-way action returns no
+pinned page in Artifacts. Other viewers ignore it. This one-way action returns no
 acknowledgement and grants no request capability.
 
 ## Episode progress

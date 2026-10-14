@@ -257,9 +257,9 @@ export function ArtifactViewer() {
         )}
         {state?.can_pin && (
           <button
-            className="artifact-viewer-control research-pin-action"
-            aria-label="Pin in Research"
-            title="Pin in Research"
+            className="artifact-viewer-control pin-view-action"
+            aria-label="Pin in Artifacts"
+            title="Pin in Artifacts"
             aria-pressed={state.pinned}
             style={
               pinFailed && !state.pinned ? { borderColor: "var(--danger, #b42318)" } : undefined

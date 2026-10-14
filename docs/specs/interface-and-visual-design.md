@@ -49,11 +49,11 @@ magnifies the page without resizing RCP windows. Verify at 390px.
 
 No wordmark, logo, or revision label sits beside the project name. Group labelled
 Sync/Ask together and icon-only History/Refresh together. Agent tasks are
-icon-only and accessible. Inbox carries a colored count; DAG and the member's pinned views are
-tabs under Research. On phones that tab strip scrolls within its own width; pin
-titles truncate and unpin is its own icon button.
+icon-only and accessible. Inbox carries a colored count; DAG is under Research.
 Paper is under Artifacts' Files | Paper switch, retaining route `paper` and an
-unsynced badge on Artifacts. Destination order ends Terminals, Agents, Settings.
+unsynced badge on Artifacts. The member's pinned pages follow Paper in that
+switch; on phones it scrolls within its own width, pin titles truncate, and
+unpin is its own icon button. Destination order ends Terminals, Agents, Settings.
 
 At widths <=560px, one top bar holds Back, project name (opens the project dock),
 Sync only for staged changes, and a labelled-row ⋯ menu. Bottom tabs show Overview,

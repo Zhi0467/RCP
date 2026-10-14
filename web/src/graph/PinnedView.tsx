@@ -27,7 +27,7 @@ export function PinnedView({
   const frame = useRef<HTMLIFrameElement>(null);
   const { store } = useRefreshRuntime();
   const profile = artifactStateProfile(projectId, pin.artifact_id);
-  const resource = useResource("pinned-research-view", profile);
+  const resource = useResource("pinned-view", profile);
   const state = resource.value;
   useEffect(() => {
     const receive = (event: MessageEvent) => {
@@ -49,7 +49,7 @@ export function PinnedView({
   }, [ready, state, branchId, pin.artifact_id, nodes, onOpenNode]);
   return (
     <div
-      className={`pinned-research-view${resource.error ? " failed" : ""}`}
+      className={`pinned-view${resource.error ? " failed" : ""}`}
       role="tabpanel"
       aria-label={pin.title}
     >
@@ -108,18 +108,13 @@ export function PinnedViewTab({
     }
   };
   return (
-    <div className={`research-pinned-tab${error ? " failed" : ""}`} role="presentation">
-      <button
-        role="tab"
-        aria-selected={active}
-        className={active ? "active" : ""}
-        title={pin.title}
-        onClick={onSelect}
-      >
+    <div className={`pinned-view-tab${error ? " failed" : ""}`}>
+      <button type="button" aria-pressed={active} title={pin.title} onClick={onSelect}>
         <span>{pin.title}</span>
       </button>
       <button
-        className="research-unpin"
+        type="button"
+        className="pinned-view-unpin"
         disabled={busy}
         aria-label={error ? `Retry unpin ${pin.title}` : `Unpin ${pin.title}`}
         title={error || `Unpin ${pin.title}`}
