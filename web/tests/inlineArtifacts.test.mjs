@@ -21,7 +21,7 @@ const { MarkdownAnswer } = await server.ssrLoadModule("/src/core/chatMarkdown.ts
 const {
   INLINE_ARTIFACT_MAX_HEIGHT,
   ARTIFACT_ERROR_MAX_CHARS,
-  inlineArtifactFor,
+  turnArtifactFor,
   inlineArtifactNames,
   inlineViewerUrl,
   isInlineViewable,
@@ -54,7 +54,10 @@ test("a reply embeds the artifacts its own turn wrote, by image syntax only", ()
     `![with line](${dir}/notes.md:4)`,
     "![remote](https://example.com/x.png)",
   ].join("\n\n");
-  assert.deepEqual([...inlineArtifactNames(text, "op-1")].sort(), ["breakout.html", "loss.svg"]);
+  assert.deepEqual([...inlineArtifactNames(text, "op-1", [])].sort(), [
+    "breakout.html",
+    "loss.svg",
+  ]);
 });
 
 test("syntax that renders no image embeds nothing, so the card stays", () => {
@@ -67,14 +70,14 @@ test("syntax that renders no image embeds nothing, so the card stays", () => {
     "",
     "[game]: " + dir + "/referenced.html",
   ].join("\n\n");
-  assert.deepEqual([...inlineArtifactNames(quoted, "op-1")], ["referenced.html"]);
+  assert.deepEqual([...inlineArtifactNames(quoted, "op-1", [])], ["referenced.html"]);
 });
 
 test("a repeated reference label embeds its first definition, as it renders", () => {
   const text = ["![Plot][p]", "[p]: " + dir + "/first.svg", "[p]: " + dir + "/second.svg"].join(
     "\n\n",
   );
-  assert.deepEqual([...inlineArtifactNames(text, "op-1")], ["first.svg"]);
+  assert.deepEqual([...inlineArtifactNames(text, "op-1", [])], ["first.svg"]);
 });
 
 test("only artifacts the viewer shows render in place", () => {
@@ -85,12 +88,36 @@ test("only artifacts the viewer shows render in place", () => {
   assert.equal(isInlineViewable(artifact("a.pdf", "pdf")), false);
   assert.equal(isInlineViewable(artifact("a.bin", "file")), false);
   const artifacts = [artifact("breakout.html", "html")];
-  assert.equal(inlineArtifactFor(`${dir}/breakout.html`, "op-1", artifacts).artifact, artifacts[0]);
-  assert.deepEqual(inlineArtifactFor(`${dir}/missing.html`, "op-1", artifacts), {
+  const own = (id) => (id === "op-1" ? artifacts : undefined);
+  assert.equal(turnArtifactFor(`${dir}/breakout.html`, "op-1", own).artifact, artifacts[0]);
+  assert.deepEqual(turnArtifactFor(`${dir}/missing.html`, "op-1", own), {
     name: "missing.html",
+    taskId: "op-1",
     artifact: null,
+    loading: false,
   });
-  assert.equal(inlineArtifactFor("https://example.com/a.png", "op-1", artifacts), null);
+  assert.equal(turnArtifactFor("https://example.com/a.png", "op-1", own), null);
+});
+
+test("a reply resolves any turn's file to the turn that owns it", () => {
+  const earlier = "/stage/chats/c/turns/op-0/artifacts";
+  const edited = artifact("depth.html", "html", { turn_folder: "op-0" });
+  const original = artifact("depth.html", "html", { artifact_id: "b".repeat(24) });
+  const other = artifact("other.html", "html", { artifact_id: "c".repeat(24) });
+  const tasks = { "op-0": [original, other], "op-1": [edited] };
+  const loaded = (id) => tasks[id];
+  // A new version this turn published stays this turn's own artifact.
+  assert.equal(turnArtifactFor(`${earlier}/depth.html`, "op-1", loaded).artifact, edited);
+  // Any other file of an earlier turn resolves through that turn's descriptors.
+  const cited = turnArtifactFor(`${earlier}/other.html`, "op-1", loaded);
+  assert.equal(cited.taskId, "op-0");
+  assert.equal(cited.artifact, other);
+  // The cited turn loads on demand.
+  const unloaded = (id) => (id === "op-1" ? [] : undefined);
+  assert.equal(turnArtifactFor(`${earlier}/other.html`, "op-1", unloaded).loading, true);
+  // Only this turn's own artifacts leave its card list.
+  const text = `![Depth](${earlier}/depth.html)\n\n![Other](${earlier}/other.html)`;
+  assert.deepEqual([...inlineArtifactNames(text, "op-1", [edited])], ["depth.html"]);
 });
 
 test("the inline shell is the viewer URL in its inline presentation", () => {

@@ -109,7 +109,7 @@ import {
   type InlineArtifactSelectionEvent,
 } from "../artifacts/InlineArtifact";
 import {
-  inlineArtifactFor,
+  turnArtifactFor,
   inlineArtifactNames,
   isInlineViewable,
 } from "../artifacts/inlineArtifacts";
@@ -2204,25 +2204,32 @@ export function NodeChat({
       // error, because the reader must not be handed a guess about which one won.
       const location = resolution.reason === "no-match" ? turnArtifactLocation(href) : null;
       if (location) {
-        const known = relatedTasks.find((candidate) => candidate.operation_id === taskId);
-        // An older answer's task has aged out of the recent list, so fetch the exact
-        // task rather than refusing a citation the transcript still displays.
-        const task = known ?? (await onRefreshTask(taskId).catch(() => null));
-        // The turn's own folder, or the tracked file of an earlier artifact this turn
-        // published a version of.
-        const artifact = task?.result?.artifacts?.find(
-          (candidate) =>
-            candidate.name === location.name &&
-            (location.folder === taskId || candidate.turn_folder === location.folder),
-        );
-        if (artifact) {
+        // An older answer's task, or the turn it cites, has aged out of the recent
+        // list, so fetch the exact task rather than refusing a citation the
+        // transcript still displays.
+        const loaded = new Map<string, AgentArtifactDescriptor[]>();
+        const load = async (id: string) => {
+          const task =
+            relatedTasks.find((candidate) => candidate.operation_id === id) ??
+            (await onRefreshTask(id).catch(() => null));
+          loaded.set(id, task ? taskArtifacts(task) : []);
+        };
+        await load(taskId);
+        let found = turnArtifactFor(href, taskId, (id) => loaded.get(id));
+        if (found?.loading) {
+          await load(found.taskId);
+          found = turnArtifactFor(href, taskId, (id) => loaded.get(id));
+        }
+        const artifact = found?.artifact;
+        if (found && artifact) {
+          const owner = found.taskId;
           setRepositoryFileErrors((current) => withoutMapKey(current, messageId));
           if (artifact.can_open || (desktop && artifact.view === "pdf" && artifact.can_download)) {
-            await openArtifact(taskId, artifact);
+            await openArtifact(owner, artifact);
           } else {
-            if (!known)
+            if (!relatedTasks.some((candidate) => candidate.operation_id === owner))
               await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-            const card = document.getElementById(`artifact-${taskId}-${artifact.artifact_id}`);
+            const card = document.getElementById(`artifact-${owner}-${artifact.artifact_id}`);
             card?.scrollIntoView({ block: "nearest" });
             card?.focus();
           }
@@ -2273,48 +2280,50 @@ export function NodeChat({
     return Array.isArray(aged) ? aged : undefined;
   };
 
+  // A task's descriptors from the recent list or the on-demand cache; undefined until loaded.
+  const knownTaskArtifacts = (taskId: string) => {
+    const task = relatedTasks.find((candidate) => candidate.operation_id === taskId);
+    if (task) return taskArtifacts(task);
+    const aged = agedInlineArtifacts.get(taskId);
+    return Array.isArray(aged) ? aged : undefined;
+  };
+
   const renderInlineArtifact = (
     taskId: string,
     artifacts: AgentArtifactDescriptor[] | undefined,
     src: string,
     alt: string,
   ) => {
-    // An older reply's task has aged out of the recent list, so fetch the exact
-    // task before deciding the artifact is missing, as file citations do.
-    const aged =
-      artifacts === undefined && !relatedTasks.some((task) => task.operation_id === taskId)
-        ? agedInlineArtifacts.get(taskId)
-        : undefined;
-    const found = inlineArtifactFor(src, taskId, Array.isArray(aged) ? aged : artifacts);
+    const found = turnArtifactFor(src, taskId, (id) =>
+      id === taskId && artifacts !== undefined ? artifacts : knownTaskArtifacts(id),
+    );
     if (!found) return null;
     const { artifact } = found;
-    if (
-      !artifact &&
-      artifacts === undefined &&
-      !relatedTasks.some((task) => task.operation_id === taskId) &&
-      !Array.isArray(aged)
-    )
+    // An older reply's task, or the earlier turn it cites, has aged out of the recent
+    // list, so fetch the exact task before deciding the artifact is missing.
+    if (found.loading)
       return (
         <InlineArtifactLoading
           name={found.name}
           onLoad={() => {
-            if (agedInlineArtifacts.has(taskId)) return;
-            setAgedInlineArtifacts((current) => new Map(current).set(taskId, "loading"));
-            void onRefreshTask(taskId)
+            const owner = found.taskId;
+            if (agedInlineArtifacts.has(owner)) return;
+            setAgedInlineArtifacts((current) => new Map(current).set(owner, "loading"));
+            void onRefreshTask(owner)
               .then(taskArtifacts)
               .catch((): AgentArtifactDescriptor[] => [])
               .then((loaded) =>
-                setAgedInlineArtifacts((current) => new Map(current).set(taskId, loaded)),
+                setAgedInlineArtifacts((current) => new Map(current).set(owner, loaded)),
               );
           }}
         />
       );
     // A PDF or download-only file keeps its card below the reply.
     if (artifact && !isInlineViewable(artifact))
-      return <InlineArtifactMissing name={found.name} attached />;
+      return <InlineArtifactMissing name={found.name} attached={found.taskId === taskId} />;
     if (!artifact || !artifact.available || !artifact.can_open)
       return <InlineArtifactMissing name={found.name} />;
-    return renderArtifactPlayer(taskId, artifact, alt.trim() || artifact.name);
+    return renderArtifactPlayer(found.taskId, artifact, alt.trim() || artifact.name);
   };
 
   const renderArtifactPlayer = (
@@ -2684,7 +2693,9 @@ export function NodeChat({
                   isInlineViewable(artifact) &&
                   artifact.available &&
                   artifact.can_open &&
-                  inlineArtifactNames(line.text, line.taskId).has(artifact.name)
+                  inlineArtifactNames(line.text, line.taskId, lineArtifacts(line) ?? []).has(
+                    artifact.name,
+                  )
                 )
                   return null;
                 if (artifact.view === "video" && artifact.available && artifact.can_open)

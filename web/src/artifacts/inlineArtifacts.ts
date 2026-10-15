@@ -3,7 +3,7 @@ import remarkParse from "remark-parse";
 import { unified } from "unified";
 import { ANSWER_SYNTAX_PLUGINS } from "../core/chatMarkdown";
 import type { AgentArtifactDescriptor, ArtifactSelection } from "../core/types";
-import { turnArtifactName } from "../core/repositoryFileLinks";
+import { turnArtifactLocation } from "../core/repositoryFileLinks";
 
 // Mirror ARTIFACT_INLINE_MAX_HEIGHT_PX and ARTIFACT_INLINE_INITIAL_HEIGHT_PX
 // in src/rcp/limits.py.
@@ -12,12 +12,16 @@ export const INLINE_ARTIFACT_INITIAL_HEIGHT = 320;
 // Mirror ARTIFACT_ERROR_MAX_CHARS in src/rcp/limits.py.
 export const ARTIFACT_ERROR_MAX_CHARS = 1024;
 
-/** The artifact names a reply embeds in place with Markdown image syntax.
+/** The names of this turn's artifacts a reply embeds in place with Markdown image syntax.
  *
  * The reply is parsed exactly as it renders, so syntax quoted in code, inside a
  * comment, or escaped embeds nothing and keeps the artifact's card.
  */
-export function inlineArtifactNames(text: string, taskId: string): Set<string> {
+export function inlineArtifactNames(
+  text: string,
+  taskId: string,
+  artifacts: readonly AgentArtifactDescriptor[],
+): Set<string> {
   const processor = unified().use(remarkParse);
   for (const plugin of ANSWER_SYNTAX_PLUGINS) processor.use(plugin);
   const tree = processor.parse(text);
@@ -43,8 +47,8 @@ export function inlineArtifactNames(text: string, taskId: string): Set<string> {
   }
   const names = new Set<string>();
   for (const source of sources) {
-    const name = turnArtifactName(source, taskId);
-    if (name) names.add(name);
+    const found = turnArtifactFor(source, taskId, (id) => (id === taskId ? artifacts : []));
+    if (found?.taskId === taskId) names.add(found.name);
   }
   return names;
 }
@@ -54,15 +58,44 @@ export function isInlineViewable(artifact: AgentArtifactDescriptor): boolean {
   return artifact.view !== "pdf" && artifact.view !== "file";
 }
 
-/** The artifact a reply's image source names, when the turn registered one. */
-export function inlineArtifactFor(
+/** A turn file a reply cites, resolved to the turn whose descriptors own it. */
+export interface TurnArtifactTarget {
+  name: string;
+  /** The citing turn, or the cited folder's own turn. */
+  taskId: string;
+  artifact: AgentArtifactDescriptor | null;
+  /** The owning turn's descriptors are not loaded yet. */
+  loading: boolean;
+}
+
+/** The artifact a cited `.../turns/<folder>/artifacts/<name>` path names, from any turn. */
+export function turnArtifactFor(
   src: string | undefined,
   taskId: string,
-  artifacts: readonly AgentArtifactDescriptor[] | undefined,
-): { name: string; artifact: AgentArtifactDescriptor | null } | null {
-  const name = src ? turnArtifactName(src, taskId) : null;
-  if (!name) return null;
-  return { name, artifact: artifacts?.find((candidate) => candidate.name === name) ?? null };
+  artifactsOf: (taskId: string) => readonly AgentArtifactDescriptor[] | undefined,
+): TurnArtifactTarget | null {
+  const location = src ? turnArtifactLocation(src) : null;
+  if (!location) return null;
+  const { folder, name } = location;
+  const own = artifactsOf(taskId);
+  if (own === undefined) return { name, taskId, artifact: null, loading: true };
+  // This turn's own file, or an earlier turn's file it published a new version of.
+  const mine = own.find(
+    (candidate) =>
+      candidate.name === name && (folder === taskId || candidate.turn_folder === folder),
+  );
+  if (mine || folder === taskId) return { name, taskId, artifact: mine ?? null, loading: false };
+  // Any other turn's file: a turn folder is named by its turn, whose descriptors own it.
+  const theirs = artifactsOf(folder);
+  return {
+    name,
+    taskId: folder,
+    artifact:
+      theirs?.find(
+        (candidate) => candidate.name === name && (candidate.turn_folder ?? folder) === folder,
+      ) ?? null,
+    loading: theirs === undefined,
+  };
 }
 
 /** The shell entrance for a reply: the viewer URL in its inline presentation. */
