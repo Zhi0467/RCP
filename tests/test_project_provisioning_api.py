@@ -586,6 +586,8 @@ def test_repository_requests_approve_membership_truth_and_connect(tmp_path, monk
         assert _complete_ready_request(client, creation).status_code == 200
         store = app.state.background_tasks.store
         project_id = creation.proposed_project_id
+        other = store.preprovision_team_member("Other member")
+        store.seat_project_member(project_id, other.user_id, seated_by=member.user_id)
         for count_as_truth in (False, True):
             alias = "context" if not count_as_truth else "code"
             response = client.post(
@@ -600,7 +602,20 @@ def test_repository_requests_approve_membership_truth_and_connect(tmp_path, monk
                 },
             )
             assert response.status_code == 201, response.text
-            ready = _ready_repository_change(store, response.json()["request_id"])
+            path = f"/api/project-provisioning/requests/{response.json()['request_id']}"
+            assert response.json()["can_cancel"] is True
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    app.state.services.identity_access,
+                    "_trusted_principal_resolver",
+                    lambda _request, _store: other,
+                )
+                assert client.get(path).json()["can_cancel"] is False
+                assert client.post(f"{path}/cancel", json={}).status_code == 403
+                ready = _ready_repository_change(store, response.json()["request_id"])
+                assert client.get(path).json()["can_review"] is False
+                assert _complete_ready_request(client, ready).status_code == 403
+            assert client.get(path).json()["can_review"] is True
             if not count_as_truth:
                 transition = store.transition_project_provisioning_request
 
