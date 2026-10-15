@@ -26,12 +26,13 @@ export function DeleteArtifactButton({
   const [deleting, setDeleting] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const mounted = useRef(true);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // StrictMode reruns setup after cleanup, so setup restores the flag.
+    mounted.current = true;
+    return () => {
       mounted.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
   useEffect(() => {
     if (!confirming) return;
     const timer = window.setTimeout(() => setConfirming(false), DELETE_CONFIRM_MS);
