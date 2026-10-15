@@ -98,29 +98,29 @@ def hold_consolidation_additions(
     The created ids come from each applied Patch receipt, never a graph diff, and the
     keyed flags replay, so rerunning after any apply or at run settlement recovers a
     hold an interrupted process missed. A failure is recorded on the task; the Patch
-    stands. Returns False only when applied Patches exist but canonical state could
-    not be read to check them.
+    stands. Returns False when the receipts, or canonical state needed to check
+    applied Patches, could not be read.
     """
     task = store.agent_task(operation_id)
     if task is None:
         return True
     created: list[tuple[str, str]] = []
-    for receipt in store.list_consolidation_apply_receipts(operation_id):
-        result = receipt["result"] or {}
-        if result.get("status") != "ok" or result["result"].get("disposition") != "applied":
-            continue
-        patch = json.loads(receipt["patch_text"])
-        summary = patch.get("summary") if isinstance(patch.get("summary"), str) else ""
-        finding = (summary.strip().splitlines() or ["Consolidation added this Evidence."])[0]
-        created += [
-            (node["id"], finding)
-            for operation in patch.get("ops", [])
-            if operation.get("op") == "create_nodes"
-            for node in operation.get("nodes", [])
-        ]
-    if not created:
-        return True
     try:
+        for receipt in store.list_consolidation_apply_receipts(operation_id):
+            result = receipt["result"] or {}
+            if result.get("status") != "ok" or result["result"].get("disposition") != "applied":
+                continue
+            patch = json.loads(receipt["patch_text"])
+            summary = patch.get("summary") if isinstance(patch.get("summary"), str) else ""
+            finding = (summary.strip().splitlines() or ["Consolidation added this Evidence."])[0]
+            created += [
+                (node["id"], finding)
+                for operation in patch.get("ops", [])
+                if operation.get("op") == "create_nodes"
+                for node in operation.get("nodes", [])
+            ]
+        if not created:
+            return True
         state = service().history.state()
     except (KeyError, OSError, StateUnavailable, ValueError) as exc:
         store.record_agent_task_event(
@@ -148,47 +148,4 @@ def hold_consolidation_additions(
                 f"Evidence {node_id} was added but could not be held for review: {exc}",
                 level="warning",
             )
-    return True
-    try:
-        state = service.history.state()
-        receipts = store.list_consolidation_apply_receipts(operation_id)
-    except (OSError, StateUnavailable, ValueError) as exc:
-        store.record_agent_task_event(
-            operation_id,
-            f"Added Evidence could not be held for review yet: {exc}",
-            level="warning",
-        )
-        return False
-    for receipt in receipts:
-        result = receipt["result"] or {}
-        if result.get("status") != "ok" or result["result"].get("disposition") != "applied":
-            continue
-        patch = json.loads(receipt["patch_text"])
-        summary = patch.get("summary") if isinstance(patch.get("summary"), str) else ""
-        finding = (summary.strip().splitlines() or ["Consolidation added this Evidence."])[0]
-        created = [
-            node["id"]
-            for operation in patch.get("ops", [])
-            if operation.get("op") == "create_nodes"
-            for node in operation.get("nodes", [])
-        ]
-        for node_id in created:
-            if not is_current_evidence(state, node_id):
-                continue
-            try:
-                store.execute_evidence_flag_command(
-                    task.project_id,
-                    operation_id,
-                    key=f"{RCP_FLAG_KEY_PREFIX}consolidation_added:{node_id}",
-                    evidence_id=node_id,
-                    kind="consolidation_added",
-                    finding=finding[:EVIDENCE_FLAG_FINDING_MAX_CHARS],
-                    validate_evidence=lambda: state.revision,
-                )
-            except (EvidenceFlagError, ValueError) as exc:
-                store.record_agent_task_event(
-                    operation_id,
-                    f"Evidence {node_id} was added but could not be held for review: {exc}",
-                    level="warning",
-                )
     return True

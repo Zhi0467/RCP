@@ -651,7 +651,8 @@ def test_consolidation_query_baseline_is_coverage_not_session_observation():
     assert len(calls) == 1
 
 
-def test_failed_run_settlement_retries_lost_evidence_holds(runtime, monkeypatch):
+@pytest.mark.parametrize("unreadable", ["state", "receipts"])
+def test_failed_run_settlement_retries_lost_evidence_holds(runtime, monkeypatch, unreadable):
     import hashlib
 
     from rcp.core.models import Patch
@@ -685,17 +686,19 @@ def test_failed_run_settlement_retries_lost_evidence_holds(runtime, monkeypatch)
         {"status": "ok", "result": {"disposition": "applied", "revision": 2}},
     )
     runtime.store.fail_agent_task(run.operation_id, "Provider failed after Apply")
-    opened = runtime.poller.service_for
 
-    def unavailable(_project_id):
-        raise StateUnavailable("state host dropped")
+    def unavailable(*_args):
+        raise StateUnavailable("state host dropped") if unreadable == "state" else OSError
 
-    monkeypatch.setattr(runtime.poller, "service_for", unavailable)
-    runtime.poller.reconcile_outcomes()
+    with monkeypatch.context() as broken:
+        if unreadable == "state":
+            broken.setattr(runtime.poller, "service_for", unavailable)
+        else:
+            broken.setattr(runtime.store, "list_consolidation_apply_receipts", unavailable)
+        runtime.poller.reconcile_outcomes()
     assert runtime.store.consolidation_run(run.run_id).kind is None
     assert runtime.store.list_evidence_flags(run.project_id) == []
     assert runtime.store.agent_task_events(run.operation_id)[-1].level == "warning"
-    monkeypatch.setattr(runtime.poller, "service_for", opened)
     runtime.poller.reconcile_outcomes()
     assert runtime.store.consolidation_run(run.run_id).kind == "failure"
     assert [
