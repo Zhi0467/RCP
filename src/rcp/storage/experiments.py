@@ -3175,6 +3175,7 @@ class ExperimentStoreMixin(StoreMixinBase):
             JOIN episode_reports ON episode_reports.episode_id = episodes.episode_id
             WHERE episodes.project_id = ?
               AND episodes.mode = 'experiment_loop'
+              AND episode_reports.deleted_at IS NULL
               AND episodes.control_node_id = ?
               AND episodes.graph_target_json = ?
             ORDER BY episode_reports.created_at DESC, episodes.episode_id DESC
@@ -3238,7 +3239,7 @@ class ExperimentStoreMixin(StoreMixinBase):
             (episode_id,),
         ).fetchall()
         report_row = connection.execute(
-            "SELECT * FROM episode_reports WHERE episode_id = ?",
+            "SELECT * FROM episode_reports WHERE episode_id = ? AND deleted_at IS NULL",
             (episode_id,),
         ).fetchone()
         usage = connection.execute(

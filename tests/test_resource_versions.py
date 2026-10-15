@@ -419,3 +419,34 @@ def test_orchestrator_chat_invalidates_chain_root(tmp_path, owner):
             ).fetchone()[0]
             > root_before
         )
+
+
+def test_report_delete_bumps_episode_graph_and_digest(manifest, tmp_path):
+    from .helpers import create_named_app
+    from .test_episode_api import create_terminal_auto_episode
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    episode, _, report = create_terminal_auto_episode(
+        store,
+        app.state.catalog.open(project_id).history,
+        project_id,
+        episode_id="deleted-report",
+        report_html="<h1>Report</h1>",
+    )
+
+    def generations():
+        with store.connection() as connection:
+            return {
+                (row["resource"], row["entity"]): row["generation"]
+                for row in connection.execute(
+                    "SELECT * FROM resource_versions WHERE scope = ?", (project_id,)
+                )
+            }
+
+    before = generations()
+    store.delete_artifact(project_id, report.artifact_id)
+    after = generations()
+    for key in (("episodes", ""), ("episode", episode.episode_id), ("graph", ""), ("digest", "")):
+        assert after[key] > before.get(key, 0)

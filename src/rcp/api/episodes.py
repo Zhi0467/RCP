@@ -416,6 +416,7 @@ def serialize_episode(
                 recovery,
                 report_login_blocked,
                 episode_has_open_questions(store, episode.project_id, episode.episode_id),
+                has_report=report is not None,
             )
         ]
     )[episode.episode_id]
@@ -930,6 +931,7 @@ def space_auto_research_episode_projection(
                 current_control_task_id,
                 recovery,
                 has_open_questions=snapshot.has_open_questions,
+                has_report=snapshot.has_report,
             )
         ]
     )[episode.episode_id]

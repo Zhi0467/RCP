@@ -968,11 +968,15 @@ def _episode_report_viewer_response(
     wrapup = store.episode_wrapup(episode.episode_id)
     if report is None or wrapup is None or wrapup.concluding_operation_id is None:
         raise HTTPException(status_code=404, detail="Episode report not found")
+    try:
+        size_bytes = len(store.read_artifact_bytes(report.artifact_id))
+    except (KeyError, OSError) as exc:
+        raise HTTPException(status_code=410, detail="Episode report unavailable") from exc
     descriptor = AgentArtifactDescriptor(
         artifact_id=report.artifact_id,
         name="episode-report.html",
         media_type="text/html",
-        size_bytes=len(store.read_artifact_bytes(report.artifact_id)),
+        size_bytes=size_bytes,
     )
     content_url = (
         f"/api/projects/{quote(project_id, safe='')}/episodes/"
