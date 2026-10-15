@@ -69,13 +69,13 @@ Members are equal, so most actions need only project membership. The membership
 rule and the few rules that name a particular member (the requester of a
 provisioning change, the admitter of a transfer) are pure predicates in
 `rcp.policies`. Where a route, a storage transaction, and a `can_*` projection
-judge the same rule, they call the same predicate.
+judge the same rule, they call the same predicate. Queries that list a member's
+projects or a project's seats filter seats in their own SQL.
 
 Each owner still loads the facts and keeps its own check order, refusal status, and
 lifecycle conditions, so a control can be offered and still be refused (a busy
 project), or hidden while a repeat is accepted (cancelling a cancelled request). A
-predicate never replaces a human authorization snapshot, and agent capability never
-reads it.
+predicate never replaces a human authorization snapshot.
 
 **Why:** a rule written twice, once for the button and once for the server, drifts.
 

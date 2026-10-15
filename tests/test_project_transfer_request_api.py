@@ -589,6 +589,10 @@ def test_authenticated_transfer_apis_link_confirm_and_keep_raw_proofs_native(
                 ).status_code
                 == 200
             )
+            # Only the admitter's projection offers the relay its bind route admits.
+            target_path = f"/api/project-transfers/requests/{target_request['request_id']}"
+            assert bob_client.get(target_path).json()["can_relay"] is False
+            assert team_client.get(target_path).json()["can_relay"] is True
             poisoned = bob_client.post(
                 f"/api/project-transfers/requests/{target_request['request_id']}/archive",
                 json={

@@ -1743,7 +1743,9 @@ def _project_transfer_response(
         and record.source_release_receipt is None
     )
     can_relay = (record.side == "source" and record.phase == "archive_bound") or (
-        record.side == "target" and record.phase == "source_released"
+        record.side == "target"
+        and record.phase == "source_released"
+        and transfer_policy.is_admitter(record.target_admission_receipt, viewer_user_id)
     )
     can_restore_reentry = (
         record.side == "target"
