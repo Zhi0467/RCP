@@ -15,6 +15,7 @@ import { resourceKeyId } from "../core/resourceStore";
 import { useRefreshRuntime } from "../core/useResource";
 import { useProjectResource } from "../projects/projectResources";
 import { artifactsProfile } from "./artifactResources";
+import { DeleteArtifactButton } from "./DeleteArtifactButton";
 import { isDesktopRuntime, openDesktopArtifactPdf } from "../core/desktopRuntime";
 import { StoredArtifactDownload } from "./StoredArtifactDownload";
 import { EpisodeAuthor } from "../experiments/EpisodeRunControls";
@@ -186,6 +187,16 @@ export function Artifacts({
                   >
                     <ExternalLink size={14} /> Open
                   </a>
+                )}
+                {entry.can_delete && entry.artifact_id && (
+                  <DeleteArtifactButton
+                    projectId={projectId}
+                    artifactId={entry.artifact_id}
+                    label={`Delete ${entry.name}`}
+                    className="button compact secondary artifact-entry-delete"
+                    iconSize={14}
+                    onDeleted={() => store.invalidate(resourceKeyId(profile.key))}
+                  />
                 )}
               </li>
             );

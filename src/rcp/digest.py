@@ -553,7 +553,8 @@ def _present_current(store, project_id, result, state, runs) -> None:
         report_rows = {
             row[0]: (row[1], row[2])
             for row in conn.execute(
-                "SELECT report_id, artifact_id, display_title FROM episode_reports "
+                "SELECT report_id, report.artifact_id, display_title FROM episode_reports AS report "
+                "JOIN artifacts USING(artifact_id) "
                 "WHERE report_id IN (SELECT value FROM json_each(?))",
                 (json.dumps(report_ids),),
             )

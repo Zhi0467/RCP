@@ -3746,7 +3746,6 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     viewer = client.get(viewer_url)
     assert viewer.status_code == 200
     assert "rcp-artifact-context" not in viewer.text
-    assert 'id="keep"' in viewer.text
 
     legacy_preview_url = f"{base}/{by_name['preview.html']['artifact_id']}/preview"
     legacy_preview = client.get(legacy_preview_url)

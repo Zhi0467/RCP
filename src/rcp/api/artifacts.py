@@ -55,6 +55,7 @@ from rcp.storage import (
     Artifact,
     EpisodeMode,
 )
+from rcp.storage.artifacts import ArtifactDeleteRefused
 from rcp.storage.research_views import ResearchViewConflict
 from rcp.transport import StateUnavailable
 
@@ -85,6 +86,12 @@ class SavedArtifactResponse(BaseModel):
     unavailable_reason: str | None = None
     # The owning branch's display name, resolved here so the tag never guesses from a link.
     graph_branch_name: str = "main"
+    can_delete: bool = False
+
+
+def _can_delete(store: AppStore, artifact_id: str | None) -> bool:
+    artifact = store.artifact(artifact_id) if artifact_id else None
+    return artifact is not None and store.artifact_delete_refusal(artifact) is None
 
 
 def _task_artifact_episode_id(task: AgentTaskRecord) -> str | None:
@@ -294,6 +301,7 @@ def saved_artifacts(
                     can_open=projected.can_open,
                     can_download=projected.can_download,
                     download_url=f"{artifact_url}/download" if projected.can_download else None,
+                    can_delete=_can_delete(store, artifact.artifact_id),
                 )
             )
     # _validate_new_wrapup requires a concluding operation; finish_episode_report_ready
@@ -323,6 +331,7 @@ def saved_artifacts(
                 source_node_id=_source_node_id(store, project_id, origin, report.episode_id),
                 authorized_by=origin.authorized_by if origin else None,
                 viewer_url=f"{artifact_url}/viewer",
+                can_delete=_can_delete(store, stored_report.artifact_id),
             )
         )
     represented = {entry.artifact_id for entry in entries if entry.artifact_id}
@@ -357,6 +366,7 @@ def saved_artifacts(
                 can_download=True,
                 download_url=f"{artifact_url}/download",
                 can_open=view not in {"file", "pdf"},
+                can_delete=store.artifact_delete_refusal(artifact) is None,
             )
         )
     _name_artifact_branches(store, project_id, entries)
@@ -421,6 +431,7 @@ class ArtifactViewerState(BaseModel):
     viewer_url: str | None
     download_url: str
     can_keep: bool
+    can_delete: bool
     expires_at: str | None
     pin_branch_id: str | None
     pin_branch_name: str
@@ -509,6 +520,7 @@ def stored_artifact_state(
         else None,
         download_url=f"{base}/download",
         can_keep=_temporary(artifact),
+        can_delete=store.artifact_delete_refusal(artifact) is None,
         expires_at=artifact.expires_at,
     )
 
@@ -629,7 +641,6 @@ def stored_artifact_viewer(
             descriptor,
             content_url=f"{base}/content?{urlencode({'version_id': artifact.current_version})}",
             live_url=f"{base}/versions/{quote(artifact.current_version, safe='')}/live",
-            keep_url=f"{base}/keep" if _temporary(artifact) else None,
             state="temporary" if _temporary(artifact) else "kept",
             presentation=presentation,
             selectable=artifact.media_type in COMMENTABLE_MEDIA_TYPES,
@@ -709,6 +720,29 @@ def keep_stored_artifact(
     )
     _stored_artifact(store, project_id, artifact_id)
     return store.keep_artifact(artifact_id, resolved_by=human)
+
+
+@router.delete(
+    "/api/projects/{project_id}/artifacts/{artifact_id}",
+    status_code=204,
+    dependencies=[Depends(require_project_write_admission)],
+)
+def delete_stored_artifact(
+    project_id: str,
+    artifact_id: str,
+    *,
+    store: Annotated[AppStore, Depends(get_store)],
+) -> Response:
+    """Any member may delete; the artifact's other lifecycles may refuse."""
+    _stored_artifact(store, project_id, artifact_id)
+    try:
+        store.delete_artifact(project_id, artifact_id)
+    except KeyError:
+        _stored_artifact(store, project_id, artifact_id)
+        raise HTTPException(status_code=404, detail="Artifact not found") from None
+    except ArtifactDeleteRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return Response(status_code=204)
 
 
 @router.get("/api/projects/{project_id}/artifacts/{artifact_id}/download")

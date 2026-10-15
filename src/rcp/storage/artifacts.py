@@ -12,6 +12,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import ARTIFACT_MAX_VERSION_BYTES, ARTIFACT_RECENT_VERSIONS
@@ -28,6 +29,9 @@ from rcp.storage.artifact_models import (
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import ACTIVE_AGENT_TASK_STATUSES
 
+if TYPE_CHECKING:
+    from rcp.storage import AppStore
+
 _EDIT_RETENTION_STATUSES = (*sorted(ACTIVE_AGENT_TASK_STATUSES), "paused", "interrupted")
 
 _LOCKS: dict[str, threading.RLock] = {}
@@ -37,6 +41,10 @@ _CAPTURE_GUARDS: dict[str, _CaptureGuard] = {}
 
 class ArtifactByteLimitError(ValueError):
     """The retained artifact versions cannot fit within their storage byte cap."""
+
+
+class ArtifactDeleteRefused(ValueError):
+    """Another lifecycle still depends on the artifact's bytes."""
 
 
 class _CaptureGuard:
@@ -556,6 +564,30 @@ class ArtifactStoreMixin(StoreMixinBase):
                         path.unlink(missing_ok=True)
             return version
 
+    def artifact_delete_refusal(self, artifact: Artifact) -> str | None:
+        """Why removal must wait; expiry and Delete share these holds."""
+        if (
+            self.artifact_edit_operation_id(artifact.project_id, artifact.artifact_id) is not None
+            or artifact.artifact_id in self.protected_edit_artifact_ids()
+        ):
+            return "An agent turn is using this artifact."
+        store = cast("AppStore", self)
+        if store.consolidation_report_is_pending(artifact):
+            return "This consolidation report awaits review."
+        if artifact.artifact_id in store.legacy_artifact_import_ids():
+            return "This artifact is still being imported."
+        return None
+
+    def delete_artifact(self, project_id: str, artifact_id: str) -> None:
+        """Remove every version of a project artifact, permanently."""
+        with self.artifact_lock(artifact_id):
+            artifact = self.artifact(artifact_id)
+            if artifact is None or artifact.project_id != project_id:
+                raise KeyError(artifact_id)
+            if (reason := self.artifact_delete_refusal(artifact)) is not None:
+                raise ArtifactDeleteRefused(reason)
+            self._remove_artifact(artifact, "Artifact deleted.")
+
     def expire_artifacts(
         self, *, as_of: datetime | None = None, protected_artifact_ids: frozenset[str] = frozenset()
     ) -> int:
@@ -574,27 +606,60 @@ class ArtifactStoreMixin(StoreMixinBase):
                     or artifact.kept_at
                     or not artifact.expires_at
                     or datetime.fromisoformat(artifact.expires_at) > now
-                    or self.artifact_edit_operation_id(artifact.project_id, artifact_id) is not None
-                    or artifact_id in self.protected_edit_artifact_ids()
-                    or self.consolidation_report_is_pending(artifact)
+                    or self.artifact_delete_refusal(artifact) is not None
                 ):
                     continue
-                with _capture_guard(self.path.parent).deletion():
-                    with self.connection() as connection:
-                        connection.execute(
-                            "INSERT OR REPLACE INTO artifact_imports VALUES (?, ?, 'missing', 0, NULL, ?)",
-                            (artifact_id, artifact.project_id, "Artifact expired."),
-                        )
-                        for table in ("artifact_operations", "artifact_versions", "artifacts"):
-                            connection.execute(
-                                f"DELETE FROM {table} WHERE artifact_id = ?",
-                                (artifact_id,),
-                            )
-                    folder = self.path.parent / "artifacts" / artifact_id
-                    if folder.exists():
-                        shutil.rmtree(folder)
-                    removed += 1
+                self._remove_artifact(artifact, "Artifact expired.")
+                removed += 1
         return removed
+
+    def _remove_artifact(self, artifact: Artifact, reason: str) -> None:
+        """Drop an artifact under its lock, leaving a tombstone that stops re-import.
+
+        Kept chat descriptors lose their kept binding, so backup inventory and the
+        saved list stop expecting the bytes; pins go for every member.
+        """
+        artifact_id = artifact.artifact_id
+        with _capture_guard(self.path.parent).deletion():
+            with self.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    "INSERT OR REPLACE INTO artifact_imports VALUES (?, ?, 'missing', 0, NULL, ?)",
+                    (artifact_id, artifact.project_id, reason),
+                )
+                for table in (
+                    "artifact_operations",
+                    "artifact_versions",
+                    "artifacts",
+                    "research_view_pins",
+                ):
+                    connection.execute(f"DELETE FROM {table} WHERE artifact_id = ?", (artifact_id,))
+                tasks = connection.execute(
+                    "SELECT operation_id, result_json FROM graph_runs r WHERE project_id = ? "
+                    "AND EXISTS (SELECT 1 FROM json_each(r.result_json, '$.artifacts') d "
+                    "WHERE d.type = 'object' AND json_extract(d.value, '$.artifact_id') = ? "
+                    "AND json_extract(d.value, '$.kept_at') IS NOT NULL)",
+                    (artifact.project_id, artifact_id),
+                ).fetchall()
+                for task in tasks:
+                    result = json.loads(task["result_json"])
+                    result["artifacts"] = [
+                        {**raw, "kept_at": None, "kept_filename": None}
+                        if isinstance(raw, dict) and raw.get("artifact_id") == artifact_id
+                        else raw
+                        for raw in result["artifacts"]
+                    ]
+                    connection.execute(
+                        "UPDATE graph_runs SET result_json = ?, updated_at = ? WHERE operation_id = ?",
+                        (
+                            cast("AppStore", self)._bounded_result_json(result),
+                            self.now(),
+                            task["operation_id"],
+                        ),
+                    )
+            folder = self.path.parent / "artifacts" / artifact_id
+            if folder.exists():
+                shutil.rmtree(folder)
 
     def _artifact_version(self, artifact_id: str, version_id: str) -> ArtifactVersion:
         for version in self.artifact_versions(artifact_id):

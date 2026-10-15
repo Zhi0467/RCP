@@ -3238,7 +3238,8 @@ class ExperimentStoreMixin(StoreMixinBase):
             (episode_id,),
         ).fetchall()
         report_row = connection.execute(
-            "SELECT * FROM episode_reports WHERE episode_id = ?",
+            "SELECT report.* FROM episode_reports AS report JOIN artifacts USING(artifact_id) "
+            "WHERE report.episode_id = ?",
             (episode_id,),
         ).fetchone()
         usage = connection.execute(

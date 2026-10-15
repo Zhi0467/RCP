@@ -213,9 +213,9 @@ Custom result HTML is an ordinary artifact, available in its origin chat, produc
 run, and after Keep in Artifacts, never unrelated chats. Stored result-view rows
 migrate to artifacts; old URLs redirect.
 
-All viewable content uses the shared panel. Panel chrome owns title, version,
-live state, Undo, Source chat, dock, and close; the embedded shell owns Keep,
-notices, selection, comments, and Send. No guidance line repeats these paths.
+All viewable content uses the shared panel. Panel chrome is the one action bar:
+title, version, live state, Keep, Undo, Source chat, Delete, dock, and close. The
+embedded shell owns notices, selection, comments, and Send. No guidance line repeats these paths.
 The shell is same-origin-frameable; agent HTML remains opaque. Repository previews
 are script-free; PDFs/download-only formats follow the type table.
 
@@ -370,6 +370,20 @@ lock. Capture guards delay unlinking until captures finish, not ordinary reads,
 creation, Keep, or non-pruning publication. Backup uses the SQLite snapshot's typed
 inventory; transfer derives metadata/versions/files from one read transaction.
 Report migration writes digest files before bindings and removal of inline HTML.
+
+Any project member may delete an artifact from the viewer or the Artifacts list,
+with a second click to confirm. Delete and expiry share one removal under the
+artifact lock and capture guard. It removes every version and every member's pin,
+clears kept bindings on chat results, and leaves a `missing` import tombstone so
+the importer never recreates it. The removal waits while an agent turn uses the
+artifact, a consolidation report awaits review, or a legacy import is pending;
+`can_delete` and the route apply that same rule. A deleted episode report keeps its
+report row, but no report view, list, digest, or transfer carries it. A copy the
+human saved into the workspace stays.
+
+**Why:** without the tombstone, import restores a deleted chat output from its
+stage; without clearing kept bindings, backup inventory refuses the project.
+Keeping the report row stops the report lifecycle from regenerating it.
 
 **Why:** RCP storage gives every format version history without adding managed
 files beside human code. Team storage is already shared; artifacts intentionally

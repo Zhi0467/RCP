@@ -1105,7 +1105,6 @@ def test_episode_report_preview_is_singular_and_sandboxed(manifest, tmp_path) ->
     assert 'id="keep"' not in viewer.text
     assert 'id="save"' not in viewer.text
     assert 'id="state"' not in viewer.text
-    assert 'id="notice"' in viewer.text
     assert legacy_preview.status_code == 200
     assert url in legacy_preview.text
     with signed_in_client(app) as client:
@@ -1187,3 +1186,29 @@ def test_episode_list_keeps_every_auto_research_chain_current_member(manifest, t
     assert len(listed) == 51
     assert current_id in listed
     assert root_id not in listed
+
+
+def test_a_deleted_episode_report_leaves_every_report_view(manifest, tmp_path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store = app.state.background_tasks.store
+    episode, _root, report = create_terminal_auto_episode(
+        store,
+        app.state.catalog.open(project_id).history,
+        project_id,
+        episode_id="deleted-report-episode",
+        report_html="<h1>Report</h1>",
+    )
+    assert report is not None
+    base = f"/api/projects/{project_id}"
+    with signed_in_client(app) as client:
+        assert client.delete(f"{base}/artifacts/{report.artifact_id}").status_code == 204
+        assert client.get(f"{base}/episodes").json()[0]["report"] is None
+        saved = client.get(f"{base}/artifacts").json()
+        assert all(entry["kind"] != "report" for entry in saved)
+        for view in ("content", "viewer"):
+            response = client.get(f"{base}/episodes/{episode.episode_id}/report/{view}")
+            assert response.status_code == 404
+    assert store.episode_report(episode.episode_id) is None
+    assert store.project_episode_report_summaries(project_id) == []

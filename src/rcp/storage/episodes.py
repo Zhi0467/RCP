@@ -2236,6 +2236,7 @@ class EpisodeStoreMixin(StoreMixinBase):
                        report.display_title
                 FROM episode_reports AS report
                 JOIN episodes AS episode ON episode.episode_id = report.episode_id
+                JOIN artifacts AS artifact ON artifact.artifact_id = report.artifact_id
                 WHERE episode.project_id = ?
                 ORDER BY report.created_at DESC, report.report_id
                 """,
@@ -2244,9 +2245,12 @@ class EpisodeStoreMixin(StoreMixinBase):
         return [EpisodeReportSummary.model_validate(dict(row)) for row in rows]
 
     def episode_report(self, episode_id: str) -> EpisodeReportRecord | None:
+        """The episode's report, unless a member deleted its artifact."""
         with self.connection() as connection:
             row = connection.execute(
-                "SELECT * FROM episode_reports WHERE episode_id = ?", (episode_id,)
+                "SELECT report.* FROM episode_reports AS report JOIN artifacts AS artifact "
+                "ON artifact.artifact_id = report.artifact_id WHERE report.episode_id = ?",
+                (episode_id,),
             ).fetchone()
         return self._episode_report_record(row) if row is not None else None
 

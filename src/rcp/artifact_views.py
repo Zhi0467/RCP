@@ -52,24 +52,6 @@ class ViewerPanel:
     script: str
 
 
-# Team servers accept authenticated mutations only as JSON (the CSRF guard in
-# rcp.api.app), so the viewer's bodiless POSTs still declare an empty JSON body.
-VIEWER_MUTATION_INIT = {
-    "method": "POST",
-    "credentials": "same-origin",
-    "headers": {"Content-Type": "application/json"},
-    "body": "{}",
-}
-_VIEWER_MUTATION_INIT_JS = json.dumps(VIEWER_MUTATION_INIT)
-
-_KEEP_HANDLER_JS = (
-    # The shell defines `config` with keepUrl and its status element.
-    "const keep=document.getElementById('keep');if(keep) keep.addEventListener('click',async()=>{keep.disabled=true;notice.textContent='';try{const response=await fetch(config.keepUrl,"
-    + _VIEWER_MUTATION_INIT_JS
-    + ");if(!response.ok)throw new Error('Keep failed');keep.remove();notice.textContent='Kept.';}catch(error){keep.disabled=false;notice.textContent=error instanceof Error?error.message:String(error);}});\n"
-)
-
-
 # The shell paints with the app's own theme tokens, in both modes. Aqua is the
 # app's default theme, so a shell that cannot learn the choice starts there.
 _THEME_TOKENS_CSS = shell_theme_css()
@@ -223,7 +205,6 @@ def artifact_viewer_document(
     *,
     content_url: str,
     state: str,
-    keep_url: str | None = None,
     panel: ViewerPanel | None = None,
     live_url: str | None = None,
     presentation: ViewerPresentation = "panel",
@@ -249,18 +230,7 @@ def artifact_viewer_document(
     )
     if kind == "video":
         preview = _VIDEO_PREVIEW
-    keep = (
-        '<button id="keep" type="button">Keep</button>'
-        if keep_url and not descriptor.is_kept()
-        else ""
-    )
     scripts: list[str] = [_video_script(content_url)] if kind == "video" else []
-    if keep:
-        config = json.dumps({"keepUrl": keep_url}).replace("<", "\\u003c")
-        scripts.append(
-            f"const config={config};const notice=document.getElementById('notice');\n"
-            + _KEEP_HANDLER_JS
-        )
     if panel and panel.script:
         scripts.append(panel.script)
     if live_url and kind == "html":
@@ -275,11 +245,6 @@ def artifact_viewer_document(
             + f"const liveMessageMaxBytes={LIVE_ARTIFACT_MESSAGE_MAX_BYTES};\n"
             + importlib.resources.files("rcp").joinpath("artifact_live.js").read_text("utf-8")
         )
-    # The RCP panel shows the name and state; the shell keeps a bar only for its actions.
-    notice = "" if panel else '<span id="notice" role="status"></span>'
-    header = (
-        f'<header><span class="spacer"></span>{keep}{notice}</header>\n' if keep or notice else ""
-    )
     page_error = (
         '<div id="pageError" hidden role="status"><span id="pageErrorMessage"></span>'
         + (' <button id="askFix" type="button">Ask to fix</button>' if panel else "")
@@ -287,8 +252,7 @@ def artifact_viewer_document(
         if kind == "html"
         else ""
     )
-    rows = "48px minmax(0,1fr)" if header else "minmax(0,1fr)"
-    # Keep, comments, live data, and video fetches call RCP.
+    # Comments, live data, and video fetches call RCP.
     connects = bool(scripts)
     if kind == "html":
         scripts.insert(0, _error_shell_script(error_channel, inline=False))
@@ -297,8 +261,7 @@ def artifact_viewer_document(
 <title>{title}</title><script>(()=>{{{_THEME_SYNC_JS}}})();</script><style>
 {_THEME_TOKENS_CSS}
 *{{box-sizing:border-box}}html,body{{margin:0;height:100%;background:var(--paper);color:var(--ink);font:14px/1.45 var(--ui)}}
-body{{display:grid;grid-template-rows:{rows}}}header{{display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid var(--rule);background:var(--panel)}}
-.spacer{{flex:1}}
+body{{display:grid;grid-template-rows:minmax(0,1fr)}}
 button{{border:1px solid var(--rule);background:transparent;color:var(--ink);padding:6px 10px;border-radius:var(--radius);font:inherit;cursor:pointer;box-shadow:var(--raised)}}button:disabled{{opacity:.45;cursor:default}}
 main{{display:grid;grid-template-rows:minmax(0,1fr) auto;min-height:0}}
 #pageError{{padding:6px 72px 6px 12px;min-width:0}}#pageError:not([hidden]){{display:flex;align-items:center;gap:8px}}
@@ -306,7 +269,7 @@ main{{display:grid;grid-template-rows:minmax(0,1fr) auto;min-height:0}}
 iframe{{display:block;border:0;width:100%;height:100%}}.canvas>img{{display:block;width:100%;height:100%;object-fit:contain}}
 {_VIDEO_STYLE if kind == "video" else ""}
 {panel.style if panel else ""}</style></head><body>
-{header}<main><div class="canvas">{preview}</div>{page_error}{panel.markup if panel else ""}</main>{script_markup}</body></html>"""
+<main><div class="canvas">{preview}</div>{page_error}{panel.markup if panel else ""}</main>{script_markup}</body></html>"""
     csp = "default-src 'none'; script-src 'unsafe-inline'; "
     if connects:
         csp += "connect-src 'self'; "

@@ -49,6 +49,9 @@
   .pin-view-action .branch-tag {
     max-width: 6.5rem;
   }
+  .artifact-viewer-label {
+    display: none;
+  }
 }
 .artifact-viewer-status.live {
   color: var(--green);

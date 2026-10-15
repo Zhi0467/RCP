@@ -6764,16 +6764,6 @@
                 }
             }
         ],
-        "./src/rcp/storage/artifacts.py": [
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 28,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/rcp/storage/auto_research.py": [
             {
                 "code": "reportAttributeAccessIssue",
