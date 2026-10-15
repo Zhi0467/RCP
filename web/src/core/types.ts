@@ -2336,8 +2336,10 @@ export interface AgentArtifactDescriptor {
   can_download: boolean;
   can_keep: boolean;
   can_discuss: boolean;
-  /** The turn folder holding this artifact's tracked file. */
+  /** The `turns/` folder holding this artifact's tracked file: its turn's, or its episode's for a report. */
   turn_folder?: string | null;
+  /** A fork's source: the tracked file its turn edited and cites, before that file moved. */
+  forked_from?: { turn_folder: string; name: string } | null;
 }
 
 export interface ResearchViewPin {

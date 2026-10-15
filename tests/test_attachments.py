@@ -601,3 +601,18 @@ def test_reference_prompt_lists_exact_staged_sources_separately_from_uploads() -
         (item["name"], item["reference"], item["path"]) for item in items[:-1]
     ]
     assert "/inputs/upload" in blocks[1] and "/inputs/ref-" not in blocks[1]
+
+
+@pytest.mark.parametrize("name", ["loss plot.svg", "accuracy#1.md", "图表.html"])
+def test_an_editable_artifact_embed_decodes_to_its_tracked_path(name) -> None:
+    from urllib.parse import unquote
+
+    from rcp.agents.prompts import _attachment_items
+
+    path = f"/stage/workspace/turns/origin/artifacts/{name}"
+    item = {"name": name, "media_type": "text/html", "path": path}
+    rendered = _attachment_items([{**item, "source_artifact_id": "a", "editable": True}])
+    [destination] = re.findall(r"!\[[^\]]*\]\(([^)]*)\)", rendered)
+    # The reply parser keeps one destination only without spaces, and refuses `#` and `?`.
+    assert not set(destination) & set(" #?()")
+    assert unquote(destination) == path

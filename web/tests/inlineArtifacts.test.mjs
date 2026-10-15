@@ -120,6 +120,14 @@ test("a reply resolves any turn's file to the turn that owns it", () => {
   const cited = turnArtifactFor(`${earlier}/other.html`, "op-1", loaded);
   assert.equal(cited.taskId, "op-0");
   assert.equal(cited.artifact, other);
+  // A fork this turn kept, because the file moved meanwhile, answers to the file it edited.
+  const fork = artifact("depth-bbbbbbbb.html", "html", {
+    artifact_id: "e".repeat(24),
+    turn_folder: "op-2",
+    forked_from: { turn_folder: "op-0", name: "depth.html" },
+  });
+  const forked = (id) => (id === "op-2" ? [fork] : tasks[id]);
+  assert.equal(turnArtifactFor(`${earlier}/depth.html`, "op-2", forked).artifact, fork);
   // The cited turn loads on demand.
   const unloaded = (id) => (id === "op-1" ? [] : undefined);
   assert.equal(turnArtifactFor(`${earlier}/other.html`, "op-1", unloaded).loading, true);
