@@ -2330,7 +2330,12 @@ export function NodeChat({
       );
     // A PDF or download-only file keeps its card below the reply.
     if (artifact && !isInlineViewable(artifact))
-      return <InlineArtifactMissing name={found.name} attached={found.taskId === taskId} />;
+      return (
+        <InlineArtifactMissing
+          name={found.name}
+          attached={found.taskId === taskId ? "below" : "earlier"}
+        />
+      );
     if (!artifact || !artifact.available || !artifact.can_open)
       return <InlineArtifactMissing name={found.name} />;
     return renderArtifactPlayer(found.taskId, artifact, alt.trim() || artifact.name);

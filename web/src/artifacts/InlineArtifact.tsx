@@ -323,11 +323,22 @@ export function InlineArtifactLoading({ name, onLoad }: { name: string; onLoad: 
   );
 }
 
-export function InlineArtifactMissing({ name, attached }: { name: string; attached?: boolean }) {
+/** `attached` says where a PDF or download-only embed's card is: this reply or an earlier one. */
+export function InlineArtifactMissing({
+  name,
+  attached,
+}: {
+  name: string;
+  attached?: "below" | "earlier";
+}) {
   return (
     <span className="chat-inline-artifact missing" role="status">
       <FileX size={12} aria-hidden="true" />{" "}
-      {attached ? `${name} is attached below.` : `${name} is not available.`}
+      {attached === "below"
+        ? `${name} is attached below.`
+        : attached === "earlier"
+          ? `${name} is attached to an earlier reply.`
+          : `${name} is not available.`}
     </span>
   );
 }
