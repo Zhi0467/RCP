@@ -4,8 +4,12 @@ import uuid
 
 import pytest
 
-from rcp.storage import AppStore, ProjectRecord
+from rcp.core.models import AuthorizedHuman
+from rcp.storage import AppStore, EpisodeRecord, ProjectRecord
 from rcp.storage.digest import append_digest_event
+from rcp.storage.evidence_flags import EvidenceFlagError
+from rcp.storage.lessons import LessonError
+from rcp.storage.research_views import ResearchViewConflict
 from rcp.transfer.records import TRANSFER_EXCLUDED_PROJECT_TABLES
 
 from .test_compute_jobs_storage import job_record
@@ -127,3 +131,50 @@ def test_digest_storage_transfer_rewrite_and_delete(digest_store):
     mark, cursor, _ = store.digest_snapshot("remaining", one)
     assert cursor == mark["seq"] == displayed
     assert store.catch_up_digest("remaining", one, cursor) == mark
+
+
+@pytest.mark.parametrize("departure", ["removal_started_at", "removed_at", "retired_at"])
+def test_live_membership_required_at_storage_boundaries(digest_store, departure):
+    store, (member, _) = digest_store
+    store.create_episode(
+        EpisodeRecord(
+            episode_id="episode",
+            project_id="project",
+            mode="experiment_loop",
+            control_node_id="experiment",
+            status="queued",
+            invocation_ceiling=1,
+            authorized_by=AuthorizedHuman(
+                space_id=store.space_id, user_id=member, display_name="One"
+            ),
+            created_at=store.now(),
+            updated_at=store.now(),
+        )
+    )
+    assert (
+        store.set_episode_archived("project", "episode", member, archived=False).archived is False
+    )
+    store.digest_snapshot("project", member)
+    with store.connection() as conn:
+        if departure == "retired_at":
+            conn.execute("UPDATE projects SET retired_at=?", (store.now(),))
+        else:
+            conn.execute(
+                "UPDATE space_users SET removal_started_at=?, removed_at=? WHERE user_id=?",
+                (store.now(), store.now() if departure == "removed_at" else None, member),
+            )
+    assert not store.is_project_member("project", member)
+    with pytest.raises(KeyError):
+        store.digest_snapshot("project", member)
+    with pytest.raises(KeyError):
+        store.catch_up_digest("project", member, 0)
+    with pytest.raises(LessonError, check=lambda exc: exc.code == "lesson_forbidden"):
+        store.add_lesson("project", "tip", user_id=member, display_name="One")
+    with pytest.raises(EvidenceFlagError, check=lambda exc: exc.code == "flag_forbidden"):
+        store.dismiss_evidence_flag("project", "missing", user_id=member)
+    with pytest.raises(ResearchViewConflict, check=lambda exc: exc.status == 404):
+        store.research_view_pins("project", member)
+    with pytest.raises(ValueError):
+        store.set_notification_preferences("project", member, {"proposal": False})
+    with pytest.raises(KeyError):
+        store.set_episode_archived("project", "episode", member, archived=True)

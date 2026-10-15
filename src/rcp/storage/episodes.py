@@ -19,6 +19,7 @@ from rcp.storage.digest import (
     append_task_failed,
     digest_link,
 )
+from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     AGENT_TASK_PROJECTION_FIELDS,
@@ -341,18 +342,7 @@ class EpisodeStoreMixin(StoreMixinBase):
             connection.execute("BEGIN IMMEDIATE")
             member = self._require_active_space_user_from_connection(connection, user_id)
             self._require_project_accepts_new_work(connection, project_id)
-            if (
-                connection.execute(
-                    """
-                SELECT 1 FROM project_members AS member
-                JOIN projects AS project ON project.project_id = member.project_id
-                WHERE member.project_id = ? AND member.user_id = ?
-                  AND project.retired_at IS NULL
-                """,
-                    (project_id, user_id),
-                ).fetchone()
-                is None
-            ):
+            if not live_project_member(connection, project_id, user_id):
                 raise KeyError(project_id)
             state = self._episode_archive_states_in_connection(connection, project_id).get(
                 episode_id
