@@ -6,7 +6,7 @@ import sqlite3
 import uuid
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, JsonValue
 
@@ -258,13 +258,21 @@ class ProjectTransferStoreMixin(StoreMixinBase):
     @staticmethod
     def _project_transfer_record_schema_version_in_connection(
         connection: sqlite3.Connection, project_id: str
-    ) -> int:
+    ) -> Literal[1, 2, 3, 4, 5]:
+        deleted = connection.execute(
+            "SELECT 1 FROM episode_reports AS report "
+            "JOIN episodes AS episode ON episode.episode_id = report.episode_id "
+            "WHERE episode.project_id = ? AND report.deleted_at IS NOT NULL LIMIT 1",
+            (project_id,),
+        ).fetchone()
+        if deleted is not None:
+            return TRANSFER_RECORD_SCHEMA_VERSION
         named = connection.execute(
             "SELECT 1 FROM branch_name_reservations WHERE project_id = ? LIMIT 1",
             (project_id,),
         ).fetchone()
         if named is not None:
-            return TRANSFER_RECORD_SCHEMA_VERSION
+            return 4
         archived = connection.execute(
             """
             SELECT 1 FROM episode_archives AS archive
@@ -304,16 +312,11 @@ class ProjectTransferStoreMixin(StoreMixinBase):
             watchers = self._transfer_watchers(connection, project_id)
             episodes = self._transfer_episodes(connection, project_id, attributions)
             paper = self._transfer_paper_draft(connection, project_id)
+            schema_version = self._project_transfer_record_schema_version_in_connection(
+                connection, project_id
+            )
         return TransferRecordBundle(
-            schema_version=(
-                TRANSFER_RECORD_SCHEMA_VERSION
-                if any(episode.reserved_branch_names for episode in episodes)
-                else 3
-                if any(episode.graph_archived for episode in episodes)
-                else 2
-                if any(episode.archive is not None for episode in episodes)
-                else 1
-            ),
+            schema_version=schema_version,
             project_id=project_id,
             attributions=attributions,
             tasks=tasks,
@@ -939,6 +942,7 @@ class ProjectTransferStoreMixin(StoreMixinBase):
             artifact_version_id=row["artifact_version_id"],
             display_title=row["display_title"],
             created_at=row["created_at"],
+            deleted_at=row["deleted_at"],
         )
 
     @staticmethod
@@ -2279,18 +2283,24 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                     )
                     write_artifact_file(self.path.parent, version, data)
                     insert_artifact(connection, artifact, [version])
-                # The report lifecycle owns its static rule, including archives
-                # created before that rule was explicit artifact metadata.
-                connection.execute(
-                    "UPDATE artifacts SET metadata = json_set(metadata, '$.live_data_allowed', json('false')) WHERE artifact_id = ?",
-                    (artifact_id,),
-                )
+                if report.deleted_at is not None:
+                    connection.execute(
+                        "INSERT INTO artifact_imports VALUES (?, ?, 'deleted', 0, NULL, 'Artifact deleted.')",
+                        (artifact_id, records.project_id),
+                    )
+                else:
+                    # The report lifecycle owns its static rule, including older archives.
+                    connection.execute(
+                        "UPDATE artifacts SET metadata = json_set(metadata, '$.live_data_allowed', json('false')) WHERE artifact_id = ?",
+                        (artifact_id,),
+                    )
                 connection.execute(
                     """
                     INSERT INTO episode_reports (
                         report_id, episode_id, attempt_id, allocation_operation_id,
-                        ending, sha256, artifact_id, artifact_version_id, created_at, display_title
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ending, sha256, artifact_id, artifact_version_id, created_at, display_title,
+                        deleted_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         report.report_id,
@@ -2304,6 +2314,7 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                         report.created_at,
                         report.display_title
                         or (html_document_title(report.html) if report.html else None),
+                        report.deleted_at,
                     ),
                 )
         for episode in records.episodes:
