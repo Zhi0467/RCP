@@ -29,7 +29,7 @@ import { StoredArtifactDownload } from "./StoredArtifactDownload";
 import { errorMessage } from "../core/errors";
 import { useResource, useRefreshRuntime } from "../core/useResource";
 import { resourceKeyId } from "../core/resourceStore";
-import { artifactStateProfile, artifactsProfile } from "./artifactResources";
+import { artifactStateProfile } from "./artifactResources";
 import { DeleteArtifactButton } from "./DeleteArtifactButton";
 import { repositoryFilePreviewUrl } from "../core/repositoryFileLinks";
 import { DraggableWindow } from "../ui/DraggableWindow";
@@ -196,7 +196,7 @@ export function ArtifactViewer() {
     }
   };
   const keep = async () => {
-    if (target.kind !== "artifact" || keeping) return;
+    if (target.kind !== "artifact") return;
     const generation = requestGeneration.current;
     setKeeping(true);
     setKeepFailure(null);
@@ -212,11 +212,6 @@ export function ArtifactViewer() {
     } finally {
       if (generation === requestGeneration.current) setKeeping(false);
     }
-  };
-  const deleted = () => {
-    if (target.kind !== "artifact") return;
-    closeArtifactViewer();
-    store.invalidate(resourceKeyId(artifactsProfile(target.projectId).key));
   };
   const pinTarget: GraphTargetRef | null = state
     ? state.pin_branch_id
@@ -338,8 +333,8 @@ export function ArtifactViewer() {
         {state?.can_keep && (
           <button
             disabled={keeping}
+            className={keepFailure ? "artifact-action-failed" : undefined}
             title={keepFailure ?? undefined}
-            style={keepFailure ? { borderColor: "var(--danger, #b42318)" } : undefined}
             onClick={() => void keep()}
           >
             Keep
@@ -364,7 +359,6 @@ export function ArtifactViewer() {
             label="Delete artifact"
             className="artifact-viewer-control"
             iconSize={16}
-            onDeleted={deleted}
           />
         )}
         <button

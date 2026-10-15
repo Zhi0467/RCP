@@ -222,7 +222,7 @@ are script-free; PDFs/download-only formats follow the type table.
 HTML doctype stays before policy/bootstrap; a missing doctype retains browser
 quirks behavior. Uncaught errors/rejections produce bounded plain-text notices
 beneath the frame or in its reply caption, without hiding content or blocking
-live data, Keep, or Download. First error appears immediately, later summaries
+live data or Download. First error appears immediately, later summaries
 at most once a second, only from the current private channel. Reload/version
 change clears it. Ask to fix prefills a comment for the human to send.
 
@@ -374,26 +374,32 @@ creation, Keep, or non-pruning publication. Backup uses the SQLite snapshot's ty
 inventory; transfer derives metadata/versions/files from one read transaction.
 Report migration writes digest files before bindings and removal of inline HTML.
 
+**Why:** RCP storage gives every format version history without adding managed
+files beside human code. Team storage is already shared; artifacts intentionally
+do not travel with repository clones. Keep, publication, and Undo grant no graph
+authority, create no Proposal, and spend no graph revision.
+
+### Deleting an artifact
+
 Any project member may delete an artifact from the viewer or the Artifacts list,
 with a second click to confirm. Delete and expiry share one removal under the
 artifact lock and capture guard. It removes every version and every member's pin,
 clears kept bindings on chat results, and leaves an import tombstone: `missing`
 after expiry, `deleted` after Delete. Nothing recreates a `deleted` identity; the
-importer skips it and `create_artifact` refuses it, so turn discovery cannot
-restore it either. The removal waits while an agent turn uses the
-artifact, a consolidation report awaits review, or a legacy import is pending;
-`can_delete` and the route apply that same rule. Deleting an episode report also
+importer skips it and `create_artifact` refuses it, so neither turn discovery nor
+a replayed fork restores it. Deleting it again succeeds.
+
+Delete is the human's call. It refuses only while a queued or running turn reads
+or edits the artifact, an episode report is still publishing, a consolidation
+report awaits review, or a legacy import is pending; `can_delete` and the route
+apply that same rule. Unlike expiry, a paused or interrupted edit holds nothing;
+its retry is refused once the artifact is gone. Deleting an episode report also
 marks its report row deleted, in the same transaction, and keeps the row as lineage
-([episode reports](conversations-episodes-and-watchers.md#visual-wrap-up)); it waits
-while that report is still publishing. A copy the human saved into the workspace stays.
+([episode reports](conversations-episodes-and-watchers.md#visual-wrap-up)). A file
+an older Keep copied into the state workspace stays; Delete only unbinds it.
 
 **Why:** without the tombstone, import restores a deleted chat output from its
 stage; without clearing kept bindings, backup inventory refuses the project.
-
-**Why:** RCP storage gives every format version history without adding managed
-files beside human code. Team storage is already shared; artifacts intentionally
-do not travel with repository clones. Keep, publication, and Undo grant no graph
-authority, create no Proposal, and spend no graph revision.
 
 ## Repository-file previews
 

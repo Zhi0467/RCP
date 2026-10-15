@@ -89,11 +89,6 @@ class SavedArtifactResponse(BaseModel):
     can_delete: bool = False
 
 
-def _can_delete(store: AppStore, artifact_id: str | None) -> bool:
-    artifact = store.artifact(artifact_id) if artifact_id else None
-    return artifact is not None and store.artifact_delete_refusal(artifact) is None
-
-
 def _task_artifact_episode_id(task: AgentTaskRecord) -> str | None:
     edit = task.request.get("artifact_edit")
     return edit.get("episode_id") if isinstance(edit, dict) else task.episode_id
@@ -260,6 +255,8 @@ def saved_artifacts(
             if origin is not None:
                 report_origins[report.episode_id] = origin
     stored_artifacts = store.artifacts(project_id)
+    stored_by_id = {artifact.artifact_id: artifact for artifact in stored_artifacts}
+    holds = store.artifact_deletion_holds()
     chat_origins = _artifact_source_hrefs(
         catalog, store, project_id, [*artifact_tasks, *stored_artifacts]
     )
@@ -278,6 +275,7 @@ def saved_artifacts(
             if not artifact.is_kept():
                 continue
             projected = _agent_artifact_response(store, task, artifact)
+            stored = stored_by_id.get(artifact.artifact_id)
             artifact_url = (
                 f"{base}/tasks/{quote(task.operation_id, safe='')}/artifacts/{artifact.artifact_id}"
             )
@@ -301,7 +299,8 @@ def saved_artifacts(
                     can_open=projected.can_open,
                     can_download=projected.can_download,
                     download_url=f"{artifact_url}/download" if projected.can_download else None,
-                    can_delete=_can_delete(store, artifact.artifact_id),
+                    can_delete=stored is not None
+                    and store.artifact_delete_refusal(stored, holds) is None,
                 )
             )
     # _validate_new_wrapup requires a concluding operation; finish_episode_report_ready
@@ -331,7 +330,6 @@ def saved_artifacts(
                 source_node_id=_source_node_id(store, project_id, origin, report.episode_id),
                 authorized_by=origin.authorized_by if origin else None,
                 viewer_url=f"{artifact_url}/viewer",
-                can_delete=_can_delete(store, stored_report.artifact_id),
             )
         )
     represented = {entry.artifact_id for entry in entries if entry.artifact_id}
@@ -366,7 +364,7 @@ def saved_artifacts(
                 can_download=True,
                 download_url=f"{artifact_url}/download",
                 can_open=view not in {"file", "pdf"},
-                can_delete=store.artifact_delete_refusal(artifact) is None,
+                can_delete=store.artifact_delete_refusal(artifact, holds) is None,
             )
         )
     _name_artifact_branches(store, project_id, entries)
@@ -520,7 +518,7 @@ def stored_artifact_state(
         else None,
         download_url=f"{base}/download",
         can_keep=_temporary(artifact),
-        can_delete=store.artifact_delete_refusal(artifact) is None,
+        can_delete=store.artifact_delete_refusal(artifact, store.artifact_deletion_holds()) is None,
         expires_at=artifact.expires_at,
     )
 
@@ -733,13 +731,17 @@ def delete_stored_artifact(
     *,
     store: Annotated[AppStore, Depends(get_store)],
 ) -> Response:
-    """Any member may delete; the artifact's other lifecycles may refuse."""
-    _stored_artifact(store, project_id, artifact_id)
+    """Any member may delete; repeating a delete of a removed artifact succeeds."""
     try:
         store.delete_artifact(project_id, artifact_id)
     except KeyError:
-        _stored_artifact(store, project_id, artifact_id)
-        raise HTTPException(status_code=404, detail="Artifact not found") from None
+        status = store.artifact_import_status(artifact_id)
+        if (
+            status is None
+            or status["project_id"] != project_id
+            or status["state"] not in {"deleted", "missing"}
+        ):
+            raise HTTPException(status_code=404, detail="Artifact not found") from None
     except ArtifactDeleteRefused as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return Response(status_code=204)
