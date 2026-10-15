@@ -108,11 +108,11 @@ Episode archives travel with their original archiving-human snapshot and time.
 A graph branch that Merge cleanup archived travels as its owner's
 `graph_archived` flag; the target records a graph-only isolation with that flag,
 and the source's worktree binding and merge state stay behind.
-Operational-record readers accept versions 1 to 4; writers use the lowest that
+Operational-record readers accept versions 1 to 5; writers use the lowest that
 fits: version 1 with none of these, version 2 when episode archive metadata is
-present, version 3 when a graph branch is archived, and version 4 when the
+present, version 3 when a graph branch is archived, version 4 when the
 project holds [branch-name](auto-research-and-branch-merge.md#branch-names)
-reservations. Older records and source
+reservations, and version 5 when a member deleted an episode report. Older records and source
 configurations keep their original serialized shape. The optional
 `record_schema_version` source-configuration field makes older strict clients
 and targets refuse preparation before the source is released. Release rechecks the required version under the storage write lock,

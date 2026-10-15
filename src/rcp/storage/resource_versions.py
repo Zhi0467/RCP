@@ -368,3 +368,11 @@ def migrate_episode_report_deletion(connection: sqlite3.Connection) -> None:
             _bump("ROW.project_id", "digest", predicate="ROW.state='deleted'"),
         ],
     )
+    # A publishing report holds Delete; the wrap-up settling releases it.
+    _install(
+        connection,
+        "episodes",
+        [_bump("ROW.project_id", "artifacts")],
+        columns=("wrapup_state",),
+        suffix="_wrapup",
+    )

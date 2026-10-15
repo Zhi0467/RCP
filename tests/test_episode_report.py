@@ -1038,7 +1038,19 @@ def test_report_delete_waits_for_publication(manifest, tmp_path) -> None:
     url = f"/api/projects/{project_id}/artifacts/{report.artifact_id}"
     assert client.get(f"{url}/state").json()["can_delete"] is False
     assert client.delete(url).status_code == 409
+
+    def artifacts_generation() -> int:
+        with store.connection() as connection:
+            return connection.execute(
+                "SELECT COALESCE(SUM(generation), 0) FROM resource_versions "
+                "WHERE scope = ? AND resource = 'artifacts'",
+                (project_id,),
+            ).fetchone()[0]
+
+    held = artifacts_generation()
     store.finish_episode_report_ready(attempt.attempt_id, report)
+    # A view that cached the hold refetches and offers Delete.
+    assert artifacts_generation() > held
     assert client.delete(url).status_code == 204
 
 
