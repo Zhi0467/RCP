@@ -728,7 +728,11 @@ def test_edit_outcome_projects_on_task_detail_and_list(manifest, tmp_path, outco
         if outcome == "forked":
             payload["artifact_id"] = payload.pop("separate_artifact_id")
         store.record_agent_task_receipt("edit", receipt.category, payload, tier="summary")
-    store.complete_agent_task("edit", applied_revision=None, result={"artifacts": []})
+    store.complete_agent_task(
+        "edit",
+        applied_revision=None,
+        result={"artifacts": [artifact.model_dump(mode="json") for artifact in artifacts]},
+    )
     # Retry tasks project the durable outcome of the original admitted edit too.
     _edit_execution(execution, request, "retry", status="succeeded", result={"artifacts": []})
     if legacy and outcome == "failed":
@@ -748,6 +752,14 @@ def test_edit_outcome_projects_on_task_detail_and_list(manifest, tmp_path, outco
             assert detail.json()["result"]["artifact_edit_outcomes"] == [expected]
             listed = next(record for record in records if record["operation_id"] == operation_id)
             assert listed["result"]["artifact_edit_outcomes"] == [expected]
+        # The fork answers to the tracked file the edit's reply cites.
+        cards = next(record for record in records if record["operation_id"] == "edit")
+        assert [card.get("forked_from") for card in cards["result"].get("artifacts", [])] == [
+            {"turn_folder": path.parent.parent.name, "name": path.name}
+            if outcome == "forked"
+            else None
+            for _ in artifacts
+        ]
 
 
 def test_a_new_comment_restores_its_base_over_a_dirty_file(manifest, tmp_path):

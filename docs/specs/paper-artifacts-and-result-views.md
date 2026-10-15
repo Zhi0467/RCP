@@ -233,7 +233,8 @@ any turn folder of the same chat; a cited link opens it the same way. A turn
 folder is named by its turn, so a path resolves through that turn's descriptors,
 or through the citing turn's when it published a new version of that file. An
 episode report's folder is named by its episode, so only a turn that published a
-version of the report resolves it. A path into another chat's turn resolves to
+version of the report resolves it. When the file moved during the edit, the turn's
+fork answers to the path it cites. A path into another chat's turn resolves to
 nothing. HTML, images, video, Markdown, and text run/render in the inline viewer;
 the card becomes Comment/Expand/Keep/Download actions beneath it. Surrounding
 links are dropped. Unembedded videos show the same player below the reply; other

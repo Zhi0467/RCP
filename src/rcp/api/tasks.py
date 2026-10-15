@@ -120,6 +120,11 @@ class SteerAgentTaskRequest(BaseModel):
         return value
 
 
+class TrackedFileLocation(BaseModel):
+    turn_folder: str
+    name: str
+
+
 class AgentArtifactResponse(AgentArtifactDescriptor):
     """One stored descriptor plus backend-owned availability decisions."""
 
@@ -134,6 +139,11 @@ class AgentArtifactResponse(AgentArtifactDescriptor):
     # supplier: a turn, or an episode for its report. A later turn's citation of
     # that path resolves to the card it published.
     turn_folder: str | None = None
+    # A fork's source: the tracked file this turn edited, which its reply cites,
+    # before the file moved and the edit was kept as this separate artifact.
+    forked_from: TrackedFileLocation | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 def _agent_artifact_response(
@@ -259,6 +269,12 @@ def _agent_task_response(
                     update["repairable"] = False
     if not isinstance(stored_artifacts, list):
         return response
+    forks = {
+        fork: source
+        for outcome in outcomes
+        if isinstance(fork := outcome["separate_artifact_id"], str)
+        and isinstance(source := outcome["artifact_id"], str)
+    }
     projected: list[object] = []
     for raw in stored_artifacts:
         try:
@@ -266,9 +282,18 @@ def _agent_task_response(
         except (TypeError, ValueError):
             projected.append(raw)
             continue
-        projected.append(
-            _agent_artifact_response_json(_agent_artifact_response(store, record, descriptor))
-        )
+        card = _agent_artifact_response(store, record, descriptor)
+        source_id = forks.get(descriptor.artifact_id)
+        source = store.artifact(source_id) if source_id else None
+        if source is not None:
+            card = card.model_copy(
+                update={
+                    "forked_from": TrackedFileLocation(
+                        turn_folder=source.supplier_id, name=source.source_name
+                    )
+                }
+            )
+        projected.append(_agent_artifact_response_json(card))
     result["artifacts"] = projected
     return response
 
