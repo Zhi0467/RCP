@@ -116,6 +116,7 @@ class AppStoreBase:
         (49, "resource_watermarks_v1"),
         (50, "research_view_pins_v1"),
         (51, "evidence_flags_v1"),
+        (52, "per_branch_auto_research_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -868,11 +869,28 @@ class AppStoreBase:
         self._run_storage_schema_migration(
             connection, version=51, name="evidence_flags_v1", migration=migrate_evidence_flags
         )
+        self._run_storage_schema_migration(
+            connection,
+            version=52,
+            name="per_branch_auto_research_v1",
+            migration=self._migrate_per_branch_auto_research,
+        )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
         if not schema_template:
             self._validate_storage_schema(connection)
         return bootstrap_code
+
+    @staticmethod
+    def _migrate_per_branch_auto_research(connection: sqlite3.Connection) -> None:
+        """Narrow live Auto-research identity from the project to its graph branch."""
+        connection.execute("DROP INDEX IF EXISTS episodes_one_live_auto_project")
+        connection.execute("DROP INDEX IF EXISTS episodes_one_live_auto_branch")
+        connection.execute(
+            "CREATE UNIQUE INDEX episodes_one_live_auto_branch "
+            "ON episodes(project_id, graph_target_json) WHERE mode = 'auto_research' "
+            "AND status IN ('queued', 'running', 'stopping', 'wrapping_up')"
+        )
 
     def _migrate_per_target_experiment_loops(self, connection: sqlite3.Connection) -> None:
         """Retain loop history while widening live identity to the graph target."""

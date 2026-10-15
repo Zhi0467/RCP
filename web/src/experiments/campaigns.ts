@@ -68,7 +68,6 @@ export interface AutoResearchStartState {
   mutationsDisabled: boolean;
   authoritative: boolean;
   canonicalReachable: boolean;
-  liveAutoResearchEpisode: Episode | null;
   taskStarting: boolean;
   episodeAction: string | null;
 }
@@ -80,9 +79,6 @@ export function autoResearchStartRefusal(state: AutoResearchStartState): string 
   if (state.mutationsDisabled) return "Graph mutations are currently disabled.";
   if (!state.authoritative) return "The project has not finished reconciling its saved state.";
   if (!state.canonicalReachable) return "The project's saved state is unreachable.";
-  if (state.liveAutoResearchEpisode) {
-    return "An auto-research episode is already live for this project.";
-  }
   if (state.taskStarting) return "Another task start is already being submitted.";
   if (state.episodeAction) return "Wait for the current episode action to finish.";
   return null;

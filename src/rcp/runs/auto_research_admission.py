@@ -416,7 +416,7 @@ def proven_reserved_auto_research_roots(
 ) -> list[tuple[EpisodeRecord, AgentTaskRecord, AutoResearchRunRequest]]:
     reserved: list[tuple[EpisodeRecord, AgentTaskRecord, AutoResearchRunRequest]] = []
     for project in tasks.store.projects():
-        for episode in tasks.store.episodes(project.project_id):
+        for episode in tasks.store.live_episodes(project.project_id):
             if (
                 episode.mode != "auto_research"
                 or episode.root_operation_id is None

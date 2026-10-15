@@ -138,8 +138,9 @@ def _command_invocations(
   Each response is one JSON object. Treat its `status` and structured `result` as the authoritative
   disposition; `message` is the concise explanation. Use returned stable worker and episode ids in
   later calls. `status` also reports the child registry, lifecycle counts, and the shared Experiment
-  allowance as total, used, and remaining. `other_branch_loops` lists live loops off your branch;
-  Experiment kickoff returns `live_elsewhere` for its node. These lists grant no control authority.
+  allowance as total, used, and remaining. `other_branch_loops` lists live loops off your branch,
+  and `other_auto_research` lists Auto-research live on other branches; Experiment kickoff returns
+  `live_elsewhere` for its node. These lists grant no control authority.
 """
 
 

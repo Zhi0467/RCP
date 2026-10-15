@@ -2481,7 +2481,7 @@ class EpisodeStoreMixin(StoreMixinBase):
         """Whether a continuation of ``episode`` would be admitted right now.
 
         The same two facts refuse it at admission: another live episode owns the
-        project (Auto-research) or the control node and target (Experiment), or the branch is
+        branch (Auto-research) or the control node and target (Experiment), or the branch is
         being merged. The projection asks first so it offers only a callable control.
         """
 
@@ -2524,10 +2524,14 @@ class EpisodeStoreMixin(StoreMixinBase):
                 f"""
                 SELECT * FROM episodes
                 WHERE project_id = ? AND mode = 'auto_research'
-                  AND status IN ({placeholders})
+                  AND graph_target_json = ? AND status IN ({placeholders})
                 LIMIT 1
                 """,
-                (record.project_id, *_LIVE_EPISODE_STATUSES),
+                (
+                    record.project_id,
+                    graph_target_json(record.graph_target),
+                    *_LIVE_EPISODE_STATUSES,
+                ),
             ).fetchone()
         return connection.execute(
             f"""

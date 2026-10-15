@@ -47,13 +47,13 @@ from rcp.agents.continuation_prompt import (
     master_key,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
-from rcp.agents.loop_overlap import render_loop_overlap
+from rcp.agents.loop_overlap import render_auto_research_overlap, render_loop_overlap
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
 from rcp.core.research_md import render_research_md
 from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
-from rcp.loop_status import other_branch_loops
+from rcp.loop_status import other_branch_auto_research, other_branch_loops
 from rcp.providers import classify_terminal_error
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.auto_research import (
@@ -1617,6 +1617,9 @@ def _orchestrator_prompt(
     loops = other_branch_loops(
         execution.store, turn.task.project_id, graph_target=turn.task.graph_target
     )
+    other_runs = other_branch_auto_research(
+        execution.store, turn.task.project_id, graph_target=turn.task.graph_target
+    )
     values = auto_research_prompt_values(
         graph_path=context.graph_path,
         research_path=context.research_md_path,
@@ -1747,6 +1750,7 @@ def _orchestrator_prompt(
             render_loop_overlap(
                 loops, ask_allowed="ask" in auto_research_allowed_verbs("orchestrator")
             ),
+            render_auto_research_overlap(other_runs),
         ),
         report_pending=lambda session_id: execution.store.episode_report_rebootstrap_pending(
             turn.task.project_id,

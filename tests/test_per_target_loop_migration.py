@@ -53,6 +53,12 @@ def _legacy_database(path: Path) -> AppStore:
             "ON episodes(project_id, control_node_id) WHERE mode = 'experiment_loop' "
             "AND status IN ('queued', 'running', 'stopping', 'wrapping_up')"
         )
+        connection.execute("DROP INDEX episodes_one_live_auto_branch")
+        connection.execute(
+            "CREATE UNIQUE INDEX episodes_one_live_auto_project "
+            "ON episodes(project_id) WHERE mode = 'auto_research' "
+            "AND status IN ('queued', 'running', 'stopping', 'wrapping_up')"
+        )
         connection.execute(
             "CREATE UNIQUE INDEX auto_research_pending_experiment_per_node "
             "ON auto_research_child_experiments(project_id, control_node_id) "
@@ -100,7 +106,7 @@ def test_per_target_upgrade_rehearses_and_preserves_live_history(tmp_path: Path)
     readonly = AppStore.open_read_only_snapshot(path)
     assert readonly.check_storage_schema_migrations() == (
         43,
-        51,
+        52,
         (
             "per_target_experiment_loops_v1",
             "client_requests_v1",
@@ -110,6 +116,7 @@ def test_per_target_upgrade_rehearses_and_preserves_live_history(tmp_path: Path)
             "resource_watermarks_v1",
             "research_view_pins_v1",
             "evidence_flags_v1",
+            "per_branch_auto_research_v1",
         ),
     )
     readonly.close()
@@ -134,6 +141,7 @@ def test_per_target_upgrade_rehearses_and_preserves_live_history(tmp_path: Path)
         }
         assert "episodes_one_live_experiment_control" not in indexes
         assert "auto_research_pending_experiment_per_node" not in indexes
+        assert "episodes_one_live_auto_project" not in indexes
         for table in ("episodes", "graph_runs", "watchers", "graph_watcher_reconciliation"):
             for row in connection.execute(f"SELECT graph_target_json FROM {table}"):
                 assert (
@@ -151,6 +159,14 @@ def test_per_target_upgrade_rehearses_and_preserves_live_history(tmp_path: Path)
     )
     with pytest.raises(ValueError, match="live parent"):
         upgraded.create_episode(_episode(upgraded, "main-duplicate"))
+    # Live Auto-research identity is the branch: "parent" stays live beside a second one.
+    upgraded.create_episode(_episode(upgraded, "second-auto", mode="auto_research"))
+    with pytest.raises(ValueError, match="live parent"):
+        upgraded.create_episode(
+            _episode(upgraded, "same-branch", mode="auto_research").model_copy(
+                update={"graph_target": GraphTargetRef(kind="branch", branch_id="parent")}
+            )
+        )
     upgraded.close()
     reopened = AppStore(path)
     assert reopened.episode("branch-loop") is not None
