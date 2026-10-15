@@ -21,6 +21,7 @@ from rcp.core.transition_models import (
     ProjectCountsProjection,
     ProposalActionLine,
 )
+from rcp.core.validation.proposals import proposal_is_stale
 
 
 def decision_awaits_choice(node: ProjectNode) -> bool:
@@ -64,6 +65,11 @@ def project_graph_attention(state: GraphState) -> GraphAttentionProjection:
             proposal_id: _proposal_action(state.proposals[proposal_id], state)
             for proposal_id in pending_proposal_ids
         },
+        stale_proposal_ids=[
+            proposal_id
+            for proposal_id in pending_proposal_ids
+            if proposal_is_stale(state, state.proposals[proposal_id])
+        ],
         decision_prior_choices=decision_prior_choices(state),
     )
 

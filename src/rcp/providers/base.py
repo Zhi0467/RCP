@@ -364,6 +364,9 @@ class ProviderProfile:
     #: when RCP passes this CLI no auto-compact setting.
     autocompact_hint: str | None = None
     shell_timeout_default_seconds: int = SHELL_TIMEOUT_DEFAULT_SECONDS
+    #: The lowest effort every model of this CLI accepts, which light agents
+    #: such as a Proposal refresh run at. None keeps the configured effort.
+    lowest_reasoning: str | None = None
 
     def canonical_shell_timeout(self, value: str) -> str:
         """Canonical whole minutes for the machine card's shell timeout."""

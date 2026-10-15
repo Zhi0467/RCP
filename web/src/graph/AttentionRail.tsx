@@ -1,4 +1,5 @@
-import { TriangleAlert, ArrowRight, Check, X } from "lucide-react";
+import { useState } from "react";
+import { TriangleAlert, ArrowRight, Check, MessageSquare, RotateCw, X } from "lucide-react";
 import type { GlossaryIndex } from "./glossary";
 import { proposalApprovalConflict, type HumanDraft, type ProposalDecision } from "./humanDraft";
 import {
@@ -16,6 +17,11 @@ interface ProposalJudgmentSectionProps {
   draft: HumanDraft | null;
   mutationsDisabled?: boolean;
   proposalActions: Record<string, ProposalActionLine[]>;
+  /** Pending Proposals the Sync gate would withdraw; they offer Refresh, not Approve. */
+  staleProposalIds?: readonly string[];
+  /** Starts (or returns) the light refresh chat; absent off main, where it cannot run. */
+  onRefresh?: (proposal: Proposal) => Promise<string>;
+  onOpenChat?: (chatId: string) => void;
   onDecision: (proposal: Proposal, decision: ProposalDecision | null) => void;
 }
 
@@ -32,6 +38,9 @@ export function ProposalJudgmentSection({
   draft,
   mutationsDisabled = false,
   proposalActions,
+  staleProposalIds = [],
+  onRefresh,
+  onOpenChat,
   onDecision,
 }: ProposalJudgmentSectionProps) {
   if (proposals.length === 0) return null;
@@ -46,6 +55,7 @@ export function ProposalJudgmentSection({
       {proposals.map((proposal) => {
         const decision = draft?.proposals[proposal.id]?.decision;
         const approved = decision === "approved";
+        const stale = staleProposalIds.includes(proposal.id);
         const rejected = decision === "rejected";
         const proposedAction = proposalActions[proposal.id];
         if (!proposedAction) {
@@ -60,7 +70,7 @@ export function ProposalJudgmentSection({
           : undefined;
         return (
           <article
-            className={`proposal-card${decision ? " draft-touched" : ""}`}
+            className={`proposal-card${decision ? " draft-touched" : ""}${stale ? " stale" : ""}`}
             key={proposal.id}
             data-proposal-id={proposal.id}
           >
@@ -123,17 +133,30 @@ export function ProposalJudgmentSection({
                 {rejected ? <Check size={14} /> : <X size={14} />}
                 Reject
               </button>
-              <button
-                className={`button judgment proposal-decision-toggle approve${approved ? " selected agree" : ""}`}
-                aria-pressed={approved}
-                aria-describedby={approvalConflict ? `proposal-conflict-${proposal.id}` : undefined}
-                disabled={mutationsDisabled || (!approved && Boolean(approvalConflict))}
-                title={approvalConflictText}
-                onClick={() => onDecision(proposal, approved ? null : "approved")}
-              >
-                <Check size={14} />
-                Approve
-              </button>
+              {stale ? (
+                onRefresh && (
+                  <RefreshProposalButton
+                    proposal={proposal}
+                    disabled={mutationsDisabled}
+                    onRefresh={onRefresh}
+                    onOpenChat={onOpenChat}
+                  />
+                )
+              ) : (
+                <button
+                  className={`button judgment proposal-decision-toggle approve${approved ? " selected agree" : ""}`}
+                  aria-pressed={approved}
+                  aria-describedby={
+                    approvalConflict ? `proposal-conflict-${proposal.id}` : undefined
+                  }
+                  disabled={mutationsDisabled || (!approved && Boolean(approvalConflict))}
+                  title={approvalConflictText}
+                  onClick={() => onDecision(proposal, approved ? null : "approved")}
+                >
+                  <Check size={14} />
+                  Approve
+                </button>
+              )}
               {approvalConflictText && (
                 <span className="eyebrow" id={`proposal-conflict-${proposal.id}`} role="status">
                   {approvalConflictText}
@@ -144,6 +167,54 @@ export function ProposalJudgmentSection({
         );
       })}
     </section>
+  );
+}
+
+/**
+ * One icon: Refresh starts the light agent's chat, then the same place opens it.
+ * A failure keeps Refresh, which retries the same server-keyed chat.
+ */
+function RefreshProposalButton({
+  proposal,
+  disabled,
+  onRefresh,
+  onOpenChat,
+}: {
+  proposal: Proposal;
+  disabled: boolean;
+  onRefresh: (proposal: Proposal) => Promise<string>;
+  onOpenChat?: (chatId: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [chatId, setChatId] = useState<string | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const run = async () => {
+    if (chatId) return onOpenChat?.(chatId);
+    setBusy(true);
+    setFailure(null);
+    try {
+      const started = await onRefresh(proposal);
+      setChatId(started);
+      onOpenChat?.(started);
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const label = chatId ? "Open chat" : "Refresh proposal";
+  return (
+    <button
+      type="button"
+      className="icon-button proposal-refresh"
+      data-action={chatId ? "open_chat" : "refresh"}
+      aria-label={label}
+      title={failure ?? label}
+      disabled={disabled || busy}
+      onClick={() => void run()}
+    >
+      {chatId ? <MessageSquare size={16} /> : <RotateCw size={16} />}
+    </button>
   );
 }
 

@@ -142,6 +142,7 @@ import {
   loadMergePreview,
   mergeEpisodeToMain,
   continueEpisode,
+  refreshProposal,
   sendEpisodeMessage,
   startEpisode,
   startExperimentRun,
@@ -4965,6 +4966,13 @@ function MemberApp({
                   proposals={pendingProposals}
                   graph={attentionGraph}
                   proposalActions={presentedAttention.proposal_actions}
+                  staleProposalIds={presentedAttention.stale_proposal_ids}
+                  onRefresh={
+                    graphTarget.kind === "main"
+                      ? async (proposal) => (await refreshProposal(apiBase, proposal.id)).chat_id
+                      : undefined
+                  }
+                  onOpenChat={openChats}
                   glossaryIndex={glossaryIndex}
                   draft={mutationsDisabled ? null : humanDraft}
                   mutationsDisabled={mutationsDisabled}

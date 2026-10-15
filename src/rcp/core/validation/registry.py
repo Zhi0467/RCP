@@ -113,7 +113,7 @@ OP_RULES: dict[str, OpRule] = {
 
 
 def proposal_dependencies(
-    state: GraphState, ops: Iterable[ProposalOperation]
+    state: GraphState, ops: Iterable[ProposalOperation], *, dependency_rule: int = 1
 ) -> tuple[list[str], list[str], list[str]]:
     """Derive the graph objects and config whose exact state a proposal depends on."""
     node_ids: set[str] = set()
@@ -147,6 +147,9 @@ def proposal_dependencies(
                 cause = update.cause
                 if isinstance(cause, EvidenceEdgeCause):
                     edge_ids.add(cause.ref_id)
+                    edge = state.edges.get(cause.ref_id)
+                    if dependency_rule >= 2 and edge is not None:
+                        node_ids.add(edge.source)
                 elif isinstance(cause, DecisionCause):
                     node_ids.add(cause.ref_id)
 

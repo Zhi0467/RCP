@@ -133,28 +133,34 @@ def proposal_updates_node(proposal: Proposal, node_id: str) -> bool:
 def proposal_is_stale(state: GraphState, proposal: Proposal) -> bool:
     """Whether the state a pending Proposal depends on has moved or disappeared."""
 
-    dependency_revision = proposal.raised_rev or proposal.base_rev
-    if any(
-        node_id not in state.nodes or state.nodes[node_id].updated_rev > dependency_revision
-        for node_id in proposal.related_node_ids
-    ):
-        return True
-    if any(
-        state.config_revisions.get(key, 0) > dependency_revision
-        for key in proposal.related_config_keys
-    ):
-        return True
+    return bool(moved_proposal_dependencies(state, proposal))
 
+
+def moved_proposal_dependencies(state: GraphState, proposal: Proposal) -> list[str]:
+    """The node, edge, and config ids whose move makes a pending Proposal stale."""
+
+    dependency_revision = proposal.raised_rev or proposal.base_rev
+    moved = [
+        node_id
+        for node_id in proposal.related_node_ids
+        if node_id not in state.nodes or state.nodes[node_id].updated_rev > dependency_revision
+    ]
+    moved.extend(
+        key
+        for key in proposal.related_config_keys
+        if state.config_revisions.get(key, 0) > dependency_revision
+    )
     referenced_edge_ids, decision_ids = _proposal_reference_dependencies(proposal)
-    edge_ids = set(proposal.related_edge_ids) | referenced_edge_ids
-    reference_revision = proposal.raised_rev or proposal.base_rev
-    if any(
-        edge_id not in state.edges or state.edges[edge_id].created_rev > reference_revision
-        for edge_id in edge_ids
-    ):
-        return True
-    if any(edge_id in state.edges for edge_id in _proposal_created_edge_ids(proposal)):
-        return True
+    moved.extend(
+        edge_id
+        for edge_id in sorted(set(proposal.related_edge_ids) | referenced_edge_ids)
+        if edge_id not in state.edges or state.edges[edge_id].created_rev > dependency_revision
+    )
+    moved.extend(
+        edge_id
+        for edge_id in sorted(_proposal_created_edge_ids(proposal))
+        if edge_id in state.edges
+    )
     removal_targets = _proposal_removal_targets(proposal)
     if removal_targets:
         current_incident_edge_ids = {
@@ -162,13 +168,14 @@ def proposal_is_stale(state: GraphState, proposal: Proposal) -> bool:
             for edge in state.edges.values()
             if edge.source in removal_targets or edge.target in removal_targets
         }
-        if current_incident_edge_ids != set(proposal.related_edge_ids):
-            return True
-    return any(
-        not isinstance(state.nodes.get(decision_id), Decision)
-        or state.nodes[decision_id].updated_rev > reference_revision
-        for decision_id in decision_ids
+        moved.extend(sorted(current_incident_edge_ids ^ set(proposal.related_edge_ids)))
+    moved.extend(
+        decision_id
+        for decision_id in sorted(decision_ids)
+        if not isinstance(state.nodes.get(decision_id), Decision)
+        or state.nodes[decision_id].updated_rev > dependency_revision
     )
+    return list(dict.fromkeys(moved))
 
 
 def _proposal_removal_targets(proposal: Proposal) -> set[str]:

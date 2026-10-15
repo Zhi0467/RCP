@@ -375,7 +375,8 @@ these projections; UI inputs such as the trust lens stay client-side.
 `web/src/core/types.ts` restates shapes, using opaque lifecycle types to prevent
 raw-status branching.
 
-Attention publishes exact Proposal, Decision, and asserted-open-Blocker ids.
+Attention publishes exact Proposal, Decision, and asserted-open-Blocker ids,
+plus `stale_proposal_ids`, the pending Proposals the Sync gate would withdraw.
 Proposal action lines include removed incident relations and `before`/`text`
 field values. Counts use that membership. Inbox, Overview, and Runs map the
 projection, never reapply predicates. Backend previews carry candidate membership;
@@ -1088,6 +1089,15 @@ identity:
 The [consolidation spec](graph-consolidation-and-lessons.md#evidence-to-check)
 owns fact-check behavior, flag lifecycle, and the Evidence to check Inbox rows.
 
+`POST .../proposals/{proposal_id}/refresh` (empty body; the id may contain
+slashes) returns `{"chat_id": string, "operation_id": string}`. It admits a
+light node Work chat on main on the Proposal's subject node, with a backend
+message holding the Proposal and its moved dependencies. Its request key is
+derived from the Proposal, so any repeat by any member returns the first chat.
+A Proposal that is not pending, not stale, or names no current node returns 409
+with code `proposal_not_pending`, `proposal_not_stale`, or
+`proposal_target_unavailable`.
+
 ## Application surfaces
 
 ### Overview
@@ -1101,7 +1111,9 @@ truthful operation fallbacks without inventing causality.
 
 Inbox contains pending protected-belief Proposals, Decisions in `ready` or
 `revisit`, and asserted open Blockers. A Proposal keeps inline judgment because
-it is not a node. A Decision row opens the existing node-detail ballot. That
+it is not a node. A stale Proposal card has a red edge and replaces Approve with
+one icon-only Refresh, which then opens the refresh chat; off main it offers only
+Reject. A Decision row opens the existing node-detail ballot. That
 ballot marks the prior choice on the matching option, and shows it separately
 when no option matches: an agent may reword a Decision's options but never
 writes `selected_option`, so a reopened ballot would otherwise not say what is

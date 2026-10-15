@@ -1302,13 +1302,18 @@ export function decodeGraphAttentionProjection(
     "decisions_awaiting_choice_ids",
     "open_blocker_ids",
     "proposal_actions",
+    "stale_proposal_ids",
     "decision_prior_choices",
   ];
   if (!isPlainRecord(value) || !hasExactKeys(value, keys)) {
     throw new Error("Project attention projection is missing or malformed.");
   }
   const readIds = (
-    field: "pending_proposal_ids" | "decisions_awaiting_choice_ids" | "open_blocker_ids",
+    field:
+      | "pending_proposal_ids"
+      | "decisions_awaiting_choice_ids"
+      | "open_blocker_ids"
+      | "stale_proposal_ids",
   ): string[] => {
     const raw = value[field];
     if (!Array.isArray(raw) || raw.some((item) => !isNonEmptyString(item))) {
@@ -1362,8 +1367,12 @@ export function decodeGraphAttentionProjection(
     decisions_awaiting_choice_ids: readIds("decisions_awaiting_choice_ids"),
     open_blocker_ids: readIds("open_blocker_ids"),
     proposal_actions: proposalActions,
+    stale_proposal_ids: readIds("stale_proposal_ids"),
     decision_prior_choices: { ...(rawPriorChoices as Record<string, string>) },
   };
+  if (attention.stale_proposal_ids.some((id) => !pendingProposalIds.includes(id))) {
+    throw new Error("Project attention marks a Proposal stale that is not pending.");
+  }
   for (const proposalId of attention.pending_proposal_ids) {
     if (!graph.proposals[proposalId]) {
       throw new Error(`Project attention references missing Proposal ${proposalId}.`);
@@ -1872,6 +1881,8 @@ export interface GraphAttentionProjection {
   decisions_awaiting_choice_ids: string[];
   open_blocker_ids: string[];
   proposal_actions: Record<string, ProposalActionLine[]>;
+  /** Pending Proposals the Sync gate would withdraw: their dependencies moved. */
+  stale_proposal_ids: string[];
   /** Decision id -> the choice it records, when its options no longer offer it. */
   decision_prior_choices: Record<string, string>;
 }

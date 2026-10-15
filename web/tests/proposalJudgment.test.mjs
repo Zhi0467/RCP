@@ -423,3 +423,38 @@ test("legacy or stale proposals use the existing card fallback instead of inferr
   assert.match(undeclared, /Review this legacy proposal\./);
   assert.doesNotMatch(undeclared, /<strong\b/);
 });
+
+test("a stale proposal trades Approve for one Refresh icon, and only on main", () => {
+  const statusChange = proposal({
+    op: "update_nodes",
+    intent: "status_change",
+    nodes: [
+      {
+        id: "hyp/replanning",
+        changes: { status: "supported" },
+        cause: { kind: "evidence_edge", ref_id: "edge/evidence-hypothesis" },
+      },
+    ],
+  });
+  const render = (props) =>
+    renderToStaticMarkup(
+      React.createElement(ProposalJudgmentSection, {
+        proposals: [statusChange],
+        graph,
+        proposalActions: { [statusChange.id]: [{ text: "x" }] },
+        draft: null,
+        onDecision() {},
+        ...props,
+      }),
+    );
+  const actions = (html) =>
+    [...html.matchAll(/proposal-decision-toggle (\w+)|data-action="(\w+)"/g)].map(
+      (match) => match[1] ?? match[2],
+    );
+
+  assert.deepEqual(actions(render({ onRefresh: async () => "chat" })), ["reject", "approve"]);
+  const stale = render({ staleProposalIds: [statusChange.id], onRefresh: async () => "chat" });
+  assert.match(stale, /class="proposal-card stale"/);
+  assert.deepEqual(actions(stale), ["reject", "refresh"]);
+  assert.deepEqual(actions(render({ staleProposalIds: [statusChange.id] })), ["reject"]);
+});

@@ -1151,6 +1151,10 @@ class GatedCard(BaseModel):
     decision_needed: str = ""
 
 
+# The dependency rule a newly filed Proposal is judged under; see Proposal.dependency_rule.
+CURRENT_PROPOSAL_DEPENDENCY_RULE: Literal[2] = 2
+
+
 class Proposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1161,6 +1165,10 @@ class Proposal(BaseModel):
     related_node_ids: list[str] = Field(default_factory=list)
     related_edge_ids: list[str] = Field(default_factory=list)
     related_config_keys: list[str] = Field(default_factory=list)
+    # Rule 2 also depends on each Evidence-edge cause's Evidence node, so rewording
+    # that Evidence makes the Proposal stale. Earlier Proposals keep rule 1: replay
+    # re-derives dependencies and must judge them as they were filed.
+    dependency_rule: Literal[1, 2] = Field(default=1, exclude_if=lambda value: value == 1)
     base_rev: int = 0
     status: Literal["pending", "approved", "rejected", "withdrawn"] = "pending"
     created_by: Literal["agent", "human"] = "agent"

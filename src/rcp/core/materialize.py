@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import TypeAdapter
 
 from rcp.core.models import (
+    CURRENT_PROPOSAL_DEPENDENCY_RULE,
     Ambiguity,
     BeliefTransition,
     Edge,
@@ -239,11 +240,12 @@ def prepare_patch_bookkeeping(state: GraphState, patch: Patch) -> Patch:
         proposals: list[Proposal] = []
         for proposal in operation.proposals:
             related_node_ids, related_edge_ids, related_config_keys = proposal_dependencies(
-                state, proposal.ops
+                state, proposal.ops, dependency_rule=CURRENT_PROPOSAL_DEPENDENCY_RULE
             )
             proposals.append(
                 proposal.model_copy(
                     update={
+                        "dependency_rule": CURRENT_PROPOSAL_DEPENDENCY_RULE,
                         "related_node_ids": related_node_ids,
                         "related_edge_ids": related_edge_ids,
                         "related_config_keys": related_config_keys,
@@ -470,7 +472,7 @@ def _apply_patch(
         elif isinstance(op, CreateProposalsOperation):
             for raw in op.proposals:
                 related_node_ids, related_edge_ids, related_config_keys = proposal_dependencies(
-                    state, raw.ops
+                    state, raw.ops, dependency_rule=raw.dependency_rule
                 )
                 proposal = raw.model_copy(
                     update={

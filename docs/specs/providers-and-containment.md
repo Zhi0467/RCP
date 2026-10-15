@@ -1063,6 +1063,10 @@ Profiles probe what their CLI can enumerate and declare the rest: Codex models
 and per-model efforts, Claude declared model aliases and probed provider-wide
 efforts, OpenCode models and optional reasoning variants. Unreadable catalogs
 use the declared list; that cannot approve an explicitly saved unknown model.
+A profile also declares `lowest_reasoning`, the effort every one of its models
+accepts, which light agents run at: `low` for Codex and Claude; none for
+OpenCode, whose variants differ per model, so its light agents keep the
+configured effort.
 
 Turns and credential-touching readiness/skill probes share one startup gate per
 provider and execution account. They acquire it before environment preparation

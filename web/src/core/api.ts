@@ -1093,6 +1093,20 @@ export function dismissEvidenceFlag(
   });
 }
 
+/** Server-keyed per Proposal, so a repeat or a second member reuses the first chat. */
+export function refreshProposal(
+  apiBase: string,
+  proposalId: string,
+): Promise<{ chat_id: string; operation_id: string }> {
+  return api(
+    `${apiBase}/proposals/${proposalId.split("/").map(encodeURIComponent).join("/")}/refresh`,
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+    },
+  );
+}
+
 export function addressEvidenceFlag(
   apiBase: string,
   flagId: string,
