@@ -111,8 +111,8 @@ validates the batch; Sync commits.
   handles light up, and the wire snaps to an eligible handle nearby. One valid
   relation stages at once; several open one inline menu. A relation that needs an
   Evidence assessment or accepts an expectation opens a details step in that
-  menu: assessment, expectation, and an explanation (required for matched or
-  diverged). Picking a link's current relation opens the same step to edit its
+  menu: assessment with its qualifications, expectation, and an explanation
+  (required for matched or diverged). Picking a link's current relation opens the same step to edit its
   details; unchanged details stage nothing. Dropping on empty canvas creates a
   linked card.
   Clicking the handle (or L) enters pick mode for touch and keyboard.

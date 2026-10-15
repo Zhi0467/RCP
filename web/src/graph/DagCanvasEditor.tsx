@@ -62,8 +62,18 @@ type Menu = {
   weight?: EvidenceAssessment["weight"];
   expectation?: EdgeExpectation | null;
   explanation?: string;
+  /** Assessment qualifications, one per line. */
+  qualifications?: string;
   node?: NewNode;
 };
+const qualificationLines = (text = "") => [
+  ...new Set(
+    text
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean),
+  ),
+];
 /** Matched and diverged outcomes must say why (backend rule). */
 const explanationRequired = (menu: Menu) =>
   (menu.expectation === "matched" || menu.expectation === "diverged") && !menu.explanation?.trim();
@@ -119,17 +129,25 @@ export function useDagCanvasEditor({
   const cleanGesture = useRef<(() => void) | null>(null);
   const longPress = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
+    const staged = editing?.humanDraft?.custom_nodes ?? {};
+    // Pending cards show the draft's current copy, so node-detail edits appear at once.
     setFresh((value) =>
-      value?.pending &&
-      (graph.nodes[value.pending.id] || !editing?.humanDraft?.custom_nodes[value.pending.id])
-        ? null
+      value?.pending
+        ? graph.nodes[value.pending.id] || !staged[value.pending.id]
+          ? null
+          : { ...value, pending: staged[value.pending.id] }
         : value,
     );
     setPendingCards((cards) =>
-      cards.filter(
-        ({ node }) => !graph.nodes[node.id] && !!editing?.humanDraft?.custom_nodes[node.id],
+      cards.flatMap((card) =>
+        !graph.nodes[card.node.id] && staged[card.node.id]
+          ? [{ ...card, node: staged[card.node.id] }]
+          : [],
       ),
     );
+    // A selected link that Undo (or a preview) removed can no longer be edited.
+    setEdge((value) => (value && !graph.edges[value.id] ? null : value));
+    setMenu((value) => (value?.replace && !graph.edges[value.replace.id] ? null : value));
     setPendingEdges((old) =>
       old.filter(
         (pending) =>
@@ -287,6 +305,8 @@ export function useDagCanvasEditor({
         weight: weight ?? (current ? replace.assessment?.weight : undefined),
         expectation: context.expectation ?? replace?.expectation ?? null,
         explanation: context.explanation ?? replace?.explanation ?? "",
+        qualifications:
+          context.qualifications ?? replace?.assessment?.qualifications?.join("\n") ?? "",
       });
       return;
     }
@@ -296,7 +316,9 @@ export function useDagCanvasEditor({
       (context.explanation ?? "").trim() === (replace.explanation ?? "") &&
       (context.expectation ?? null) === (replace.expectation ?? null) &&
       relevance === replace.assessment?.relevance &&
-      weight === replace.assessment?.weight
+      weight === replace.assessment?.weight &&
+      qualificationLines(context.qualifications).join("\n") ===
+        (replace.assessment?.qualifications ?? []).join("\n")
     ) {
       setMenu(null);
       return;
@@ -313,7 +335,10 @@ export function useDagCanvasEditor({
               ...context.replace?.assessment,
               relevance,
               weight,
-              qualifications: context.replace?.assessment?.qualifications ?? [],
+              qualifications:
+                context.qualifications !== undefined
+                  ? qualificationLines(context.qualifications)
+                  : (context.replace?.assessment?.qualifications ?? []),
             },
           }
         : {}),
@@ -885,7 +910,7 @@ export function useDagCanvasEditor({
             260,
             menu.choice
               ? 110 +
-                  (menu.choice.needsAssessment ? 76 : 0) +
+                  (menu.choice.needsAssessment ? 130 : 0) +
                   (menu.choice.acceptsExpectation ? 38 : 0)
               : menu.choices.length * 32 + 10,
           )}
@@ -919,6 +944,18 @@ export function useDagCanvasEditor({
                       </button>
                     ))}
                   </div>
+                  <textarea
+                    className="dag-menu-explanation"
+                    aria-label="Qualifications"
+                    placeholder="Qualifications, one per line"
+                    rows={2}
+                    value={menu.qualifications ?? ""}
+                    onChange={(event) => setMenu({ ...menu, qualifications: event.target.value })}
+                    onKeyDown={(event) => {
+                      event.stopPropagation();
+                      if (event.key === "Escape") setMenu(null);
+                    }}
+                  />
                 </>
               )}
               {menu.choice.acceptsExpectation && (

@@ -113,6 +113,7 @@ test("canvas gestures stage atomic updates, retain pending previews, and guard r
     await page.getByLabel("Explanation", { exact: true }).fill("");
     assert.equal(await linkButton.isDisabled(), true);
     await page.getByLabel("Explanation", { exact: true }).fill("Same direction as planned");
+    await page.getByLabel("Qualifications", { exact: true }).fill("One run\n\nOne run\nSmall n");
     await linkButton.click();
     await page.waitForFunction(() =>
       JSON.parse(document.querySelector('output[aria-label="Canvas calls"]').textContent).some(
@@ -122,6 +123,7 @@ test("canvas gestures stage atomic updates, retain pending previews, and guard r
     const replaced = (await calls()).find((call) => call.method === "onReplaceEdge");
     assert.equal(replaced.args[1].expectation, "matched");
     assert.ok(replaced.args[1].explanation.length > 0);
+    assert.deepEqual(replaced.args[1].assessment.qualifications, ["One run", "Small n"]);
     // The current relation reopens the same details to edit them in place.
     await selectEdge(replaced.args[1].id);
     await page.locator(".dag-edge-chip button").first().click();
@@ -137,7 +139,12 @@ test("canvas gestures stage atomic updates, retain pending previews, and guard r
     const edited = (await calls()).filter((call) => call.method === "onReplaceEdge")[1];
     assert.equal(edited.args[0], replaced.args[1].id);
     assert.equal(edited.args[1].expectation, "matched");
+    // Undo removes the selected draft link, and its chip with it.
     await selectEdge(edited.args[1].id);
+    await page.locator(".dag-edge-chip").waitFor();
+    await page.getByRole("button", { name: "Undo", exact: true }).click();
+    await page.locator(".dag-edge-chip").waitFor({ state: "detached" });
+    await selectEdge(replaced.args[1].id);
     await page.getByRole("button", { name: "Unlink", exact: true }).click();
     // Hold the duplicate over the keeper until the merge ring arms.
     const duplicate = await card("hyp/duplicate").boundingBox();
