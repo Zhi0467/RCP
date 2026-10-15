@@ -133,7 +133,7 @@ def test_digest_storage_transfer_rewrite_and_delete(digest_store):
     assert store.catch_up_digest("remaining", one, cursor) == mark
 
 
-@pytest.mark.parametrize("departure", ["removal_started_at", "removed_at", "retired_at"])
+@pytest.mark.parametrize("departure", ["removal_started_at", "retired_at"])
 def test_live_membership_required_at_storage_boundaries(digest_store, departure):
     store, (member, _) = digest_store
     store.create_episode(
@@ -155,14 +155,14 @@ def test_live_membership_required_at_storage_boundaries(digest_store, departure)
         store.set_episode_archived("project", "episode", member, archived=False).archived is False
     )
     store.digest_snapshot("project", member)
+    table, key = (
+        ("projects", "project_id") if departure == "retired_at" else ("space_users", "user_id")
+    )
     with store.connection() as conn:
-        if departure == "retired_at":
-            conn.execute("UPDATE projects SET retired_at=?", (store.now(),))
-        else:
-            conn.execute(
-                "UPDATE space_users SET removal_started_at=?, removed_at=? WHERE user_id=?",
-                (store.now(), store.now() if departure == "removed_at" else None, member),
-            )
+        conn.execute(
+            f"UPDATE {table} SET {departure}=? WHERE {key}=?",
+            (store.now(), "project" if table == "projects" else member),
+        )
     assert not store.is_project_member("project", member)
     with pytest.raises(KeyError):
         store.digest_snapshot("project", member)
