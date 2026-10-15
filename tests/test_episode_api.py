@@ -1234,7 +1234,8 @@ def test_a_deleted_episode_report_keeps_its_lineage_row(
             client.get(f"/api/projects/{project_id}/episodes").json()[0]["recommendation"]
             == "open_report"
         )
-        assert client.get(f"{url}/state").json()["can_delete"]
+        saved = client.get(f"/api/projects/{project_id}/artifacts").json()
+        assert next(item for item in saved if item["id"].startswith("report:"))["can_delete"]
         assert client.delete(url).status_code == 204
         assert client.get(f"{url}/state").status_code == 410
         payload = client.get(f"/api/projects/{project_id}/episodes").json()[0]
