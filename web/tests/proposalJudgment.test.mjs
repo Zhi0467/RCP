@@ -423,3 +423,41 @@ test("legacy or stale proposals use the existing card fallback instead of inferr
   assert.match(undeclared, /Review this legacy proposal\./);
   assert.doesNotMatch(undeclared, /<strong\b/);
 });
+
+test("a stale proposal trades Approve for one Refresh icon, offered only when main is stale", () => {
+  const statusChange = proposal({
+    op: "update_nodes",
+    intent: "status_change",
+    nodes: [
+      {
+        id: "hyp/replanning",
+        changes: { status: "supported" },
+        cause: { kind: "evidence_edge", ref_id: "edge/evidence-hypothesis" },
+      },
+    ],
+  });
+  const render = (props) =>
+    renderToStaticMarkup(
+      React.createElement(ProposalJudgmentSection, {
+        proposals: [statusChange],
+        graph,
+        proposalActions: { [statusChange.id]: [{ text: "x" }] },
+        draft: null,
+        onDecision() {},
+        ...props,
+      }),
+    );
+  const actions = (html) =>
+    [...html.matchAll(/proposal-decision-toggle (\w+)|data-action="(\w+)"/g)].map(
+      (match) => match[1] ?? match[2],
+    );
+
+  const onRefresh = async () => "chat";
+  const staleIds = [statusChange.id];
+  assert.deepEqual(actions(render({ onRefresh })), ["reject", "approve"]);
+  const stale = render({ staleProposalIds: staleIds, refreshableProposalIds: staleIds, onRefresh });
+  assert.match(stale, /class="proposal-card stale"/);
+  assert.deepEqual(actions(stale), ["reject", "refresh"]);
+  // Stale only in a staged preview, or on a branch: Sync first.
+  assert.deepEqual(actions(render({ staleProposalIds: staleIds, onRefresh })), ["reject"]);
+});

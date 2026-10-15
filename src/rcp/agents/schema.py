@@ -750,6 +750,7 @@ def _strip_rcp_bookkeeping(operations: list[GraphOperation]) -> list[dict[str, A
                         "related_node_ids",
                         "related_edge_ids",
                         "related_config_keys",
+                        "dependency_rule",
                         "base_rev",
                         "status",
                         "created_by",

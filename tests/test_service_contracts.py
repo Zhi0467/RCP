@@ -96,6 +96,8 @@ def test_graph_attention_projection_publishes_exact_membership_ids() -> None:
         "proposal_actions": {
             "prop/pending": [{"label": None, "text": "Choose.", "before": None}],
         },
+        "stale_proposal_ids": [],
+        "refreshable_proposal_ids": [],
         "decision_prior_choices": {},
     }
 
