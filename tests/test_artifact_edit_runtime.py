@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 from pathlib import Path
 
 import pytest
@@ -766,6 +767,44 @@ def test_a_spaced_or_unicode_name_is_tracked(manifest, tmp_path, name):
         other.artifact_id
     ]
     assert execution.store.read_artifact_bytes(other.artifact_id) == b"<p>v2</p>"
+
+
+def test_a_delete_during_settlement_is_never_read_as_a_conflict_fork(
+    manifest, tmp_path, monkeypatch
+):
+    import rcp.runs.session_artifacts as module
+
+    app, request, execution, source, workspace = _setup(manifest, tmp_path)
+    store = execution.store
+    other = _stored_artifact(app, "origin", "notes.html", b"<p>v1</p>")
+    tracked = workspace / "turns" / "origin" / "artifacts" / other.name
+    tracked.parent.mkdir(parents=True)
+    tracked.write_bytes(b"<p>v2</p>")
+    base_version = module._base_version
+    deletion = threading.Thread(
+        target=store.delete_artifact, args=(app.state.default_project_id, other.artifact_id)
+    )
+
+    versions = store.artifact_versions
+
+    def versions_after_a_delete(artifact_id):
+        deletion.start()
+        deletion.join(timeout=0.2)  # Settlement's lock keeps Delete waiting.
+        return versions(artifact_id)
+
+    def base_with_a_delete_between_its_reads(*args):
+        with monkeypatch.context() as patch:
+            patch.setattr(store, "artifact_versions", versions_after_a_delete)
+            return base_version(*args)
+
+    monkeypatch.setattr(module, "_base_version", base_with_a_delete_between_its_reads)
+    plain = request.model_copy(update={"artifact_context": None, "artifact_edit": None})
+    directory = workspace / "turns" / "next" / "artifacts"
+    directory.mkdir(parents=True)
+    _finalize(app, plain, execution, directory)
+    deletion.join()
+    remaining = store.artifacts(app.state.default_project_id)
+    assert [artifact.artifact_id for artifact in remaining] == [source.artifact_id]
 
 
 def test_a_rejected_oversized_file_is_restored_at_the_next_turn_start(
