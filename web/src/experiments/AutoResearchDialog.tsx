@@ -336,13 +336,7 @@ export function AutoResearchDialog({
                           <BranchTag refs={graphRefs} target={run.graph_target} />
                         </a>
                         <span>{run.authorized_by?.display_name || "a member"}</span>
-                        <ExperimentCheckout
-                          checkout={{
-                            kind: run.code_worktree ? "worktree" : "shared",
-                            execution_host: null,
-                            repository_paths: [],
-                          }}
-                        />
+                        <ExperimentCheckout checkout={run.checkout} detailed />
                       </li>
                     ))}
                   </ul>

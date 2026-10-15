@@ -1529,6 +1529,7 @@
   font-size: var(--type-sm);
   gap: 4px 10px;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 .auto-research-live-elsewhere a {
   text-decoration: none;

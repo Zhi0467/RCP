@@ -103,6 +103,7 @@ test("a new Auto-research start lists runs live on other branches", () => {
     ...episode,
     episode_id: "other-run",
     graph_target: { kind: "branch", branch_id: "other-run" },
+    checkout: { kind: "shared", execution_host: "gpu-host", repository_paths: ["/srv/repo"] },
   };
   const render = (props) =>
     renderMarkup(
@@ -120,6 +121,7 @@ test("a new Auto-research start lists runs live on other branches", () => {
   const html = render({ otherLiveRuns: [other] });
   assert.match(html, /data-overlap-episode-id="other-run"/);
   assert.match(html, /href="[^"]*other-run/);
+  assert.match(html, /gpu-host · \/srv\/repo/);
   assert.doesNotMatch(render({ otherLiveRuns: [] }), /data-overlap-episode-id/);
 });
 
