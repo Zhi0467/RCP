@@ -525,7 +525,7 @@ def listed_episodes(
     mode: EpisodeMode | None = None,
     include_archived_branches: bool = False,
 ) -> list[EpisodeRecord]:
-    """The recent bounded list, plus retained archives and each orchestrator's current member."""
+    """The recent bounded list plus live episodes, retained archives, and chain heads."""
 
     bounded_limit = 50
 
@@ -551,7 +551,6 @@ def listed_episodes(
     # Filter before the limit so hidden archived branches do not shrink the list.
     every = [episode for episode in store.episodes(project_id, limit=None) if listed(episode)]
     selected = every[:bounded_limit]
-    # Retained archives remain discoverable after newer episodes fill the recent list.
     selected_by_id = {episode.episode_id: episode for episode in selected}
     # Agents lists every Auto-research orchestrator, so each chain's current
     # member stays listed however many newer episodes there are.
@@ -560,7 +559,8 @@ def listed_episodes(
             current = store.episode_chain(root.episode_id)[-1]
             if listed(current):
                 selected_by_id[current.episode_id] = current
-    for episode in store.archived_episodes(project_id):
+    # Live episodes keep Stop reachable; retained archives stay discoverable.
+    for episode in [*store.live_episodes(project_id), *store.archived_episodes(project_id)]:
         if listed(episode):
             selected_by_id[episode.episode_id] = episode
     return sorted(

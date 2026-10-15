@@ -1187,3 +1187,17 @@ def test_episode_list_keeps_every_auto_research_chain_current_member(manifest, t
     assert len(listed) == 51
     assert current_id in listed
     assert root_id not in listed
+
+    # A live member stays listed on an archived branch even when its ended root is hidden.
+    from rcp.core.models import EpisodeIsolationState
+
+    archived = EpisodeIsolationState(owner_episode_id=root_id, status="ready", graph_archived=True)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET status = 'running' WHERE episode_id = ?", (current_id,)
+        )
+        connection.execute(
+            "INSERT INTO episode_isolation_states VALUES (?, ?, ?)",
+            (project_id, root_id, archived.model_dump_json()),
+        )
+    assert current_id in {episode.episode_id for episode in listed_episodes(store, project_id)}
