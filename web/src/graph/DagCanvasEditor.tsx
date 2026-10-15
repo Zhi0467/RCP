@@ -77,6 +77,13 @@ const qualificationLines = (text = "") => [
 /** Matched and diverged outcomes must say why (backend rule). */
 const explanationRequired = (menu: Menu) =>
   (menu.expectation === "matched" || menu.expectation === "diverged") && !menu.explanation?.trim();
+/** Step down from `at` until no card occupies the spot. */
+function freeSpot(at: Point, taken: Point[]): Point {
+  const spot = { ...at };
+  while (taken.some((p) => Math.abs(p.x - spot.x) < W + 12 && Math.abs(p.y - spot.y) < H + 12))
+    spot.y += H + 16;
+  return spot;
+}
 /** Only a single valid relation stages at once; any choice opens the menu. */
 function automaticRelation(choices: RelationChoice[]): RelationChoice | undefined {
   return choices.length === 1 ? choices[0] : undefined;
@@ -113,6 +120,8 @@ export function useDagCanvasEditor({
     target?: string;
   } | null>(null);
   const [fresh, setFresh] = useState<Fresh | null>(null);
+  const freshPendingId = useRef<string | null>(null);
+  freshPendingId.current = fresh?.pending?.id ?? null;
   const [pendingCards, setPendingCards] = useState<Array<{ node: NewNode; at: Point }>>([]);
   const [rename, setRename] = useState<string | null>(null);
   const [menu, setMenu] = useState<Menu | null>(null);
@@ -124,6 +133,9 @@ export function useDagCanvasEditor({
   const [box, setBox] = useState<{ a: Point; b: Point } | null>(null);
   const [shake, setShake] = useState<string[]>([]);
   const lastType = useRef("");
+  const positionsRef = useRef(positions);
+  positionsRef.current = positions;
+  const centerRef = useRef<() => Point>(() => ({ x: W, y: H }));
   const mergeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mergeCandidate = useRef<{ id: string; armed: boolean } | null>(null);
   const cleanGesture = useRef<(() => void) | null>(null);
@@ -138,13 +150,28 @@ export function useDagCanvasEditor({
           : { ...value, pending: staged[value.pending.id] }
         : value,
     );
-    setPendingCards((cards) =>
-      cards.flatMap((card) =>
+    setPendingCards((cards) => {
+      const kept = cards.flatMap((card) =>
         !graph.nodes[card.node.id] && staged[card.node.id]
           ? [{ ...card, node: staged[card.node.id] }]
           : [],
-      ),
-    );
+      );
+      // A staged node the preview never returned (e.g. after re-entering the DAG)
+      // gets a card back, so it stays editable here.
+      const shown = new Set(kept.map((card) => card.node.id));
+      for (const node of Object.values(staged)) {
+        if (graph.nodes[node.id] || shown.has(node.id) || freshPendingId.current === node.id)
+          continue;
+        kept.push({
+          node,
+          at: freeSpot(centerRef.current(), [
+            ...Object.values(positionsRef.current),
+            ...kept.map((card) => card.at),
+          ]),
+        });
+      }
+      return kept;
+    });
     // A selected link that Undo (or a preview) removed can no longer be edited.
     setEdge((value) => (value && !graph.edges[value.id] ? null : value));
     setMenu((value) => (value?.replace && !graph.edges[value.replace.id] ? null : value));
@@ -216,6 +243,7 @@ export function useDagCanvasEditor({
       (rect?.top ?? 0) + (rect?.height ?? 400) / 2,
     );
   };
+  centerRef.current = center;
   const port = (id: string) => ({ x: (positions[id]?.x ?? 0) + W / 2, y: positions[id]?.y ?? 0 });
   const controlScale =
     typeof window !== "undefined" && window.matchMedia("(max-width: 560px)").matches ? 1 / zoom : 1;
@@ -258,15 +286,11 @@ export function useDagCanvasEditor({
     if (!types.length) return;
     if (fresh?.pending)
       setPendingCards((cards) => [...cards, { node: fresh.pending!, at: fresh.at }]);
-    const spot = { ...at };
-    while (
-      [
-        ...Object.values(positions),
-        ...pendingCards.map((card) => card.at),
-        ...(fresh?.pending ? [fresh.at] : []),
-      ].some((p) => Math.abs(p.x - spot.x) < W + 12 && Math.abs(p.y - spot.y) < H + 12)
-    )
-      spot.y += H + 16;
+    const spot = freeSpot(at, [
+      ...Object.values(positions),
+      ...pendingCards.map((card) => card.at),
+      ...(fresh?.pending ? [fresh.at] : []),
+    ]);
     setFresh({
       at: spot,
       from,

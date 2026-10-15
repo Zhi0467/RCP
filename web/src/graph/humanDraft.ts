@@ -539,7 +539,18 @@ export function stageEdgeReplacement(
   edgeId: string,
   edge: NewEdge,
 ): HumanDraft {
-  return stageEdgeAddition(stageEdgeRemoval(draft, graph, edgeId), graph, edge);
+  const next = stageEdgeAddition(stageEdgeRemoval(draft, graph, edgeId), graph, edge);
+  // An edited merge copy stays part of its merge, so undoing the merge removes it.
+  const owner = draft.merges?.find((merge) => merge.edge_ids.includes(edgeId));
+  if (!owner || !next.merges) return next;
+  return {
+    ...next,
+    merges: next.merges.map((merge) =>
+      merge.duplicate === owner.duplicate
+        ? { ...merge, edge_ids: [...merge.edge_ids.filter((id) => id !== edgeId), edge.id] }
+        : merge,
+    ),
+  };
 }
 
 export function unstageEdgeRemoval(
