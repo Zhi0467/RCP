@@ -108,11 +108,7 @@ import {
   InlineArtifactMissing,
   type InlineArtifactSelectionEvent,
 } from "../artifacts/InlineArtifact";
-import {
-  turnArtifactFor,
-  inlineArtifactNames,
-  isInlineViewable,
-} from "../artifacts/inlineArtifacts";
+import { turnArtifactFor, inlineArtifactIds, isInlineViewable } from "../artifacts/inlineArtifacts";
 import {
   assembleChatTurn,
   chatAnnotationComposerPosition,
@@ -2707,8 +2703,8 @@ export function NodeChat({
                   isInlineViewable(artifact) &&
                   artifact.available &&
                   artifact.can_open &&
-                  inlineArtifactNames(line.text, line.taskId, lineArtifacts(line) ?? []).has(
-                    artifact.name,
+                  inlineArtifactIds(line.text, line.taskId, lineArtifacts(line) ?? []).has(
+                    artifact.artifact_id,
                   )
                 )
                   return null;

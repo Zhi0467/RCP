@@ -22,7 +22,7 @@ const {
   INLINE_ARTIFACT_MAX_HEIGHT,
   ARTIFACT_ERROR_MAX_CHARS,
   turnArtifactFor,
-  inlineArtifactNames,
+  inlineArtifactIds,
   inlineViewerUrl,
   isInlineViewable,
   readInlineShellMessage,
@@ -45,6 +45,9 @@ const artifact = (name, view, extra = {}) => ({
   ...extra,
 });
 
+// One artifact per name, its id the name, so expectations read as files.
+const named = (...names) => names.map((name) => artifact(name, "html", { artifact_id: name }));
+
 test("a reply embeds the artifacts its own turn wrote, by image syntax only", () => {
   const text = [
     `Play it here: ![Breakout](${dir}/breakout.html)`,
@@ -54,7 +57,8 @@ test("a reply embeds the artifacts its own turn wrote, by image syntax only", ()
     `![with line](${dir}/notes.md:4)`,
     "![remote](https://example.com/x.png)",
   ].join("\n\n");
-  assert.deepEqual([...inlineArtifactNames(text, "op-1", [])].sort(), [
+  const names = ["breakout.html", "loss.svg", "log.txt", "stale.html", "notes.md", "x.png"];
+  assert.deepEqual([...inlineArtifactIds(text, "op-1", named(...names))].sort(), [
     "breakout.html",
     "loss.svg",
   ]);
@@ -70,14 +74,18 @@ test("syntax that renders no image embeds nothing, so the card stays", () => {
     "",
     "[game]: " + dir + "/referenced.html",
   ].join("\n\n");
-  assert.deepEqual([...inlineArtifactNames(quoted, "op-1", [])], ["referenced.html"]);
+  const names = ["inline", "fenced", "commented", "escaped", "referenced"].map((n) => `${n}.html`);
+  assert.deepEqual([...inlineArtifactIds(quoted, "op-1", named(...names))], ["referenced.html"]);
 });
 
 test("a repeated reference label embeds its first definition, as it renders", () => {
   const text = ["![Plot][p]", "[p]: " + dir + "/first.svg", "[p]: " + dir + "/second.svg"].join(
     "\n\n",
   );
-  assert.deepEqual([...inlineArtifactNames(text, "op-1", [])], ["first.svg"]);
+  assert.deepEqual(
+    [...inlineArtifactIds(text, "op-1", named("first.svg", "second.svg"))],
+    ["first.svg"],
+  );
 });
 
 test("only artifacts the viewer shows render in place", () => {
@@ -115,9 +123,14 @@ test("a reply resolves any turn's file to the turn that owns it", () => {
   // The cited turn loads on demand.
   const unloaded = (id) => (id === "op-1" ? [] : undefined);
   assert.equal(turnArtifactFor(`${earlier}/other.html`, "op-1", unloaded).loading, true);
-  // Only this turn's own artifacts leave its card list.
+  // Only this turn's own embedded artifact leaves its card list, not a namesake
+  // it published from another folder.
+  const namesake = artifact("depth.html", "html", {
+    artifact_id: "d".repeat(24),
+    turn_folder: "op-9",
+  });
   const text = `![Depth](${earlier}/depth.html)\n\n![Other](${earlier}/other.html)`;
-  assert.deepEqual([...inlineArtifactNames(text, "op-1", [edited])], ["depth.html"]);
+  assert.deepEqual([...inlineArtifactIds(text, "op-1", [edited, namesake])], [edited.artifact_id]);
 });
 
 test("the inline shell is the viewer URL in its inline presentation", () => {

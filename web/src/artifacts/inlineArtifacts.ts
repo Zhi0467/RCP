@@ -12,12 +12,12 @@ export const INLINE_ARTIFACT_INITIAL_HEIGHT = 320;
 // Mirror ARTIFACT_ERROR_MAX_CHARS in src/rcp/limits.py.
 export const ARTIFACT_ERROR_MAX_CHARS = 1024;
 
-/** The names of this turn's artifacts a reply embeds in place with Markdown image syntax.
+/** The ids of this turn's artifacts a reply embeds in place with Markdown image syntax.
  *
  * The reply is parsed exactly as it renders, so syntax quoted in code, inside a
  * comment, or escaped embeds nothing and keeps the artifact's card.
  */
-export function inlineArtifactNames(
+export function inlineArtifactIds(
   text: string,
   taskId: string,
   artifacts: readonly AgentArtifactDescriptor[],
@@ -45,12 +45,13 @@ export function inlineArtifactNames(
     const url = definitions.get(reference);
     if (url) sources.push(url);
   }
-  const names = new Set<string>();
+  // By identity: two files of one name from different turn folders keep apart.
+  const ids = new Set<string>();
   for (const source of sources) {
     const found = turnArtifactFor(source, taskId, (id) => (id === taskId ? artifacts : []));
-    if (found?.taskId === taskId) names.add(found.name);
+    if (found?.taskId === taskId && found.artifact) ids.add(found.artifact.artifact_id);
   }
-  return names;
+  return ids;
 }
 
 /** Whether a turn's artifact can render in place: anything the viewer shows. */
