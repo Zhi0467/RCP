@@ -46,6 +46,17 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Episode report deletion (v53), fresh, immutable fixture upgrades, and
+        # in-place upgrades.
+        "d05958cb3377a1dcdec87c62ef30094a4c0fc0efba24ecf3c824cadc834ab0b9",
+        "5cdc1ac9f5690fcaf08c573f5a6247524fb192d6560796d60767a16a4ff5057d",
+        "18ea461c86e55d7cf8e596f83b8bd378dc7fb3b206d81164481310afe022e110",
+        "938e67c46e1bd4e4bad3f7f378578e9c8f61873ff2a0b00f881db1f891f52c5d",
+        "0005a4b25f42a7676009094c4d8018ccd2455cb67f640f682dec4993299540c6",
+        "e02ea53cc1c02a8e29be3f52db2d8429fbf5722fabbb76202faee878e954a313",
+        "96fb7ee90dda42cfa129112efd8d3fa3346cbaefab7ca0d166e20658f6edc988",
+        "ddab658e70d42a693e6b7e6da4bca8b31d74e9650e1f5fae883fb073ed95f03e",
+        "cec5ae25c19ac91ec7a43875bc71afe4a4816a2645a514353301ccfa5b3cc2c3",
         # Per-branch Auto-research (v52), fresh, immutable fixture upgrades, and
         # in-place upgrades.
         "58e6f3c20eba29966620b89c4c007bed285e884e239ef22e7d5543fd5bd96c76",

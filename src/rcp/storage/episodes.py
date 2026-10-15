@@ -5,7 +5,7 @@ import json
 import sqlite3
 import uuid
 from collections.abc import Sequence
-from typing import Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from rcp.core.graph_targets import graph_target_json
 from rcp.core.models import AuthorizedHuman, EpisodeIsolation
@@ -45,6 +45,9 @@ from rcp.storage.models import (
     _required_timestamp,
 )
 from rcp.storage.rows import _agent_task_control_flags
+
+if TYPE_CHECKING:
+    from rcp.storage import AppStore
 
 _LIVE_EPISODE_STATUSES = ("queued", "running", "stopping", "wrapping_up")
 _REPORT_ATTEMPT_LIMIT = 3
@@ -2087,145 +2090,148 @@ class EpisodeStoreMixin(StoreMixinBase):
         attempt_id: str,
         report: EpisodeReportRecord,
     ) -> tuple[EpisodeRecord, EpisodeReportRecord]:
-        artifact = self.artifact(report.artifact_id)
-        versions = self.artifact_versions(report.artifact_id)
-        if (
-            artifact is None
-            or not versions
-            or versions[0].sequence != 0
-            or versions[0].version_id != report.artifact_version_id
-            or versions[0].sha256 != report.sha256
-            or artifact.episode_id != report.episode_id
-            or artifact.origin_operation_id != report.allocation_operation_id
-            or artifact.expires_at is not None
-        ):
-            raise EpisodeReportConflict(
-                "the report must bind its permanent original artifact version"
-            )
-        now = self.now()
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            attempt_row = connection.execute(
-                "SELECT * FROM episode_report_attempts WHERE attempt_id = ?", (attempt_id,)
-            ).fetchone()
-            if attempt_row is None:
-                raise KeyError(attempt_id)
-            episode_row = connection.execute(
-                "SELECT * FROM episodes WHERE episode_id = ?", (attempt_row["episode_id"],)
-            ).fetchone()
-            wrapup_row = connection.execute(
-                "SELECT * FROM episode_wrapups WHERE episode_id = ?",
-                (attempt_row["episode_id"],),
-            ).fetchone()
-            if episode_row is None or wrapup_row is None:
-                raise RuntimeError("the report attempt lost its episode wrap-up")
-            episode = self._episode_record(episode_row)
-            wrapup = self._episode_wrapup_record(wrapup_row)
+        """Bind under the artifact lock, so Delete sees the report published or not at all."""
+        store = cast("AppStore", self)
+        with store.artifact_lock(report.artifact_id):
+            artifact = store.artifact(report.artifact_id)
+            versions = store.artifact_versions(report.artifact_id)
             if (
-                report.attempt_id != attempt_id
-                or report.episode_id != episode.episode_id
-                or report.allocation_operation_id != attempt_row["allocation_operation_id"]
-                or report.allocation_operation_id != wrapup.allocation_operation_id
-                or report.ending != episode.ending
+                artifact is None
+                or not versions
+                or versions[0].sequence != 0
+                or versions[0].version_id != report.artifact_version_id
+                or versions[0].sha256 != report.sha256
+                or artifact.episode_id != report.episode_id
+                or artifact.origin_operation_id != report.allocation_operation_id
+                or artifact.expires_at is not None
             ):
-                raise EpisodeReportConflict("the report does not match its episode attempt")
-            if episode.ending == "stopped":
-                raise EpisodeReportConflict("a stopped episode cannot publish a report")
-            existing = connection.execute(
-                "SELECT * FROM episode_reports WHERE episode_id = ?", (episode.episode_id,)
-            ).fetchone()
-            if existing is not None:
-                stored = self._episode_report_record(existing)
-                if stored != report:
-                    raise EpisodeReportConflict("the episode report is immutable")
-                return episode, stored
-            if attempt_row["status"] not in {"queued", "running"}:
-                raise EpisodeReportConflict("the report attempt has already ended")
-            connection.execute(
-                """
-                INSERT INTO episode_reports (
-                    report_id, episode_id, attempt_id, allocation_operation_id, ending,
-                    sha256, artifact_id, artifact_version_id, created_at, display_title
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    report.report_id,
-                    report.episode_id,
-                    report.attempt_id,
-                    report.allocation_operation_id,
-                    report.ending,
-                    report.sha256,
-                    report.artifact_id,
-                    report.artifact_version_id,
-                    report.created_at,
-                    artifact.display_title,
-                ),
-            )
-            connection.execute(
-                """
-                UPDATE episode_report_attempts
-                SET status = 'succeeded', error = NULL, updated_at = ?, finished_at = ?
-                WHERE attempt_id = ?
-                """,
-                (now, now, attempt_id),
-            )
-            connection.execute(
-                """
-                UPDATE graph_runs
-                SET status = 'succeeded', status_message = 'Report ready', error = NULL,
-                    updated_at = ?, finished_at = ?, phase = 'completed'
-                WHERE operation_id = ?
-                """,
-                (now, now, report.allocation_operation_id),
-            )
-            connection.execute(
-                """
-                UPDATE episode_wrapups
-                SET state = 'ready', diagnostic = NULL, updated_at = ?, finished_at = ?
-                WHERE episode_id = ?
-                """,
-                (now, now, episode.episode_id),
-            )
-            connection.execute(
-                """
-                UPDATE episodes
-                SET status = ?, wrapup_state = 'ready', wrapup_error = NULL,
-                    updated_at = ?, ended_at = COALESCE(ended_at, ?)
-                WHERE episode_id = ?
-                """,
-                (self._status_for_ending(report.ending), now, now, episode.episode_id),
-            )
-            append_episode_ended(connection, episode.episode_id, now)
-            self._terminalize_auto_research_child_experiment_with_notice(
-                connection,
-                child_episode_id=episode.episode_id,
-                status=self._status_for_ending(report.ending),
-                ending=report.ending,
-                diagnostic=episode.ending_diagnostic,
-                created_at=now,
-            )
-            append_digest_event(
-                connection,
-                project_id=episode.project_id,
-                kind="episode_report",
-                target=episode.graph_target.key,
-                item_id=report.report_id,
-                created_at=now,
-                payload={
-                    "title": artifact.display_title or "Episode report",
-                    "status": "ready",
-                    "deep_link": digest_link(
-                        episode.project_id,
-                        episode.graph_target.model_dump(),
-                        "episode",
-                        episode.episode_id,
+                raise EpisodeReportConflict(
+                    "the report must bind its permanent original artifact version"
+                )
+            now = self.now()
+            with self.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                attempt_row = connection.execute(
+                    "SELECT * FROM episode_report_attempts WHERE attempt_id = ?", (attempt_id,)
+                ).fetchone()
+                if attempt_row is None:
+                    raise KeyError(attempt_id)
+                episode_row = connection.execute(
+                    "SELECT * FROM episodes WHERE episode_id = ?", (attempt_row["episode_id"],)
+                ).fetchone()
+                wrapup_row = connection.execute(
+                    "SELECT * FROM episode_wrapups WHERE episode_id = ?",
+                    (attempt_row["episode_id"],),
+                ).fetchone()
+                if episode_row is None or wrapup_row is None:
+                    raise RuntimeError("the report attempt lost its episode wrap-up")
+                episode = self._episode_record(episode_row)
+                wrapup = self._episode_wrapup_record(wrapup_row)
+                if (
+                    report.attempt_id != attempt_id
+                    or report.episode_id != episode.episode_id
+                    or report.allocation_operation_id != attempt_row["allocation_operation_id"]
+                    or report.allocation_operation_id != wrapup.allocation_operation_id
+                    or report.ending != episode.ending
+                ):
+                    raise EpisodeReportConflict("the report does not match its episode attempt")
+                if episode.ending == "stopped":
+                    raise EpisodeReportConflict("a stopped episode cannot publish a report")
+                existing = connection.execute(
+                    "SELECT * FROM episode_reports WHERE episode_id = ?", (episode.episode_id,)
+                ).fetchone()
+                if existing is not None:
+                    stored = self._episode_report_record(existing)
+                    if stored != report:
+                        raise EpisodeReportConflict("the episode report is immutable")
+                    return episode, stored
+                if attempt_row["status"] not in {"queued", "running"}:
+                    raise EpisodeReportConflict("the report attempt has already ended")
+                connection.execute(
+                    """
+                    INSERT INTO episode_reports (
+                        report_id, episode_id, attempt_id, allocation_operation_id, ending,
+                        sha256, artifact_id, artifact_version_id, created_at, display_title
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        report.report_id,
+                        report.episode_id,
+                        report.attempt_id,
+                        report.allocation_operation_id,
+                        report.ending,
+                        report.sha256,
+                        report.artifact_id,
+                        report.artifact_version_id,
+                        report.created_at,
+                        artifact.display_title,
                     ),
-                },
-            )
-        stored_episode = self.episode(report.episode_id)
-        stored_report = self.episode_report(report.episode_id)
-        assert stored_episode is not None and stored_report is not None
-        return stored_episode, stored_report
+                )
+                connection.execute(
+                    """
+                    UPDATE episode_report_attempts
+                    SET status = 'succeeded', error = NULL, updated_at = ?, finished_at = ?
+                    WHERE attempt_id = ?
+                    """,
+                    (now, now, attempt_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE graph_runs
+                    SET status = 'succeeded', status_message = 'Report ready', error = NULL,
+                        updated_at = ?, finished_at = ?, phase = 'completed'
+                    WHERE operation_id = ?
+                    """,
+                    (now, now, report.allocation_operation_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE episode_wrapups
+                    SET state = 'ready', diagnostic = NULL, updated_at = ?, finished_at = ?
+                    WHERE episode_id = ?
+                    """,
+                    (now, now, episode.episode_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE episodes
+                    SET status = ?, wrapup_state = 'ready', wrapup_error = NULL,
+                        updated_at = ?, ended_at = COALESCE(ended_at, ?)
+                    WHERE episode_id = ?
+                    """,
+                    (self._status_for_ending(report.ending), now, now, episode.episode_id),
+                )
+                append_episode_ended(connection, episode.episode_id, now)
+                store._terminalize_auto_research_child_experiment_with_notice(
+                    connection,
+                    child_episode_id=episode.episode_id,
+                    status=self._status_for_ending(report.ending),
+                    ending=report.ending,
+                    diagnostic=episode.ending_diagnostic,
+                    created_at=now,
+                )
+                append_digest_event(
+                    connection,
+                    project_id=episode.project_id,
+                    kind="episode_report",
+                    target=episode.graph_target.key,
+                    item_id=report.report_id,
+                    created_at=now,
+                    payload={
+                        "title": artifact.display_title or "Episode report",
+                        "status": "ready",
+                        "deep_link": digest_link(
+                            episode.project_id,
+                            episode.graph_target.model_dump(),
+                            "episode",
+                            episode.episode_id,
+                        ),
+                    },
+                )
+            stored_episode = self.episode(report.episode_id)
+            stored_report = self.episode_report(report.episode_id)
+            assert stored_episode is not None and stored_report is not None
+            return stored_episode, stored_report
 
     def project_episode_report_summaries(self, project_id: str) -> list[EpisodeReportSummary]:
         """List every durable report, including archived episodes, without HTML bytes."""
@@ -2236,17 +2242,21 @@ class EpisodeStoreMixin(StoreMixinBase):
                        report.display_title
                 FROM episode_reports AS report
                 JOIN episodes AS episode ON episode.episode_id = report.episode_id
-                WHERE episode.project_id = ?
+                WHERE episode.project_id = ? AND report.deleted_at IS NULL
                 ORDER BY report.created_at DESC, report.report_id
                 """,
                 (project_id,),
             ).fetchall()
         return [EpisodeReportSummary.model_validate(dict(row)) for row in rows]
 
-    def episode_report(self, episode_id: str) -> EpisodeReportRecord | None:
+    def episode_report(
+        self, episode_id: str, *, include_deleted: bool = False
+    ) -> EpisodeReportRecord | None:
+        """The episode's report; a deleted one is none unless lineage asks for it."""
         with self.connection() as connection:
             row = connection.execute(
-                "SELECT * FROM episode_reports WHERE episode_id = ?", (episode_id,)
+                "SELECT * FROM episode_reports WHERE episode_id = ? AND (? OR deleted_at IS NULL)",
+                (episode_id, include_deleted),
             ).fetchone()
         return self._episode_report_record(row) if row is not None else None
 

@@ -578,8 +578,16 @@ class ArtifactStoreMixin(StoreMixinBase):
 
     def artifact_delete_refusal(self, artifact: Artifact) -> str | None:
         """Why removal must wait; expiry and Delete share these holds."""
-        if artifact.supplier == "episode_ending":
-            return "Episode reports stay bound to their episode."
+        if artifact.supplier == "episode_ending" and artifact.episode_id is not None:
+            # Publication binds the report under this artifact's lock, as Delete does.
+            with self.connection() as connection:
+                publishing = connection.execute(
+                    "SELECT 1 FROM episodes WHERE episode_id = ? "
+                    "AND wrapup_state IN ('pending', 'running')",
+                    (artifact.episode_id,),
+                ).fetchone()
+            if publishing is not None:
+                return "This report is still being published."
         if (
             self.artifact_edit_operation_id(artifact.project_id, artifact.artifact_id) is not None
             or artifact.artifact_id in self.protected_edit_artifact_ids()
@@ -650,6 +658,11 @@ class ArtifactStoreMixin(StoreMixinBase):
                     "research_view_pins",
                 ):
                     connection.execute(f"DELETE FROM {table} WHERE artifact_id = ?", (artifact_id,))
+                # A report keeps its lineage row, so its lifecycle never writes another.
+                connection.execute(
+                    "UPDATE episode_reports SET deleted_at = ? WHERE artifact_id = ?",
+                    (self.now(), artifact_id),
+                )
                 tasks = connection.execute(
                     "SELECT operation_id, result_json FROM graph_runs r WHERE project_id = ? "
                     "AND EXISTS (SELECT 1 FROM json_each(r.result_json, '$.artifacts') d "

@@ -95,7 +95,7 @@ async def stream_episode_report_run(
 
     try:
         turn = _canonical_report_turn(execution, request)
-        existing = execution.store.episode_report(turn.episode.episode_id)
+        existing = execution.store.episode_report(turn.episode.episode_id, include_deleted=True)
         if existing is not None:
             if turn.wrapup.state != "ready":
                 raise ValueError("The episode report exists outside a ready wrap-up.")
