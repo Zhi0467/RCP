@@ -7,6 +7,7 @@ import textwrap
 from datetime import datetime
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Literal
+from urllib.parse import quote
 
 from rcp.agents.artifact_contract import artifact_contract
 from rcp.agents.context import ChatContext
@@ -729,9 +730,10 @@ def _attachment_items(attachments: list[dict[str, object]] | None) -> str:
                 "they ask for something different alongside it, write a new file in this turn's "
                 "directory; that becomes a separate artifact and this one stays as it is."
             )
+            # Encoded, so a space or `#` in the name still parses as one destination.
             lines.append(
-                "  To show this file in your reply, embed it with Markdown image syntax and "
-                f"this path: `![Short title]({item['path']})`."
+                "  Once you change it in place, you can show it in your reply with Markdown "
+                f"image syntax: `![Short title]({quote(str(item['path']), safe='/')})`."
             )
         if item.get("edit_now"):
             lines.append("  The human asked for that in-place edit now, in this turn.")

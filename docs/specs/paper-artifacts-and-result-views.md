@@ -234,13 +234,12 @@ folder is named by its turn, so a path resolves through that turn's descriptors,
 or through the citing turn's when it published a new version of that file. An
 episode report's folder is named by its episode, so only a turn that published a
 version of the report resolves it. A path into another chat's turn resolves to
-nothing. HTML, images, video,
-Markdown, and text run/render in the inline viewer; the card becomes
-Comment/Expand/Keep/Download actions beneath it. Surrounding links are dropped.
-Unembedded videos show the same player below the reply; other artifacts keep
-cards. PDFs/download-only embeds point to their cards. Unknown names report
-unavailable without navigating. Old turns fetch their exact task before declaring
-absence and retain it across list refreshes.
+nothing. HTML, images, video, Markdown, and text run/render in the inline viewer;
+the card becomes Comment/Expand/Keep/Download actions beneath it. Surrounding
+links are dropped. Unembedded videos show the same player below the reply; other
+artifacts keep cards. PDFs/download-only embeds point to their cards. Unknown
+names report unavailable without navigating. Old turns fetch their exact task
+before declaring absence and retain it across list refreshes.
 
 Inline uses the same shell without chrome, with transparent background. Every
 frame pins the reply color-scheme; content receives `--rcp-*` palette before its
@@ -293,8 +292,8 @@ frame and says so. SVG/over-pixel-limit images carry positions only. Legacy view
 area boxes keep sampled text and are never cropped. Turns allow 50 annotations.
 Both routes number human `Comment N:` text and prompt regions identically;
 `edit_now` adds only the immediate-edit request. The editable item also gives the
-Markdown embed of its tracked path, so the reply can show the edited file in place.
-All input is bounded/untrusted.
+URL-encoded Markdown embed of its tracked path, so a reply that changed the file in
+place can show it there. All input is bounded/untrusted.
 
 ### Editing and versions
 
