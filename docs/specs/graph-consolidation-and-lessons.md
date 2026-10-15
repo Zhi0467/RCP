@@ -129,9 +129,11 @@ RCP itself raises a `consolidation_added` flag on every current Evidence node an
 applied consolidation Patch created, read from that Patch's apply receipt rather
 than a graph diff, keyed `rcp:consolidation_added:<id>` and carrying the Patch
 summary as its finding, so added Evidence waits for a human. Holds rerun after
-every successful or replayed `apply` and at turn settlement; their keys make that
-idempotent, so an interrupted hold is recovered. The agent cannot raise that kind.
-A failure to record it is a task warning; the applied Patch stands.
+every successful or replayed `apply` and when the run settles, whether its turn
+succeeded or failed; their keys make that idempotent, so an interrupted hold is
+recovered. A run whose applied Patches cannot be checked against canonical state
+stays unsettled until a later pass can. The agent cannot raise that kind. A
+failure to record it is a task warning; the applied Patch stands.
 
 Flag creation checks live authorizer membership and records its keyed receipt
 transactionally. The same key and arguments replay; changed arguments refuse.

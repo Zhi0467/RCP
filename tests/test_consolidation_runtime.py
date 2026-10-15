@@ -649,3 +649,56 @@ def test_consolidation_query_baseline_is_coverage_not_session_observation():
     store.consolidation_schedule = lambda project: SimpleNamespace(covered_head=None)
     assert consolidation_covered_head(service, execution) is None
     assert len(calls) == 1
+
+
+def test_failed_run_settlement_retries_lost_evidence_holds(runtime, monkeypatch):
+    import hashlib
+
+    from rcp.core.models import Patch
+    from rcp.transport import StateUnavailable
+
+    runtime.poller.poll_once()
+    run = runtime.store.consolidation_runs()[0]
+    evidence = {
+        "id": "ev/added-overnight",
+        "type": "evidence",
+        "title": "Seed 3 shows no spike",
+        "observation": "The seed 3 log has no step-200 spike.",
+        "origin": "analytic",
+    }
+    patch = Patch(
+        kind="work",
+        author="agent",
+        summary="Record the seed 3 result",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[{"op": "create_nodes", "nodes": [evidence]}],
+    )
+    append_fixture_patch(runtime.service, patch)
+    # The apply committed and recorded its receipt; the process died before the hold.
+    text = patch.model_dump_json()
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    runtime.store.reserve_consolidation_apply(run.operation_id, "add", digest, text, "effect")
+    runtime.store.finish_consolidation_apply(
+        run.operation_id,
+        "add",
+        {"status": "ok", "result": {"disposition": "applied", "revision": 2}},
+    )
+    runtime.store.fail_agent_task(run.operation_id, "Provider failed after Apply")
+    opened = runtime.poller.service_for
+
+    def unavailable(_project_id):
+        raise StateUnavailable("state host dropped")
+
+    monkeypatch.setattr(runtime.poller, "service_for", unavailable)
+    runtime.poller.reconcile_outcomes()
+    assert runtime.store.consolidation_run(run.run_id).kind is None
+    assert runtime.store.list_evidence_flags(run.project_id) == []
+    assert runtime.store.agent_task_events(run.operation_id)[-1].level == "warning"
+    monkeypatch.setattr(runtime.poller, "service_for", opened)
+    runtime.poller.reconcile_outcomes()
+    assert runtime.store.consolidation_run(run.run_id).kind == "failure"
+    assert [
+        (flag["evidence_id"], flag["kind"])
+        for flag in runtime.store.list_evidence_flags(run.project_id)
+    ] == [("ev/added-overnight", "consolidation_added")]

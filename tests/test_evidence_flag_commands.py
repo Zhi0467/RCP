@@ -5,9 +5,7 @@ import pytest
 from rcp.agents import staged_command_client
 from rcp.agents.command_protocol import FlagArguments, FlagCommandRequest
 from rcp.core.models import Patch
-from rcp.runs.evidence_flag_commands import hold_consolidation_additions
 from rcp.runs.questions import work_command_handler
-from rcp.transport import StateUnavailable
 
 from .helpers import append_fixture_patch, create_named_app, seed_patch
 from .test_consolidation_work import _admit
@@ -98,19 +96,3 @@ def test_flag_client_preserves_arguments(tmp_path):
 def test_flag_rejects_invalid_findings(finding):
     with pytest.raises(ValueError):
         request(finding=finding)
-
-
-def test_consolidation_hold_read_failure_is_a_task_warning(manifest, tmp_path):
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    append_fixture_patch(app.state.service, seed_patch())
-    _, execution = _admit(app)
-
-    class History:
-        def state(self):
-            raise StateUnavailable("state host dropped")
-
-    class Unreachable:
-        history = History()
-
-    hold_consolidation_additions(Unreachable(), execution.store, execution.operation_id)
-    assert execution.store.agent_task_events(execution.operation_id)[-1].level == "warning"

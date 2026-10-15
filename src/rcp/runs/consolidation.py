@@ -155,7 +155,7 @@ def consolidation_apply_handler(
             except FileNotFoundError:
                 if previous is None or previous["result"] is None:
                     raise ValueError("consolidation_patch_missing") from None
-                hold_consolidation_additions(service(), execution.store, execution.operation_id)
+                hold_consolidation_additions(service, execution.store, execution.operation_id)
                 return CommandResponse(request_id=request.request_id, **previous["result"])
             digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
             receipt = execution.store.reserve_consolidation_apply(
@@ -212,7 +212,7 @@ def consolidation_apply_handler(
                 )
 
             if response.status == "ok":
-                hold_consolidation_additions(service(), execution.store, execution.operation_id)
+                hold_consolidation_additions(service, execution.store, execution.operation_id)
                 mailbox.remove_if_sha256("patch.json", digest)
             return response
         except (OSError, StateUnavailable) as exc:
