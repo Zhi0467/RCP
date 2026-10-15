@@ -30,6 +30,8 @@ from rcp.core.operations import SetProjectTruthScopeOperation
 from rcp.core.transition_models import GraphHeadRef
 from rcp.history import ProjectIdentityConflict
 from rcp.keyed_locks import KeyedLocks
+from rcp.policies import provisioning as provisioning_policy
+from rcp.policies import transfer as transfer_policy
 from rcp.project_transfer import capture_project_transfer_source
 from rcp.projects import ProjectCatalog
 from rcp.providers import ProviderId
@@ -961,7 +963,7 @@ def bind_project_transfer_archive(
         if transfer.side != "target":
             raise ValueError("source archives are bound only by the source release workflow")
         admission = transfer.target_admission_receipt
-        if admission is None or admission.admitted_by.user_id != actor.user_id:
+        if not transfer_policy.is_admitter(admission, actor.user_id):
             raise HTTPException(
                 status_code=403,
                 detail="Only the member who admitted this transfer may bind its archive.",
@@ -1052,11 +1054,7 @@ def acknowledge_project_transfer_cleanup(
         member = store.authenticate_team_member_token(token)
         transfer = _transfer_request_or_404(store, request_id)
         admission = transfer.target_admission_receipt
-        if (
-            transfer.side != "target"
-            or admission is None
-            or admission.admitted_by.user_id != member.user_id
-        ):
+        if transfer.side != "target" or not transfer_policy.is_admitter(admission, member.user_id):
             raise HTTPException(
                 status_code=403,
                 detail="Only the member who admitted this transfer may acknowledge cleanup.",
@@ -1139,11 +1137,7 @@ def retrieve_target_activation_proof(
         member = store.authenticate_team_member_token(token)
         transfer = _transfer_request_or_404(store, request_id)
         admission = transfer.target_admission_receipt
-        if (
-            transfer.side != "target"
-            or admission is None
-            or admission.admitted_by.user_id != member.user_id
-        ):
+        if transfer.side != "target" or not transfer_policy.is_admitter(admission, member.user_id):
             raise HTTPException(
                 status_code=403,
                 detail="Only the member who admitted this transfer may retrieve its proof.",
@@ -1386,7 +1380,7 @@ def cancel_project_provisioning_request(
         and not store.is_project_member(record.target_project_id, viewer.user_id)
     ):
         raise HTTPException(status_code=404, detail="Provisioning request not found")
-    if record.authorized_by.user_id != viewer.user_id:
+    if not provisioning_policy.is_requester(record, viewer.user_id):
         raise HTTPException(
             status_code=403,
             detail="Only the member who authorized this preparation may cancel it.",
@@ -1537,7 +1531,7 @@ def _complete_repository_request(
 ) -> ProjectProvisioningResponse:
     if not store.is_project_member(record.proposed_project_id, reviewer.user_id):
         raise HTTPException(status_code=404, detail="Provisioning request not found")
-    if reviewer.user_id != record.authorized_by.user_id:
+    if not provisioning_policy.is_requester(record, reviewer.user_id):
         raise HTTPException(
             status_code=403, detail="Only the requesting member may confirm this change."
         )
@@ -1756,9 +1750,9 @@ def _project_transfer_response(
         and record.phase == "operator_action_needed"
         and record.restore_resume_phase == "archive_bound"
         and target_ready_for_review
-        and record.target_admission_receipt is not None
-        and record.target_admission_receipt.admitted_by.space_id == store.space_id
-        and record.target_admission_receipt.admitted_by.user_id == viewer_user_id
+        and transfer_policy.is_restore_admitter(
+            record.target_admission_receipt, space_id=store.space_id, user_id=viewer_user_id
+        )
     )
     # Target cleanup is completed by the native proof relay. There is no
     # browser mutation to advertise as a generic "complete" action.
@@ -1851,12 +1845,12 @@ def _project_provisioning_response(
         can_review=record.status == "ready_for_review"
         and (
             record.kind not in {"add_repository", "connect_repository"}
-            or record.authorized_by.user_id == viewer_user_id
+            or provisioning_policy.is_requester(record, viewer_user_id)
         ),
         can_cancel=(
             record.kind != "incoming_transfer"
             and record.status == "waiting_for_server_setup"
-            and record.authorized_by.user_id == viewer_user_id
+            and provisioning_policy.is_requester(record, viewer_user_id)
         ),
         target_space_id=record.target_space_id,
         target_project_id=record.target_project_id,

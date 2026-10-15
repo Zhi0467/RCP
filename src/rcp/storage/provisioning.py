@@ -14,6 +14,7 @@ from pydantic import TypeAdapter
 from rcp.config import DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef
+from rcp.policies import transfer as transfer_policy
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
 from rcp.server_ops.models import (
     CommandAction,
@@ -1546,8 +1547,9 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             if (
                 current.side != "target"
                 or admission is None
-                or admission.admitted_by.space_id != actor.space_id
-                or admission.admitted_by.user_id != actor.user_id
+                or not transfer_policy.is_restore_admitter(
+                    admission, space_id=actor.space_id, user_id=actor.user_id
+                )
             ):
                 raise ValueError("restored target transfer requires its exact confirmer")
             self._require_transfer_actor(connection, actor)

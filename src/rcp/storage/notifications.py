@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import quote
 
 from rcp.limits import TEAM_CODE_FAILED_ATTEMPT_LIMIT, TEAM_DEVICE_PAIRING_TTL_MINUTES
+from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import _new_device_pairing_code, _parse_device_pairing_code
 
@@ -194,13 +195,7 @@ class NotificationStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             # Member-owned, so a project work fence never blocks an opt-out.
-            member = connection.execute(
-                "SELECT 1 FROM project_members m JOIN projects p ON p.project_id=m.project_id "
-                "JOIN space_users u ON u.user_id=m.user_id WHERE m.project_id=? AND m.user_id=? "
-                "AND p.retired_at IS NULL AND u.removal_started_at IS NULL AND u.removed_at IS NULL",
-                (project_id, user_id),
-            ).fetchone()
-            if member is None:
+            if not live_project_member(connection, project_id, user_id):
                 raise ValueError("notification preferences require project membership")
             connection.executemany(
                 "INSERT INTO notification_preferences VALUES (?,?,?,?) ON CONFLICT "

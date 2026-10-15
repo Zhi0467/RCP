@@ -8,6 +8,7 @@ from collections.abc import Iterable
 from urllib.parse import quote
 
 from rcp.limits import DIGEST_LANDING_EVENT_LIMIT
+from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
 
 
@@ -75,15 +76,7 @@ def digest_event(row: sqlite3.Row) -> dict:
 
 
 def _require_member(connection, project_id, user_id):
-    if (
-        connection.execute(
-            "SELECT 1 FROM project_members m JOIN space_users u ON u.user_id=m.user_id "
-            "WHERE m.project_id=? AND m.user_id=? AND u.removed_at IS NULL "
-            "AND u.removal_started_at IS NULL",
-            (project_id, user_id),
-        ).fetchone()
-        is None
-    ):
+    if not live_project_member(connection, project_id, user_id):
         raise KeyError(project_id)
 
 

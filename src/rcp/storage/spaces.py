@@ -20,6 +20,7 @@ from rcp.limits import (
     WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT,
 )
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
+from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     MemberRemovalPreviewRecord,
@@ -307,21 +308,7 @@ class SpaceStoreMixin(StoreMixinBase):
 
     def is_project_member(self, project_id: str, user_id: str) -> bool:
         with self.connection() as connection:
-            return (
-                connection.execute(
-                    """
-                    SELECT 1
-                    FROM project_members AS member
-                    JOIN projects AS project ON project.project_id = member.project_id
-                    JOIN space_users AS user ON user.user_id = member.user_id
-                    WHERE member.project_id = ? AND member.user_id = ?
-                      AND project.retired_at IS NULL
-                      AND user.removal_started_at IS NULL AND user.removed_at IS NULL
-                    """,
-                    (project_id, user_id),
-                ).fetchone()
-                is not None
-            )
+            return live_project_member(connection, project_id, user_id)
 
     def member_project_ids(self, user_id: str) -> set[str]:
         with self.connection() as connection:
