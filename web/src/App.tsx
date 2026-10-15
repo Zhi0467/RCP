@@ -4173,6 +4173,7 @@ function MemberApp({
     consolidation?.evidence_flags ?? [],
     graph.nodes,
     project.repositories,
+    graphTarget.kind === "main",
   );
   const flaggedNodeIds = new Set(
     graphTarget.kind === "main" ? flagRows.flatMap((row) => (row.node ? [row.node.id] : [])) : [],

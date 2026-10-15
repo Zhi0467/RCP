@@ -42,6 +42,9 @@ test("flag rows keep open records, mark only current Evidence, and offer resolva
         ["retired", null, ["dismiss"]],
       ],
     );
+    // Off main the open graph cannot rule out Address; main's endpoint decides.
+    const branch = evidenceFlagRows([{ ...base, flag_id: "new-on-main" }], {}, repositories, false);
+    assert.deepEqual(branch[0].actions, ["address", "dismiss"]);
     assert.deepEqual(rows[1].source, { kind: "url", href: "https://example.org/paper" });
     assert.deepEqual(rows[2].source, { kind: "file", target: { path: "/work/repo/log", line: 4 } });
   } finally {
