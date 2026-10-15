@@ -103,7 +103,12 @@ test("a new Auto-research start lists runs live on other branches", () => {
     ...episode,
     episode_id: "other-run",
     graph_target: { kind: "branch", branch_id: "other-run" },
-    checkout: { kind: "shared", execution_host: "gpu-host", repository_paths: ["/srv/repo"] },
+    checkout: {
+      kind: "shared",
+      available: true,
+      execution_host: "gpu-host",
+      repository_paths: ["/srv/repo"],
+    },
   };
   const render = (props) =>
     renderMarkup(
