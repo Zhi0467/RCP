@@ -77,9 +77,9 @@ const qualificationLines = (text = "") => [
 /** Matched and diverged outcomes must say why (backend rule). */
 const explanationRequired = (menu: Menu) =>
   (menu.expectation === "matched" || menu.expectation === "diverged") && !menu.explanation?.trim();
+/** Only a single valid relation stages at once; any choice opens the menu. */
 function automaticRelation(choices: RelationChoice[]): RelationChoice | undefined {
-  const ontology = choices.filter((choice) => !choice.meta);
-  return ontology.length === 1 ? ontology[0] : choices.length === 1 ? choices[0] : undefined;
+  return choices.length === 1 ? choices[0] : undefined;
 }
 
 interface Props {

@@ -86,7 +86,13 @@ export interface ProjectSessionState extends ProjectSessionTabState {
   syncRequestSequence: number;
   draftHistory: Record<
     string,
-    { base_revision: number; past: Array<HumanDraft | null>; future: Array<HumanDraft | null> }
+    {
+      base_revision: number;
+      past: Array<HumanDraft | null>;
+      future: Array<HumanDraft | null>;
+      /** The node-detail edit whose start step is the newest undo step. */
+      open_edit?: string;
+    }
   >;
 }
 
@@ -131,8 +137,11 @@ export type ProjectSessionAction =
       kind: "human_draft_updated";
       project_id: string;
       draft: HumanDraft | null;
-      /** Fold into the previous undo step instead of adding one (finishing a node-detail edit). */
-      amend?: boolean;
+      /**
+       * A node-detail edit's start opens one undo step; its finish folds into
+       * that step while it is still the newest, so one edit is one step.
+       */
+      edit_step?: { phase: "start" | "finish"; key: string };
     }
   | { kind: "human_draft_undo"; project_id: string }
   | { kind: "human_draft_redo"; project_id: string }
@@ -334,6 +343,7 @@ export function projectSessionReducer(
       let draft: HumanDraft | null;
       let past = history.past;
       let future = history.future;
+      let openEdit: string | undefined;
       if (action.kind === "human_draft_undo") {
         if (!past.length) return state;
         draft = past[past.length - 1];
@@ -346,8 +356,10 @@ export function projectSessionReducer(
         past = [...past, state.humanDraft].slice(-100);
       } else {
         draft = action.draft;
-        if (!(action.kind === "human_draft_updated" && action.amend && past.length))
-          past = [...past, state.humanDraft].slice(-100);
+        const step = action.edit_step;
+        const folds = step?.phase === "finish" && history.open_edit === step.key && past.length;
+        if (!folds) past = [...past, state.humanDraft].slice(-100);
+        if (step?.phase === "start") openEdit = step.key;
         future = [];
       }
       const nextGeneration =
@@ -368,7 +380,12 @@ export function projectSessionReducer(
         humanDraft: draft,
         draftHistory: {
           ...state.draftHistory,
-          [key]: { base_revision: state.renderedRevision, past, future },
+          [key]: {
+            base_revision: state.renderedRevision,
+            past,
+            future,
+            ...(openEdit ? { open_edit: openEdit } : {}),
+          },
         },
         transitionCoordinator,
       };

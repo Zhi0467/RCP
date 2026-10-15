@@ -827,20 +827,28 @@ test("draft undo and redo restore null, advance generations, and branch after a 
   assert.equal(Object.values(state.draftHistory)[0].past.length, 100);
 });
 
-test("an amended draft update folds into the previous undo step", () => {
+test("a node-detail edit finish folds into its own start step only", () => {
   let state = emptyProjectSessionState("alpha");
-  const update = (draft, amend) =>
+  const update = (draft, edit_step) =>
     projectSessionReducer(state, {
       kind: "human_draft_updated",
       project_id: "alpha",
       draft,
-      amend,
+      edit_step,
     });
+  const undo = () =>
+    projectSessionReducer(state, { kind: "human_draft_undo", project_id: "alpha" });
   state = update(humanDraft(0, "Before"));
-  state = update(humanDraft(0, "Provisional"));
-  state = update(humanDraft(0, "Finished"), true);
-  state = projectSessionReducer(state, { kind: "human_draft_undo", project_id: "alpha" });
+  state = update(humanDraft(0, "Provisional"), { phase: "start", key: "node" });
+  state = update(humanDraft(0, "Finished"), { phase: "finish", key: "node" });
+  state = undo();
   assert.deepEqual(state.humanDraft, humanDraft(0, "Before"));
+  // A canvas edit in between keeps its own step; the finish no longer folds.
+  state = update(humanDraft(0, "Provisional"), { phase: "start", key: "node" });
+  state = update(humanDraft(0, "Canvas"));
+  state = update(humanDraft(0, "Finished"), { phase: "finish", key: "node" });
+  state = undo();
+  assert.deepEqual(state.humanDraft, humanDraft(0, "Canvas"));
 });
 
 test("draft history stays scoped to its project and graph target across tab restores", () => {

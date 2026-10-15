@@ -2509,10 +2509,13 @@ function MemberApp({
     [dismissedHistoryNoticeIds, graph.revision, graph.validation_messages],
   );
 
-  const updateHumanDraft = (update: (draft: HumanDraft) => HumanDraft, amend = false) => {
+  const updateHumanDraft = (
+    update: (draft: HumanDraft) => HumanDraft,
+    editStep?: { phase: "start" | "finish"; key: string },
+  ) => {
     if (!projectId || mutationsDisabled) return;
     setNotice(null);
-    const { next } = updateProjectHumanDraft(projectId, graph, update, amend);
+    const { next } = updateProjectHumanDraft(projectId, graph, update, editStep);
     try {
       persistProjectHumanDraft(localStorage, draftActorId, projectId, next.humanDraft, graphTarget);
     } catch (error) {
@@ -5324,13 +5327,22 @@ function MemberApp({
             onClose={() => closeDetailSlot(slot)}
             onDock={() => dockNode(node.id, slot)}
             onBeginEdit={() =>
-              updateHumanDraft((draft) => stageNodeEditStart(draft, graph, node.id))
+              updateHumanDraft((draft) => stageNodeEditStart(draft, graph, node.id), {
+                phase: "start",
+                key: node.id,
+              })
             }
             onStanding={(standing, amend) =>
-              updateHumanDraft((draft) => stageNodeStanding(draft, graph, node.id, standing), amend)
+              updateHumanDraft(
+                (draft) => stageNodeStanding(draft, graph, node.id, standing),
+                amend ? { phase: "finish", key: node.id } : undefined,
+              )
             }
             onStage={(changes, amend) =>
-              updateHumanDraft((draft) => stageNodeEdit(draft, graph, node.id, changes), amend)
+              updateHumanDraft(
+                (draft) => stageNodeEdit(draft, graph, node.id, changes),
+                amend ? { phase: "finish", key: node.id } : undefined,
+              )
             }
             onApplyField={(changes, fieldKey) =>
               updateHumanDraft((draft) => stageNodeEdit(draft, graph, node.id, changes, [fieldKey]))

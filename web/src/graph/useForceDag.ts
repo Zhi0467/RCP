@@ -270,6 +270,8 @@ export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceD
   const pinAt = useCallback(
     (nodeId: string, x: number, y: number) => {
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      x = Math.max(HORIZONTAL_PADDING + DAG_NODE_WIDTH / 2, x);
+      y = Math.max(VERTICAL_PADDING + DAG_NODE_HEIGHT / 2, y);
       const node = nodesRef.current.find((item) => item.id === nodeId);
       const pending = pendingPinsRef.current.get(storageKey) ?? {};
       if (node) {
@@ -537,20 +539,15 @@ function constrainNodeToCanvas(node: ForceNode, width: number, height: number): 
   const pinned = node.fx !== null && node.fx !== undefined;
   const rawX = node.fx ?? node.x ?? width / 2;
   const rawY = node.fy ?? node.y ?? height / 2;
+  // Pinned cards may grow the canvas right and down, never past its top-left edge.
+  const minX = HORIZONTAL_PADDING + DAG_NODE_WIDTH / 2;
+  const minY = VERTICAL_PADDING + DAG_NODE_HEIGHT / 2;
   const x = pinned
-    ? rawX
-    : clamp(
-        rawX,
-        HORIZONTAL_PADDING + DAG_NODE_WIDTH / 2,
-        width - HORIZONTAL_PADDING - DAG_NODE_WIDTH / 2,
-      );
+    ? Math.max(minX, rawX)
+    : clamp(rawX, minX, width - HORIZONTAL_PADDING - DAG_NODE_WIDTH / 2);
   const y = pinned
-    ? rawY
-    : clamp(
-        rawY,
-        VERTICAL_PADDING + DAG_NODE_HEIGHT / 2,
-        height - VERTICAL_PADDING - DAG_NODE_HEIGHT / 2,
-      );
+    ? Math.max(minY, rawY)
+    : clamp(rawY, minY, height - VERTICAL_PADDING - DAG_NODE_HEIGHT / 2);
   if (x !== rawX) node.vx = 0;
   if (y !== rawY) node.vy = 0;
   node.x = x;
