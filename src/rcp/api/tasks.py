@@ -141,9 +141,7 @@ class AgentArtifactResponse(AgentArtifactDescriptor):
     turn_folder: str | None = None
     # A fork's source: the tracked file this turn edited, which its reply cites,
     # before the file moved and the edit was kept as this separate artifact.
-    forked_from: TrackedFileLocation | None = Field(
-        default=None, exclude_if=lambda value: value is None
-    )
+    forked_from: TrackedFileLocation | None = None
 
 
 def _agent_artifact_response(
@@ -247,10 +245,11 @@ def _agent_task_response(
         result["artifact_omissions"] = artifact_omissions(receipt)
     edit = record.request.get("artifact_edit")
     edit = edit if isinstance(edit, dict) else {}
+    operation_ids = _artifact_outcome_operation_ids([record])
+    if edit_outcomes is None:
+        edit_outcomes = store.agent_task_artifact_edit_outcomes(operation_ids)
     receipts = [
-        receipt
-        for operation_id in _artifact_outcome_operation_ids([record])
-        for receipt in (edit_outcomes or {}).get(operation_id, [])
+        receipt for operation_id in operation_ids for receipt in edit_outcomes.get(operation_id, [])
     ]
     outcomes = artifact_edit_outcomes(
         receipts,
@@ -269,13 +268,17 @@ def _agent_task_response(
                     update["repairable"] = False
     if not isinstance(stored_artifacts, list):
         return response
-    # The tracked file each fork was cut from, as settlement recorded it.
-    forks = {
-        payload["separate_artifact_id"]: payload["forked_from"]
-        for receipt in receipts
-        if isinstance((payload := receipt.payload).get("separate_artifact_id"), str)
-        and isinstance(payload.get("forked_from"), dict)
-    }
+    # Where each published file and each fork's source lived, as settlement
+    # recorded it: the reply cites that path after Delete or expiry removes the row.
+    located: dict[str, dict[str, object]] = {}
+    for receipt in receipts:
+        payload = receipt.payload
+        if "turn_folder" in payload:
+            located[str(payload["artifact_id"])] = {"turn_folder": payload["turn_folder"]}
+        if "forked_from" in payload:
+            located[str(payload["separate_artifact_id"])] = {
+                "forked_from": TrackedFileLocation.model_validate(payload["forked_from"])
+            }
     projected: list[object] = []
     for raw in stored_artifacts:
         try:
@@ -284,11 +287,8 @@ def _agent_task_response(
             projected.append(raw)
             continue
         card = _agent_artifact_response(store, record, descriptor)
-        forked_from = forks.get(descriptor.artifact_id)
-        if forked_from is not None:
-            card = card.model_copy(
-                update={"forked_from": TrackedFileLocation.model_validate(forked_from)}
-            )
+        if descriptor.artifact_id in located:
+            card = card.model_copy(update=located[descriptor.artifact_id])
         projected.append(_agent_artifact_response_json(card))
     result["artifacts"] = projected
     return response
@@ -587,9 +587,6 @@ def agent_task(
         background_tasks,
         store.agent_task_degradations([operation_id]),
         store.agent_task_artifact_discoveries([operation_id]),
-        edit_outcomes=store.agent_task_artifact_edit_outcomes(
-            _artifact_outcome_operation_ids([record])
-        ),
     )
     detail["events"] = [
         event.model_dump(mode="json") for event in store.agent_task_events(operation_id)

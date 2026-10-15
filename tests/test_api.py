@@ -3497,6 +3497,7 @@ def test_failed_chat_task_retains_artifacts_emitted_before_the_error(app, tmp_pa
                 "can_keep": False,
                 "can_discuss": False,
                 "turn_folder": None,
+                "forked_from": None,
             }
         ],
     }

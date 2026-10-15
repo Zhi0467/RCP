@@ -348,6 +348,7 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
         "can_keep": False,
         "can_discuss": False,
         "turn_folder": chat_operation_id,
+        "forked_from": None,
     }
     reason = artifacts["temporary.html"].pop("unavailable_reason")
     assert (reason is None) == retained_temporary
@@ -361,6 +362,7 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
         "can_discuss": False,
         # Only a still-stored artifact names its turn folder.
         "turn_folder": chat_operation_id if retained_temporary else None,
+        "forked_from": None,
     }
     base = f"/api/projects/{project_id}/tasks/{chat_operation_id}/artifacts"
     kept_base = f"{base}/{kept.artifact_id}"

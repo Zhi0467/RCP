@@ -77,10 +77,12 @@ class _CaptureGuard:
                 self.condition.notify_all()
 
     @contextmanager
-    def deletion(self) -> Iterator[None]:
+    def deletion(self, *, wait: bool) -> Iterator[bool]:
+        """Yield whether no capture runs; with `wait`, block until none does."""
         with self.condition:
-            self.condition.wait_for(lambda: self.captures == 0)
-            yield
+            if wait:
+                self.condition.wait_for(lambda: self.captures == 0)
+            yield self.captures == 0
 
 
 def _capture_guard(root: Path) -> _CaptureGuard:
@@ -578,7 +580,7 @@ class ArtifactStoreMixin(StoreMixinBase):
                 )
             ]
             if obsolete:
-                with _capture_guard(self.path.parent).deletion():
+                with _capture_guard(self.path.parent).deletion(wait=True):
                     for path in obsolete:
                         path.unlink(missing_ok=True)
             return version
@@ -643,7 +645,9 @@ class ArtifactStoreMixin(StoreMixinBase):
             refusal = self.artifact_delete_refusal(artifact, self.artifact_deletion_holds())
             if refusal is not None:
                 raise ArtifactDeleteRefused(refusal)
-            self._remove_artifact(artifact, "deleted", "Artifact deleted.")
+            # A member's request never waits on a backup or transfer copying files.
+            if not self._remove_artifact(artifact, "deleted", "Artifact deleted.", wait=False):
+                raise ArtifactDeleteRefused("A backup or transfer is copying artifacts.")
 
     def expire_artifacts(
         self, *, as_of: datetime | None = None, protected_artifact_ids: frozenset[str] = frozenset()
@@ -668,20 +672,23 @@ class ArtifactStoreMixin(StoreMixinBase):
                     or cast("AppStore", self).consolidation_report_is_pending(artifact)
                 ):
                     continue
-                self._remove_artifact(artifact, "missing", "Artifact expired.")
+                self._remove_artifact(artifact, "missing", "Artifact expired.", wait=True)
                 removed += 1
         return removed
 
-    def _remove_artifact(self, artifact: Artifact, state: str, reason: str) -> None:
+    def _remove_artifact(self, artifact: Artifact, state: str, reason: str, *, wait: bool) -> bool:
         """Drop an artifact under its lock, leaving a tombstone that stops re-import.
 
         A `deleted` tombstone also stops discovery from recreating the identity.
 
         Kept chat descriptors lose their kept binding, so backup inventory and the
-        saved list stop expecting the bytes; pins go for every member.
+        saved list stop expecting the bytes; pins go for every member. Without
+        `wait`, a running capture leaves everything in place and returns False.
         """
         artifact_id = artifact.artifact_id
-        with _capture_guard(self.path.parent).deletion():
+        with _capture_guard(self.path.parent).deletion(wait=wait) as idle:
+            if not idle:
+                return False
             with self.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 connection.execute(
@@ -726,6 +733,7 @@ class ArtifactStoreMixin(StoreMixinBase):
             folder = self.path.parent / "artifacts" / artifact_id
             if folder.exists():
                 shutil.rmtree(folder)
+        return True
 
     def _artifact_version(self, artifact_id: str, version_id: str) -> ArtifactVersion:
         for version in self.artifact_versions(artifact_id):
