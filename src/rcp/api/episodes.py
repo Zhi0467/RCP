@@ -532,7 +532,13 @@ def listed_episodes(
     def listed(episode: EpisodeRecord) -> bool:
         if mode is not None and episode.mode != mode:
             return False
-        if include_archived_branches or episode.graph_target.kind != "branch":
+        # A live episode stays listed even on an archived branch: it can still
+        # act on a shared checkout, and Stop must stay reachable.
+        if (
+            include_archived_branches
+            or episode.graph_target.kind != "branch"
+            or episode.status in _LIVE_EPISODE_STATUSES
+        ):
             return True
         state = store.episode_isolation_state(
             project_id,

@@ -275,7 +275,7 @@ callbacks mutating a reopened run, while retaining branch work and session memor
 `POST .../episodes/{id}/continue` takes `invocation_ceiling` and `request_id` for
 both episode kinds, including stopped sources. `can_continue` requires bound
 session/stage. Admission refuses nonterminal/already-continued sources, live turns,
-active merge, a competing live project/node-target episode, removed isolation, or
+active merge, a competing live branch/node-target episode, removed isolation, or
 an active human-owned lineage-child turn. Exact request replay returns the same
 continuation. Stopped watchers stay stopped; missing bindings require a new run.
 
