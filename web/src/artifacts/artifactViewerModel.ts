@@ -27,6 +27,10 @@ export function openRepositoryFile(input: {
 export function closeArtifactViewer(): void {
   publish(null);
 }
+/** A finished Delete closes the viewer only while it still shows that artifact. */
+export function closeArtifactIfOpen(artifactId: string): void {
+  if (target?.kind === "artifact" && target.artifactId === artifactId) publish(null);
+}
 
 export function useArtifactViewerTarget() {
   return useSyncExternalStore(

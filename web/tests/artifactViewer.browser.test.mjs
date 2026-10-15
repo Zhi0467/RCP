@@ -3,7 +3,7 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
-test("served viewer observes watermark changes and Undo, retries errors and aborts on close", async () => {
+test("served viewer observes watermark changes and Undo, deletes, retries errors and aborts on close", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "silent",
@@ -69,6 +69,7 @@ test("served viewer observes watermark changes and Undo, retries errors and abor
                 current_version: `v${version}`,
                 version_number: version,
                 can_undo: version > 1,
+                can_delete: true,
                 live: null,
                 editing_operation_id: null,
                 viewer_url: `/api/projects/project/artifacts/a/viewer?v=${version}`,
@@ -77,18 +78,23 @@ test("served viewer observes watermark changes and Undo, retries errors and abor
               },
       });
     });
+    await page.route("**/api/projects/project/artifacts/a", (route) =>
+      route.fulfill({ status: 204 }),
+    );
     await page.route("**/api/projects/project/artifacts/a/viewer?*", (route) =>
       route.fulfill({ contentType: "text/html", body: "<p>Preview</p>" }),
     );
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/artifacts.html`,
     );
-    await page.evaluate(async () =>
-      (await import("/src/artifacts/artifactViewerModel.ts")).openArtifact({
-        projectId: "project",
-        artifactId: "a",
-      }),
-    );
+    const openViewer = () =>
+      page.evaluate(async () =>
+        (await import("/src/artifacts/artifactViewerModel.ts")).openArtifact({
+          projectId: "project",
+          artifactId: "a",
+        }),
+      );
+    await openViewer();
     await page.locator('iframe[src$="v=1"]').waitFor();
     const source = page.locator('.artifact-viewer-header a[href^="#/projects/"]');
     assert.equal(await source.getAttribute("href"), threadHref);
@@ -141,6 +147,15 @@ test("served viewer observes watermark changes and Undo, retries errors and abor
       }),
       "Test artifact",
     );
+    await page.locator('iframe[src$="v=1"]').waitFor();
+    // A Delete that finishes after the viewer moved on leaves that viewer open.
+    await page.evaluate(async () =>
+      (await import("/src/artifacts/artifactViewerModel.ts")).closeArtifactIfOpen("b"),
+    );
+    await page.getByRole("button", { name: "Delete artifact", exact: true }).click();
+    await page.getByRole("button", { name: "Confirm delete", exact: true }).click();
+    await panel.waitFor({ state: "detached" });
+    await openViewer();
     await page.locator('iframe[src$="v=1"]').waitFor();
 
     status = 404;

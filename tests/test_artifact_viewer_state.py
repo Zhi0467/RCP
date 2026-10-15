@@ -312,7 +312,7 @@ def test_delete_unbinds_keeps_and_pins_and_is_never_reimported(viewer_app):
     assert _state(client, artifact)["can_delete"]
 
     assert client.delete(url).status_code == 204
-    assert client.delete(url).status_code == 410
+    assert client.delete(url).status_code == 204
     assert store.research_view_pins(project, owner) == []
     assert not AgentArtifactDescriptor.model_validate(
         store.agent_task(task.operation_id).result["artifacts"][0]
@@ -324,17 +324,25 @@ def test_delete_unbinds_keeps_and_pins_and_is_never_reimported(viewer_app):
     assert artifact.artifact_id not in {entry["artifact_id"] for entry in saved}
 
 
-def test_delete_waits_for_an_edit_using_the_artifact(viewer_app):
+def test_delete_waits_only_while_an_edit_using_the_artifact_runs(viewer_app):
     app, client, store = viewer_app
     project = app.state.default_project_id
     artifact = _artifact(store, _task(store, project))
-    _task(
+    edit = _task(
         store,
         project,
         status="running",
         request={"artifact_edit": {"artifact_id": artifact.artifact_id}},
     )
+    url = f"/api/projects/{project}/artifacts/{artifact.artifact_id}"
     assert not _state(client, artifact)["can_delete"]
-    response = client.delete(f"/api/projects/{project}/artifacts/{artifact.artifact_id}")
-    assert response.status_code == 409
+    assert client.delete(url).status_code == 409
     assert store.artifact(artifact.artifact_id) is not None
+    # A stopped edit holds nothing; a resumed turn finds its artifact gone.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET status = 'interrupted' WHERE operation_id = ?",
+            (edit.operation_id,),
+        )
+    assert _state(client, artifact)["can_delete"]
+    assert client.delete(url).status_code == 204

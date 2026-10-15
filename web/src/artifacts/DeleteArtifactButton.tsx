@@ -1,46 +1,43 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Trash2 } from "lucide-react";
 import { api } from "../core/api";
 import { errorMessage } from "../core/errors";
-import { artifactAlreadyGone, artifactDeleteUrl, DELETE_CONFIRM_MS } from "./artifactDelete";
+import { resourceKeyId } from "../core/resourceStore";
+import { useRefreshRuntime } from "../core/useResource";
+import { artifactsProfile } from "./artifactResources";
+import { closeArtifactIfOpen } from "./artifactViewerModel";
 
-const dangerEdge = { borderColor: "var(--danger, #b42318)" };
+/** A first click arms Delete; this long without a second click disarms it. */
+const CONFIRM_MS = 4000;
 
-/** Two-click Delete: the first click arms it, the second sends the request. */
+/**
+ * Two-click Delete: the first click arms it, the second sends the request. A
+ * finished Delete closes the viewer only while it still shows this artifact.
+ */
 export function DeleteArtifactButton({
   projectId,
   artifactId,
   label,
   className,
   iconSize,
-  onDeleted,
 }: {
   projectId: string;
   artifactId: string;
   label: string;
   className: string;
   iconSize: number;
-  onDeleted: () => void;
 }) {
+  const { store } = useRefreshRuntime();
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  const mounted = useRef(true);
-  useEffect(() => {
-    // StrictMode reruns setup after cleanup, so setup restores the flag.
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
   useEffect(() => {
     if (!confirming) return;
-    const timer = window.setTimeout(() => setConfirming(false), DELETE_CONFIRM_MS);
+    const timer = window.setTimeout(() => setConfirming(false), CONFIRM_MS);
     return () => window.clearTimeout(timer);
   }, [confirming]);
 
   const click = async () => {
-    if (deleting) return;
     if (!confirming) {
       setConfirming(true);
       return;
@@ -49,24 +46,28 @@ export function DeleteArtifactButton({
     setFailure(null);
     setDeleting(true);
     try {
-      await api(artifactDeleteUrl(projectId, artifactId), { method: "DELETE" });
-      onDeleted();
+      // The route answers 204 again for an artifact that is already gone.
+      await api(
+        `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}`,
+        { method: "DELETE" },
+      );
+      closeArtifactIfOpen(artifactId);
+      store.invalidate(resourceKeyId(artifactsProfile(projectId).key));
     } catch (cause) {
-      if (artifactAlreadyGone(cause)) onDeleted();
-      else if (mounted.current) setFailure(errorMessage(cause));
+      setFailure(errorMessage(cause));
     } finally {
-      if (mounted.current) setDeleting(false);
+      setDeleting(false);
     }
   };
 
   const name = confirming ? "Confirm delete" : label;
+  const state = confirming ? " artifact-delete-confirm" : failure ? " artifact-action-failed" : "";
   return (
     <button
       type="button"
-      className={`${className}${confirming ? " artifact-delete-confirm" : ""}`}
+      className={className + state}
       aria-label={name}
       title={!confirming && failure ? failure : name}
-      style={failure && !confirming ? dangerEdge : undefined}
       disabled={deleting}
       onBlur={() => setConfirming(false)}
       onClick={() => void click()}

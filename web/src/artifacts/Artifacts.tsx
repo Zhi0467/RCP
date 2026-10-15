@@ -195,7 +195,6 @@ export function Artifacts({
                     label={`Delete ${entry.name}`}
                     className="button compact secondary artifact-entry-delete"
                     iconSize={14}
-                    onDeleted={() => store.invalidate(resourceKeyId(profile.key))}
                   />
                 )}
               </li>

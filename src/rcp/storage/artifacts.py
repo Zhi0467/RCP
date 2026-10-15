@@ -576,20 +576,31 @@ class ArtifactStoreMixin(StoreMixinBase):
                         path.unlink(missing_ok=True)
             return version
 
-    def artifact_delete_refusal(self, artifact: Artifact) -> str | None:
-        """Why removal must wait; expiry and Delete share these holds."""
+    def artifact_deletion_holds(self) -> frozenset[str]:
+        """Artifacts a running turn reads or edits, and legacy imports still pending.
+
+        A paused or interrupted edit holds nothing: Delete is the human's call, and a
+        resumed turn finds its artifact unavailable.
+        """
+        statuses = sorted(ACTIVE_AGENT_TASK_STATUSES)
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT json_extract(request_json, '$.artifact_context.artifact_id'), "
+                "json_extract(request_json, '$.artifact_edit.artifact_id') FROM graph_runs "
+                f"WHERE status IN ({','.join('?' for _ in statuses)})",
+                statuses,
+            ).fetchall()
+        running = frozenset(value for row in rows for value in row if isinstance(value, str))
+        return running | cast("AppStore", self).legacy_artifact_import_ids()
+
+    def artifact_delete_refusal(self, artifact: Artifact, holds: frozenset[str]) -> str | None:
+        """Why Delete refuses this artifact; `holds` is `artifact_deletion_holds()`."""
         if artifact.supplier == "episode_ending":
             return "Episode reports stay bound to their episode."
-        if (
-            self.artifact_edit_operation_id(artifact.project_id, artifact.artifact_id) is not None
-            or artifact.artifact_id in self.protected_edit_artifact_ids()
-        ):
-            return "An agent turn is using this artifact."
-        store = cast("AppStore", self)
-        if store.consolidation_report_is_pending(artifact):
+        if artifact.artifact_id in holds:
+            return "An agent turn or import is using this artifact."
+        if cast("AppStore", self).consolidation_report_is_pending(artifact):
             return "This consolidation report awaits review."
-        if artifact.artifact_id in store.legacy_artifact_import_ids():
-            return "This artifact is still being imported."
         return None
 
     def delete_artifact(self, project_id: str, artifact_id: str) -> None:
@@ -598,8 +609,9 @@ class ArtifactStoreMixin(StoreMixinBase):
             artifact = self.artifact(artifact_id)
             if artifact is None or artifact.project_id != project_id:
                 raise KeyError(artifact_id)
-            if (reason := self.artifact_delete_refusal(artifact)) is not None:
-                raise ArtifactDeleteRefused(reason)
+            refusal = self.artifact_delete_refusal(artifact, self.artifact_deletion_holds())
+            if refusal is not None:
+                raise ArtifactDeleteRefused(refusal)
             self._remove_artifact(artifact, "deleted", "Artifact deleted.")
 
     def expire_artifacts(
@@ -620,7 +632,9 @@ class ArtifactStoreMixin(StoreMixinBase):
                     or artifact.kept_at
                     or not artifact.expires_at
                     or datetime.fromisoformat(artifact.expires_at) > now
-                    or self.artifact_delete_refusal(artifact) is not None
+                    or self.artifact_edit_operation_id(artifact.project_id, artifact_id) is not None
+                    or artifact_id in self.protected_edit_artifact_ids()
+                    or cast("AppStore", self).consolidation_report_is_pending(artifact)
                 ):
                     continue
                 self._remove_artifact(artifact, "missing", "Artifact expired.")

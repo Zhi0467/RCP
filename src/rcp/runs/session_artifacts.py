@@ -32,7 +32,7 @@ from rcp.regular_file_reader import RegularFileTooLargeError
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AgentTaskReceiptRecord, AppStore, Artifact, ArtifactVersionConflict
 from rcp.storage.artifact_models import ArtifactOperationConflict, ArtifactVersion
-from rcp.storage.artifacts import ArtifactByteLimitError
+from rcp.storage.artifacts import ArtifactByteLimitError, ArtifactDeleted
 from rcp.transport import RemoteRunStage
 from rcp.transport.remote_stage_root import artifact_digests, sync_artifact
 
@@ -554,6 +554,8 @@ def _fork(
         )
     except ArtifactVersionConflict:
         return None  # A replay found different bytes already forked.
+    except ArtifactDeleted:
+        return None  # A member deleted this fork; a replay does not restore it.
     # Later turns track the fork at its own path in this turn's folder.
     if _write(workspace, remote, forked, "", data):
         store.record_artifact_sync(forked.artifact_id, hashlib.sha256(data).hexdigest())
