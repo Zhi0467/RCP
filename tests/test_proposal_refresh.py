@@ -260,12 +260,16 @@ def test_a_stale_merge_only_proposal_is_not_refreshable(filed):
         related_node_ids=[HYP],
         raised_rev=state.revision,
     )
+    filed_ops = state.proposals[PROPOSAL].ops
+    bundle = state.proposals[PROPOSAL].model_copy(
+        update={"id": "prop/merge-bundle", "ops": [*filed_ops, *filed_ops]}
+    )
     moved = state.model_copy(
         update={
             "nodes": {**state.nodes, HYP: hypothesis},
-            "proposals": {**state.proposals, standing.id: standing},
+            "proposals": {**state.proposals, standing.id: standing, bundle.id: bundle},
         }
     )
     attention = project_graph_attention(moved)
-    assert attention.stale_proposal_ids == [PROPOSAL, standing.id]
+    assert attention.stale_proposal_ids == [PROPOSAL, bundle.id, standing.id]
     assert attention.refreshable_proposal_ids == [PROPOSAL]

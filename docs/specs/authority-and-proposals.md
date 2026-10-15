@@ -215,9 +215,10 @@ light agent (node-chat provider and model at the lowest effort that model's
 probed catalog lists, Evidence triage invoked when Evidence is the cause) gets
 only the Proposal and what moved, withdraws it, and files one fresh pending
 Proposal if the change still holds. The fresh Proposal waits for a human like
-any other. Forms only a branch merge may file (standing change, human-caused
-status change, removal of an accepted unprotected node) are not refreshable; a
-stale one is withdrawn by Reject or the next Sync judgment.
+any other. Forms only a branch merge may file (a multi-intent bundle, standing
+change, human-caused status change, removal of an accepted unprotected node)
+are not refreshable; a stale one is withdrawn by Reject or the next Sync
+judgment.
 
 ## Guarded removal
 

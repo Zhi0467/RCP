@@ -191,11 +191,13 @@ def moved_proposal_dependencies(state: GraphState, proposal: Proposal) -> list[s
 def proposal_requires_branch_merge(state: GraphState, proposal: Proposal) -> bool:
     """Whether only a canonical branch merge may file this Proposal's form.
 
-    Ordinary Work cannot re-file a standing change, a status change caused by a
-    human edit, or the removal of an accepted unprotected node, so a stale one
-    is withdrawn rather than refreshed.
+    Ordinary Work cannot re-file a multi-intent bundle, a standing change, a
+    status change caused by a human edit, or the removal of an accepted
+    unprotected node, so a stale one is withdrawn rather than refreshed.
     """
 
+    if len(proposal.ops) > 1:
+        return True
     for operation in proposal.ops:
         if isinstance(operation, ProposalStandingChangeOperation):
             return True
