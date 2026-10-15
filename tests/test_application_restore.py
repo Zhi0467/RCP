@@ -440,7 +440,9 @@ def test_tampered_archive_structure_never_changes_live_state(restore_request, tm
 
 
 @pytest.mark.parametrize("omit_inventory", [False, True])
-def test_restore_relocates_every_artifact_version(restore_request, tmp_path, omit_inventory):
+def test_restore_relocates_every_artifact_version(
+    restore_request, tmp_path, omit_inventory, manifest, monkeypatch
+):
     import json
 
     from rcp.storage import AppStore, Artifact
@@ -451,6 +453,24 @@ def test_restore_relocates_every_artifact_version(restore_request, tmp_path, omi
     database = root / "rcp.sqlite3"
     database.chmod(0o600)
     store = AppStore(database)
+    from tests.test_transfer_import import _archive_fixture
+    from tests.test_transfer_import_storage import _rich_capture
+
+    with monkeypatch.context() as setup:
+        fixture = _archive_fixture(manifest, tmp_path / "report-source", setup)
+        records = _rich_capture(fixture, with_report=True).records.model_copy(
+            update={"project_id": store.projects()[0].project_id}
+        )
+    attributions = {item.archive_actor_id: item for item in records.attributions}
+    with store.connection() as connection:
+        store._insert_transfer_tasks(connection, records, attributions)
+        store._insert_transfer_watchers(connection, records)
+        store._insert_transfer_episodes(connection, records, attributions)
+    episode = records.episodes[0]
+    report = store.episode_report(episode.episode_id)
+    assert report is not None
+    store.delete_artifact(records.project_id, report.artifact_id)
+    lineage = store.episode_report(episode.episode_id, include_deleted=True)
     artifact = store.create_artifact(
         Artifact(
             artifact_id="restore-versions",
@@ -506,6 +526,16 @@ def test_restore_relocates_every_artifact_version(restore_request, tmp_path, omi
         candidate.read_artifact_bytes(artifact.artifact_id, artifact.current_version) == b"original"
     )
     assert candidate.read_artifact_bytes(artifact.artifact_id, edited.version_id) == b"edited"
+    assert candidate.episode_report(episode.episode_id, include_deleted=True) == lineage
+    assert candidate.episode_report(episode.episode_id) is None
+    assert candidate.artifact(report.artifact_id) is None
+    with candidate.connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT state FROM artifact_imports WHERE artifact_id = ?", (report.artifact_id,)
+            ).fetchone()[0]
+            == "deleted"
+        )
 
 
 def test_restore_legacy_migrated_artifact_can_be_archived_again(
