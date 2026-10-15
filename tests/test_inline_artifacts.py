@@ -136,7 +136,6 @@ def test_the_inline_shell_has_no_chrome_and_bounds_its_content() -> None:
         descriptor,
         content_url="/content?version_id=v1",
         state="temporary",
-        keep_url="/keep",
         live_url="/live",
         presentation="inline",
         selectable=True,

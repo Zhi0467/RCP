@@ -152,7 +152,7 @@ from rcp.limits import ARTIFACT_ERROR_MAX_CHARS
 d = AgentArtifactDescriptor(artifact_id="a"*24, name="page.html", media_type="text/html", size_bytes=1)
 result = {"limit": ARTIFACT_ERROR_MAX_CHARS}
 for mode in ("panel", "inline"):
-    result[mode] = artifact_viewer_document(d, content_url="/content", state="temporary", keep_url="/keep", presentation=mode, selectable=True, panel=comment_panel({"projectId":"p", "artifactId":d.artifact_id, "mediaType":"text/html"}))[0]
+    result[mode] = artifact_viewer_document(d, content_url="/content", state="temporary", presentation=mode, selectable=True, panel=comment_panel({"projectId":"p", "artifactId":d.artifact_id, "mediaType":"text/html"}))[0]
 for name, script in {"sync":"throw new Error('broken <img src=x>')", "quiet":"", "reject":"Promise.reject('rejected')", "long":"throw new Error('x'.repeat(10000))"}.items():
     addon = FrameAddon(frame_script="send({kind:'rcp-artifact-error',message:'extra-key',count:1,extra:1});", wrapper_script="") if name == "quiet" else None
     result[name] = artifact_content("page.html", "text/html", ("<!doctype html><p id=drawn>drawn</p><script>"+script+"</script>").encode(), frame_addon=addon)[0]
@@ -198,7 +198,6 @@ test("script errors preserve the drawing and actions and prefill only a human co
   assert.equal(await shell.locator("#pageError img").count(), 0);
   assert.equal(await artifact.locator("#drawn").count(), 1);
   assert.equal(await page.locator("a[download]").count(), 1);
-  assert.equal(await shell.locator("#keep").isVisible(), true);
   await shell.locator("#message").evaluate((field) => (field.value = "my draft"));
   await shell.locator("#askFix").click();
   const draft = await shell.locator("#message").inputValue();

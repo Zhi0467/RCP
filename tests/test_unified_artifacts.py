@@ -272,7 +272,6 @@ def test_viewer_sends_comments_through_stored_artifact_route() -> None:
 
     document, csp = artifact_viewer_document(
         content_url="/preview",
-        keep_url="/keep",
         state="temporary",
         panel=comment_panel(
             {
@@ -294,7 +293,6 @@ def test_viewer_sends_comments_through_stored_artifact_route() -> None:
     assert "frame-ancestors 'self'" in csp
     assert 'id="state"' not in document
     assert "mode:" not in document and '"mode"' not in document
-    assert "fetch(config.keepUrl" in document
     assert "right - left < 4" in document
     assert 'id="composer"' in document
     assert "installSelectionConfirmation" in document
@@ -313,7 +311,6 @@ def test_viewer_filename_cannot_add_preview_attributes(chat_id: str | None, suff
     name = f'x" onload="alert(1)" onerror="alert(1){suffix}'
     document, _csp = artifact_viewer_document(
         content_url="/preview",
-        keep_url="/keep",
         state="temporary",
         panel=comment_panel(
             {
@@ -349,7 +346,6 @@ def test_viewer_filename_cannot_add_preview_attributes(chat_id: str | None, suff
 def test_episode_report_shell_has_no_repository_save_action(commentable) -> None:
     document, csp = artifact_viewer_document(
         content_url="/preview",
-        keep_url=None,
         state="report",
         panel=comment_panel({"projectId": "project", "artifactId": "a" * 24})
         if commentable

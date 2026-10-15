@@ -55,6 +55,7 @@ from rcp.storage import (
     Artifact,
     EpisodeMode,
 )
+from rcp.storage.artifacts import ArtifactDeleteRefused
 from rcp.storage.research_views import ResearchViewConflict
 from rcp.transport import StateUnavailable
 
@@ -85,6 +86,7 @@ class SavedArtifactResponse(BaseModel):
     unavailable_reason: str | None = None
     # The owning branch's display name, resolved here so the tag never guesses from a link.
     graph_branch_name: str = "main"
+    can_delete: bool = False
 
 
 def _task_artifact_episode_id(task: AgentTaskRecord) -> str | None:
@@ -253,6 +255,8 @@ def saved_artifacts(
             if origin is not None:
                 report_origins[report.episode_id] = origin
     stored_artifacts = store.artifacts(project_id)
+    stored_by_id = {artifact.artifact_id: artifact for artifact in stored_artifacts}
+    holds = store.artifact_deletion_holds()
     chat_origins = _artifact_source_hrefs(
         catalog, store, project_id, [*artifact_tasks, *stored_artifacts]
     )
@@ -271,6 +275,7 @@ def saved_artifacts(
             if not artifact.is_kept():
                 continue
             projected = _agent_artifact_response(store, task, artifact)
+            stored = stored_by_id.get(artifact.artifact_id)
             artifact_url = (
                 f"{base}/tasks/{quote(task.operation_id, safe='')}/artifacts/{artifact.artifact_id}"
             )
@@ -294,6 +299,8 @@ def saved_artifacts(
                     can_open=projected.can_open,
                     can_download=projected.can_download,
                     download_url=f"{artifact_url}/download" if projected.can_download else None,
+                    can_delete=stored is not None
+                    and store.artifact_delete_refusal(stored, holds) is None,
                 )
             )
     # _validate_new_wrapup requires a concluding operation; finish_episode_report_ready
@@ -357,6 +364,7 @@ def saved_artifacts(
                 can_download=True,
                 download_url=f"{artifact_url}/download",
                 can_open=view not in {"file", "pdf"},
+                can_delete=store.artifact_delete_refusal(artifact, holds) is None,
             )
         )
     _name_artifact_branches(store, project_id, entries)
@@ -387,7 +395,7 @@ def _stored_artifact(store: AppStore, project_id: str, artifact_id: str):
         status = store.artifact_import_status(artifact_id)
         if status is not None and status["project_id"] == project_id:
             raise HTTPException(
-                status_code=410 if status["state"] == "missing" else 409,
+                status_code=410 if status["state"] in {"missing", "deleted"} else 409,
                 detail=status["reason"] or "Artifact import is pending.",
             )
     if artifact is None or artifact.project_id != project_id:
@@ -421,6 +429,7 @@ class ArtifactViewerState(BaseModel):
     viewer_url: str | None
     download_url: str
     can_keep: bool
+    can_delete: bool
     expires_at: str | None
     pin_branch_id: str | None
     pin_branch_name: str
@@ -509,6 +518,7 @@ def stored_artifact_state(
         else None,
         download_url=f"{base}/download",
         can_keep=_temporary(artifact),
+        can_delete=store.artifact_delete_refusal(artifact, store.artifact_deletion_holds()) is None,
         expires_at=artifact.expires_at,
     )
 
@@ -629,7 +639,6 @@ def stored_artifact_viewer(
             descriptor,
             content_url=f"{base}/content?{urlencode({'version_id': artifact.current_version})}",
             live_url=f"{base}/versions/{quote(artifact.current_version, safe='')}/live",
-            keep_url=f"{base}/keep" if _temporary(artifact) else None,
             state="temporary" if _temporary(artifact) else "kept",
             presentation=presentation,
             selectable=artifact.media_type in COMMENTABLE_MEDIA_TYPES,
@@ -707,8 +716,31 @@ def keep_stored_artifact(
         if user.display_name and user.display_name.strip()
         else None
     )
-    _stored_artifact(store, project_id, artifact_id)
-    return store.keep_artifact(artifact_id, resolved_by=human)
+    # Delete takes this lock too, so the check cannot go stale before Keep.
+    with store.artifact_lock(artifact_id):
+        _stored_artifact(store, project_id, artifact_id)
+        return store.keep_artifact(artifact_id, resolved_by=human)
+
+
+@router.delete(
+    "/api/projects/{project_id}/artifacts/{artifact_id}",
+    status_code=204,
+    dependencies=[Depends(require_project_write_admission)],
+)
+def delete_stored_artifact(
+    project_id: str,
+    artifact_id: str,
+    *,
+    store: Annotated[AppStore, Depends(get_store)],
+) -> Response:
+    """Any member may delete; repeating a delete of a removed artifact succeeds."""
+    try:
+        store.delete_artifact(project_id, artifact_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Artifact not found") from None
+    except ArtifactDeleteRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return Response(status_code=204)
 
 
 @router.get("/api/projects/{project_id}/artifacts/{artifact_id}/download")
@@ -835,10 +867,12 @@ def undo_artifact(
     *,
     store: Annotated[AppStore, Depends(get_store)],
 ):
-    artifact = store.artifact(artifact_id)
-    if artifact is None or artifact.project_id != project_id:
-        raise HTTPException(status_code=404, detail="Artifact not found")
-    try:
-        return store.undo_artifact(artifact_id).model_dump(mode="json")
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    # Delete takes this lock too, so the check cannot go stale before Undo.
+    with store.artifact_lock(artifact_id):
+        artifact = store.artifact(artifact_id)
+        if artifact is None or artifact.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Artifact not found")
+        try:
+            return store.undo_artifact(artifact_id).model_dump(mode="json")
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc

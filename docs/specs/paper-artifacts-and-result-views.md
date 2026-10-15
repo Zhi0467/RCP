@@ -213,16 +213,16 @@ Custom result HTML is an ordinary artifact, available in its origin chat, produc
 run, and after Keep in Artifacts, never unrelated chats. Stored result-view rows
 migrate to artifacts; old URLs redirect.
 
-All viewable content uses the shared panel. Panel chrome owns title, version,
-live state, Undo, Source chat, dock, and close; the embedded shell owns Keep,
-notices, selection, comments, and Send. No guidance line repeats these paths.
+All viewable content uses the shared panel. Panel chrome is the one action bar:
+title, version, live state, Keep, Undo, Source chat, Delete, dock, and close. The
+embedded shell owns notices, selection, comments, and Send. No guidance line repeats these paths.
 The shell is same-origin-frameable; agent HTML remains opaque. Repository previews
 are script-free; PDFs/download-only formats follow the type table.
 
 HTML doctype stays before policy/bootstrap; a missing doctype retains browser
 quirks behavior. Uncaught errors/rejections produce bounded plain-text notices
 beneath the frame or in its reply caption, without hiding content or blocking
-live data, Keep, or Download. First error appears immediately, later summaries
+live data or Download. First error appears immediately, later summaries
 at most once a second, only from the current private channel. Reload/version
 change clears it. Ask to fix prefills a comment for the human to send.
 
@@ -378,6 +378,26 @@ Report migration writes digest files before bindings and removal of inline HTML.
 files beside human code. Team storage is already shared; artifacts intentionally
 do not travel with repository clones. Keep, publication, and Undo grant no graph
 authority, create no Proposal, and spend no graph revision.
+
+### Deleting an artifact
+
+Any project member may delete an artifact from the viewer or the Artifacts list,
+with a second click to confirm. Delete and expiry share one removal under the
+artifact lock and capture guard. It removes every version and every member's pin,
+clears kept bindings on chat results, and leaves an import tombstone: `missing`
+after expiry, `deleted` after Delete. Nothing recreates a `deleted` identity; the
+importer skips it and `create_artifact` refuses it, so neither turn discovery nor
+a replayed fork restores it. Deleting it again succeeds.
+
+Delete is the human's call. It refuses only while a queued or running turn reads
+or edits the artifact, a consolidation report awaits review, or a legacy import is
+pending; `can_delete` and the route apply that same rule. Unlike expiry, a paused
+or interrupted edit holds nothing; its retry is refused once the artifact is gone.
+Episode reports stay bound to their episode and cannot be deleted. A file an older
+Keep copied into the state workspace stays; Delete only unbinds it.
+
+**Why:** without the tombstone, import restores a deleted chat output from its
+stage; without clearing kept bindings, backup inventory refuses the project.
 
 ## Repository-file previews
 

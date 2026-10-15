@@ -599,9 +599,19 @@
 }
 
 .artifact-entry-download,
-.artifact-entry-copy {
+.artifact-entry-copy,
+.artifact-entry-delete {
   position: relative;
   z-index: 1;
+}
+
+/* An armed Delete, and a failed artifact action, in the list and the viewer header alike. */
+.artifact-delete-confirm {
+  border: 1px solid var(--red);
+  color: var(--red);
+}
+.artifact-action-failed {
+  border-color: var(--red);
 }
 
 /* On a phone the name takes its own line and the actions wrap below it. */

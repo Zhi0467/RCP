@@ -780,12 +780,6 @@ async def _artifact_viewer_response(
         f"/api/projects/{quote(project_id, safe='')}/tasks/{quote(operation_id, safe='')}"
         f"/artifacts/{quote(artifact_id, safe='')}/content"
     )
-    keep_url = (
-        f"/api/projects/{quote(project_id, safe='')}/tasks/{quote(operation_id, safe='')}"
-        f"/artifacts/{quote(artifact_id, safe='')}/keep"
-        if descriptor.can_keep
-        else None
-    )
     panel = (
         comment_panel(
             {"projectId": project_id, "artifactId": artifact_id, "mediaType": descriptor.media_type}
@@ -804,7 +798,6 @@ async def _artifact_viewer_response(
     document, csp = artifact_viewer_document(
         descriptor,
         content_url=content_url,
-        keep_url=keep_url,
         state="kept" if descriptor.is_kept() else "temporary",
         panel=panel,
         live_url=live_url,
@@ -843,12 +836,16 @@ def keep_agent_artifact(
             "keep",
         )
         try:
-            stored = store.keep_artifact(artifact_id)
-            kept = store.mark_agent_artifact_kept(
-                operation_id,
-                artifact_id,
-                kept_at=stored.kept_at,
-            )
+            # Under Delete's lock, so a Delete cannot land between the two and
+            # leave a kept binding on an artifact that no longer exists.
+            with store.artifact_lock(artifact_id):
+                stored = store.keep_artifact(artifact_id)
+                assert stored.kept_at is not None
+                kept = store.mark_agent_artifact_kept(
+                    operation_id,
+                    artifact_id,
+                    kept_at=stored.kept_at,
+                )
         except (FileNotFoundError, OSError, StateUnavailable, ValueError) as exc:
             raise HTTPException(status_code=503, detail="Artifact Keep unavailable") from exc
         except KeyError as exc:

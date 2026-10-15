@@ -1105,7 +1105,6 @@ def test_episode_report_preview_is_singular_and_sandboxed(manifest, tmp_path) ->
     assert 'id="keep"' not in viewer.text
     assert 'id="save"' not in viewer.text
     assert 'id="state"' not in viewer.text
-    assert 'id="notice"' in viewer.text
     assert legacy_preview.status_code == 200
     assert url in legacy_preview.text
     with signed_in_client(app) as client:
@@ -1201,3 +1200,23 @@ def test_episode_list_keeps_every_auto_research_chain_current_member(manifest, t
             (project_id, root_id, archived.model_dump_json()),
         )
     assert current_id in {episode.episode_id for episode in listed_episodes(store, project_id)}
+
+
+def test_an_episode_report_cannot_be_deleted(manifest, tmp_path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store = app.state.background_tasks.store
+    episode, _root, report = create_terminal_auto_episode(
+        store,
+        app.state.catalog.open(project_id).history,
+        project_id,
+        episode_id="kept-report-episode",
+        report_html="<h1>Report</h1>",
+    )
+    assert report is not None
+    url = f"/api/projects/{project_id}/artifacts/{report.artifact_id}"
+    with signed_in_client(app) as client:
+        assert not client.get(f"{url}/state").json()["can_delete"]
+        assert client.delete(url).status_code == 409
+    assert store.episode_report(episode.episode_id) is not None

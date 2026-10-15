@@ -30,6 +30,7 @@ import { errorMessage } from "../core/errors";
 import { useResource, useRefreshRuntime } from "../core/useResource";
 import { resourceKeyId } from "../core/resourceStore";
 import { artifactStateProfile } from "./artifactResources";
+import { DeleteArtifactButton } from "./DeleteArtifactButton";
 import { repositoryFilePreviewUrl } from "../core/repositoryFileLinks";
 import { DraggableWindow } from "../ui/DraggableWindow";
 import "../styles/artifact-viewer.css";
@@ -65,6 +66,8 @@ export function ArtifactViewer() {
   const [editing, setEditing] = useState(false);
   const [pinning, setPinning] = useState(false);
   const [undoing, setUndoing] = useState(false);
+  const [keeping, setKeeping] = useState(false);
+  const [keepFailure, setKeepFailure] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   // The pin control names its target only while another target is in view.
   const [hash, setHash] = useState(window.location.hash);
@@ -91,6 +94,8 @@ export function ArtifactViewer() {
     setError("");
     setEditing(false);
     setUndoing(false);
+    setKeeping(false);
+    setKeepFailure(null);
     setPinning(false);
     setPinFailed(false);
     if (target) setPlacement((current) => collapseViewer(current, false));
@@ -188,6 +193,24 @@ export function ArtifactViewer() {
       if (generation === requestGeneration.current) setError(errorMessage(failure));
     } finally {
       if (generation === requestGeneration.current) setUndoing(false);
+    }
+  };
+  const keep = async () => {
+    if (target.kind !== "artifact") return;
+    const generation = requestGeneration.current;
+    setKeeping(true);
+    setKeepFailure(null);
+    try {
+      await api(
+        `/api/projects/${encodeURIComponent(target.projectId)}/artifacts/${encodeURIComponent(target.artifactId)}/keep`,
+        { method: "POST" },
+      );
+      if (generation !== requestGeneration.current) return;
+      refresh();
+    } catch (failure) {
+      if (generation === requestGeneration.current) setKeepFailure(errorMessage(failure));
+    } finally {
+      if (generation === requestGeneration.current) setKeeping(false);
     }
   };
   const pinTarget: GraphTargetRef | null = state
@@ -307,16 +330,36 @@ export function ArtifactViewer() {
           </button>
         )}
         {editing && <span role="status">Editing</span>}
+        {state?.can_keep && (
+          <button
+            disabled={keeping}
+            className={keepFailure ? "artifact-action-failed" : undefined}
+            title={keepFailure ?? undefined}
+            onClick={() => void keep()}
+          >
+            Keep
+          </button>
+        )}
         {state?.can_undo && (
           <button disabled={undoing} onClick={() => void undo()}>
             Undo
           </button>
         )}
         {state?.thread_href && (
-          <a className="artifact-viewer-control" href={state.thread_href}>
+          <a className="artifact-viewer-control" href={state.thread_href} aria-label="Source chat">
             <MessageCircle size={16} />
-            Source chat
+            <span className="artifact-viewer-label">Source chat</span>
           </a>
+        )}
+        {target.kind === "artifact" && state?.can_delete && (
+          <DeleteArtifactButton
+            key={target.artifactId}
+            projectId={target.projectId}
+            artifactId={target.artifactId}
+            label="Delete artifact"
+            className="artifact-viewer-control"
+            iconSize={16}
+          />
         )}
         <button
           className="artifact-viewer-control"

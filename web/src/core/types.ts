@@ -2384,6 +2384,7 @@ export interface ArtifactViewerState {
   viewer_url: string | null;
   download_url: string;
   can_keep: boolean;
+  can_delete: boolean;
   expires_at: string | null;
 }
 
@@ -3463,6 +3464,7 @@ export interface ProjectArtifact {
   unavailable_reason: string | null;
   /** The owning branch's name, resolved by the server. */
   graph_branch_name: string;
+  can_delete: boolean;
 }
 
 export interface ProviderLoginState {

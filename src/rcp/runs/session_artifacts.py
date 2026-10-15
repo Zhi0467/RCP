@@ -32,7 +32,7 @@ from rcp.regular_file_reader import RegularFileTooLargeError
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AgentTaskReceiptRecord, AppStore, Artifact, ArtifactVersionConflict
 from rcp.storage.artifact_models import ArtifactOperationConflict, ArtifactVersion
-from rcp.storage.artifacts import ArtifactByteLimitError
+from rcp.storage.artifacts import ArtifactByteLimitError, ArtifactDeleted
 from rcp.transport import RemoteRunStage
 from rcp.transport.remote_stage_root import artifact_digests, sync_artifact
 
@@ -422,16 +422,21 @@ def _publish(
             continue
         assert media_type is not None
         digest = hashlib.sha256(data).hexdigest()
-        base = _base_version(store, artifact.artifact_id, synced)
         try:
-            if base is None:
-                raise ArtifactVersionConflict("the tracked file's version is unavailable")
-            version = store.publish_artifact_version(
-                artifact.artifact_id,
-                base_version=base,
-                operation_id=execution.operation_id,
-                data=data,
-            )
+            # Delete takes this lock, so a source removed mid-settlement is skipped
+            # rather than read as a missing base and forked.
+            with store.artifact_lock(artifact.artifact_id):
+                if store.artifact(artifact.artifact_id) is None:
+                    continue
+                base = _base_version(store, artifact.artifact_id, synced)
+                if base is None:
+                    raise ArtifactVersionConflict("the tracked file's version is unavailable")
+                version = store.publish_artifact_version(
+                    artifact.artifact_id,
+                    base_version=base,
+                    operation_id=execution.operation_id,
+                    data=data,
+                )
         except ArtifactByteLimitError:
             _record(execution, "failed", artifact.artifact_id, reason="too_large")
             _settle(store, item, digest)
@@ -554,6 +559,8 @@ def _fork(
         )
     except ArtifactVersionConflict:
         return None  # A replay found different bytes already forked.
+    except ArtifactDeleted:
+        return None  # A member deleted this fork; a replay does not restore it.
     # Later turns track the fork at its own path in this turn's folder.
     if _write(workspace, remote, forked, "", data):
         store.record_artifact_sync(forked.artifact_id, hashlib.sha256(data).hexdigest())

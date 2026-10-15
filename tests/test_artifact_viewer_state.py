@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from datetime import datetime, timedelta
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
 
-from rcp.artifacts import classify_artifact_bytes, descriptor_for
+from rcp.artifacts import AgentArtifactDescriptor, classify_artifact_bytes, descriptor_for
 from rcp.live_artifacts import ResolvedLiveVersion
 from rcp.storage import AgentTaskRecord, Artifact, AutoResearchChildExperimentRecord, EpisodeRecord
+from rcp.storage.artifacts import ArtifactDeleted
 from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
@@ -288,3 +290,73 @@ def test_viewer_endpoints_enforce_project_membership(tmp_path, route):
     acting[0] = people[1].user_id
     response = client.get(url)
     assert response.status_code == 404
+
+
+def test_delete_unbinds_keeps_and_pins_and_is_never_reimported(viewer_app):
+    app, client, store = viewer_app
+    project = app.state.default_project_id
+    task = _task(store, project)
+    html = b"<!doctype html><title>Board</title>"
+    artifact = _artifact(store, task, name="board.html", data=html)
+    descriptor = descriptor_for(task.operation_id, "board.html", media_type=artifact.media_type)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET result_json = ? WHERE operation_id = ?",
+            (json.dumps({"artifacts": [descriptor.model_dump(mode="json")]}), task.operation_id),
+        )
+    store.keep_artifact(artifact.artifact_id)
+    store.mark_agent_artifact_kept(task.operation_id, artifact.artifact_id, kept_at=store.now())
+    owner = store.local_owner.user_id
+    store.pin_research_view(project, owner, artifact.artifact_id, None)
+    url = f"/api/projects/{project}/artifacts/{artifact.artifact_id}"
+    assert _state(client, artifact)["can_delete"]
+
+    assert client.delete(url).status_code == 204
+    assert client.delete(url).status_code == 204
+    assert store.research_view_pins(project, owner) == []
+    assert not AgentArtifactDescriptor.model_validate(
+        store.agent_task(task.operation_id).result["artifacts"][0]
+    ).is_kept()
+    assert store.artifact_import_tasks(project, limit=10) == []
+    with pytest.raises(ArtifactDeleted):
+        _artifact(store, task, name="board.html", data=html)
+    saved = client.get(f"/api/projects/{project}/artifacts").json()
+    assert artifact.artifact_id not in {entry["artifact_id"] for entry in saved}
+
+
+def test_a_delete_after_expiry_leaves_the_artifact_deleted(viewer_app):
+    app, client, store = viewer_app
+    project = app.state.default_project_id
+    task = _task(store, project)
+    artifact = _artifact(store, task, expires_at=store.now())
+    assert store.expire_artifacts() == 1
+    assert (
+        client.delete(f"/api/projects/{project}/artifacts/{artifact.artifact_id}").status_code
+        == 204
+    )
+    with pytest.raises(ArtifactDeleted):
+        _artifact(store, task)
+
+
+def test_delete_waits_only_while_an_edit_using_the_artifact_runs(viewer_app):
+    app, client, store = viewer_app
+    project = app.state.default_project_id
+    artifact = _artifact(store, _task(store, project))
+    edit = _task(
+        store,
+        project,
+        status="running",
+        request={"artifact_edit": {"artifact_id": artifact.artifact_id}},
+    )
+    url = f"/api/projects/{project}/artifacts/{artifact.artifact_id}"
+    assert not _state(client, artifact)["can_delete"]
+    assert client.delete(url).status_code == 409
+    assert store.artifact(artifact.artifact_id) is not None
+    # A stopped edit holds nothing; a resumed turn finds its artifact gone.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET status = 'interrupted' WHERE operation_id = ?",
+            (edit.operation_id,),
+        )
+    assert _state(client, artifact)["can_delete"]
+    assert client.delete(url).status_code == 204
