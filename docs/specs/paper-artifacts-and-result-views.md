@@ -229,9 +229,10 @@ change clears it. Ask to fix prefills a comment for the human to send.
 ### Artifacts inside a reply
 
 Markdown image syntax embeds a registered artifact by its absolute file path in
-any turn's folder; a cited link opens it the same way. A turn folder is named by
-its turn, so a path resolves through that turn's descriptors, or through the
-citing turn's when it published a new version of that file. HTML, images, video,
+any turn folder of the same chat; a cited link opens it the same way. A turn
+folder is named by its turn, so a path resolves through that turn's descriptors,
+or through the citing turn's when it published a new version of that file. A
+path into another chat's turn resolves to nothing. HTML, images, video,
 Markdown, and text run/render in the inline viewer; the card becomes
 Comment/Expand/Keep/Download actions beneath it. Surrounding links are dropped.
 Unembedded videos show the same player below the reply; other artifacts keep

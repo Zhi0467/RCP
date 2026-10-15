@@ -2209,10 +2209,7 @@ export function NodeChat({
         // transcript still displays.
         const loaded = new Map<string, AgentArtifactDescriptor[]>();
         const load = async (id: string) => {
-          const task =
-            relatedTasks.find((candidate) => candidate.operation_id === id) ??
-            (await onRefreshTask(id).catch(() => null));
-          loaded.set(id, task ? taskArtifacts(task) : []);
+          loaded.set(id, knownTaskArtifacts(id) ?? (await loadTaskArtifacts(id)));
         };
         await load(taskId);
         let found = turnArtifactFor(href, taskId, (id) => loaded.get(id));
@@ -2288,6 +2285,29 @@ export function NodeChat({
     return Array.isArray(aged) ? aged : undefined;
   };
 
+  // The chat this transcript shows; an artifact is only ever shown in its origin chat.
+  const transcriptChatId = chatId ?? relatedTasks.at(-1)?.request.chat_id ?? null;
+
+  // A turn outside the recent list, fetched once and kept, since a later bounded
+  // task-list refresh drops it again. A cited turn of another chat contributes nothing.
+  const loadTaskArtifacts = (taskId: string): Promise<AgentArtifactDescriptor[]> => {
+    setAgedInlineArtifacts((current) =>
+      current.has(taskId) ? current : new Map(current).set(taskId, "loading"),
+    );
+    return onRefreshTask(taskId)
+      .then((task) =>
+        transcript.some((line) => line.taskId === taskId) ||
+        task.request.chat_id === transcriptChatId
+          ? taskArtifacts(task)
+          : [],
+      )
+      .catch((): AgentArtifactDescriptor[] => [])
+      .then((loaded) => {
+        setAgedInlineArtifacts((current) => new Map(current).set(taskId, loaded));
+        return loaded;
+      });
+  };
+
   const renderInlineArtifact = (
     taskId: string,
     artifacts: AgentArtifactDescriptor[] | undefined,
@@ -2304,17 +2324,11 @@ export function NodeChat({
     if (found.loading)
       return (
         <InlineArtifactLoading
+          // Loading moves from the citing turn to the cited one; each loads on mount.
+          key={found.taskId}
           name={found.name}
           onLoad={() => {
-            const owner = found.taskId;
-            if (agedInlineArtifacts.has(owner)) return;
-            setAgedInlineArtifacts((current) => new Map(current).set(owner, "loading"));
-            void onRefreshTask(owner)
-              .then(taskArtifacts)
-              .catch((): AgentArtifactDescriptor[] => [])
-              .then((loaded) =>
-                setAgedInlineArtifacts((current) => new Map(current).set(owner, loaded)),
-              );
+            if (!agedInlineArtifacts.has(found.taskId)) void loadTaskArtifacts(found.taskId);
           }}
         />
       );
