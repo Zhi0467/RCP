@@ -10,6 +10,7 @@ from rcp.api.project_provisioning import ProjectTransferSourceConfigurationReque
 from rcp.core.transition_models import GraphHeadRef
 from rcp.storage import AppStore, EpisodeRecord, ProjectTransferRepositorySource
 from rcp.storage.provisioning import project_transfer_source_configuration_sha256
+from rcp.transfer.records import TRANSFER_RECORD_SCHEMA_VERSION
 
 from .test_project_transfer_request_storage import (
     _actor,
@@ -116,7 +117,12 @@ def test_target_accepts_graph_archive_and_named_branch_record_versions(tmp_path,
 
 def test_target_validates_record_capability_instead_of_echoing_unknown_version(tmp_path):
     with pytest.raises(ValueError, match="does not support the source transfer record schema"):
-        _linked_pair(tmp_path, configuration=_source_configuration(record_schema_version=5))
+        _linked_pair(
+            tmp_path,
+            configuration=_source_configuration(
+                record_schema_version=TRANSFER_RECORD_SCHEMA_VERSION + 1
+            ),
+        )
     target = AppStore(tmp_path / "team" / "rcp.sqlite3")
     source = AppStore(tmp_path / "personal" / "rcp.sqlite3")
     assert target.project_transfer_requests() == []
@@ -140,7 +146,7 @@ def test_archiving_after_preparation_is_rechecked_under_source_release_lock(tmp_
         assert source.episode_archive_states(request.project_id)[episode_id].archived
     assert source.project_transfer_record_schema_version(request.project_id) == 2
 
-    with pytest.raises(ValueError, match="archive state changed after transfer preparation"):
+    with pytest.raises(ValueError, match="changed after transfer preparation"):
         source.record_source_project_transfer_release(
             request.request_id,
             released_by=actor,

@@ -267,7 +267,7 @@ def test_verify_resumes_parked_report_allocation_once(manifest, tmp_path, monkey
 
     service, store, request, _execution, _stage = _setup_report(manifest, tmp_path)
     # The report fixture omits the mode adapter; its admitted visible turn is finished.
-    store.complete_agent_task("operation", applied_revision=None, result={})
+    store.complete_agent_task(f"{request.episode_id}-operation", applied_revision=None, result={})
     report_launcher = _ReportLauncher(["auth", "valid"])
 
     async def stream(_project, _kind, report_request, execution):
