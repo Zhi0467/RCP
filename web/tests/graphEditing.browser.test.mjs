@@ -122,7 +122,22 @@ test("canvas gestures stage atomic updates, retain pending previews, and guard r
     const replaced = (await calls()).find((call) => call.method === "onReplaceEdge");
     assert.equal(replaced.args[1].expectation, "matched");
     assert.ok(replaced.args[1].explanation.length > 0);
+    // The current relation reopens the same details to edit them in place.
     await selectEdge(replaced.args[1].id);
+    await page.locator(".dag-edge-chip button").first().click();
+    await page.locator('[data-relation="supports"]').first().click();
+    await page.getByLabel("Explanation", { exact: true }).fill("Edited reason");
+    await linkButton.click();
+    await page.waitForFunction(
+      () =>
+        JSON.parse(document.querySelector('output[aria-label="Canvas calls"]').textContent).filter(
+          (call) => call.method === "onReplaceEdge",
+        ).length === 2,
+    );
+    const edited = (await calls()).filter((call) => call.method === "onReplaceEdge")[1];
+    assert.equal(edited.args[0], replaced.args[1].id);
+    assert.equal(edited.args[1].expectation, "matched");
+    await selectEdge(edited.args[1].id);
     await page.getByRole("button", { name: "Unlink", exact: true }).click();
     // Hold the duplicate over the keeper until the merge ring arms.
     const duplicate = await card("hyp/duplicate").boundingBox();

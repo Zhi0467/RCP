@@ -112,7 +112,9 @@ validates the batch; Sync commits.
   relation stages at once; several open one inline menu. A relation that needs an
   Evidence assessment or accepts an expectation opens a details step in that
   menu: assessment, expectation, and an explanation (required for matched or
-  diverged). Dropping on empty canvas creates a linked card.
+  diverged). Picking a link's current relation opens the same step to edit its
+  details; unchanged details stage nothing. Dropping on empty canvas creates a
+  linked card.
   Clicking the handle (or L) enters pick mode for touch and keyboard.
 - Links are selectable. One chip shows the relation and Unlink; the relation
   opens in place, never as a second box.

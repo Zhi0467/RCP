@@ -268,29 +268,39 @@ export function useDagCanvasEditor({
     weight = context.weight,
   ) => {
     if (!editing) return;
-    if (
-      context.replace &&
-      context.replace.source === choice.source &&
-      context.replace.target === choice.target &&
-      context.replace.relation === choice.relation
-    ) {
-      setMenu(null);
-      return;
-    }
-    // Assessed and result links open the details step before staging.
+    const replace = context.replace;
+    const current =
+      !!replace &&
+      replace.source === choice.source &&
+      replace.target === choice.target &&
+      replace.relation === choice.relation;
+    // Assessed and result links open the details step before staging; the
+    // current relation opens it too, to edit the link's details in place.
     if (
       (choice.needsAssessment && (!relevance || !weight)) ||
-      (choice.acceptsExpectation && !context.choice)
+      ((choice.acceptsExpectation || current) && !context.choice)
     ) {
       setMenu({
         ...context,
         choice,
-        expectation: context.expectation ?? context.replace?.expectation ?? null,
-        explanation: context.explanation ?? context.replace?.explanation ?? "",
+        relevance: relevance ?? (current ? replace.assessment?.relevance : undefined),
+        weight: weight ?? (current ? replace.assessment?.weight : undefined),
+        expectation: context.expectation ?? replace?.expectation ?? null,
+        explanation: context.explanation ?? replace?.explanation ?? "",
       });
       return;
     }
     if (explanationRequired(context)) return;
+    if (
+      current &&
+      (context.explanation ?? "").trim() === (replace.explanation ?? "") &&
+      (context.expectation ?? null) === (replace.expectation ?? null) &&
+      relevance === replace.assessment?.relevance &&
+      weight === replace.assessment?.weight
+    ) {
+      setMenu(null);
+      return;
+    }
     const next: NewEdge = {
       id: `edge/${crypto.randomUUID()}`,
       source: choice.source,
