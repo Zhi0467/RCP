@@ -1,6 +1,16 @@
-"""Refresh a stale pending Proposal through a light agent on main."""
+"""Refresh a stale pending Proposal through a light agent on main.
+
+The light agent is an ordinary node Work chat. It runs the node-chat provider
+and model at the lowest effort that model's probed catalog lists; with no
+cached catalog it keeps the configured effort. Project Settings keep deciding
+which skills are enabled; a refresh skill the project disabled is left out.
+The request key is per Proposal, so a repeated click or a second member reuses
+the first chat instead of starting another, even after the Proposal moved on.
+"""
 
 from __future__ import annotations
+
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -9,19 +19,16 @@ from rcp.api.dependencies import (
     require_project_membership,
     require_project_write_admission,
 )
-from rcp.api.light_agents import LightChat, start_light_node_chat
 from rcp.api.tasks import (
     AttachmentStoreDependency,
     BackgroundTasksDependency,
     CatalogDependency,
     IdentityDependency,
     StoreDependency,
+    start_agent_task,
 )
-from rcp.core.validation.proposals import (
-    proposal_is_stale,
-    proposal_subject_node,
-    proposal_work_cannot_refile,
-)
+from rcp.core.validation.proposals import proposal_refresh_refusal, proposal_subject_node
+from rcp.keyed_locks import KeyedLocks
 from rcp.runs.proposal_refresh import (
     proposal_refresh_key,
     proposal_refresh_message,
@@ -30,9 +37,16 @@ from rcp.runs.proposal_refresh import (
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
 
+# One process owns the database (invariant 8), so an in-process lock serializes
+# every member's lookup and admission for one Proposal.
+_LOCKS = KeyedLocks()
 
-def _refused(code: str, message: str) -> HTTPException:
-    return HTTPException(status_code=409, detail={"code": code, "message": message})
+_REFUSALS = {
+    "proposal_not_pending": "The Proposal is not pending on main.",
+    "proposal_not_stale": "The Proposal's dependencies have not moved.",
+    "proposal_not_refileable": "Ordinary Work cannot file this Proposal's form.",
+    "proposal_target_unavailable": "Every node the Proposal names is gone.",
+}
 
 
 # ``{proposal_id:path}`` because Proposal ids contain slashes.
@@ -51,43 +65,67 @@ def refresh_proposal(
     attachment_store: AttachmentStoreDependency,
     background_tasks: BackgroundTasksDependency,
 ) -> dict[str, str]:
-    """Offered only on a stale card, and refused unless the Sync gate would withdraw it."""
+    """Return the Proposal's refresh chat, starting it only when the card offers Refresh."""
 
     identity_access.require_patch_capable_identity(request)
     project_id = catalog.resolve_project_id(project_id)
     service = get_graph_service(catalog, project_id, initialize=False, write=True)
-
-    def prepare() -> LightChat:
-        # Reached only before the first chat exists, under the key's lock, so it
-        # judges the current graph; a retry after the agent withdrew the
-        # Proposal returns that chat instead.
-        state = service.history.state()
-        proposal = state.proposals.get(proposal_id)
-        if proposal is None or proposal.status != "pending":
-            raise _refused("proposal_not_pending", "The Proposal is not pending on main.")
-        if not proposal_is_stale(state, proposal):
-            raise _refused("proposal_not_stale", "The Proposal's dependencies have not moved.")
-        if proposal_work_cannot_refile(state, proposal):
-            raise _refused(
-                "proposal_not_refileable", "Ordinary Work cannot file this Proposal's form."
+    request_key = proposal_refresh_key(proposal_id)
+    with _LOCKS(f"{store.path.resolve()}:{project_id}:{request_key}"):
+        existing = store.client_request(project_id, str(request_key))
+        if existing is not None:
+            # A retry after the agent withdrew the Proposal returns that chat.
+            operation_id = existing.operation_id or ""
+        else:
+            state = service.history.state()
+            proposal = state.proposals.get(proposal_id)
+            refusal = proposal_refresh_refusal(state, proposal)
+            if refusal is not None:
+                raise HTTPException(
+                    status_code=409, detail={"code": refusal, "message": _REFUSALS[refusal]}
+                )
+            assert proposal is not None
+            profile = service.resolve_agent_profile("node_chat")
+            enabled = set(service.manifest.agent.skill_defaults.skill_ids)
+            body: dict[str, object] = {
+                "node_id": proposal_subject_node(state, proposal),
+                "chat_id": str(uuid.uuid4()),
+                "mode": "work",
+                "message": proposal_refresh_message(state, proposal),
+                "invoked_skill_ids": [
+                    skill for skill in proposal_refresh_skill_ids(proposal) if skill in enabled
+                ],
+            }
+            machine = service.manifest.machine_map[profile.run_on]
+            readiness = service.launcher.cached_readiness(
+                profile.provider,
+                host=machine.host,
+                binary=machine.provider_paths.get(profile.provider),
             )
-        node_id = proposal_subject_node(state, proposal)
-        if node_id is None:
-            raise _refused("proposal_target_unavailable", "Every node the Proposal names is gone.")
-        return LightChat(
-            node_id=node_id,
-            message=proposal_refresh_message(state, proposal),
-            invoked_skill_ids=proposal_refresh_skill_ids(proposal),
-        )
-
-    return start_light_node_chat(
-        project_id,
-        request_key=proposal_refresh_key(proposal_id),
-        prepare=prepare,
-        http_request=request,
-        catalog=catalog,
-        store=store,
-        identity_access=identity_access,
-        attachment_store=attachment_store,
-        background_tasks=background_tasks,
-    )
+            efforts = next(
+                (
+                    model.reasoning
+                    for model in (readiness.models if readiness else [])
+                    if model.id == profile.model
+                ),
+                [],
+            )
+            if efforts:
+                body["reasoning"] = efforts[0]
+            response = start_agent_task(
+                project_id,
+                "node_chat",
+                body,
+                request,
+                catalog=catalog,
+                store=store,
+                identity_access=identity_access,
+                attachment_store=attachment_store,
+                background_tasks=background_tasks,
+                idempotency_key=request_key,
+            )
+            operation_id = str(response["operation_id"])
+    record = store.agent_task(operation_id)
+    if record is None:
+        raise RuntimeError(f"Proposal refresh task {operation_id} is missing.")
+    return {"operation_id": operation_id, "chat_id": str(record.request["chat_id"])}

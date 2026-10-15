@@ -403,6 +403,38 @@ test("authoritative reconciliation clears only proposal choices that are no long
   assert.equal(reconciliation.draft.base_revision, 5);
 });
 
+test("a staged approval of a Proposal the projection marks stale is never sent", () => {
+  const pending = (id) => ({
+    id,
+    status: "pending",
+    related_node_ids: [],
+    related_edge_ids: [],
+    related_config_keys: [],
+    ops: [],
+  });
+  const withProposals = {
+    ...graph,
+    proposals: {
+      "proposal/stale": pending("proposal/stale"),
+      "proposal/live": pending("proposal/live"),
+    },
+  };
+  const draft = {
+    ...emptyHumanDraft(4),
+    proposals: {
+      "proposal/stale": { decision: "approved" },
+      "proposal/live": { decision: "approved" },
+    },
+  };
+
+  const normalized = normalizeHumanDraft(draft, withProposals, ["proposal/stale"]);
+
+  assert.deepEqual(
+    toHumanSyncRequest(normalized, withProposals).proposals.map((item) => item.proposal_id),
+    ["proposal/live"],
+  );
+});
+
 test("staging prevents overlapping approvals but permits rejections and independent approvals", () => {
   const proposal = (id, nodeId, edgeIds = []) => ({
     id,

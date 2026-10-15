@@ -1909,9 +1909,13 @@ function MemberApp({
     () => (retryTask && project ? taskRetryConfig(retryTask, project) : null),
     [project, retryTask],
   );
+  const canonicalAttention = projectAttentionForPresentation(project, null);
   const normalizedPreviewDraft = useMemo(
-    () => (humanDraft ? normalizeHumanDraft(humanDraft, graph) : null),
-    [graph, humanDraft],
+    () =>
+      humanDraft
+        ? normalizeHumanDraft(humanDraft, graph, canonicalAttention.stale_proposal_ids)
+        : null,
+    [graph, humanDraft, canonicalAttention.stale_proposal_ids],
   );
   const draftPreviewRouting = useMemo(
     () =>
@@ -2578,7 +2582,11 @@ function MemberApp({
     const expectedGraph = graph;
     const expectedProject = project;
     const expectedHead = transitionHead;
-    const normalized = normalizeHumanDraft(humanDraft, graph);
+    const normalized = normalizeHumanDraft(
+      humanDraft,
+      graph,
+      canonicalAttention.stale_proposal_ids,
+    );
     if (humanDraftCommittableCount(normalized, graph) === 0) return;
     const request = toHumanSyncRequest(normalized, graph);
     const fence = beginProjectSync(requestedProjectId, expectedHead);
@@ -4967,9 +4975,7 @@ function MemberApp({
                   proposalActions={presentedAttention.proposal_actions}
                   staleProposalIds={presentedAttention.stale_proposal_ids}
                   refreshableProposalIds={
-                    graphTarget.kind === "main"
-                      ? projectAttentionForPresentation(project, null).refreshable_proposal_ids
-                      : []
+                    graphTarget.kind === "main" ? canonicalAttention.refreshable_proposal_ids : []
                   }
                   onRefresh={async (proposal) =>
                     (await refreshProposal(apiBase, proposal.id)).chat_id

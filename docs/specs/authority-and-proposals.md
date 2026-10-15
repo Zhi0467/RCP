@@ -219,19 +219,22 @@ pending obsolete or duplicate Proposal; withdrawal applies no semantic operation
 Creation snapshots referenced nodes, edges, and project configuration. Removal
 also snapshots the exact incident-edge set, including empty. A Proposal filed
 under dependency rule 2 also depends on each Evidence-edge cause's Evidence node,
-so rewording that Evidence (Address, consolidation) stales it. Proposals filed
+so any change to that Evidence stales it: rewording it (Address, consolidation) or
+accepting or rejecting it in a later Sync. Proposals filed
 earlier keep rule 1, because replay re-derives dependencies and must judge them
 as filed. Changed dependencies, recreated edges, or changed incident sets make
 approval stale: Sync withdraws it without semantic change. Multiple judgments in
 one Sync evaluate in order and commit atomically.
 
 Attention lists stale pending Proposals by the same rule, so the card never
-offers an Approve that Sync would withdraw. A human refreshes one from main: a
-light agent (node-chat provider and model at the lowest effort that model's
-probed catalog lists, Evidence triage invoked when Evidence is the cause) gets
-only the Proposal and what moved, withdraws it, and files one fresh pending
-Proposal if the change still holds. The fresh Proposal waits for a human like
-any other. Forms ordinary Work cannot file (a replay-only legacy intent, or
+offers an Approve that Sync would withdraw. An Approve staged before the card
+went stale is dropped, not sent. A human refreshes a stale Proposal from main.
+Refresh starts an ordinary node Work chat. It uses the node-chat provider and
+model at the lowest effort that model's probed catalog lists, and invokes
+Evidence triage when Evidence is the cause. Its message carries only the
+Proposal and what moved. The agent withdraws the Proposal and files one fresh
+pending Proposal if the change still holds. The fresh Proposal waits for a
+human like any other. Forms ordinary Work cannot file (a replay-only legacy intent, or
 what only a branch merge files: a multi-intent bundle, standing change,
 human-caused status change, removal of an accepted unprotected node) are not
 refreshable, nor is one whose nodes are all gone; a stale one is withdrawn by

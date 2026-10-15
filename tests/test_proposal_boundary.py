@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from rcp.core.authority import WriteAuthority
-from rcp.core.materialize import apply_valid_patch
+from rcp.core.materialize import apply_valid_patch, prepare_patch_bookkeeping
 from rcp.core.models import Patch
 from rcp.core.operations import adapt_persisted_patch_document, graph_operations_from_proposal
 from rcp.core.validation import ValidationContext, validate_patch
@@ -599,6 +599,24 @@ def test_same_patch_edge_recreation_stales_a_new_proposal_but_remains_replayable
     assert admission.rejected
     assert any(message.code == "stale-created-proposal" for message in admission.messages)
     assert not historical.rejected
+
+
+def test_same_patch_cause_evidence_update_stales_a_new_proposal(manifest) -> None:
+    state = _state_with_decision(manifest)
+    raw = _agent_patch(
+        _proposal(
+            proposal_id="prop/status-before-evidence-edit",
+            node_id="hyp/replanning-restores-plasticity",
+            changes={"status": "active"},
+            cause={"kind": "evidence_edge", "ref_id": "edge/evaluation-support"},
+        ),
+        _update_node("ev/evaluation-result", {"observation": "A narrower observation."}),
+    )
+    patch = prepare_patch_bookkeeping(state, raw)
+
+    admission = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"]))
+
+    assert any(message.code == "stale-created-proposal" for message in admission.messages)
 
 
 def test_replay_does_not_recheck_protected_action_permission(manifest) -> None:

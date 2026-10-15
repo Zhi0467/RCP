@@ -88,7 +88,16 @@ export function emptyHumanDraft(baseRevision: number): HumanDraft {
   };
 }
 
-export function normalizeHumanDraft(draft: HumanDraft, graph: GraphState): HumanDraft {
+/**
+ * `staleProposalIds` is the projection's stale set. A stale card offers no
+ * Approve, and Sync would withdraw a stale Proposal it is asked to approve, so
+ * a staged approval of one is dropped rather than sent.
+ */
+export function normalizeHumanDraft(
+  draft: HumanDraft,
+  graph: GraphState,
+  staleProposalIds: readonly string[] = [],
+): HumanDraft {
   const next = cloneDraft(draft);
   const removedNodeIds = draft.removed_node_ids.filter((nodeId) => Boolean(graph.nodes[nodeId]));
   const nodes = Object.fromEntries(
@@ -162,7 +171,12 @@ export function normalizeHumanDraft(draft: HumanDraft, graph: GraphState): Human
   };
   return {
     ...normalized,
-    proposals: proposalDecisionsWithoutDirectChoices(normalized, graph),
+    proposals: Object.fromEntries(
+      Object.entries(proposalDecisionsWithoutDirectChoices(normalized, graph)).filter(
+        ([proposalId, entry]) =>
+          entry.decision !== "approved" || !staleProposalIds.includes(proposalId),
+      ),
+    ),
   };
 }
 
