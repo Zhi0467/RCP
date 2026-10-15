@@ -231,8 +231,10 @@ change clears it. Ask to fix prefills a comment for the human to send.
 Markdown image syntax embeds a registered artifact by its absolute file path in
 any turn folder of the same chat; a cited link opens it the same way. A turn
 folder is named by its turn, so a path resolves through that turn's descriptors,
-or through the citing turn's when it published a new version of that file. A
-path into another chat's turn resolves to nothing. HTML, images, video,
+or through the citing turn's when it published a new version of that file. An
+episode report's folder is named by its episode, so only a turn that published a
+version of the report resolves it. A path into another chat's turn resolves to
+nothing. HTML, images, video,
 Markdown, and text run/render in the inline viewer; the card becomes
 Comment/Expand/Keep/Download actions beneath it. Surrounding links are dropped.
 Unembedded videos show the same player below the reply; other artifacts keep
@@ -290,7 +292,9 @@ once from the staged version and retained for recovery; animation uses its first
 frame and says so. SVG/over-pixel-limit images carry positions only. Legacy viewer-
 area boxes keep sampled text and are never cropped. Turns allow 50 annotations.
 Both routes number human `Comment N:` text and prompt regions identically;
-`edit_now` adds only the immediate-edit request. All input is bounded/untrusted.
+`edit_now` adds only the immediate-edit request. The editable item also gives the
+Markdown embed of its tracked path, so the reply can show the edited file in place.
+All input is bounded/untrusted.
 
 ### Editing and versions
 

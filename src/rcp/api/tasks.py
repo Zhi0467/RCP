@@ -130,8 +130,9 @@ class AgentArtifactResponse(AgentArtifactDescriptor):
     can_download: bool
     can_keep: bool
     can_discuss: bool
-    # The turn folder holding the artifact's tracked file, so a later turn's
-    # citation of that path resolves to the card it published.
+    # The `turns/` folder holding the artifact's tracked file, named by its
+    # supplier: a turn, or an episode for its report. A later turn's citation of
+    # that path resolves to the card it published.
     turn_folder: str | None = None
 
 
@@ -179,9 +180,7 @@ def _agent_artifact_response(
         can_download=available,
         can_keep=available and not kept and not record.history_only,
         can_discuss=can_discuss,
-        turn_folder=stored.supplier_id
-        if stored is not None and stored.supplier == "turn"
-        else None,
+        turn_folder=stored.supplier_id if stored is not None else None,
     )
 
 

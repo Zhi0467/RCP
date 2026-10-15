@@ -617,6 +617,35 @@ def test_in_place_edit_turn_lists_the_published_artifact_on_replay(manifest, tmp
     assert _finalize(app, request, execution, directory) == artifacts
 
 
+def test_an_edited_episode_report_card_names_the_folder_its_reply_embeds(manifest, tmp_path):
+    # The prompt item gives the reply the tracked path to embed; an episode report's is
+    # under its episode's folder, which the card must name for the embed to resolve.
+    from rcp.api.tasks import _agent_artifact_response
+
+    app, request, execution, _, workspace = _setup(manifest, tmp_path)
+    store = execution.store
+    report = _stored_artifact(
+        app,
+        "episode-1",
+        "episode-report.html",
+        b"<p>report</p>",
+        supplier="episode_ending",
+        episode_id="episode-1",
+    )
+    request = _edit_request(
+        request,
+        artifact_id=report.artifact_id,
+        base_version=store.artifact(report.artifact_id).current_version,
+        source_name=report.name,
+    )
+    directory, staged = _stage(app, request, execution, workspace)
+    embedded = _tracked_file(staged)
+    embedded.write_bytes(b"<p>report v2</p>")
+    [published] = _finalize(app, request, execution, directory)
+    card = _agent_artifact_response(store, store.agent_task("edit"), published)
+    assert card.turn_folder == embedded.parent.parent.name
+
+
 def test_emptying_edit_publishes_and_lists_the_artifact(manifest, tmp_path):
     # Descriptor sizes are positive or unknown; an emptied artifact must not fail the turn.
     app, request, execution, source, _, directory, staged = _staged_edit(manifest, tmp_path)

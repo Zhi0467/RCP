@@ -729,6 +729,10 @@ def _attachment_items(attachments: list[dict[str, object]] | None) -> str:
                 "they ask for something different alongside it, write a new file in this turn's "
                 "directory; that becomes a separate artifact and this one stays as it is."
             )
+            lines.append(
+                "  To show this file in your reply, embed it with Markdown image syntax and "
+                f"this path: `![Short title]({item['path']})`."
+            )
         if item.get("edit_now"):
             lines.append("  The human asked for that in-place edit now, in this turn.")
         selections = item.get("selections")
