@@ -19,6 +19,7 @@ from rcp.limits import (
     RUN_STAGE_RETENTION_DAYS,
 )
 from rcp.storage.digest import append_digest_event, digest_link
+from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import AgentTaskRecord
 
@@ -263,15 +264,7 @@ class ConsolidationStoreMixin(StoreMixinBase):
                     (next_due_at, schedule.project_id),
                 )
                 return None
-            if (
-                conn.execute(
-                    "SELECT 1 FROM project_members AS member JOIN space_users AS user ON user.user_id=member.user_id "
-                    "JOIN projects AS project ON project.project_id=member.project_id "
-                    "WHERE member.project_id=? AND member.user_id=? AND user.removal_started_at IS NULL AND user.removed_at IS NULL AND project.retired_at IS NULL",
-                    (schedule.project_id, schedule.authorized_by.user_id),
-                ).fetchone()
-                is None
-            ):
+            if not live_project_member(conn, schedule.project_id, schedule.authorized_by.user_id):
                 task = None
                 skipped = False
                 error_code = "authorization_membership_lost"

@@ -9,6 +9,7 @@ import uuid
 from typing import Any
 
 from rcp.limits import LESSON_TEXT_MAX_CHARS, LESSONS_LIST_PAGE_SIZE, LESSONS_PER_PROJECT_MAX
+from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
 
 
@@ -80,15 +81,7 @@ def _record(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def _require_member(connection: sqlite3.Connection, project_id: str, user_id: str) -> None:
-    if (
-        connection.execute(
-            "SELECT 1 FROM project_members m JOIN space_users u ON u.user_id=m.user_id "
-            "JOIN projects p ON p.project_id=m.project_id WHERE m.project_id=? AND m.user_id=? "
-            "AND u.removal_started_at IS NULL AND u.removed_at IS NULL AND p.retired_at IS NULL",
-            (project_id, user_id),
-        ).fetchone()
-        is None
-    ):
+    if not live_project_member(connection, project_id, user_id):
         raise LessonError("lesson_forbidden")
 
 

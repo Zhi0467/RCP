@@ -785,7 +785,7 @@ def test_transfer_coordination_routes_keep_space_and_session_boundaries(tmp_path
     assert wrong_target.status_code == 404
 
 
-def test_restored_target_reentry_route_is_exact_and_idempotent(tmp_path: Path) -> None:
+def test_restored_target_reentry_route_is_exact_and_idempotent(tmp_path: Path, monkeypatch) -> None:
     _source, target, _source_request, target_request = _archive_bound_pair(tmp_path)
     original_upload = target.begin_target_project_transfer_upload(target_request.request_id)
     assert target_request.target_admission_receipt is not None
@@ -835,6 +835,16 @@ def test_restored_target_reentry_route_is_exact_and_idempotent(tmp_path: Path) -
         eligible_projection = client.get(
             f"/api/project-transfers/requests/{target_request.request_id}"
         )
+        with monkeypatch.context() as patch:
+            wrong_space_id = str(uuid.uuid4())
+            patch.setattr(AppStore, "space_id", property(lambda _store: wrong_space_id))
+            patch.setattr(app.state.services.identity_access, "_space_id", wrong_space_id)
+            wrong_space_projection = client.get(
+                f"/api/project-transfers/requests/{target_request.request_id}"
+            )
+            assert wrong_space_projection.status_code == 200
+            assert wrong_space_projection.json()["can_restore_reentry"] is False
+            assert client.post(path, json=payload).status_code == 409
         resumed = client.post(path, json=payload)
         repeated = client.post(path, json=payload)
 

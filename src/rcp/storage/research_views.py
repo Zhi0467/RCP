@@ -12,6 +12,7 @@ from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import RESEARCH_VIEW_PIN_LIMIT
 from rcp.storage.artifact_models import Artifact
 from rcp.storage.artifacts import ArtifactStoreMixin
+from rcp.storage.membership import live_project_member
 from rcp.storage.resource_versions import _bump, _install
 
 
@@ -44,13 +45,7 @@ def migrate_research_views(connection: sqlite3.Connection) -> None:
 
 
 def _require_member(connection: sqlite3.Connection, project_id: str, user_id: str) -> None:
-    member = connection.execute(
-        "SELECT 1 FROM project_members m JOIN projects p ON p.project_id=m.project_id "
-        "JOIN space_users u ON u.user_id=m.user_id WHERE m.project_id=? AND m.user_id=? "
-        "AND p.retired_at IS NULL AND u.removal_started_at IS NULL AND u.removed_at IS NULL",
-        (project_id, user_id),
-    ).fetchone()
-    if member is None:
+    if not live_project_member(connection, project_id, user_id):
         raise ResearchViewConflict("project_not_found", 404)
 
 
