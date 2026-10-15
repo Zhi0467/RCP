@@ -63,6 +63,21 @@ Leaving or losing membership durably fences new continuations and watcher claims
 already-authorized turns finish. The last member cannot leave. Credential rotation
 or revocation alone does not stop already-authorized work.
 
+### Who-may rules
+
+Members are equal, so most actions need only project membership. The few rules
+that name a particular member (the requester of a provisioning change, the admitter
+of a transfer) and the membership rule itself are pure predicates in `rcp.policies`.
+The route, the storage transaction, and the `can_*` projection call the same
+predicate, so a control is offered exactly when that rule admits the viewer.
+
+The owner still loads the facts, checks visibility first (nonmembers get not-found),
+picks the refusal status, and runs lifecycle admission afterwards; a control can
+therefore be offered and still be refused because the project is busy. A predicate
+never replaces a human authorization snapshot, and agent capability never reads it.
+
+**Why:** a rule written twice, once for the button and once for the server, drifts.
+
 ## Human authority
 
 The [protected authority boundary](../design.md#cross-cutting-invariants) reserves
