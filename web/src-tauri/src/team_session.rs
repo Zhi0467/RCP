@@ -39,10 +39,11 @@ pub(crate) const MAX_SESSION_COOKIE_BYTES: usize = 4 * 1024;
 const SESSION_COOKIE_PREFIX: &str = "__Host-rcp_session=";
 const TEAM_SHELL_PROTOCOL_HEADER: &str = "RCP-Team-Shell-Protocol";
 // Protocol 3 carries reviewed commits; protocol 4 also preserves episode archive
-// state; protocol 5 also carries archived graph branches and branch names. Native
-// transfer preparation refuses record versions the negotiated protocol lacks.
+// state; protocol 5 also carries archived graph branches and branch names;
+// protocol 6 also carries deleted episode reports. Native transfer preparation
+// refuses record versions the negotiated protocol lacks.
 const TEAM_SHELL_PROTOCOL_MINIMUM: u32 = 3;
-pub(crate) const TEAM_SHELL_PROTOCOL_MAXIMUM: u32 = 5;
+pub(crate) const TEAM_SHELL_PROTOCOL_MAXIMUM: u32 = 6;
 const TEAM_ENROLLMENT_PATH: &str = "/api/team/enroll";
 const TEAM_SESSION_EXCHANGE_PATH: &str = "/api/team/session/exchange";
 const TEAM_PROJECT_CARDS_PATH: &str = "/api/projects";
@@ -1976,7 +1977,7 @@ mod tests {
             assert!(error.contains(DESKTOP_SOURCE_COMMIT));
             assert!(error.contains(installed_server_commit(&older_server)));
         }
-        assert_eq!(select_team_shell_protocol(&health()).unwrap(), 5);
+        assert_eq!(select_team_shell_protocol(&health()).unwrap(), 6);
 
         let mut stale_desktop = health();
         stale_desktop.team_shell_protocol = Some(TeamShellProtocolRange {
@@ -2102,10 +2103,7 @@ mod tests {
         assert_eq!(fixture["selection_header"], TEAM_SHELL_PROTOCOL_HEADER);
         assert_eq!(
             fixture["desktop_range"],
-            serde_json::json!({
-                "minimum": TEAM_SHELL_PROTOCOL_MINIMUM,
-                "maximum": TEAM_SHELL_PROTOCOL_MAXIMUM,
-            })
+            serde_json::json!({"minimum": 3, "maximum": 5})
         );
         let mut server = health();
         server.team_shell_protocol =
@@ -2116,6 +2114,32 @@ mod tests {
             maximum: 4,
         });
         assert_eq!(validate_health(&server, None).unwrap(), 4);
+    }
+
+    #[test]
+    fn protocol_six_fixture_preserves_protocol_five_connectivity() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/team_shell_protocol_v6.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture["protocol_version"], 6);
+        assert_eq!(fixture["selection_header"], TEAM_SHELL_PROTOCOL_HEADER);
+        assert_eq!(
+            fixture["desktop_range"],
+            serde_json::json!({
+                "minimum": TEAM_SHELL_PROTOCOL_MINIMUM,
+                "maximum": TEAM_SHELL_PROTOCOL_MAXIMUM,
+            })
+        );
+        let mut server = health();
+        server.team_shell_protocol =
+            Some(serde_json::from_value(fixture["server_range"].clone()).unwrap());
+        assert_eq!(validate_health(&server, None).unwrap(), 6);
+        server.team_shell_protocol = Some(TeamShellProtocolRange {
+            minimum: 1,
+            maximum: 5,
+        });
+        assert_eq!(validate_health(&server, None).unwrap(), 5);
     }
 
     #[test]

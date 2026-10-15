@@ -697,15 +697,15 @@ and requires the exact echoed integer. Missing/mismatched negotiation or changed
 compatible release/update path. Semantic versions and commit order are not the
 protocol. Personal work remains usable; unavailable team cards remain labelled.
 
-Desktop supports `[3, 5]`, server `[1, 5]`. Protocol 1 forbids team deletion;
+Desktop supports `[3, 6]`, server `[1, 6]`. Protocol 1 forbids team deletion;
 2 permits deletion only with negotiated support and the exact confirmation;
 3 adds optional reviewed `source_commit` and `rcp-transfer-v2` Git archives,
 while accepting omitted commits/v1 archives; 4 adds optional
 `record_schema_version=2` for episode archives; 5 also allows 3 (an archived
-graph branch) and 4 (branch names). The desktop refuses preparation, before any
-target mutation, when the source needs a record version the negotiated protocol
-lacks, so a new record version needs a new protocol. Archive-free transfers retain
-prior bytes; incompatible peers refuse preparation before source release.
+graph branch) and 4 (branch names); 6 also allows 5 (a deleted episode
+report). The desktop refuses preparation, before any target mutation, when the
+source needs a record version the negotiated protocol lacks, so a new record
+version needs a new protocol. Archive-free transfers retain prior bytes; incompatible peers refuse preparation before source release.
 Breaking contracts get a new immutable version; retirement is explicit.
 The range governs native bootstrap and relay, not server operations, provider
 work, or the server-served Web/API. Negotiation is live, never durable authority.
