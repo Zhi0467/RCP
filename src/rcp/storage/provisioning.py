@@ -8,7 +8,6 @@ import secrets
 import sqlite3
 import uuid
 from pathlib import PurePosixPath
-from typing import cast
 
 from pydantic import TypeAdapter
 
@@ -1539,12 +1538,16 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 canonical_request_id,
             )
             admission = current.target_admission_receipt
-            if current.side != "target" or not transfer_policy.is_restore_admitter(
-                admission, space_id=actor.space_id, user_id=actor.user_id
+            if (
+                current.side != "target"
+                or admission is None
+                or not transfer_policy.is_restore_admitter(
+                    admission, space_id=actor.space_id, user_id=actor.user_id
+                )
             ):
                 raise ValueError("restored target transfer requires its exact confirmer")
             self._require_transfer_actor(connection, actor)
-            confirmer_snapshot = cast(ProjectTransferTargetAdmissionReceipt, admission).admitted_by
+            confirmer_snapshot = admission.admitted_by
 
             provisioning_row = connection.execute(
                 "SELECT * FROM project_provisioning_requests WHERE request_id = ?",
