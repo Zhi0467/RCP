@@ -58,6 +58,11 @@ class GraphAttentionProjection(_StrictTransitionModel):
     decisions_awaiting_choice_ids: list[str] = Field(default_factory=list)
     open_blocker_ids: list[str] = Field(default_factory=list)
     proposal_actions: dict[str, list[ProposalActionLine]] = Field(default_factory=dict)
+    # Pending Proposals whose dependencies moved after filing: the same rule the
+    # Sync gate applies, so the card never offers an Approve that would withdraw.
+    stale_proposal_ids: list[str] = Field(default_factory=list)
+    # The stale ones ordinary Work can re-file; a form it cannot file is withdrawn instead.
+    refreshable_proposal_ids: list[str] = Field(default_factory=list)
     # Decision id -> the choice it still records, for the Decisions whose options
     # no longer offer it. Agents may reword options but never write
     # `selected_option`, so a reopened Decision routinely keeps a choice the

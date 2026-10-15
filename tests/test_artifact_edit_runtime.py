@@ -618,6 +618,35 @@ def test_in_place_edit_turn_lists_the_published_artifact_on_replay(manifest, tmp
     assert _finalize(app, request, execution, directory) == artifacts
 
 
+def test_an_edited_episode_report_card_names_the_folder_its_reply_embeds(manifest, tmp_path):
+    # The prompt item gives the reply the tracked path to embed; an episode report's is
+    # under its episode's folder, which the card must name for the embed to resolve.
+    from rcp.api.tasks import _agent_artifact_response
+
+    app, request, execution, _, workspace = _setup(manifest, tmp_path)
+    store = execution.store
+    report = _stored_artifact(
+        app,
+        "episode-1",
+        "episode-report.html",
+        b"<p>report</p>",
+        supplier="episode_ending",
+        episode_id="episode-1",
+    )
+    request = _edit_request(
+        request,
+        artifact_id=report.artifact_id,
+        base_version=store.artifact(report.artifact_id).current_version,
+        source_name=report.name,
+    )
+    directory, staged = _stage(app, request, execution, workspace)
+    embedded = _tracked_file(staged)
+    embedded.write_bytes(b"<p>report v2</p>")
+    [published] = _finalize(app, request, execution, directory)
+    card = _agent_artifact_response(store, store.agent_task("edit"), published)
+    assert card.turn_folder == embedded.parent.parent.name
+
+
 def test_emptying_edit_publishes_and_lists_the_artifact(manifest, tmp_path):
     # Descriptor sizes are positive or unknown; an emptied artifact must not fail the turn.
     app, request, execution, source, _, directory, staged = _staged_edit(manifest, tmp_path)
@@ -677,6 +706,9 @@ def test_edit_outcome_projects_on_task_detail_and_list(manifest, tmp_path, outco
     artifacts = _finalize(app, request, execution, directory)
     [receipt] = store.agent_task_artifact_edit_outcomes(["edit"])["edit"]
     assert receipt.payload["status"] == outcome
+    # Recorded at settlement: the source artifact may expire before its fork does.
+    cited = {"turn_folder": path.parent.parent.name, "name": path.name}
+    assert receipt.payload.get("forked_from") == (cited if outcome == "forked" else None)
     expected = {
         "status": outcome,
         "artifact_id": source.artifact_id,
@@ -700,7 +732,11 @@ def test_edit_outcome_projects_on_task_detail_and_list(manifest, tmp_path, outco
         if outcome == "forked":
             payload["artifact_id"] = payload.pop("separate_artifact_id")
         store.record_agent_task_receipt("edit", receipt.category, payload, tier="summary")
-    store.complete_agent_task("edit", applied_revision=None, result={"artifacts": []})
+    store.complete_agent_task(
+        "edit",
+        applied_revision=None,
+        result={"artifacts": [artifact.model_dump(mode="json") for artifact in artifacts]},
+    )
     # Retry tasks project the durable outcome of the original admitted edit too.
     _edit_execution(execution, request, "retry", status="succeeded", result={"artifacts": []})
     if legacy and outcome == "failed":
@@ -720,6 +756,11 @@ def test_edit_outcome_projects_on_task_detail_and_list(manifest, tmp_path, outco
             assert detail.json()["result"]["artifact_edit_outcomes"] == [expected]
             listed = next(record for record in records if record["operation_id"] == operation_id)
             assert listed["result"]["artifact_edit_outcomes"] == [expected]
+        # The fork answers to the tracked file the edit's reply cites.
+        cards = next(record for record in records if record["operation_id"] == "edit")
+        assert [card.get("forked_from") for card in cards["result"].get("artifacts", [])] == [
+            cited if outcome == "forked" else None for _ in artifacts
+        ]
 
 
 def test_a_new_comment_restores_its_base_over_a_dirty_file(manifest, tmp_path):

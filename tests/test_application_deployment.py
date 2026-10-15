@@ -475,7 +475,7 @@ def test_projection_defaults_have_explicit_recursive_upgrade_examples() -> None:
             "config_revisions": {"research": 1},
             "proposals": {"proposal": {"id": "proposal", "title": "change",
               "card": {"situation_cold": "context", "why_human_now": "choice", "consequences": "change", "decision_needed": "approve"},
-              "related_node_ids": ["hypothesis"], "related_edge_ids": ["edge"], "related_config_keys": ["research"],
+              "related_node_ids": ["hypothesis"], "related_edge_ids": ["edge"], "related_config_keys": ["research"], "dependency_rule": 2,
               "base_rev": 1, "status": "pending", "created_by": "agent", "created_by_operation_id": "operation",
               "raised_rev": 2, "resolved_rev": null, "resolved_by": null, "resolved_by_operation_id": null,
               "resolution_reason": null, "rejection_reason": null}},

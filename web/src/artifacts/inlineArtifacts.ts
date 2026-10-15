@@ -80,10 +80,12 @@ export function turnArtifactFor(
   const { folder, name } = location;
   const own = artifactsOf(taskId);
   if (own === undefined) return { name, taskId, artifact: null, loading: true };
-  // This turn's own file, or an earlier turn's file it published a new version of.
+  // This turn's own file, an earlier turn's file it published a new version of, or
+  // one whose edit it kept as a fork because the file moved meanwhile.
   const mine = own.find(
     (candidate) =>
-      candidate.name === name && (folder === taskId || candidate.turn_folder === folder),
+      (candidate.name === name && (folder === taskId || candidate.turn_folder === folder)) ||
+      (candidate.forked_from?.turn_folder === folder && candidate.forked_from.name === name),
   );
   if (mine || folder === taskId) return { name, taskId, artifact: mine ?? null, loading: false };
   // Any other turn's file: a turn folder is named by its turn, whose descriptors own it.

@@ -1302,13 +1302,20 @@ export function decodeGraphAttentionProjection(
     "decisions_awaiting_choice_ids",
     "open_blocker_ids",
     "proposal_actions",
+    "stale_proposal_ids",
+    "refreshable_proposal_ids",
     "decision_prior_choices",
   ];
   if (!isPlainRecord(value) || !hasExactKeys(value, keys)) {
     throw new Error("Project attention projection is missing or malformed.");
   }
   const readIds = (
-    field: "pending_proposal_ids" | "decisions_awaiting_choice_ids" | "open_blocker_ids",
+    field:
+      | "pending_proposal_ids"
+      | "decisions_awaiting_choice_ids"
+      | "open_blocker_ids"
+      | "stale_proposal_ids"
+      | "refreshable_proposal_ids",
   ): string[] => {
     const raw = value[field];
     if (!Array.isArray(raw) || raw.some((item) => !isNonEmptyString(item))) {
@@ -1362,8 +1369,16 @@ export function decodeGraphAttentionProjection(
     decisions_awaiting_choice_ids: readIds("decisions_awaiting_choice_ids"),
     open_blocker_ids: readIds("open_blocker_ids"),
     proposal_actions: proposalActions,
+    stale_proposal_ids: readIds("stale_proposal_ids"),
+    refreshable_proposal_ids: readIds("refreshable_proposal_ids"),
     decision_prior_choices: { ...(rawPriorChoices as Record<string, string>) },
   };
+  if (
+    attention.stale_proposal_ids.some((id) => !pendingProposalIds.includes(id)) ||
+    attention.refreshable_proposal_ids.some((id) => !attention.stale_proposal_ids.includes(id))
+  ) {
+    throw new Error("Project attention marks a Proposal stale that is not pending.");
+  }
   for (const proposalId of attention.pending_proposal_ids) {
     if (!graph.proposals[proposalId]) {
       throw new Error(`Project attention references missing Proposal ${proposalId}.`);
@@ -1872,6 +1887,10 @@ export interface GraphAttentionProjection {
   decisions_awaiting_choice_ids: string[];
   open_blocker_ids: string[];
   proposal_actions: Record<string, ProposalActionLine[]>;
+  /** Pending Proposals the Sync gate would withdraw: their dependencies moved. */
+  stale_proposal_ids: string[];
+  /** The stale ones ordinary Work can re-file; a form it cannot file offers Reject alone. */
+  refreshable_proposal_ids: string[];
   /** Decision id -> the choice it records, when its options no longer offer it. */
   decision_prior_choices: Record<string, string>;
 }
@@ -2336,8 +2355,10 @@ export interface AgentArtifactDescriptor {
   can_download: boolean;
   can_keep: boolean;
   can_discuss: boolean;
-  /** The turn folder holding this artifact's tracked file. */
+  /** The `turns/` folder holding this artifact's tracked file: its turn's, or its episode's for a report. */
   turn_folder?: string | null;
+  /** A fork's source: the tracked file its turn edited and cites, before that file moved. */
+  forked_from?: { turn_folder: string; name: string } | null;
 }
 
 export interface ResearchViewPin {

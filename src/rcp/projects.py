@@ -2440,6 +2440,9 @@ class ProjectCatalog:
                 # and their wording and shape change between releases; a cache
                 # written by an older release takes this release's rendering.
                 attention_payload["proposal_actions"] = expected_payload["proposal_actions"]
+                # Staleness is derived from the cached graph, so an older cache takes it too.
+                for key in ("stale_proposal_ids", "refreshable_proposal_ids"):
+                    attention_payload[key] = expected_payload[key]
             if "graph_mutation" not in snapshot:
                 snapshot["graph_mutation"] = project_graph_mutation_availability(graph).model_dump(
                     mode="json"

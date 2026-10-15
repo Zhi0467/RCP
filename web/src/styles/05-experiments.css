@@ -1248,3 +1248,11 @@
 .branch-tag > svg {
   flex-shrink: 0;
 }
+/* A stale Proposal: Sync would withdraw it, so it offers Refresh instead of Approve. */
+.proposal-card.stale {
+  border-left: 3px solid var(--red);
+}
+.proposal-refresh.failed {
+  border-color: var(--red);
+  color: var(--red);
+}

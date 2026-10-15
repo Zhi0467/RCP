@@ -181,6 +181,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/projects/{project_id}/consolidation/runs/{run_id}/dismiss"),
     (("POST",), "/api/projects/{project_id}/consolidation/evidence-flags/{flag_id}/dismiss"),
     (("POST",), "/api/projects/{project_id}/consolidation/evidence-flags/{flag_id}/address"),
+    (("POST",), "/api/projects/{project_id}/proposals/{proposal_id:path}/refresh"),
     (("GET",), "/api/projects/{project_id}/research-views"),
     (("POST",), "/api/projects/{project_id}/research-views"),
     (("DELETE",), "/api/projects/{project_id}/research-views/{artifact_id}"),

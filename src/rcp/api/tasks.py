@@ -120,6 +120,11 @@ class SteerAgentTaskRequest(BaseModel):
         return value
 
 
+class TrackedFileLocation(BaseModel):
+    turn_folder: str
+    name: str
+
+
 class AgentArtifactResponse(AgentArtifactDescriptor):
     """One stored descriptor plus backend-owned availability decisions."""
 
@@ -130,9 +135,15 @@ class AgentArtifactResponse(AgentArtifactDescriptor):
     can_download: bool
     can_keep: bool
     can_discuss: bool
-    # The turn folder holding the artifact's tracked file, so a later turn's
-    # citation of that path resolves to the card it published.
+    # The `turns/` folder holding the artifact's tracked file, named by its
+    # supplier: a turn, or an episode for its report. A later turn's citation of
+    # that path resolves to the card it published.
     turn_folder: str | None = None
+    # A fork's source: the tracked file this turn edited, which its reply cites,
+    # before the file moved and the edit was kept as this separate artifact.
+    forked_from: TrackedFileLocation | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 def _agent_artifact_response(
@@ -179,9 +190,7 @@ def _agent_artifact_response(
         can_download=available,
         can_keep=available and not kept and not record.history_only,
         can_discuss=can_discuss,
-        turn_folder=stored.supplier_id
-        if stored is not None and stored.supplier == "turn"
-        else None,
+        turn_folder=stored.supplier_id if stored is not None else None,
     )
 
 
@@ -260,6 +269,13 @@ def _agent_task_response(
                     update["repairable"] = False
     if not isinstance(stored_artifacts, list):
         return response
+    # The tracked file each fork was cut from, as settlement recorded it.
+    forks = {
+        payload["separate_artifact_id"]: payload["forked_from"]
+        for receipt in receipts
+        if isinstance((payload := receipt.payload).get("separate_artifact_id"), str)
+        and isinstance(payload.get("forked_from"), dict)
+    }
     projected: list[object] = []
     for raw in stored_artifacts:
         try:
@@ -267,9 +283,13 @@ def _agent_task_response(
         except (TypeError, ValueError):
             projected.append(raw)
             continue
-        projected.append(
-            _agent_artifact_response_json(_agent_artifact_response(store, record, descriptor))
-        )
+        card = _agent_artifact_response(store, record, descriptor)
+        forked_from = forks.get(descriptor.artifact_id)
+        if forked_from is not None:
+            card = card.model_copy(
+                update={"forked_from": TrackedFileLocation.model_validate(forked_from)}
+            )
+        projected.append(_agent_artifact_response_json(card))
     result["artifacts"] = projected
     return response
 

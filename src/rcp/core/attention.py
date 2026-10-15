@@ -21,6 +21,11 @@ from rcp.core.transition_models import (
     ProjectCountsProjection,
     ProposalActionLine,
 )
+from rcp.core.validation.proposals import (
+    proposal_is_stale,
+    proposal_subject_node,
+    proposal_work_cannot_refile,
+)
 
 
 def decision_awaits_choice(node: ProjectNode) -> bool:
@@ -48,6 +53,11 @@ def project_graph_attention(state: GraphState) -> GraphAttentionProjection:
         for proposal_id, proposal in state.proposals.items()
         if proposal.status == "pending"
     )
+    stale_ids = [
+        proposal_id
+        for proposal_id in pending_proposal_ids
+        if proposal_is_stale(state, state.proposals[proposal_id])
+    ]
     return GraphAttentionProjection(
         pending_proposal_ids=pending_proposal_ids,
         decisions_awaiting_choice_ids=sorted(
@@ -64,6 +74,13 @@ def project_graph_attention(state: GraphState) -> GraphAttentionProjection:
             proposal_id: _proposal_action(state.proposals[proposal_id], state)
             for proposal_id in pending_proposal_ids
         },
+        stale_proposal_ids=stale_ids,
+        refreshable_proposal_ids=[
+            proposal_id
+            for proposal_id in stale_ids
+            if not proposal_work_cannot_refile(state, state.proposals[proposal_id])
+            and proposal_subject_node(state, state.proposals[proposal_id]) is not None
+        ],
         decision_prior_choices=decision_prior_choices(state),
     )
 
