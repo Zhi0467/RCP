@@ -27,6 +27,7 @@ from rcp.storage.client_requests import migrate_client_requests
 from rcp.storage.connections import ConnectionCache
 from rcp.storage.digest import migrate_digest
 from rcp.storage.episodes import migrate_legacy_episodes
+from rcp.storage.evidence_flags import migrate_evidence_flags
 from rcp.storage.lessons import migrate_operational_lessons
 from rcp.storage.models import (
     AutoResearchLifecycleNoticeRecord,
@@ -114,6 +115,7 @@ class AppStoreBase:
         (48, "graph_seen_heads_v1"),
         (49, "resource_watermarks_v1"),
         (50, "research_view_pins_v1"),
+        (51, "evidence_flags_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -862,6 +864,9 @@ class AppStoreBase:
         )
         self._run_storage_schema_migration(
             connection, version=50, name="research_view_pins_v1", migration=migrate_research_views
+        )
+        self._run_storage_schema_migration(
+            connection, version=51, name="evidence_flags_v1", migration=migrate_evidence_flags
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

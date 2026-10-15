@@ -39,6 +39,7 @@ _MUTATING = frozenset(
     (
         "ask",
         "lesson",
+        "flag",
         "apply",
         "spawn",
         "pause",
@@ -183,6 +184,15 @@ def _parser():
     graph_log.add_argument("id")
     graph_log.add_argument("--at", default="@head")
     graph_log.add_argument("--cursor")
+
+    flag = subparsers.add_parser("flag")
+    flag.add_argument("--key", required=True)
+    flag.add_argument("--evidence", required=True)
+    flag.add_argument(
+        "--kind", required=True, choices=("overclaim", "underclaim", "no_source", "unverified")
+    )
+    flag.add_argument("--finding", required=True)
+    flag.add_argument("--source")
 
     lesson = subparsers.add_parser("lesson")
     lesson_actions = lesson.add_subparsers(dest="lesson_action", required=True)
@@ -334,7 +344,14 @@ def _request_arguments(namespace, workspace):
             arguments["lesson_id"] = _nonblank(namespace.id, "lesson id")
         return verb, _nonblank(namespace.key, "idempotency key"), arguments
     key = _nonblank(namespace.key, "idempotency key")
-    if verb == "ask":
+    if verb == "flag":
+        arguments = {
+            "evidence_id": _nonblank(namespace.evidence, "evidence id"),
+            "kind": namespace.kind,
+            "finding": _nonblank(namespace.finding, "finding"),
+            "source": namespace.source,
+        }
+    elif verb == "ask":
         if namespace.multiple and not namespace.choice:
             raise ClientInputError("--multiple requires --choice")
         arguments = {
@@ -897,6 +914,7 @@ def _requested_verb(argv):
         if argument in (
             "ask",
             "lesson",
+            "flag",
             "validate",
             "graph_diff",
             "graph_log",

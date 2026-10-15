@@ -458,6 +458,10 @@ class ClaudeProfile(ProviderProfile):
     def project_write_enforcement_mode(self) -> str:
         return "claude.permission-allowlist.v1"
 
+    def canonical_state_boundary(self) -> str:
+        # The Work shell is unbounded; see the provider's section of the containment spec.
+        return "file_tools_only"
+
     def canonical_autocompact(self, value: str) -> str:
         value = value.strip().lower()
         if value == "auto":

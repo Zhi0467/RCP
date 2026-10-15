@@ -28,6 +28,7 @@ from rcp.storage.consolidation import ConsolidationStoreMixin
 from rcp.storage.conversation_worktrees import ConversationWorktreeStoreMixin
 from rcp.storage.digest import DigestStoreMixin
 from rcp.storage.episodes import EpisodeStoreMixin
+from rcp.storage.evidence_flags import EvidenceFlagStoreMixin
 from rcp.storage.experiments import ExperimentStoreMixin
 from rcp.storage.lessons import LessonStoreMixin
 from rcp.storage.models import *  # noqa: F401,F403
@@ -61,6 +62,7 @@ class AppStore(
     DigestStoreMixin,
     ConsolidationStoreMixin,
     LessonStoreMixin,
+    EvidenceFlagStoreMixin,
     QuestionStoreMixin,
     NotificationStoreMixin,
     SpaceMachineStoreMixin,

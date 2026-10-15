@@ -27,6 +27,7 @@ from .helpers import (
     seed_patch,
     store_test_claude_token,
     wait_for_task_response,
+    write_turn_outcome,
 )
 from .helpers import create_named_app as create_app
 
@@ -38,8 +39,10 @@ class _FailThenSucceedLauncher:
         *,
         first_files: dict[str, str] | None = None,
         retry_files: dict[str, str] | None = None,
+        retry_outcome: bool = True,
     ) -> None:
         self.failure = failure
+        self.retry_outcome = retry_outcome
         self.first_files = first_files or {}
         self.retry_files = retry_files or {}
         self.native_session_id = str(uuid.uuid4())
@@ -82,6 +85,8 @@ class _FailThenSucceedLauncher:
                 (workspace / name).write_text(content, encoding="utf-8")
             yield AgentEvent(event="error", text=self.failure)
             return
+        if self.retry_outcome:
+            write_turn_outcome(workspace)
         for name, content in self.retry_files.items():
             (workspace / name).write_text(content, encoding="utf-8")
         yield AgentEvent(event="answer", text="The Retry completed.")
@@ -233,6 +238,39 @@ def test_same_provider_discuss_retry_receives_exact_failure(manifest, tmp_path) 
     _assert_retry_receipt(app, str(retried["operation_id"]))
 
 
+def test_work_retry_does_not_publish_the_failed_attempts_outcome(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    launcher = _FailThenSucceedLauncher(
+        "Work provider disconnected.",
+        first_files={"outcome.json": '{"status":"done"}'},
+        retry_outcome=False,
+    )
+
+    async def stream(_project_id, _kind, request, execution):
+        async for frame in stream_work_run(
+            service, launcher, request, tmp_path / "data", execution=execution
+        ):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    _, retried = _retry_task(
+        signed_in_client(app),
+        app.state.default_project_id,
+        "project_chat",
+        {
+            "chat_id": str(uuid.uuid4()),
+            "message": "Finish the check.",
+            "run_truth_scope": ["repo-a"],
+            "mode": "work",
+        },
+    )
+    # The retry and its one correction left the predecessor's file untouched.
+    assert len(launcher.sessions) == 3
+    assert retried["result"]["turn_outcome"] == {"status": "not_stated", "reason": None}
+
+
 @pytest.mark.parametrize("legacy_layout", [False, True])
 def test_same_provider_work_retry_preserves_but_does_not_consume_predecessor_outputs(
     manifest, tmp_path, legacy_layout: bool
@@ -325,6 +363,7 @@ def test_same_provider_work_retry_preserves_but_does_not_consume_predecessor_out
         item.payload
         for item in store.agent_task_receipts(str(retried["operation_id"]))
         if item.category == "retry_deliverable_comparison"
+        and item.payload["filename"] != "outcome.json"
     ]
     assert {
         (
@@ -378,12 +417,13 @@ def test_work_recovery_in_a_committed_session_points_to_its_chat_master(manifest
     prompts: list[str] = []
 
     class Launcher:
-        async def stream(self, _provider, prompt, **_kwargs):
+        async def stream(self, _provider, prompt, **kwargs):
             prompts.append(prompt)
             yield AgentEvent(event="session", session_id=session)
             if len(prompts) == 2:
                 yield AgentEvent(event="error", text="Work provider disconnected.")
                 return
+            write_turn_outcome(Path(kwargs["cwd"]))
             yield AgentEvent(event="answer", text="Done.")
             yield AgentEvent(event="done")
 
@@ -799,6 +839,7 @@ def test_browser_grant_precedes_persisted_prompt_and_turns_off(
             if len(grants) > 1:
                 assert kwargs["session_id"] == native_session_id
             yield AgentEvent(event="session", session_id=native_session_id)
+            write_turn_outcome(Path(kwargs["cwd"]))
             yield AgentEvent(event="answer", text="done")
             yield AgentEvent(event="done")
 

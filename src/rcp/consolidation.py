@@ -18,6 +18,7 @@ from rcp.history.queries import HeadSpec, HistoryEngine, StepRecord
 from rcp.limits import CONSOLIDATION_POLL_SECONDS
 from rcp.machine_sleep import seconds_until_automatic_launch
 from rcp.runs.consolidation import CONSOLIDATION_PRELAUNCH_ERRORS, consolidation_skill_selection
+from rcp.runs.evidence_flag_commands import hold_consolidation_additions
 from rcp.runs.task_policy import resolved_dispatch_authority
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AgentTaskRecord, AppStore
@@ -258,6 +259,12 @@ class ConsolidationPoller:
                 logger.exception("Consolidation outcome reconciliation failed for %s", run.run_id)
 
     def _settle(self, run: ConsolidationRun, task: AgentTaskRecord) -> None:
+        # Every finished turn, failed or not, reruns the keyed holds. A run whose
+        # applied Evidence cannot be checked yet stays unsettled for the next pass.
+        if not hold_consolidation_additions(
+            lambda: self.service_for(run.project_id), self.store, task.operation_id
+        ):
+            return
         revisions: list[dict[str, object]] = []
         proposals = 0
         covered = run.input_head

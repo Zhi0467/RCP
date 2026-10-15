@@ -540,6 +540,10 @@ class ProviderProfile:
     def project_write_enforcement_mode(self) -> str:
         raise ValueError(f"Provider {self.id!r} has no project write enforcement mode")
 
+    def canonical_state_boundary(self) -> str:
+        """What keeps canonical state read-only in Work: every tool, or only file tools."""
+        raise ValueError(f"Provider {self.id!r} has no canonical state boundary")
+
     def launch_degradation(self, stderr: str, *, requested_reasoning: str | None) -> str | None:
         """One RCP-authored sentence when the CLI ignored part of a launch.
 

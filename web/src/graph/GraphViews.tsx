@@ -1,3 +1,4 @@
+import { useEvidenceFlags } from "./EvidenceFlagContext";
 import { MAIN_GRAPH } from "../core/graphTarget";
 import { ExperimentLoopMetadata } from "../experiments/ExperimentLoopMetadata";
 import { ComputeRouteNotice } from "../experiments/ComputeRouteNotice";
@@ -271,6 +272,7 @@ export function DagView({
   changedNodeIds = NO_CHANGED_NODES,
   ...editing
 }: DagProps) {
+  const { nodeIds: flaggedNodeIds } = useEvidenceFlags();
   const narrow = useNarrowViewport();
   const [mobileControlsOpen, setMobileControlsOpen] = useState(false);
   const [connection, setConnection] = useState<{ source: string; target: string } | null>(null);
@@ -1053,7 +1055,7 @@ export function DagView({
                     : null;
                   return (
                     <div
-                      className={`dag-node ${branchChanges ? "is-branch-diff" : ""} ${diffWord ? `diff-${diffWord}` : ""} ${node.type} ${node.standing} ${node.draft_touched ? "draft-touched" : ""} ${dimmed ? "is-dim" : ""} ${projectionEmphasis === "neutral" ? "is-layer-neutral" : ""} ${position.pinned ? "is-pinned" : ""} ${draggingId === node.id ? "is-dragging" : ""} ${changedNodeIds.has(node.id) ? "digest-changed" : ""}`}
+                      className={`dag-node ${flaggedNodeIds.has(node.id) ? "has-evidence-flag" : ""} ${branchChanges ? "is-branch-diff" : ""} ${diffWord ? `diff-${diffWord}` : ""} ${node.type} ${node.standing} ${node.draft_touched ? "draft-touched" : ""} ${dimmed ? "is-dim" : ""} ${projectionEmphasis === "neutral" ? "is-layer-neutral" : ""} ${position.pinned ? "is-pinned" : ""} ${draggingId === node.id ? "is-dragging" : ""} ${changedNodeIds.has(node.id) ? "digest-changed" : ""}`}
                       data-node-id={node.id}
                       style={
                         {
@@ -2011,9 +2013,10 @@ function ResearchNodeCard({
   compact?: boolean;
   changed?: boolean;
 }) {
+  const { nodeIds: flaggedNodeIds } = useEvidenceFlags();
   return (
     <button
-      className={`research-node-card ${node.standing} ${node.draft_touched ? "draft-touched" : ""} ${compact ? "compact" : ""} ${changed ? "digest-changed" : ""}`}
+      className={`research-node-card ${flaggedNodeIds.has(node.id) ? "has-evidence-flag" : ""} ${node.standing} ${node.draft_touched ? "draft-touched" : ""} ${compact ? "compact" : ""} ${changed ? "digest-changed" : ""}`}
       onClick={() => onSelectNode(node)}
     >
       <span className="research-node-topline">

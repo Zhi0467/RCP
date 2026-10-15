@@ -1056,6 +1056,37 @@ offers its result; `rcp_open_finished_result` opens it only on the member's
 next reply, under the current project and graph guards, and the offer expires
 after that reply or the next agent response. Nothing opens on its own.
 
+## Consolidation API
+
+`GET /api/projects/{project_id}/consolidation` returns `can_write`, `schedule`,
+consolidation `inbox` rows, `recent_nights`, and `evidence_flags`. The last array
+contains only open and addressing flags. Each flag has `flag_id`, nullable
+`run_id` and `occurrence_date`, `evidence_id`, `evidence_revision` (the main
+revision when flagged), `kind` (`overclaim`, `underclaim`, `no_source`,
+`unverified`, or `consolidation_added`), `finding`, nullable `source`, `state`
+(`open`, `addressing`, or `dismissed`), nullable `chat_id`, and `created_at`.
+Findings are non-blank single lines of at most 400 characters; sources are at
+most 1000 characters and use an absolute host path or `<alias>/<relative path>`
+with optional `:LINE`, or an `http(s)` URL.
+
+Both Evidence flag mutations require project write admission and a patch-capable
+identity:
+
+- `POST .../consolidation/evidence-flags/{flag_id}/dismiss` returns
+  `{"flag": EvidenceFlag}`; unknown flags return 404 and dismissed flags 409.
+- `POST .../consolidation/evidence-flags/{flag_id}/address` takes
+  `{"request_id": string}` and returns `{"flag": EvidenceFlag, "chat_id": string,
+  "operation_id": string}`. It admits an ordinary node Work chat on main using
+  the human node-chat path and default node-chat provider profile. The first human
+  message is composed on the backend from flag context and fixed instructions;
+  it adds no authority. Replaying the same request id or addressing an addressing
+  flag returns the existing chat and operation without starting another turn,
+  whatever main now holds. Addressing an open flag whose Evidence is absent or
+  retired on main, or a dismissed flag, returns 409; unknown flags return 404.
+
+The [consolidation spec](graph-consolidation-and-lessons.md#evidence-to-check)
+owns fact-check behavior, flag lifecycle, and the Evidence to check Inbox rows.
+
 ## Application surfaces
 
 ### Overview

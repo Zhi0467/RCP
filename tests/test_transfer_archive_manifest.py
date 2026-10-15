@@ -119,6 +119,8 @@ PROJECT_LINKED_TABLES = {
     "graph_watcher_reconciliation",
     "operational_lessons",
     "lesson_command_receipts",
+    "evidence_flags",
+    "evidence_flag_command_receipts",
     "notification_preferences",
     "notification_outbox",
     "notification_graph_markers",

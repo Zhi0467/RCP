@@ -1413,3 +1413,15 @@ button.relation-map-node:hover {
   grid-template-columns: minmax(360px, 62%) 9px minmax(320px, 1fr);
   height: 100%;
 }
+
+:root .research-node-card.has-evidence-flag,
+:root .relation-map-node.has-evidence-flag,
+:root .node-detail-drawer.has-evidence-flag {
+  border-left: 3px solid var(--red);
+}
+:root .dag-node.has-evidence-flag::before {
+  background: var(--red);
+}
+.evidence-flag-action {
+  color: var(--red);
+}

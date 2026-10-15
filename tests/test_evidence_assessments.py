@@ -628,7 +628,7 @@ def test_historical_unassessed_evidence_relation_replays_and_renders_as_legacy()
     assert result.state.replay_status == "complete"
     assert not any(report.rejected for report in result.reports.values())
     assert result.state.edges[EDGE_A_ID].assessment is None
-    rendered = render_research_md(result.state)
+    rendered = render_research_md(_with_evidence(result.state, standing=Standing.ACCEPTED))
     assert "`supports`" in rendered
 
 
@@ -728,6 +728,37 @@ def test_remove_and_create_replaces_assessment_without_rewriting_prior_patch(man
     )
 
 
+def _with_evidence(state: GraphState, **changes: object) -> GraphState:
+    evidence = state.nodes[EVIDENCE_ID].model_copy(update=changes)
+    return state.model_copy(update={"nodes": {**state.nodes, EVIDENCE_ID: evidence}})
+
+
+@pytest.mark.parametrize(
+    ("standing", "validity", "listed"),
+    [
+        (Standing.ACCEPTED, "valid", True),
+        (Standing.ACCEPTED, "qualified", True),
+        (Standing.ASSERTED, "valid", False),
+        (Standing.CONTESTED, "valid", False),
+        (Standing.ACCEPTED, "invalid", False),
+    ],
+)
+def test_accepted_research_lists_only_accepted_sound_evidence(
+    standing: Standing, validity: str, listed: bool
+) -> None:
+    state = apply_valid_patch(
+        _state(),
+        _agent_patch(
+            CreateEdgesOperation(op="create_edges", edges=[_edge(assessment=_assessment())]),
+            revision=1,
+        ),
+    )
+
+    rendered = render_research_md(_with_evidence(state, standing=standing, validity=validity))
+
+    assert ("**Transfer result**" in rendered) is listed
+
+
 def test_research_markdown_and_graph_dump_place_assessment_on_edges() -> None:
     state = apply_valid_patch(
         _state(),
@@ -749,7 +780,7 @@ def test_research_markdown_and_graph_dump_place_assessment_on_edges() -> None:
         ),
     )
 
-    rendered = render_research_md(state)
+    rendered = render_research_md(_with_evidence(state, standing=Standing.ACCEPTED))
     dumped = state.model_dump(mode="json")
 
     assert "**Transfer result** `supports` **Transfer persists**" in rendered

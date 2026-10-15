@@ -55,6 +55,26 @@ explains the concrete unavailable prerequisite or new authority needed for
 further useful progress. This does not widen the requested objective or grant
 another invocation.
 
+Every turn settled by ordinary Work (human Work chat and nightly consolidation) writes
+`outcome.json` in its exact task stage: `status` is `done`, `partial`, or
+`could_not`; `reason` is optional for `done`, and required and non-blank otherwise.
+The reason is one line of at most 240 characters. The answer is never parsed for
+an outcome. Experiment loops, Auto-research, child Work, Discuss, and Seed/Refresh
+are outside this contract. New turns clear stale outcomes with the other handoffs.
+
+A missing or invalid outcome gets one same-session correction through the watcher
+handoff correction loop, without another invocation, budget, or repeated operational
+work. If still invalid or absent, it records `not_stated` without failing the turn.
+Recorded-result recovery cannot launch a correction and records `not_stated` when
+no valid outcome is available. A Retry treats an `outcome.json` left unchanged from
+its predecessor as missing. Only the Work owner sets the outcome; provider event
+text never does. Task results and assistant transcript messages carry
+`turn_outcome`; user messages and non-Work turns have no outcome. Project transfer
+carries it in the transcript only; transfer task records omit it so the record
+schema version stays unchanged. The outcome is independent of the graph receipt. Honest partial or couldn't-do-it results are good
+results; done must be backed by what the turn ran or read. Unknowns are stated once,
+plainly, rather than hedging every sentence.
+
 A Work turn may finish without a Patch; no net graph change spends no revision.
 The answer and graph outcome remain independently visible. A stray Patch left by
 Discuss is retained as a receipt and discarded; a file cannot grant its author a

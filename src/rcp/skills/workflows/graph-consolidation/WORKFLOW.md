@@ -2,7 +2,7 @@
 id: graph-consolidation
 kind: workflow
 label: Graph consolidation
-version: 1.4.0
+version: 1.5.0
 description: Consolidate a project's main research graph and operational lessons while nobody is watching, apply the result inside the turn, and leave one short visual report of every change for the human to read in the morning.
 dependencies:
 - graph-audit@3.4.0
@@ -13,11 +13,11 @@ dependencies:
 # Graph consolidation
 
 The graph is this project's memory. Your job tonight is to make it easier to
-read and act on, and to check recent literature against its open claims,
-without changing what it claims on your own authority. Tidy; do not run
-experiments. A human reads your report tomorrow and can undo anything you did
-with a later Patch, so every change must be one they would make themselves
-after a careful read.
+read and act on, to check its Evidence against its sources, and to check
+recent literature against its open claims, without changing what it claims on
+your own authority. Tidy and check sources; do not run experiments. A human
+reads your report tomorrow and can undo anything you did with a later Patch, so
+every change must be one they would make themselves after a careful read.
 
 ## Pass 1: audit
 
@@ -25,9 +25,36 @@ Apply Graph audit to main, reading `research.md` before `graph.json`. Use
 Experiment causality and Evidence triage only on the nodes the audit flags.
 Keep the findings as working notes; they feed passes 2, 3, 4, and 6.
 
-## Pass 2: literature
+## Pass 2: fact-check and literature
 
-Use the turn's web search to find recent work bearing on open ResearchQuestions
+Check Evidence created or changed on main since the covered head supplied for
+this run; if there is no covered head yet, check all current Evidence. Read
+the cited sources themselves: artifact refs, producing Experiment job logs, and
+repository files on the execution host, and papers, web pages, or datasets
+through your web and network tools. Conversation transcripts and earlier agent
+summaries are pointers, not substitutes for reading sources. When your provider
+offers native subagents, give each a batch of Evidence to check in parallel and
+wait for all of them before you continue.
+
+Fix prose problems and missing or wrong citations directly in your Patch when
+you find the right source, preserving the claim, scope, and qualifications.
+For scientific or semantic problems, use the command client's keyed `flag`:
+
+- `overclaim`: the Evidence claims more than the source supports;
+- `underclaim`: the Evidence omits or understates a result the source supports;
+- `no_source`: you read the sources you could find and none contains the claim;
+- `unverified`: a source is named but you could not read it, for example a
+  paywalled paper, a dead link, or an unreachable host.
+
+Give a one-line finding and, when available, the source: an absolute
+execution-host path or a repository alias followed by its relative path, with
+an optional line number, or an `http(s)` URL. Do not edit the flagged claim,
+validity, or standing to resolve the finding, including in later passes. A
+human addresses it from Inbox. Do not treat inability to read a source as proof
+the claim is false; state what you could not verify in the finding and use
+`unverified`, not `no_source`.
+
+Then use the turn's web search to find recent work bearing on open ResearchQuestions
 and Hypotheses. For each search, record the query, date, each source and its version (preprint or published),
 and whether you read full text or only an abstract. Mark unread hits as unread;
 search snippets alone do not establish Evidence. Deduplicate preprint and
@@ -50,7 +77,8 @@ Apply Evidence triage to each literature change. You may add Evidence with
 the graph rules. Cite the paper and keep the observation within what you read.
 An abstract-only observation may state what the abstract reports; it cannot
 claim you checked the full methods or results. Carry that limit into the
-edge's qualifications. Keep these changes for the shared Patch in Pass 4.
+edge's qualifications. RCP holds every Evidence node you add for human review.
+Keep these changes for the shared Patch in Pass 4.
 
 ## Pass 3: consolidate
 
@@ -64,7 +92,9 @@ Fix only what the audit proved, smallest change first:
   changing its claim, scope, or qualifications;
 - refresh a stale `current_summary` or `next_action` from what the graph now
   shows;
-- add a missing relation only when the graph already states its reason.
+- add a missing relation only when the graph already states its reason;
+- add Evidence for a result that a source you read states and the graph lacks,
+  citing that source. RCP holds every Evidence node you add for human review.
 
 You may also add what the graph already implies but never wrote down:
 
@@ -109,6 +139,9 @@ inside the same Patch stays stale. Rewrite each such field from what the graph
 now shows and `apply` that as one more validated Patch. When you cannot tell
 what is now true, leave the field and list the Experiment under Suggestions.
 
+Last, fact-check every Evidence node your Patches added, exactly as in Pass 2,
+and raise the flags that check finds.
+
 ## Pass 5: lessons
 
 Read `lessons.md`. Merge agent-written lessons that say the same thing, rewrite
@@ -125,11 +158,12 @@ turn's artifact folder. Give it a `<title>` naming what changed most, such as
 Lead with one sentence on the state of the graph. Then list every change you
 applied, grouped as merged, superseded, rewritten, refreshed, readability,
 glossary, and relations, each with the node titles before and after and one line of reason.
-Then list the nodes you added, every Decision you queued or reopened, every
-Proposal you raised and why, and the lesson changes. Under **Literature**, list
-every literature change and new paper, with its source, reading depth, and the
-claim it bears on. Include the search records and any access gaps; say when
-the search found nothing new. End with **Suggestions**:
+Then list the nodes you added, Evidence first, every Decision you queued or
+reopened, every Proposal you raised and why, and the lesson changes. List the
+Evidence flags you raised with each Evidence title, flag kind, and finding.
+Under **Literature**, list every literature change and new paper, with its
+source, reading depth, and the claim it bears on. Include the search records
+and any access gaps; say when the search found nothing new. End with **Suggestions**:
 next steps, possible experiments, and audit findings you chose not to act on,
 each one line the human can act on. Use a small before-and-after diagram when a
 merge or supersession changes the shape of a question's path. Keep it to a few

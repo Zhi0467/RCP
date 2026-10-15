@@ -1,3 +1,6 @@
+import { EvidenceFlagProvider } from "./graph/EvidenceFlagContext";
+import { EvidenceFlagInbox } from "./projects/EvidenceFlagInbox";
+import { evidenceFlagRows } from "./projects/evidenceFlags";
 import { errorMessage } from "./core/errors";
 import { PinnedView, PinnedViewTab } from "./graph/PinnedView";
 import { pinRequest, pinScopeKey, researchViewsProfile } from "./graph/researchViewResources";
@@ -93,6 +96,7 @@ import {
 import {
   lazy,
   Suspense,
+  createElement,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -1842,6 +1846,7 @@ function MemberApp({
     consolidation,
     error: consolidationError,
     refresh: refreshConsolidation,
+    updateFlag: updateEvidenceFlag,
   } = useConsolidation(backendSessionReady ? apiBase : "", String(graph.revision));
   const refreshProjectIndexQuietly = useCallback(() => {
     // The landing count follows Caught up; a failed index read keeps the old list.
@@ -3504,6 +3509,16 @@ function MemberApp({
   openNodeByIdRef.current = openNodeById;
   const openChatsRef = useRef(openChats);
   openChatsRef.current = openChats;
+  // A flag's chat is bound to main; from a branch, switch there, then open it.
+  const [pendingMainChat, setPendingMainChat] = useState<string | null>(null);
+  const loadedTargetKind = project?.graph_target.kind;
+  useEffect(() => {
+    // The chat reads the loaded snapshot's target, so wait until main has loaded.
+    if (!pendingMainChat || graphTarget.kind !== "main" || loadedTargetKind !== "main" || loading)
+      return;
+    setPendingMainChat(null);
+    openChatsRef.current(pendingMainChat);
+  }, [pendingMainChat, graphTarget, loadedTargetKind, loading]);
   const webMcpViewOwners = useMemo<WebMcpViewOwners>(
     () => ({
       openNode: (nodeId) => openNodeByIdRef.current(nodeId),
@@ -4153,10 +4168,18 @@ function MemberApp({
     consolidation?.schedule ?? null,
     Date.now(),
   );
-  const consolidationCount = consolidationAttentionCount(
-    openConsolidation,
-    needsConsolidationRenewal,
+  // Flags are project-wide Inbox rows; only main's graph carries their node marks.
+  const flagRows = evidenceFlagRows(
+    consolidation?.evidence_flags ?? [],
+    graph.nodes,
+    project.repositories,
+    graphTarget.kind === "main",
   );
+  const flaggedNodeIds = new Set(
+    graphTarget.kind === "main" ? flagRows.flatMap((row) => (row.node ? [row.node.id] : [])) : [],
+  );
+  const consolidationCount =
+    consolidationAttentionCount(openConsolidation, needsConsolidationRenewal) + flagRows.length;
   const attentionCount =
     pendingProposals.length + attentionDecisions.length + openBlockers.length + consolidationCount;
   const showTrustFilter = view === "scientific" || view === "dag";
@@ -4553,7 +4576,15 @@ function MemberApp({
       )}
     </>
   );
-  return (
+  return createElement(
+    EvidenceFlagProvider,
+    {
+      nodeIds: flaggedNodeIds,
+      onOpenInbox: () => {
+        clearNodeSelections();
+        changeView("attention");
+      },
+    },
     <div className="app-shell overview-shell">
       {acceptanceAgentSurface}
       {voiceSurface}
@@ -4861,6 +4892,20 @@ function MemberApp({
                       stageProposalDecision(draft, graph, proposal.id, decision),
                     )
                   }
+                />
+                <EvidenceFlagInbox
+                  key={project.id}
+                  apiBase={apiBase}
+                  projectId={project.id}
+                  rows={flagRows}
+                  writesDisabled={!consolidation?.can_write}
+                  onChanged={updateEvidenceFlag}
+                  onOpenNode={openNode}
+                  onOpenChat={(chatId) => {
+                    if (graphTarget.kind === "main") return openChats(chatId);
+                    setPendingMainChat(chatId);
+                    window.location.hash = projectViewHash(project.id, MAIN_GRAPH, "chats");
+                  }}
                 />
                 <ConsolidationInbox
                   items={openConsolidation}
@@ -5455,7 +5500,7 @@ function MemberApp({
       {desktopAccessSurface}
       {actorNameSurface}
       {reverificationSurface}
-    </div>
+    </div>,
   );
 }
 

@@ -57,6 +57,7 @@ from rcp.limits import (
 from rcp.providers import ProviderUsage, classify_terminal_error, require_runtime_id
 from rcp.storage.client_requests import record_client_request
 from rcp.storage.digest import append_task_failed
+from rcp.storage.evidence_flags import record_evidence_flag_address
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     ACTIVE_AGENT_TASK_STATUSES,
@@ -88,6 +89,7 @@ from rcp.storage.models import (
     _retention_reference_time,
 )
 from rcp.storage.question_models import QuestionRecord
+from rcp.turn_outcomes import TurnOutcome
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
@@ -949,6 +951,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             ),
         )
         record_client_request(self, connection, record)
+        record_evidence_flag_address(self, connection, record)
         self._insert_agent_task_receipt(
             connection,
             record.operation_id,
@@ -4038,6 +4041,11 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     continue
                 artifacts.append(descriptor.model_dump(mode="json"))
         payload: dict[str, object] = {"messages": []}
+        if result.get("turn_outcome") is not None:
+            with suppress(TypeError, ValueError):
+                payload["turn_outcome"] = TurnOutcome.model_validate(
+                    result["turn_outcome"]
+                ).model_dump(mode="json")
         if artifacts:
             payload["artifacts"] = artifacts
 

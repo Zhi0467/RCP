@@ -98,6 +98,29 @@ commits. Node removal removes incident edges, not history. Accepted-node and
 active-Experiment safeguards apply. Artifact selections are not graph editing
 or Evidence shortcuts.
 
+Open or addressing Evidence flags mark their current main-graph nodes with a red
+left edge in graph and research cards. Node detail adds one icon-only flag action
+that opens the Inbox. A flag on retired or absent Evidence keeps its row, titled from
+the recorded node or id, with only Open chat, Open source, and Dismiss as they apply;
+it marks no node.
+
+## Evidence to check
+
+The Inbox uses the consolidation load for an **Evidence to check** section and
+includes its rows in the open total. Each row shows the kind, night, current
+Evidence title, and finding. **Address** starts the backend-authorized node Work
+chat and opens the returned chat in Agents; **Open chat** replaces it while the
+flag is addressing. The row stays until its icon-only **Dismiss** action succeeds.
+**Open Evidence** opens node detail. **Open source** opens a URL source in a new
+tab, or a repository alias or absolute path in the existing file preview, and is
+offered only for a URL or a path that resolves to a configured repository file.
+The section and its count appear on every graph target. On a branch, rows read
+their Evidence from the branch's graph, every open flag offers Address because
+main's endpoint decides it, and Address and Open chat switch to main, where the
+flag's chat is bound.
+A failed action marks the row with a red edge and replaces that action with one
+icon-only retry. Controls wrap and retain phone-sized targets at 390px.
+
 ## DAG controls
 
 At <=560px controls start behind a chevron; wider views show them. Provide
@@ -163,7 +186,9 @@ Unread cards have tint, accent edge, bold title, and New; unread failed/stopped
 cards keep their group. Offered Retry/Resume stays visible; working rows show
 phase/elapsed time. Search requires every word to match loaded card/turn content.
 Filters are All/Working. A failed/stopped conversation has a backend-labelled
-recovery banner above it.
+recovery banner above it, except a plain Retry: that sits as one icon-only
+action on the failed turn's error row. Only a turn with no later turn offers it;
+artifact edits and conversation turns are compared only among themselves.
 
 Agents shows the selected graph, plus unarchived listed branch orchestrators on
 main. Orchestrators open in place without linking branch ids to main nodes.
@@ -224,6 +249,12 @@ Cancel independently of graph read-only state; watcher refresh owns observation.
 Actions sit at the right. Hide removes completed watcher rows/cards only for this
 browser/project; Show hidden watchers restores them, and renewed activity overrides
 hiding. Records and other viewers are unaffected.
+
+Work replies show the recorded turn outcome as a neutral chip beside the graph
+receipt, including replies without a graph update: **Done**, **Partial · reason**,
+**Couldn't do it · reason**, or **No outcome stated**. Missing outcome metadata on
+non-Work turns produces no chip. Outcome chips never use failure coloring and
+wrap long reasons within the reply width.
 
 ## Terminals
 

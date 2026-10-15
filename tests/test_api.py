@@ -115,6 +115,7 @@ from .helpers import (
     store_test_claude_token,
     wait_for_entry,
     wait_until,
+    write_turn_outcome,
 )
 from .helpers import wait_for_task_response as _wait_for_run
 
@@ -634,7 +635,9 @@ class ScriptedLauncher:
         *,
         message: str = "",
         usage: ProviderUsage | None = None,
+        outcome: str | None = '{"status":"done"}',
     ) -> None:
+        self.outcome = outcome
         self.turns = turns
         self.message = message
         self.usage = usage
@@ -667,6 +670,8 @@ class ScriptedLauncher:
             if inputs.is_dir()
             else {}
         )
+        if self.outcome is not None and "outcome.json" not in turn:
+            write_turn_outcome(workspace, self.outcome)
         for name, content in turn.items():
             (workspace / name).write_text(content, encoding="utf-8")
         yield AgentEvent(event="session", session_id=self.native_session_id)
@@ -4913,6 +4918,7 @@ def test_resumed_chat_patch_is_applied_to_live_current_state(app, tmp_path) -> N
             (Path(kwargs["cwd"]) / "patch.json").write_text(
                 agent_patch_json(patch), encoding="utf-8"
             )
+            write_turn_outcome(Path(kwargs["cwd"]))
             yield AgentEvent(event="answer", text="Recorded.")
             yield AgentEvent(event="done")
 
@@ -5585,7 +5591,11 @@ def test_work_launch_receipt_names_the_canonical_state_boundary(
         receipt for receipt in completed["debug_receipts"] if receipt["category"] == "agent_launch"
     )
     repository_root = str(Path(manifest.repository_map["repo-a"].path).resolve())
-    assert launch["payload"]["canonical_state_boundary"] == "provider_enforced"
+    # Claude's Work shell is unbounded, so only its file tools keep canonical state read-only.
+    assert (
+        launch["payload"]["canonical_state_boundary"]
+        == {"codex": "provider_enforced", "claude": "file_tools_only"}[provider]
+    )
     assert (
         launch["payload"]["provider_enforcement_mode"]
         == {
@@ -8159,7 +8169,8 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
     invalid = json.dumps({"external": [{**common, "check_command": "exit 2"}], "graph": graph})
     corrected = json.dumps({"external": [{**common, "check_command": "exit 1"}], "graph": graph})
     launcher = ScriptedLauncher(
-        [{"watch.json": invalid}, {"watch.json": corrected}],
+        [{"watch.json": invalid}, {"watch.json": corrected, "outcome.json": '{"status":"done"}'}],
+        outcome=None,
         message="The fixture was launched once.",
     )
 

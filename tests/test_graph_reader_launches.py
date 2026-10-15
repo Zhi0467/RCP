@@ -26,6 +26,7 @@ from .helpers import (
     seed_patch,
     signed_in_client,
     wait_for_task_response,
+    write_turn_outcome,
 )
 from .test_consolidation_work import _apply_request
 from .test_experiment_loop_agent_io import _LoopLauncher
@@ -94,6 +95,8 @@ class _HistoryLauncher:
         if not self.succeed:
             yield AgentEvent(event="error", text="provider failed")
             return
+        if self.kind in {"work", "consolidation"}:
+            write_turn_outcome(root)
         if self.kind in {"seed", "refresh"}:
             patch = seed_patch() if self.kind == "seed" else refresh_patch()
             (root / "patch.json").write_text(agent_patch_json(patch))

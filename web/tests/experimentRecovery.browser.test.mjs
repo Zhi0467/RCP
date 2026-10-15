@@ -40,14 +40,19 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
       const submissions = [];
       page.on("requestfailed", (request) => {
         // The Terminals tab's projections are abandoned when the view unmounts
-        // mid-flight, and a Runs refresh supersedes an in-flight artifact list
-        // or question read. A deliberate abort is cleanup, not a failure.
-        const aborted = new URL(request.url()).pathname;
+        // mid-flight, and a Runs refresh supersedes an in-flight artifact list,
+        // question read, or opened card's episode detail. A deliberate abort is
+        // cleanup, not a failure.
+        const url = new URL(request.url());
+        const aborted = url.pathname;
         if (
           (aborted.endsWith("/terminals") ||
             aborted.endsWith("/terminals/repositories") ||
             aborted.endsWith("/artifacts") ||
-            aborted.endsWith("/questions")) &&
+            aborted.endsWith("/questions") ||
+            (aborted.endsWith("/episodes") && url.searchParams.has("episode_id")) ||
+            aborted.endsWith("/episodes/episode/messages") ||
+            aborted.endsWith("/episodes/episode/timeline")) &&
           request.failure()?.errorText === "net::ERR_ABORTED"
         )
           return;
