@@ -236,7 +236,8 @@ Unseen completed turns remain until the chat is read. Provider authorship is
 unchanged. Removed nodes and changed edge endpoints participate. Main lists only
 main changes; unmerged work appears on its branch. `changed_node_ids` includes
 only surviving main nodes and is empty on branches. Reports opens the target's
-episode/consolidation artifacts. Jobs, failed tasks, ended episodes, lessons,
+episode/consolidation artifacts; a report whose artifact was deleted leaves the
+list and the count. Jobs, failed tasks, ended episodes, lessons,
 and chat messages alone are not lines.
 
 Links open ordinary in-app routes: a run's branch orchestrator, exact Experiment
@@ -698,15 +699,15 @@ and requires the exact echoed integer. Missing/mismatched negotiation or changed
 compatible release/update path. Semantic versions and commit order are not the
 protocol. Personal work remains usable; unavailable team cards remain labelled.
 
-Desktop supports `[3, 5]`, server `[1, 5]`. Protocol 1 forbids team deletion;
+Desktop supports `[3, 6]`, server `[1, 6]`. Protocol 1 forbids team deletion;
 2 permits deletion only with negotiated support and the exact confirmation;
 3 adds optional reviewed `source_commit` and `rcp-transfer-v2` Git archives,
 while accepting omitted commits/v1 archives; 4 adds optional
 `record_schema_version=2` for episode archives; 5 also allows 3 (an archived
-graph branch) and 4 (branch names). The desktop refuses preparation, before any
-target mutation, when the source needs a record version the negotiated protocol
-lacks, so a new record version needs a new protocol. Archive-free transfers retain
-prior bytes; incompatible peers refuse preparation before source release.
+graph branch) and 4 (branch names); 6 also allows 5 (a deleted episode
+report). The desktop refuses preparation, before any target mutation, when the
+source needs a record version the negotiated protocol lacks, so a new record
+version needs a new protocol. Archive-free transfers retain prior bytes; incompatible peers refuse preparation before source release.
 Breaking contracts get a new immutable version; retirement is explicit.
 The range governs native bootstrap and relay, not server operations, provider
 work, or the server-served Web/API. Negotiation is live, never durable authority.
@@ -1798,7 +1799,7 @@ have no viewer URL. Download and retention information are independent offers.
 
 `GET /api/projects/{project_id}/episodes/{episode_id}/artifacts` returns
 `RunArtifactEntry[]` for the episode, including its Auto-research workers and
-child Experiment episodes. It includes unexpired or kept artifacts and permanent
+child Experiment episodes. It includes unexpired or kept artifacts and undeleted
 reports, with the queried episode's report first, then creation order. Worker
 labels use the child Work route's instruction heading, or Worker. Both routes enforce project
 membership, and the inventory rejects an episode from another project.

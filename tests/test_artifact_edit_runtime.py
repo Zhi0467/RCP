@@ -621,8 +621,6 @@ def test_in_place_edit_turn_lists_the_published_artifact_on_replay(manifest, tmp
 def test_an_edited_episode_report_card_names_the_folder_its_reply_embeds(manifest, tmp_path):
     # The prompt item gives the reply the tracked path to embed; an episode report's is
     # under its episode's folder, which the card must name for the embed to resolve.
-    from rcp.api.tasks import _agent_artifact_response
-
     app, request, execution, _, workspace = _setup(manifest, tmp_path)
     store = execution.store
     report = _stored_artifact(
@@ -643,8 +641,17 @@ def test_an_edited_episode_report_card_names_the_folder_its_reply_embeds(manifes
     embedded = _tracked_file(staged)
     embedded.write_bytes(b"<p>report v2</p>")
     [published] = _finalize(app, request, execution, directory)
-    card = _agent_artifact_response(store, store.agent_task("edit"), published)
-    assert card.turn_folder == embedded.parent.parent.name
+    store.complete_agent_task(
+        "edit", applied_revision=None, result={"artifacts": [published.model_dump(mode="json")]}
+    )
+    detail = f"/api/projects/{app.state.default_project_id}/tasks/edit"
+    with signed_in_client(app) as client:
+        [card] = client.get(detail).json()["result"]["artifacts"]
+        assert card["turn_folder"] == embedded.parent.parent.name
+        # The reply still cites that folder after a member deletes the report.
+        store.delete_artifact(app.state.default_project_id, report.artifact_id)
+        [deleted] = client.get(detail).json()["result"]["artifacts"]
+        assert (deleted["available"], deleted["turn_folder"]) == (False, card["turn_folder"])
 
 
 def test_emptying_edit_publishes_and_lists_the_artifact(manifest, tmp_path):
@@ -729,6 +736,7 @@ def test_edit_outcome_projects_on_task_detail_and_list(manifest, tmp_path, outco
         payload = dict(receipt.payload)
         payload.pop("status")
         payload.pop("reason", None)
+        payload.pop("forked_from", None)
         if outcome == "forked":
             payload["artifact_id"] = payload.pop("separate_artifact_id")
         store.record_agent_task_receipt("edit", receipt.category, payload, tier="summary")

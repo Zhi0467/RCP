@@ -113,3 +113,8 @@ consolidation gained Evidence flags (storage migration 51), ending at migration
 Auto-research identity narrowed from the project to its graph branch (storage
 migration 52), ending at migration 51. It is built by the exact boundary source
 from the preceding immutable fixture.
+
+`pre-report-deletion-v26-cea7952` retains the last shape before episode reports
+gained a deleted marker and report triggers refreshed every mode's graph
+(storage migration 53), ending at migration 52. It is built by the exact
+boundary source from the preceding immutable fixture.

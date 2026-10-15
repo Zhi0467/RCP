@@ -729,7 +729,7 @@ def test_successful_report_is_immutable_and_closes_semantic_ending(tmp_path) -> 
     assert episode.ending == "completed"
     assert episode.wrapup_state == "ready"
     assert stored == report
-    assert store.episode_report_by_id("report") == report
+    assert store.episode_report("episode") == report
     assert store.project_episode_report_summaries("project")[0].display_title == (
         "Adaptation preserves recall"
     )

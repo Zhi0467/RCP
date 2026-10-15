@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 import uuid
 from datetime import UTC, datetime
@@ -236,6 +237,7 @@ def _archive_fixture(
     seal_archive: bool = False,
     include_local_commits: bool = False,
     include_episode_archive: bool = False,
+    deleted_report: bool | None = None,
 ):
     from rcp.rcp_home import rcp_temp_dir
 
@@ -274,6 +276,25 @@ def _archive_fixture(
         source.set_episode_archived(
             records.project_id, episode_id, source_actor.user_id, archived=True
         )
+    if deleted_report is not None:
+        from tests.test_episode_api import create_terminal_auto_episode
+
+        _, _, report = create_terminal_auto_episode(
+            source,
+            service.history,
+            records.project_id,
+            episode_id="transfer-report",
+            report_html="<h1>Report</h1>",
+        )
+        assert report is not None
+        with source.connection() as connection:
+            connection.execute(
+                "UPDATE episodes SET status = 'completed' WHERE episode_id = ?",
+                (report.episode_id,),
+            )
+        source.rename_branch(records.project_id, report.episode_id, "report")
+        if deleted_report:
+            source.delete_artifact(records.project_id, report.artifact_id)
     target_data = tmp_path / "target-data"
     target = AppStore(target_data / "rcp.sqlite3", space_kind="team")
     target_actor = _target_actor(target)
@@ -519,6 +540,7 @@ def _archive_fixture(
     assert state_repository.resolved_path is not None
     return {
         "source": source,
+        "service": service,
         "target": target,
         "catalog": catalog,
         "archive": archive,
@@ -781,3 +803,95 @@ def test_target_import_rejects_an_undeclared_archive_entry_before_database_mutat
 
     assert fixture["target"].project_transfer_import(archive.target_request_id) is None
     assert fixture["target"].project(archive.project_id) is None
+
+
+def test_deleted_report_transfers_as_tombstone(manifest, tmp_path, monkeypatch):
+    from rcp.storage import Artifact
+    from rcp.storage.artifacts import ArtifactDeleted
+    from rcp.transfer.project_files import (
+        parse_transfer_project_file_payload,
+        transfer_project_file_payload,
+    )
+
+    fixture = _archive_fixture(manifest, tmp_path, monkeypatch, deleted_report=True)
+    capture = parse_transfer_project_file_payload(
+        (fixture["archive_root"] / "records/project.jsonl").read_bytes()
+    )
+    assert capture.records.schema_version == 5
+    for changes in (
+        {"schema_version": 4},
+        {"html": "<h1>Report</h1>"},
+    ):
+        invalid = json.loads(transfer_project_file_payload(capture))
+        if "schema_version" in changes:
+            invalid["records"].update(changes)
+        else:
+            invalid["records"]["episodes"][0]["report"].update(changes)
+        with pytest.raises(ValueError):
+            parse_transfer_project_file_payload(json.dumps(invalid).encode())
+    episode = capture.records.episodes[0]
+    report = episode.report
+    assert report is not None
+    source = fixture["source"]
+    lineage = source.episode_report(episode.episode_id, include_deleted=True)
+    receipt = import_project_transfer(
+        fixture["catalog"],
+        archive=fixture["archive"],
+        envelope=fixture["envelope"],
+        archive_root=fixture["archive_root"],
+        target_configuration=fixture["configuration"],
+    )
+    assert receipt.status == "complete"
+    target = fixture["target"]
+    assert target.episode_report(episode.episode_id, include_deleted=True) == lineage
+    assert target.episode_report(episode.episode_id) is None
+    assert target.artifact(report.artifact_id) is None
+    with target.connection() as connection:
+        tombstone = connection.execute(
+            "SELECT state, attempts FROM artifact_imports WHERE artifact_id = ?",
+            (report.artifact_id,),
+        ).fetchone()
+    assert tuple(tombstone) == ("deleted", 0)
+    with pytest.raises(ArtifactDeleted):
+        target.create_artifact(
+            Artifact(
+                artifact_id=report.artifact_id,
+                project_id=capture.project_id,
+                supplier="episode_ending",
+                supplier_id=episode.episode_id,
+                source_name="episode-report.html",
+                media_type="text/html",
+                created_at=report.created_at,
+            ),
+            data=b"<h1>Report</h1>",
+        )
+
+
+def test_record_v4_still_admitted(manifest, tmp_path, monkeypatch):
+    from rcp.api.project_provisioning import ProjectTransferSourceConfigurationRequest
+    from rcp.project_transfer import capture_project_transfer_source
+    from rcp.transfer.project_files import parse_transfer_project_file_payload
+
+    fixture = _archive_fixture(manifest, tmp_path, monkeypatch, deleted_report=False)
+    payload = (fixture["archive_root"] / "records/project.jsonl").read_bytes()
+    capture = parse_transfer_project_file_payload(payload)
+    assert capture.records.schema_version == 4
+    assert b'"deleted_at"' not in payload
+    report = capture.records.episodes[0].report
+    assert report is not None
+    monkeypatch.setattr("rcp.project_transfer._repository_origin", lambda **kw: None)
+    monkeypatch.setattr("rcp.project_transfer._repository_revision", lambda **kw: "a" * 40)
+    configuration, _ = capture_project_transfer_source(
+        fixture["service"],
+        record_schema_version=4,
+    )
+    request = ProjectTransferSourceConfigurationRequest.model_validate_json(
+        configuration.model_dump_json()
+    )
+    assert request.storage_model().record_schema_version == 4
+
+    invalid = json.loads(payload)
+    invalid["records"]["schema_version"] = 5
+    invalid["records"]["episodes"][0]["report"]["deleted_at"] = report.created_at
+    with pytest.raises(ValueError):
+        parse_transfer_project_file_payload(json.dumps(invalid).encode())

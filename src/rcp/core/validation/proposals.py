@@ -151,7 +151,6 @@ def moved_proposal_dependencies(state: GraphState, proposal: Proposal) -> list[s
         if state.config_revisions.get(key, 0) > dependency_revision
     )
     referenced_edge_ids, decision_ids = _proposal_reference_dependencies(proposal)
-    cause_edge_ids = proposal_evidence_cause_edge_ids(proposal)
     moved.extend(
         edge_id
         for edge_id in sorted(set(proposal.related_edge_ids) | referenced_edge_ids)
@@ -170,15 +169,13 @@ def moved_proposal_dependencies(state: GraphState, proposal: Proposal) -> list[s
             if edge.source in removal_targets or edge.target in removal_targets
         }
         moved.extend(sorted(current_incident_edge_ids ^ set(proposal.related_edge_ids)))
-    if proposal.dependency_rule >= 2:
-        # A cause edge that moved is already listed above; a current one still
-        # depends on the exact Evidence it starts from.
-        for edge_id in sorted(cause_edge_ids):
-            edge = state.edges.get(edge_id)
-            if edge is not None and edge.created_rev <= dependency_revision:
-                source = state.nodes.get(edge.source)
-                if source is None or source.updated_rev > dependency_revision:
-                    moved.append(edge.source)
+    # A cause edge that moved is already listed above; a current one still
+    # depends on the exact Evidence it starts from.
+    for edge_id, source_id in sorted(proposal_cause_evidence_sources(state, proposal).items()):
+        if state.edges[edge_id].created_rev <= dependency_revision:
+            source = state.nodes.get(source_id)
+            if source is None or source.updated_rev > dependency_revision:
+                moved.append(source_id)
     moved.extend(
         decision_id
         for decision_id in sorted(decision_ids)
@@ -213,6 +210,24 @@ def proposal_work_cannot_refile(state: GraphState, proposal: Proposal) -> bool:
     return False
 
 
+def proposal_refresh_refusal(state: GraphState, proposal: Proposal | None) -> str | None:
+    """Why a light agent may not refresh this Proposal, or None when it may.
+
+    Refresh is offered only where the Sync gate would withdraw the Proposal and
+    ordinary Work can file it again against a node that still exists.
+    """
+
+    if proposal is None or proposal.status != "pending":
+        return "proposal_not_pending"
+    if not proposal_is_stale(state, proposal):
+        return "proposal_not_stale"
+    if proposal_work_cannot_refile(state, proposal):
+        return "proposal_not_refileable"
+    if proposal_subject_node(state, proposal) is None:
+        return "proposal_target_unavailable"
+    return None
+
+
 def proposal_subject_node(state: GraphState, proposal: Proposal) -> str | None:
     """The Proposal's first current subject node, else its first current related node."""
 
@@ -243,6 +258,22 @@ def proposal_evidence_cause_edge_ids(proposal: Proposal) -> set[str]:
         if isinstance(operation, (ProposalContentChangeOperation, ProposalStatusChangeOperation))
         for update in operation.nodes
         if isinstance(update.cause, EvidenceEdgeCause)
+    }
+
+
+def proposal_cause_evidence_sources(state: GraphState, proposal: Proposal) -> dict[str, str]:
+    """Each current cause edge mapped to the Evidence it starts from, under rule 2.
+
+    Rule 2 makes a pending Proposal depend on that Evidence too, so staleness
+    and same-patch admission liveness both read it here.
+    """
+
+    if proposal.dependency_rule < 2:
+        return {}
+    return {
+        edge_id: state.edges[edge_id].source
+        for edge_id in proposal_evidence_cause_edge_ids(proposal)
+        if edge_id in state.edges
     }
 
 

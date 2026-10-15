@@ -900,6 +900,8 @@ def test_the_projection_decides_lifecycle_state_so_no_surface_has_to(
         control_task_id="control",
         recovery=SimpleNamespace(status="pending") if recovering else None,
         report_login_blocked=episode_fields.get("report_login_blocked", False),
+        # A ready wrap-up keeps its report unless a member deleted it.
+        has_report=episode_fields.get("wrapup_state") == "ready",
     )
     assert result == expected
     if record.ending is not None:

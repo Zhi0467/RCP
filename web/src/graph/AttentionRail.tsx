@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { TriangleAlert, ArrowRight, Check, MessageSquare, RotateCw, X } from "lucide-react";
+import { TriangleAlert, ArrowRight, Check, RotateCw, X } from "lucide-react";
 import type { GlossaryIndex } from "./glossary";
 import { proposalApprovalConflict, type HumanDraft, type ProposalDecision } from "./humanDraft";
 import {
@@ -59,9 +59,11 @@ export function ProposalJudgmentSection({
       </header>
 
       {proposals.map((proposal) => {
-        const decision = draft?.proposals[proposal.id]?.decision;
-        const approved = decision === "approved";
         const stale = staleProposalIds.includes(proposal.id);
+        // Sync drops a staged approval of a stale Proposal; the card shows what it sends.
+        const staged = draft?.proposals[proposal.id]?.decision;
+        const decision = stale && staged === "approved" ? undefined : staged;
+        const approved = decision === "approved";
         const rejected = decision === "rejected";
         const proposedAction = proposalActions[proposal.id];
         if (!proposedAction) {
@@ -71,9 +73,10 @@ export function ProposalJudgmentSection({
         const conflictingTitles = approvalConflict?.proposalIds.map(
           (proposalId) => graph.proposals[proposalId]?.title ?? proposalId,
         );
-        const approvalConflictText = conflictingTitles?.length
-          ? `Approval conflicts with staged approval: ${conflictingTitles.join(", ")}.`
-          : undefined;
+        const approvalConflictText =
+          !stale && conflictingTitles?.length
+            ? `Approval conflicts with staged approval: ${conflictingTitles.join(", ")}.`
+            : undefined;
         return (
           <article
             className={`proposal-card${decision ? " draft-touched" : ""}${stale ? " stale" : ""}`}
@@ -178,8 +181,8 @@ export function ProposalJudgmentSection({
 }
 
 /**
- * One icon: Refresh starts the light agent's chat, then the same place opens it.
- * A failure keeps Refresh, which retries the same server-keyed chat.
+ * One icon: Refresh starts the light agent's chat and opens it. A failure keeps
+ * Refresh, which retries the same server-keyed chat.
  */
 function RefreshProposalButton({
   proposal,
@@ -193,34 +196,29 @@ function RefreshProposalButton({
   onOpenChat?: (chatId: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const [chatId, setChatId] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const run = async () => {
-    if (chatId) return onOpenChat?.(chatId);
     setBusy(true);
     setFailure(null);
     try {
-      const started = await onRefresh(proposal);
-      setChatId(started);
-      onOpenChat?.(started);
+      onOpenChat?.(await onRefresh(proposal));
     } catch (error) {
       setFailure(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
     }
   };
-  const label = chatId ? "Open chat" : "Refresh proposal";
   return (
     <button
       type="button"
       className={`icon-button proposal-refresh${failure ? " failed" : ""}`}
-      data-action={chatId ? "open_chat" : "refresh"}
-      aria-label={label}
-      title={failure ?? label}
+      data-action="refresh"
+      aria-label="Refresh proposal"
+      title={failure ?? "Refresh proposal"}
       disabled={disabled || busy}
       onClick={() => void run()}
     >
-      {chatId ? <MessageSquare size={16} /> : <RotateCw size={16} />}
+      <RotateCw size={16} />
     </button>
   );
 }

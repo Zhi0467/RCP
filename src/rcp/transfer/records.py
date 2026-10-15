@@ -30,7 +30,7 @@ from rcp.transfer.archive import (
     TransferGraphTarget,
 )
 
-TRANSFER_RECORD_SCHEMA_VERSION = 4
+TRANSFER_RECORD_SCHEMA_VERSION = 5
 
 TRANSFER_RECORD_TABLES = frozenset(
     {
@@ -744,6 +744,7 @@ class TransferEpisodeReport(_StrictTransferRecord):
     artifact_version_id: str | None = None
     display_title: str | None = None
     created_at: AwareTimestamp
+    deleted_at: AwareTimestamp | None = None
 
     @model_serializer(mode="wrap")
     def serialize_report(self, handler: SerializerFunctionWrapHandler) -> dict[str, JsonValue]:
@@ -751,10 +752,14 @@ class TransferEpisodeReport(_StrictTransferRecord):
         for name in ("artifact_id", "artifact_version_id", "display_title"):
             if name not in self.model_fields_set:
                 data.pop(name, None)
+        if self.deleted_at is None:
+            data.pop("deleted_at", None)
         return data
 
     @model_validator(mode="after")
     def validate_report(self) -> TransferEpisodeReport:
+        if self.deleted_at is not None and self.html is not None:
+            raise ValueError("deleted episode report cannot carry content")
         if self.html is None and not (self.artifact_id and self.artifact_version_id):
             raise ValueError("episode report requires content or an artifact binding")
         if self.html is not None and hashlib.sha256(self.html.encode()).hexdigest() != self.sha256:
@@ -1136,7 +1141,7 @@ class TransferPaperDraft(_StrictTransferRecord):
 
 
 class TransferRecordBundle(_StrictTransferRecord):
-    schema_version: Literal[1, 2, 3, 4] = 1
+    schema_version: Literal[1, 2, 3, 4, 5] = 1
     project_id: str = Field(min_length=1)
     attributions: tuple[TransferArchiveAttribution, ...]
     tasks: tuple[TransferTaskRecord, ...]
@@ -1162,6 +1167,11 @@ class TransferRecordBundle(_StrictTransferRecord):
             for episode in self.episodes
         ):
             raise ValueError("branch names require transfer record schema version 4")
+        if self.schema_version < 5 and any(
+            episode.report is not None and episode.report.deleted_at is not None
+            for episode in self.episodes
+        ):
+            raise ValueError("deleted reports require transfer record schema version 5")
         reserved_names = [
             name for episode in self.episodes for name in episode.reserved_branch_names
         ]

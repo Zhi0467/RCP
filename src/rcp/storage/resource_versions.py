@@ -47,6 +47,7 @@ _PROJECT_TABLES = {
     "branch_name_reservations": ("refs", "graph", "digest", "chats", "artifacts"),
     "conversation_worktrees": ("refs", "chats", "terminals"),
     "artifacts": ("artifacts", "tasks.status", "tasks.progress"),
+    # migrate_episode_report_deletion adds a digest bump for removal tombstones.
     "artifact_imports": ("artifacts",),
     "artifact_revision_candidates": ("artifacts",),
     "compute_backend_probes": ("settings", "terminals"),
@@ -57,6 +58,7 @@ _PROJECT_TABLES = {
     "browser_owners": ("chats",),
     "client_requests": ("chats", "episodes"),
 }
+# migrate_episode_report_deletion reinstalls episode_reports with graph in every mode.
 _EPISODE_TABLES = (
     "episode_archives",
     "episode_invocations",
@@ -338,3 +340,39 @@ def migrate_resource_versions(connection: sqlite3.Connection) -> None:
         columns=("name", "state_location", "state_remote", "locator"),
     )
     migrate_resource_deadlines(connection)
+
+
+def migrate_episode_report_deletion(connection: sqlite3.Connection) -> None:
+    """A deleted report keeps its lineage row; every view of it must refresh."""
+    connection.execute("ALTER TABLE episode_reports ADD COLUMN deleted_at TEXT")
+    for table in ("episode_reports", "artifact_imports"):
+        for event in ("insert", "update", "delete"):
+            connection.execute(f"DROP TRIGGER resource_{table}_{event}")
+    scope = "(SELECT project_id FROM episodes WHERE episode_id=ROW.episode_id)"
+    # History subscribes to graph in every mode, not only Experiment.
+    _install(
+        connection,
+        "episode_reports",
+        [
+            _bump(scope, "episodes"),
+            _bump(scope, "graph"),
+            _bump(scope, "episode", "ROW.episode_id"),
+        ],
+    )
+    # The digest drops a report whose artifact a member deleted.
+    _install(
+        connection,
+        "artifact_imports",
+        [
+            _bump("ROW.project_id", "artifacts"),
+            _bump("ROW.project_id", "digest", predicate="ROW.state='deleted'"),
+        ],
+    )
+    # A publishing report holds Delete; the wrap-up settling releases it.
+    _install(
+        connection,
+        "episodes",
+        [_bump("ROW.project_id", "artifacts")],
+        columns=("wrapup_state",),
+        suffix="_wrapup",
+    )

@@ -247,7 +247,7 @@ class ProjectTransferRepositorySourceRequest(_StrictModel):
 class ProjectTransferSourceConfigurationRequest(_StrictModel):
     source_rcp_version: str
     source_schema_generation: int = Field(ge=1)
-    record_schema_version: Literal[2, 3, 4] | None = None
+    record_schema_version: Literal[2, 3, 4, 5] | None = None
     supported_archive_codecs: list[str] = Field(min_length=1, max_length=16)
     machine_aliases: list[str] = Field(min_length=1, max_length=32)
     repositories: list[ProjectTransferRepositorySourceRequest] = Field(
@@ -1743,7 +1743,9 @@ def _project_transfer_response(
         and record.source_release_receipt is None
     )
     can_relay = (record.side == "source" and record.phase == "archive_bound") or (
-        record.side == "target" and record.phase == "source_released"
+        record.side == "target"
+        and record.phase == "source_released"
+        and transfer_policy.is_admitter(record.target_admission_receipt, viewer_user_id)
     )
     can_restore_reentry = (
         record.side == "target"

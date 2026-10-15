@@ -310,6 +310,7 @@ def test_archive_migration_defaults_legacy_episodes_visible_and_project_deletion
         "research_view_pins_v1",
         "evidence_flags_v1",
         "per_branch_auto_research_v1",
+        "episode_report_deletion_v1",
     )
     migrated = AppStore(store.path)
     assert migrated.episode("episode") == before

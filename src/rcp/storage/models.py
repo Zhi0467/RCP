@@ -2550,6 +2550,8 @@ class EpisodeReportRecord(BaseModel):
     artifact_id: str
     artifact_version_id: str
     created_at: str
+    # A member deleted the report's artifact; the row stays as lineage.
+    deleted_at: str | None = None
 
 
 class EpisodeWrapupRecord(BaseModel):

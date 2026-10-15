@@ -312,6 +312,7 @@ def saved_artifacts(
         if stored_report is None:
             continue
         artifact_url = f"{base}/artifacts/{quote(stored_report.artifact_id, safe='')}"
+        stored = stored_by_id.get(stored_report.artifact_id)
         entries.append(
             SavedArtifactResponse(
                 id=f"report:{report.report_id}",
@@ -330,6 +331,8 @@ def saved_artifacts(
                 source_node_id=_source_node_id(store, project_id, origin, report.episode_id),
                 authorized_by=origin.authorized_by if origin else None,
                 viewer_url=f"{artifact_url}/viewer",
+                can_delete=stored is not None
+                and store.artifact_delete_refusal(stored, holds) is None,
             )
         )
     represented = {entry.artifact_id for entry in entries if entry.artifact_id}

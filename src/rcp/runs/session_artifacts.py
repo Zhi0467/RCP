@@ -492,6 +492,8 @@ def _published(
         artifact.artifact_id,
         version_id=version.version_id,
         descriptor=descriptor.model_dump(mode="json"),
+        # The folder the reply cites; Delete or expiry may remove the row first.
+        turn_folder=artifact.supplier_id,
     )
     return descriptor
 

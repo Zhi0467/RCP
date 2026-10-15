@@ -359,4 +359,8 @@ def test_delete_waits_only_while_an_edit_using_the_artifact_runs(viewer_app):
             (edit.operation_id,),
         )
     assert _state(client, artifact)["can_delete"]
+    # A backup copying files refuses Delete instead of holding the project's writes.
+    with store.artifact_capture():
+        assert client.delete(url).status_code == 409
+    assert store.artifact(artifact.artifact_id) is not None
     assert client.delete(url).status_code == 204

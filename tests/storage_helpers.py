@@ -15,6 +15,10 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
     for (name,) in triggers:
         connection.execute(f'DROP TRIGGER "{name}"')
     connection.execute("DROP TABLE IF EXISTS research_view_pins")
+    if any(
+        row[1] == "deleted_at" for row in connection.execute("PRAGMA table_info(episode_reports)")
+    ):
+        connection.execute("ALTER TABLE episode_reports DROP COLUMN deleted_at")
     for table in ("resource_versions", "resource_deadlines", "resource_watermark_epoch"):
         connection.execute(f"DROP TABLE IF EXISTS {table}")
 

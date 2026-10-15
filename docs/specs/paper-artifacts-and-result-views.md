@@ -191,7 +191,7 @@ nonblocking. The panel shows current version and Download, without repository co
 
 ## Artifacts panel
 
-Artifacts lists kept outputs and permanent reports across history, including
+Artifacts lists kept outputs and undeleted reports across history, including
 archives, independent of task/episode windows. Temporary outputs stay in their
 chats until kept. Reports appear when captured. Revisits paint cached lists first.
 
@@ -233,7 +233,8 @@ any turn folder of the same chat; a cited link opens it the same way. A turn
 folder is named by its turn, so a path resolves through that turn's descriptors,
 or through the citing turn's when it published a new version of that file. An
 episode report's folder is named by its episode, so only a turn that published a
-version of the report resolves it. When the file moved during the edit, the turn's
+version of the report resolves it, even after a member deletes it. When the edit
+forked because the artifact moved past the version it started from, the turn's
 fork answers to the path it cites. A path into another chat's turn resolves to
 nothing. HTML, images, video, Markdown, and text run/render in the inline viewer;
 the card becomes Comment/Expand/Keep/Download actions beneath it. Surrounding
@@ -347,7 +348,8 @@ files to current content.
 Replay keeps receipts and recovers an already-published operation's version.
 `result.artifact_edit_outcomes` lists published/unchanged/failed/forked per artifact,
 including projected older single receipts. Replies state non-published outcomes;
-published versions show themselves. Their later cards accept comments and tracked-
+published versions show themselves. An edit to an artifact a member deleted during
+the turn is dropped without an outcome. Their later cards accept comments and tracked-
 file citations. Unreachable publication never fails the answer: bytes remain for
 a later settlement. Failed turns retain stages without publishing; other new files
 are ordinary outputs. Version storage stays outside provider-writable scratch.
@@ -393,12 +395,15 @@ after expiry, `deleted` after Delete. Nothing recreates a `deleted` identity; th
 importer skips it and `create_artifact` refuses it, so neither turn discovery nor
 a replayed fork restores it. Deleting it again succeeds.
 
-Delete is the human's call. It refuses only while a queued or running turn reads
-or edits the artifact, a consolidation report awaits review, or a legacy import is
-pending; `can_delete` and the route apply that same rule. Unlike expiry, a paused
-or interrupted edit holds nothing; its retry is refused once the artifact is gone.
-Episode reports stay bound to their episode and cannot be deleted. A file an older
-Keep copied into the state workspace stays; Delete only unbinds it.
+Delete is the human's call. It refuses only while a queued, running, or pausing
+turn reads or edits the artifact, an episode report is still publishing, a
+consolidation report awaits review, or a legacy import is pending; `can_delete`
+and the route apply that same rule. It also refuses, rather than waits, while a
+backup or transfer is copying artifact files; expiry waits for the copy instead. Unlike expiry, a paused or interrupted edit holds nothing;
+its retry is refused once the artifact is gone. Deleting an episode report also
+marks its report row deleted, in the same transaction, and keeps the row as lineage
+([episode reports](conversations-episodes-and-watchers.md#visual-wrap-up)). A file
+an older Keep copied into the state workspace stays; Delete only unbinds it.
 
 **Why:** without the tombstone, import restores a deleted chat output from its
 stage; without clearing kept bindings, backup inventory refuses the project.

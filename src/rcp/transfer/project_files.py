@@ -230,6 +230,8 @@ class TransferProjectFileCapture(BaseModel):
             report = episode.report
             if report is None or report.html is not None:
                 continue
+            if report.deleted_at is not None:
+                continue
             owner = by_id.get(report.artifact_id)
             original = next(
                 (

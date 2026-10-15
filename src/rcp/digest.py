@@ -514,6 +514,32 @@ def _drop_closed_attention(store, project_id: str, events: list[dict]) -> list[d
     ]
 
 
+def _drop_deleted_reports(store, events: list[dict]) -> list[dict]:
+    """Both report kinds leave the digest when their artifact is gone."""
+    reports = [e for e in events if e["kind"] in _REPORTS]
+    if not reports:
+        return events
+    with store.connection() as conn:
+        live = {
+            row[0]
+            for row in conn.execute(
+                """
+                SELECT json_extract(event.value, '$.seq')
+                FROM json_each(?) AS event
+                LEFT JOIN episode_reports AS report
+                  ON json_extract(event.value, '$.kind') = 'episode_report'
+                 AND report.report_id = json_extract(event.value, '$.item_id')
+                JOIN artifacts AS artifact ON artifact.artifact_id = CASE
+                    WHEN json_extract(event.value, '$.kind') = 'episode_report'
+                    THEN report.artifact_id
+                    ELSE json_extract(event.value, '$.payload.report_artifact_id') END
+                """,
+                (json.dumps(reports),),
+            )
+        }
+    return [e for e in events if e["kind"] not in _REPORTS or e["seq"] in live]
+
+
 def _assemble_current(store, project_id, user_id, events, mark, cursor, state=None, target="main"):
     with store.connection() as conn:
         runs = _auto_research_runs(conn, project_id)
@@ -522,7 +548,7 @@ def _assemble_current(store, project_id, user_id, events, mark, cursor, state=No
     result = assemble_digest(
         project_id,
         user_id,
-        _drop_closed_attention(store, project_id, events),
+        _drop_deleted_reports(store, _drop_closed_attention(store, project_id, events)),
         mark,
         cursor,
         state,

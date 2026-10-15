@@ -199,11 +199,15 @@ def _setup_report(
     tmp_path: Path,
     *,
     ending: str = "completed",
+    store: AppStore | None = None,
+    episode_id: str = "episode",
+    project_id: str = "project",
+    allocation_operation_id: str = "report-allocation",
 ) -> tuple[SimpleNamespace, AppStore, EpisodeReportRunRequest, AgentTaskExecution, Path]:
-    store = AppStore(tmp_path / "app.sqlite3")
+    store = store or AppStore(tmp_path / "app.sqlite3")
     store.upsert_project(
         ProjectRecord(
-            project_id="project",
+            project_id=project_id,
             locator=str(manifest.path),
             name=manifest.name,
             state_location=str(manifest.path.parent),
@@ -214,8 +218,8 @@ def _setup_report(
     now = store.now()
     store.create_episode(
         EpisodeRecord(
-            episode_id="episode",
-            project_id="project",
+            episode_id=episode_id,
+            project_id=project_id,
             mode="experiment_loop",
             control_node_id="experiment-node",
             status="queued",
@@ -226,9 +230,9 @@ def _setup_report(
         )
     )
     operational = AgentTaskRecord(
-        operation_id="operation",
-        project_id="project",
-        episode_id="episode",
+        operation_id=f"{episode_id}-operation",
+        project_id=project_id,
+        episode_id=episode_id,
         # The generic episode parent is intentionally indifferent to the adapter's visible task
         # kind. This focused runner fixture uses a plain operational task so it does not have to
         # construct either mode adapter's authority contract.
@@ -239,12 +243,12 @@ def _setup_report(
         updated_at=now,
         status_message="Queued",
     )
-    store.allocate_episode_invocation("episode", operational)
+    store.allocate_episode_invocation(episode_id, operational)
 
-    stage = tmp_path / "episode-stage"
+    stage = tmp_path / f"{episode_id}-stage"
     stage.mkdir()
     request = EpisodeReportRunRequest(
-        episode_id="episode",
+        episode_id=episode_id,
         provider="codex",
         model="",
         reasoning="medium",
@@ -255,18 +259,18 @@ def _setup_report(
     receipt_json, receipt_sha256 = compact_episode_receipt(
         {
             "ending": ending,
-            "episode_id": "episode",
+            "episode_id": episode_id,
             "mode": "experiment_loop",
             "observations": ["one compact observation"],
         }
     )
     skill = official_registry().package("skill", "episode-report").reference()
     wrapup = EpisodeWrapupRecord(
-        episode_id="episode",
+        episode_id=episode_id,
         ending=ending,
         partial=ending != "completed",
         concluding_operation_id=operational.operation_id,
-        allocation_operation_id="report-allocation",
+        allocation_operation_id=allocation_operation_id,
         provider=request.provider,
         run_on=request.run_on,
         execution_host=request.execution_host,
@@ -284,9 +288,9 @@ def _setup_report(
         updated_at=now,
     )
     hidden = AgentTaskRecord(
-        operation_id="report-allocation",
-        project_id="project",
-        episode_id="episode",
+        operation_id=wrapup.allocation_operation_id,
+        project_id=project_id,
+        episode_id=episode_id,
         kind="episode_report",
         status="queued",
         request=request.model_dump(mode="json"),
@@ -298,9 +302,9 @@ def _setup_report(
         stage_host=None,
         stage_root=str(stage),
         visible=False,
-        authorized_by=store.episode("episode").authorized_by,
+        authorized_by=store.episode(episode_id).authorized_by,
     )
-    store.begin_episode_wrapup("episode", wrapup, hidden)
+    store.begin_episode_wrapup(episode_id, wrapup, hidden)
     execution = AgentTaskExecution(
         operation_id=hidden.operation_id,
         store=store,
@@ -467,6 +471,18 @@ async def test_experiment_control_response_owns_wrapup_and_ready_report_state(
     }
     assert ready["report_episode_id"] == "episode"
     assert ready["report_is_current"] is True
+
+    # A deleted report keeps its lineage row, so the allocation never runs again.
+    report = store.episode_report("episode")
+    assert report is not None
+    store.delete_artifact("project", report.artifact_id)
+    launcher = _ReportLauncher([])
+    events = await _events(stream_episode_report_run(service, launcher, request, execution))
+    assert [event.event for event in events] == ["message", "done"]
+    assert launcher.calls == 0
+    assert len(store.episode_report_attempts("episode")) == 1
+    deleted = projected()
+    assert deleted["recommendation"] != "open_report" and not deleted["can_open_report"]
 
 
 @pytest.mark.asyncio
@@ -994,3 +1010,112 @@ async def test_login_block_after_report_dispatch_spends_no_attempt_and_is_recove
     store.mark_provider_login_verified("codex", "", member_id="member", detail="verified")
     queued = store.requeue_interrupted_episode_report_allocation(request.episode_id)
     assert queued.operation_id == execution.operation_id and queued.status == "queued"
+
+
+def test_report_delete_waits_for_publication(manifest, tmp_path) -> None:
+    from .episode_report_helpers import stored_report
+    from .helpers import create_named_app, signed_in_client
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    _setup_report(manifest, tmp_path, store=store, project_id=project_id)
+    attempt = store.allocate_episode_report_attempt("episode")
+    store.mark_episode_report_attempt_running(attempt.attempt_id)
+    html = "<h1>Report</h1>"
+    report = stored_report(
+        store,
+        html=html,
+        report_id="report",
+        episode_id="episode",
+        attempt_id=attempt.attempt_id,
+        allocation_operation_id="report-allocation",
+        ending="completed",
+        sha256=hashlib.sha256(html.encode()).hexdigest(),
+        created_at=store.now(),
+    )
+    client = signed_in_client(app)
+    url = f"/api/projects/{project_id}/artifacts/{report.artifact_id}"
+    assert client.get(f"{url}/state").json()["can_delete"] is False
+    assert client.delete(url).status_code == 409
+
+    def artifacts_generation() -> int:
+        with store.connection() as connection:
+            return connection.execute(
+                "SELECT COALESCE(SUM(generation), 0) FROM resource_versions "
+                "WHERE scope = ? AND resource = 'artifacts'",
+                (project_id,),
+            ).fetchone()[0]
+
+    held = artifacts_generation()
+    store.finish_episode_report_ready(attempt.attempt_id, report)
+    # A view that cached the hold refetches and offers Delete.
+    assert artifacts_generation() > held
+    assert client.delete(url).status_code == 204
+
+
+def test_report_offer_falls_back_after_delete(manifest, tmp_path) -> None:
+    from .episode_report_helpers import stored_report
+
+    store = AppStore(tmp_path / "app.sqlite3")
+    reports = []
+    for episode_id in ("episode", "newer"):
+        _setup_report(
+            manifest,
+            tmp_path,
+            store=store,
+            episode_id=episode_id,
+            allocation_operation_id=f"{episode_id}-report-allocation",
+        )
+        store.complete_agent_task(f"{episode_id}-operation", applied_revision=None, result={})
+        attempt = store.allocate_episode_report_attempt(episode_id)
+        html = "<h1>Report</h1>"
+        report = stored_report(
+            store,
+            html=html,
+            report_id=f"{episode_id}-report",
+            episode_id=episode_id,
+            attempt_id=attempt.attempt_id,
+            allocation_operation_id=attempt.allocation_operation_id,
+            ending="completed",
+            sha256=hashlib.sha256(html.encode()).hexdigest(),
+            created_at=store.now(),
+        )
+        store.finish_episode_report_ready(attempt.attempt_id, report)
+        reports.append(report)
+    older, newer = reports
+    state = GraphState(
+        nodes={
+            "experiment-node": Experiment(
+                id="experiment-node",
+                type="experiment",
+                title="Report",
+                objective="Report",
+                invocation_ceiling=1,
+                status="completed",
+            )
+        }
+    )
+
+    def projected():
+        snapshot = store.experiment_control_projection_snapshots(
+            "project", ["experiment-node"], graph_target=GraphTargetRef()
+        )["experiment-node"]
+        assert snapshot.episode is not None
+        return _experiment_control_response(
+            state,
+            "experiment-node",
+            snapshot.runtime,
+            serialize_episode(
+                store, "project", snapshot.episode.episode, projection_snapshot=snapshot.episode
+            ),
+            latest_report_episode_id=snapshot.latest_report_episode_id,
+        )
+
+    assert projected().report_episode_id == "newer"
+    store.delete_artifact("project", newer.artifact_id)
+    response = projected()
+    assert response.report_episode_id == "episode" and not response.report_is_current
+    assert response.episode.report is None and response.episode.recommendation == "none"
+    store.delete_artifact("project", older.artifact_id)
+    assert projected().can_open_report is False

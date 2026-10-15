@@ -44,7 +44,10 @@ from rcp.storage.question_activity import QuestionActivity
 from rcp.storage.questions import migrate_questions
 from rcp.storage.research_views import migrate_research_views
 from rcp.storage.resource_deadlines import record_question_activity
-from rcp.storage.resource_versions import migrate_resource_versions
+from rcp.storage.resource_versions import (
+    migrate_episode_report_deletion,
+    migrate_resource_versions,
+)
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
@@ -117,6 +120,7 @@ class AppStoreBase:
         (50, "research_view_pins_v1"),
         (51, "evidence_flags_v1"),
         (52, "per_branch_auto_research_v1"),
+        (53, "episode_report_deletion_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -874,6 +878,12 @@ class AppStoreBase:
             version=52,
             name="per_branch_auto_research_v1",
             migration=self._migrate_per_branch_auto_research,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=53,
+            name="episode_report_deletion_v1",
+            migration=migrate_episode_report_deletion,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

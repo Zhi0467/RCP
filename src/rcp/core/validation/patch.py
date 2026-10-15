@@ -30,7 +30,7 @@ from rcp.core.research_rules import chooses_decision, reject_incomplete_decision
 from rcp.core.validation.approval import validate_approval_shape
 from rcp.core.validation.context import OpContext
 from rcp.core.validation.experiment_loop import validate_experiment_loop_authority
-from rcp.core.validation.proposals import proposal_is_stale
+from rcp.core.validation.proposals import proposal_cause_evidence_sources, proposal_is_stale
 from rcp.core.validation.registry import OP_RULES
 from rcp.core.validation.report import ValidationReport
 from rcp.core.validation.settings import ValidationContext
@@ -207,7 +207,10 @@ def _validate_created_proposal_liveness(ctx: OpContext) -> None:
             moved_nodes, moved_edges, moved_config = _later_dependency_mutations(
                 ctx,
                 position,
-                proposal.related_node_ids,
+                [
+                    *proposal.related_node_ids,
+                    *proposal_cause_evidence_sources(ctx.state, proposal).values(),
+                ],
                 proposal.related_edge_ids,
                 proposal.related_config_keys,
             )

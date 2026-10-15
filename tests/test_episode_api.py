@@ -1202,7 +1202,12 @@ def test_episode_list_keeps_every_auto_research_chain_current_member(manifest, t
     assert current_id in {episode.episode_id for episode in listed_episodes(store, project_id)}
 
 
-def test_an_episode_report_cannot_be_deleted(manifest, tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("ending", "recommendation"), [("completed", "none"), ("failed", "review")]
+)
+def test_a_deleted_episode_report_keeps_its_lineage_row(
+    manifest, tmp_path, ending, recommendation
+) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     assert project_id is not None
@@ -1211,12 +1216,63 @@ def test_an_episode_report_cannot_be_deleted(manifest, tmp_path) -> None:
         store,
         app.state.catalog.open(project_id).history,
         project_id,
-        episode_id="kept-report-episode",
+        episode_id="deleted-report-episode",
         report_html="<h1>Report</h1>",
     )
     assert report is not None
+    from rcp.api.history import _history_episode_decoration
+
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET status = ?, ending = ? WHERE episode_id = ?",
+            (ending, ending, episode.episode_id),
+        )
     url = f"/api/projects/{project_id}/artifacts/{report.artifact_id}"
+    episode_url = f"/api/projects/{project_id}/episodes/{episode.episode_id}"
     with signed_in_client(app) as client:
-        assert not client.get(f"{url}/state").json()["can_delete"]
-        assert client.delete(url).status_code == 409
-    assert store.episode_report(episode.episode_id) is not None
+        assert (
+            client.get(f"/api/projects/{project_id}/episodes").json()[0]["recommendation"]
+            == "open_report"
+        )
+        saved = client.get(f"/api/projects/{project_id}/artifacts").json()
+        assert next(item for item in saved if item["id"].startswith("report:"))["can_delete"]
+        assert client.delete(url).status_code == 204
+        assert client.get(f"{url}/state").status_code == 410
+        payload = client.get(f"/api/projects/{project_id}/episodes").json()[0]
+        assert payload["report"] is None
+        assert payload["recommendation"] == recommendation
+        decoration = _history_episode_decoration(store, project_id, episode.episode_id)
+        assert decoration is not None and decoration.report is None
+        artifacts = client.get(f"/api/projects/{project_id}/artifacts").json()
+        assert not any(item["id"].startswith("report:") for item in artifacts)
+        for route in ("viewer", "content"):
+            assert client.get(f"{episode_url}/report/{route}").status_code == 404
+    snapshots = store.auto_research_space_run_projection_snapshots(
+        {project_id}, completed_since=episode.created_at
+    )
+    assert not next(s for s in snapshots if s.episode.episode_id == episode.episode_id).has_report
+    assert store.episode_report(episode.episode_id) is None
+    lineage = store.episode_report(episode.episode_id, include_deleted=True)
+    assert lineage is not None and lineage.deleted_at is not None
+    assert lineage.model_copy(update={"deleted_at": None}) == report
+
+
+def test_episode_report_viewer_returns_gone_when_the_artifact_disappears(
+    manifest, tmp_path, monkeypatch
+):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    episode, _, _ = create_terminal_auto_episode(
+        store,
+        app.state.catalog.open(project_id).history,
+        project_id,
+        episode_id="unavailable-report",
+        report_html="<h1>Report</h1>",
+    )
+
+    # A Delete that lands between the report read and the artifact read.
+    monkeypatch.setattr(store, "artifact", lambda _artifact_id: None)
+    url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/viewer"
+    with signed_in_client(app) as client:
+        assert client.get(url).status_code == 410

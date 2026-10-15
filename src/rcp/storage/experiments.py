@@ -18,7 +18,7 @@ from rcp.limits import (
     SPACE_RUNS_COMPLETED_TTL,
 )
 from rcp.storage.digest import append_question_attention
-from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
+from rcp.storage.episodes import _LIVE_EPISODE_STATUSES, _VISIBLE_EPISODE_REPORTS
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,
@@ -3169,10 +3169,11 @@ class ExperimentStoreMixin(StoreMixinBase):
         graph_target: GraphTargetRef,
     ) -> str | None:
         row = connection.execute(
-            """
+            f"""
             SELECT episodes.episode_id
             FROM episodes
-            JOIN episode_reports ON episode_reports.episode_id = episodes.episode_id
+            JOIN {_VISIBLE_EPISODE_REPORTS} AS episode_reports
+              ON episode_reports.episode_id = episodes.episode_id
             WHERE episodes.project_id = ?
               AND episodes.mode = 'experiment_loop'
               AND episodes.control_node_id = ?
@@ -3238,7 +3239,7 @@ class ExperimentStoreMixin(StoreMixinBase):
             (episode_id,),
         ).fetchall()
         report_row = connection.execute(
-            "SELECT * FROM episode_reports WHERE episode_id = ?",
+            f"SELECT * FROM {_VISIBLE_EPISODE_REPORTS} WHERE episode_id = ?",
             (episode_id,),
         ).fetchone()
         usage = connection.execute(
