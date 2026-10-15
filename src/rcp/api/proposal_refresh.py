@@ -52,7 +52,7 @@ def refresh_proposal(
 
     identity_access.require_patch_capable_identity(request)
     project_id = catalog.resolve_project_id(project_id)
-    state = get_graph_service(catalog, project_id, initialize=False).history.state()
+    state = get_graph_service(catalog, project_id, initialize=False, write=True).history.state()
     proposal = state.proposals.get(proposal_id)
     if proposal is None:
         raise _refused("proposal_not_pending", "The Proposal is not pending on main.")

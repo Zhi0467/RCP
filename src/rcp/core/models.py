@@ -1168,7 +1168,7 @@ class Proposal(BaseModel):
     # Under rule 2 a Proposal is also stale once the Evidence its cause edge starts
     # from changes (validation/proposals.py). Earlier Proposals keep rule 1, so
     # replay judges them as they were filed.
-    dependency_rule: Literal[1, 2] = Field(default=1, exclude_if=lambda value: value == 1)
+    dependency_rule: Literal[1, 2] = 1
     base_rev: int = 0
     status: Literal["pending", "approved", "rejected", "withdrawn"] = "pending"
     created_by: Literal["agent", "human"] = "agent"

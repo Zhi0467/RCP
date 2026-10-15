@@ -122,11 +122,9 @@ def test_rewording_cause_evidence_stales_only_rule_two_proposals(filed):
 
     state = service.history.state()
     assert project_graph_attention(state).stale_proposal_ids == [PROPOSAL]
-    # Proposals filed before rule 2 stay judged as replay judged them, and
-    # serialize exactly as they did.
+    # Proposals filed before rule 2 stay judged as replay judged them.
     legacy = Proposal.model_validate(proposal.model_dump(mode="json") | {"dependency_rule": 1})
     assert not proposal_is_stale(state, legacy)
-    assert "dependency_rule" not in legacy.model_dump(mode="json")
 
 
 def test_refresh_starts_one_light_work_chat_only_when_stale(filed):
