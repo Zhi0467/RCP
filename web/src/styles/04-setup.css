@@ -504,6 +504,11 @@
 .repository-path-field.wide {
   grid-column: 2;
 }
+/* SSH paths follow the full-width machine tiles; the folder picker needs the row. */
+.repository-path-field:not(.wide) {
+  grid-column: 1 / -1;
+  max-width: 760px;
+}
 .repository-path-field > label {
   display: block;
 }

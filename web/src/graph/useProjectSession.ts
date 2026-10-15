@@ -120,13 +120,33 @@ export function useProjectSession(initialProjectId: string | null) {
       projectId: string,
       graph: GraphState,
       update: (draft: HumanDraft) => HumanDraft,
+      editStep?: { phase: "start" | "finish"; key: string },
     ): ProjectSessionTransition => {
       const updated = update(getState().humanDraft ?? emptyHumanDraft(graph.revision));
       const draft = humanDraftChangeCount(updated) > 0 ? updated : null;
-      return dispatch({ kind: "human_draft_updated", project_id: projectId, draft });
+      return dispatch({
+        kind: "human_draft_updated",
+        project_id: projectId,
+        draft,
+        ...(editStep ? { edit_step: editStep } : {}),
+      });
     },
     [dispatch, getState],
   );
+
+  const undoHumanDraft = useCallback((): ProjectSessionTransition => {
+    const previous = getState();
+    return previous.projectId
+      ? dispatch({ kind: "human_draft_undo", project_id: previous.projectId })
+      : { previous, next: previous };
+  }, [dispatch, getState]);
+
+  const redoHumanDraft = useCallback((): ProjectSessionTransition => {
+    const previous = getState();
+    return previous.projectId
+      ? dispatch({ kind: "human_draft_redo", project_id: previous.projectId })
+      : { previous, next: previous };
+  }, [dispatch, getState]);
 
   const beginSync = useCallback(
     (projectId: string, expectedHead: GraphHeadRef): TransitionSyncFence | null => {
@@ -166,8 +186,16 @@ export function useProjectSession(initialProjectId: string | null) {
     [dispatch],
   );
 
+  const history = state.projectId
+    ? state.draftHistory[graphSessionKey(state.projectId, state.graphTarget)]
+    : undefined;
+
   return {
     state,
+    undoHumanDraft,
+    redoHumanDraft,
+    canUndo: Boolean(history?.past.length),
+    canRedo: Boolean(history?.future.length),
     dispatchProjectSession: dispatch,
     getProjectSessionState: getState,
     beginProjectSnapshotRequest: beginSnapshotRequest,

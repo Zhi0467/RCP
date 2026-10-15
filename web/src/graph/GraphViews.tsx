@@ -48,6 +48,7 @@ import {
   Maximize2,
   Minimize2,
   Orbit,
+  Pencil,
   Pin,
   PinOff,
   RotateCcw,
@@ -69,7 +70,6 @@ import {
   type PointerEvent as ReactPointerEvent,
   type Ref,
   type ReactNode,
-  type MouseEvent as ReactMouseEvent,
 } from "react";
 import {
   buildNodeProjectionEmphasis,
@@ -100,7 +100,8 @@ import {
   experimentHealthLabel,
   experimentHealthTone,
 } from "../experiments/ExperimentRunDetail";
-import { GraphEditingControls, type GraphEditingProps } from "./GraphEditingControls";
+import type { GraphEditingProps } from "./canvasEditing";
+import { useDagCanvasEditor } from "./DagCanvasEditor";
 import { AutoResearchEpisodeCard, EpisodeBudgetMeter } from "../experiments/CampaignRuns";
 import {
   EpisodeArchiveButton,
@@ -119,7 +120,6 @@ import type {
   Machine,
   AgentRunConfig,
   AgentTask,
-  Edge,
   Episode,
   EpisodeRunSection,
   ExperimentControlState,
@@ -133,8 +133,7 @@ import type {
   WatcherRecord,
 } from "../core/types";
 import { humanize, nodeTypeLabel } from "./nodePresentation";
-import { RESEARCH, TYPE_LENS, isControlNode, isQuestion } from "./researchType";
-import { useNarrowViewport } from "../ui/useNarrowViewport";
+import { RESEARCH, TYPE_LENS, isControlNode } from "./researchType";
 
 export function focusRunDetail(detail: Pick<HTMLDivElement, "focus" | "scrollIntoView">): void {
   detail.focus({ preventScroll: true });
@@ -160,7 +159,6 @@ export function ScientificView({
   trustView,
   onSelectNode,
   changedNodeIds = NO_CHANGED_NODES,
-  ...editing
 }: ScientificProps) {
   const nodes = projectNodes(Object.values(graph.nodes), trustView);
   const projection = buildResearchPaths(nodes, Object.values(graph.edges));
@@ -175,7 +173,6 @@ export function ScientificView({
             : `${projection.paths.length} question${projection.paths.length === 1 ? "" : "s"}`
         }
       />
-      <GraphEditingControls graph={graph} {...editing} />
       {projection.paths.length === 0 && projection.unconnected.length === 0 ? (
         <EmptyState icon={<Search size={20} />} title="No research structure" />
       ) : (
@@ -255,6 +252,7 @@ interface DragState {
   startX: number;
   startY: number;
   moved: boolean;
+  original?: DagPosition;
 }
 
 export function DagView({
@@ -273,10 +271,23 @@ export function DagView({
   ...editing
 }: DagProps) {
   const { nodeIds: flaggedNodeIds } = useEvidenceFlags();
-  const narrow = useNarrowViewport();
-  const [mobileControlsOpen, setMobileControlsOpen] = useState(false);
-  const [connection, setConnection] = useState<{ source: string; target: string } | null>(null);
-  const connectionDrag = useRef<{ source: string; pointerId: number } | null>(null);
+  const [toolbarMenu, setToolbarMenu] = useState<"layout" | "view" | null>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!toolbarMenu) return;
+    const outside = (event: PointerEvent) => {
+      if (!toolbarRef.current?.contains(event.target as Node)) setToolbarMenu(null);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setToolbarMenu(null);
+    };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [toolbarMenu]);
   const [expandedContext, setExpandedContext] = useState<Set<string> | null>(() => new Set());
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const displayGraph = useMemo(
@@ -328,14 +339,8 @@ export function DagView({
       }),
     [displayGraph, relationFocusNodeId, trustView, branchChanges],
   );
-  const naturalFocusNodeId = useMemo(
-    () => dagFocusNode(projection.nodes, projection.edges),
-    [projection],
-  );
   const focusNodeId =
-    relationFocusNodeId && graph.nodes[relationFocusNodeId]
-      ? relationFocusNodeId
-      : naturalFocusNodeId;
+    relationFocusNodeId && graph.nodes[relationFocusNodeId] ? relationFocusNodeId : null;
   const focusedRelations = useMemo(
     () => (relationFocusNodeId ? relationFocus(relationFocusNodeId, projection.edges) : null),
     [projection.edges, relationFocusNodeId],
@@ -387,6 +392,18 @@ export function DagView({
     projectId: graphSessionKey(projectId, graphTarget),
     repulsion,
     mode: layoutMode,
+  });
+  const canEdit = !editing.mutationsDisabled && Boolean(editing.editOptions);
+  const editor = useDagCanvasEditor({
+    graph,
+    editing: { ...editing, projectId },
+    enabled: canEdit,
+    positions: layout.positions,
+    canvasRef,
+    scrollRef,
+    zoom,
+    pinAt: layout.pinAt,
+    onSelectNode,
   });
   const typeCounts = useMemo(
     () =>
@@ -462,7 +479,7 @@ export function DagView({
     };
     scroller.addEventListener("wheel", pinchZoom, { passive: false });
     return () => scroller.removeEventListener("wheel", pinchZoom);
-  }, [projection.nodes.length, viewportRef]);
+  }, [viewportRef]);
 
   useEffect(() => {
     const scroller = scrollRef.current;
@@ -470,7 +487,7 @@ export function DagView({
     commitViewport();
     scroller.addEventListener("scroll", commitViewport, { passive: true });
     return () => scroller.removeEventListener("scroll", commitViewport);
-  }, [commitViewport, projection.nodes.length]);
+  }, [commitViewport]);
 
   useLayoutEffect(() => {
     const pending = pendingZoomScrollRef.current;
@@ -502,7 +519,7 @@ export function DagView({
         scrollTop: scroller.scrollTop,
       };
     };
-  }, [projection.nodes.length, viewportRef]);
+  }, [viewportRef]);
 
   const fitToView = useCallback(() => {
     const scroller = scrollRef.current;
@@ -543,35 +560,35 @@ export function DagView({
   // both outrank this: each already states where the human wants to look.
   useEffect(() => {
     if (!layoutReady || focusNodeId) return;
-    const frameKey = `fit:${layoutMode}:${projection.nodes.length}:${projection.edges.length}`;
+    const frameKey = `fit:${layoutMode}`;
     if (framedLayoutRef.current === frameKey) return;
-    framedLayoutRef.current = frameKey;
     if (restoringViewportRef.current) {
-      restoringViewportRef.current = null;
-      return;
-    }
-    const timer = window.setTimeout(fitToView, layoutMode === "force" ? 550 : 80);
-    return () => window.clearTimeout(timer);
-  }, [
-    fitToView,
-    focusNodeId,
-    layoutMode,
-    layoutReady,
-    projection.edges.length,
-    projection.nodes.length,
-  ]);
-
-  useEffect(() => {
-    if (!layoutReady || !focusNodeId) return;
-    const frameKey = `${layoutMode}:${focusNodeId}:${projection.nodes.length}:${projection.edges.length}`;
-    if (framedLayoutRef.current === frameKey) return;
-    framedLayoutRef.current = frameKey;
-    if (restoringViewportRef.current) {
+      framedLayoutRef.current = frameKey;
       restoringViewportRef.current = null;
       return;
     }
     const timer = window.setTimeout(
       () => {
+        framedLayoutRef.current = frameKey;
+        fitToView();
+      },
+      layoutMode === "force" ? 550 : 80,
+    );
+    return () => window.clearTimeout(timer);
+  }, [fitToView, focusNodeId, layoutMode, layoutReady]);
+
+  useEffect(() => {
+    if (!layoutReady || !focusNodeId) return;
+    const frameKey = `${layoutMode}:${relationFocusNodeId ?? "initial"}`;
+    if (framedLayoutRef.current === frameKey) return;
+    if (restoringViewportRef.current) {
+      framedLayoutRef.current = frameKey;
+      restoringViewportRef.current = null;
+      return;
+    }
+    const timer = window.setTimeout(
+      () => {
+        framedLayoutRef.current = frameKey;
         const scroller = scrollRef.current;
         const focusNode = [
           ...(canvasRef.current?.querySelectorAll<HTMLElement>(".dag-node") ?? []),
@@ -592,7 +609,7 @@ export function DagView({
       layoutMode === "force" ? 550 : 80,
     );
     return () => window.clearTimeout(timer);
-  }, [focusNodeId, layoutMode, layoutReady, projection.edges.length, projection.nodes.length]);
+  }, [focusNodeId, relationFocusNodeId, layoutMode, layoutReady]);
 
   const toggleType = (type: GraphNode["type"]) => {
     setBrightTypes((current) => {
@@ -605,11 +622,7 @@ export function DagView({
 
   const pointerDown = (event: ReactPointerEvent<HTMLDivElement>, nodeId: string) => {
     if (event.button !== 0) return;
-    if ((event.target as Element).closest(".dag-connect-handle")) {
-      connectionDrag.current = { source: nodeId, pointerId: event.pointerId };
-      event.currentTarget.setPointerCapture(event.pointerId);
-      return;
-    }
+    if ((event.target as Element).closest(".dag-connect-handle, input, select")) return;
     if (dragWatchdogRef.current !== null) window.clearTimeout(dragWatchdogRef.current);
     dragRef.current = {
       nodeId,
@@ -617,16 +630,21 @@ export function DagView({
       startX: event.clientX,
       startY: event.clientY,
       moved: false,
+      original: layout.positions[nodeId],
     };
   };
 
-  const finishDrag = (pointerId: number) => {
+  const finishDrag = (pointerId: number, commit = true) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== pointerId) return;
     if (dragWatchdogRef.current !== null) window.clearTimeout(dragWatchdogRef.current);
     dragWatchdogRef.current = null;
     if (drag.moved) {
       layout.endDrag();
+      if (editor.onNodeDragEnd(drag.nodeId, commit) && drag.original) {
+        layout.pinAt(drag.nodeId, drag.original.x, drag.original.y);
+        if (!drag.original.pinned) layout.releasePin(drag.nodeId);
+      }
       suppressClickRef.current = drag.nodeId;
       window.requestAnimationFrame(() => {
         if (suppressClickRef.current === drag.nodeId) suppressClickRef.current = null;
@@ -655,41 +673,14 @@ export function DagView({
       (event.clientX - rect.left) / zoomRef.current,
       (event.clientY - rect.top) / zoomRef.current,
     );
+    editor.onNodeDragMove(drag.nodeId, event.clientX, event.clientY);
     if (dragWatchdogRef.current !== null) window.clearTimeout(dragWatchdogRef.current);
-    dragWatchdogRef.current = window.setTimeout(() => finishDrag(drag.pointerId), 3000);
+    dragWatchdogRef.current = window.setTimeout(() => finishDrag(drag.pointerId, false), 3000);
     event.preventDefault();
   };
 
   const pointerEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const connection = connectionDrag.current;
-    if (connection?.pointerId === event.pointerId) {
-      connectionDrag.current = null;
-      if (event.type === "pointerup") {
-        const target = document
-          .elementFromPoint(event.clientX, event.clientY)
-          ?.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
-        setConnection({
-          source: connection.source,
-          target: target && graph.nodes[target] && target !== connection.source ? target : "",
-        });
-      }
-      return;
-    }
-    finishDrag(event.pointerId);
-  };
-
-  const connectionClick = (event: ReactMouseEvent<HTMLDivElement>) => {
-    if (event.detail !== 0 || !(event.target as Element).closest(".dag-connect-handle")) return;
-    const source = event.currentTarget.dataset.nodeId;
-    if (source) setConnection({ source, target: "" });
-  };
-
-  const inspectNode = (node: GraphNode) => {
-    if (suppressClickRef.current === node.id) {
-      suppressClickRef.current = null;
-      return;
-    }
-    onSelectNode(node);
+    finishDrag(event.pointerId, event.type === "pointerup");
   };
 
   const toggleFullscreen = async () => {
@@ -787,12 +778,6 @@ export function DagView({
           </div>
         </div>
       )}
-      <GraphEditingControls
-        graph={graph}
-        projectId={projectId}
-        {...editing}
-        connection={connection}
-      />
       {relationFocusNodeId && graph.nodes[relationFocusNodeId] && (
         <div className="dag-relation-focus" role="status">
           <Focus size={16} />
@@ -825,64 +810,123 @@ export function DagView({
           })}
         </details>
       )}
-      {projection.nodes.length === 0 ? (
-        <EmptyState icon={<GitBranch size={20} />} title="No graph" />
-      ) : (
-        <div className="dag-shell" ref={shellRef}>
-          <details className="dag-controls-disclosure" open={!narrow || mobileControlsOpen}>
-            <summary
-              className="view-disclosure-summary"
-              onClick={(event) => {
-                event.preventDefault();
-                setMobileControlsOpen((current) => !current);
-              }}
+      <div className="dag-shell" ref={shellRef} tabIndex={-1} onKeyDown={editor.onKeyDown}>
+        <div className="dag-toolbar" ref={toolbarRef} data-canvas-ui>
+          {editor.controls}
+          <div className="dag-toolbar-group">
+            <button
+              type="button"
+              aria-label="Layout"
+              aria-expanded={toolbarMenu === "layout"}
+              onClick={() => setToolbarMenu((open) => (open === "layout" ? null : "layout"))}
             >
-              <span>DAG controls</span>
-              <ChevronDown size={14} />
-            </summary>
-            <div className="dag-controls">
-              <div className="dag-layout-controls">
-                <span className="dag-control-label">
-                  <GitBranch size={14} /> Layout
-                </span>
-                <div className="segmented" role="group" aria-label="DAG layout">
-                  <button
-                    type="button"
-                    aria-pressed={layoutMode === "force"}
-                    onClick={() => setLayoutMode("force")}
-                  >
-                    <Orbit size={14} /> Force-directed
-                  </button>
-                  <button
-                    type="button"
-                    aria-pressed={layoutMode === "flow"}
-                    onClick={() => setLayoutMode("flow")}
-                  >
-                    <Workflow size={14} /> Research flow
-                  </button>
-                </div>
-                <span className="dag-control-label dag-projection-label">Projection</span>
-                <div
-                  className="segmented dag-projection-switch"
-                  role="group"
-                  aria-label="DAG ontology projection"
+              <GitBranch size={15} />
+              <span>Layout</span>
+              <ChevronDown size={13} />
+            </button>
+            <button
+              type="button"
+              aria-label="View"
+              aria-expanded={toolbarMenu === "view"}
+              onClick={() => setToolbarMenu((open) => (open === "view" ? null : "view"))}
+            >
+              <Eye size={15} />
+              <span>View</span>
+              <ChevronDown size={13} />
+            </button>
+          </div>
+          <div className="dag-toolbar-group">
+            <button type="button" aria-label="Fit" title="Fit" onClick={fitToView}>
+              <Scan size={15} />
+            </button>
+            {fullscreenSupported && (
+              <button
+                aria-label={isFullscreen ? "Exit DAG full screen" : "Enter DAG full screen"}
+                aria-pressed={isFullscreen}
+                title={isFullscreen ? "Exit full screen" : "Full screen"}
+                type="button"
+                onClick={toggleFullscreen}
+              >
+                {isFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+              </button>
+            )}
+          </div>
+          {toolbarMenu === "layout" && (
+            <div className="dag-toolbar-menu" role="group" aria-label="Layout options">
+              <div className="segmented" role="group" aria-label="DAG layout">
+                <button
+                  type="button"
+                  aria-pressed={layoutMode === "force"}
+                  onClick={() => setLayoutMode("force")}
                 >
-                  {(["all", "belief", "action"] as const).map((item) => (
-                    <button
-                      type="button"
-                      aria-pressed={ontologyProjection === item}
-                      onClick={() => setOntologyProjection(item)}
-                      key={item}
-                    >
-                      {item[0].toUpperCase() + item.slice(1)}
-                    </button>
-                  ))}
-                </div>
+                  <Orbit size={14} /> Force-directed
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={layoutMode === "flow"}
+                  onClick={() => setLayoutMode("flow")}
+                >
+                  <Workflow size={14} /> Research flow
+                </button>
+              </div>
+              {layoutMode === "force" && (
+                <label className="dag-force-control">
+                  <span>
+                    <Gauge size={14} /> Repulsion
+                  </span>
+                  <input
+                    aria-label="Node repulsion"
+                    type="range"
+                    min="350"
+                    max="1900"
+                    step="50"
+                    value={repulsion}
+                    onChange={(event) => setRepulsion(Number(event.target.value))}
+                  />
+                  <output>{repulsionLabel}</output>
+                </label>
+              )}
+              <div className="dag-toolbar-menu-row">
+                <button
+                  className="dag-tool-button"
+                  type="button"
+                  disabled={layout.pinCount === 0}
+                  onClick={layout.releasePins}
+                >
+                  <PinOff size={14} /> Release all pins
+                </button>
+                <button
+                  className="dag-tool-button"
+                  type="button"
+                  onClick={() => {
+                    framedLayoutRef.current = null;
+                    layout.resetLayout();
+                  }}
+                >
+                  <RotateCcw size={14} /> Reset layout
+                </button>
+              </div>
+            </div>
+          )}
+          {toolbarMenu === "view" && (
+            <div className="dag-toolbar-menu" role="group" aria-label="View options">
+              <div
+                className="segmented dag-projection-switch"
+                role="group"
+                aria-label="DAG ontology projection"
+              >
+                {(["all", "belief", "action"] as const).map((item) => (
+                  <button
+                    type="button"
+                    aria-pressed={ontologyProjection === item}
+                    onClick={() => setOntologyProjection(item)}
+                    key={item}
+                  >
+                    {item[0].toUpperCase() + item.slice(1)}
+                  </button>
+                ))}
               </div>
               <div className="dag-lenses" role="group" aria-label="Node brightness by type">
-                <span className="dag-control-label">
-                  <Eye size={14} /> Brightness
-                </span>
                 {dagTypes.map((type) => {
                   const active = brightTypes.has(type);
                   const meta = dagTypeMeta[type];
@@ -902,6 +946,8 @@ export function DagView({
                     </button>
                   );
                 })}
+              </div>
+              <div className="dag-toolbar-menu-row">
                 <button
                   className="dag-tool-button"
                   type="button"
@@ -919,211 +965,216 @@ export function DagView({
                   <EyeOff size={14} /> Dim all
                 </button>
               </div>
-              <div className="dag-physics-controls">
-                {layoutMode === "force" && (
-                  <label className="dag-force-control">
-                    <span>
-                      <Gauge size={14} /> Repulsion
-                    </span>
-                    <input
-                      aria-label="Node repulsion"
-                      type="range"
-                      min="350"
-                      max="1900"
-                      step="50"
-                      value={repulsion}
-                      onChange={(event) => setRepulsion(Number(event.target.value))}
-                    />
-                    <output>{repulsionLabel}</output>
-                  </label>
-                )}
-                <button
-                  className="dag-tool-button"
-                  type="button"
-                  disabled={layout.pinCount === 0}
-                  onClick={layout.releasePins}
-                >
-                  <PinOff size={14} /> Release all pins
-                </button>
-                <button
-                  className="dag-tool-button"
-                  type="button"
-                  onClick={() => {
-                    framedLayoutRef.current = null;
-                    layout.resetLayout();
-                  }}
-                >
-                  <RotateCcw size={14} /> Reset layout
-                </button>
-                <button className="dag-tool-button" type="button" onClick={fitToView}>
-                  <Scan size={14} /> Fit
-                </button>
-                {fullscreenSupported && (
-                  <button
-                    aria-label={isFullscreen ? "Exit DAG full screen" : "Enter DAG full screen"}
-                    aria-pressed={isFullscreen}
-                    className="dag-tool-button"
-                    type="button"
-                    onClick={toggleFullscreen}
-                  >
-                    {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-                    {isFullscreen ? "Exit full screen" : "Full screen"}
-                  </button>
-                )}
-              </div>
             </div>
-          </details>
-          <div className="dag-scroll" ref={scrollRef}>
+          )}
+        </div>
+        <div
+          className="dag-scroll"
+          ref={scrollRef}
+          onPointerDown={editor.onCanvasPointerDown}
+          onDoubleClick={editor.onCanvasDoubleClick}
+          onMouseDown={(event) => {
+            if (!(event.target as Element).closest("input, select, textarea")) {
+              event.preventDefault();
+              ((event.target as Element).closest<HTMLElement>("button") ?? shellRef.current)?.focus(
+                { preventScroll: true },
+              );
+            }
+          }}
+        >
+          <div
+            className="dag-zoom-plane"
+            style={{
+              // Trailing room lets the browser center nodes near either canvas edge.
+              width: `calc(${layout.width * zoom + canvasOffset.offsetX}px + 50%)`,
+              height: `calc(${layout.height * zoom + canvasOffset.offsetY}px + 50%)`,
+            }}
+          >
             <div
-              className="dag-zoom-plane"
-              style={{
-                // Trailing room lets the browser center nodes near either canvas edge.
-                width: `calc(${layout.width * zoom + canvasOffset.offsetX}px + 50%)`,
-                height: `calc(${layout.height * zoom + canvasOffset.offsetY}px + 50%)`,
-              }}
-            >
-              <div
-                className="dag-canvas"
-                ref={canvasRef}
-                style={{
+              className="dag-canvas"
+              ref={canvasRef}
+              style={
+                {
+                  "--dag-canvas-zoom": zoom,
                   width: layout.width,
                   height: layout.height,
                   left: canvasOffset.offsetX,
                   top: canvasOffset.offsetY,
                   transform: `scale(${zoom})`,
-                }}
-              >
-                <svg width={layout.width} height={layout.height} aria-hidden="true">
-                  <defs>
-                    <marker
-                      id="dag-arrow"
-                      viewBox="0 0 10 10"
-                      refX="9"
-                      refY="5"
-                      markerWidth="6"
-                      markerHeight="6"
-                      orient="auto-start-reverse"
-                    >
-                      <path d="M 0 0 L 10 5 L 0 10 z" />
-                    </marker>
-                  </defs>
-                  {projection.edges.map((edge, edgeIndex) => {
-                    const source = layout.positions[edge.source];
-                    const target = layout.positions[edge.target];
-                    if (!source || !target) return null;
-                    const geometry = edgeGeometry(source, target, edgeIndex);
-                    const projectionEmphasis = edgeProjectionEmphasis(edge, ontologyProjection);
-                    const dimmed =
-                      projectionEmphasis === "dimmed" ||
-                      !brightTypes.has(displayGraph.nodes[edge.source]?.type) ||
-                      !brightTypes.has(displayGraph.nodes[edge.target]?.type) ||
-                      Boolean(focusedRelations && !focusedRelations.edgeIds.has(edge.id)) ||
-                      Boolean(
-                        selectedTaskId &&
-                        !edgeChanges
-                          .get(edge.id)
-                          ?.history.some((source) => source.task_id === selectedTaskId),
-                      );
-                    return (
-                      <g
-                        className={`dag-edge-group ${edgeChanges.has(edge.id) ? `branch-${edgeChanges.get(edge.id)!.change}` : ""} ${dimmed ? "is-dim" : ""} ${projectionEmphasis === "neutral" ? "is-neutral" : ""}`}
-                        key={edge.id}
-                      >
-                        <path className="dag-edge" d={geometry.path} markerEnd="url(#dag-arrow)" />
-                        <text className="dag-edge-label" x={geometry.labelX} y={geometry.labelY}>
-                          {edgeChanges.has(edge.id) ? `${edgeChanges.get(edge.id)!.change} · ` : ""}
-                          {edge.relation.replaceAll("_", " ")}
-                        </text>
-                      </g>
-                    );
-                  })}
-                </svg>
-                {projection.nodes.map((node) => {
-                  const position = layout.positions[node.id];
-                  if (!position) return null;
-                  const projectionEmphasis =
-                    nodeProjectionEmphasis.get(node.id) ??
-                    (ontologyProjection === "all" ? "emphasized" : "neutral");
+                } as CSSProperties
+              }
+            >
+              <svg width={layout.width} height={layout.height} aria-hidden="true">
+                <defs>
+                  <marker
+                    id="dag-arrow"
+                    viewBox="0 0 10 10"
+                    refX="9"
+                    refY="5"
+                    markerWidth="6"
+                    markerHeight="6"
+                    orient="auto-start-reverse"
+                  >
+                    <path d="M 0 0 L 10 5 L 0 10 z" />
+                  </marker>
+                </defs>
+                {projection.edges.map((edge, edgeIndex) => {
+                  const source = layout.positions[edge.source];
+                  const target = layout.positions[edge.target];
+                  if (!source || !target) return null;
+                  const geometry = edgeGeometry(source, target, edgeIndex);
+                  const projectionEmphasis = edgeProjectionEmphasis(edge, ontologyProjection);
                   const dimmed =
                     projectionEmphasis === "dimmed" ||
-                    !brightTypes.has(node.type) ||
-                    Boolean(focusedRelations && !focusedRelations.nodeIds.has(node.id)) ||
-                    Boolean(selectedTaskId && !taskHighlights.has(node.id));
-                  const nodeChange = nodeChanges.get(node.id);
-                  const diffWord = nodeChange
-                    ? branchDiffWord(nodeChange.change, mergeMarks.get(`node:${node.id}`))
-                    : null;
+                    !brightTypes.has(displayGraph.nodes[edge.source]?.type) ||
+                    !brightTypes.has(displayGraph.nodes[edge.target]?.type) ||
+                    Boolean(focusedRelations && !focusedRelations.edgeIds.has(edge.id)) ||
+                    Boolean(
+                      selectedTaskId &&
+                      !edgeChanges
+                        .get(edge.id)
+                        ?.history.some((source) => source.task_id === selectedTaskId),
+                    );
                   return (
-                    <div
-                      className={`dag-node ${flaggedNodeIds.has(node.id) ? "has-evidence-flag" : ""} ${branchChanges ? "is-branch-diff" : ""} ${diffWord ? `diff-${diffWord}` : ""} ${node.type} ${node.standing} ${node.draft_touched ? "draft-touched" : ""} ${dimmed ? "is-dim" : ""} ${projectionEmphasis === "neutral" ? "is-layer-neutral" : ""} ${position.pinned ? "is-pinned" : ""} ${draggingId === node.id ? "is-dragging" : ""} ${changedNodeIds.has(node.id) ? "digest-changed" : ""}`}
-                      data-node-id={node.id}
-                      style={
-                        {
-                          left: position.x - DAG_NODE_WIDTH / 2,
-                          top: position.y - DAG_NODE_HEIGHT / 2,
-                          "--node-accent": dagTypeMeta[node.type].color,
-                        } as CSSProperties
-                      }
-                      key={node.id}
-                      onDragStart={(event) => event.preventDefault()}
-                      onPointerDown={(event) => pointerDown(event, node.id)}
-                      onPointerMove={pointerMove}
-                      onPointerUp={pointerEnd}
-                      onPointerCancel={pointerEnd}
-                      onLostPointerCapture={pointerEnd}
-                      onClick={connectionClick}
+                    <g
+                      className={`dag-edge-group ${edgeChanges.has(edge.id) ? `branch-${edgeChanges.get(edge.id)!.change}` : ""} ${dimmed ? "is-dim" : ""} ${projectionEmphasis === "neutral" ? "is-neutral" : ""}`}
+                      key={edge.id}
                     >
-                      <button
-                        aria-label={`${node.title}. Inspect node. Drag this card to pin it.`}
-                        className="dag-node-inspect"
-                        type="button"
-                        onClick={() => inspectNode(node)}
-                      >
-                        {!branchChanges && <span className="eyebrow">{nodeTypeLabel(node)}</span>}
-                        <strong>{node.title}</strong>
-                        {branchChanges && (
-                          <span className={`branch-diff-word diff-${diffWord ?? "context"}`}>
-                            {diffWord ? BRANCH_DIFF_WORDS[diffWord] : "Context"}
-                          </span>
+                      <path className="dag-edge" d={geometry.path} markerEnd="url(#dag-arrow)" />
+                      {canEdit &&
+                        (editing.canonicalGraph.edges[edge.id] ||
+                          editing.humanDraft?.added_edges.some(
+                            (added) => added.id === edge.id,
+                          )) && (
+                          <path
+                            className="dag-edge-hit"
+                            data-edge-id={edge.id}
+                            d={geometry.path}
+                            onClick={(event) => editor.onEdgeClick(event, edge)}
+                          />
                         )}
-                        <small className="dag-node-standing">
-                          <span className={`standing ${node.standing}`}>{node.standing}</span>
-                          <span>{node.status || node.validity || ""}</span>
-                        </small>
-                      </button>
-                      {!editing.mutationsDisabled && graph.nodes[node.id] && (
-                        <button
-                          className="dag-connect-handle"
-                          type="button"
-                          aria-label={`Connect from ${node.title}`}
-                          title="Drag to another node, or click to choose a connection"
-                        >
-                          <Link2 size={14} />
-                        </button>
-                      )}
-                      {position.pinned && (
-                        <button
-                          aria-label={`Release pin from ${node.title}`}
-                          className="dag-pin-state"
-                          title="Release this pin"
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            layout.releasePin(node.id);
-                          }}
-                          onPointerDown={(event) => event.stopPropagation()}
-                        >
-                          <Pin size={12} /> pinned
-                        </button>
-                      )}
-                    </div>
+                      <text className="dag-edge-label" x={geometry.labelX} y={geometry.labelY}>
+                        {edgeChanges.has(edge.id) ? `${edgeChanges.get(edge.id)!.change} · ` : ""}
+                        {edge.relation.replaceAll("_", " ")}
+                      </text>
+                    </g>
                   );
                 })}
-              </div>
+              </svg>
+              {projection.nodes.map((node) => {
+                const position = layout.positions[node.id];
+                if (!position) return null;
+                const projectionEmphasis =
+                  nodeProjectionEmphasis.get(node.id) ??
+                  (ontologyProjection === "all" ? "emphasized" : "neutral");
+                const dimmed =
+                  projectionEmphasis === "dimmed" ||
+                  !brightTypes.has(node.type) ||
+                  Boolean(focusedRelations && !focusedRelations.nodeIds.has(node.id)) ||
+                  Boolean(selectedTaskId && !taskHighlights.has(node.id));
+                const nodeChange = nodeChanges.get(node.id);
+                const diffWord = nodeChange
+                  ? branchDiffWord(nodeChange.change, mergeMarks.get(`node:${node.id}`))
+                  : null;
+                return (
+                  <div
+                    className={`dag-node ${canEdit && editing.humanDraft?.custom_nodes[node.id] && node.origin === "unknown" ? "needs-origin" : ""} ${flaggedNodeIds.has(node.id) ? "has-evidence-flag" : ""} ${editor.nodeClass(node.id)} ${branchChanges ? "is-branch-diff" : ""} ${diffWord ? `diff-${diffWord}` : ""} ${node.type} ${node.standing} ${node.draft_touched ? "draft-touched" : ""} ${dimmed ? "is-dim" : ""} ${projectionEmphasis === "neutral" ? "is-layer-neutral" : ""} ${position.pinned ? "is-pinned" : ""} ${draggingId === node.id ? "is-dragging" : ""} ${changedNodeIds.has(node.id) ? "digest-changed" : ""}`}
+                    data-node-id={node.id}
+                    style={
+                      {
+                        left: position.x - DAG_NODE_WIDTH / 2,
+                        top: position.y - DAG_NODE_HEIGHT / 2,
+                        "--node-accent": dagTypeMeta[node.type].color,
+                      } as CSSProperties
+                    }
+                    key={node.id}
+                    onDragStart={(event) => event.preventDefault()}
+                    onPointerDown={(event) => pointerDown(event, node.id)}
+                    onPointerMove={pointerMove}
+                    onPointerUp={pointerEnd}
+                    onPointerCancel={pointerEnd}
+                    onLostPointerCapture={pointerEnd}
+                  >
+                    <button
+                      aria-label={`${node.title}. Inspect node. Drag this card to pin it.`}
+                      className="dag-node-inspect"
+                      type="button"
+                      onDoubleClick={(event) => {
+                        event.stopPropagation();
+                        editor.onNodeDoubleClick(node);
+                      }}
+                      onClick={(event) => {
+                        if (suppressClickRef.current === node.id) {
+                          suppressClickRef.current = null;
+                          return;
+                        }
+                        if (!editor.onNodeClick(event, node)) onSelectNode(node);
+                      }}
+                    >
+                      {!branchChanges && <span className="eyebrow">{nodeTypeLabel(node)}</span>}
+                      <strong>{node.title}</strong>
+                      {branchChanges && (
+                        <span className={`branch-diff-word diff-${diffWord ?? "context"}`}>
+                          {diffWord ? BRANCH_DIFF_WORDS[diffWord] : "Context"}
+                        </span>
+                      )}
+                      <small className="dag-node-standing">
+                        <span className={`standing ${node.standing}`}>{node.standing}</span>
+                        <span>{node.status || node.validity || ""}</span>
+                      </small>
+                    </button>
+                    {editor.renameField(node)}
+                    {canEdit &&
+                      editing.humanDraft?.custom_nodes[node.id] &&
+                      node.origin === "unknown" && (
+                        <button
+                          className="dag-origin-action"
+                          type="button"
+                          aria-label="Edit node origin"
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onSelectNode(node);
+                          }}
+                        >
+                          <Pencil size={14} />
+                        </button>
+                      )}
+                    {canEdit && graph.nodes[node.id] && (
+                      <button
+                        onPointerDown={(event) => editor.onHandlePointerDown(event, node.id)}
+                        onClick={(event) => editor.onHandleClick(event, node.id)}
+                        className="dag-connect-handle"
+                        type="button"
+                        aria-label={`Connect from ${node.title}`}
+                        title="Drag to another node, or click to choose a connection"
+                      >
+                        <Link2 size={14} />
+                      </button>
+                    )}
+                    {position.pinned && (
+                      <button
+                        aria-label={`Release pin from ${node.title}`}
+                        className="dag-pin-state"
+                        title="Release this pin"
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          layout.releasePin(node.id);
+                        }}
+                        onPointerDown={(event) => event.stopPropagation()}
+                      >
+                        <Pin size={12} /> pinned
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+              {editor.overlays}
             </div>
           </div>
         </div>
-      )}
+      </div>
     </section>
   );
 }
@@ -2025,21 +2076,6 @@ function ResearchNodeCard({
       </span>
       <strong>{node.title}</strong>
     </button>
-  );
-}
-
-function dagFocusNode(nodes: GraphNode[], edges: Edge[]): string | undefined {
-  const incoming = new Set(edges.map((edge) => edge.target));
-  const outgoing = new Map<string, number>();
-  edges.forEach((edge) => outgoing.set(edge.source, (outgoing.get(edge.source) ?? 0) + 1));
-  const questions = nodes.filter((node) => isQuestion(node.type));
-  const roots = questions.filter((node) => !incoming.has(node.id));
-  return (
-    [...(roots.length > 0 ? roots : questions)].sort(
-      (left, right) =>
-        (outgoing.get(right.id) ?? 0) - (outgoing.get(left.id) ?? 0) ||
-        left.id.localeCompare(right.id),
-    )[0]?.id ?? nodes[0]?.id
   );
 }
 

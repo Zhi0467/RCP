@@ -3,135 +3,188 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
-test("human graph controls create built-in nodes, stage connections, undo, and honor read-only", async () => {
+// Exercise the served canvas with callback recording; the draft owner is tested separately.
+test("canvas gestures stage atomic updates, retain pending previews, and guard removal", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
-    logLevel: "silent",
+    logLevel: "error",
     server: { host: "127.0.0.1", port: 0 },
   });
   let browser;
   try {
     await server.listen();
     browser = await chromium.launch({ headless: true });
-    // Use the supported reduced-motion mode so targets do not move during a drag.
-    const page = await browser.newPage({ reducedMotion: "reduce" });
+    const page = await browser.newPage({
+      reducedMotion: "reduce",
+      viewport: { width: 1280, height: 1000 },
+    });
     const failures = [];
     page.on("pageerror", (error) => failures.push(error.message));
-    await page.route("**/api/projects/fixture/graph-edit-options", (route) =>
-      route.fulfill({
-        json: {
-          node_prefixes: {
-            research_question: "rq",
-            hypothesis: "hyp",
-            experiment: "exp",
-            evidence: "ev",
-            decision: "dec",
-            blocker: "blk",
-          },
-          relations: [
-            {
-              name: "supports",
-              assessment_required_for: [{ source_type: "evidence", target_type: "hypothesis" }],
-            },
-            { name: "contradicts", assessment_required_for: [] },
-          ],
-        },
-      }),
-    );
+    page.on("console", (message) => {
+      if (message.type() === "error") failures.push(message.text());
+    });
+    page.on("requestfailed", (request) => failures.push(request.url()));
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/graphEditing.html`,
     );
-    await page.getByRole("button", { name: "New node", exact: true }).click();
-    await page.getByLabel("Type", { exact: true }).selectOption("research_question");
-    await page.getByLabel("ID slug").fill("new-question");
-    await page.getByLabel("Title", { exact: true }).fill("New question");
-    await page.getByLabel("Question", { exact: true }).fill("Does the change work?");
-    await page.getByRole("button", { name: "Stage", exact: true }).click();
-    const request = async () => JSON.parse(await page.getByLabel("Staged request").textContent());
-    assert.equal((await request()).custom_nodes[0].type, "research_question");
-    assert.equal((await request()).custom_nodes[0].extension_type, null);
-    assert.equal("created_rev" in (await request()).custom_nodes[0], false);
-    // The fixture intentionally leaves the node awaiting backend completion.
-    // Its ID must still be reserved so reopening the form cannot overwrite it.
-    await page.getByRole("button", { name: "New node", exact: true }).click();
-    await page.getByLabel("ID slug").fill("new-question");
-    await page.getByLabel("Title", { exact: true }).fill("Replacement question");
-    await page.getByLabel("Question", { exact: true }).fill("Would overwrite the first draft?");
-    assert.equal(await page.getByRole("button", { name: "Stage", exact: true }).isDisabled(), true);
-    await page.getByRole("button", { name: "Close new node" }).click();
-    await page.getByRole("button", { name: "Connections", exact: true }).click();
-    await page.getByLabel("From", { exact: true }).selectOption("ev/second");
-    await page.getByLabel("To", { exact: true }).selectOption("hyp/first");
-    await page.getByLabel("Relation", { exact: true }).selectOption("supports");
-    await page.getByLabel("Explanation").fill("Measured comparison");
-    await page.getByLabel("Relevance", { exact: true }).selectOption("direct");
-    await page.getByLabel("Weight", { exact: true }).selectOption("moderate");
-    await page.getByRole("button", { name: "Stage connection" }).click();
-    const edge = (await request()).added_edges[0];
-    assert.equal(edge.source, "ev/second");
-    assert.equal(edge.target, "hyp/first");
-    assert.equal(edge.relation, "supports");
-    assert.equal(edge.explanation, "Measured comparison");
-    assert.equal("layer" in edge, false);
-    assert.equal(
-      await page
-        .getByRole("button", { name: "Remove relates_to connection from hyp/first to ev/second" })
-        .count(),
-      0,
-    );
-    await page
-      .getByRole("button", { name: "Remove contradicts connection from hyp/first to ev/second" })
-      .click();
-    assert.deepEqual((await request()).removed_edge_ids, ["edge/canonical"]);
-    await page
-      .getByRole("button", {
-        name: "Undo removal of contradicts connection from hyp/first to ev/second",
-      })
-      .click();
-    assert.deepEqual((await request()).removed_edge_ids, []);
-    assert.deepEqual(edge.assessment, {
-      relevance: "direct",
-      weight: "moderate",
-      qualifications: [],
-    });
-    await page
-      .getByRole("button", { name: "Remove supports connection from ev/second to hyp/first" })
-      .click();
-    assert.deepEqual((await request()).added_edges, []);
-    assert.deepEqual((await request()).removed_edge_ids, []);
-    await page.getByRole("button", { name: "Close connections" }).click();
-    await page.getByRole("button", { name: "Connect from Second result" }).focus();
-    await page.keyboard.press("Enter");
-    assert.equal(await page.getByLabel("From", { exact: true }).inputValue(), "ev/second");
-    assert.equal(await page.getByLabel("To", { exact: true }).inputValue(), "");
-    await page.getByRole("button", { name: "Close connections" }).click();
-    const handle = page.getByRole("button", { name: "Connect from Second result" });
+    await page.locator(".dag-node").first().waitFor();
+    const calls = async () => JSON.parse(await page.getByLabel("Canvas calls").textContent());
+    const card = (id) => page.locator(`.dag-node[data-node-id="${id}"]`);
+    const select = (id) => card(id).locator(".dag-node-inspect").click();
+    const selectEdge = async (id) => {
+      // Wait until the link's own hit path has sat under its midpoint for several
+      // frames: a preview or layout pass may still be moving it.
+      const handle = await page.waitForFunction(
+        (edgeId) => {
+          const path = document.querySelector(`.dag-edge-hit[data-edge-id="${edgeId}"]`);
+          const p = path?.getPointAtLength(path.getTotalLength() / 2);
+          const screen = p && new DOMPoint(p.x, p.y).matrixTransform(path.getScreenCTM());
+          const key =
+            screen && document.elementFromPoint(screen.x, screen.y) === path
+              ? `${Math.round(screen.x)},${Math.round(screen.y)}`
+              : null;
+          const probe = window.__edgeProbe;
+          window.__edgeProbe = { key, frames: key && probe?.key === key ? probe.frames + 1 : 0 };
+          return window.__edgeProbe.frames >= 10 ? { x: screen.x, y: screen.y } : null;
+        },
+        id,
+        { polling: "raf" },
+      );
+      const point = await handle.jsonValue();
+      await page.mouse.click(point.x, point.y);
+    };
+    await page.getByRole("button", { name: "Layout", exact: true }).click();
     await page.getByRole("button", { name: "Research flow", exact: true }).click();
-    // Scroll each endpoint into view, including a target outside the DAG viewport.
-    await handle.dragTo(page.locator('[data-node-id="hyp/first"]'));
-    await page.waitForFunction(
-      () => document.querySelector('select[aria-label="To"]')?.value === "hyp/first",
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "Fit", exact: true }).click();
+    await page.getByLabel("Hold preview").check();
+    const scroll = await page.locator(".dag-scroll").boundingBox();
+    await page.mouse.dblclick(scroll.x + scroll.width - 90, scroll.y + scroll.height - 80);
+    await page.getByLabel("Node title", { exact: true }).fill("Canvas result");
+    await page.locator('[data-node-type="evidence"]').click();
+    await page.getByLabel("Node title", { exact: true }).press("Enter");
+    await page.locator(".dag-staged-card").waitFor();
+    assert.equal(await card("ev/canvas-result").count(), 0);
+    await page.getByLabel("Hold preview").uncheck();
+    await card("ev/canvas-result").waitFor();
+    assert.equal(await page.locator(".dag-staged-card").count(), 0);
+    assert.ok(
+      await card("ev/canvas-result").evaluate((node) => node.classList.contains("is-pinned")),
     );
-    assert.equal(await page.getByLabel("From", { exact: true }).inputValue(), "ev/second");
-    assert.equal(await page.getByLabel("To", { exact: true }).inputValue(), "hyp/first");
-    assert.equal(await page.getByLabel("Relevance", { exact: true }).inputValue(), "");
-    await page.getByLabel("Relevance", { exact: true }).selectOption("direct");
-    await page.getByLabel("Weight", { exact: true }).selectOption("limited");
-    assert.equal(await page.getByRole("button", { name: "Stage connection" }).isDisabled(), false);
-    await page.getByRole("button", { name: "Stage target removal" }).click();
+    await select("hyp/accepted");
     assert.equal(
-      await page.locator('select[aria-label="To"] option[value="hyp/first"]').count(),
-      0,
-    );
-    assert.equal(await page.getByRole("button", { name: "Stage connection" }).isDisabled(), true);
-    await page.getByRole("button", { name: "Remove source from fixture" }).click();
-    assert.equal(await page.getByRole("button", { name: "Stage connection" }).isDisabled(), true);
-    await page.getByRole("button", { name: "Toggle read-only" }).click();
-    assert.equal(await page.getByRole("button", { name: "Stage connection" }).isDisabled(), true);
-    assert.equal(
-      await page.getByRole("button", { name: "New node", exact: true }).isDisabled(),
+      await page.getByRole("button", { name: "Delete", exact: true }).isDisabled(),
       true,
     );
+    const beforeGuard = (await calls()).length;
+    await page.keyboard.press("Delete");
+    assert.equal((await calls()).length, beforeGuard);
+    await select("hyp/first");
+    await page.keyboard.press("F2");
+    await page.getByLabel("Node title", { exact: true }).fill("Renamed claim");
+    await page.getByLabel("Node title", { exact: true }).press("Enter");
+    await page.getByRole("button", { name: "Undo", exact: true }).click();
+    // Drag to the eligible handle with a small offset, exercising snapping.
+    const source = await card("hyp/duplicate").locator(".dag-connect-handle").boundingBox();
+    const target = await card("hyp/first").locator(".dag-connect-handle").boundingBox();
+    await page.mouse.move(source.x + source.width / 2, source.y + source.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(target.x + target.width / 2 + 12, target.y + target.height / 2, {
+      steps: 8,
+    });
+    await page.mouse.up();
+    const menu = page.locator('[data-relation="relates_to"]').first();
+    if (await menu.count()) await menu.click();
+    await page.waitForFunction(() =>
+      JSON.parse(document.querySelector('output[aria-label="Canvas calls"]').textContent).some(
+        (call) => call.method === "onStageEdge",
+      ),
+    );
+    // Select a link and replace its relation in the same chip, then unlink it.
+    await selectEdge("edge/canonical");
+    await page.locator(".dag-edge-chip button").first().click();
+    await page.locator('[data-relation="supports"]').first().click();
+    await page.getByRole("button", { name: "Direct", exact: true }).click();
+    await page.getByRole("button", { name: "Moderate", exact: true }).click();
+    const linkButton = page
+      .locator(".dag-edit-menu")
+      .getByRole("button", { name: "Link", exact: true });
+    await page.getByRole("button", { name: "Matched", exact: true }).click();
+    await page.getByLabel("Explanation", { exact: true }).fill("");
+    assert.equal(await linkButton.isDisabled(), true);
+    await page.getByLabel("Explanation", { exact: true }).fill("Same direction as planned");
+    await page.getByLabel("Qualifications", { exact: true }).fill("One run\n\nOne run\nSmall n");
+    await linkButton.click();
+    await page.waitForFunction(() =>
+      JSON.parse(document.querySelector('output[aria-label="Canvas calls"]').textContent).some(
+        (call) => call.method === "onReplaceEdge",
+      ),
+    );
+    const replaced = (await calls()).find((call) => call.method === "onReplaceEdge");
+    assert.equal(replaced.args[1].expectation, "matched");
+    assert.ok(replaced.args[1].explanation.length > 0);
+    assert.deepEqual(replaced.args[1].assessment.qualifications, ["One run", "Small n"]);
+    // The current relation reopens the same details to edit them in place.
+    await selectEdge(replaced.args[1].id);
+    await page.locator(".dag-edge-chip button").first().click();
+    await page.locator('[data-relation="supports"]').first().click();
+    await page.getByLabel("Explanation", { exact: true }).fill("Edited reason");
+    await linkButton.click();
+    await page.waitForFunction(
+      () =>
+        JSON.parse(document.querySelector('output[aria-label="Canvas calls"]').textContent).filter(
+          (call) => call.method === "onReplaceEdge",
+        ).length === 2,
+    );
+    const edited = (await calls()).filter((call) => call.method === "onReplaceEdge")[1];
+    assert.equal(edited.args[0], replaced.args[1].id);
+    assert.equal(edited.args[1].expectation, "matched");
+    // Undo removes the selected draft link, and its chip with it.
+    await selectEdge(edited.args[1].id);
+    await page.locator(".dag-edge-chip").waitFor();
+    await page.getByRole("button", { name: "Undo", exact: true }).click();
+    await page.locator(".dag-edge-chip").waitFor({ state: "detached" });
+    await selectEdge(replaced.args[1].id);
+    await page.getByRole("button", { name: "Unlink", exact: true }).click();
+    // Hold the duplicate over the keeper until the merge ring arms.
+    const duplicate = await card("hyp/duplicate").boundingBox();
+    const keeper = await card("hyp/first").boundingBox();
+    await page.mouse.move(duplicate.x + duplicate.width / 2, duplicate.y + duplicate.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(keeper.x + keeper.width / 2, keeper.y + keeper.height / 2, { steps: 8 });
+    await page.locator('.dag-node.is-merge-armed[data-node-id="hyp/first"]').waitFor();
+    await page.mouse.up();
+    await page.getByRole("button", { name: "Confirm merge", exact: true }).click();
+    const recorded = await calls();
+    assert.ok(
+      recorded.some(
+        (call) =>
+          call.method === "onStageNode" &&
+          call.args[0].id === "ev/canvas-result" &&
+          call.args[0].origin === "unknown",
+      ),
+    );
+    assert.ok(
+      recorded.some(
+        (call) =>
+          call.method === "onRenameNode" &&
+          call.args[0] === "hyp/first" &&
+          call.args[1] === "Renamed claim",
+      ),
+    );
+    assert.ok(recorded.some((call) => call.method === "onUndo"));
+    assert.ok(recorded.some((call) => call.method === "onRemoveEdge"));
+    assert.ok(
+      recorded.some(
+        (call) =>
+          call.method === "onMergeNodes" &&
+          call.args[0] === "hyp/duplicate" &&
+          call.args[1] === "hyp/first",
+      ),
+    );
+    await page.getByRole("button", { name: "Toggle read-only", exact: true }).click();
+    assert.equal(await page.locator(".dag-connect-handle").count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Delete", exact: true }).count(), 0);
     assert.deepEqual(failures, []);
   } finally {
     await browser?.close();
@@ -139,37 +192,49 @@ test("human graph controls create built-in nodes, stage connections, undo, and h
   }
 });
 
-test("a failed graph-edit-options load says what is unavailable instead of promising free entry", async () => {
+test("phone canvas keeps creation and pick controls inside the viewport", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
-    logLevel: "silent",
+    logLevel: "error",
     server: { host: "127.0.0.1", port: 0 },
   });
   let browser;
   try {
     await server.listen();
     browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage({ reducedMotion: "reduce" });
-    const failures = [];
-    page.on("pageerror", (error) => failures.push(error.message));
-    await page.route("**/api/projects/fixture/graph-edit-options", (route) =>
-      route.fulfill({ status: 503, json: { detail: "Graph edit options unavailable" } }),
-    );
+    const page = await browser.newPage({
+      viewport: { width: 390, height: 844 },
+      hasTouch: true,
+      isMobile: true,
+      reducedMotion: "reduce",
+    });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/graphEditing.html`,
     );
-
-    const notice = page.getByRole("alert");
-    await notice.waitFor();
-    // Node ids are derived from the backend prefixes, so there is no free-entry
-    // path to offer: the form would fill in and never stage.
-
-    assert.equal(
-      await page.getByRole("button", { name: "New node", exact: true }).isDisabled(),
-      true,
-    );
-    assert.equal(await page.getByRole("button", { name: "Retry" }).isDisabled(), false);
-    assert.deepEqual(failures, []);
+    await page.locator(".dag-node").first().waitFor();
+    await page.getByRole("button", { name: "Node", exact: true }).tap();
+    await page.getByLabel("Node title", { exact: true }).fill("Phone node");
+    const staged = await page.locator(".dag-staged-card").boundingBox();
+    assert.ok(staged.width >= 230);
+    await page.getByLabel("Node title", { exact: true }).press("Enter");
+    await page.locator('[data-node-id="rq/phone-node"]').waitFor();
+    const source = page.locator('[data-node-id="hyp/duplicate"]');
+    await source.locator(".dag-node-inspect").tap();
+    const handle = await source.locator(".dag-connect-handle").boundingBox();
+    assert.ok(handle.width >= 29 && handle.height >= 29);
+    await source.locator(".dag-connect-handle").tap();
+    await page.locator(".dag-pick-chip").waitFor();
+    await page.locator('[data-node-id="hyp/first"] .dag-node-inspect').tap();
+    const menu = page.locator(".dag-edit-menu");
+    await menu.waitFor();
+    const bounds = await menu.boundingBox();
+    assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 390);
+    await menu.locator('[data-relation="relates_to"]').first().tap();
+    assert.equal(await page.locator(".dag-edit-menu").count(), 0);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > 390), false);
+    assert.deepEqual(errors, []);
   } finally {
     await browser?.close();
     await server.close();
@@ -333,7 +398,9 @@ test("Research flow fits six type columns to width with vertical scrolling and a
       `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/dagViewport.html?representative`,
     );
     await page.locator(".dag-node").last().waitFor();
+    await page.getByRole("button", { name: "Layout", exact: true }).click();
     await page.getByRole("button", { name: "Research flow", exact: true }).click();
+    await page.keyboard.press("Escape");
     await page.waitForFunction(() => {
       const nodes = [...document.querySelectorAll(".dag-node")];
       const columns = new Map();

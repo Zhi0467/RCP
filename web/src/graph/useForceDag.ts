@@ -105,6 +105,7 @@ export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceD
   const simulationRef = useRef<Simulation<ForceNode, ForceEdge> | null>(null);
   const nodesRef = useRef<ForceNode[]>([]);
   const activeModeRef = useRef<DagLayoutMode | null>(null);
+  const pendingPinsRef = useRef(new Map<string, Record<string, StoredPosition>>());
   const [positions, setPositions] = useState<Record<string, DagPosition>>({});
   const [pinCount, setPinCount] = useState(0);
   const [resetGeneration, setResetGeneration] = useState(0);
@@ -123,7 +124,8 @@ export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceD
         ? new Map(nodesRef.current.map((node) => [node.id, node]))
         : new Map<string, ForceNode>();
     activeModeRef.current = mode;
-    const stored = readStoredPositions(storageKey);
+    const pendingPins = pendingPinsRef.current.get(storageKey) ?? {};
+    const stored = { ...readStoredPositions(storageKey), ...pendingPins };
     const initial =
       mode === "flow"
         ? flowPositions(flowLayout, metrics.width)
@@ -154,6 +156,7 @@ export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceD
       target: edge.target,
     }));
 
+    forceNodes.forEach((node) => delete pendingPins[node.id]);
     nodesRef.current = forceNodes;
     setPinCount(forceNodes.filter((node) => node.fx !== null && node.fx !== undefined).length);
 
@@ -263,9 +266,34 @@ export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceD
     [metrics.height, metrics.width, publish],
   );
 
+  // Creation can precede the backend preview that adds the node to the graph.
+  const pinAt = useCallback(
+    (nodeId: string, x: number, y: number) => {
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      x = Math.max(HORIZONTAL_PADDING + DAG_NODE_WIDTH / 2, x);
+      y = Math.max(VERTICAL_PADDING + DAG_NODE_HEIGHT / 2, y);
+      const node = nodesRef.current.find((item) => item.id === nodeId);
+      const pending = pendingPinsRef.current.get(storageKey) ?? {};
+      if (node) {
+        node.x = node.fx = x;
+        node.y = node.fy = y;
+        publish();
+        delete pending[nodeId];
+      } else {
+        pending[nodeId] = { x, y };
+      }
+      pendingPinsRef.current.set(storageKey, pending);
+      persistPinnedPositions(storageKey, nodesRef.current, pending);
+      setPinCount(
+        nodesRef.current.filter((item) => item.fx !== null && item.fx !== undefined).length,
+      );
+    },
+    [publish, storageKey],
+  );
+
   const endDrag = useCallback(() => {
     simulationRef.current?.alphaTarget(0);
-    persistPinnedPositions(storageKey, nodesRef.current);
+    persistPinnedPositions(storageKey, nodesRef.current, pendingPinsRef.current.get(storageKey));
     setPinCount(
       nodesRef.current.filter((node) => node.fx !== null && node.fx !== undefined).length,
     );
@@ -273,6 +301,7 @@ export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceD
   }, [publish, storageKey]);
 
   const releasePins = useCallback(() => {
+    pendingPinsRef.current.delete(storageKey);
     removeStoredPositions(storageKey);
     if (mode === "flow") {
       nodesRef.current = [];
@@ -309,7 +338,7 @@ export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceD
         simulationRef.current?.alpha(0.72).alphaTarget(0).restart();
       }
 
-      persistPinnedPositions(storageKey, nodesRef.current);
+      persistPinnedPositions(storageKey, nodesRef.current, pendingPinsRef.current.get(storageKey));
       setPinCount(
         nodesRef.current.filter((item) => item.fx !== null && item.fx !== undefined).length,
       );
@@ -319,6 +348,7 @@ export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceD
   );
 
   const resetLayout = useCallback(() => {
+    pendingPinsRef.current.delete(storageKey);
     removeStoredPositions(storageKey);
     simulationRef.current?.stop();
     nodesRef.current = [];
@@ -329,11 +359,20 @@ export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceD
 
   return {
     ...metrics,
+    width: Math.max(
+      metrics.width,
+      ...Object.values(positions).map((point) => point.x + DAG_NODE_WIDTH / 2 + HORIZONTAL_PADDING),
+    ),
+    height: Math.max(
+      metrics.height,
+      ...Object.values(positions).map((point) => point.y + DAG_NODE_HEIGHT / 2 + VERTICAL_PADDING),
+    ),
     positions,
     pinCount,
     beginDrag,
     moveDrag,
     endDrag,
+    pinAt,
     releasePin,
     releasePins,
     resetLayout,
@@ -460,7 +499,11 @@ function readStoredPositions(storageKey: string): Record<string, StoredPosition>
   }
 }
 
-function persistPinnedPositions(storageKey: string, nodes: ForceNode[]): void {
+function persistPinnedPositions(
+  storageKey: string,
+  nodes: ForceNode[],
+  pending: Record<string, StoredPosition> = {},
+): void {
   const pinned = Object.fromEntries(
     nodes
       .filter(
@@ -470,7 +513,7 @@ function persistPinnedPositions(storageKey: string, nodes: ForceNode[]): void {
       .map((node) => [node.id, { x: Number(node.fx), y: Number(node.fy) }]),
   );
   try {
-    window.localStorage.setItem(storageKey, JSON.stringify(pinned));
+    window.localStorage.setItem(storageKey, JSON.stringify({ ...pending, ...pinned }));
   } catch {
     // Layout persistence is an enhancement; interaction remains available without storage.
   }
@@ -496,16 +539,15 @@ function constrainNodeToCanvas(node: ForceNode, width: number, height: number): 
   const pinned = node.fx !== null && node.fx !== undefined;
   const rawX = node.fx ?? node.x ?? width / 2;
   const rawY = node.fy ?? node.y ?? height / 2;
-  const x = clamp(
-    rawX,
-    HORIZONTAL_PADDING + DAG_NODE_WIDTH / 2,
-    width - HORIZONTAL_PADDING - DAG_NODE_WIDTH / 2,
-  );
-  const y = clamp(
-    rawY,
-    VERTICAL_PADDING + DAG_NODE_HEIGHT / 2,
-    height - VERTICAL_PADDING - DAG_NODE_HEIGHT / 2,
-  );
+  // Pinned cards may grow the canvas right and down, never past its top-left edge.
+  const minX = HORIZONTAL_PADDING + DAG_NODE_WIDTH / 2;
+  const minY = VERTICAL_PADDING + DAG_NODE_HEIGHT / 2;
+  const x = pinned
+    ? Math.max(minX, rawX)
+    : clamp(rawX, minX, width - HORIZONTAL_PADDING - DAG_NODE_WIDTH / 2);
+  const y = pinned
+    ? Math.max(minY, rawY)
+    : clamp(rawY, minY, height - VERTICAL_PADDING - DAG_NODE_HEIGHT / 2);
   if (x !== rawX) node.vx = 0;
   if (y !== rawY) node.vy = 0;
   node.x = x;

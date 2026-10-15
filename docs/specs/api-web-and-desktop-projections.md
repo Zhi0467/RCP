@@ -561,8 +561,9 @@ Human Sync accepts built-in and active custom nodes through the existing
 commit share the same backend owner and exact base revision. Edge replacements
 remove the old edge before creating its replacement in the same transition;
 layers are resolved by the backend. The membership-protected `graph-edit-options`
-endpoint publishes built-in relation names, Evidence-assessment requirements
-and node ID prefixes from backend rules without replaying project history. The
+endpoint publishes built-in relation names with their endpoint types and
+same-type rule, Evidence-assessment requirements and node ID prefixes from
+backend rules without replaying project history. The
 client reads custom relations from the displayed ontology; backend preview completes
 new node defaults and resolves edge layers. A draft with edge
 changes retains its original edge-edit revision across refresh/reload; it cannot

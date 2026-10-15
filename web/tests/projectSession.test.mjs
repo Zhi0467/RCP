@@ -792,3 +792,137 @@ test("a replacement backend accepts its own revision and invalidates old Sync fe
   });
   assert.equal(state.renderedRevision, 2);
 });
+
+test("draft undo and redo restore null, advance generations, and branch after a new edit", () => {
+  let state = emptyProjectSessionState("alpha");
+  const edit = humanDraft(0);
+  state = projectSessionReducer(state, {
+    kind: "human_draft_updated",
+    project_id: "alpha",
+    draft: edit,
+  });
+  const generation = Object.values(state.transitionCoordinator.draft_generations)[0];
+  state = projectSessionReducer(state, { kind: "human_draft_undo", project_id: "alpha" });
+  assert.equal(state.humanDraft, null);
+  assert.equal(Object.values(state.transitionCoordinator.draft_generations)[0], generation + 1);
+  state = projectSessionReducer(state, { kind: "human_draft_redo", project_id: "alpha" });
+  assert.deepEqual(state.humanDraft, edit);
+  state = projectSessionReducer(state, { kind: "human_draft_undo", project_id: "alpha" });
+  state = projectSessionReducer(state, {
+    kind: "human_draft_updated",
+    project_id: "alpha",
+    draft: humanDraft(0, "Replacement"),
+  });
+  assert.strictEqual(
+    projectSessionReducer(state, { kind: "human_draft_redo", project_id: "alpha" }),
+    state,
+  );
+  for (let index = 0; index < 110; index++) {
+    state = projectSessionReducer(state, {
+      kind: "human_draft_updated",
+      project_id: "alpha",
+      draft: humanDraft(0, String(index)),
+    });
+  }
+  assert.equal(Object.values(state.draftHistory)[0].past.length, 100);
+});
+
+test("a node-detail edit finish folds into its own start step only", () => {
+  let state = emptyProjectSessionState("alpha");
+  const update = (draft, edit_step) =>
+    projectSessionReducer(state, {
+      kind: "human_draft_updated",
+      project_id: "alpha",
+      draft,
+      edit_step,
+    });
+  const undo = () =>
+    projectSessionReducer(state, { kind: "human_draft_undo", project_id: "alpha" });
+  state = update(humanDraft(0, "Before"));
+  state = update(humanDraft(0, "Provisional"), { phase: "start", key: "node" });
+  state = update(humanDraft(0, "Finished"), { phase: "finish", key: "node" });
+  state = undo();
+  assert.deepEqual(state.humanDraft, humanDraft(0, "Before"));
+  // A canvas edit in between keeps its own step; the finish no longer folds.
+  state = update(humanDraft(0, "Provisional"), { phase: "start", key: "node" });
+  state = update(humanDraft(0, "Canvas"));
+  state = update(humanDraft(0, "Finished"), { phase: "finish", key: "node" });
+  state = undo();
+  assert.deepEqual(state.humanDraft, humanDraft(0, "Canvas"));
+});
+
+test("draft history stays scoped to its project and graph target across tab restores", () => {
+  const canonical = snapshot(1, {
+    graph: graph(1, {
+      id: "hyp/example",
+      type: "hypothesis",
+      title: "Original",
+      updated_rev: 1,
+      standing: "accepted",
+    }),
+  });
+  const poll = { kind: "snapshot_applied", snapshot: canonical, preserve_readiness: false };
+  let state = projectSessionReducer(emptyProjectSessionState("alpha"), poll);
+  state = projectSessionReducer(state, {
+    kind: "human_draft_updated",
+    project_id: "alpha",
+    draft: humanDraft(1),
+  });
+  const alpha = serializeProjectSessionTabState(state);
+  for (const [projectId, target] of [
+    ["beta", { kind: "main" }],
+    ["alpha", { kind: "branch", branch_id: "branch/one" }],
+  ]) {
+    state = projectSessionReducer(state, {
+      kind: "reset",
+      project_id: projectId,
+      graph_target: target,
+    });
+    assert.strictEqual(
+      projectSessionReducer(state, { kind: "human_draft_undo", project_id: projectId }),
+      state,
+    );
+  }
+  state = projectSessionReducer(state, { kind: "restore_tab", project_id: "alpha", state: alpha });
+  const history = state.draftHistory;
+  state = projectSessionReducer(state, poll);
+  assert.strictEqual(state.draftHistory, history);
+  state = projectSessionReducer(state, { kind: "human_draft_undo", project_id: "alpha" });
+  assert.equal(state.humanDraft, null);
+});
+
+test("reload, canonical rebase, and Sync clear history while unchanged polls preserve it", () => {
+  let state = projectSessionReducer(emptyProjectSessionState("alpha"), {
+    kind: "snapshot_applied",
+    snapshot: snapshot(1),
+    preserve_readiness: false,
+  });
+  state = projectSessionReducer(state, {
+    kind: "human_draft_updated",
+    project_id: "alpha",
+    draft: null,
+  });
+  const polled = projectSessionReducer(state, {
+    kind: "snapshot_applied",
+    snapshot: snapshot(1),
+    preserve_readiness: false,
+  });
+  assert.strictEqual(polled.draftHistory, state.draftHistory);
+  for (const action of [
+    { kind: "human_draft_loaded", draft: state.humanDraft },
+    { kind: "snapshot_applied", snapshot: snapshot(2), preserve_readiness: false },
+    {
+      kind: "committed_transition_applied",
+      project_id: "alpha",
+      projection: { ...projection(2), canonical: true },
+      submitted_draft: { ...humanDraft(1), nodes: {} },
+    },
+  ]) {
+    const cleared = projectSessionReducer(state, action);
+    assert.deepEqual(cleared.draftHistory, {});
+    assert.strictEqual(
+      projectSessionReducer(cleared, { kind: "human_draft_undo", project_id: "alpha" }),
+      cleared,
+    );
+  }
+});

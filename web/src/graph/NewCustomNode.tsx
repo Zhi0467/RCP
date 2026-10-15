@@ -1,227 +1,120 @@
-import { Check, Plus, X } from "lucide-react";
-import { useMemo, useState } from "react";
-import {
-  activeCustomTypes,
-  activeFieldsForNode,
-  baseOntologyTypes,
-  makeHumanNode,
-  humanNodeId,
-  normalizeSlug,
-} from "./ontologyEditing";
-import { carriesOrigin } from "./researchType";
+import { Check } from "lucide-react";
+import { useState } from "react";
+import { activeFieldsForNode, baseOntologyTypes } from "./ontologyEditing";
+import { carriesOrigin, primaryField } from "./researchType";
 import type {
   ExtensionFieldValue,
   GraphNode,
-  GraphEditOptions,
   NewNode,
   OntologyFieldDefinition,
   OntologyState,
 } from "../core/types";
 
-interface Props {
-  ontology: OntologyState;
-  nodePrefixes: GraphEditOptions["node_prefixes"] | null;
-  disabled?: boolean;
-  existingNodeIds: Set<string>;
-  onStage: (node: NewNode) => void;
-}
-
-export function NewCustomNode({
+/** Edits human-entered fields; preview metadata never returns to the draft. */
+export function StagedNodeEditor({
+  node,
   ontology,
-  nodePrefixes,
-  disabled = false,
-  existingNodeIds,
-  onStage,
-}: Props) {
-  const types = useMemo(
-    () => [
-      ...baseOntologyTypes.map((item) => ({ name: item.name, base_type: item.name })),
-      ...activeCustomTypes(ontology),
-    ],
-    [ontology],
-  );
-  const [open, setOpen] = useState(false);
-  const [extensionType, setExtensionType] = useState(types[0]?.name ?? "");
-  const [slug, setSlug] = useState("");
-  const [title, setTitle] = useState("");
-  const [primaryText, setPrimaryText] = useState("");
-  const [origin, setOrigin] = useState<GraphNode["origin"] | "">("");
-  const [values, setValues] = useState<Record<string, ExtensionFieldValue>>({});
-
-  const definition = types.find((item) => item.name === extensionType) ?? types[0];
-  const base = baseOntologyTypes.find((item) => item.name === definition?.base_type);
-  const fields = useMemo(
-    () => (definition ? activeFieldsForNode(ontology, definition.base_type, definition.name) : []),
-    [definition, ontology],
-  );
-  const normalizedSlug = normalizeSlug(slug);
-  const nodeId =
-    definition && nodePrefixes && normalizedSlug
-      ? humanNodeId(definition, nodePrefixes, normalizedSlug)
-      : "";
-  const requiredFieldsPresent = fields
-    .filter((item) => item.required)
-    .every((item) => hasFieldValue(values[item.name], item));
+  disabled,
+  onSave,
+  onCancel,
+}: {
+  node: NewNode;
+  ontology: OntologyState;
+  disabled: boolean;
+  onSave: (node: NewNode) => void;
+  onCancel: () => void;
+}) {
+  const primary = primaryField(node.type) as keyof NewNode;
+  const base = baseOntologyTypes.find((item) => item.name === node.type)!;
+  const [title, setTitle] = useState(node.title);
+  const [text, setText] = useState(String(node[primary] ?? ""));
+  const [origin, setOrigin] = useState(node.origin);
+  const [values, setValues] = useState(node.extension_fields);
+  const fields = activeFieldsForNode(ontology, node.type, node.extension_type);
   const valid = Boolean(
-    definition &&
-    nodePrefixes &&
-    normalizedSlug &&
     title.trim() &&
-    primaryText.trim() &&
-    requiredFieldsPresent &&
-    !existingNodeIds.has(nodeId) &&
-    (!carriesOrigin(definition.base_type) || origin),
+    text.trim() &&
+    (!carriesOrigin(node.type) || (origin && origin !== "unknown")) &&
+    fields
+      .filter((field) => field.required)
+      .every((field) => hasFieldValue(values[field.name], field)),
   );
-
-  const reset = () => {
-    setSlug("");
-    setTitle("");
-    setPrimaryText("");
-    setOrigin("");
-    setValues({});
-  };
-  const submit = () => {
-    if (!definition || !nodePrefixes || !valid) return;
-    const extensionFields = Object.fromEntries(
-      fields.flatMap((field) => {
-        const value = values[field.name];
-        return hasFieldValue(value, field) ? [[field.name, value]] : [];
-      }),
-    );
-    onStage(
-      makeHumanNode(
-        definition,
-        nodePrefixes,
-        normalizedSlug,
-        title,
-        primaryText,
-        origin || undefined,
-        extensionFields,
-      ),
-    );
-    reset();
-    setOpen(false);
-  };
-
-  if (!open) {
-    return (
-      <button
-        className="button secondary compact"
-        type="button"
-        disabled={disabled || types.length === 0}
-        onClick={() => {
-          setExtensionType(
-            types.find((item) => item.name === extensionType)?.name ?? types[0]?.name ?? "",
-          );
-          setOpen(true);
-        }}
-      >
-        <Plus size={14} /> New node
-      </button>
-    );
-  }
-
   return (
     <form
-      className="new-custom-node"
+      className="node-edit-form"
       onSubmit={(event) => {
         event.preventDefault();
-        submit();
+        if (!valid || disabled) return;
+        onSave({
+          id: node.id,
+          type: node.type,
+          title: title.trim(),
+          extension_type: node.extension_type,
+          extension_fields: Object.fromEntries(
+            Object.entries(values).filter(([name, value]) => {
+              const field = fields.find((item) => item.name === name);
+              return !field || hasFieldValue(value, field);
+            }),
+          ),
+          [primary]: text.trim(),
+          ...(carriesOrigin(node.type) ? { origin } : {}),
+        });
       }}
     >
-      <header>
-        <strong>New node</strong>
-        <button
-          className="icon-button"
-          type="button"
-          aria-label="Close new node"
-          onClick={() => setOpen(false)}
-        >
-          <X size={14} />
-        </button>
-      </header>
-      <div className="new-custom-node-grid">
-        <label>
-          <span>Type</span>
+      <label className="node-edit-field">
+        <span>Title</span>
+        <input
+          value={title}
+          disabled={disabled}
+          onChange={(event) => setTitle(event.target.value)}
+        />
+      </label>
+      <label className="node-edit-field">
+        <span>{base.primaryLabel}</span>
+        <textarea
+          aria-label={base.primaryLabel}
+          rows={3}
+          value={text}
+          disabled={disabled}
+          onChange={(event) => setText(event.target.value)}
+        />
+      </label>
+      {carriesOrigin(node.type) && (
+        <label className="node-edit-field">
+          <span>Origin</span>
           <select
-            aria-label="Type"
-            value={definition?.name ?? ""}
+            aria-label="Origin"
+            value={origin ?? "unknown"}
             disabled={disabled}
-            onChange={(event) => {
-              setExtensionType(event.target.value);
-              setValues({});
-              setOrigin("");
-            }}
+            onChange={(event) => setOrigin(event.target.value as GraphNode["origin"])}
           >
-            {types.map((item) => (
-              <option value={item.name} key={item.name}>
-                {typeLabel(item.name)}
-              </option>
-            ))}
+            <option value="unknown" disabled>
+              Unknown
+            </option>
+            <option value="internal_run">Internal run</option>
+            <option value="external_publication">External publication</option>
+            <option value="external_instance">External instance</option>
+            <option value="analytic">Analytic</option>
           </select>
         </label>
-        <label>
-          <span>ID slug</span>
-          <input
-            value={slug}
-            disabled={disabled}
-            onChange={(event) => setSlug(event.target.value)}
-          />
-        </label>
-        <label>
-          <span>Title</span>
-          <input
-            value={title}
-            disabled={disabled}
-            onChange={(event) => setTitle(event.target.value)}
-          />
-        </label>
-        {base && (
-          <label className="wide">
-            <span>{base.primaryLabel}</span>
-            <textarea
-              rows={3}
-              value={primaryText}
-              disabled={disabled}
-              onChange={(event) => setPrimaryText(event.target.value)}
-            />
-          </label>
-        )}
-        {carriesOrigin(definition?.base_type) && (
-          <label>
-            <span>Origin</span>
-            <select
-              aria-label="Origin"
-              value={origin}
-              disabled={disabled}
-              onChange={(event) => setOrigin(event.target.value as GraphNode["origin"])}
-            >
-              <option value="" disabled>
-                —
-              </option>
-              <option value="internal_run">Internal run</option>
-              <option value="external_publication">External publication</option>
-              <option value="external_instance">External instance</option>
-              <option value="analytic">Analytic</option>
-            </select>
-          </label>
-        )}
-        {fields.map((field) => (
-          <ExtensionFieldInput
-            field={field}
-            value={values[field.name]}
-            disabled={disabled}
-            onChange={(value) => setValues((current) => ({ ...current, [field.name]: value }))}
-            key={`${field.owner_type}.${field.name}`}
-          />
-        ))}
-      </div>
-      <footer>
-        <span className="mono">{nodeId}</span>
-        <button className="button primary compact" type="submit" disabled={disabled || !valid}>
-          <Check size={14} /> Stage
+      )}
+      {fields.map((field) => (
+        <ExtensionFieldInput
+          key={`${field.owner_type}.${field.name}`}
+          field={field}
+          value={values[field.name]}
+          disabled={disabled}
+          onChange={(value) => setValues((current) => ({ ...current, [field.name]: value }))}
+        />
+      ))}
+      <div className="node-detail-actions">
+        <button className="button ghost" type="button" onClick={onCancel}>
+          Cancel
         </button>
-      </footer>
+        <button className="button primary compact" type="submit" disabled={disabled || !valid}>
+          <Check size={14} /> Done
+        </button>
+      </div>
     </form>
   );
 }
@@ -240,7 +133,7 @@ function ExtensionFieldInput({
   const label = `${typeLabel(field.name)}${field.required ? " *" : ""}`;
   if (field.kind === "boolean")
     return (
-      <label>
+      <label className="node-edit-field">
         <span>{label}</span>
         <select
           value={value === true ? "true" : value === false ? "false" : ""}
@@ -257,7 +150,7 @@ function ExtensionFieldInput({
     );
   if (field.kind === "text_list")
     return (
-      <label className="wide">
+      <label className="node-edit-field">
         <span>{label}</span>
         <textarea
           rows={3}
@@ -275,14 +168,18 @@ function ExtensionFieldInput({
       </label>
     );
   return (
-    <label>
+    <label className="node-edit-field">
       <span>{label}</span>
       <input
         type={field.kind === "number" ? "number" : "text"}
         value={typeof value === "string" || typeof value === "number" ? value : ""}
         disabled={disabled}
         onChange={(event) =>
-          onChange(field.kind === "number" ? Number(event.target.value) : event.target.value)
+          onChange(
+            field.kind === "number" && event.target.value !== ""
+              ? Number(event.target.value)
+              : event.target.value,
+          )
         }
       />
     </label>

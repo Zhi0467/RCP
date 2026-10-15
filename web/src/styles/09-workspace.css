@@ -7,7 +7,7 @@
   box-shadow: var(--shadow);
   color: var(--ink);
   display: flex;
-  font: 700 var(--type-3xs) var(--sans);
+  font: 700 var(--type-3xs) var(--ui);
   gap: 8px;
   position: fixed;
   right: 16px;
@@ -44,7 +44,7 @@
   border: 0;
   color: var(--muted);
   cursor: pointer;
-  font: 700 var(--type-3xs) var(--sans);
+  font: 700 var(--type-3xs) var(--ui);
   padding: 7px;
 }
 .desktop-update-dismiss:hover {
@@ -232,10 +232,6 @@
   }
   .repository-path-field.wide {
     grid-column: auto;
-  }
-  .path-picker > header {
-    align-items: stretch;
-    flex-direction: column;
   }
   .repository-editor > footer {
     align-items: flex-start;
@@ -1097,7 +1093,7 @@ a.digest-title:hover {
   border: 1px solid var(--line-strong);
   color: var(--ink);
   display: block;
-  font: var(--type-xs)/1.4 var(--sans);
+  font: var(--type-xs)/1.4 var(--ui);
   margin-top: 5px;
   padding: 7px 8px;
   resize: vertical;
@@ -1201,6 +1197,78 @@ a.digest-title:hover {
 .dag-shell {
   background: var(--paper);
   min-height: 0;
+  position: relative;
+}
+/* One floating bar inside the canvas: edit, Layout and View menus, Fit, full screen. */
+.dag-toolbar {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  box-shadow: var(--shadow);
+  display: flex;
+  left: 8px;
+  max-width: calc(100% - 16px);
+  padding: 2px;
+  position: absolute;
+  top: 8px;
+  z-index: 15;
+}
+.dag-toolbar-group {
+  align-items: center;
+  display: flex;
+  gap: 2px;
+}
+.dag-toolbar > * + * {
+  border-left: 1px solid var(--line);
+  margin-left: 2px;
+  padding-left: 2px;
+}
+.dag-toolbar > .dag-toolbar-menu {
+  border-left: 1px solid var(--line-strong);
+  margin: 0;
+}
+.dag-toolbar-group > button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  color: var(--ink);
+  cursor: pointer;
+  display: inline-flex;
+  font: 600 var(--type-2xs) var(--ui);
+  gap: 5px;
+  justify-content: center;
+  min-height: 30px;
+  min-width: 30px;
+  padding: 5px 8px;
+}
+.dag-toolbar-group > button:hover,
+.dag-toolbar-group > button[aria-expanded="true"],
+.dag-toolbar-group > button[aria-pressed="true"] {
+  background: var(--surface-cool);
+  color: var(--teal);
+}
+.dag-toolbar-menu {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+  left: -1px;
+  max-height: min(70vh, 460px);
+  overflow: auto;
+  padding: 10px;
+  position: absolute;
+  top: calc(100% + 6px);
+  width: min(440px, calc(100vw - 32px));
+}
+.dag-toolbar-menu-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 .dag-relation-focus {
   align-items: center;
@@ -1219,48 +1287,11 @@ a.digest-title:hover {
 .dag-relation-focus svg {
   flex: none;
 }
-.dag-controls {
-  align-items: center;
-  background: var(--paper-deep);
-  border: 1px solid var(--line);
-  border-bottom: 0;
-  display: grid;
-  gap: 12px;
-  grid-template-columns: minmax(0, 1fr) auto;
-  padding: 11px 12px;
-}
-.dag-layout-controls {
-  align-items: center;
-  border-bottom: 1px solid var(--line);
-  display: flex;
-  gap: 8px;
-  grid-column: 1 / -1;
-  margin: -1px 0 2px;
-  padding: 0 0 10px;
-}
-.dag-projection-label {
-  margin-left: auto;
-}
-.dag-lenses,
-.dag-physics-controls {
+.dag-lenses {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-}
-.dag-physics-controls {
-  justify-content: flex-end;
-}
-.dag-control-label {
-  align-items: center;
-  color: var(--ink-soft);
-  display: inline-flex;
-  font-size: var(--type-3xs);
-  font-weight: 750;
-  gap: 6px;
-  letter-spacing: 0.09em;
-  margin-right: 3px;
-  text-transform: uppercase;
 }
 .dag-lens,
 .dag-tool-button {
@@ -1359,7 +1390,7 @@ a.digest-title:hover {
   background-position: 0 0;
   background-size: 18px 18px;
   border: 1px solid var(--line);
-  border-radius: 0 0 5px 5px;
+  border-radius: 5px;
   height: clamp(520px, calc(100dvh - 300px), 840px);
   min-height: 520px;
   overscroll-behavior: auto;
@@ -1562,8 +1593,9 @@ a.digest-title:hover {
   padding: 12px;
   width: 100vw;
 }
-.dag-shell:fullscreen .dag-controls-disclosure {
-  flex: none;
+.dag-shell:fullscreen .dag-toolbar {
+  left: 20px;
+  top: 20px;
 }
 .dag-shell:fullscreen .dag-scroll {
   flex: 1;
@@ -1641,4 +1673,313 @@ a.digest-title:hover {
   .pinned-view {
     height: max(240px, calc(100dvh - 220px));
   }
+}
+
+/* Direct canvas editing: the graph remains the editing surface. */
+.dag-canvas {
+  user-select: none;
+  -webkit-user-select: none;
+}
+.dag-edit-controls,
+.dag-pick-chip,
+.dag-edit-float,
+.dag-assessment-row,
+.dag-type-dots {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.dag-edit-controls {
+  flex-wrap: wrap;
+}
+.dag-edit-controls.is-failed {
+  border-left: 3px solid var(--red);
+}
+.dag-edit-controls button,
+.dag-edit-float button,
+.dag-edit-menu button,
+.dag-staged-card > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 30px;
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: 600 var(--type-2xs) var(--ui);
+  cursor: pointer;
+}
+.dag-edit-controls button:hover,
+.dag-edit-float button:hover,
+.dag-edit-menu button:hover,
+.dag-edit-menu button[aria-pressed="true"] {
+  background: var(--surface-cool);
+  color: var(--teal);
+}
+.dag-edit-controls button:disabled,
+.dag-edit-float button:disabled,
+.dag-edit-menu button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.dag-pick-chip {
+  max-width: 260px;
+  border: 1px solid var(--teal);
+  padding-left: 8px;
+  font-size: var(--type-2xs);
+}
+.dag-edit-float,
+.dag-edit-menu {
+  position: absolute;
+  z-index: 14;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  box-shadow: var(--shadow);
+  background: var(--surface);
+  padding: 4px;
+}
+.dag-edit-menu {
+  width: 260px;
+  max-width: calc(100vw - 24px);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dag-edit-menu > button {
+  justify-content: flex-start;
+  width: 100%;
+}
+.dag-edit-menu kbd {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 10px;
+}
+.dag-edit-menu .is-meta {
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+}
+.dag-menu-explanation {
+  resize: vertical;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  font: var(--type-2xs) var(--ui);
+  min-height: 30px;
+  padding: 4px 8px;
+  width: 100%;
+}
+.dag-menu-explanation.is-required {
+  border-color: var(--red);
+}
+.dag-assessment-row {
+  flex-wrap: wrap;
+}
+.dag-merge-confirm > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--type-2xs);
+}
+.dag-merge-confirm s,
+.dag-merge-confirm strong {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.dag-editor-wire {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 12;
+}
+.dag-editor-wire path {
+  fill: none;
+  stroke: var(--teal);
+  stroke-width: 2;
+  stroke-dasharray: 5 4;
+}
+.dag-editor-wire .is-snapped {
+  stroke-width: 3;
+  stroke-dasharray: none;
+}
+.dag-editor-wire .is-pending {
+  opacity: 0.55;
+}
+.dag-node.is-canvas-selected {
+  outline: 2px solid var(--teal);
+  outline-offset: 3px;
+}
+.dag-node.is-link-candidate {
+  border-color: var(--teal);
+}
+.dag-node.is-link-candidate .dag-connect-handle,
+.dag-node.is-canvas-selected .dag-connect-handle {
+  opacity: 1;
+}
+.dag-node.is-link-ineligible {
+  opacity: 0.35;
+}
+.dag-node.is-link-snap,
+.dag-node.is-merge-armed {
+  outline: 3px solid var(--teal);
+  outline-offset: 5px;
+  box-shadow: 0 0 0 9px color-mix(in srgb, var(--teal) 15%, transparent);
+}
+.dag-node.is-merge-armed::after {
+  content: "Merge";
+  position: absolute;
+  right: 6px;
+  top: -22px;
+  padding: 2px 6px;
+  background: var(--teal);
+  color: var(--surface);
+  font: 600 10px var(--ui);
+}
+.dag-node.is-merge-hover {
+  outline: 1px dashed var(--teal);
+  outline-offset: 5px;
+}
+.dag-marquee {
+  position: absolute;
+  border: 1px solid var(--teal);
+  background: color-mix(in srgb, var(--teal) 12%, transparent);
+  pointer-events: none;
+  z-index: 13;
+}
+.dag-staged-card {
+  position: absolute;
+  z-index: 13;
+  width: 236px;
+  min-height: 96px;
+  padding: 12px;
+  border: 1px dashed var(--accent, var(--teal));
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.dag-staged-card.needs-origin {
+  border: 2px solid var(--red);
+}
+.dag-staged-card.is-pending {
+  opacity: 0.8;
+}
+.dag-staged-card input,
+.dag-staged-card select,
+.dag-inline-title {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  outline-color: var(--teal);
+  background: transparent;
+  color: var(--ink);
+  font: 600 var(--type-xs) var(--ui);
+  user-select: text;
+  -webkit-user-select: text;
+}
+.dag-type-dots {
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.dag-type-dots > span {
+  width: 100%;
+  color: var(--accent);
+  font: 600 10px var(--ui);
+}
+.dag-type-dots > button {
+  border: 4px solid var(--surface);
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--dot);
+  cursor: pointer;
+}
+.dag-type-dots > button[aria-pressed="true"] {
+  outline: 1px solid var(--dot);
+}
+.dag-required-fields {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.dag-staged-card > button:not([hidden]) {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  color: var(--red);
+}
+/* A pending card's title opens node detail, where it can be edited or removed. */
+.dag-staged-card > button.dag-staged-open {
+  position: static;
+  justify-content: flex-start;
+  width: 100%;
+  padding: 0;
+  color: var(--ink);
+  text-align: left;
+}
+.dag-node.is-shake {
+  animation: dag-refuse 350ms ease-in-out;
+}
+@keyframes dag-refuse {
+  25%,
+  75% {
+    translate: -4px 0;
+  }
+  50% {
+    translate: 4px 0;
+  }
+}
+
+.dag-node {
+  overflow: visible;
+}
+.dag-inline-title {
+  position: absolute;
+  left: 18px;
+  top: 32px;
+  width: calc(100% - 36px);
+  background: var(--surface);
+  z-index: 3;
+}
+.dag-connect-handle {
+  opacity: 0;
+}
+.dag-node:hover .dag-connect-handle,
+.dag-connect-handle:focus-visible {
+  opacity: 1;
+}
+.dag-node.needs-origin {
+  border: 2px solid var(--red);
+}
+.dag-origin-action {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  background: var(--surface);
+  color: var(--red);
+  cursor: pointer;
+}
+.dag-edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 18px;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+/* Floating edit controls keep screen size whatever the canvas zoom. */
+.dag-edit-float,
+.dag-edit-menu {
+  transform: scale(calc(1 / var(--dag-canvas-zoom, 1)));
+  transform-origin: top left;
 }

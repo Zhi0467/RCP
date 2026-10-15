@@ -165,7 +165,18 @@ def test_graph_edit_options_are_backend_owned(manifest, tmp_path, monkeypatch):
     assert {item["name"] for item in response.json()["relations"]} == set(RELATION_SPEC)
     assert response.json()["node_prefixes"] == NODE_PREFIXES
     for item in response.json()["relations"]:
-        assert set(item) == {"name", "assessment_required_for", "accepts_expectation"}
+        assert set(item) == {
+            "name",
+            "assessment_required_for",
+            "accepts_expectation",
+            "source_types",
+            "target_types",
+            "same_type",
+        }
+        spec = RELATION_SPEC[item["name"]]
+        assert item["source_types"] == sorted(spec.source_types)
+        assert item["target_types"] == sorted(spec.target_types)
+        assert item["same_type"] is spec.same_type
         assert item["accepts_expectation"] is (item["name"] in EXPECTATION_RELATIONS)
         assert {
             (pair["source_type"], pair["target_type"]) for pair in item["assessment_required_for"]

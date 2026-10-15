@@ -84,6 +84,16 @@ export interface ProjectSessionState extends ProjectSessionTabState {
   latestSnapshotRequests: Record<string, number>;
   transitionCoordinator: ProjectTransitionCoordinatorState;
   syncRequestSequence: number;
+  draftHistory: Record<
+    string,
+    {
+      base_revision: number;
+      past: Array<HumanDraft | null>;
+      future: Array<HumanDraft | null>;
+      /** The node-detail edit whose start step is the newest undo step. */
+      open_edit?: string;
+    }
+  >;
 }
 
 export type ProjectSessionAction =
@@ -123,7 +133,18 @@ export type ProjectSessionAction =
       paper: PaperSnapshot;
     }
   | { kind: "human_draft_loaded"; draft: HumanDraft | null }
-  | { kind: "human_draft_updated"; project_id: string; draft: HumanDraft | null }
+  | {
+      kind: "human_draft_updated";
+      project_id: string;
+      draft: HumanDraft | null;
+      /**
+       * A node-detail edit's start opens one undo step; its finish folds into
+       * that step while it is still the newest, so one edit is one step.
+       */
+      edit_step?: { phase: "start" | "finish"; key: string };
+    }
+  | { kind: "human_draft_undo"; project_id: string }
+  | { kind: "human_draft_redo"; project_id: string }
   | { kind: "discarded_proposals_consumed" }
   | {
       kind: "manifest_loading";
@@ -206,6 +227,7 @@ export function emptyProjectSessionState(
       graph_target: graphTarget,
     }),
     syncRequestSequence: 0,
+    draftHistory: {},
     paperEditorGeneration: 0,
   };
 }
@@ -234,6 +256,9 @@ export function projectSessionReducer(
         latestSnapshotRequests: state.latestSnapshotRequests,
         syncRequestSequence: state.syncRequestSequence,
         humanDraft: action.human_draft ?? null,
+        draftHistory: action.invalidate_backend
+          ? {}
+          : clearDraftHistory(state, action.project_id, empty.graphTarget),
         draftPreviewPending: false,
         paperEditorGeneration: state.paperEditorGeneration + 1,
         transitionCoordinator: reduceProjectTransitionCoordinator(
@@ -255,6 +280,7 @@ export function projectSessionReducer(
         ...state,
         ...emptyProjectSessionState(action.project_id, restored.graphTarget),
         ...restored,
+        draftHistory: state.draftHistory,
         snapshotRequestSequence: state.snapshotRequestSequence,
         latestSnapshotRequests: state.latestSnapshotRequests,
         syncRequestSequence: state.syncRequestSequence,
@@ -303,9 +329,39 @@ export function projectSessionReducer(
       return { ...state, project: { ...state.project, paper: action.paper } };
     }
     case "human_draft_loaded":
-      return state.humanDraft === action.draft ? state : { ...state, humanDraft: action.draft };
-    case "human_draft_updated": {
+      return {
+        ...state,
+        humanDraft: action.draft,
+        draftHistory: clearDraftHistory(state),
+      };
+    case "human_draft_updated":
+    case "human_draft_undo":
+    case "human_draft_redo": {
       if (state.projectId !== action.project_id) return state;
+      const key = graphSessionKey(action.project_id, state.graphTarget);
+      const history = state.draftHistory[key] ?? { past: [], future: [] };
+      let draft: HumanDraft | null;
+      let past = history.past;
+      let future = history.future;
+      let openEdit: string | undefined;
+      if (action.kind === "human_draft_undo") {
+        if (!past.length) return state;
+        draft = past[past.length - 1];
+        past = past.slice(0, -1);
+        future = [...future, state.humanDraft].slice(-100);
+      } else if (action.kind === "human_draft_redo") {
+        if (!future.length) return state;
+        draft = future[future.length - 1];
+        future = future.slice(0, -1);
+        past = [...past, state.humanDraft].slice(-100);
+      } else {
+        draft = action.draft;
+        const step = action.edit_step;
+        const folds = step?.phase === "finish" && history.open_edit === step.key && past.length;
+        if (!folds) past = [...past, state.humanDraft].slice(-100);
+        if (step?.phase === "start") openEdit = step.key;
+        future = [];
+      }
       const nextGeneration =
         (state.transitionCoordinator.draft_generations[
           graphSessionKey(action.project_id, state.graphTarget)
@@ -319,7 +375,20 @@ export function projectSessionReducer(
           graph_target: state.graphTarget,
         },
       );
-      return { ...state, humanDraft: action.draft, transitionCoordinator };
+      return {
+        ...state,
+        humanDraft: draft,
+        draftHistory: {
+          ...state.draftHistory,
+          [key]: {
+            base_revision: state.renderedRevision,
+            past,
+            future,
+            ...(openEdit ? { open_edit: openEdit } : {}),
+          },
+        },
+        transitionCoordinator,
+      };
     }
     case "discarded_proposals_consumed":
       return state.draftReconciliationDiscardedProposalIds.length === 0
@@ -696,6 +765,11 @@ function applyProjectSnapshot(
     renderedRevision: nextGraph.revision,
     renderedEpoch: action.epoch === undefined ? state.renderedEpoch : action.epoch,
     humanDraft,
+    draftHistory:
+      state.draftHistory[graphSessionKey(decodedProject.id, state.graphTarget)]?.base_revision ===
+        nextGraph.revision && sameProjectSlice(state.humanDraft, humanDraft)
+        ? state.draftHistory
+        : clearDraftHistory(state),
     transitionHead: transitionHeadsEqual(state.transitionHead, nextHead)
       ? state.transitionHead
       : nextHead,
@@ -774,6 +848,7 @@ function applyCommittedTransition(
     },
     renderedRevision: nextGraph.revision,
     humanDraft: retainedDraft,
+    draftHistory: clearDraftHistory(state),
     transitionHead: action.projection.head,
     transitionRulesetTag: action.projection.ruleset_tag,
     transitionManifestState: manifestInvalid
@@ -792,6 +867,19 @@ function applyCommittedTransition(
     draftPreviewPending: false,
     transitionCoordinator,
   };
+}
+
+function clearDraftHistory(
+  state: ProjectSessionState,
+  projectId: string | null = state.projectId,
+  graphTarget: GraphTargetRef = state.graphTarget,
+): ProjectSessionState["draftHistory"] {
+  if (!projectId) return state.draftHistory;
+  const key = graphSessionKey(projectId, graphTarget);
+  if (!state.draftHistory[key]) return state.draftHistory;
+  const history = { ...state.draftHistory };
+  delete history[key];
+  return history;
 }
 
 function withTransitionCoordinator(
