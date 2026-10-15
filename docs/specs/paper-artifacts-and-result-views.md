@@ -158,7 +158,12 @@ for its own bound graph target. Pins are personal, shown only while that target
 is selected, bounded by
 `RESEARCH_VIEW_PIN_LIMIT`, and always show the current version. Pinning keeps
 the artifact in the same transaction; unpinning deletes only the pin. Pins are
-not carried by cross-space transfer.
+not carried by cross-space transfer. While another project or graph target is in
+view, the viewer's pin control carries the bound target's branch tag. Once
+pinned, the control stays enabled and opens that pin on its own target.
+
+**Why:** a pin bound to a branch is invisible from main; without the tag and the
+way back, a successful pin read as a dead button.
 
 **Why:** RCP owns every graph read, so a custom view gains no data path the
 member lacks and no new request channel. Opening a node uses trusted UI, so the

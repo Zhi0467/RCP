@@ -393,7 +393,6 @@ async def stream_auto_research_orchestrator_run(
                     "capability": "orchestrate",
                     "network_access": True,
                     "write_directory_count": len(write_dirs),
-                    "canonical_state_boundary": "prompt_only",
                 },
             )
             outcome = _ProviderOutcome(session_id=turn.binding.native_session_id)
@@ -691,7 +690,6 @@ async def stream_auto_research_worker_run(
                     "capability": "work_auto",
                     "network_access": True,
                     "write_directory_count": len(write_dirs),
-                    "canonical_state_boundary": "prompt_only",
                 },
             )
 
@@ -2316,7 +2314,6 @@ async def _settle_worker_patch(
                     "launch_kind": "graph_correction",
                     "correction_round": correction_rounds,
                     "write_directory_count": len(write_dirs),
-                    "canonical_state_boundary": "prompt_only",
                     "repeat_operational_work": False,
                 },
             )

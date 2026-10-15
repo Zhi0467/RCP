@@ -1,6 +1,8 @@
 import { researchViewsProfile } from "../graph/researchViewResources";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
-import { graphTargetFromHash } from "../core/graphTarget";
+import { graphTargetFromHash, projectViewHash, sameGraphTarget } from "../core/graphTarget";
+import type { GraphTargetRef } from "../core/types";
+import { BranchTag } from "../core/BranchTag";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MessageCircle, PanelRight, Pin, RefreshCw, X } from "lucide-react";
 import { api } from "../core/api";
@@ -64,6 +66,8 @@ export function ArtifactViewer() {
   const [pinning, setPinning] = useState(false);
   const [undoing, setUndoing] = useState(false);
   const [reload, setReload] = useState(0);
+  // The pin control names its target only while another target is in view.
+  const [hash, setHash] = useState(window.location.hash);
   const iframe = useRef<HTMLIFrameElement>(null);
   const refresh = () => {
     if (profile) store.invalidate(resourceKeyId(profile.key));
@@ -91,6 +95,12 @@ export function ArtifactViewer() {
     setPinFailed(false);
     if (target) setPlacement((current) => collapseViewer(current, false));
   }, [target]);
+
+  useEffect(() => {
+    const follow = () => setHash(window.location.hash);
+    window.addEventListener("hashchange", follow);
+    return () => window.removeEventListener("hashchange", follow);
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -180,8 +190,31 @@ export function ArtifactViewer() {
       if (generation === requestGeneration.current) setUndoing(false);
     }
   };
+  const pinTarget: GraphTargetRef | null = state
+    ? state.pin_branch_id
+      ? { kind: "branch", branch_id: state.pin_branch_id }
+      : { kind: "main" }
+    : null;
+  const pinElsewhere =
+    pinTarget !== null &&
+    target?.kind === "artifact" &&
+    (parseProjectHash(hash).projectId !== target.projectId ||
+      !sameGraphTarget(pinTarget, graphTargetFromHash(hash)));
+  const pinLabel = state?.pinned
+    ? `Open pin on ${state.pin_branch_name}`
+    : `Pin in Artifacts on ${state?.pin_branch_name}`;
   const pin = async () => {
     if (target.kind !== "artifact" || !state?.can_pin || pinning) return;
+    if (state.pinned && pinTarget) {
+      const pinHash = projectViewHash(target.projectId, pinTarget, "artifacts", {
+        pinId: target.artifactId,
+      });
+      // Assigning the current hash fires no event, yet the pin may be unselected.
+      if (window.location.hash === pinHash) window.dispatchEvent(new HashChangeEvent("hashchange"));
+      else window.location.hash = pinHash;
+      closeArtifactViewer();
+      return;
+    }
     const generation = requestGeneration.current;
     setPinning(true);
     try {
@@ -258,16 +291,19 @@ export function ArtifactViewer() {
         {state?.can_pin && (
           <button
             className="artifact-viewer-control pin-view-action"
-            aria-label="Pin in Artifacts"
-            title="Pin in Artifacts"
+            aria-label={pinLabel}
+            title={pinLabel}
             aria-pressed={state.pinned}
             style={
               pinFailed && !state.pinned ? { borderColor: "var(--danger, #b42318)" } : undefined
             }
-            disabled={pinning || state.pinned}
+            disabled={pinning}
             onClick={() => void pin()}
           >
             <Pin size={16} />
+            {pinElsewhere && pinTarget && (
+              <BranchTag refs={null} target={pinTarget} name={state.pin_branch_name} />
+            )}
           </button>
         )}
         {editing && <span role="status">Editing</span>}

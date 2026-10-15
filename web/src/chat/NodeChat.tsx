@@ -1,3 +1,4 @@
+import { turnOutcomeChip } from "./turnOutcome";
 import { memberDraftKey } from "../core/draftStorage";
 import { MAIN_GRAPH } from "../core/graphTarget";
 import { ProjectReferencePicker } from "./ProjectReferencePicker";
@@ -72,6 +73,7 @@ import {
   isActiveTask,
   resolvedChatSessionId,
   orderTranscriptLines,
+  isNewestOfTurnClass,
   reconcileChatHistoryArtifacts,
   reconstructTaskTranscript,
   relatedChatTasks,
@@ -181,6 +183,7 @@ import type {
   AgentRunConfig,
   AgentTask,
   ChatMessage,
+  TurnOutcome,
   ChatAttachmentDescriptor,
   ConversationMode,
   GraphNode,
@@ -2498,6 +2501,14 @@ export function NodeChat({
             !continuedTaskIds.has(task.operation_id)
               ? task
               : null;
+          // Only the newest turn's error row carries Retry; the header shows no second one.
+          const retryLineTask =
+            line.role === "error" &&
+            task?.can_retry &&
+            !task.can_resume &&
+            isNewestOfTurnClass(task, relatedTasks)
+              ? task
+              : null;
           const pendingLine = pendingTurn?.clientId === line.taskId;
           const failedTurn = pendingLine && pendingTurn?.error ? pendingTurn : null;
           const collapsible =
@@ -2653,6 +2664,18 @@ export function NodeChat({
               ) : pausedLineTask ? null : (
                 <span className="node-chat-text">{line.text}</span>
               )}
+              {retryLineTask && (
+                <button
+                  type="button"
+                  className="icon-button chat-error-retry"
+                  aria-label="Retry"
+                  title="Retry"
+                  disabled={readOnly}
+                  onClick={() => onRetryTask(retryLineTask)}
+                >
+                  <RotateCcw size={14} />
+                </button>
+              )}
               {lineArtifacts(line)?.map((artifact) => {
                 // A reply that embeds an artifact shows it in place, with its actions.
                 if (
@@ -2790,26 +2813,35 @@ export function NodeChat({
                     )}
                   </p>
                 ))}
-              {line.role === "agent" && line.graphUpdate && (
-                <GraphUpdateReceipt
-                  update={line.graphUpdate}
-                  taskId={line.taskId}
-                  repairBusy={repairingTaskId === line.taskId}
-                  repairDisabled={
-                    readOnly || graphChangesDisabled || relatedActive || submitting || reviewPending
-                  }
-                  repairContinued={continuedTaskIds.has(line.taskId)}
-                  latestReceipt={latestGraphReceiptLineIds.has(line.lineId)}
-                  canApplyAgain={
-                    relatedTasks.find((task) => task.operation_id === line.taskId)
-                      ?.can_apply_again === true
-                  }
-                  repairError={repairErrors.get(line.taskId) ?? null}
-                  onInspectTask={onInspectTask}
-                  onOpenInbox={onOpenInbox}
-                  onRepair={() => void repairGraphUpdate(line.taskId)}
-                  onApplyAgain={() => void repairGraphUpdate(line.taskId, "apply_again")}
-                />
+              {line.role === "agent" && (line.graphUpdate || line.turnOutcome) && (
+                <div className="chat-turn-receipts">
+                  {line.turnOutcome && <TurnOutcomeChip outcome={line.turnOutcome} />}
+                  {line.graphUpdate && (
+                    <GraphUpdateReceipt
+                      update={line.graphUpdate}
+                      taskId={line.taskId}
+                      repairBusy={repairingTaskId === line.taskId}
+                      repairDisabled={
+                        readOnly ||
+                        graphChangesDisabled ||
+                        relatedActive ||
+                        submitting ||
+                        reviewPending
+                      }
+                      repairContinued={continuedTaskIds.has(line.taskId)}
+                      latestReceipt={latestGraphReceiptLineIds.has(line.lineId)}
+                      canApplyAgain={
+                        relatedTasks.find((task) => task.operation_id === line.taskId)
+                          ?.can_apply_again === true
+                      }
+                      repairError={repairErrors.get(line.taskId) ?? null}
+                      onInspectTask={onInspectTask}
+                      onOpenInbox={onOpenInbox}
+                      onRepair={() => void repairGraphUpdate(line.taskId)}
+                      onApplyAgain={() => void repairGraphUpdate(line.taskId, "apply_again")}
+                    />
+                  )}
+                </div>
               )}
             </div>
           );
@@ -3566,6 +3598,16 @@ function InlinePausedTask({
         <RotateCcw size={12} /> Retry
       </button>
     </div>
+  );
+}
+
+function TurnOutcomeChip({ outcome }: { outcome: TurnOutcome }) {
+  const chip = turnOutcomeChip(outcome);
+  return (
+    <span className="chat-turn-outcome" data-outcome={chip.status}>
+      {chip.label}
+      {chip.reason ? ` · ${chip.reason}` : ""}
+    </span>
   );
 }
 

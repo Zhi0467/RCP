@@ -6,6 +6,7 @@ import {
   artifactUrl,
   chatMessageTranscriptLine,
   chatTasksMissingFromHistory,
+  isNewestOfTurnClass,
   resolvedChatSessionId,
   orderTranscriptLines,
   projectActivityTask,
@@ -811,6 +812,27 @@ test("omission-only turns survive reconstruction and persisted history reconcili
   }
 });
 
+test("a failed turn with a persisted human message keeps its error row", () => {
+  const failed = task({
+    operation_id: "failed",
+    request: {},
+    status: "failed",
+    error: "Provider disconnected.",
+  });
+  const human = {
+    message_id: "human",
+    role: "user",
+    operation_id: "failed",
+    text: "Run it",
+    timestamp: failed.created_at,
+  };
+  const lines = reconcileChatHistoryArtifacts([human], [failed]);
+  assert.deepEqual(
+    lines.map(({ role }) => role),
+    ["human", "error"],
+  );
+});
+
 test("artifact edit tasks follow their resolved chat and exclude the orchestrator thread", () => {
   const tasks = [
     task({
@@ -919,4 +941,13 @@ test("browser status stays on one turn line, including a turn with no answer", (
     lines.find((line) => line.lineId === "message:answer").browserStatus,
     browser_status,
   );
+});
+
+test("a later artifact edit leaves Retry on the newest failed turn", () => {
+  const turn = task({ operation_id: "turn", status: "failed" });
+  const edit = task({ operation_id: "edit", kind: "artifact_edit" });
+  const tasks = [task({ operation_id: "older" }), turn, edit];
+  assert.equal(isNewestOfTurnClass(turn, tasks), true);
+  assert.equal(isNewestOfTurnClass(edit, tasks), true);
+  assert.equal(isNewestOfTurnClass(tasks[0], tasks), false);
 });

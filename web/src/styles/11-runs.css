@@ -47,6 +47,13 @@
     align-items: start;
     grid-template-columns: minmax(0, 1fr) 12px;
   }
+  .experiment-run-watcher-heading > * {
+    grid-column: 1;
+  }
+  .experiment-run-watcher-heading::after {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+  }
   .experiment-run-watcher-heading > span:nth-child(3) {
     text-align: left;
   }

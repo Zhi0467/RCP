@@ -36,6 +36,8 @@ def render_research_md(state: GraphState) -> str:
         target = state.nodes.get(edge.target)
         if (
             not isinstance(source, Evidence)
+            or source.standing != Standing.ACCEPTED
+            or source.validity == "invalid"
             or getattr(source, project_type.lifecycle_field(source.type))
             == project_type.retired_value
             or not isinstance(target, Hypothesis)

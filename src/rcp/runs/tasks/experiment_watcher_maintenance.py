@@ -328,7 +328,6 @@ async def _process_experiment_watcher_maintenance(
                     "correction_round": correction_round,
                     "control_node_id": staged.resource.control_node_id,
                     "write_directory_count": len(write_dirs),
-                    "canonical_state_boundary": "prompt_only",
                 },
             )
             correction_outcome = _ProviderOutcome(session_id=native_session_id)

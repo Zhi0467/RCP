@@ -871,12 +871,13 @@ def test_turn_handoff_cleanup_includes_messages_and_fails_closed(tmp_path) -> No
     workspace = tmp_path / "stage"
     workspace.mkdir()
     mailbox = RunStageMailbox.for_stage(local_stage=workspace, remote_stage=None)
-    for name in ("patch.json", "watch.json", "messages.json"):
+    for name in ("patch.json", "watch.json", "messages.json", "outcome.json"):
         (workspace / name).write_text("stale", encoding="utf-8")
 
     clear_turn_handoff_files(mailbox)
     assert not any(
-        (workspace / name).exists() for name in ("patch.json", "watch.json", "messages.json")
+        (workspace / name).exists()
+        for name in ("patch.json", "watch.json", "messages.json", "outcome.json")
     )
 
     (workspace / "patch.json").write_text("stale", encoding="utf-8")
@@ -1039,6 +1040,19 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         ("inbox", "--clear", "--key", "k-inbox-clear"),
         ("finish", "--key", "k-finish"),
         ("lesson", "add", "--key", "k-lesson", "--text", "Use the environment"),
+        (
+            "flag",
+            "--key",
+            "k-flag",
+            "--evidence",
+            "ev/result",
+            "--kind",
+            "overclaim",
+            "--finding",
+            "Claim exceeds source",
+            "--source",
+            "repo-a/result.txt:4",
+        ),
     ]
 
     stop = asyncio.Event()
@@ -1075,6 +1089,7 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         "inbox",
         "finish",
         "lesson",
+        "flag",
     ]
     applied = next(arguments for verb, arguments in seen if verb == "apply")
     assert applied == {"patch_file": "patch.json"}

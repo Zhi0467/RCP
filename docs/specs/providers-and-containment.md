@@ -483,9 +483,11 @@ Provider logins, and the model picker, locally and on an SSH execution machine.
 ## Continuation binding
 
 Launch receipts record project, host, capability, canonical write roots,
-fingerprint, enforcement mode and fresh/resumed state. Before any resumed
-launch, RCP recomputes and compares project, host, exact stage, graph target and
-root fingerprint. Missing/moved roots, cross-project bindings or incompatible
+fingerprint, enforcement mode and fresh/resumed state. Their canonical-state
+boundary is `provider_enforced` only where every tool is bounded (Codex) and
+`file_tools_only` where the Work shell is not (Claude, OpenCode). Before any
+resumed launch, RCP recomputes and compares project, host, exact stage, graph
+target and root fingerprint. Missing/moved roots, cross-project bindings or incompatible
 run scope fail before launch; they require a fresh session.
 
 The session id actually passed to the provider decides whether this is a
@@ -617,10 +619,13 @@ the one its session began with.
 ## One graph output channel
 
 The collection boundary is [invariant 4b](../../AGENTS.md#stable-invariants).
-Conversation turns collect only `patch.json` from their exact task stage.
+Conversation graph changes collect only `patch.json` from their exact task stage.
+Ordinary Work also collects `watch.json` and the required `outcome.json` there;
+the latter reports the turn outcome and grants no graph authority.
 Ingestion and branch merge prefer it, then accept exactly one patch-shaped JSON
 file if it is missing or not Patch-shaped. They inspect at most eight files,
 `patch.json` first then filename order; multiple candidates are refused.
+Local and remote collection read only regular files and never follow a link.
 The labelled final assistant message is the answer, separate from traces,
 reasoning, tool output and Patch verdict. Rejection preserves an existing answer.
 

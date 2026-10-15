@@ -97,6 +97,7 @@ export function beginChatSend(
             execution_machine: null,
             applied_revision: null,
             graph_update: null,
+            turn_outcome: null,
             trigger: request.trigger ?? "human",
           },
         ],

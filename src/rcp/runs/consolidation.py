@@ -13,6 +13,7 @@ from rcp.core.authority import AgentAuthorizerDeparted
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history.queries import HeadSpec
 from rcp.limits import PATCH_SELF_CHECK_MAX_REQUEST_BYTES
+from rcp.runs.evidence_flag_commands import hold_consolidation_additions
 from rcp.skill_registry import official_registry
 from rcp.transport import StateUnavailable
 
@@ -154,6 +155,7 @@ def consolidation_apply_handler(
             except FileNotFoundError:
                 if previous is None or previous["result"] is None:
                     raise ValueError("consolidation_patch_missing") from None
+                hold_consolidation_additions(service, execution.store, execution.operation_id)
                 return CommandResponse(request_id=request.request_id, **previous["result"])
             digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
             receipt = execution.store.reserve_consolidation_apply(
@@ -208,7 +210,9 @@ def consolidation_apply_handler(
                     key,
                     response.model_dump(mode="json", exclude={"request_id"}),
                 )
+
             if response.status == "ok":
+                hold_consolidation_additions(service, execution.store, execution.operation_id)
                 mailbox.remove_if_sha256("patch.json", digest)
             return response
         except (OSError, StateUnavailable) as exc:

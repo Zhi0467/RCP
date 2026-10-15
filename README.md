@@ -5,7 +5,7 @@ and Claude Code sessions into one durable research graph of questions,
 hypotheses, experiments, evidence, and decisions. Agents propose; you decide.
 Run it alone on a Mac, or share one team space with your lab on a Linux server.
 
-![The research graph, one node, and the Agents hub](docs/media/graph.gif)
+![The research graph, one node, and approving an agent's Proposal](docs/media/graph.gif)
 
 ## Who it's for today
 
@@ -60,7 +60,13 @@ access, then send:
   on your own Linux server adds shared projects, member attribution, central
   Git checkouts, and backup/restore.
 
-![Runs: control, timeline, and report](docs/media/runs.gif)
+![An agent's chart in its reply, with a boxed region sent back as a comment](docs/media/artifacts.gif)
+
+![Authorizing Auto-research with a budget, then an episode's timeline and report](docs/media/runs.gif)
+
+![A team space: creating a shared project and inviting a member](docs/media/team.gif)
+
+<img src="docs/media/phone.gif" alt="The phone layout: digest, Inbox, research paths, and runs" width="300">
 
 ## Install and run
 

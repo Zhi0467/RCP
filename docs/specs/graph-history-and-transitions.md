@@ -67,6 +67,8 @@ aggregates scores nor infers Hypothesis status, standing, Decisions, Proposals,
 or Evidence validity. Historical strength remains visible as `legacy_strength`:
 `diagnostic` maps to that role, other values to `result`, never to edge weight.
 Old epistemic edges without assessments remain readable as unassessed.
+`research.md` lists an assessment under accepted research only when both the
+Hypothesis and the Evidence are accepted and the Evidence is not invalid.
 
 ## Relations and control structure
 

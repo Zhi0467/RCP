@@ -210,6 +210,8 @@ _EXEMPT_TABLES = {
     "owner_credentials": "credential",
     "owner_sign_in_codes": "credential",
     "project_aliases": "identity",
+    # The flag command's idempotency ledger; no view reads it.
+    "evidence_flag_command_receipts": "receipt",
     "project_provisioning_requests": "setup",
     "project_provisioning_step_receipts": "setup",
     "project_transfer_activations": "transfer",
@@ -250,6 +252,7 @@ def test_current_schema_classifies_every_table_and_installs_all_owner_triggers(t
             "chat_reads",
             "chat_pins",
             "research_view_pins",
+            "evidence_flags",
             "auto_research_experiment_invocations",
             "auto_research_child_work_attempts",
             "artifact_versions",

@@ -1,6 +1,9 @@
+import { EvidenceFlagProvider } from "./graph/EvidenceFlagContext";
+import { EvidenceFlagInbox } from "./projects/EvidenceFlagInbox";
+import { evidenceFlagRows } from "./projects/evidenceFlags";
 import { errorMessage } from "./core/errors";
 import { PinnedView, PinnedViewTab } from "./graph/PinnedView";
-import { researchViewsProfile } from "./graph/researchViewResources";
+import { pinRequest, pinScopeKey, researchViewsProfile } from "./graph/researchViewResources";
 import { useProjectTabResources } from "./projects/projectTabResources";
 import { beginTaskMutation, beginTaskPublication } from "./agents/taskActions";
 import { beginChatSend } from "./agents/chatSendMutation";
@@ -94,6 +97,7 @@ import {
 import {
   lazy,
   Suspense,
+  createElement,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -833,8 +837,16 @@ function MemberApp({
     reportError: reportErrorNotice,
   });
   const pinBranchId = graphTarget.kind === "branch" ? graphTarget.branch_id : null;
-  const pinScope = JSON.stringify([projectId, pinBranchId]);
+  const pinScope = pinScopeKey(projectId, pinBranchId);
   const [pinSelection, setPinSelection] = useState<{ scope: string; id: string } | null>(null);
+  // A route naming a pin opens it once that target's pins have loaded.
+  const [requestedPin, setRequestedPin] = useState(() =>
+    pinRequest(
+      initialRoute.project.projectId,
+      initialRoute.graphTarget,
+      initialRoute.project.pinId,
+    ),
+  );
   const graphView = useResource(
     `${projectId}:graph-view`,
     backendSessionReady && projectId ? graphProfile(projectId, graphTarget) : null,
@@ -1124,13 +1136,25 @@ function MemberApp({
   const apiBase = projectId ? `/api/projects/${encodeURIComponent(projectId)}` : "";
   useEffect(() => setPinSelection(null), [pinScope]);
   useEffect(() => {
-    if (view !== "artifacts") setPinSelection(null);
+    if (view !== "artifacts") {
+      setPinSelection(null);
+      setRequestedPin(null);
+    }
   }, [view]);
   useEffect(() => {
     if (pinSelection?.scope === pinScope && pinsResource.value && !activePin) {
       setPinSelection(null);
     }
   }, [pinSelection, pinScope, pinsResource.value, activePin]);
+  // A cached list can predate the pin, so the request waits for a list holding
+  // it; the next route change or explicit tab choice replaces the request.
+  useEffect(() => {
+    if (requestedPin?.scope !== pinScope || !pinsResource.value) return;
+    if (pinsResource.value.pins.some((pin) => pin.artifact_id === requestedPin.id)) {
+      setPinSelection(requestedPin);
+      setRequestedPin(null);
+    }
+  }, [requestedPin, pinScope, pinsResource.value]);
   const graphPath = useCallback((path: string) => graphTargetUrl(path, graphTarget), [graphTarget]);
   const isActiveGraph = useCallback(
     (id: string) =>
@@ -1677,6 +1701,7 @@ function MemberApp({
         chatId: route.chatId,
         graphTarget: nextTarget,
       });
+      setRequestedPin(pinRequest(route.projectId, nextTarget, route.pinId));
       // A route that names a chat opens it; any other entry shows the board.
       setAgentsBoard(!route.chatId);
       if (
@@ -1857,6 +1882,7 @@ function MemberApp({
     consolidation,
     error: consolidationError,
     refresh: refreshConsolidation,
+    updateFlag: updateEvidenceFlag,
   } = useConsolidation(backendSessionReady ? apiBase : "", String(graph.revision));
   const refreshProjectIndexQuietly = useCallback(() => {
     // The landing count follows Caught up; a failed index read keeps the old list.
@@ -3522,6 +3548,16 @@ function MemberApp({
   openNodeByIdRef.current = openNodeById;
   const openChatsRef = useRef(openChats);
   openChatsRef.current = openChats;
+  // A flag's chat is bound to main; from a branch, switch there, then open it.
+  const [pendingMainChat, setPendingMainChat] = useState<string | null>(null);
+  const loadedTargetKind = project?.graph_target.kind;
+  useEffect(() => {
+    // The chat reads the loaded snapshot's target, so wait until main has loaded.
+    if (!pendingMainChat || graphTarget.kind !== "main" || loadedTargetKind !== "main" || loading)
+      return;
+    setPendingMainChat(null);
+    openChatsRef.current(pendingMainChat);
+  }, [pendingMainChat, graphTarget, loadedTargetKind, loading]);
   const webMcpViewOwners = useMemo<WebMcpViewOwners>(
     () => ({
       openNode: (nodeId) => openNodeByIdRef.current(nodeId),
@@ -4171,10 +4207,18 @@ function MemberApp({
     consolidation?.schedule ?? null,
     Date.now(),
   );
-  const consolidationCount = consolidationAttentionCount(
-    openConsolidation,
-    needsConsolidationRenewal,
+  // Flags are project-wide Inbox rows; only main's graph carries their node marks.
+  const flagRows = evidenceFlagRows(
+    consolidation?.evidence_flags ?? [],
+    graph.nodes,
+    project.repositories,
+    graphTarget.kind === "main",
   );
+  const flaggedNodeIds = new Set(
+    graphTarget.kind === "main" ? flagRows.flatMap((row) => (row.node ? [row.node.id] : [])) : [],
+  );
+  const consolidationCount =
+    consolidationAttentionCount(openConsolidation, needsConsolidationRenewal) + flagRows.length;
   const attentionCount =
     pendingProposals.length + attentionDecisions.length + openBlockers.length + consolidationCount;
   const showTrustFilter = view === "scientific" || view === "dag";
@@ -4597,6 +4641,7 @@ function MemberApp({
           active={activePin?.artifact_id === pin.artifact_id}
           onSelect={() => {
             setPinSelection({ scope: pinScope, id: pin.artifact_id });
+            setRequestedPin(null);
             changeView("artifacts");
           }}
         />
@@ -4612,7 +4657,15 @@ function MemberApp({
       )}
     </>
   );
-  return (
+  return createElement(
+    EvidenceFlagProvider,
+    {
+      nodeIds: flaggedNodeIds,
+      onOpenInbox: () => {
+        clearNodeSelections();
+        changeView("attention");
+      },
+    },
     <div className="app-shell overview-shell">
       {acceptanceAgentSurface}
       {voiceSurface}
@@ -4921,6 +4974,20 @@ function MemberApp({
                     )
                   }
                 />
+                <EvidenceFlagInbox
+                  key={project.id}
+                  apiBase={apiBase}
+                  projectId={project.id}
+                  rows={flagRows}
+                  writesDisabled={!consolidation?.can_write}
+                  onChanged={updateEvidenceFlag}
+                  onOpenNode={openNode}
+                  onOpenChat={(chatId) => {
+                    if (graphTarget.kind === "main") return openChats(chatId);
+                    setPendingMainChat(chatId);
+                    window.location.hash = projectViewHash(project.id, MAIN_GRAPH, "chats");
+                  }}
+                />
                 <ConsolidationInbox
                   items={openConsolidation}
                   schedule={consolidation?.schedule ?? null}
@@ -4984,6 +5051,7 @@ function MemberApp({
                 failed={Boolean(pinsResource.error)}
                 onChange={(next) => {
                   setPinSelection(null);
+                  setRequestedPin(null);
                   changeView(next);
                 }}
               >
@@ -5523,7 +5591,7 @@ function MemberApp({
       {desktopAccessSurface}
       {actorNameSurface}
       {reverificationSurface}
-    </div>
+    </div>,
   );
 }
 

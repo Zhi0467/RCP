@@ -46,6 +46,19 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Evidence flags (v51), fresh, immutable fixture upgrades, and in-place
+        # upgrades.
+        "2e46ed4bba3131503a693b110e34fff7ef9d07f46e1c393014fbdc940ba43f82",
+        "30692906d9f9ff0fcd2378df68fa4ede75d1972c048b4dd6af277ec98c9fea98",
+        "38e32a697f14d56bb379855ece4549ba1e77e77ef3dc1d7c60a4bf99525c02f7",
+        "8343f064e16276352f5d6fff0730a3719e642796449fe40f8a8f5c7caf2055cb",
+        "9535f36977149015f6f4f217e81705d23ed42ea58e54148400f5a72cf8afb77a",
+        "b0d534c67a5bb645bea27666e0f9e87cb2520f2e3088b0ddb1c3bc843316b438",
+        "b651a6f034480f6fd565bf2560a0b5b540ff69d84f718e572f85766a405cbd9e",
+        "d0dd3694809f6867c4d26a18960b30eb0b276470d1dca50ea175b6b55a571510",
+        "d6ea8bd3ec0b0ab89b66e68916954fb6559e745f0c6565cf7dc6fd44ffc3c562",
+        "d73950ee7d5940660359108438651b1397e4845f5f8e37c0f84552736ab30889",
+        "ff6937ffcd4f294531941db0e3fb98a923170edcc631a3383ee943339e7b1882",
         # Personal research view pins (v50), fresh and immutable fixture upgrades.
         "1b40b67a9194af261a13b165130a6885cd61177cac5894ba642b0e56f08f0dfe",
         "4283a05535b3723919dd83760835a4c1f1856a1afddf95b8128c41b9cc454eaa",

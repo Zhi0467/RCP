@@ -71,6 +71,7 @@ from rcp.runs.session_master import (
     stage_session_master,
 )
 from rcp.runs.shared import (
+    _read_local_workspace_file,
     _remove_local_tree,
     _safe_stage_name,
     _stage_or_reuse_task_input,
@@ -94,6 +95,7 @@ from rcp.transport import (
     clear_turn_handoff_files,
 )
 from rcp.transport.run_stage import remote_stage_name
+from rcp.turn_outcomes import TurnOutcome
 
 if TYPE_CHECKING:
     from rcp.runs.auto_research import AutoResearchRunRequest
@@ -1179,10 +1181,7 @@ def _read_chat_patch(workspace: Path, remote_stage: RemoteRunStage | None) -> st
         if "patch.json" not in remote_stage.list_workspace_files():
             return None
         return remote_stage.read_text(remote_stage.workspace / "patch.json")
-    path = workspace / "patch.json"
-    if not path.is_file():
-        return None
-    return path.read_text(encoding="utf-8")
+    return _read_local_workspace_file(workspace / "patch.json")
 
 
 def _read_watch_request(workspace: Path, remote_stage: RemoteRunStage | None) -> str | None:
@@ -1192,10 +1191,16 @@ def _read_watch_request(workspace: Path, remote_stage: RemoteRunStage | None) ->
         if "watch.json" not in remote_stage.list_workspace_files():
             return None
         return remote_stage.read_text(remote_stage.workspace / "watch.json")
-    path = workspace / "watch.json"
-    if not path.is_file():
-        return None
-    return path.read_text(encoding="utf-8")
+    return _read_local_workspace_file(workspace / "watch.json")
+
+
+def _read_turn_outcome(workspace: Path, remote_stage: RemoteRunStage | None) -> str | None:
+    """Read only the exact regular outcome file in this turn's stage."""
+    if remote_stage is not None:
+        if "outcome.json" not in remote_stage.list_workspace_files():
+            return None
+        return remote_stage.read_text(remote_stage.workspace / "outcome.json")
+    return _read_local_workspace_file(workspace / "outcome.json")
 
 
 def _record_chat_context_receipt(
@@ -1774,6 +1779,7 @@ def _append_chat_exchange(
     applied_revision: int | None,
     *,
     graph_update: GraphUpdateResult | None = None,
+    turn_outcome: TurnOutcome | None = None,
     execution: AgentTaskExecution | None = None,
 ) -> None:
     assert request.message is not None
@@ -1828,6 +1834,7 @@ def _append_chat_exchange(
                 "role": "assistant",
                 "text": answer,
                 "appliedRevision": applied_revision,
+                "turnOutcome": turn_outcome.model_dump(mode="json") if turn_outcome else None,
                 "graphUpdate": (
                     graph_update.model_dump(mode="json") if graph_update is not None else None
                 ),

@@ -14,6 +14,7 @@ from rcp.agents.command_mailbox import CommandTurnIdentity
 from rcp.agents.command_protocol import ApplyArguments, ApplyCommandRequest
 from rcp.background import AgentTaskExecution
 from rcp.core.authority import AgentAuthorizerDeparted
+from rcp.core.models import Patch
 from rcp.core.transition_models import GraphTargetRef
 from rcp.runs.consolidation import consolidation_apply_handler, settlement_source_effect_id
 from rcp.runs.questions import work_command_handler
@@ -124,6 +125,51 @@ def test_consolidation_apply_keys_replay_and_settlement_matches_each_digest(mani
         assert failure is None
         assert result.status == "applied"
     assert service.history.state().revision == initial_revision + 3
+
+
+def test_consolidation_apply_holds_added_evidence_for_review(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    append_fixture_patch(app.state.service, seed_patch())
+    _, execution = _admit(app)
+    mailbox, apply = _command(app, execution, tmp_path)
+    evidence = {
+        "id": "ev/added-overnight",
+        "type": "evidence",
+        "title": "Seed 3 shows no spike",
+        "observation": "The seed 3 log has no step-200 spike.",
+        "origin": "analytic",
+    }
+    patch = Patch(
+        kind="work",
+        author="agent",
+        summary="Record the seed 3 result",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[{"op": "create_nodes", "nodes": [evidence]}],
+    )
+    mailbox.write_text("patch.json", agent_patch_json(patch))
+    assert apply("add").status == "ok"
+    # A process lost before the hold, and another writer's Evidence landing meanwhile.
+    with execution.store.connection() as connection:
+        connection.execute("DELETE FROM evidence_flags")
+        connection.execute("DELETE FROM evidence_flag_command_receipts")
+    other = {**evidence, "id": "ev/other-writer", "title": "Another writer's result"}
+    append_fixture_patch(
+        app.state.service,
+        Patch(
+            kind="seed",
+            author="agent",
+            summary="Another writer",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[{"op": "create_nodes", "nodes": [other]}],
+        ),
+    )
+    assert apply("add").status == "ok"
+    flags = execution.store.list_evidence_flags(app.state.default_project_id)
+    assert [(item["evidence_id"], item["kind"], item["finding"]) for item in flags] == [
+        ("ev/added-overnight", "consolidation_added", "Record the seed 3 result")
+    ]
 
 
 def test_consolidation_apply_recovers_crash_after_canonical_append(manifest, tmp_path, monkeypatch):
@@ -243,18 +289,35 @@ def test_consolidation_queued_launch_rechecks_authorization(
 
 
 @pytest.mark.asyncio
-async def test_consolidation_bound_owner_pins_workflow_and_refuses_watchers(manifest, tmp_path):
+@pytest.mark.parametrize("outcome", ['{"status":"done"}', None])
+async def test_consolidation_bound_owner_pins_workflow_and_refuses_watchers(
+    manifest, tmp_path, outcome
+):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     append_fixture_patch(app.state.service, seed_patch())
     request, execution = _admit(app)
-    assert work_command_handler(execution, None).allowed_verbs == {"validate", "apply", "lesson"}
-    launcher = ScriptedLauncher([{"watch.json": "{}"}], message="Consolidation finished.")
-    async for _ in stream_work_run(
+    assert work_command_handler(execution, None).allowed_verbs == {
+        "validate",
+        "apply",
+        "lesson",
+        "flag",
+    }
+    launcher = ScriptedLauncher(
+        [{"watch.json": "{}"}], message="Consolidation finished.", outcome=outcome
+    )
+    frames = []
+    async for frame in stream_work_run(
         app.state.service, launcher, request, tmp_path / "data", execution=execution
     ):
-        pass
-    assert launcher.calls == 1
-    assert launcher.resumed_sessions == [None]
+        frames.append(frame)
+    calls = 1 if outcome else 2
+    assert launcher.calls == calls
+    assert launcher.resumed_sessions == [None] + [launcher.native_session_id] * (calls - 1)
+    assert all(item["capability"] == "work_auto" for item in launcher.launch_kwargs)
+    payloads = [json.loads(frame.removeprefix("data: ")) for frame in frames]
+    assert not any(item["event"] == "error" for item in payloads)
+    assert execution.turn_outcome is not None
+    assert execution.turn_outcome.status == ("done" if outcome else "not_stated")
     # The task contract invokes the staged workflow, not just the request field.
     contract = Path(re.search(r"(/\S+-initial\.md)", launcher.prompts[0]).group(1))
     invoked = [

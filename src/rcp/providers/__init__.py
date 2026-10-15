@@ -188,6 +188,10 @@ def project_write_enforcement_mode(provider: str) -> str:
     return profile_for(provider).project_write_enforcement_mode()
 
 
+def canonical_state_boundary(provider: str) -> str:
+    return profile_for(provider).canonical_state_boundary()
+
+
 def _known_provider(value: str) -> str:
     profile_for(value)
     return value
@@ -221,6 +225,7 @@ __all__ = [
     "ProviderTurn",
     "ProviderTurnRequest",
     "ProviderUsage",
+    "canonical_state_boundary",
     "classify_terminal_error",
     "configured_runtime",
     "configured_runtime_id",

@@ -778,6 +778,9 @@ def test_agent_can_prune_evidence(manifest, operation) -> None:
             ]
         )
     )
+    history.append(
+        _approval_patch([{"op": "set_standing", "node_id": "ev/canonical", "standing": "accepted"}])
+    )
     if operation == "supersede_nodes":
         op = {
             "op": operation,

@@ -692,7 +692,9 @@ export function ChatsWorkspace({
     !selected?.humanTurnRefusal &&
     selectedStatus !== null &&
     needsHuman(selectedStatus) &&
-    Boolean(selectedLatest?.failed || selectedLatest?.paused || selectedLatest?.awaiting_human);
+    Boolean(selectedLatest?.failed || selectedLatest?.paused || selectedLatest?.awaiting_human) &&
+    // A plain Retry lives on the failed turn's error row in the transcript.
+    !(selectedLatest?.can_retry && !selectedLatest.can_resume);
   // An Auto-research child lives on its orchestrator's branch; its links stay there.
   const orchestratorHref = projectViewHash(
     project.id,
@@ -727,15 +729,6 @@ export function ChatsWorkspace({
                 onClick={() => onResumeTask(selectedLatest)}
               >
                 Resume
-              </button>
-            )}
-            {!selectedLatest.can_resume && selectedLatest.can_retry && (
-              <button
-                className="button compact"
-                type="button"
-                onClick={() => onRetryTask(selectedLatest)}
-              >
-                Retry
               </button>
             )}
             {!selectedLatest.can_resume &&

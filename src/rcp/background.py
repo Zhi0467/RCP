@@ -103,6 +103,7 @@ from rcp.storage import (
 from rcp.storage.models import AgentTaskAlreadyContinued
 from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable, StateUnreachable
 from rcp.transport.state_transfer import warning_context
+from rcp.turn_outcomes import TurnOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +247,9 @@ class AgentTaskExecution:
     applied_revision: int | None = None
     applied_graph_state: GraphState | None = None
     armed_graph_watchers: bool = False
+    #: Set only by the ordinary Work owner from its validated stage file; provider
+    #: event text can never supply it.
+    turn_outcome: TurnOutcome | None = None
     compatible_related_write_scope_fingerprints: frozenset[str] = frozenset()
     #: Set when a stage read or host probe during this run failed because the
     #: host could not be reached, rather than because a deliverable was bad or a
@@ -346,6 +350,7 @@ class AgentTaskOutcome:
     messages: list[str]
     artifacts: list[AgentArtifactDescriptor]
     graph_update: GraphUpdateResult | None = None
+    turn_outcome: TurnOutcome | None = None
     graph_updates: list[GraphUpdateResult] = field(default_factory=list)
 
 
@@ -2248,6 +2253,8 @@ class BackgroundAgentTasks:
         result: dict[str, object] = {"messages": outcome.messages}
         if outcome.artifacts:
             result["artifacts"] = [item.model_dump(mode="json") for item in outcome.artifacts]
+        if outcome.turn_outcome is not None:
+            result["turn_outcome"] = outcome.turn_outcome.model_dump(mode="json")
         if outcome.graph_update is not None:
             result["graph_update"] = outcome.graph_update.model_dump(mode="json")
         if outcome.graph_updates:
@@ -3047,6 +3054,7 @@ class BackgroundAgentTasks:
             messages=messages,
             artifacts=artifacts,
             graph_update=graph_update,
+            turn_outcome=execution.turn_outcome,
             graph_updates=graph_updates,
         )
 

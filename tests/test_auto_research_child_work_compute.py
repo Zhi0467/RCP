@@ -32,6 +32,7 @@ from .helpers import (
     launch_contract_path,
     seed_patch,
     wait_for_task,
+    write_turn_outcome,
 )
 from .test_compute_jobs_commands import commands as commands
 from .test_compute_jobs_settlement import _command, _job_for_watcher
@@ -282,6 +283,7 @@ def test_child_session_replaces_its_master_when_turn_owner_changes(manifest, tmp
     class Launcher:
         async def stream(self, provider, prompt, **kwargs):
             calls.append(kwargs)
+            write_turn_outcome(Path(kwargs["cwd"]))
             yield AgentEvent(event="session", session_id=session_id)
             yield AgentEvent(event="answer", text="Turn complete.")
             yield AgentEvent(event="done")

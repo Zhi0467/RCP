@@ -237,6 +237,10 @@ class OpenCodeProfile(ProviderProfile):
     def project_write_enforcement_mode(self) -> str:
         return "opencode.agent-permission-rules.v1"
 
+    def canonical_state_boundary(self) -> str:
+        # The Work shell is unbounded; see the provider's section of the containment spec.
+        return "file_tools_only"
+
     def command(
         self,
         prompt: str,

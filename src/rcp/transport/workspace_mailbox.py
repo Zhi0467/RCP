@@ -14,7 +14,7 @@ from rcp.rcp_home import rcp_temp_dir
 from rcp.transport.run_stage import RemoteRunStage
 
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
-TURN_HANDOFF_FILES = ("patch.json", "watch.json", "messages.json", "lifecycle.json")
+TURN_HANDOFF_FILES = ("patch.json", "watch.json", "outcome.json", "messages.json", "lifecycle.json")
 
 
 @dataclass(frozen=True, slots=True)

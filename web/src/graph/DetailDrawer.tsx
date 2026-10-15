@@ -1,3 +1,4 @@
+import { useEvidenceFlags } from "./EvidenceFlagContext";
 import { ExperimentStartOverlap } from "../experiments/ExperimentStartOverlap";
 import {
   canStartExperiment,
@@ -17,7 +18,7 @@ import { BranchNameField, branchNameRequest, branchNameValid } from "./BranchNam
 import type { AgentRunConfig, GraphRef, GraphTargetRef, ProjectSnapshot } from "../core/types";
 import { BranchChangeDetail } from "./BranchChangeDetail";
 import type { GraphBranchChanges, MergeDiffPath } from "../core/types";
-import { Check, FlaskConical, MessageCircle, Minus, Pencil, Trash2, X } from "lucide-react";
+import { Check, Flag, FlaskConical, MessageCircle, Minus, Pencil, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { experimentGuidanceDetail } from "../core/experimentGuidance";
@@ -201,6 +202,8 @@ export function DetailDrawer({
   onOpenRelatedNode,
   onSelectNode,
 }: Props) {
+  const { nodeIds: flaggedNodeIds, onOpenInbox } = useEvidenceFlags();
+  const hasEvidenceFlag = !historical && graphTarget.kind === "main" && flaggedNodeIds.has(node.id);
   const unavailableOverlapCount = experimentUnavailableLoops.filter(
     (entry) =>
       entry.control_node_id === node.id && !sameGraphTarget(entry.graph_target, graphTarget),
@@ -430,7 +433,7 @@ export function DetailDrawer({
       focusRequestToken={focusRequestToken}
     >
       <aside
-        className={`detail-drawer node-detail-drawer${node.draft_touched ? " draft-touched" : ""}${behind ? " draft-behind" : ""}`}
+        className={`detail-drawer node-detail-drawer${hasEvidenceFlag ? " has-evidence-flag" : ""}${node.draft_touched ? " draft-touched" : ""}${behind ? " draft-behind" : ""}`}
         role="dialog"
         aria-modal="false"
         aria-labelledby={drawerTitleId}
@@ -454,6 +457,17 @@ export function DetailDrawer({
             </div>
           </div>
           <div className="window-actions">
+            {hasEvidenceFlag && (
+              <button
+                type="button"
+                className="icon-button evidence-flag-action"
+                aria-label="Open Evidence flags in Inbox"
+                title="Open Evidence flags in Inbox"
+                onClick={onOpenInbox}
+              >
+                <Flag size={18} />
+              </button>
+            )}
             {projectId && !stagedNewNode && !historical && (
               <CopyReferenceButton
                 projectId={projectId}

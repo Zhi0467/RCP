@@ -56,6 +56,8 @@ export function graphTargetFromHash(hash: string): GraphTargetRef {
 
 export interface ProjectHashSelection {
   chatId?: string;
+  /** A pinned page to open in Artifacts. */
+  pinId?: string;
   /** Exact Auto-research selection on Runs; Experiment routes carry additional identity. */
   autoResearchEpisodeId?: string;
 }
@@ -70,6 +72,7 @@ export function projectViewHash(
   const params = new URLSearchParams();
   if (view !== null) params.set("view", view === "execution" ? "runs" : view);
   if (selection.chatId !== undefined) params.set("chat", selection.chatId);
+  if (selection.pinId !== undefined) params.set("pin", selection.pinId);
   if (selection.autoResearchEpisodeId !== undefined) {
     params.set("mode", "auto_research");
     params.set("episode", selection.autoResearchEpisodeId);

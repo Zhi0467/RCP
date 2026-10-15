@@ -420,7 +420,8 @@ rules; secret redaction is not a stored-data validity rule.
 
 Before selection, effects are fenced and only local state changes. Remote live
 checks compare a current local display cache or leave the project unopened;
-validation already replayed its captured history on copies. Remote projects
+validation already replayed its captured main and branch heads on copies and
+refuses any head that differs. Remote projects
 open only after selection, when rollback is no longer possible. Artifact versions
 are in the data root; legacy kept files retain typed checks until imported.
 

@@ -423,6 +423,7 @@ class ArtifactViewerState(BaseModel):
     can_keep: bool
     expires_at: str | None
     pin_branch_id: str | None
+    pin_branch_name: str
     can_pin: bool
     pinned: bool
 
@@ -480,8 +481,12 @@ def stored_artifact_state(
         offers = store.research_view_offers(artifact, identity_access.acting_user(request).user_id)
     except ResearchViewConflict as exc:
         raise HTTPException(exc.status, detail={"code": exc.code}) from exc
+    pin_branch = offers.pin_branch_id
     return ArtifactViewerState(
-        pin_branch_id=offers.pin_branch_id,
+        pin_branch_id=pin_branch,
+        pin_branch_name=store.branch_names(project_id).get(pin_branch, pin_branch[:8])
+        if pin_branch
+        else "main",
         can_pin=offers.can_pin,
         pinned=offers.pinned,
         artifact_id=artifact_id,
