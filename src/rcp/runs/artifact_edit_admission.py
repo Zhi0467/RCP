@@ -204,7 +204,8 @@ def _checked_artifact(
 def _edit_version(store: AppStore, artifact: Artifact, context: ArtifactContextRequest) -> str:
     with store.artifact_lock(artifact.artifact_id):
         current = store.artifact(artifact.artifact_id)
-        assert current is not None
+        if current is None:
+            raise ValueError("The artifact is unavailable.")  # Deleted since it was checked.
         if context.base_version is not None and context.base_version != current.current_version:
             raise ValueError(
                 "This artifact changed to a new version after the parts were selected. "
