@@ -1354,6 +1354,7 @@ def test_status_lists_other_branch_loops_without_granting_control(
     rows = overlap["rows"]
     assert isinstance(rows, list)
     assert [row["episode_id"] for row in rows] == [HUMAN_PREDECESSOR]
+    assert result["other_auto_research"] == {"rows": [], "omitted": 0}
     with pytest.raises(ValueError):
         effects.episode(
             context,

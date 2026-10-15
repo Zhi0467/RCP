@@ -5,8 +5,11 @@ import {
   launchProviderReady,
   profileRunConfig,
 } from "../core/AgentConfigControls";
-import type { AgentRunConfig, Episode, ProjectSnapshot } from "../core/types";
+import { BranchTag } from "../core/BranchTag";
+import type { AgentRunConfig, Episode, GraphRef, ProjectSnapshot } from "../core/types";
 import { BranchNameField, branchNameRequest, branchNameValid } from "../graph/BranchNameField";
+import { ExperimentCheckout } from "./ExperimentCheckout";
+import { AUTO_RESEARCH_ROUTE_PREFIX, experimentBoardHref } from "./experimentBoardModel";
 import { GitBranch, LoaderCircle, Telescope, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 
@@ -103,6 +106,9 @@ interface Props {
   /** The server's branch-name refusal code from the last start, if any. */
   branchNameRefusal?: string | null;
   branchNamesInUse?: readonly string[];
+  /** Auto-research live on other branches; a new start runs beside them. */
+  otherLiveRuns?: readonly Episode[];
+  graphRefs?: readonly GraphRef[] | null;
   /** On an Auto-research branch the dialog continues it instead of starting another. */
   continueBranch?: { name: string; episode: Episode } | null;
   /** Adds turns to an ended orchestrator without a message. */
@@ -126,11 +132,14 @@ export function AutoResearchDialog({
   onAuthorize,
   branchNameRefusal = null,
   branchNamesInUse = [],
+  otherLiveRuns = [],
+  graphRefs = null,
   continueBranch = null,
   onContinue,
   onSendMessage,
 }: Props) {
   const titleId = useId();
+  const liveId = useId();
   const dialog = useRef<HTMLFormElement>(null);
   const budgetInput = useRef<HTMLInputElement>(null);
   const [budget, setBudget] = useState(String(initialInvocationCeiling));
@@ -311,6 +320,34 @@ export function AutoResearchDialog({
             </>
           ) : (
             <>
+              {project && otherLiveRuns.length > 0 && (
+                <div className="auto-research-live-elsewhere" role="group" aria-labelledby={liveId}>
+                  <span id={liveId}>Live on other branches</span>
+                  <ul>
+                    {otherLiveRuns.map((run) => (
+                      <li key={run.episode_id} data-overlap-episode-id={run.episode_id}>
+                        <a
+                          href={experimentBoardHref(
+                            project.id,
+                            `${AUTO_RESEARCH_ROUTE_PREFIX}${run.episode_id}`,
+                          )}
+                          onClick={onClose}
+                        >
+                          <BranchTag refs={graphRefs} target={run.graph_target} />
+                        </a>
+                        <span>{run.authorized_by?.display_name || "a member"}</span>
+                        <ExperimentCheckout
+                          checkout={{
+                            kind: run.code_worktree ? "worktree" : "shared",
+                            execution_host: null,
+                            repository_paths: [],
+                          }}
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               <label className="campaign-budget-field">
                 <span>Operational invocation ceiling</span>
                 <input

@@ -97,6 +97,32 @@ test("the Auto-research dialog names its branch and keeps launch options in the 
   assert.match(render({ branchNameRefusal: "branch_name_taken" }), /class="branch-name-warning"/);
 });
 
+test("a new Auto-research start lists runs live on other branches", () => {
+  const project = { id: "p", agent_profiles: {}, provider_readiness: {} };
+  const other = {
+    ...episode,
+    episode_id: "other-run",
+    graph_target: { kind: "branch", branch_id: "other-run" },
+  };
+  const render = (props) =>
+    renderMarkup(
+      React.createElement(AutoResearchDialog, {
+        open: true,
+        busy: false,
+        error: null,
+        initialInvocationCeiling: 1,
+        project,
+        onClose() {},
+        onAuthorize() {},
+        ...props,
+      }),
+    );
+  const html = render({ otherLiveRuns: [other] });
+  assert.match(html, /data-overlap-episode-id="other-run"/);
+  assert.match(html, /href="[^"]*other-run/);
+  assert.doesNotMatch(render({ otherLiveRuns: [] }), /data-overlap-episode-id/);
+});
+
 test("on an Auto-research branch the dialog continues it", () => {
   // The current orchestrator default is not ready; a continuation keeps its own agent.
   const project = {
@@ -193,7 +219,6 @@ test("Auto-research refuses in every state that disables its button", () => {
     mutationsDisabled: false,
     authoritative: true,
     canonicalReachable: true,
-    liveAutoResearchEpisode: null,
     taskStarting: false,
     episodeAction: null,
   };
@@ -203,7 +228,6 @@ test("Auto-research refuses in every state that disables its button", () => {
     { mutationsDisabled: true },
     { authoritative: false },
     { canonicalReachable: false },
-    { liveAutoResearchEpisode: episode },
     { taskStarting: true },
     { episodeAction: "stop:episode-1" },
   ]) {

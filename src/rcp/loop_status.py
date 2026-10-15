@@ -91,6 +91,24 @@ class LoopOverlap(BaseModel):
     omitted: int = 0
 
 
+class AutoResearchOverlapRow(BaseModel):
+    """Compact identity of a live Auto-research episode on another branch."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    episode_id: str
+    graph_target: GraphTargetRef
+    started_by: LoopStarter
+    checkout: LoopOverlapCheckout
+
+
+class AutoResearchOverlap(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rows: list[AutoResearchOverlapRow] = Field(default_factory=list)
+    omitted: int = 0
+
+
 class LoopCurrentStatus(EpisodeLoopMetadata):
     """Full lifecycle metadata for the target's own loop."""
 
@@ -269,6 +287,49 @@ def other_branch_loops(
         )
         # Bound the wire encoding too: unusually long paths must not exhaust a
         # command response's budget. Never truncate an identity or checkout path.
+        if len(json.dumps(candidate.model_dump(mode="json")).encode()) > LOOP_OVERLAP_MAX_BYTES:
+            break
+        overlap = candidate
+    return overlap
+
+
+def other_branch_auto_research(
+    store: AppStore,
+    project_id: str,
+    *,
+    graph_target: GraphTargetRef,
+) -> AutoResearchOverlap:
+    """Live Auto-research episodes off this target, bounded like loop overlap."""
+
+    candidates = sorted(
+        (
+            episode
+            for episode in store.live_episodes(project_id)
+            if episode.mode == "auto_research"
+            and episode.status in _LIVE_EPISODE_STATUSES
+            and episode.graph_target != graph_target
+        ),
+        key=lambda episode: (episode.graph_target.key, episode.episode_id),
+    )
+    overlap = AutoResearchOverlap(omitted=len(candidates))
+    for episode in candidates[:LOOP_OVERLAP_MAX_ROWS]:
+        metadata = episode_loop_metadata(store, episode)
+        human = metadata.started_by.human
+        row = AutoResearchOverlapRow(
+            episode_id=episode.episode_id,
+            graph_target=episode.graph_target,
+            started_by=LoopStarter(
+                kind=metadata.started_by.kind,
+                id=human.user_id if human else None,
+                display_name=human.display_name if human else None,
+            ),
+            checkout=LoopOverlapCheckout(
+                kind=metadata.checkout.kind,
+                execution_host=metadata.checkout.execution_host,
+                repository_paths=metadata.checkout.repository_paths,
+            ),
+        )
+        candidate = AutoResearchOverlap(rows=[*overlap.rows, row], omitted=overlap.omitted - 1)
         if len(json.dumps(candidate.model_dump(mode="json")).encode()) > LOOP_OVERLAP_MAX_BYTES:
             break
         overlap = candidate

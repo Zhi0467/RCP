@@ -329,9 +329,8 @@ def _start_modern_experiment_episode(
 def test_fresh_episode_parents_enforce_mode_specific_live_scope(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     store.create_episode(_episode(store, "auto-1", mode="auto_research"))
-
-    with pytest.raises(ValueError, match="live parent"):
-        store.create_episode(_episode(store, "auto-2", mode="auto_research"))
+    # Auto-research is live per branch; each fresh episode owns its own.
+    store.create_episode(_episode(store, "auto-2", mode="auto_research"))
 
     first_experiment = _episode(
         store,
@@ -360,6 +359,7 @@ def test_fresh_episode_parents_enforce_mode_specific_live_scope(tmp_path) -> Non
 
     assert {item.episode_id for item in store.episodes("project")} == {
         "auto-1",
+        "auto-2",
         "experiment-1",
         "experiment-3",
     }

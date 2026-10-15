@@ -704,7 +704,6 @@ def auto_research_message_refusal(store: AppStore, episode: EpisodeRecord) -> di
             "auto_research_already_continued": "Open the newest continuation to message its orchestrator.",
             "auto_research_session_unavailable": "The orchestrator session or stage is unavailable. Start a new Auto-research episode.",
             "auto_research_turn_active": "An episode turn is still active; wait for it to settle.",
-            "auto_research_project_occupied": "Another Auto-research episode is live on this project.",
             "episode_merge_reserved": "The branch is being merged; wait for the merge to finish.",
             "episode_isolation_unavailable": "The branch's isolation has been removed or is being removed.",
             "auto_research_child_turn_active": f"Wait for the human turn in child chat {chat_id} to settle.",

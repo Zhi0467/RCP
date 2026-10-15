@@ -6,12 +6,17 @@ commands, episode graph branches, and human-dispatched merge to main.
 ## Episode scope, budget, and authority
 
 One human action starts project-wide Auto-research. Each project has one
-orchestrator profile and at most one live Auto-research episode. An optional
+orchestrator profile; each graph branch has at most one live Auto-research
+episode, so several may run at once on separate branches. Status lists the others
+as `other_auto_research` (capped `{rows, omitted}` of episode, target, starter, and
+checkout), and the start dialog shows them; neither gates a start. An optional
 instruction guides the first invocation without granting authority. Human start
 pins provider, model, and reasoning, defaulting to that profile. Child picks
 use the orchestrator's explicit choice or the Settings node_chat profile, always
 on the child's profile machine. Unsupported choices refuse before admission;
 prompts list the same probed readiness choices.
+**Why:** each episode's graph writes stay on its own branch; overlap in a shared
+checkout is for humans to coordinate, as with Experiment loops below.
 
 Start and reauthorization resolve the execution machine without gating on compute
 readiness. The helper probes on use; Settings shows the stored probe. See
