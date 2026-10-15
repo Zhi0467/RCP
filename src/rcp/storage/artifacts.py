@@ -579,7 +579,7 @@ class ArtifactStoreMixin(StoreMixinBase):
     def artifact_delete_refusal(self, artifact: Artifact) -> str | None:
         """Why removal must wait; expiry and Delete share these holds."""
         if artifact.supplier == "episode_ending" and artifact.episode_id is not None:
-            # Publication binds the report under this artifact's lock, as Delete does.
+            # The report row commits with the ready wrap-up; until then there is no row to mark.
             with self.connection() as connection:
                 publishing = connection.execute(
                     "SELECT 1 FROM episodes WHERE episode_id = ? "

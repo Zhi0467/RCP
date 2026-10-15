@@ -1781,7 +1781,7 @@ have no viewer URL. Download and retention information are independent offers.
 
 `GET /api/projects/{project_id}/episodes/{episode_id}/artifacts` returns
 `RunArtifactEntry[]` for the episode, including its Auto-research workers and
-child Experiment episodes. It includes unexpired or kept artifacts and permanent
+child Experiment episodes. It includes unexpired or kept artifacts and undeleted
 reports, with the queried episode's report first, then creation order. Worker
 labels use the child Work route's instruction heading, or Worker. Both routes enforce project
 membership, and the inventory rejects an episode from another project.

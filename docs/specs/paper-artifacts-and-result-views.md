@@ -191,7 +191,7 @@ nonblocking. The panel shows current version and Download, without repository co
 
 ## Artifacts panel
 
-Artifacts lists kept outputs and permanent reports across history, including
+Artifacts lists kept outputs and undeleted reports across history, including
 archives, independent of task/episode windows. Temporary outputs stay in their
 chats until kept. Reports appear when captured. Revisits paint cached lists first.
 

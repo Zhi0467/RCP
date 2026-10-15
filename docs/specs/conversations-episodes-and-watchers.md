@@ -693,8 +693,8 @@ episode health, a recommendation or a reason to withhold controls.
 
 A member may delete a report once its wrap-up is ready. The report row stays,
 marked deleted, as lineage: the episode shows no report and recommends nothing
-about it, and the lifecycle never writes another. Publication and Delete take
-the same artifact lock, so Delete sees a report either bound or not yet started.
+about it, and the lifecycle never writes another. Delete waits while the wrap-up
+is still publishing, because the report row commits with the ready wrap-up.
 
 **Why:** a ready wrap-up without its report row reads as broken history to
 transfer and would let the report lifecycle run again.

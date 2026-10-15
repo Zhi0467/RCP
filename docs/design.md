@@ -171,7 +171,7 @@ number here.
   explicitly labelled Discuss and Work turns.
 - An **artifact** is an RCP-owned file supplied by a turn or episode ending.
   Its metadata lives in SQLite and immutable versions live in the data directory.
-  Turn outputs expire unless kept; reports are permanent. It is never a graph
+  Turn outputs expire unless kept; reports never expire. It is never a graph
   object or a second answer channel. A live HTML version reads declared sources
   only through data RCP's viewer relays into the opaque sandbox.
 - An **episode** is the persisted parent for bounded Experiment control or

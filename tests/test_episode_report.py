@@ -472,6 +472,18 @@ async def test_experiment_control_response_owns_wrapup_and_ready_report_state(
     assert ready["report_episode_id"] == "episode"
     assert ready["report_is_current"] is True
 
+    # A deleted report keeps its lineage row, so the allocation never runs again.
+    report = store.episode_report("episode")
+    assert report is not None
+    store.delete_artifact("project", report.artifact_id)
+    launcher = _ReportLauncher([])
+    events = await _events(stream_episode_report_run(service, launcher, request, execution))
+    assert [event.event for event in events] == ["message", "done"]
+    assert launcher.calls == 0
+    assert len(store.episode_report_attempts("episode")) == 1
+    deleted = projected()
+    assert deleted["recommendation"] != "open_report" and not deleted["can_open_report"]
+
 
 @pytest.mark.asyncio
 async def test_experiment_control_keeps_the_latest_report_when_a_newer_episode_is_stopped(
