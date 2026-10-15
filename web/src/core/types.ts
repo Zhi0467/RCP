@@ -1889,7 +1889,7 @@ export interface GraphAttentionProjection {
   proposal_actions: Record<string, ProposalActionLine[]>;
   /** Pending Proposals the Sync gate would withdraw: their dependencies moved. */
   stale_proposal_ids: string[];
-  /** The stale ones ordinary Work can re-file; a merge-only form offers Reject alone. */
+  /** The stale ones ordinary Work can re-file; a form it cannot file offers Reject alone. */
   refreshable_proposal_ids: string[];
   /** Decision id -> the choice it records, when its options no longer offer it. */
   decision_prior_choices: Record<string, string>;

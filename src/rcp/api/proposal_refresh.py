@@ -17,7 +17,7 @@ from rcp.api.tasks import (
     IdentityDependency,
     StoreDependency,
 )
-from rcp.core.validation.proposals import proposal_is_stale, proposal_requires_branch_merge
+from rcp.core.validation.proposals import proposal_is_stale, proposal_work_cannot_refile
 from rcp.runs.proposal_refresh import (
     proposal_refresh_key,
     proposal_refresh_message,
@@ -64,9 +64,9 @@ def refresh_proposal(
             raise _refused("proposal_not_pending", "The Proposal is not pending on main.")
         if not proposal_is_stale(state, proposal):
             raise _refused("proposal_not_stale", "The Proposal's dependencies have not moved.")
-        if proposal_requires_branch_merge(state, proposal):
+        if proposal_work_cannot_refile(state, proposal):
             raise _refused(
-                "proposal_needs_branch_merge", "Only a branch merge may file this Proposal."
+                "proposal_not_refileable", "Ordinary Work cannot file this Proposal's form."
             )
         node_id = proposal_refresh_node(state, proposal)
         if node_id is None:

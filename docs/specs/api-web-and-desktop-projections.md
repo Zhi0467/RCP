@@ -1096,9 +1096,9 @@ light node Work chat on main on the Proposal's subject node, with a backend
 message holding the Proposal and its moved dependencies. Its request key is
 derived from the Proposal, so any repeat by any member returns the first chat.
 Once that chat exists, every repeat returns it, whatever the Proposal's state.
-Before it does, a Proposal that is not pending, not stale, merge-only, or names
+Before it does, a Proposal that is not pending, not stale, a form ordinary Work cannot file, or names
 no current node returns 409 with code `proposal_not_pending`,
-`proposal_not_stale`, `proposal_needs_branch_merge`, or
+`proposal_not_stale`, `proposal_not_refileable`, or
 `proposal_target_unavailable`.
 
 ## Application surfaces
@@ -1116,7 +1116,7 @@ Inbox contains pending protected-belief Proposals, Decisions in `ready` or
 `revisit`, and asserted open Blockers. A Proposal keeps inline judgment because
 it is not a node. A stale Proposal card has a red edge and replaces Approve with
 one icon-only Refresh, which then opens the refresh chat; a failed Refresh turns
-the icon red and stays the retry. A merge-only form, a branch target, or a
+the icon red and stays the retry. A form ordinary Work cannot file, a branch target, or a
 staleness only a staged draft introduces offers Reject alone. A Decision row opens the existing node-detail ballot. That
 ballot marks the prior choice on the matching option, and shows it separately
 when no option matches: an agent may reword a Decision's options but never

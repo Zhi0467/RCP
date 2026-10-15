@@ -188,15 +188,16 @@ def moved_proposal_dependencies(state: GraphState, proposal: Proposal) -> list[s
     return list(dict.fromkeys(moved))
 
 
-def proposal_requires_branch_merge(state: GraphState, proposal: Proposal) -> bool:
-    """Whether only a canonical branch merge may file this Proposal's form.
+def proposal_work_cannot_refile(state: GraphState, proposal: Proposal) -> bool:
+    """Whether ordinary Work cannot re-file this Proposal's form.
 
-    Ordinary Work cannot re-file a multi-intent bundle, a standing change, a
-    status change caused by a human edit, or the removal of an accepted
-    unprotected node, so a stale one is withdrawn rather than refreshed.
+    Only replay files a legacy intent, and only a canonical branch merge files a
+    multi-intent bundle, a standing change, a status change caused by a human
+    edit, or the removal of an accepted unprotected node, so a stale one is
+    withdrawn rather than refreshed.
     """
 
-    if len(proposal.ops) > 1:
+    if len(proposal.ops) > 1 or any(op.intent not in PROPOSAL_INTENTS for op in proposal.ops):
         return True
     for operation in proposal.ops:
         if isinstance(operation, ProposalStandingChangeOperation):

@@ -253,7 +253,7 @@ def test_cause_evidence_counts_when_its_edge_follows_the_proposal(manifest, tmp_
     assert project_graph_attention(service.history.state()).stale_proposal_ids == [PROPOSAL]
 
 
-def test_a_stale_merge_only_proposal_is_not_refreshable(filed):
+def test_a_stale_form_work_cannot_file_is_not_refreshable(filed):
     service = filed.state.service
     state = service.history.state()
     hypothesis = state.nodes[HYP].model_copy(update={"updated_rev": state.revision + 1})
@@ -276,12 +276,26 @@ def test_a_stale_merge_only_proposal_is_not_refreshable(filed):
     bundle = state.proposals[PROPOSAL].model_copy(
         update={"id": "prop/merge-bundle", "ops": [*filed_ops, *filed_ops]}
     )
+    legacy = standing.model_copy(
+        update={
+            "id": "prop/replay-legacy",
+            "ops": Proposal.model_validate(
+                {
+                    **standing.model_dump(mode="json"),
+                    "ops": [
+                        {"op": "upsert_glossary", "intent": "legacy_upsert_glossary", "terms": []}
+                    ],
+                }
+            ).ops,
+        }
+    )
+    others = {item.id: item for item in (standing, bundle, legacy)}
     moved = state.model_copy(
         update={
             "nodes": {**state.nodes, HYP: hypothesis},
-            "proposals": {**state.proposals, standing.id: standing, bundle.id: bundle},
+            "proposals": {**state.proposals, **others},
         }
     )
     attention = project_graph_attention(moved)
-    assert attention.stale_proposal_ids == [PROPOSAL, bundle.id, standing.id]
+    assert attention.stale_proposal_ids == sorted([PROPOSAL, *others])
     assert attention.refreshable_proposal_ids == [PROPOSAL]
