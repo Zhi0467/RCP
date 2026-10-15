@@ -46,8 +46,6 @@ class CodexProfile(ProviderProfile):
 
     id = "codex"
     label = "Codex"
-    # Every model's effort list starts at "low" (probed on the CLI catalog).
-    lowest_reasoning = "low"
     usage_profile = "codex.turn.v1"
     local_session_roots_field = "codex_roots"
     remote_session_roots_field = "remote_codex_roots"

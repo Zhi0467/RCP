@@ -1,7 +1,7 @@
 """Light agents: quick, human-started Work chats that recheck one thing.
 
-A light agent runs the node-chat provider and model at that provider's lowest
-effort. Project Settings keep deciding which skills are enabled; the caller
+A light agent runs the node-chat provider and model at the lowest effort that
+model's probed catalog lists; with no cached catalog it keeps the configured effort. Project Settings keep deciding which skills are enabled; the caller
 names in code the few to invoke, and one the project disabled is left out. Its
 request key is the caller's, so a repeated click or a second member reuses the
 first chat instead of starting another, even after its subject moved on.
@@ -25,7 +25,6 @@ from rcp.api.tasks import (
     start_agent_task,
 )
 from rcp.keyed_locks import KeyedLocks
-from rcp.providers import profile_for
 
 # One process owns the database (invariant 8), so an in-process lock serializes
 # every member's lookup and admission for one key.
@@ -63,7 +62,7 @@ def start_light_node_chat(
         else:
             chat = prepare()
             service = get_graph_service(catalog, project_id, initialize=False)
-            provider = service.resolve_agent_profile("node_chat").provider
+            profile = service.resolve_agent_profile("node_chat")
             enabled = set(service.manifest.agent.skill_defaults.skill_ids)
             body: dict[str, object] = {
                 "node_id": chat.node_id,
@@ -74,9 +73,22 @@ def start_light_node_chat(
                     skill for skill in chat.invoked_skill_ids if skill in enabled
                 ],
             }
-            lowest = profile_for(provider).lowest_reasoning
-            if lowest is not None:
-                body["reasoning"] = lowest
+            machine = service.manifest.machine_map[profile.run_on]
+            readiness = service.launcher.cached_readiness(
+                profile.provider,
+                host=machine.host,
+                binary=machine.provider_paths.get(profile.provider),
+            )
+            efforts = next(
+                (
+                    model.reasoning
+                    for model in (readiness.models if readiness else [])
+                    if model.id == profile.model
+                ),
+                [],
+            )
+            if efforts:
+                body["reasoning"] = efforts[0]
             response = start_agent_task(
                 project_id,
                 "node_chat",

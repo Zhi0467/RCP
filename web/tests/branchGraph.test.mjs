@@ -115,6 +115,7 @@ function snapshot(target, revision) {
       decisions_awaiting_choice_ids: [],
       proposal_actions: {},
       stale_proposal_ids: [],
+      refreshable_proposal_ids: [],
       decision_prior_choices: {},
     },
   };

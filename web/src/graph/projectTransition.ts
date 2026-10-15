@@ -265,6 +265,7 @@ function validAttentionProjection(value: unknown): value is GraphAttentionProjec
     "open_blocker_ids",
     "proposal_actions",
     "stale_proposal_ids",
+    "refreshable_proposal_ids",
     "decision_prior_choices",
   ];
   if (
@@ -278,6 +279,7 @@ function validAttentionProjection(value: unknown): value is GraphAttentionProjec
     "decisions_awaiting_choice_ids",
     "open_blocker_ids",
     "stale_proposal_ids",
+    "refreshable_proposal_ids",
   ];
   if (
     !idFields.every((field) => {

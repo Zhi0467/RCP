@@ -1303,6 +1303,7 @@ export function decodeGraphAttentionProjection(
     "open_blocker_ids",
     "proposal_actions",
     "stale_proposal_ids",
+    "refreshable_proposal_ids",
     "decision_prior_choices",
   ];
   if (!isPlainRecord(value) || !hasExactKeys(value, keys)) {
@@ -1313,7 +1314,8 @@ export function decodeGraphAttentionProjection(
       | "pending_proposal_ids"
       | "decisions_awaiting_choice_ids"
       | "open_blocker_ids"
-      | "stale_proposal_ids",
+      | "stale_proposal_ids"
+      | "refreshable_proposal_ids",
   ): string[] => {
     const raw = value[field];
     if (!Array.isArray(raw) || raw.some((item) => !isNonEmptyString(item))) {
@@ -1368,9 +1370,13 @@ export function decodeGraphAttentionProjection(
     open_blocker_ids: readIds("open_blocker_ids"),
     proposal_actions: proposalActions,
     stale_proposal_ids: readIds("stale_proposal_ids"),
+    refreshable_proposal_ids: readIds("refreshable_proposal_ids"),
     decision_prior_choices: { ...(rawPriorChoices as Record<string, string>) },
   };
-  if (attention.stale_proposal_ids.some((id) => !pendingProposalIds.includes(id))) {
+  if (
+    attention.stale_proposal_ids.some((id) => !pendingProposalIds.includes(id)) ||
+    attention.refreshable_proposal_ids.some((id) => !attention.stale_proposal_ids.includes(id))
+  ) {
     throw new Error("Project attention marks a Proposal stale that is not pending.");
   }
   for (const proposalId of attention.pending_proposal_ids) {
@@ -1883,6 +1889,8 @@ export interface GraphAttentionProjection {
   proposal_actions: Record<string, ProposalActionLine[]>;
   /** Pending Proposals the Sync gate would withdraw: their dependencies moved. */
   stale_proposal_ids: string[];
+  /** The stale ones ordinary Work can re-file; a merge-only form offers Reject alone. */
+  refreshable_proposal_ids: string[];
   /** Decision id -> the choice it records, when its options no longer offer it. */
   decision_prior_choices: Record<string, string>;
 }

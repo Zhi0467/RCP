@@ -213,7 +213,7 @@ function RefreshProposalButton({
   return (
     <button
       type="button"
-      className="icon-button proposal-refresh"
+      className={`icon-button proposal-refresh${failure ? " failed" : ""}`}
       data-action={chatId ? "open_chat" : "refresh"}
       aria-label={label}
       title={failure ?? label}

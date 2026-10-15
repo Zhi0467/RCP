@@ -7,24 +7,26 @@ import uuid
 
 from rcp.core.models import GraphState, Proposal
 from rcp.core.operations import (
-    EvidenceEdgeCause,
     ProposalContentChangeOperation,
     ProposalMergeOperation,
     ProposalProtectedRelationOperation,
     ProposalRemovalOperation,
-    ProposalStandingChangeOperation,
     ProposalStatusChangeOperation,
     ProposalSupersedeOperation,
 )
-from rcp.core.validation.proposals import moved_proposal_dependencies
+from rcp.core.validation.proposals import (
+    moved_proposal_dependencies,
+    proposal_evidence_cause_edge_ids,
+)
 
 
-def proposal_refresh_key(project_id: str, proposal: Proposal) -> uuid.UUID:
-    """One refresh chat per filed Proposal, whoever clicks and however often."""
+def proposal_refresh_key(proposal: Proposal) -> uuid.UUID:
+    """One refresh chat per Proposal, whoever clicks and however often.
 
-    return uuid.uuid5(
-        uuid.NAMESPACE_URL, f"rcp:proposal-refresh:{project_id}:{proposal.id}:{proposal.raised_rev}"
-    )
+    Proposal ids are never reused, and request keys are already per project.
+    """
+
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:proposal-refresh:{proposal.id}")
 
 
 def proposal_refresh_node(state: GraphState, proposal: Proposal) -> str | None:
@@ -34,8 +36,6 @@ def proposal_refresh_node(state: GraphState, proposal: Proposal) -> str | None:
     for operation in proposal.ops:
         if isinstance(operation, (ProposalContentChangeOperation, ProposalStatusChangeOperation)):
             subjects.extend(update.id for update in operation.nodes)
-        elif isinstance(operation, ProposalStandingChangeOperation):
-            subjects.append(operation.node_id)
         elif isinstance(operation, ProposalRemovalOperation):
             subjects.extend(operation.node_ids)
         elif isinstance(operation, ProposalSupersedeOperation):
@@ -53,13 +53,7 @@ def proposal_refresh_node(state: GraphState, proposal: Proposal) -> str | None:
 def proposal_refresh_skill_ids(proposal: Proposal) -> list[str]:
     """Evidence triage only when Evidence is the cause being re-judged; nothing else."""
 
-    cites_evidence = any(
-        isinstance(update.cause, EvidenceEdgeCause)
-        for operation in proposal.ops
-        if isinstance(operation, (ProposalContentChangeOperation, ProposalStatusChangeOperation))
-        for update in operation.nodes
-    )
-    return ["evidence-triage"] if cites_evidence else []
+    return ["evidence-triage"] if proposal_evidence_cause_edge_ids(proposal) else []
 
 
 def proposal_refresh_message(state: GraphState, proposal: Proposal) -> str:

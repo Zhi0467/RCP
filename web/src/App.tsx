@@ -4969,7 +4969,7 @@ function MemberApp({
                   staleProposalIds={presentedAttention.stale_proposal_ids}
                   refreshableProposalIds={
                     graphTarget.kind === "main"
-                      ? projectAttentionForPresentation(project, null).stale_proposal_ids
+                      ? projectAttentionForPresentation(project, null).refreshable_proposal_ids
                       : []
                   }
                   onRefresh={async (proposal) =>

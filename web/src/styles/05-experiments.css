@@ -1252,3 +1252,7 @@
 .proposal-card.stale {
   border-left: 3px solid var(--red);
 }
+.proposal-refresh.failed {
+  border-color: var(--red);
+  color: var(--red);
+}

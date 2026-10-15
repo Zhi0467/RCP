@@ -265,8 +265,6 @@ class ClaudeProfile(ProviderProfile):
     # No credential failure signatures have been observed for Claude.
     id = "claude"
     label = "Claude"
-    # Every model's effort list starts at "low" (probed on the CLI catalog).
-    lowest_reasoning = "low"
     usage_profile = "claude.query.v1"
     local_session_roots_field = "claude_roots"
     remote_session_roots_field = "remote_claude_roots"

@@ -151,7 +151,7 @@ def moved_proposal_dependencies(state: GraphState, proposal: Proposal) -> list[s
         if state.config_revisions.get(key, 0) > dependency_revision
     )
     referenced_edge_ids, decision_ids = _proposal_reference_dependencies(proposal)
-    cause_edge_ids = _proposal_evidence_cause_edge_ids(proposal)
+    cause_edge_ids = proposal_evidence_cause_edge_ids(proposal)
     moved.extend(
         edge_id
         for edge_id in sorted(set(proposal.related_edge_ids) | referenced_edge_ids)
@@ -188,7 +188,31 @@ def moved_proposal_dependencies(state: GraphState, proposal: Proposal) -> list[s
     return list(dict.fromkeys(moved))
 
 
-def _proposal_evidence_cause_edge_ids(proposal: Proposal) -> set[str]:
+def proposal_requires_branch_merge(state: GraphState, proposal: Proposal) -> bool:
+    """Whether only a canonical branch merge may file this Proposal's form.
+
+    Ordinary Work cannot re-file a standing change, a status change caused by a
+    human edit, or the removal of an accepted unprotected node, so a stale one
+    is withdrawn rather than refreshed.
+    """
+
+    for operation in proposal.ops:
+        if isinstance(operation, ProposalStandingChangeOperation):
+            return True
+        if isinstance(
+            operation, (ProposalContentChangeOperation, ProposalStatusChangeOperation)
+        ) and any(isinstance(update.cause, HumanEditCause) for update in operation.nodes):
+            return True
+        if isinstance(operation, ProposalRemovalOperation) and any(
+            _existing_protected_node(state, None, node_id) is None for node_id in operation.node_ids
+        ):
+            return True
+    return False
+
+
+def proposal_evidence_cause_edge_ids(proposal: Proposal) -> set[str]:
+    """The Evidence-to-belief edges a Proposal names as its cause."""
+
     return {
         update.cause.ref_id
         for operation in proposal.ops

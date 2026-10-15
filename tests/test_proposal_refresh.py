@@ -3,10 +3,11 @@ from __future__ import annotations
 import pytest
 
 from rcp.agents import AgentEvent
+from rcp.agents.launcher import ProviderReadiness
 from rcp.core.attention import project_graph_attention
-from rcp.core.models import Patch, Proposal
+from rcp.core.models import GatedCard, Patch, Proposal
 from rcp.core.validation.proposals import proposal_is_stale
-from rcp.providers import profile_for
+from rcp.providers.base import ModelChoice
 from tests.helpers import (
     append_fixture_patch,
     create_named_app,
@@ -137,6 +138,14 @@ def test_refresh_starts_one_light_work_chat_only_when_stale(filed):
         yield _event_frame(AgentEvent(event="done"))
 
     filed.state.background_tasks.stream = stream
+    # The light chat takes the lowest effort the model's probed catalog lists.
+    catalog = ProviderReadiness(
+        provider=service.resolve_agent_profile("node_chat").provider,
+        installed=True,
+        authenticated=True,
+        models=[ModelChoice(id="probed", label="Probed", reasoning=["minimal", "low", "high"])],
+    )
+    service.launcher.cached_readiness = lambda *_args, **_kwargs: catalog
     client = signed_in_client(filed)
     url = f"/api/projects/{filed.state.default_project_id}/proposals/{PROPOSAL}/refresh"
 
@@ -149,12 +158,11 @@ def test_refresh_starts_one_light_work_chat_only_when_stale(filed):
     assert client.post(url, json={}).json() == result
 
     task = wait_for_task(store, result["operation_id"], expect="succeeded")
-    provider = service.resolve_agent_profile("node_chat").provider
     assert task.kind == "node_chat"
     assert task.request["mode"] == "work"
     assert task.request["node_id"] == HYP
     assert task.request["chat_id"] == result["chat_id"]
-    assert task.request["reasoning"] == profile_for(provider).lowest_reasoning
+    assert task.request["reasoning"] == "minimal"
     assert task.request["invoked_skill_ids"] == ["evidence-triage"]
     assert PROPOSAL in task.request["message"] and EV in task.request["message"]
     assert launches == ["node_chat"]
@@ -231,3 +239,33 @@ def test_cause_evidence_counts_when_its_edge_follows_the_proposal(manifest, tmp_
     assert project_graph_attention(service.history.state()).stale_proposal_ids == []
     _reword_evidence(service)
     assert project_graph_attention(service.history.state()).stale_proposal_ids == [PROPOSAL]
+
+
+def test_a_stale_merge_only_proposal_is_not_refreshable(filed):
+    service = filed.state.service
+    state = service.history.state()
+    hypothesis = state.nodes[HYP].model_copy(update={"updated_rev": state.revision + 1})
+    standing = Proposal(
+        id="prop/merge-standing",
+        title="Accept the hypothesis",
+        card=GatedCard(decision_needed="d"),
+        ops=[
+            {
+                "op": "set_standing",
+                "intent": "standing_change",
+                "node_id": HYP,
+                "standing": "accepted",
+            }
+        ],
+        related_node_ids=[HYP],
+        raised_rev=state.revision,
+    )
+    moved = state.model_copy(
+        update={
+            "nodes": {**state.nodes, HYP: hypothesis},
+            "proposals": {**state.proposals, standing.id: standing},
+        }
+    )
+    attention = project_graph_attention(moved)
+    assert attention.stale_proposal_ids == [PROPOSAL, standing.id]
+    assert attention.refreshable_proposal_ids == [PROPOSAL]

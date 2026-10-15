@@ -376,7 +376,8 @@ these projections; UI inputs such as the trust lens stay client-side.
 raw-status branching.
 
 Attention publishes exact Proposal, Decision, and asserted-open-Blocker ids,
-plus `stale_proposal_ids`, the pending Proposals the Sync gate would withdraw.
+plus `stale_proposal_ids`, the pending Proposals the Sync gate would withdraw,
+and its subset `refreshable_proposal_ids` that ordinary Work can re-file.
 Proposal action lines include removed incident relations and `before`/`text`
 field values. Counts use that membership. Inbox, Overview, and Runs map the
 projection, never reapply predicates. Backend previews carry candidate membership;
@@ -1094,8 +1095,10 @@ slashes) returns `{"chat_id": string, "operation_id": string}`. It admits a
 light node Work chat on main on the Proposal's subject node, with a backend
 message holding the Proposal and its moved dependencies. Its request key is
 derived from the Proposal, so any repeat by any member returns the first chat.
-A Proposal that is not pending, not stale, or names no current node returns 409
-with code `proposal_not_pending`, `proposal_not_stale`, or
+Once that chat exists, every repeat returns it, whatever the Proposal's state.
+Before it does, a Proposal that is not pending, not stale, merge-only, or names
+no current node returns 409 with code `proposal_not_pending`,
+`proposal_not_stale`, `proposal_needs_branch_merge`, or
 `proposal_target_unavailable`.
 
 ## Application surfaces
@@ -1112,8 +1115,9 @@ truthful operation fallbacks without inventing causality.
 Inbox contains pending protected-belief Proposals, Decisions in `ready` or
 `revisit`, and asserted open Blockers. A Proposal keeps inline judgment because
 it is not a node. A stale Proposal card has a red edge and replaces Approve with
-one icon-only Refresh, which then opens the refresh chat. Off main, or when only a
-staged draft makes it stale, it offers Reject alone until Sync. A Decision row opens the existing node-detail ballot. That
+one icon-only Refresh, which then opens the refresh chat; a failed Refresh turns
+the icon red and stays the retry. A merge-only form, a branch target, or a
+staleness only a staged draft introduces offers Reject alone. A Decision row opens the existing node-detail ballot. That
 ballot marks the prior choice on the matching option, and shows it separately
 when no option matches: an agent may reword a Decision's options but never
 writes `selected_option`, so a reopened ballot would otherwise not say what is
