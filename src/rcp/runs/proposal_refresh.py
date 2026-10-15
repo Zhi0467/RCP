@@ -24,6 +24,8 @@ def proposal_refresh_key(proposal: Proposal) -> uuid.UUID:
     """One refresh chat per Proposal, whoever clicks and however often.
 
     Proposal ids are never reused, and request keys are already per project.
+    The key is a version-5 UUID, and every client Idempotency-Key header is
+    UUID4, so no other request can claim it first.
     """
 
     return uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:proposal-refresh:{proposal.id}")
