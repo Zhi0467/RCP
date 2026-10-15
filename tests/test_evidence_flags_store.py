@@ -103,7 +103,7 @@ def test_flag_migration_preserves_existing_store_and_space_records(store):
     store.close()
     reopened = AppStore(path)
     assert reopened.agent_task("turn") == before
-    assert reopened.storage_schema_ledger_head() == 51
+    assert reopened.storage_schema_ledger_head() == AppStore.storage_schema_registry_head()
     consolidate(reopened)
     original = flag(reopened)["flag"]
     reopened.detach_restored_lifecycle(diagnostic="Restore test", confirmed_by="Human")

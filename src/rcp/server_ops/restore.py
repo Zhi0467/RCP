@@ -46,6 +46,19 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Per-branch Auto-research (v52), fresh, immutable fixture upgrades, and
+        # in-place upgrades.
+        "58e6f3c20eba29966620b89c4c007bed285e884e239ef22e7d5543fd5bd96c76",
+        "1d04767078cb653f2c18867cfdcdf539acaa07a7ea2607b0363cc8c72b746395",
+        "9fa201b3a56b5141a76e718c223055a5457234bfe3490b391c3891f6fdc11319",
+        "f05e22188fc86004ba707effe39101e0514b1e09a6733f43dc83776d00a3cb0a",
+        "4bf6e619daf075ffa34ee3fa51e8e112f333d2f665fab72e4e980674cdb807ab",
+        "844b09827ac2ee52816a212ac15cc458fc7f171be4d41e83f728243df086d7ff",
+        "0e927d179c35519c5fff6f4aaa5eed62590e5af05865f519c958cd571d95e7e4",
+        "34222b2fd761406e5fa737101f98a5401946e068609106c16da3fe3974612072",
+        "d3a0a5b3b1ac64624c68c90400dcaeb2df8c9c4f842ad50ca54925021a94890c",
+        "de2d057fc612bab8d5ab26882f23a0722972c04f360dbf2393055175846d9de8",
+        "a6367104bf28a9198e6a6c2dbadf42e9e20f04be91486032f87bcc90125b7c0f",
         # Evidence flags (v51), fresh, immutable fixture upgrades, and in-place
         # upgrades.
         "2e46ed4bba3131503a693b110e34fff7ef9d07f46e1c393014fbdc940ba43f82",

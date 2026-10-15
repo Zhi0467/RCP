@@ -27,7 +27,7 @@ from rcp.agents.command_protocol import (
     WatchGraphCommandRequest,
 )
 from rcp.core.models import GraphState
-from rcp.loop_status import other_branch_loops
+from rcp.loop_status import other_branch_auto_research, other_branch_loops
 from rcp.runs.auto_research import (
     AutoResearchCommandContext,
     AutoResearchCommandEffectResult,
@@ -212,6 +212,9 @@ def auto_research_command_effects(
             )
         result = project_auto_research_episode(store, episode.episode_id).status_result()
         result["other_branch_loops"] = other_branch_loops(
+            store, episode.project_id, graph_target=episode.graph_target
+        ).model_dump(mode="json", exclude_none=True)
+        result["other_auto_research"] = other_branch_auto_research(
             store, episode.project_id, graph_target=episode.graph_target
         ).model_dump(mode="json", exclude_none=True)
         if arguments.worker_id is not None:

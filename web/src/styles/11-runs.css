@@ -1505,3 +1505,32 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.auto-research-live-elsewhere > span {
+  color: var(--muted);
+  display: block;
+  font-size: var(--type-3xs);
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  margin-bottom: 7px;
+  text-transform: uppercase;
+}
+.auto-research-live-elsewhere ul {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.auto-research-live-elsewhere li {
+  align-items: center;
+  color: var(--ink-soft);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--type-sm);
+  gap: 4px 10px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.auto-research-live-elsewhere a {
+  text-decoration: none;
+}

@@ -44,8 +44,9 @@ export function useEpisodeDialogs({
       ? { [selectedAutoResearchEpisodeId]: selected.value.messages }
       : {};
   const episodeRefreshError = resource.error ? String(resource.error) : null;
-  const liveAutoResearchEpisode =
-    episodes.find((episode) => episode.mode === "auto_research" && isLiveEpisode(episode)) ?? null;
+  const liveAutoResearchEpisodes = episodes.filter(
+    (episode) => episode.mode === "auto_research" && isLiveEpisode(episode),
+  );
   const refreshEpisodes = useCallback(async () => {
     if (!projectId) return false;
     // Callers hold their action lock until this read settles or fails.
@@ -113,7 +114,7 @@ export function useEpisodeDialogs({
     episodeRefreshError,
     episodes,
     episodeMessages,
-    liveAutoResearchEpisode,
+    liveAutoResearchEpisodes,
     openRunDialog,
     closeRunDialog,
     openAutoResearchDialog,

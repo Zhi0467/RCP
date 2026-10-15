@@ -9,6 +9,7 @@ import rcp.storage as storage_package
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.loop_status import other_branch_auto_research
 from rcp.providers import ProviderUsage
 from rcp.storage import (
     AgentTaskRecord,
@@ -1092,3 +1093,16 @@ def test_public_usage_snapshot_excludes_hidden_episode_report_usage(tmp_path) ->
     assert {
         task.operation_id for task in store.episode_tasks(episode.episode_id, include_hidden=True)
     } == {root.operation_id, hidden.operation_id}
+
+
+def test_auto_research_runs_concurrently_on_separate_branches(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    first, _ = _episode(store, episode_id="episode-a", root_status="queued")
+    second, _ = _episode(store, episode_id="episode-b", root_status="queued")
+
+    overlap = other_branch_auto_research(store, "project", graph_target=first.graph_target)
+
+    assert [row.episode_id for row in overlap.rows] == [second.episode_id]
+    assert overlap.rows[0].started_by.kind == "human"
+    assert overlap.omitted == 0

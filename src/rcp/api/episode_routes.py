@@ -415,13 +415,7 @@ def start_episode(
             except ClientRequestConflict:
                 raise
             except ValueError as exc:
-                live = any(
-                    episode.mode == "auto_research"
-                    and episode.status in {"queued", "running", "stopping", "wrapping_up"}
-                    for episode in store.episodes(project_id)
-                )
-                status = 409 if live else 422
-                raise HTTPException(status_code=status, detail=str(exc)) from exc
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ClientRequestConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

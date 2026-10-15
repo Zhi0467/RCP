@@ -579,8 +579,8 @@ def test_failed_report_is_terminal_without_a_report_recovery_surface(tmp_path) -
     assert not {"report_retry", "report_resume"} & type(response).model_fields.keys()
 
 
-def test_can_continue_is_withheld_while_another_episode_owns_the_slot(tmp_path) -> None:
-    """The offer mirrors admission: a live project episode or an active merge refuses it."""
+def test_can_continue_is_withheld_only_while_its_branch_merges(tmp_path) -> None:
+    """The offer mirrors admission: an active merge refuses it, a sibling branch does not."""
 
     from .test_branch_target_storage import _merge_task
 
@@ -598,18 +598,8 @@ def test_can_continue_is_withheld_while_another_episode_owns_the_slot(tmp_path) 
         ).can_continue
 
     assert can_continue()
-    live, live_root = _auto_episode(store, "live", root_status="queued")
-    assert not can_continue()
-    assert not serialize_episode(
-        store, "project", live, branch_summary=_branch_summary
-    ).can_continue
-    # A wrapping-up episode still owns the slot; only its settled report frees it.
-    store.fail_agent_task(live_root.operation_id, "provider failed")
-    assert not can_continue()
-    live_root = store.agent_task(live_root.operation_id)
-    assert live_root is not None
-    _, live_attempt_id = _begin_report(store, live, live_root, ending="failed")
-    store.finish_episode_report_error(live_attempt_id, "The report output was invalid.")
+    # Live Auto-research on another branch runs beside this one.
+    _auto_episode(store, "live", root_status="queued")
     assert can_continue()
     store.create_branch_merge_task(_merge_task(store, ended, "merge"))
     assert not can_continue()
@@ -1071,6 +1061,17 @@ def test_graph_archive_hides_default_list_but_keeps_explicit_reads(tmp_path) -> 
     def summaries(items):
         return {item.episode_id: _branch_summary(item) for item in items}
 
+    # A live episode stays listed on an archived branch; only an ended one is hidden.
+    listed = serialize_episodes(store, "project", branch_summaries=summaries)
+    assert [item.episode_id for item in listed] == [episode.episode_id]
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET status = 'stopped', ending = 'stopped', "
+            "wrapup_state = 'skipped' WHERE episode_id = ?",
+            (episode.episode_id,),
+        )
+    episode = store.episode(episode.episode_id)
+    assert episode is not None
     assert serialize_episodes(store, "project", branch_summaries=summaries) == []
     shown = serialize_episodes(
         store, "project", branch_summaries=summaries, include_archived_branches=True
