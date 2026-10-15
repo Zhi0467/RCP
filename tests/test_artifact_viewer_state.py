@@ -324,6 +324,20 @@ def test_delete_unbinds_keeps_and_pins_and_is_never_reimported(viewer_app):
     assert artifact.artifact_id not in {entry["artifact_id"] for entry in saved}
 
 
+def test_a_delete_after_expiry_leaves_the_artifact_deleted(viewer_app):
+    app, client, store = viewer_app
+    project = app.state.default_project_id
+    task = _task(store, project)
+    artifact = _artifact(store, task, expires_at=store.now())
+    assert store.expire_artifacts() == 1
+    assert (
+        client.delete(f"/api/projects/{project}/artifacts/{artifact.artifact_id}").status_code
+        == 204
+    )
+    with pytest.raises(ArtifactDeleted):
+        _artifact(store, task)
+
+
 def test_delete_waits_only_while_an_edit_using_the_artifact_runs(viewer_app):
     app, client, store = viewer_app
     project = app.state.default_project_id

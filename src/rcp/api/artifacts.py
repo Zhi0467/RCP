@@ -719,8 +719,10 @@ def keep_stored_artifact(
         if user.display_name and user.display_name.strip()
         else None
     )
-    _stored_artifact(store, project_id, artifact_id)
-    return store.keep_artifact(artifact_id, resolved_by=human)
+    # Delete takes this lock too, so the check cannot go stale before Keep.
+    with store.artifact_lock(artifact_id):
+        _stored_artifact(store, project_id, artifact_id)
+        return store.keep_artifact(artifact_id, resolved_by=human)
 
 
 @router.delete(
@@ -738,13 +740,7 @@ def delete_stored_artifact(
     try:
         store.delete_artifact(project_id, artifact_id)
     except KeyError:
-        status = store.artifact_import_status(artifact_id)
-        if (
-            status is None
-            or status["project_id"] != project_id
-            or status["state"] not in {"deleted", "missing"}
-        ):
-            raise HTTPException(status_code=404, detail="Artifact not found") from None
+        raise HTTPException(status_code=404, detail="Artifact not found") from None
     except ArtifactDeleteRefused as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return Response(status_code=204)
@@ -874,10 +870,12 @@ def undo_artifact(
     *,
     store: Annotated[AppStore, Depends(get_store)],
 ):
-    artifact = store.artifact(artifact_id)
-    if artifact is None or artifact.project_id != project_id:
-        raise HTTPException(status_code=404, detail="Artifact not found")
-    try:
-        return store.undo_artifact(artifact_id).model_dump(mode="json")
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    # Delete takes this lock too, so the check cannot go stale before Undo.
+    with store.artifact_lock(artifact_id):
+        artifact = store.artifact(artifact_id)
+        if artifact is None or artifact.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Artifact not found")
+        try:
+            return store.undo_artifact(artifact_id).model_dump(mode="json")
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc

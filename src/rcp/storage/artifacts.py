@@ -610,10 +610,24 @@ class ArtifactStoreMixin(StoreMixinBase):
         return None
 
     def delete_artifact(self, project_id: str, artifact_id: str) -> None:
-        """Remove every version of a project artifact, permanently."""
+        """Remove every version of a project artifact, permanently.
+
+        Deleting one that expiry or an earlier Delete already removed succeeds and
+        leaves it `deleted`, so nothing recreates it.
+        """
         with self.artifact_lock(artifact_id):
             artifact = self.artifact(artifact_id)
-            if artifact is None or artifact.project_id != project_id:
+            if artifact is None:
+                with self.connection() as connection:
+                    marked = connection.execute(
+                        "UPDATE artifact_imports SET state = 'deleted', reason = ? "
+                        "WHERE artifact_id = ? AND project_id = ? AND state IN ('missing', 'deleted')",
+                        ("Artifact deleted.", artifact_id, project_id),
+                    ).rowcount
+                if not marked:
+                    raise KeyError(artifact_id)
+                return
+            if artifact.project_id != project_id:
                 raise KeyError(artifact_id)
             refusal = self.artifact_delete_refusal(artifact, self.artifact_deletion_holds())
             if refusal is not None:
