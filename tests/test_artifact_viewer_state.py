@@ -11,6 +11,7 @@ import pytest
 from rcp.artifacts import AgentArtifactDescriptor, classify_artifact_bytes, descriptor_for
 from rcp.live_artifacts import ResolvedLiveVersion
 from rcp.storage import AgentTaskRecord, Artifact, AutoResearchChildExperimentRecord, EpisodeRecord
+from rcp.storage.artifacts import ArtifactDeleted
 from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
@@ -317,6 +318,8 @@ def test_delete_unbinds_keeps_and_pins_and_is_never_reimported(viewer_app):
         store.agent_task(task.operation_id).result["artifacts"][0]
     ).is_kept()
     assert store.artifact_import_tasks(project, limit=10) == []
+    with pytest.raises(ArtifactDeleted):
+        _artifact(store, task, name="board.html", data=html)
     saved = client.get(f"/api/projects/{project}/artifacts").json()
     assert artifact.artifact_id not in {entry["artifact_id"] for entry in saved}
 

@@ -773,10 +773,8 @@ class ProjectTransferStoreMixin(StoreMixinBase):
             "SELECT * FROM episode_wrapups WHERE episode_id = ?",
             (episode_id,),
         ).fetchone()
-        # A deleted report's artifact is gone; the archive carries no report for it.
         report = connection.execute(
-            "SELECT report.* FROM episode_reports AS report JOIN artifacts USING(artifact_id) "
-            "WHERE report.episode_id = ?",
+            "SELECT * FROM episode_reports WHERE episode_id = ?",
             (episode_id,),
         ).fetchone()
         archive = connection.execute(

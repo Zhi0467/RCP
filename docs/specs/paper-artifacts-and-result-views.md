@@ -377,13 +377,11 @@ artifact lock and capture guard. It removes every version and every member's pin
 clears kept bindings on chat results, and leaves a `missing` import tombstone so
 the importer never recreates it. The removal waits while an agent turn uses the
 artifact, a consolidation report awaits review, or a legacy import is pending;
-`can_delete` and the route apply that same rule. A deleted episode report keeps its
-report row, but no report view, list, digest, or transfer carries it. A copy the
-human saved into the workspace stays.
+`can_delete` and the route apply that same rule. Episode reports stay bound to their
+episode and cannot be deleted. A copy the human saved into the workspace stays.
 
 **Why:** without the tombstone, import restores a deleted chat output from its
 stage; without clearing kept bindings, backup inventory refuses the project.
-Keeping the report row stops the report lifecycle from regenerating it.
 
 **Why:** RCP storage gives every format version history without adding managed
 files beside human code. Team storage is already shared; artifacts intentionally

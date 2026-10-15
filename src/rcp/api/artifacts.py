@@ -397,7 +397,7 @@ def _stored_artifact(store: AppStore, project_id: str, artifact_id: str):
         status = store.artifact_import_status(artifact_id)
         if status is not None and status["project_id"] == project_id:
             raise HTTPException(
-                status_code=410 if status["state"] == "missing" else 409,
+                status_code=410 if status["state"] in {"missing", "deleted"} else 409,
                 detail=status["reason"] or "Artifact import is pending.",
             )
     if artifact is None or artifact.project_id != project_id:

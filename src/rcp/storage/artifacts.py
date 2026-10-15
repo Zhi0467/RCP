@@ -47,6 +47,10 @@ class ArtifactDeleteRefused(ValueError):
     """Another lifecycle still depends on the artifact's bytes."""
 
 
+class ArtifactDeleted(ValueError):
+    """A member deleted this identity; nothing may recreate it."""
+
+
 class _CaptureGuard:
     """Allow overlapping captures; exclude deletion until every capture exits."""
 
@@ -178,6 +182,14 @@ class ArtifactStoreMixin(StoreMixinBase):
     def create_artifact(self, artifact: Artifact, *, data: bytes) -> Artifact:
         with self.artifact_lock(artifact.artifact_id):
             existing = self.artifact(artifact.artifact_id)
+            if existing is None:
+                with self.connection() as connection:
+                    tombstone = connection.execute(
+                        "SELECT 1 FROM artifact_imports WHERE artifact_id = ? AND state = 'deleted'",
+                        (artifact.artifact_id,),
+                    ).fetchone()
+                if tombstone is not None:
+                    raise ArtifactDeleted(artifact.artifact_id)
             if existing is not None:
                 if (
                     self.read_artifact_bytes(
@@ -566,6 +578,8 @@ class ArtifactStoreMixin(StoreMixinBase):
 
     def artifact_delete_refusal(self, artifact: Artifact) -> str | None:
         """Why removal must wait; expiry and Delete share these holds."""
+        if artifact.supplier == "episode_ending":
+            return "Episode reports stay bound to their episode."
         if (
             self.artifact_edit_operation_id(artifact.project_id, artifact.artifact_id) is not None
             or artifact.artifact_id in self.protected_edit_artifact_ids()
@@ -586,7 +600,7 @@ class ArtifactStoreMixin(StoreMixinBase):
                 raise KeyError(artifact_id)
             if (reason := self.artifact_delete_refusal(artifact)) is not None:
                 raise ArtifactDeleteRefused(reason)
-            self._remove_artifact(artifact, "Artifact deleted.")
+            self._remove_artifact(artifact, "deleted", "Artifact deleted.")
 
     def expire_artifacts(
         self, *, as_of: datetime | None = None, protected_artifact_ids: frozenset[str] = frozenset()
@@ -609,12 +623,14 @@ class ArtifactStoreMixin(StoreMixinBase):
                     or self.artifact_delete_refusal(artifact) is not None
                 ):
                     continue
-                self._remove_artifact(artifact, "Artifact expired.")
+                self._remove_artifact(artifact, "missing", "Artifact expired.")
                 removed += 1
         return removed
 
-    def _remove_artifact(self, artifact: Artifact, reason: str) -> None:
+    def _remove_artifact(self, artifact: Artifact, state: str, reason: str) -> None:
         """Drop an artifact under its lock, leaving a tombstone that stops re-import.
+
+        A `deleted` tombstone also stops discovery from recreating the identity.
 
         Kept chat descriptors lose their kept binding, so backup inventory and the
         saved list stop expecting the bytes; pins go for every member.
@@ -624,8 +640,8 @@ class ArtifactStoreMixin(StoreMixinBase):
             with self.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 connection.execute(
-                    "INSERT OR REPLACE INTO artifact_imports VALUES (?, ?, 'missing', 0, NULL, ?)",
-                    (artifact_id, artifact.project_id, reason),
+                    "INSERT OR REPLACE INTO artifact_imports VALUES (?, ?, ?, 0, NULL, ?)",
+                    (artifact_id, artifact.project_id, state, reason),
                 )
                 for table in (
                     "artifact_operations",

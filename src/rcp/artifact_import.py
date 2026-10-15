@@ -139,6 +139,9 @@ def import_project_artifacts(
         with store.artifact_lock(descriptor.artifact_id):
             try:
                 existing = store.artifact(descriptor.artifact_id)
+                # A Delete or settlement may have landed since the source was listed.
+                if existing is None and not _due(store, descriptor.artifact_id):
+                    continue
                 if existing is None:
                     scope, data, expires_at = _read_source(
                         store, task, descriptor, candidate, workspace, protected
