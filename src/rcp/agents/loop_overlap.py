@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from rcp.loop_status import LoopOverlap
+from rcp.loop_status import AutoResearchOverlap, LoopOverlap
 
 
 def render_loop_interference_rule(*, ask_allowed: bool) -> str:
@@ -31,4 +31,13 @@ def render_loop_overlap(loops: LoopOverlap, *, ask_allowed: bool) -> str:
         render_loop_interference_rule(ask_allowed=ask_allowed)
         + "\n"
         + json.dumps(loops.model_dump(mode="json", exclude_none=True), ensure_ascii=False)
+    )
+
+
+def render_auto_research_overlap(runs: AutoResearchOverlap) -> str:
+    """Read-only evidence of Auto-research live on other branches."""
+
+    return json.dumps(
+        {"other_auto_research": runs.model_dump(mode="json", exclude_none=True)},
+        ensure_ascii=False,
     )

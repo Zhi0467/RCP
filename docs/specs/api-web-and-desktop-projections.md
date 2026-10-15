@@ -481,11 +481,13 @@ conflict files. Its status is `clean`, `conflict`, `already_merged`,
 `POST /api/projects/{project_id}/episodes/{episode_id}/cleanup` accepts the
 three cleanup choices and `confirm_discard`. Unmerged removal or graph archive
 requires that confirmation. Each step is recorded and retryable. Graph archive
-only hides the branch from the default episode list. The list query
+only hides the branch's ended episodes from the default episode list; a live
+episode stays listed so its Stop remains reachable. The list query
 `include_archived_branches=true` includes it again. Explicit episode and branch
 reads remain available, and Patch history is unchanged. The default episode
-list is the 50 most recent plus retained archives and the current member of
-every Auto-research chain, so each orchestrator card in Agents has its episode.
+list is the 50 most recent plus every live episode, retained archives, and the
+current member of every Auto-research chain, so each orchestrator card in Agents
+has its episode.
 
 ## Compute setup and job APIs
 

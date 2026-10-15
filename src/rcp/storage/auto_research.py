@@ -141,7 +141,7 @@ class AutoResearchStoreMixin(StoreMixinBase):
                     (task.created_at, episode.episode_id),
                 )
         except sqlite3.IntegrityError as exc:
-            raise ValueError("Only one live Auto-research episode may run per project.") from exc
+            raise ValueError("Only one live Auto-research episode may run per branch.") from exc
         stored_episode = self.episode(episode.episode_id)
         stored_task = self.agent_task(task.operation_id)
         assert stored_episode is not None and stored_task is not None
@@ -248,7 +248,7 @@ class AutoResearchStoreMixin(StoreMixinBase):
                     raise ValueError("the continuation chain does not reach its graph branch root")
                 self._require_project_accepts_new_work(connection, episode.project_id)
                 if self._live_episode_row(connection, started) is not None:
-                    raise ValueError("Only one live Auto-research episode may run per project.")
+                    raise ValueError("Only one live Auto-research episode may run per branch.")
                 self._insert_episode(connection, started)
                 connection.execute(
                     """
@@ -301,7 +301,7 @@ class AutoResearchStoreMixin(StoreMixinBase):
                     raise ValueError("the continuation could not claim its reauthorized notice")
         except sqlite3.IntegrityError as exc:
             raise ValueError(
-                "Only one live Auto-research episode may run per project, and an episode "
+                "Only one live Auto-research episode may run per branch, and an episode "
                 "is continued at most once."
             ) from exc
         stored_episode = self.episode(episode.episode_id)
@@ -340,8 +340,6 @@ class AutoResearchStoreMixin(StoreMixinBase):
             is not None
         ):
             raise ValueError("auto_research_turn_active")
-        if store._live_episode_row(connection, source) is not None:
-            raise ValueError("auto_research_project_occupied")
         if store._active_branch_merge_exists(connection, source.project_id, source.graph_target):
             raise ValueError("episode_merge_reserved")
         store.require_episode_binding_admission_open(
