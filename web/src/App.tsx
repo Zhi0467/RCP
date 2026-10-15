@@ -3509,6 +3509,16 @@ function MemberApp({
   openNodeByIdRef.current = openNodeById;
   const openChatsRef = useRef(openChats);
   openChatsRef.current = openChats;
+  // A flag's chat is bound to main; from a branch, switch there, then open it.
+  const [pendingMainChat, setPendingMainChat] = useState<string | null>(null);
+  const loadedTargetKind = project?.graph_target.kind;
+  useEffect(() => {
+    // The chat reads the loaded snapshot's target, so wait until main has loaded.
+    if (!pendingMainChat || graphTarget.kind !== "main" || loadedTargetKind !== "main" || loading)
+      return;
+    setPendingMainChat(null);
+    openChatsRef.current(pendingMainChat);
+  }, [pendingMainChat, graphTarget, loadedTargetKind, loading]);
   const webMcpViewOwners = useMemo<WebMcpViewOwners>(
     () => ({
       openNode: (nodeId) => openNodeByIdRef.current(nodeId),
@@ -4158,12 +4168,15 @@ function MemberApp({
     consolidation?.schedule ?? null,
     Date.now(),
   );
+  // Flags are project-wide Inbox rows; only main's graph carries their node marks.
   const flagRows = evidenceFlagRows(
-    graphTarget.kind === "main" ? (consolidation?.evidence_flags ?? []) : [],
+    consolidation?.evidence_flags ?? [],
     graph.nodes,
     project.repositories,
   );
-  const flaggedNodeIds = new Set(flagRows.flatMap((row) => (row.node ? [row.node.id] : [])));
+  const flaggedNodeIds = new Set(
+    graphTarget.kind === "main" ? flagRows.flatMap((row) => (row.node ? [row.node.id] : [])) : [],
+  );
   const consolidationCount =
     consolidationAttentionCount(openConsolidation, needsConsolidationRenewal) + flagRows.length;
   const attentionCount =
@@ -4887,7 +4900,11 @@ function MemberApp({
                   writesDisabled={!consolidation?.can_write}
                   onChanged={updateEvidenceFlag}
                   onOpenNode={openNode}
-                  onOpenChat={openChats}
+                  onOpenChat={(chatId) => {
+                    if (graphTarget.kind === "main") return openChats(chatId);
+                    setPendingMainChat(chatId);
+                    window.location.hash = projectViewHash(project.id, MAIN_GRAPH, "chats");
+                  }}
                 />
                 <ConsolidationInbox
                   items={openConsolidation}
