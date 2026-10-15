@@ -544,15 +544,16 @@ def test_start_episode_projects_the_exact_main_transition_into_its_branch_head(
     }
     assert launch_observations == [payload["root_operation_id"]]
 
-    refused = signed_in_client(app).post(
+    # A second start runs beside the first on its own branch.
+    second = signed_in_client(app).post(
         f"/api/projects/{app.state.default_project_id}/episodes",
         json={"mode": "auto_research", "invocation_ceiling": 2},
     )
-    assert refused.status_code == 409
+    assert second.status_code == 202, second.text
     branches = service.manifest.research_dir / "branches"
-    assert sorted(path.name for path in branches.iterdir() if not path.name.startswith(".")) == [
-        payload["episode_id"]
-    ]
+    assert sorted(
+        path.name for path in branches.iterdir() if not path.name.startswith(".")
+    ) == sorted([payload["episode_id"], second.json()["episode_id"]])
 
 
 def test_start_episode_keeps_a_visible_failed_reservation_when_branch_creation_fails(

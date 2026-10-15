@@ -108,3 +108,8 @@ by the exact boundary source from the preceding immutable fixture.
 `pre-evidence-flags-v24-b063a21` retains the last shape before nightly
 consolidation gained Evidence flags (storage migration 51), ending at migration
 50. It is built by the exact boundary source from the preceding immutable fixture.
+
+`pre-per-branch-auto-research-v25-475744b` retains the last shape before live
+Auto-research identity narrowed from the project to its graph branch (storage
+migration 52), ending at migration 51. It is built by the exact boundary source
+from the preceding immutable fixture.

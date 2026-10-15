@@ -8,7 +8,8 @@ receipt, never from a possibly moved current manifest.
 from __future__ import annotations
 
 import json
-from typing import Literal
+from collections.abc import Iterable
+from typing import Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -89,6 +90,27 @@ class LoopOverlap(BaseModel):
 
     rows: list[LoopStatusRow] = Field(default_factory=list)
     omitted: int = 0
+
+
+class AutoResearchOverlapRow(BaseModel):
+    """Compact identity of a live Auto-research episode on another branch."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    episode_id: str
+    graph_target: GraphTargetRef
+    started_by: LoopStarter
+    checkout: LoopOverlapCheckout
+
+
+class AutoResearchOverlap(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rows: list[AutoResearchOverlapRow] = Field(default_factory=list)
+    omitted: int = 0
+
+
+_OverlapT = TypeVar("_OverlapT", LoopOverlap, AutoResearchOverlap)
 
 
 class LoopCurrentStatus(EpisodeLoopMetadata):
@@ -258,42 +280,91 @@ def other_branch_loops(
             item[0].episode_id,
         ),
     )
-    overlap = LoopOverlap(omitted=len(candidates))
-    for _episode, snapshot in candidates[:LOOP_OVERLAP_MAX_ROWS]:
-        current = _loop_status_row(store, snapshot)
-        if current is None:
-            continue
-        candidate = LoopOverlap(
-            rows=[*overlap.rows, compact_loop_status(current)],
-            omitted=overlap.omitted - 1,
+    rows = (
+        compact_loop_status(current)
+        for _episode, snapshot in candidates[:LOOP_OVERLAP_MAX_ROWS]
+        if (current := _loop_status_row(store, snapshot)) is not None
+    )
+    return _fill_within_budget(LoopOverlap(omitted=len(candidates)), rows)
+
+
+def other_branch_auto_research(
+    store: AppStore,
+    project_id: str,
+    *,
+    graph_target: GraphTargetRef,
+) -> AutoResearchOverlap:
+    """Live Auto-research episodes off this target, bounded like loop overlap."""
+
+    candidates = sorted(
+        (
+            episode
+            for episode in store.live_episodes(project_id)
+            if episode.mode == "auto_research"
+            and episode.status in _LIVE_EPISODE_STATUSES
+            and episode.graph_target != graph_target
+        ),
+        key=lambda episode: (episode.graph_target.key, episode.episode_id),
+    )
+    rows = (_auto_research_row(store, episode) for episode in candidates[:LOOP_OVERLAP_MAX_ROWS])
+    return _fill_within_budget(AutoResearchOverlap(omitted=len(candidates)), rows)
+
+
+def _auto_research_row(store: AppStore, episode: EpisodeRecord) -> AutoResearchOverlapRow:
+    metadata = episode_loop_metadata(store, episode)
+    return AutoResearchOverlapRow(
+        episode_id=episode.episode_id,
+        graph_target=episode.graph_target,
+        started_by=_loop_starter(metadata.started_by),
+        checkout=_overlap_checkout(metadata.checkout),
+    )
+
+
+def _fill_within_budget(
+    overlap: _OverlapT, rows: Iterable[LoopStatusRow | AutoResearchOverlapRow]
+) -> _OverlapT:
+    """Append whole rows while the overlap's wire encoding fits its byte budget.
+
+    Unusually long paths must not exhaust a command response's budget. Never
+    truncate an identity or checkout path; a row that does not fit is omitted.
+    """
+
+    for row in rows:
+        candidate = overlap.model_copy(
+            update={"rows": [*overlap.rows, row], "omitted": overlap.omitted - 1}
         )
-        # Bound the wire encoding too: unusually long paths must not exhaust a
-        # command response's budget. Never truncate an identity or checkout path.
         if len(json.dumps(candidate.model_dump(mode="json")).encode()) > LOOP_OVERLAP_MAX_BYTES:
             break
         overlap = candidate
     return overlap
 
 
+def _loop_starter(starter: EpisodeStarter) -> LoopStarter:
+    return LoopStarter(
+        kind=starter.kind,
+        id=(starter.human.user_id if starter.human else starter.auto_research_episode_id),
+        display_name=starter.human.display_name if starter.human else None,
+    )
+
+
+def _overlap_checkout(checkout: LoopCheckout) -> LoopOverlapCheckout:
+    return LoopOverlapCheckout(
+        kind=checkout.kind,
+        execution_host=checkout.execution_host,
+        repository_paths=checkout.repository_paths,
+    )
+
+
 def compact_loop_status(row: LoopCurrentStatus) -> LoopStatusRow:
     """Use one compact identity projection in prompts and overlap responses."""
 
-    starter = row.started_by
     return LoopStatusRow(
         node_id=row.node_id,
         episode_id=row.episode_id,
         graph_target=row.graph_target,
         state=row.state,
-        started_by=LoopStarter(
-            kind=starter.kind,
-            id=(starter.human.user_id if starter.human else starter.auto_research_episode_id),
-            display_name=starter.human.display_name if starter.human else None,
-        ),
-        checkout=LoopOverlapCheckout(
-            kind=row.checkout.kind,
-            execution_host=row.checkout.execution_host,
-            repository_paths=row.checkout.repository_paths,
-        ),
+        started_by=_loop_starter(row.started_by),
+        checkout=_overlap_checkout(row.checkout),
     )
 
 

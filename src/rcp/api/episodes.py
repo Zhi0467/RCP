@@ -525,14 +525,20 @@ def listed_episodes(
     mode: EpisodeMode | None = None,
     include_archived_branches: bool = False,
 ) -> list[EpisodeRecord]:
-    """The recent bounded list, plus retained archives and each orchestrator's current member."""
+    """The recent bounded list plus live episodes, retained archives, and chain heads."""
 
     bounded_limit = 50
 
     def listed(episode: EpisodeRecord) -> bool:
         if mode is not None and episode.mode != mode:
             return False
-        if include_archived_branches or episode.graph_target.kind != "branch":
+        # A live episode stays listed even on an archived branch: it can still
+        # act on a shared checkout, and Stop must stay reachable.
+        if (
+            include_archived_branches
+            or episode.graph_target.kind != "branch"
+            or episode.status in _LIVE_EPISODE_STATUSES
+        ):
             return True
         state = store.episode_isolation_state(
             project_id,
@@ -545,7 +551,6 @@ def listed_episodes(
     # Filter before the limit so hidden archived branches do not shrink the list.
     every = [episode for episode in store.episodes(project_id, limit=None) if listed(episode)]
     selected = every[:bounded_limit]
-    # Retained archives remain discoverable after newer episodes fill the recent list.
     selected_by_id = {episode.episode_id: episode for episode in selected}
     # Agents lists every Auto-research orchestrator, so each chain's current
     # member stays listed however many newer episodes there are.
@@ -554,7 +559,8 @@ def listed_episodes(
             current = store.episode_chain(root.episode_id)[-1]
             if listed(current):
                 selected_by_id[current.episode_id] = current
-    for episode in store.archived_episodes(project_id):
+    # Live episodes keep Stop reachable; retained archives stay discoverable.
+    for episode in [*store.live_episodes(project_id), *store.archived_episodes(project_id)]:
         if listed(episode):
             selected_by_id[episode.episode_id] = episode
     return sorted(
@@ -704,7 +710,6 @@ def auto_research_message_refusal(store: AppStore, episode: EpisodeRecord) -> di
             "auto_research_already_continued": "Open the newest continuation to message its orchestrator.",
             "auto_research_session_unavailable": "The orchestrator session or stage is unavailable. Start a new Auto-research episode.",
             "auto_research_turn_active": "An episode turn is still active; wait for it to settle.",
-            "auto_research_project_occupied": "Another Auto-research episode is live on this project.",
             "episode_merge_reserved": "The branch is being merged; wait for the merge to finish.",
             "episode_isolation_unavailable": "The branch's isolation has been removed or is being removed.",
             "auto_research_child_turn_active": f"Wait for the human turn in child chat {chat_id} to settle.",

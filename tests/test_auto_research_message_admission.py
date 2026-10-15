@@ -18,7 +18,6 @@ from tests.test_episode_api import create_terminal_auto_episode
         ("session", "auto_research_session_unavailable"),
         ("stage", "auto_research_session_unavailable"),
         ("history", "auto_research_session_unavailable"),
-        ("occupied", "auto_research_project_occupied"),
         ("merge", "episode_merge_reserved"),
         ("removed", "episode_isolation_unavailable"),
         ("wrapping_up", "auto_research_not_ended"),
@@ -41,20 +40,6 @@ def test_message_refusal_is_projected_and_enforced(
                 connection.execute(
                     f"UPDATE graph_runs SET {updates[condition]} WHERE operation_id = ?",
                     (episode.root_operation_id,),
-                )
-        elif condition == "occupied":
-            other, _, _ = create_terminal_auto_episode(
-                store,
-                app.state.catalog.open(episode.project_id).history,
-                episode.project_id,
-                episode_id="another-episode",
-                report_error="Unavailable.",
-            )
-            with store.connection() as connection:
-                connection.execute(
-                    "UPDATE episodes SET status = 'running', ending = NULL, "
-                    "wrapup_state = 'not_started', ended_at = NULL WHERE episode_id = ?",
-                    (other.episode_id,),
                 )
         elif condition == "wrapping_up":
             with store.connection() as connection:
@@ -95,3 +80,26 @@ def test_message_refusal_is_projected_and_enforced(
         assert response.json()["detail"]["code"] == code
     assert store.episode_continuation(episode.episode_id) is None
     assert store.auto_research_messages(episode.episode_id) == []
+
+
+def test_live_auto_research_on_another_branch_does_not_occupy(manifest, tmp_path, monkeypatch):
+    app, store, episode, _url = _ended_app(manifest, tmp_path, monkeypatch)
+    other, _, _ = create_terminal_auto_episode(
+        store,
+        app.state.catalog.open(episode.project_id).history,
+        episode.project_id,
+        episode_id="another-episode",
+        report_error="Unavailable.",
+    )
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET status = 'running', ending = NULL, "
+            "wrapup_state = 'not_started', ended_at = NULL WHERE episode_id = ?",
+            (other.episode_id,),
+        )
+    with signed_in_client(app) as client:
+        projected = client.get(f"/api/projects/{episode.project_id}/episodes")
+        assert projected.status_code == 200, projected.text
+        item = next(row for row in projected.json() if row["episode_id"] == episode.episode_id)
+        assert item["can_message"] is True
+        assert item["can_continue"] is True

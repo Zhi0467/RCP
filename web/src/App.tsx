@@ -1259,7 +1259,7 @@ function MemberApp({
     episodeAction,
     episodeRefreshError,
     episodes,
-    liveAutoResearchEpisode,
+    liveAutoResearchEpisodes,
     openRunDialog,
     closeRunDialog,
     openAutoResearchDialog,
@@ -3114,7 +3114,6 @@ function MemberApp({
     mutationsDisabled,
     authoritative: projectReconciliation === "authoritative",
     canonicalReachable: Boolean(project?.canonical_state.reachable),
-    liveAutoResearchEpisode,
     taskStarting,
     episodeAction,
   });
@@ -5529,6 +5528,8 @@ function MemberApp({
         }
         branchNameRefusal={autoResearchBranchRefusal}
         branchNamesInUse={branchNamesInUse}
+        otherLiveRuns={liveAutoResearchEpisodes}
+        graphRefs={projectGraphRefs ?? null}
         continueBranch={continueBranch}
         onContinue={requestEpisodeContinuation}
         onSendMessage={messageEpisodeOrchestrator}

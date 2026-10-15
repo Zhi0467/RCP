@@ -111,13 +111,6 @@ def test_episode_start_uses_the_dedicated_orchestrator_profile(manifest, tmp_pat
         meter = store.episode_budget_meter(episode_id)
         assert meter.observed_input_tokens == 0
         assert meter.observed_generated_tokens == 0
-
-        duplicate = client.post(
-            f"/api/projects/{project_id}/episodes",
-            json={"mode": "auto_research", "invocation_ceiling": 5},
-        )
-        assert duplicate.status_code == 409
-        assert [item.episode_id for item in store.episodes(project_id)] == [episode_id]
         assert [item.operation_id for item in store.episode_tasks(episode_id)] == [operation_id]
 
 
