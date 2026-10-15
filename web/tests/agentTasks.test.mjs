@@ -6,6 +6,7 @@ import {
   artifactUrl,
   chatMessageTranscriptLine,
   chatTasksMissingFromHistory,
+  isNewestOfTurnClass,
   resolvedChatSessionId,
   orderTranscriptLines,
   projectActivityTask,
@@ -940,4 +941,13 @@ test("browser status stays on one turn line, including a turn with no answer", (
     lines.find((line) => line.lineId === "message:answer").browserStatus,
     browser_status,
   );
+});
+
+test("a later artifact edit leaves Retry on the newest failed turn", () => {
+  const turn = task({ operation_id: "turn", status: "failed" });
+  const edit = task({ operation_id: "edit", kind: "artifact_edit" });
+  const tasks = [task({ operation_id: "older" }), turn, edit];
+  assert.equal(isNewestOfTurnClass(turn, tasks), true);
+  assert.equal(isNewestOfTurnClass(edit, tasks), true);
+  assert.equal(isNewestOfTurnClass(tasks[0], tasks), false);
 });

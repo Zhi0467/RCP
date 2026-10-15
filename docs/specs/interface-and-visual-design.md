@@ -187,7 +187,8 @@ cards keep their group. Offered Retry/Resume stays visible; working rows show
 phase/elapsed time. Search requires every word to match loaded card/turn content.
 Filters are All/Working. A failed/stopped conversation has a backend-labelled
 recovery banner above it, except a plain Retry: that sits as one icon-only
-action on the failed turn's error row, and only the newest failed turn offers it.
+action on the failed turn's error row. Only a turn with no later turn offers it;
+artifact edits and conversation turns are compared only among themselves.
 
 Agents shows the selected graph, plus unarchived listed branch orchestrators on
 main. Orchestrators open in place without linking branch ids to main nodes.

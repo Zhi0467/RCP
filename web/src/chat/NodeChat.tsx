@@ -73,6 +73,7 @@ import {
   isActiveTask,
   resolvedChatSessionId,
   orderTranscriptLines,
+  isNewestOfTurnClass,
   reconcileChatHistoryArtifacts,
   reconstructTaskTranscript,
   relatedChatTasks,
@@ -2505,7 +2506,7 @@ export function NodeChat({
             line.role === "error" &&
             task?.can_retry &&
             !task.can_resume &&
-            task.operation_id === relatedTasks.at(-1)?.operation_id
+            isNewestOfTurnClass(task, relatedTasks)
               ? task
               : null;
           const pendingLine = pendingTurn?.clientId === line.taskId;

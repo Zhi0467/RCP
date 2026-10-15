@@ -134,6 +134,17 @@ export function relatedChatTasks(
   return chatId ? candidates.filter((task) => task.request.chat_id === chatId) : [latest];
 }
 
+/**
+ * Whether `task` is the newest of its class in a chat's `tasks`, so its failure
+ * takes Retry. Artifact edits do not advance the conversation, so turns and edits
+ * are compared only among themselves.
+ */
+export function isNewestOfTurnClass(task: AgentTask, tasks: readonly AgentTask[]): boolean {
+  const edit = task.kind === "artifact_edit";
+  const newest = tasks.filter((item) => (item.kind === "artifact_edit") === edit).at(-1);
+  return newest?.operation_id === task.operation_id;
+}
+
 export function relatedCoachTasks(tasks: AgentTask[], sessionId: string | null): AgentTask[] {
   const candidates = tasks.filter((task) => task.kind === "paper_coach").sort(compareTaskTime);
   if (sessionId) {
