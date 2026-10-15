@@ -213,6 +213,27 @@ def proposal_work_cannot_refile(state: GraphState, proposal: Proposal) -> bool:
     return False
 
 
+def proposal_subject_node(state: GraphState, proposal: Proposal) -> str | None:
+    """The Proposal's first current subject node, else its first current related node."""
+
+    subjects: list[str] = []
+    for operation in proposal.ops:
+        if isinstance(operation, (ProposalContentChangeOperation, ProposalStatusChangeOperation)):
+            subjects.extend(update.id for update in operation.nodes)
+        elif isinstance(operation, ProposalRemovalOperation):
+            subjects.extend(operation.node_ids)
+        elif isinstance(operation, ProposalSupersedeOperation):
+            subjects.extend(item.id for item in operation.nodes)
+        elif isinstance(operation, ProposalMergeOperation):
+            subjects.extend(item.duplicate for item in operation.merges)
+        elif isinstance(operation, ProposalProtectedRelationOperation):
+            subjects.extend(edge.target for edge in operation.edges or [])
+    return next(
+        (node_id for node_id in [*subjects, *proposal.related_node_ids] if node_id in state.nodes),
+        None,
+    )
+
+
 def proposal_evidence_cause_edge_ids(proposal: Proposal) -> set[str]:
     """The Evidence-to-belief edges a Proposal names as its cause."""
 

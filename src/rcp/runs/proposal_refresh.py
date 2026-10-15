@@ -6,14 +6,6 @@ import json
 import uuid
 
 from rcp.core.models import GraphState, Proposal
-from rcp.core.operations import (
-    ProposalContentChangeOperation,
-    ProposalMergeOperation,
-    ProposalProtectedRelationOperation,
-    ProposalRemovalOperation,
-    ProposalStatusChangeOperation,
-    ProposalSupersedeOperation,
-)
 from rcp.core.validation.proposals import (
     moved_proposal_dependencies,
     proposal_evidence_cause_edge_ids,
@@ -29,27 +21,6 @@ def proposal_refresh_key(proposal_id: str) -> uuid.UUID:
     """
 
     return uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:proposal-refresh:{proposal_id}")
-
-
-def proposal_refresh_node(state: GraphState, proposal: Proposal) -> str | None:
-    """The current node the refresh chat opens on: the Proposal's subject when it exists."""
-
-    subjects: list[str] = []
-    for operation in proposal.ops:
-        if isinstance(operation, (ProposalContentChangeOperation, ProposalStatusChangeOperation)):
-            subjects.extend(update.id for update in operation.nodes)
-        elif isinstance(operation, ProposalRemovalOperation):
-            subjects.extend(operation.node_ids)
-        elif isinstance(operation, ProposalSupersedeOperation):
-            subjects.extend(item.id for item in operation.nodes)
-        elif isinstance(operation, ProposalMergeOperation):
-            subjects.extend(item.duplicate for item in operation.merges)
-        elif isinstance(operation, ProposalProtectedRelationOperation):
-            subjects.extend(edge.target for edge in operation.edges or [])
-    return next(
-        (node_id for node_id in [*subjects, *proposal.related_node_ids] if node_id in state.nodes),
-        None,
-    )
 
 
 def proposal_refresh_skill_ids(proposal: Proposal) -> list[str]:

@@ -17,11 +17,14 @@ from rcp.api.tasks import (
     IdentityDependency,
     StoreDependency,
 )
-from rcp.core.validation.proposals import proposal_is_stale, proposal_work_cannot_refile
+from rcp.core.validation.proposals import (
+    proposal_is_stale,
+    proposal_subject_node,
+    proposal_work_cannot_refile,
+)
 from rcp.runs.proposal_refresh import (
     proposal_refresh_key,
     proposal_refresh_message,
-    proposal_refresh_node,
     proposal_refresh_skill_ids,
 )
 
@@ -68,7 +71,7 @@ def refresh_proposal(
             raise _refused(
                 "proposal_not_refileable", "Ordinary Work cannot file this Proposal's form."
             )
-        node_id = proposal_refresh_node(state, proposal)
+        node_id = proposal_subject_node(state, proposal)
         if node_id is None:
             raise _refused("proposal_target_unavailable", "Every node the Proposal names is gone.")
         return LightChat(

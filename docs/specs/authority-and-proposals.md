@@ -218,7 +218,8 @@ Proposal if the change still holds. The fresh Proposal waits for a human like
 any other. Forms ordinary Work cannot file (a replay-only legacy intent, or
 what only a branch merge files: a multi-intent bundle, standing change,
 human-caused status change, removal of an accepted unprotected node) are not
-refreshable; a stale one is withdrawn by Reject or the next Sync judgment.
+refreshable, nor is one whose nodes are all gone; a stale one is withdrawn by
+Reject or the next Sync judgment.
 
 ## Guarded removal
 

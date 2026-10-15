@@ -289,7 +289,14 @@ def test_a_stale_form_work_cannot_file_is_not_refreshable(filed):
             ).ops,
         }
     )
-    others = {item.id: item for item in (standing, bundle, legacy)}
+    orphan = Proposal.model_validate_json(
+        state.proposals[PROPOSAL]
+        .model_dump_json()
+        .replace(PROPOSAL, "prop/orphan")
+        .replace(HYP, "hyp/gone")
+        .replace(EV, "ev/gone")
+    )
+    others = {item.id: item for item in (standing, bundle, legacy, orphan)}
     moved = state.model_copy(
         update={
             "nodes": {**state.nodes, HYP: hypothesis},
