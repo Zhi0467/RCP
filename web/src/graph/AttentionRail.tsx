@@ -19,7 +19,12 @@ interface ProposalJudgmentSectionProps {
   proposalActions: Record<string, ProposalActionLine[]>;
   /** Pending Proposals the Sync gate would withdraw; they offer Refresh, not Approve. */
   staleProposalIds?: readonly string[];
-  /** Starts (or returns) the light refresh chat; absent off main, where it cannot run. */
+  /**
+   * Stale on main, where the refresh chat runs. A staleness only a staged draft
+   * introduces, or one on a branch, offers Reject alone until Sync.
+   */
+  refreshableProposalIds?: readonly string[];
+  /** Starts (or returns) the light refresh chat. */
   onRefresh?: (proposal: Proposal) => Promise<string>;
   onOpenChat?: (chatId: string) => void;
   onDecision: (proposal: Proposal, decision: ProposalDecision | null) => void;
@@ -39,6 +44,7 @@ export function ProposalJudgmentSection({
   mutationsDisabled = false,
   proposalActions,
   staleProposalIds = [],
+  refreshableProposalIds = [],
   onRefresh,
   onOpenChat,
   onDecision,
@@ -134,7 +140,8 @@ export function ProposalJudgmentSection({
                 Reject
               </button>
               {stale ? (
-                onRefresh && (
+                onRefresh &&
+                refreshableProposalIds.includes(proposal.id) && (
                   <RefreshProposalButton
                     proposal={proposal}
                     disabled={mutationsDisabled}

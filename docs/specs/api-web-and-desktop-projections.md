@@ -1112,8 +1112,8 @@ truthful operation fallbacks without inventing causality.
 Inbox contains pending protected-belief Proposals, Decisions in `ready` or
 `revisit`, and asserted open Blockers. A Proposal keeps inline judgment because
 it is not a node. A stale Proposal card has a red edge and replaces Approve with
-one icon-only Refresh, which then opens the refresh chat; off main it offers only
-Reject. A Decision row opens the existing node-detail ballot. That
+one icon-only Refresh, which then opens the refresh chat. Off main, or when only a
+staged draft makes it stale, it offers Reject alone until Sync. A Decision row opens the existing node-detail ballot. That
 ballot marks the prior choice on the matching option, and shows it separately
 when no option matches: an agent may reword a Decision's options but never
 writes `selected_option`, so a reopened ballot would otherwise not say what is

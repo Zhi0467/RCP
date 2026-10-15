@@ -240,7 +240,7 @@ def prepare_patch_bookkeeping(state: GraphState, patch: Patch) -> Patch:
         proposals: list[Proposal] = []
         for proposal in operation.proposals:
             related_node_ids, related_edge_ids, related_config_keys = proposal_dependencies(
-                state, proposal.ops, dependency_rule=CURRENT_PROPOSAL_DEPENDENCY_RULE
+                state, proposal.ops
             )
             proposals.append(
                 proposal.model_copy(
@@ -472,7 +472,7 @@ def _apply_patch(
         elif isinstance(op, CreateProposalsOperation):
             for raw in op.proposals:
                 related_node_ids, related_edge_ids, related_config_keys = proposal_dependencies(
-                    state, raw.ops, dependency_rule=raw.dependency_rule
+                    state, raw.ops
                 )
                 proposal = raw.model_copy(
                     update={

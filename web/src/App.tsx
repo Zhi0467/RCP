@@ -4967,10 +4967,13 @@ function MemberApp({
                   graph={attentionGraph}
                   proposalActions={presentedAttention.proposal_actions}
                   staleProposalIds={presentedAttention.stale_proposal_ids}
-                  onRefresh={
+                  refreshableProposalIds={
                     graphTarget.kind === "main"
-                      ? async (proposal) => (await refreshProposal(apiBase, proposal.id)).chat_id
-                      : undefined
+                      ? projectAttentionForPresentation(project, null).stale_proposal_ids
+                      : []
+                  }
+                  onRefresh={async (proposal) =>
+                    (await refreshProposal(apiBase, proposal.id)).chat_id
                   }
                   onOpenChat={openChats}
                   glossaryIndex={glossaryIndex}

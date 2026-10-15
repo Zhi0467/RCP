@@ -424,7 +424,7 @@ test("legacy or stale proposals use the existing card fallback instead of inferr
   assert.doesNotMatch(undeclared, /<strong\b/);
 });
 
-test("a stale proposal trades Approve for one Refresh icon, and only on main", () => {
+test("a stale proposal trades Approve for one Refresh icon, offered only when main is stale", () => {
   const statusChange = proposal({
     op: "update_nodes",
     intent: "status_change",
@@ -452,9 +452,12 @@ test("a stale proposal trades Approve for one Refresh icon, and only on main", (
       (match) => match[1] ?? match[2],
     );
 
-  assert.deepEqual(actions(render({ onRefresh: async () => "chat" })), ["reject", "approve"]);
-  const stale = render({ staleProposalIds: [statusChange.id], onRefresh: async () => "chat" });
+  const onRefresh = async () => "chat";
+  const staleIds = [statusChange.id];
+  assert.deepEqual(actions(render({ onRefresh })), ["reject", "approve"]);
+  const stale = render({ staleProposalIds: staleIds, refreshableProposalIds: staleIds, onRefresh });
   assert.match(stale, /class="proposal-card stale"/);
   assert.deepEqual(actions(stale), ["reject", "refresh"]);
-  assert.deepEqual(actions(render({ staleProposalIds: [statusChange.id] })), ["reject"]);
+  // Stale only in a staged preview, or on a branch: Sync first.
+  assert.deepEqual(actions(render({ staleProposalIds: staleIds, onRefresh })), ["reject"]);
 });

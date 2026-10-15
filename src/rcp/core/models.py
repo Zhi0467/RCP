@@ -1165,9 +1165,9 @@ class Proposal(BaseModel):
     related_node_ids: list[str] = Field(default_factory=list)
     related_edge_ids: list[str] = Field(default_factory=list)
     related_config_keys: list[str] = Field(default_factory=list)
-    # Rule 2 also depends on each Evidence-edge cause's Evidence node, so rewording
-    # that Evidence makes the Proposal stale. Earlier Proposals keep rule 1: replay
-    # re-derives dependencies and must judge them as they were filed.
+    # Under rule 2 a Proposal is also stale once the Evidence its cause edge starts
+    # from changes (validation/proposals.py). Earlier Proposals keep rule 1, so
+    # replay judges them as they were filed.
     dependency_rule: Literal[1, 2] = Field(default=1, exclude_if=lambda value: value == 1)
     base_rev: int = 0
     status: Literal["pending", "approved", "rejected", "withdrawn"] = "pending"

@@ -5,7 +5,7 @@ import pytest
 from rcp.agents import AgentEvent
 from rcp.core.attention import project_graph_attention
 from rcp.core.models import Patch, Proposal
-from rcp.core.validation.registry import proposal_dependencies
+from rcp.core.validation.proposals import proposal_is_stale
 from rcp.providers import profile_for
 from tests.helpers import (
     append_fixture_patch,
@@ -122,10 +122,10 @@ def test_rewording_cause_evidence_stales_only_rule_two_proposals(filed):
 
     state = service.history.state()
     assert project_graph_attention(state).stale_proposal_ids == [PROPOSAL]
-    # Proposals filed before rule 2 keep the dependencies replay judged them under,
-    # and serialize exactly as they did.
-    assert EV not in proposal_dependencies(state, proposal.ops, dependency_rule=1)[0]
+    # Proposals filed before rule 2 stay judged as replay judged them, and
+    # serialize exactly as they did.
     legacy = Proposal.model_validate(proposal.model_dump(mode="json") | {"dependency_rule": 1})
+    assert not proposal_is_stale(state, legacy)
     assert "dependency_rule" not in legacy.model_dump(mode="json")
 
 
@@ -160,3 +160,76 @@ def test_refresh_starts_one_light_work_chat_only_when_stale(filed):
     assert task.request["invoked_skill_ids"] == ["evidence-triage"]
     assert PROPOSAL in task.request["message"] and EV in task.request["message"]
     assert launches == ["node_chat"]
+
+    # A response lost after the agent withdrew the Proposal still finds its chat.
+    _agent_patch(
+        service,
+        [{"op": "withdraw_proposals", "proposals": [{"id": PROPOSAL, "reason": "Refiled."}]}],
+    )
+    assert client.post(url, json={}).json() == result
+
+
+def test_cause_evidence_counts_when_its_edge_follows_the_proposal(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    _agent_patch(
+        service,
+        [
+            {
+                "op": "create_proposals",
+                "proposals": [
+                    {
+                        "id": PROPOSAL,
+                        "title": "Activate the replanning hypothesis",
+                        "card": {
+                            "situation_cold": "s",
+                            "why_human_now": "w",
+                            "consequences": "c",
+                            "decision_needed": "d",
+                        },
+                        "ops": [
+                            {
+                                "op": "update_nodes",
+                                "intent": "status_change",
+                                "nodes": [
+                                    {
+                                        "id": HYP,
+                                        "changes": {"status": "active"},
+                                        "cause": {"kind": "evidence_edge", "ref_id": "edge/replan"},
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            },
+            {
+                "op": "create_nodes",
+                "nodes": [
+                    {
+                        "id": EV,
+                        "type": "evidence",
+                        "title": "Replanning ablation",
+                        "observation": "Replanning recovers most plasticity.",
+                        "origin": "analytic",
+                    }
+                ],
+            },
+            {
+                "op": "create_edges",
+                "edges": [
+                    {
+                        "id": "edge/replan",
+                        "source": EV,
+                        "target": HYP,
+                        "relation": "supports",
+                        "assessment": {"relevance": "direct", "weight": "moderate"},
+                    }
+                ],
+            },
+        ],
+    )
+    assert project_graph_attention(service.history.state()).stale_proposal_ids == []
+    _reword_evidence(service)
+    assert project_graph_attention(service.history.state()).stale_proposal_ids == [PROPOSAL]

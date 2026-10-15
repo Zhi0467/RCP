@@ -151,6 +151,7 @@ def moved_proposal_dependencies(state: GraphState, proposal: Proposal) -> list[s
         if state.config_revisions.get(key, 0) > dependency_revision
     )
     referenced_edge_ids, decision_ids = _proposal_reference_dependencies(proposal)
+    cause_edge_ids = _proposal_evidence_cause_edge_ids(proposal)
     moved.extend(
         edge_id
         for edge_id in sorted(set(proposal.related_edge_ids) | referenced_edge_ids)
@@ -169,6 +170,15 @@ def moved_proposal_dependencies(state: GraphState, proposal: Proposal) -> list[s
             if edge.source in removal_targets or edge.target in removal_targets
         }
         moved.extend(sorted(current_incident_edge_ids ^ set(proposal.related_edge_ids)))
+    if proposal.dependency_rule >= 2:
+        # A cause edge that moved is already listed above; a current one still
+        # depends on the exact Evidence it starts from.
+        for edge_id in sorted(cause_edge_ids):
+            edge = state.edges.get(edge_id)
+            if edge is not None and edge.created_rev <= dependency_revision:
+                source = state.nodes.get(edge.source)
+                if source is None or source.updated_rev > dependency_revision:
+                    moved.append(edge.source)
     moved.extend(
         decision_id
         for decision_id in sorted(decision_ids)
@@ -176,6 +186,16 @@ def moved_proposal_dependencies(state: GraphState, proposal: Proposal) -> list[s
         or state.nodes[decision_id].updated_rev > dependency_revision
     )
     return list(dict.fromkeys(moved))
+
+
+def _proposal_evidence_cause_edge_ids(proposal: Proposal) -> set[str]:
+    return {
+        update.cause.ref_id
+        for operation in proposal.ops
+        if isinstance(operation, (ProposalContentChangeOperation, ProposalStatusChangeOperation))
+        for update in operation.nodes
+        if isinstance(update.cause, EvidenceEdgeCause)
+    }
 
 
 def _proposal_removal_targets(proposal: Proposal) -> set[str]:
