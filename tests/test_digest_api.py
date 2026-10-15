@@ -2,10 +2,28 @@ from __future__ import annotations
 
 from rcp.digest import digest_counts
 from rcp.history.manager import HistoryManager
+from rcp.storage import Artifact
 from rcp.storage.digest import append_digest_event
 from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
+
+
+def _report_artifact(store, project_id, artifact_id):
+    """A report digest line lives only while its artifact does."""
+    store.create_artifact(
+        Artifact(
+            artifact_id=artifact_id,
+            project_id=project_id,
+            supplier="turn",
+            supplier_id="turn",
+            source_name="consolidation-report.html",
+            media_type="text/html",
+            created_at=store.now(),
+        ),
+        data=b"<p>Report</p>",
+    )
+    return artifact_id
 
 
 def test_landing_counts_batch_events_without_history(manifest, tmp_path, monkeypatch):
@@ -25,6 +43,7 @@ def test_landing_counts_batch_events_without_history(manifest, tmp_path, monkeyp
     with store.connection() as conn:
         assert conn.execute("SELECT COUNT(*) FROM digest_marks").fetchone()[0] == 0
     store.digest_snapshot(project_id, user_id)
+    artifact_id = _report_artifact(store, project_id, "night")
     with store.connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         append_digest_event(
@@ -33,7 +52,7 @@ def test_landing_counts_batch_events_without_history(manifest, tmp_path, monkeyp
             kind="consolidation_report",
             item_id="night",
             created_at=store.now(),
-            payload={"title": "Nightly consolidation", "report_artifact_id": None},
+            payload={"title": "Nightly consolidation", "report_artifact_id": artifact_id},
         )
     response = client.get("/api/projects")
     assert response.status_code == 200
@@ -54,6 +73,7 @@ def test_caught_up_keeps_events_committed_after_displayed_cursor(manifest, tmp_p
     assert initial.json()["count"] == 0
 
     def finish(identifier):
+        artifact_id = _report_artifact(store, project_id, identifier)
         with store.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             return append_digest_event(
@@ -62,7 +82,7 @@ def test_caught_up_keeps_events_committed_after_displayed_cursor(manifest, tmp_p
                 kind="consolidation_report",
                 item_id=identifier,
                 created_at=store.now(),
-                payload={"title": identifier, "report_artifact_id": None},
+                payload={"title": identifier, "report_artifact_id": artifact_id},
             )
 
     first = finish("first")
