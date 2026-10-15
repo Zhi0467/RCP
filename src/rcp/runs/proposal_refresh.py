@@ -20,7 +20,7 @@ from rcp.core.validation.proposals import (
 )
 
 
-def proposal_refresh_key(proposal: Proposal) -> uuid.UUID:
+def proposal_refresh_key(proposal_id: str) -> uuid.UUID:
     """One refresh chat per Proposal, whoever clicks and however often.
 
     Proposal ids are never reused, and request keys are already per project.
@@ -28,7 +28,7 @@ def proposal_refresh_key(proposal: Proposal) -> uuid.UUID:
     UUID4, so no other request can claim it first.
     """
 
-    return uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:proposal-refresh:{proposal.id}")
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:proposal-refresh:{proposal_id}")
 
 
 def proposal_refresh_node(state: GraphState, proposal: Proposal) -> str | None:

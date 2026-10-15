@@ -52,15 +52,15 @@ def refresh_proposal(
 
     identity_access.require_patch_capable_identity(request)
     project_id = catalog.resolve_project_id(project_id)
-    state = get_graph_service(catalog, project_id, initialize=False, write=True).history.state()
-    proposal = state.proposals.get(proposal_id)
-    if proposal is None:
-        raise _refused("proposal_not_pending", "The Proposal is not pending on main.")
+    service = get_graph_service(catalog, project_id, initialize=False, write=True)
 
     def prepare() -> LightChat:
-        # Reached only before the first chat exists; a retry after the agent
-        # withdrew the Proposal returns that chat instead.
-        if proposal.status != "pending":
+        # Reached only before the first chat exists, under the key's lock, so it
+        # judges the current graph; a retry after the agent withdrew the
+        # Proposal returns that chat instead.
+        state = service.history.state()
+        proposal = state.proposals.get(proposal_id)
+        if proposal is None or proposal.status != "pending":
             raise _refused("proposal_not_pending", "The Proposal is not pending on main.")
         if not proposal_is_stale(state, proposal):
             raise _refused("proposal_not_stale", "The Proposal's dependencies have not moved.")
@@ -79,7 +79,7 @@ def refresh_proposal(
 
     return start_light_node_chat(
         project_id,
-        request_key=proposal_refresh_key(proposal),
+        request_key=proposal_refresh_key(proposal_id),
         prepare=prepare,
         http_request=request,
         catalog=catalog,

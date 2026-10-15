@@ -158,11 +158,10 @@ def test_refresh_starts_one_light_work_chat_only_when_stale(filed):
 
     # No client request can claim the refresh key first.
     project_id = filed.state.default_project_id
-    proposal = service.history.state().proposals[PROPOSAL]
     preclaim = client.post(
         f"/api/projects/{project_id}/tasks/node_chat",
         json={"node_id": HYP, "chat_id": str(uuid.uuid4()), "mode": "work", "message": "Mine."},
-        headers={"Idempotency-Key": str(proposal_refresh_key(proposal))},
+        headers={"Idempotency-Key": str(proposal_refresh_key(PROPOSAL))},
     )
     assert preclaim.status_code == 422
 
