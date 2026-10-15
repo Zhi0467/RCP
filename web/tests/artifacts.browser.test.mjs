@@ -821,8 +821,27 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
                 provider: "codex",
                 trigger: "human",
               },
+              {
+                message_id: "foreign-reply",
+                operation_id: "foreign-citing-task",
+                role: "assistant",
+                text: "![Foreign](/stage/chats/c/turns/other-chat-task/artifacts/secret.html)",
+                timestamp: "2026-09-02T12:01:00Z",
+                mode: "discuss",
+                provider: "codex",
+                trigger: "human",
+              },
             ],
-            onRefreshTask: async () => ({ result: { artifacts: [artifact] } }),
+            // An artifact belongs to its origin chat: another chat's turn never embeds here.
+            onRefreshTask: async (id) =>
+              id === "other-chat-task"
+                ? {
+                    request: { chat_id: "other-chat" },
+                    result: {
+                      artifacts: [{ ...artifact, artifact_id: "secret", name: "secret.html" }],
+                    },
+                  }
+                : { result: { artifacts: id === "answer-task" ? [artifact] : [] } },
             onStartTask: async () => {
               window.errorTestSent = true;
             },
@@ -838,6 +857,8 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
       );
     });
     const embed = page.locator('.chat-inline-artifact[data-artifact-id="plot"]');
+    await page.locator(".chat-inline-artifact.missing").waitFor();
+    assert.equal(await page.locator('[data-artifact-id="secret"]').count(), 0);
     const notice = embed.locator("[data-error-count]");
     await notice.waitFor();
     assert.equal(await notice.getAttribute("data-error-count"), "1");

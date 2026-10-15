@@ -612,3 +612,23 @@ def test_viewer_does_not_see_their_own_chat_agent_edits_once_read(tmp_path):
     markers = store.chat_read_markers("p", "me")
     assert markers["reads"] == {"mine": "2026-10-07T12:00:05.000000+00:00"}
     assert groups("me", markers) == ["agent:one"]
+
+
+def test_failing_project_retries_on_the_next_recheck_not_at_once(tmp_path):
+    store = _project_store(tmp_path)
+    projector = DigestProjector(store, None, admission=RuntimeAdmissionGate())
+    projector._dirty = set()
+    attempts = []
+
+    def fail(project_id, targets=None):
+        attempts.append(targets)
+        raise RuntimeError("state unavailable")
+
+    projector.reconcile_project = fail
+    projector.signal("p")
+    projector._wake.clear()
+    projector.run_pass()
+
+    assert not projector._wake.is_set()
+    projector.run_pass()
+    assert attempts == [{"main"}, {"main"}]

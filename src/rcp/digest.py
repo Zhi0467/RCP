@@ -654,10 +654,13 @@ class DigestProjector:
         self.signal_branch(project_id, "main", revision)
 
     def signal_branch(self, project_id, target, revision):
+        self._mark_dirty(project_id, target)
+        self._wake.set()
+
+    def _mark_dirty(self, project_id, target):
         with self._dirty_lock:
             if self._dirty is not None:
                 self._dirty.add((project_id, target))
-        self._wake.set()
 
     def _run(self):
         while not self._stop.is_set():
@@ -696,7 +699,9 @@ class DigestProjector:
                             self.reconcile_project(project_id, lagging)
                     self._observe_episodes(project_id)
                 except Exception:
-                    self.signal(project_id)
+                    # Retry on the next recheck or change signal, never at once: a
+                    # project that keeps failing would otherwise spin this thread.
+                    self._mark_dirty(project_id, "main")
                     _LOG.exception("Digest reconciliation failed for %s", project_id)
 
     def _branch_targets(self, project_id):
