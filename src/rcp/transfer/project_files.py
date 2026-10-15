@@ -231,8 +231,6 @@ class TransferProjectFileCapture(BaseModel):
             if report is None or report.html is not None:
                 continue
             if report.deleted_at is not None:
-                if report.artifact_id in by_id:
-                    raise ValueError("deleted report artifact is present in capture")
                 continue
             owner = by_id.get(report.artifact_id)
             original = next(

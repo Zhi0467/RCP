@@ -51,6 +51,8 @@ if TYPE_CHECKING:
     from rcp.storage import AppStore
 
 _LIVE_EPISODE_STATUSES = ("queued", "running", "stopping", "wrapping_up")
+# Reports a member has not deleted; a deleted report's row stays for lineage only.
+_VISIBLE_EPISODE_REPORTS = "(SELECT * FROM episode_reports WHERE deleted_at IS NULL)"
 _REPORT_ATTEMPT_LIMIT = 3
 
 
@@ -561,8 +563,8 @@ class EpisodeStoreMixin(StoreMixinBase):
                 }
                 report_rows = connection.execute(
                     f"""
-                    SELECT episode_id FROM episode_reports
-                    WHERE episode_id IN ({episode_placeholders}) AND deleted_at IS NULL
+                    SELECT episode_id FROM {_VISIBLE_EPISODE_REPORTS}
+                    WHERE episode_id IN ({episode_placeholders})
                     """,
                     lifecycle_episode_ids,
                 ).fetchall()
@@ -2226,12 +2228,12 @@ class EpisodeStoreMixin(StoreMixinBase):
         """List every durable report, including archived episodes, without HTML bytes."""
         with self.connection() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT report.report_id, report.episode_id, report.created_at, episode.mode,
                        report.display_title
-                FROM episode_reports AS report
+                FROM {_VISIBLE_EPISODE_REPORTS} AS report
                 JOIN episodes AS episode ON episode.episode_id = report.episode_id
-                WHERE episode.project_id = ? AND report.deleted_at IS NULL
+                WHERE episode.project_id = ?
                 ORDER BY report.created_at DESC, report.report_id
                 """,
                 (project_id,),
@@ -2242,19 +2244,22 @@ class EpisodeStoreMixin(StoreMixinBase):
         self, episode_id: str, *, include_deleted: bool = False
     ) -> EpisodeReportRecord | None:
         """The episode's report; a deleted one is none unless lineage asks for it."""
+        reports = "episode_reports" if include_deleted else _VISIBLE_EPISODE_REPORTS
         with self.connection() as connection:
             row = connection.execute(
-                "SELECT * FROM episode_reports WHERE episode_id = ? AND (? OR deleted_at IS NULL)",
-                (episode_id, include_deleted),
+                f"SELECT * FROM {reports} WHERE episode_id = ?", (episode_id,)
             ).fetchone()
         return self._episode_report_record(row) if row is not None else None
 
-    def episode_report_by_id(self, report_id: str) -> EpisodeReportRecord | None:
+    def reported_episode_ids(self, episode_ids: Sequence[str]) -> frozenset[str]:
+        """The episodes among these whose report a member has not deleted."""
         with self.connection() as connection:
-            row = connection.execute(
-                "SELECT * FROM episode_reports WHERE report_id = ?", (report_id,)
-            ).fetchone()
-        return self._episode_report_record(row) if row is not None else None
+            rows = connection.execute(
+                f"SELECT episode_id FROM {_VISIBLE_EPISODE_REPORTS} "
+                "WHERE episode_id IN (SELECT value FROM json_each(?))",
+                (json.dumps(list(episode_ids)),),
+            ).fetchall()
+        return frozenset(row[0] for row in rows)
 
     @staticmethod
     def _validate_new_episode(record: EpisodeRecord) -> None:

@@ -12,7 +12,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, NamedTuple, cast
 
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import ARTIFACT_MAX_VERSION_BYTES, ARTIFACT_RECENT_VERSIONS
@@ -49,6 +49,13 @@ class ArtifactDeleteRefused(ValueError):
 
 class ArtifactDeleted(ValueError):
     """A member deleted this identity; nothing may recreate it."""
+
+
+class ArtifactDeletionHolds(NamedTuple):
+    """Artifacts in use, and episodes whose report is still publishing."""
+
+    artifact_ids: frozenset[str]
+    publishing_episode_ids: frozenset[str]
 
 
 class _CaptureGuard:
@@ -576,7 +583,7 @@ class ArtifactStoreMixin(StoreMixinBase):
                         path.unlink(missing_ok=True)
             return version
 
-    def artifact_deletion_holds(self) -> frozenset[str]:
+    def artifact_deletion_holds(self) -> ArtifactDeletionHolds:
         """Artifacts a running turn reads or edits, reports still publishing, and pending legacy imports.
 
         A paused or interrupted edit holds nothing: Delete is the human's call, and a
@@ -592,18 +599,22 @@ class ArtifactStoreMixin(StoreMixinBase):
                 statuses,
             ).fetchall()
             publishing = connection.execute(
-                "SELECT a.artifact_id FROM artifacts a JOIN episodes e "
-                "ON e.episode_id = json_extract(a.metadata, '$.episode_id') "
-                "WHERE json_extract(a.metadata, '$.supplier') = 'episode_ending' "
-                "AND e.wrapup_state IN ('pending', 'running')"
+                "SELECT episode_id FROM episodes WHERE wrapup_state IN ('pending', 'running')"
             ).fetchall()
         running = frozenset(value for row in rows for value in row if isinstance(value, str))
-        reports = frozenset(row[0] for row in publishing)
-        return running | reports | cast("AppStore", self).legacy_artifact_import_ids()
+        return ArtifactDeletionHolds(
+            running | cast("AppStore", self).legacy_artifact_import_ids(),
+            frozenset(row[0] for row in publishing),
+        )
 
-    def artifact_delete_refusal(self, artifact: Artifact, holds: frozenset[str]) -> str | None:
+    def artifact_delete_refusal(
+        self, artifact: Artifact, holds: ArtifactDeletionHolds
+    ) -> str | None:
         """Why Delete refuses this artifact; `holds` is `artifact_deletion_holds()`."""
-        if artifact.artifact_id in holds:
+        if artifact.artifact_id in holds.artifact_ids or (
+            artifact.supplier == "episode_ending"
+            and artifact.episode_id in holds.publishing_episode_ids
+        ):
             return "An agent turn or import is using this artifact."
         if cast("AppStore", self).consolidation_report_is_pending(artifact):
             return "This consolidation report awaits review."

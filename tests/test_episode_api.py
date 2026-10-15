@@ -1257,7 +1257,9 @@ def test_a_deleted_episode_report_keeps_its_lineage_row(
     assert lineage.model_copy(update={"deleted_at": None}) == report
 
 
-def test_episode_report_viewer_returns_gone_when_bytes_disappear(manifest, tmp_path, monkeypatch):
+def test_episode_report_viewer_returns_gone_when_the_artifact_disappears(
+    manifest, tmp_path, monkeypatch
+):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
@@ -1269,10 +1271,8 @@ def test_episode_report_viewer_returns_gone_when_bytes_disappear(manifest, tmp_p
         report_html="<h1>Report</h1>",
     )
 
-    def unavailable(_artifact_id):
-        raise KeyError(_artifact_id)
-
-    monkeypatch.setattr(store, "read_artifact_bytes", unavailable)
+    # A Delete that lands between the report read and the artifact read.
+    monkeypatch.setattr(store, "artifact", lambda _artifact_id: None)
     url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/viewer"
     with signed_in_client(app) as client:
         assert client.get(url).status_code == 410

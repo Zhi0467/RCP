@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 from rcp.storage import (
@@ -85,7 +85,8 @@ class EpisodeHealthInput:
     recovery: _RecoveryProjection | None
     report_login_blocked: bool = False
     has_open_questions: bool = False
-    has_report: bool = False
+    # Required: a forgotten report would silently hide Open report.
+    has_report: bool = field(kw_only=True)
 
 
 def project_episode_health(
@@ -141,7 +142,7 @@ def _episode_projection(
     control_task_id: str | None,
     recovery: _RecoveryProjection | None,
     report_login_blocked: bool = False,
-    has_report: bool = False,
+    has_report: bool,
     has_open_questions: bool = False,
 ) -> tuple[
     EpisodeHealth,
@@ -288,6 +289,7 @@ def load_episode_health(
 
     inputs = []
     credentials = ProviderCredentialStore.for_data_dir(store.path.parent)
+    reported = store.reported_episode_ids([episode.episode_id for episode in episodes])
     for episode in episodes:
         tasks = [
             task.model_copy(update=_episode_task_controls(episode, task))
@@ -342,7 +344,7 @@ def load_episode_health(
                 recovery,
                 blocked,
                 episode_has_open_questions(store, episode.project_id, episode.episode_id),
-                has_report=store.episode_report(episode.episode_id) is not None,
+                has_report=episode.episode_id in reported,
             )
         )
     return project_episode_health(inputs)

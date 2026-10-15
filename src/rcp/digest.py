@@ -517,6 +517,8 @@ def _drop_closed_attention(store, project_id: str, events: list[dict]) -> list[d
 def _drop_deleted_reports(store, events: list[dict]) -> list[dict]:
     """Both report kinds leave the digest when their artifact is gone."""
     reports = [e for e in events if e["kind"] in _REPORTS]
+    if not reports:
+        return events
     with store.connection() as conn:
         live = {
             row[0]
