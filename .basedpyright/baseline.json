@@ -1534,16 +1534,6 @@
                 }
             }
         ],
-        "./src/rcp/api/tasks.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 24,
-                    "endColumn": 38,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/rcp/api/terminal_projection.py": [
             {
                 "code": "reportOperatorIssue",
