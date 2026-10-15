@@ -1913,6 +1913,15 @@ a.digest-title:hover {
   bottom: 3px;
   color: var(--red);
 }
+/* A pending card's title opens node detail, where it can be edited or removed. */
+.dag-staged-card > button.dag-staged-open {
+  position: static;
+  justify-content: flex-start;
+  width: 100%;
+  padding: 0;
+  color: var(--ink);
+  text-align: left;
+}
 .dag-node.is-shake {
   animation: dag-refuse 350ms ease-in-out;
 }

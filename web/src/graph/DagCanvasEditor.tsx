@@ -175,10 +175,11 @@ export function useDagCanvasEditor({
     // A selected link that Undo (or a preview) removed can no longer be edited.
     setEdge((value) => (value && !graph.edges[value.id] ? null : value));
     setMenu((value) => (value?.replace && !graph.edges[value.replace.id] ? null : value));
-    setPendingEdges((old) =>
-      old.filter(
+    // Draft links the preview has not shown yet, rebuilt from the draft itself so
+    // they survive leaving and re-entering the DAG.
+    setPendingEdges(
+      (editing?.humanDraft?.added_edges ?? []).filter(
         (pending) =>
-          !!editing?.humanDraft?.added_edges.some((edge) => edge.id === pending.id) &&
           !Object.values(graph.edges).some(
             (edge) =>
               edge.source === pending.source &&
@@ -840,7 +841,14 @@ export function useDagCanvasEditor({
               data-canvas-ui
               style={{ left: at.x - (W * controlScale) / 2, top: at.y - (H * controlScale) / 2 }}
             >
-              <strong>{node.title}</strong>
+              <button
+                type="button"
+                className="dag-staged-open"
+                aria-label={`Open ${node.title}`}
+                onClick={() => inspectPending(node)}
+              >
+                <strong>{node.title}</strong>
+              </button>
               {"origin" in node && node.origin === "unknown" && (
                 <button
                   type="button"
