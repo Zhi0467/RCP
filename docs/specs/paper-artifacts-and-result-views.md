@@ -382,8 +382,10 @@ after expiry, `deleted` after Delete. Nothing recreates a `deleted` identity; th
 importer skips it and `create_artifact` refuses it, so turn discovery cannot
 restore it either. The removal waits while an agent turn uses the
 artifact, a consolidation report awaits review, or a legacy import is pending;
-`can_delete` and the route apply that same rule. Episode reports stay bound to their
-episode and cannot be deleted. A copy the human saved into the workspace stays.
+`can_delete` and the route apply that same rule. Deleting an episode report also
+marks its report row deleted, in the same transaction, and keeps the row as lineage
+([episode reports](conversations-episodes-and-watchers.md#visual-wrap-up)); it waits
+while that report is still publishing. A copy the human saved into the workspace stays.
 
 **Why:** without the tombstone, import restores a deleted chat output from its
 stage; without clearing kept bindings, backup inventory refuses the project.

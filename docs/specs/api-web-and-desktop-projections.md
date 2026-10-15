@@ -236,7 +236,8 @@ Unseen completed turns remain until the chat is read. Provider authorship is
 unchanged. Removed nodes and changed edge endpoints participate. Main lists only
 main changes; unmerged work appears on its branch. `changed_node_ids` includes
 only surviving main nodes and is empty on branches. Reports opens the target's
-episode/consolidation artifacts. Jobs, failed tasks, ended episodes, lessons,
+episode/consolidation artifacts; a report whose artifact was deleted leaves the
+list and the count. Jobs, failed tasks, ended episodes, lessons,
 and chat messages alone are not lines.
 
 Links open ordinary in-app routes: a run's branch orchestrator, exact Experiment

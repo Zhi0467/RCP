@@ -685,11 +685,19 @@ It clears the old scope fingerprint and records a private dispatch-reset fence
 newer than prior attempt receipts. Only that fence authorizes redispatch; old
 attempts remain history.
 
-Valid `episode-report.html` becomes a permanent Artifact whose lifecycle binds
-its original version in the opaque sandbox. It has no graph, Proposal, watcher
+Valid `episode-report.html` becomes an Artifact whose lifecycle binds its
+original version in the opaque sandbox. It has no graph, Proposal, watcher
 or command channel and cannot change the ending. Final report failure is visible
 beside the ending, nonblocking, with no manual report Retry; it never becomes
 episode health, a recommendation or a reason to withhold controls.
+
+A member may delete a report once its wrap-up is ready. The report row stays,
+marked deleted, as lineage: the episode shows no report and recommends nothing
+about it, and the lifecycle never writes another. Publication and Delete take
+the same artifact lock, so Delete sees a report either bound or not yet started.
+
+**Why:** a ready wrap-up without its report row reads as broken history to
+transfer and would let the report lifecycle run again.
 
 ## Runs projection
 
@@ -699,8 +707,8 @@ ending fence decides whether the episode is over. A terminal episode on a closed
 Experiment reads Completed even after human Stop, whose ending remains history.
 The browser neither rebuilds health from task rows nor suggests unavailable actions.
 
-Report availability is independent of current episode: the newest report for
-that Experiment and target remains linked to its owner. `report_is_current`
+Report availability is independent of current episode: the newest surviving
+report for that Experiment and target remains linked to its owner. `report_is_current`
 selects **Open report** or **Previous episode report**.
 
 Active observers show **Waiting on watchers**; completed observations show

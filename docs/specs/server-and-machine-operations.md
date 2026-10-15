@@ -713,6 +713,8 @@ One versioned, checksummed archive carries:
   Apply-result and inert-command records needed to render them.
 - Every database-referenced artifact version and saved live snapshot through one
   typed inventory; older inline-report and repository-kept formats stay readable.
+  A deleted episode report travels as its lineage row without bytes, and the
+  target records its artifact as deleted. Older targets refuse such a project.
 - Complete project-matched native provider conversations and, when required or
   explicitly chosen, reviewed Git commits and their reachable history.
 
