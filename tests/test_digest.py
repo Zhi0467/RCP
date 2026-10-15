@@ -632,3 +632,52 @@ def test_failing_project_retries_on_the_next_recheck_not_at_once(tmp_path):
     assert not projector._wake.is_set()
     projector.run_pass()
     assert attempts == [{"main"}, {"main"}]
+
+
+def test_deleted_reports_leave_digest_and_count(manifest, tmp_path):
+    import hashlib
+
+    from rcp.digest import digest_counts, read_digest
+
+    from .episode_report_helpers import stored_report
+    from .helpers import create_named_app
+    from .test_consolidation_storage_api import _report
+    from .test_episode_report import _setup_report
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    history = app.state.catalog.open(project_id).history
+    app.state.digest_projector._project_history(project_id, "main", history.history_engine)
+    user_id = store.local_owner.user_id
+    assert read_digest(store, app.state.catalog, project_id, user_id)["count"] == 0
+    _setup_report(manifest, tmp_path, store=store, project_id=project_id)
+    attempt = store.allocate_episode_report_attempt("episode")
+    html = "<h1>Report</h1>"
+    report = stored_report(
+        store,
+        html=html,
+        report_id="episode-report",
+        episode_id="episode",
+        attempt_id=attempt.attempt_id,
+        allocation_operation_id="report-allocation",
+        ending="completed",
+        sha256=hashlib.sha256(html.encode()).hexdigest(),
+        created_at=store.now(),
+    )
+    store.finish_episode_report_ready(attempt.attempt_id, report)
+    run = _report(store, project_id)
+    store.resolve_consolidation_run(
+        project_id, run.run_id, state="kept", resolved_by=authorized_human(store)
+    )
+    before = read_digest(store, app.state.catalog, project_id, user_id)
+    assert {item["kind"] for item in before["reports"]} == {
+        "episode_report",
+        "consolidation_report",
+    }
+    count = digest_counts(store, [project_id], user_id)[project_id]
+    store.delete_artifact(project_id, report.artifact_id)
+    store.delete_artifact(project_id, run.report_artifact_id)
+    after = read_digest(store, app.state.catalog, project_id, user_id)
+    assert after["reports"] == []
+    assert after["count"] == count - 2 == digest_counts(store, [project_id], user_id)[project_id]

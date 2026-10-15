@@ -85,6 +85,7 @@ class EpisodeHealthInput:
     recovery: _RecoveryProjection | None
     report_login_blocked: bool = False
     has_open_questions: bool = False
+    has_report: bool = False
 
 
 def project_episode_health(
@@ -106,6 +107,7 @@ def project_episode_health(
             control_task_id=item.control_task_id,
             recovery=item.recovery,
             report_login_blocked=item.report_login_blocked,
+            has_report=item.has_report,
             has_open_questions=item.has_open_questions,
         )
         for item in inputs
@@ -139,6 +141,7 @@ def _episode_projection(
     control_task_id: str | None,
     recovery: _RecoveryProjection | None,
     report_login_blocked: bool = False,
+    has_report: bool = False,
     has_open_questions: bool = False,
 ) -> tuple[
     EpisodeHealth,
@@ -158,14 +161,14 @@ def _episode_projection(
     if episode.ending == "completed" or (episode.ending is None and episode.status == "completed"):
         return (
             "completed",
-            "open_report" if episode.wrapup_state == "ready" else "none",
+            "open_report" if has_report and episode.wrapup_state == "ready" else "none",
             None,
             None,
         )
     if episode.ending == "failed" or (episode.ending is None and episode.status == "failed"):
         return (
             "failed",
-            "open_report" if episode.wrapup_state == "ready" else "review",
+            "open_report" if has_report and episode.wrapup_state == "ready" else "review",
             None,
             None,
         )
@@ -339,6 +342,7 @@ def load_episode_health(
                 recovery,
                 blocked,
                 episode_has_open_questions(store, episode.project_id, episode.episode_id),
+                has_report=store.episode_report(episode.episode_id) is not None,
             )
         )
     return project_episode_health(inputs)

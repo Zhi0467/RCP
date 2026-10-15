@@ -572,7 +572,7 @@ class EpisodeStoreMixin(StoreMixinBase):
                 report_rows = connection.execute(
                     f"""
                     SELECT episode_id FROM episode_reports
-                    WHERE episode_id IN ({episode_placeholders})
+                    WHERE episode_id IN ({episode_placeholders}) AND deleted_at IS NULL
                     """,
                     lifecycle_episode_ids,
                 ).fetchall()
