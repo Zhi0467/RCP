@@ -56,13 +56,6 @@ export function resolveRepositoryFileHref(
   };
 }
 
-export function turnArtifactName(href: string, taskId: string): string | null {
-  const location = turnArtifactLocation(href);
-  // The turn's own directory, not any path ending in a registered name: a stale
-  // citation must not quietly open a different turn's evidence.
-  return location?.folder === taskId ? location.name : null;
-}
-
 /** The turn folder and file name of a cited `.../turns/<folder>/artifacts/<name>`. */
 export function turnArtifactLocation(href: string): { folder: string; name: string } | null {
   const parsed = parseAbsoluteFileHref(href);
