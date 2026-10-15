@@ -377,8 +377,10 @@ Report migration writes digest files before bindings and removal of inline HTML.
 Any project member may delete an artifact from the viewer or the Artifacts list,
 with a second click to confirm. Delete and expiry share one removal under the
 artifact lock and capture guard. It removes every version and every member's pin,
-clears kept bindings on chat results, and leaves a `missing` import tombstone so
-the importer never recreates it. The removal waits while an agent turn uses the
+clears kept bindings on chat results, and leaves an import tombstone: `missing`
+after expiry, `deleted` after Delete. Nothing recreates a `deleted` identity; the
+importer skips it and `create_artifact` refuses it, so turn discovery cannot
+restore it either. The removal waits while an agent turn uses the
 artifact, a consolidation report awaits review, or a legacy import is pending;
 `can_delete` and the route apply that same rule. Episode reports stay bound to their
 episode and cannot be deleted. A copy the human saved into the workspace stays.
