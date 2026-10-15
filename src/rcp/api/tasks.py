@@ -269,11 +269,12 @@ def _agent_task_response(
                     update["repairable"] = False
     if not isinstance(stored_artifacts, list):
         return response
+    # The tracked file each fork was cut from, as settlement recorded it.
     forks = {
-        fork: source
-        for outcome in outcomes
-        if isinstance(fork := outcome["separate_artifact_id"], str)
-        and isinstance(source := outcome["artifact_id"], str)
+        payload["separate_artifact_id"]: payload["forked_from"]
+        for receipt in receipts
+        if isinstance((payload := receipt.payload).get("separate_artifact_id"), str)
+        and isinstance(payload.get("forked_from"), dict)
     }
     projected: list[object] = []
     for raw in stored_artifacts:
@@ -283,15 +284,10 @@ def _agent_task_response(
             projected.append(raw)
             continue
         card = _agent_artifact_response(store, record, descriptor)
-        source_id = forks.get(descriptor.artifact_id)
-        source = store.artifact(source_id) if source_id else None
-        if source is not None:
+        forked_from = forks.get(descriptor.artifact_id)
+        if forked_from is not None:
             card = card.model_copy(
-                update={
-                    "forked_from": TrackedFileLocation(
-                        turn_folder=source.supplier_id, name=source.source_name
-                    )
-                }
+                update={"forked_from": TrackedFileLocation.model_validate(forked_from)}
             )
         projected.append(_agent_artifact_response_json(card))
     result["artifacts"] = projected

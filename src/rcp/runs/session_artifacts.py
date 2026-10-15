@@ -451,6 +451,8 @@ def _publish(
                     artifact.artifact_id,
                     separate_artifact_id=fork.artifact_id,
                     descriptor=fork.model_dump(mode="json"),
+                    # The tracked file the reply cites; the source may expire first.
+                    forked_from={"turn_folder": artifact.supplier_id, "name": artifact.source_name},
                 )
                 listed.append(fork)
             _settle(store, item, digest)

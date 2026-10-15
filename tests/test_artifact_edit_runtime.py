@@ -705,6 +705,9 @@ def test_edit_outcome_projects_on_task_detail_and_list(manifest, tmp_path, outco
     artifacts = _finalize(app, request, execution, directory)
     [receipt] = store.agent_task_artifact_edit_outcomes(["edit"])["edit"]
     assert receipt.payload["status"] == outcome
+    # Recorded at settlement: the source artifact may expire before its fork does.
+    cited = {"turn_folder": path.parent.parent.name, "name": path.name}
+    assert receipt.payload.get("forked_from") == (cited if outcome == "forked" else None)
     expected = {
         "status": outcome,
         "artifact_id": source.artifact_id,
@@ -755,10 +758,7 @@ def test_edit_outcome_projects_on_task_detail_and_list(manifest, tmp_path, outco
         # The fork answers to the tracked file the edit's reply cites.
         cards = next(record for record in records if record["operation_id"] == "edit")
         assert [card.get("forked_from") for card in cards["result"].get("artifacts", [])] == [
-            {"turn_folder": path.parent.parent.name, "name": path.name}
-            if outcome == "forked"
-            else None
-            for _ in artifacts
+            cited if outcome == "forked" else None for _ in artifacts
         ]
 
 
