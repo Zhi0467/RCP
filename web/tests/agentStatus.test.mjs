@@ -44,6 +44,8 @@ test("the active turn wins, else the latest finished turn", () => {
   assert.equal(agentStatusTask([done, later]).operation_id, "c");
   const paused = task("p", { finished: false });
   assert.equal(agentStatusTask([done, paused]).operation_id, "p");
+  const retry = task("r", { parent_operation_id: "p" });
+  assert.equal(agentStatusTask([done, paused, retry]).operation_id, "r");
 });
 
 test("a window falls back to an earlier turn of the same provider and model only", () => {

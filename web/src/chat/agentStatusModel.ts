@@ -18,6 +18,7 @@ export type StatusTask = Pick<
   | "runtime_id"
   | "runtime_label"
   | "agent_status"
+  | "parent_operation_id"
 > & { request: Pick<AgentTaskRequest, "provider" | "model" | "session_id"> };
 
 /** The chat's tasks, preceded by earlier turns that fell outside the bounded task
@@ -37,6 +38,7 @@ export function chatStatusTasks(tasks: AgentTask[], messages: ChatMessage[]): St
       native_session_id: message.native_session_id,
       runtime_id: "",
       runtime_label: "",
+      parent_operation_id: null,
       agent_status: message.agent_status ?? null,
       request: {
         provider: (message.provider as AgentTaskRequest["provider"]) ?? null,
@@ -66,7 +68,12 @@ export interface AgentStatusView {
 
 /** The chat's current turn (running, queued or paused), else its latest finished turn. */
 export function agentStatusTask(tasks: StatusTask[]): StatusTask | null {
-  return lastWhere(tasks, (task) => !task.finished) ?? lastWhere(tasks, (task) => task.finished);
+  // A retry is a child attempt; its paused parent is no longer the current turn.
+  const retried = new Set(tasks.map((task) => task.parent_operation_id).filter(Boolean));
+  const current = tasks.filter((task) => !retried.has(task.operation_id));
+  return (
+    lastWhere(current, (task) => !task.finished) ?? lastWhere(current, (task) => task.finished)
+  );
 }
 
 /** The task's own window, else the newest one an earlier task of the chat
