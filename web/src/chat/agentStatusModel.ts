@@ -18,9 +18,9 @@ export interface AgentStatusView {
   compactions: ChatCompaction[];
 }
 
-/** The chat's current turn when one is active, else its latest finished turn. */
+/** The chat's current turn (running, queued or paused), else its latest finished turn. */
 export function agentStatusTask(tasks: AgentTask[]): AgentTask | null {
-  return lastWhere(tasks, (task) => task.active) ?? lastWhere(tasks, (task) => task.finished);
+  return lastWhere(tasks, (task) => !task.finished) ?? lastWhere(tasks, (task) => task.finished);
 }
 
 /** The task's own window, else the newest one an earlier task of the chat
@@ -39,18 +39,21 @@ export function agentContextWindow(task: AgentTask, tasks: AgentTask[]): number 
   return match?.agent_status?.context_window ?? null;
 }
 
-/** The task's own context, else, until a resumed turn reports one, the context
- *  its native session ended the previous turn with. */
+/** The task's own context, else, until an unfinished resumed turn reports one,
+ *  the context its native session ended the previous turn with on the same
+ *  runtime (an exec fallback never reports context, so it inherits none). */
 export function agentContextTokens(task: AgentTask, tasks: AgentTask[]): number | null {
   const own = task.agent_status?.context_tokens;
   if (own != null) return own;
   const session = task.request.session_id;
-  if (!session) return null;
+  if (!session || task.finished) return null;
   const match = lastEarlier(
     task,
     tasks,
     (candidate) =>
-      candidate.native_session_id === session && candidate.agent_status?.context_tokens != null,
+      candidate.native_session_id === session &&
+      candidate.runtime_id === task.runtime_id &&
+      candidate.agent_status?.context_tokens != null,
   );
   return match?.agent_status?.context_tokens ?? null;
 }

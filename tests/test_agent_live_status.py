@@ -6,7 +6,9 @@ from uuid import uuid4
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.background import AgentTaskExecution
 from rcp.core.models import AuthorizedHuman
+from rcp.limits import AGENT_STATUS_WRITE_SECONDS
 from rcp.providers.base import AgentCompaction, AgentStatusDelta, AgentSubagent
+from rcp.providers.live_status import AgentStatus
 from rcp.runs.shared import _sse
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord
@@ -39,6 +41,18 @@ def test_live_status_folds_into_the_task_and_ends_with_the_last_observation(
     )
     assert store.agent_task("turn").agent_status is None
 
+    def task_generation() -> int:
+        with store.connection() as connection:
+            row = connection.execute(
+                "SELECT generation FROM resource_versions WHERE resource='task' AND entity='turn'"
+            ).fetchone()
+        return row[0] if row else 0
+
+    before = task_generation()
+    store.update_agent_task_status("turn", AgentStatus(context_tokens=1))
+    # A status-only write refreshes the chat that polls this task.
+    assert task_generation() > before
+
     def frame(**delta: object) -> str:
         return _sse(AgentEvent(event="raw", status=AgentStatusDelta.model_validate(delta)))
 
@@ -48,6 +62,9 @@ def test_live_status_folds_into_the_task_and_ends_with_the_last_observation(
     async def frames():
         yield frame(context_tokens=1_000, context_window=200_000)
         yield frame(context_tokens=5_000)
+        # A held update is written once the throttle lapses, with no further frame.
+        await asyncio.sleep(AGENT_STATUS_WRITE_SECONDS + 0.3)
+        assert stored().context_tokens == 5_000
         yield frame(compaction=AgentCompaction(trigger="auto", after_tokens=800))
         # A compaction is written at once.
         assert [item.before_tokens for item in stored().compactions] == [5_000]

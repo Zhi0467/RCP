@@ -3333,6 +3333,9 @@ class _LiveStatusWriter:
         self._status: AgentStatus | None = None
         self._pending = False
         self._written_at: float | None = None
+        # A held meter update is written when the throttle lapses, even if the
+        # stream goes quiet, as during a long tool call.
+        self._trailing: asyncio.TimerHandle | None = None
 
     def observe(self, delta: AgentStatusDelta) -> None:
         self._status = fold_agent_status(self._status, delta)
@@ -3350,8 +3353,14 @@ class _LiveStatusWriter:
         )
         if urgent or due:
             self.flush()
+        elif self._trailing is None and self._written_at is not None:
+            delay = AGENT_STATUS_WRITE_SECONDS - (time.monotonic() - self._written_at)
+            self._trailing = asyncio.get_running_loop().call_later(max(0.0, delay), self.flush)
 
     def flush(self) -> None:
+        if self._trailing is not None:
+            self._trailing.cancel()
+            self._trailing = None
         if not self._pending or self._status is None:
             return
         self._pending = False

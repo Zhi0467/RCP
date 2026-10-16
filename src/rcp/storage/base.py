@@ -45,6 +45,7 @@ from rcp.storage.questions import migrate_questions
 from rcp.storage.research_views import migrate_research_views
 from rcp.storage.resource_deadlines import record_question_activity
 from rcp.storage.resource_versions import (
+    migrate_agent_live_status,
     migrate_episode_report_deletion,
     migrate_resource_versions,
 )
@@ -121,6 +122,7 @@ class AppStoreBase:
         (51, "evidence_flags_v1"),
         (52, "per_branch_auto_research_v1"),
         (53, "episode_report_deletion_v1"),
+        (54, "agent_live_status_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -885,6 +887,12 @@ class AppStoreBase:
             name="episode_report_deletion_v1",
             migration=migrate_episode_report_deletion,
         )
+        self._run_storage_schema_migration(
+            connection,
+            version=54,
+            name="agent_live_status_v1",
+            migration=migrate_agent_live_status,
+        )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
         if not schema_template:
@@ -1601,8 +1609,7 @@ class AppStoreBase:
                 authorized_user_id TEXT,
                 authorized_display_name TEXT,
                 visible INTEGER NOT NULL DEFAULT 1,
-                failure_kind TEXT,
-                agent_status_json TEXT
+                failure_kind TEXT
             );
             CREATE INDEX IF NOT EXISTS graph_runs_project
                 ON graph_runs(project_id, created_at DESC);
@@ -2189,7 +2196,6 @@ class AppStoreBase:
         )
         self._ensure_column(connection, "graph_runs", "phase", "TEXT NOT NULL DEFAULT 'queued'")
         self._ensure_column(connection, "graph_runs", "last_activity_at", "TEXT")
-        self._ensure_column(connection, "graph_runs", "agent_status_json", "TEXT")
         self._ensure_column(connection, "graph_runs", "result_json", "TEXT")
         self._ensure_column(connection, "graph_runs", "dispatch_authority_json", "TEXT")
         self._ensure_column(connection, "graph_runs", "authorized_space_id", "TEXT")

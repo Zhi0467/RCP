@@ -41,7 +41,8 @@ test("the active turn wins, else the latest finished turn", () => {
   const later = task("c");
   assert.equal(agentStatusTask([done, running, later]).operation_id, "b");
   assert.equal(agentStatusTask([done, later]).operation_id, "c");
-  assert.equal(agentStatusTask([task("q", { finished: false })]), null);
+  const paused = task("p", { finished: false });
+  assert.equal(agentStatusTask([done, paused]).operation_id, "p");
 });
 
 test("a window falls back to an earlier turn of the same provider and model only", () => {
@@ -69,6 +70,13 @@ test("a resumed turn shows its session's last context until it reports one", () 
     agent_status: status({ context_tokens: 36_000 }),
   });
   const resumed = task("b", { active: true, finished: false, request: { session_id: "s1" } });
+  const fallback = task("e", {
+    active: true,
+    finished: false,
+    runtime_id: "codex.exec-json.v1",
+    request: { session_id: "s1" },
+  });
+  assert.equal(agentContextTokens(fallback, [previous, fallback]), null);
   const fresh = task("c", { active: true, finished: false, request: {} });
   assert.equal(agentContextTokens(resumed, [previous, resumed]), 36_000);
   assert.equal(agentContextTokens(fresh, [previous, fresh]), null);
