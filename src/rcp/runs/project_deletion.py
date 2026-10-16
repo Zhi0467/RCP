@@ -28,7 +28,7 @@ from rcp.limits import (
     PROJECT_DELETION_CANCEL_CONFIRM_SECONDS,
 )
 from rcp.runs.membership_fence import press_episode_stop
-from rcp.storage import AppStore, EpisodeNotRunning
+from rcp.storage import AppStore, EpisodeNotRunning, ProjectActiveTaskConflict
 from rcp.storage.models import (
     AgentTaskRecord,
     EpisodeRecord,
@@ -140,6 +140,7 @@ def stop_project_work(
             logger.info("Episode %s needed no Stop: %s", episode.episode_id, exc)
     branches = store.branch_names(project_id)
     # A run's settle or a claimed watcher delivery can admit one last turn.
+    stopping: set[str] = set()
     for _ in range(2):
         tasks = store.project_live_work(project_id).tasks
         if not tasks:
@@ -148,8 +149,21 @@ def stop_project_work(
             reason = background.stop_for_project_deletion(task.operation_id)
             if reason is not None:
                 unstopped.append(f"{_task_label(task, branches)}: {reason}")
-        background.wait_for_stopped_workers([task.operation_id for task in tasks])
+        stopping.update(background.wait_for_stopped_workers([task.operation_id for task in tasks]))
+    # The watchers are already retired, so a retry would no longer find their
+    # jobs: cancel them now, even when the project must be kept below.
     unstopped.extend(_cancel_external_work(store, project_id, work.watchers))
+    # A worker can settle its task, then keep using the project's rows and
+    # stage; deleting them under it would corrupt both, so keep the project.
+    if background.wait_for_stopped_workers(sorted(stopping), timeout=0.0):
+        raise ProjectActiveTaskConflict(
+            " ".join(
+                [
+                    "An agent task is still stopping. Try Delete again in a moment.",
+                    *(["RCP could not stop:", "; ".join(unstopped)] if unstopped else []),
+                ]
+            )
+        )
     return unstopped
 
 

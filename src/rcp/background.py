@@ -1277,10 +1277,13 @@ class BackgroundAgentTasks:
         try:
             self.store.request_agent_task_pause(operation_id, requested_by="project_deletion")
         except ValueError:
-            # It settled after the read above; a finished task is already stopped.
-            if self._require_operation(operation_id).active:
+            # Already pausing (a human Pause, or an earlier stop pass) goes on to
+            # the worker below; one that settled after the read is already stopped.
+            current = self._require_operation(operation_id)
+            if not current.active:
+                return None
+            if not current.pausing:
                 raise
-            return None
         with self._controls_lock:
             worker = self._workers.get(operation_id)
         if worker is None or not worker.is_alive():

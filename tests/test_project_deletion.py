@@ -517,3 +517,102 @@ def test_delete_stops_in_flight_work_and_names_what_it_could_not_stop(
     assert store.project(project_id) is None
     assert cancelled.exists()
     assert len(response.json()["unstopped"]) == 3
+
+
+def test_delete_stops_a_task_already_pausing(manifest, tmp_path) -> None:
+    from rcp.api.app import create_app
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "app-data")
+    store = app.state.catalog.store
+    project_id = app.state.default_project_id
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="pausing-turn",
+            project_id=project_id,
+            kind="project_chat",
+            status="queued",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="queued",
+        )
+    )
+    # A human Pause the worker never finished: a second pause request is refused.
+    store.request_agent_task_pause("pausing-turn")
+    client = signed_in_client(app)
+    preview = client.get(f"/api/projects/{project_id}/deletion-preview").json()
+
+    response = client.delete(
+        f"/api/projects/{project_id}", params={"stop_token": preview["stop_token"]}
+    )
+
+    assert response.status_code == 200, response.text
+    assert store.project(project_id) is None
+
+
+def test_delete_keeps_the_project_while_a_stopped_worker_still_runs(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    from rcp.api.app import create_app
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "app-data")
+    store = app.state.catalog.store
+    background = app.state.background_tasks
+    project_id = app.state.default_project_id
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="lingering-turn",
+            project_id=project_id,
+            kind="project_chat",
+            status="queued",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="queued",
+        )
+    )
+    # The worker settles its task when signalled, then outlives the wait.
+    release = threading.Event()
+    worker = threading.Thread(target=release.wait, daemon=True)
+    worker.start()
+    background._workers["lingering-turn"] = worker
+    monkeypatch.setattr(background, "_signal_agent_task_pause", store.pause_agent_task)
+    # Its watcher is retired by the first attempt, so the cancel cannot wait for a retry.
+    cancelled = tmp_path / "watched-job-cancelled"
+    store.create_watchers(
+        [
+            WatcherRecord(
+                watcher_id="watched-job",
+                project_id=project_id,
+                origin_operation_id="lingering-turn",
+                origin_task_kind="project_chat",
+                chat_id="chat",
+                check_command=f"test -e {cancelled}",
+                cancel_command=f"touch {cancelled}",
+                log_path=str(tmp_path / "watched.log"),
+                cwd=str(tmp_path),
+                continuation=WatcherContinuation(provider="codex", run_on="local"),
+                created_at=now,
+            )
+        ]
+    )
+    wait = background.wait_for_stopped_workers
+    monkeypatch.setattr(
+        background, "wait_for_stopped_workers", lambda ids, timeout=0.0: wait(ids, timeout=0.0)
+    )
+    client = signed_in_client(app)
+    preview = client.get(f"/api/projects/{project_id}/deletion-preview").json()
+
+    response = client.delete(
+        f"/api/projects/{project_id}", params={"stop_token": preview["stop_token"]}
+    )
+
+    assert response.status_code == 409, response.text
+    assert store.project(project_id) is not None
+    assert cancelled.exists()
+    release.set()
+    worker.join()
+    retried = client.delete(f"/api/projects/{project_id}")
+    assert retried.status_code == 200, retried.text

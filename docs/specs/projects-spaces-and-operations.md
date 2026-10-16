@@ -420,7 +420,9 @@ without a cancel action is checked once and listed if it still runs. The
 response lists each in `unstopped`, and the Web shows those lines once the
 project is gone. Only an unfinished project transfer refuses
 Delete, from the preview onward. The transaction still refuses a task that
-outlived the stop, for example one admitted mid-stop; retrying Delete stops it.
+outlived the stop, for example one admitted mid-stop, and Delete refuses while
+a stopped task's worker thread is still running past the wait, since it may
+still use the project's rows and stage; retrying Delete finishes the job.
 **Why:** a refusal named work the human often could not see, such as a
 chat-launched job, and made them hunt for it; the project is going away, so
 its work has no later owner. Deletion never edits
