@@ -447,6 +447,10 @@ def chat(
     for message in transcript.messages:
         if message.operation_id is not None:
             message.browser_status = store.browser_turn_status(message.operation_id).public()
+            if message.role == "assistant":
+                # An old turn can fall outside the bounded task list the chat polls.
+                task = store.agent_task(message.operation_id)
+                message.agent_status = task.agent_status if task is not None else None
     return transcript
 
 

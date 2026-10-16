@@ -2987,6 +2987,8 @@ export interface SteerRequest {
 export interface ChatMessage {
   turn_outcome: TurnOutcome | null;
   browser_status?: BrowserTurnStatus | null;
+  /** The turn's live agent status, joined by the chat route; display only. */
+  agent_status?: AgentStatus | null;
   message_id: string;
   steering?: SteerReceipt | null;
   operation_id?: string | null;

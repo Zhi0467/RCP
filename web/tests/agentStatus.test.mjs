@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   agentContextTokens,
+  chatStatusTasks,
   agentContextWindow,
   agentStatusTask,
   agentStatusView,
@@ -85,6 +86,22 @@ test("a resumed turn shows its session's last context until it reports one", () 
     agent_status: status({ context_tokens: 38_000 }),
   });
   assert.equal(agentContextTokens(reported, [previous, reported]), 38_000);
+});
+
+test("older turns outside the task list come from the transcript", () => {
+  const listed = task("b");
+  const messages = [
+    { role: "user", operation_id: "a" },
+    { role: "assistant", operation_id: "a", agent_status: status({ context_window: 200_000 }) },
+    { role: "assistant", operation_id: "b", agent_status: status({ context_window: 1 }) },
+    { role: "assistant", operation_id: "c", agent_status: null },
+  ];
+  const turns = chatStatusTasks([listed], messages);
+  assert.deepEqual(
+    turns.map((turn) => turn.operation_id),
+    ["a", "b"],
+  );
+  assert.equal(turns[1], listed);
 });
 
 test("view counts running subagents and gathers compactions across turns", () => {

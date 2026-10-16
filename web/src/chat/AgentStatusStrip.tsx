@@ -1,16 +1,17 @@
 import { FoldVertical } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { AgentCompaction, AgentTask } from "../core/types";
+import type { AgentCompaction } from "../core/types";
 import {
   agentStatusView,
   contextFraction,
   formatTokens,
   type AgentStatusView,
+  type StatusTask,
 } from "./agentStatusModel";
 
 /** The chat header's running-subagent chip, compaction chip and context ring,
  *  and the one panel any of them opens. Renders nothing the provider did not report. */
-export function AgentStatusStrip({ tasks }: { tasks: AgentTask[] }) {
+export function AgentStatusStrip({ tasks }: { tasks: StatusTask[] }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {

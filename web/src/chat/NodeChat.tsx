@@ -206,7 +206,7 @@ import {
 import { SkillPicker, useSkillPicker } from "../core/SkillPicker";
 import { RepositoryScope } from "./RepositoryScope";
 import { AgentStatusStrip, CompactionDivider } from "./AgentStatusStrip";
-import { compactionAnchors } from "./agentStatusModel";
+import { chatStatusTasks, compactionAnchors } from "./agentStatusModel";
 import { BrowserTurnNotice, ChatBrowserControl } from "../core/BrowserControls";
 import { WorktreeChooser, WorktreeControls, useConversationWorktree } from "./WorktreeControls";
 
@@ -663,9 +663,13 @@ export function NodeChat({
   });
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const relatedActive = relatedTasks.some(isActiveTask);
+  const statusTasks = useMemo(
+    () => chatStatusTasks(relatedTasks, displayedMessages),
+    [relatedTasks, displayedMessages],
+  );
   const compactionByLine = useMemo(
-    () => compactionAnchors(transcript, relatedTasks),
-    [relatedTasks, transcript],
+    () => compactionAnchors(transcript, statusTasks),
+    [statusTasks, transcript],
   );
   // A settled turn may have published a new version of an artifact shown in place.
   const inlineArtifactRefreshToken = useMemo(
@@ -2404,7 +2408,7 @@ export function NodeChat({
   const contextControls = (showProvider: boolean) => (
     <div className="chat-context-controls">
       {(showProvider || !readOnly) && agentSummary}
-      <AgentStatusStrip tasks={relatedTasks} />
+      <AgentStatusStrip tasks={statusTasks} />
       {!fixedConversation && !readOnly && (
         <button
           className="chat-new-session"

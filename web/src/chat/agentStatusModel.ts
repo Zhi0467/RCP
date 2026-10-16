@@ -1,5 +1,51 @@
-import type { AgentCompaction, AgentStatus, AgentSubagent, AgentTask } from "../core/types";
+import type {
+  AgentCompaction,
+  AgentStatus,
+  AgentSubagent,
+  AgentTask,
+  AgentTaskRequest,
+  ChatMessage,
+} from "../core/types";
 import type { TaskTranscriptLine } from "../agents/agentTasks";
+
+/** The task fields the status strip reads; a task or an older turn known only from history. */
+export type StatusTask = Pick<
+  AgentTask,
+  | "operation_id"
+  | "active"
+  | "finished"
+  | "native_session_id"
+  | "runtime_id"
+  | "runtime_label"
+  | "agent_status"
+> & { request: Pick<AgentTaskRequest, "provider" | "model" | "session_id"> };
+
+/** The chat's tasks, preceded by earlier turns that fell outside the bounded task
+ *  list and are known only from the transcript the chat route joined status into. */
+export function chatStatusTasks(tasks: AgentTask[], messages: ChatMessage[]): StatusTask[] {
+  const known = new Set(tasks.map((task) => task.operation_id));
+  const history: StatusTask[] = [];
+  for (const message of messages) {
+    const operationId = message.operation_id;
+    if (message.role !== "assistant" || !operationId || known.has(operationId)) continue;
+    if (!message.agent_status) continue;
+    known.add(operationId);
+    history.push({
+      operation_id: operationId,
+      active: false,
+      finished: true,
+      native_session_id: message.native_session_id,
+      runtime_id: "",
+      runtime_label: "",
+      agent_status: message.agent_status,
+      request: {
+        provider: (message.provider as AgentTaskRequest["provider"]) ?? null,
+        model: message.model,
+      },
+    });
+  }
+  return [...history, ...tasks];
+}
 
 export interface ChatCompaction extends AgentCompaction {
   operationId: string;
@@ -8,7 +54,7 @@ export interface ChatCompaction extends AgentCompaction {
 }
 
 export interface AgentStatusView {
-  task: AgentTask;
+  task: StatusTask;
   contextTokens: number | null;
   contextWindow: number | null;
   autocompactTokens: number | null;
@@ -19,13 +65,13 @@ export interface AgentStatusView {
 }
 
 /** The chat's current turn (running, queued or paused), else its latest finished turn. */
-export function agentStatusTask(tasks: AgentTask[]): AgentTask | null {
+export function agentStatusTask(tasks: StatusTask[]): StatusTask | null {
   return lastWhere(tasks, (task) => !task.finished) ?? lastWhere(tasks, (task) => task.finished);
 }
 
 /** The task's own window, else the newest one an earlier task of the chat
  *  learned for the same provider and model (Claude reports it at turn end). */
-export function agentContextWindow(task: AgentTask, tasks: AgentTask[]): number | null {
+export function agentContextWindow(task: StatusTask, tasks: StatusTask[]): number | null {
   const own = task.agent_status?.context_window;
   if (own) return own;
   const match = lastEarlier(
@@ -42,7 +88,7 @@ export function agentContextWindow(task: AgentTask, tasks: AgentTask[]): number 
 /** The task's own context, else, until an unfinished resumed turn reports one,
  *  the context its native session ended the previous turn with on the same
  *  runtime (an exec fallback never reports context, so it inherits none). */
-export function agentContextTokens(task: AgentTask, tasks: AgentTask[]): number | null {
+export function agentContextTokens(task: StatusTask, tasks: StatusTask[]): number | null {
   const own = task.agent_status?.context_tokens;
   if (own != null) return own;
   const session = task.request.session_id;
@@ -59,10 +105,10 @@ export function agentContextTokens(task: AgentTask, tasks: AgentTask[]): number 
 }
 
 function lastEarlier(
-  task: AgentTask,
-  tasks: AgentTask[],
-  predicate: (candidate: AgentTask) => boolean,
-): AgentTask | null {
+  task: StatusTask,
+  tasks: StatusTask[],
+  predicate: (candidate: StatusTask) => boolean,
+): StatusTask | null {
   const index = tasks.indexOf(task);
   return lastWhere(index < 0 ? tasks : tasks.slice(0, index), predicate);
 }
@@ -73,7 +119,7 @@ function lastWhere<T>(items: T[], predicate: (item: T) => boolean): T | null {
   return null;
 }
 
-export function chatCompactions(tasks: AgentTask[]): ChatCompaction[] {
+export function chatCompactions(tasks: StatusTask[]): ChatCompaction[] {
   return tasks.flatMap((task, index) =>
     (task.agent_status?.compactions ?? []).map((compaction) => ({
       ...compaction,
@@ -87,7 +133,7 @@ export function runningSubagentCount(status: AgentStatus | null | undefined): nu
   return (status?.subagents ?? []).filter((subagent) => subagent.state === "running").length;
 }
 
-export function agentStatusView(tasks: AgentTask[]): AgentStatusView | null {
+export function agentStatusView(tasks: StatusTask[]): AgentStatusView | null {
   const task = agentStatusTask(tasks);
   if (!task) return null;
   const status = task.agent_status;
@@ -128,7 +174,7 @@ export interface CompactionAnchor {
  */
 export function compactionAnchors(
   lines: TaskTranscriptLine[],
-  tasks: AgentTask[],
+  tasks: StatusTask[],
 ): Map<string, CompactionAnchor> {
   const anchors = new Map<string, CompactionAnchor>();
   for (const task of tasks) {

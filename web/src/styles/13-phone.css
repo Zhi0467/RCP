@@ -132,7 +132,8 @@
   .conversation-list [role="option"],
   .conversation-list-toggle,
   .conversation-list .agent-list-search input,
-  .agent-list-filters button {
+  .agent-list-filters button,
+  .agent-status-chip {
     height: auto;
     min-height: 44px;
   }

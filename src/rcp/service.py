@@ -117,6 +117,7 @@ from rcp.providers import (
     profile_for,
 )
 from rcp.providers.browser_grant import BrowserTurnStatus
+from rcp.providers.live_status import AgentStatus
 from rcp.provisioning_repositories import team_repository_sources
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.skill_registry import (
@@ -335,6 +336,8 @@ class ChatMessage(BaseModel):
     browser_status: BrowserTurnStatus = Field(
         default_factory=lambda: BrowserTurnStatus(status="not_requested")
     )
+    #: The turn's live agent status, joined by the chat route; display only.
+    agent_status: AgentStatus | None = None
     role: Literal["user", "assistant"]
     text: str
     timestamp: str
