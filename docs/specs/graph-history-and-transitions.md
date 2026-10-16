@@ -284,6 +284,14 @@ ruleset are independent. When retiring a field, update
 `adapt_persisted_patch_document` and affected replay field rules together, including
 adapter-introduced fields. Historical bytes never change.
 
+A field the write path stamps, such as a Proposal's filer, dependency-rule
+version, or revisions, is bookkeeping in semantic comparison
+(`history/delta.py`). A branch merge files a source Proposal again on main under
+current stamps, so an older stored copy must still compare equal.
+**Why:** v0.4.23 versioned the dependency rule, and every branch holding an
+older pending Proposal failed its merge self-check;
+`tests/test_branch_merge.py` now varies every stamp a pending Proposal can hold.
+
 ## History reads
 
 One engine serves every history reader and materialization path. References are

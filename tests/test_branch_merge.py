@@ -5,7 +5,7 @@ import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal, get_args, get_origin
 
 import pytest
 
@@ -442,7 +442,30 @@ def test_effective_delta_accepts_compatible_main_changes_and_ignores_proposal_pr
     assert detect_branch_merge_conflicts(base, branch, main) == []
 
 
-def test_merge_carries_a_source_proposal_filed_under_an_older_dependency_rule() -> None:
+def _filing_stamp_variants() -> list[tuple[str, object]]:
+    """Every value filing could have stamped on a stored pending Proposal.
+
+    Filing (`prepare_patch_bookkeeping`) restamps these when a merge files the
+    Proposal on main, so a schema change that adds or versions a stamp is
+    covered without listing it here. Resolution fields and status are fixed
+    for a pending Proposal.
+    """
+
+    variants: list[tuple[str, object]] = []
+    for name, field in Proposal.model_fields.items():
+        if name == "status" or name.startswith("resolved_"):
+            continue
+        if get_origin(field.annotation) is Literal:
+            variants.extend((name, value) for value in get_args(field.annotation))
+        elif field.annotation in (int, "int"):
+            variants.extend((name, value) for value in (2, 3))
+    return variants
+
+
+@pytest.mark.parametrize(("field", "value"), _filing_stamp_variants())
+def test_merge_carries_a_source_proposal_whatever_its_filing_stamps(
+    field: str, value: object
+) -> None:
     proposal = Proposal.model_validate(
         {
             "id": "prop/merge",
@@ -457,7 +480,7 @@ def test_merge_carries_a_source_proposal_filed_under_an_older_dependency_rule() 
             ],
             "related_node_ids": ["rq/merge"],
             "base_rev": 2,
-            "dependency_rule": 1,
+            field: value,
         }
     )
     template = _context()

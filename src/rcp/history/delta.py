@@ -948,11 +948,12 @@ _SEMANTIC_NODE_BOOKKEEPING = frozenset(
     {"created_rev", "updated_rev", "current_summary_stale", "next_action_stale"}
 )
 _SEMANTIC_EDGE_BOOKKEEPING = frozenset({"created_rev"})
-# Filing stamps the current staleness rule, so a Proposal carried from a branch
-# filed under an older rule is still the same Proposal.
+# Filing (`prepare_patch_bookkeeping`) restamps the rule version and filer, so a
+# Proposal a merge carries from a branch is still the same Proposal.
 _SEMANTIC_PROPOSAL_BOOKKEEPING = frozenset(
     {
         "dependency_rule",
+        "created_by",
         "base_rev",
         "raised_rev",
         "resolved_rev",
