@@ -231,3 +231,23 @@ test("project Settings keeps the global appearance and no longer owns a Display 
   assert.match(inset, /inset/);
   assert.notEqual(relief, inset);
 });
+
+test("an open project card menu stays above the shelf row below while its items are hovered", async (t) => {
+  const page = await openFixture(t);
+  const card = page.locator(".project-cover-shell").first();
+  await card.hover();
+  await card.getByRole("button", { name: "Project actions for Project One" }).click();
+  const menu = card.getByRole("menu");
+  const remove = menu.getByRole("menuitem", { name: "Delete project" });
+  await remove.hover({ force: true });
+  const covered = await menu.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const misses = [];
+    for (let y = box.top + 2; y < box.bottom - 1; y += 6) {
+      const hit = document.elementFromPoint(box.left + box.width / 2, y);
+      if (!element.contains(hit)) misses.push(hit?.className);
+    }
+    return misses;
+  });
+  assert.deepEqual(covered, []);
+});

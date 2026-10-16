@@ -2,7 +2,7 @@ import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { useTheme } from "../../src/ui/useTheme";
 import { ProjectLanding } from "../../src/projects/ProjectLanding";
-import type { ProjectCreationControl, SpaceRunIndexEntry } from "../../src/core/types";
+import type { ProjectCard, ProjectCreationControl, SpaceRunIndexEntry } from "../../src/core/types";
 import "../../src/styles.css";
 
 const noop = () => undefined;
@@ -21,6 +21,21 @@ const creation: ProjectCreationControl = {
     },
   ],
 };
+// Two shelf rows, so a first-row card menu overlaps the card below it.
+const projects: ProjectCard[] = ["One", "Two", "Three", "Four", "Five"].map((name) => ({
+  id: `project-${name.toLowerCase()}`,
+  home_space_id: "personal-space",
+  name: `Project ${name}`,
+  locator: `/projects/${name.toLowerCase()}`,
+  state_location: `/projects/${name.toLowerCase()}`,
+  remote: false,
+  revision: 1,
+  attention_count: 0,
+  digest_count: 0,
+  can_delete: true,
+  delete_unavailable_reason: null,
+  delete_confirmation: "Delete this project.",
+}));
 const runs: SpaceRunIndexEntry[] = [
   {
     episode_id: "episode-1",
@@ -54,7 +69,7 @@ function Fixture() {
       onThemeChoiceChange={appearance.setTheme}
       onColorModeChoiceChange={appearance.setMode}
       palette={appearance.palette}
-      projects={[]}
+      projects={projects}
       invitations={[]}
       onAnswerInvitation={resolved}
       spaceRuns={spaceRuns}
