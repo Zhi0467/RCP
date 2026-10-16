@@ -21,14 +21,14 @@ export type StatusTask = Pick<
 > & { request: Pick<AgentTaskRequest, "provider" | "model" | "session_id"> };
 
 /** The chat's tasks, preceded by earlier turns that fell outside the bounded task
- *  list and are known only from the transcript the chat route joined status into. */
+ *  list and are known only from the transcript the chat route joined status into.
+ *  A turn without status stays, so a later status-less turn is still the latest. */
 export function chatStatusTasks(tasks: AgentTask[], messages: ChatMessage[]): StatusTask[] {
   const known = new Set(tasks.map((task) => task.operation_id));
   const history: StatusTask[] = [];
   for (const message of messages) {
     const operationId = message.operation_id;
     if (message.role !== "assistant" || !operationId || known.has(operationId)) continue;
-    if (!message.agent_status) continue;
     known.add(operationId);
     history.push({
       operation_id: operationId,
@@ -37,7 +37,7 @@ export function chatStatusTasks(tasks: AgentTask[], messages: ChatMessage[]): St
       native_session_id: message.native_session_id,
       runtime_id: "",
       runtime_label: "",
-      agent_status: message.agent_status,
+      agent_status: message.agent_status ?? null,
       request: {
         provider: (message.provider as AgentTaskRequest["provider"]) ?? null,
         model: message.model,

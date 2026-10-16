@@ -99,9 +99,12 @@ test("older turns outside the task list come from the transcript", () => {
   const turns = chatStatusTasks([listed], messages);
   assert.deepEqual(
     turns.map((turn) => turn.operation_id),
-    ["a", "b"],
+    ["a", "c", "b"],
   );
-  assert.equal(turns[1], listed);
+  assert.equal(turns[2], listed);
+  // The latest turn reported no status, so the strip shows none rather than an older one.
+  assert.equal(agentStatusView(turns.slice(0, 2)).contextTokens, null);
+  assert.equal(agentStatusView(turns.slice(0, 2)).task.operation_id, "c");
 });
 
 test("view counts running subagents and gathers compactions across turns", () => {

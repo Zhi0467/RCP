@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 from uuid import uuid4
 
+import pytest
+
 from rcp.agents import AgentEvent, AgentProcessControl
-from rcp.background import AgentTaskExecution
+from rcp.background import AgentTaskExecution, TaskFailed
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import AGENT_STATUS_WRITE_SECONDS
 from rcp.providers.base import AgentCompaction, AgentStatusDelta, AgentSubagent
@@ -15,18 +17,14 @@ from rcp.storage import AgentTaskRecord
 from tests.helpers import create_named_app, signed_in_client
 
 
-def test_live_status_folds_into_the_task_and_ends_with_the_last_observation(
-    manifest, tmp_path
-) -> None:
+def _running_turn(manifest, tmp_path, operation_id: str = "turn"):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    tasks = app.state.background_tasks
-    store = tasks.store
-    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
     request = RunRequest(chat_scope="project", chat_id="chat", message="Go", provider="codex")
     store.create_agent_task(
         AgentTaskRecord(
-            operation_id="turn",
-            project_id=project_id,
+            operation_id=operation_id,
+            project_id=app.state.default_project_id,
             kind="project_chat",
             status="running",
             request=request.model_dump(mode="json"),
@@ -39,6 +37,16 @@ def test_live_status_folds_into_the_task_and_ends_with_the_last_observation(
             dispatch_authority=resolve_dispatch_authority("project_chat", request),
         )
     )
+    return app, request
+
+
+def test_live_status_folds_into_the_task_and_ends_with_the_last_observation(
+    manifest, tmp_path
+) -> None:
+    app, request = _running_turn(manifest, tmp_path)
+    tasks = app.state.background_tasks
+    store = tasks.store
+    project_id = app.state.default_project_id
     assert store.agent_task("turn").agent_status is None
 
     def task_generation() -> int:
@@ -93,3 +101,30 @@ def test_a_compaction_without_its_size_takes_the_next_context() -> None:
     status = fold_agent_status(status, AgentStatusDelta(context_tokens=25_000))
     status = fold_agent_status(status, AgentStatusDelta(context_tokens=30_000))
     assert [(c.before_tokens, c.after_tokens) for c in status.compactions] == [(42_000, 25_000)]
+
+
+@pytest.mark.parametrize("fails", [False, True], ids=["ended", "failed"])
+def test_an_ended_turn_leaves_nothing_running(manifest, tmp_path, fails: bool) -> None:
+    app, request = _running_turn(manifest, tmp_path)
+    tasks = app.state.background_tasks
+
+    async def frames():
+        live = AgentStatusDelta(compacting=True, subagent=AgentSubagent(id="sub"))
+        yield _sse(AgentEvent(event="raw", status=live))
+        if fails:
+            yield _sse(AgentEvent(event="error", text="stopped"))
+
+    execution = AgentTaskExecution(
+        operation_id="turn", store=tasks.store, control=AgentProcessControl()
+    )
+    run = tasks._consume(
+        app.state.default_project_id, "project_chat", request, execution, source=frames()
+    )
+    if fails:
+        with pytest.raises(TaskFailed):
+            asyncio.run(run)
+    else:
+        asyncio.run(run)
+    status = tasks.store.agent_task("turn").agent_status
+    assert not status.compacting
+    assert [item.state for item in status.subagents] == ["failed" if fails else "completed"]

@@ -2958,9 +2958,17 @@ class BackgroundAgentTasks:
         frames = source if source is not None else self.stream(project_id, kind, request, execution)
         live_status = _LiveStatusWriter(self.store, execution.operation_id)
         try:
-            return await self._consume_frames(
+            outcome = await self._consume_frames(
                 frames, request, execution, live_status, recorded=recorded
             )
+            live_status.settle(failed=False)
+            return outcome
+        except (TaskPaused, TaskAwaitingRemoteResult):
+            # The turn continues later; its live states are still live.
+            raise
+        except BaseException:
+            live_status.settle(failed=True)
+            raise
         finally:
             # Whatever ends the stream, the panel keeps the last observation.
             live_status.flush()
@@ -3356,6 +3364,22 @@ class _LiveStatusWriter:
         elif self._trailing is None and self._written_at is not None:
             delay = AGENT_STATUS_WRITE_SECONDS - (time.monotonic() - self._written_at)
             self._trailing = asyncio.get_running_loop().call_later(max(0.0, delay), self.flush)
+
+    def settle(self, *, failed: bool) -> None:
+        """An ended turn compacts nothing and has no subagent still running."""
+        if self._status is None:
+            return
+        ended = "failed" if failed else "completed"
+        self._status = self._status.model_copy(
+            update={
+                "compacting": False,
+                "subagents": [
+                    item.model_copy(update={"state": ended}) if item.state == "running" else item
+                    for item in self._status.subagents
+                ],
+            }
+        )
+        self._pending = True
 
     def flush(self) -> None:
         if self._trailing is not None:
