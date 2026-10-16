@@ -28,16 +28,40 @@ export function agentStatusTask(tasks: AgentTask[]): AgentTask | null {
 export function agentContextWindow(task: AgentTask, tasks: AgentTask[]): number | null {
   const own = task.agent_status?.context_window;
   if (own) return own;
-  const index = tasks.indexOf(task);
-  const earlier = index < 0 ? tasks : tasks.slice(0, index);
-  const match = lastWhere(
-    earlier,
+  const match = lastEarlier(
+    task,
+    tasks,
     (candidate) =>
       Boolean(candidate.agent_status?.context_window) &&
       (candidate.request.provider ?? null) === (task.request.provider ?? null) &&
       (candidate.request.model ?? null) === (task.request.model ?? null),
   );
   return match?.agent_status?.context_window ?? null;
+}
+
+/** The task's own context, else, until a resumed turn reports one, the context
+ *  its native session ended the previous turn with. */
+export function agentContextTokens(task: AgentTask, tasks: AgentTask[]): number | null {
+  const own = task.agent_status?.context_tokens;
+  if (own != null) return own;
+  const session = task.request.session_id;
+  if (!session) return null;
+  const match = lastEarlier(
+    task,
+    tasks,
+    (candidate) =>
+      candidate.native_session_id === session && candidate.agent_status?.context_tokens != null,
+  );
+  return match?.agent_status?.context_tokens ?? null;
+}
+
+function lastEarlier(
+  task: AgentTask,
+  tasks: AgentTask[],
+  predicate: (candidate: AgentTask) => boolean,
+): AgentTask | null {
+  const index = tasks.indexOf(task);
+  return lastWhere(index < 0 ? tasks : tasks.slice(0, index), predicate);
 }
 
 function lastWhere<T>(items: T[], predicate: (item: T) => boolean): T | null {
@@ -66,7 +90,7 @@ export function agentStatusView(tasks: AgentTask[]): AgentStatusView | null {
   const status = task.agent_status;
   return {
     task,
-    contextTokens: status?.context_tokens ?? null,
+    contextTokens: agentContextTokens(task, tasks),
     contextWindow: agentContextWindow(task, tasks),
     autocompactTokens: status?.autocompact_tokens ?? null,
     compacting: Boolean(status?.compacting),

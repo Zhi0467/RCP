@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  agentContextTokens,
   agentContextWindow,
   agentStatusTask,
   agentStatusView,
@@ -60,6 +61,22 @@ test("a window falls back to an earlier turn of the same provider and model only
   assert.equal(agentContextWindow(learned, [learned, current]), 200_000);
   const own = task("d", { agent_status: status({ context_window: 400_000 }) });
   assert.equal(agentContextWindow(own, [learned, own]), 400_000);
+});
+
+test("a resumed turn shows its session's last context until it reports one", () => {
+  const previous = task("a", {
+    native_session_id: "s1",
+    agent_status: status({ context_tokens: 36_000 }),
+  });
+  const resumed = task("b", { active: true, finished: false, request: { session_id: "s1" } });
+  const fresh = task("c", { active: true, finished: false, request: {} });
+  assert.equal(agentContextTokens(resumed, [previous, resumed]), 36_000);
+  assert.equal(agentContextTokens(fresh, [previous, fresh]), null);
+  const reported = task("d", {
+    request: { session_id: "s1" },
+    agent_status: status({ context_tokens: 38_000 }),
+  });
+  assert.equal(agentContextTokens(reported, [previous, reported]), 38_000);
 });
 
 test("view counts running subagents and gathers compactions across turns", () => {

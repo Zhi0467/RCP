@@ -66,3 +66,13 @@ def test_live_status_folds_into_the_task_and_ends_with_the_last_observation(
     assert [(item.kind, item.tokens) for item in status.subagents] == [("explore", 42)]
     payload = signed_in_client(app).get(f"/api/projects/{project_id}/tasks/turn").json()
     assert payload["agent_status"]["context_tokens"] == 900
+
+
+def test_a_compaction_without_its_size_takes_the_next_context() -> None:
+    from rcp.providers.live_status import fold_agent_status
+
+    status = fold_agent_status(None, AgentStatusDelta(context_tokens=42_000))
+    status = fold_agent_status(status, AgentStatusDelta(compaction=AgentCompaction()))
+    status = fold_agent_status(status, AgentStatusDelta(context_tokens=25_000))
+    status = fold_agent_status(status, AgentStatusDelta(context_tokens=30_000))
+    assert [(c.before_tokens, c.after_tokens) for c in status.compactions] == [(42_000, 25_000)]

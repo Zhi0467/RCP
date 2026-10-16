@@ -631,6 +631,8 @@ def test_app_server_reports_live_status_for_display(tmp_path: Path):
     for method, extra in (
         ("thread/tokenUsage/updated", {"tokenUsage": {**usage, "modelContextWindow": 258400}}),
         ("item/started", {"item": {"type": "contextCompaction", "id": "c1"}}),
+        # Seen live: compaction reports an update with no model call in it.
+        ("thread/tokenUsage/updated", {"tokenUsage": {**usage, "last": {"inputTokens": 0}}}),
         ("item/completed", {"item": {"type": "contextCompaction", "id": "c1"}}),
         ("thread/compacted", {}),
         ("item/completed", {"item": spawn}),

@@ -185,7 +185,7 @@ function AgentStatusPanel({ view, fraction }: { view: AgentStatusView; fraction:
 function compactionSpan(compaction: AgentCompaction): string {
   const before = compaction.before_tokens == null ? "" : formatTokens(compaction.before_tokens);
   const after = compaction.after_tokens == null ? "" : formatTokens(compaction.after_tokens);
-  return before || after ? `${before} → ${after}`.trim() : "";
+  return before && after ? `${before} → ${after}` : before || after;
 }
 
 /** A dashed rule in the transcript where the turn's context was compacted. */

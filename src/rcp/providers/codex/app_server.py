@@ -440,11 +440,12 @@ class _CodexAppServerTurn(ProviderTurn):
             elif self._phase == "running" and turn_id == self._turn_id:
                 self._usage = _usage_event(usage, turn_id, self._usage_baseline)
                 last = usage.get("last")
+                # A compaction reports an update with no model call in it
+                # (`last.inputTokens` 0); that is not the context size.
+                context = _usage_int(last.get("inputTokens")) if isinstance(last, dict) else 0
                 return _status_step(
                     AgentStatusDelta(
-                        context_tokens=_usage_int(last.get("inputTokens"))
-                        if isinstance(last, dict)
-                        else None,
+                        context_tokens=context or None,
                         context_window=_optional_int(usage.get("modelContextWindow")),
                     )
                 )

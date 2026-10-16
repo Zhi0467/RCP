@@ -23,6 +23,10 @@ class AgentStatus(BaseModel):
 
 def fold_agent_status(current: AgentStatus | None, delta: AgentStatusDelta) -> AgentStatus:
     status = current.model_copy(deep=True) if current is not None else AgentStatus()
+    last = status.compactions[-1] if status.compactions else None
+    if delta.context_tokens is not None and last is not None and last.after_tokens is None:
+        # Codex reports no post-compaction size; its next model call shows it.
+        last.after_tokens = delta.context_tokens
     for field in ("context_tokens", "context_window", "autocompact_tokens", "compacting"):
         value = getattr(delta, field)
         if value is not None:
