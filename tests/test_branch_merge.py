@@ -443,12 +443,12 @@ def test_effective_delta_accepts_compatible_main_changes_and_ignores_proposal_pr
 
 
 def _filing_stamp_variants() -> list[tuple[str, object]]:
-    """Every value filing could have stamped on a stored pending Proposal.
+    """Literal and integer values a stored pending Proposal may hold.
 
-    Filing (`prepare_patch_bookkeeping`) restamps these when a merge files the
-    Proposal on main, so a schema change that adds or versions a stamp is
-    covered without listing it here. Resolution fields and status are fixed
-    for a pending Proposal.
+    A merge files the Proposal again on main under current stamps
+    (`prepare_patch_bookkeeping`). This covers a versioned Literal stamp such as
+    `dependency_rule` without listing it; string, optional, and list fields are
+    not varied. Resolution fields and status are fixed for a pending Proposal.
     """
 
     variants: list[tuple[str, object]] = []

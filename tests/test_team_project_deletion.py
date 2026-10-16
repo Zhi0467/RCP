@@ -312,7 +312,7 @@ def test_team_delete_removes_invitation_transfer_and_provisioning_history(
             )
 
 
-def test_team_delete_refuses_an_active_task_before_touching_the_checkout(tmp_path: Path) -> None:
+def test_team_delete_stops_an_active_task_and_leaves_the_checkout(tmp_path: Path) -> None:
     app, client, store, _people, _acting = _team_app(tmp_path, members=1)
     repository = tmp_path / "managed-checkout"
     project_id = _create_project(client, repository)
@@ -331,13 +331,12 @@ def test_team_delete_refuses_an_active_task_before_touching_the_checkout(tmp_pat
         )
     )
 
-    refused = client.delete(
+    deleted = client.delete(
         f"/api/projects/{project_id}", headers={TEAM_SHELL_PROTOCOL_HEADER: "2"}
     )
 
-    assert refused.status_code == 409
-    assert "Pause the active agent task" in refused.json()["detail"]
-    assert store.project(project_id) is not None
+    assert deleted.status_code == 200, deleted.text
+    assert store.project(project_id) is None
     assert _tree_digest(repository) == before
 
 

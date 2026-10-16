@@ -49,6 +49,21 @@
   list-style: disc;
   padding: 20px 24px 20px 42px;
 }
+.project-delete-stops {
+  border-top: 1px solid var(--line);
+  font-size: var(--type-xs);
+  line-height: 1.65;
+  padding: 16px 24px;
+}
+.project-delete-stops > p {
+  margin: 0;
+}
+.project-delete-stops > ul {
+  list-style: disc;
+  margin: 6px 0;
+  overflow-wrap: anywhere;
+  padding-left: 18px;
+}
 .project-delete-dialog code {
   background: var(--paper);
   border: 1px solid var(--line);

@@ -280,145 +280,6 @@ def test_catalog_delete_accepts_legacy_non_uuid_project_id(tmp_path) -> None:
     assert store.project(project_id) is None
 
 
-def test_catalog_delete_refuses_live_episode(manifest, tmp_path) -> None:
-    data_dir = tmp_path / "app-data"
-    store = AppStore(data_dir / "rcp.sqlite3")
-    catalog = ProjectCatalog(data_dir, store, AgentLauncher())
-    record = catalog.register(str(manifest.path), identity_action="adopted")
-    owner = store.local_owner
-    assert owner is not None
-    now = store.now()
-    store.create_episode(
-        EpisodeRecord(
-            episode_id="live-episode",
-            project_id=record.project_id,
-            mode="experiment_loop",
-            control_node_id="experiment",
-            status="queued",
-            invocation_ceiling=1,
-            authorized_by=AuthorizedHuman(
-                space_id=store.space_id,
-                user_id=owner.user_id,
-                display_name="Researcher",
-            ),
-            created_at=now,
-            updated_at=now,
-        )
-    )
-
-    with pytest.raises(ValueError, match="Use Stop"):
-        catalog.delete(record.project_id)
-
-    assert store.project(record.project_id) is not None
-    assert store.episode("live-episode") is not None
-
-
-def test_catalog_delete_refuses_active_watcher(manifest, tmp_path) -> None:
-    data_dir = tmp_path / "app-data"
-    store = AppStore(data_dir / "rcp.sqlite3")
-    catalog = ProjectCatalog(data_dir, store, AgentLauncher())
-    record = catalog.register(str(manifest.path), identity_action="adopted")
-    now = store.now()
-    store.create_agent_task(
-        AgentTaskRecord(
-            operation_id="watch-origin",
-            project_id=record.project_id,
-            kind="project_chat",
-            status="failed",
-            request={},
-            created_at=now,
-            updated_at=now,
-            status_message="failed",
-        )
-    )
-    store.create_watchers(
-        [
-            WatcherRecord(
-                watcher_id="live-watcher",
-                project_id=record.project_id,
-                origin_operation_id="watch-origin",
-                origin_task_kind="project_chat",
-                chat_id="chat",
-                check_command="true",
-                log_path="/tmp/live-watcher.log",
-                cwd="/tmp",
-                continuation=WatcherContinuation(
-                    provider="codex",
-                    run_on="local",
-                ),
-                created_at=now,
-            )
-        ]
-    )
-
-    with pytest.raises(ValueError, match="stop watching"):
-        catalog.delete(record.project_id)
-
-    assert store.project(record.project_id) is not None
-    assert store.watcher("live-watcher") is not None
-
-
-@pytest.mark.parametrize(("notified", "blocks_deletion"), [(False, True), (True, False)])
-def test_catalog_delete_handles_degraded_watcher_delivery(
-    manifest,
-    tmp_path,
-    notified: bool,
-    blocks_deletion: bool,
-) -> None:
-    data_dir = tmp_path / "app-data"
-    store = AppStore(data_dir / "rcp.sqlite3")
-    catalog = ProjectCatalog(data_dir, store, AgentLauncher())
-    record = catalog.register(str(manifest.path), identity_action="adopted")
-    now = store.now()
-    store.create_agent_task(
-        AgentTaskRecord(
-            operation_id="watch-origin",
-            project_id=record.project_id,
-            kind="project_chat",
-            status="failed",
-            request={},
-            created_at=now,
-            updated_at=now,
-            status_message="failed",
-        )
-    )
-    store.create_watchers(
-        [
-            WatcherRecord(
-                watcher_id="degraded-watcher",
-                project_id=record.project_id,
-                origin_operation_id="watch-origin",
-                origin_task_kind="project_chat",
-                chat_id="chat",
-                check_command="true",
-                log_path="/tmp/degraded-watcher.log",
-                cwd="/tmp",
-                continuation=WatcherContinuation(
-                    provider="codex",
-                    run_on="local",
-                ),
-                status="degraded",
-                created_at=now,
-                notified=notified,
-                last_error="temporary watcher failure",
-                consecutive_error_count=1,
-            )
-        ]
-    )
-
-    if blocks_deletion:
-        with pytest.raises(ValueError, match="stop watching"):
-            catalog.delete(record.project_id)
-
-        assert store.project(record.project_id) is not None
-        assert store.watcher("degraded-watcher") is not None
-    else:
-        catalog.delete(record.project_id)
-
-        assert store.project(record.project_id) is None
-        assert store.watcher("degraded-watcher") is None
-
-
 def test_deleted_tagged_project_reregisters_with_canonical_id_and_alias(
     manifest,
     tmp_path,
@@ -477,15 +338,12 @@ def test_registration_waits_until_project_deletion_cleanup_finishes(
     assert restored.project_id == record.project_id
 
 
-@pytest.mark.parametrize("status", ["running", "exited", "cancelled", "lost"])
-def test_delete_compute_jobs_preserves_running_work_and_job_directories(
-    manifest, tmp_path, monkeypatch, status
-):
+@pytest.mark.parametrize("status", ["exited", "cancelled", "lost"])
+def test_delete_compute_jobs_preserves_job_directories(manifest, tmp_path, monkeypatch, status):
 
     from rcp.api.app import create_app
     from rcp.compute_jobs.backends import COMPUTE_BACKENDS
     from rcp.compute_jobs.models import ComputeBackendProbe
-    from rcp.storage import ProjectActiveTaskConflict
     from tests.test_compute_jobs_storage import job_record
 
     data_dir = tmp_path / "app-data"
@@ -520,25 +378,14 @@ def test_delete_compute_jobs_preserves_running_work_and_job_directories(
     store.record_compute_backend_probe(project_id, probe, "helper")
     store.record_compute_backend_probe("other-project", probe, "helper")
     client = signed_in_client(app)
-    # Deletion reconciles running rows first; the fence applies to work still alive.
     monkeypatch.setattr(COMPUTE_BACKENDS["systemd_user"], "alive", lambda handle, context: True)
-    if status == "running":
-        with pytest.raises(ProjectActiveTaskConflict):
-            store.delete_project_records(project_id)
-        response = client.delete(f"/api/projects/{project_id}")
-        assert response.status_code == 409
-        assert "2 running compute job" in response.json()["detail"]
-        assert store.project(project_id) is not None
-        assert len(store.compute_jobs(project_id)) == 2
-        assert store.compute_backend_probe(project_id, "laptop", "helper") == probe
-    else:
-        response = client.delete(f"/api/projects/{project_id}")
-        assert response.status_code == 200
-        assert response.json()["database_records"]["compute_jobs"] == 2
-        assert response.json()["database_records"]["compute_backend_probes"] == 1
-        assert store.project(project_id) is None
-        assert store.compute_jobs(project_id) == []
-        assert store.compute_backend_probe(project_id, "laptop", "helper") is None
+    response = client.delete(f"/api/projects/{project_id}")
+    assert response.status_code == 200
+    assert response.json()["database_records"]["compute_jobs"] == 2
+    assert response.json()["database_records"]["compute_backend_probes"] == 1
+    assert store.project(project_id) is None
+    assert store.compute_jobs(project_id) == []
+    assert store.compute_backend_probe(project_id, "laptop", "helper") is None
     assert store.compute_job(other.job_id) == other
     assert store.compute_backend_probe("other-project", "laptop", "helper") == probe
     assert all((root / "log").read_text() == "preserve compute output" for root in roots)
@@ -576,3 +423,81 @@ def test_delete_reconciles_finished_helper_jobs_before_the_running_fence(
     assert response.status_code == 200, response.text
     assert response.json()["database_records"]["compute_jobs"] == 1
     assert store.project(project_id) is None
+
+
+def test_delete_stops_in_flight_work_and_names_what_it_could_not_stop(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    from rcp.api.app import create_app
+    from rcp.compute_jobs.backends import COMPUTE_BACKENDS
+    from tests.test_compute_jobs_storage import job_record
+
+    data_dir = tmp_path / "app-data"
+    app = create_app(str(manifest.path), data_dir=data_dir)
+    store = app.state.catalog.store
+    project_id = app.state.default_project_id
+    owner = store.local_owner
+    assert owner is not None
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="queued-turn",
+            project_id=project_id,
+            kind="project_chat",
+            status="queued",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="queued",
+        )
+    )
+    store.create_episode(
+        EpisodeRecord(
+            episode_id="live-episode",
+            project_id=project_id,
+            mode="experiment_loop",
+            control_node_id="experiment",
+            status="queued",
+            invocation_ceiling=1,
+            authorized_by=AuthorizedHuman(
+                space_id=store.space_id, user_id=owner.user_id, display_name="Researcher"
+            ),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    # The helper's owner script is gone, so its cancel cannot run.
+    store.create_compute_job(
+        job_record("lost-owner", project_id=project_id, job_root=str(tmp_path / "gone"))
+    )
+    monkeypatch.setattr(COMPUTE_BACKENDS["systemd_user"], "alive", lambda handle, context: True)
+    cancelled = tmp_path / "external-job-cancelled"
+    store.create_watchers(
+        [
+            WatcherRecord(
+                watcher_id="external-job",
+                project_id=project_id,
+                origin_operation_id="queued-turn",
+                origin_task_kind="project_chat",
+                chat_id="chat",
+                check_command="true",
+                cancel_command=f"touch {cancelled}",
+                log_path=str(tmp_path / "external.log"),
+                cwd=str(tmp_path),
+                continuation=WatcherContinuation(provider="codex", run_on="local"),
+                created_at=now,
+            )
+        ]
+    )
+    client = signed_in_client(app)
+
+    preview = client.get(f"/api/projects/{project_id}/deletion-preview").json()
+    assert preview["blocked_reason"] is None
+    assert [len(group["items"]) for group in preview["stops"]] == [1, 1, 1, 0]
+
+    response = client.delete(f"/api/projects/{project_id}")
+
+    assert response.status_code == 200, response.text
+    assert store.project(project_id) is None
+    assert cancelled.exists()
+    assert len(response.json()["unstopped"]) == 1

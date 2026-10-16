@@ -393,11 +393,25 @@ and registered imported provider history. A cleanup failure is logged with the
 project and path but does not restore the registration or report deletion as
 failed; any leftover app files are inert.
 
-Queued, running, or pausing tasks; non-terminal episodes; unfinished project
-transfers; running compute jobs; active watchers; and degraded or completed
-watchers with an undelivered notification block deletion. The human must use
-the existing Pause, Stop, or stop-watching action and wait for work to settle.
-Running compute jobs must be cancelled or finish first. Deletion never edits
+Delete stops in-flight work instead of refusing because of it. Opening the
+confirm dialog reads `GET /api/projects/{id}/deletion-preview`, which names
+what will stop: active agent tasks (including branch merges and run reports),
+live runs, running compute jobs, and live watchers. The dialog renders those
+lines verbatim and its action becomes **Stop work and delete**. Confirming
+stops everything inside the catalog's deletion fence, which already refuses
+new work for the project. First it retires the watchers so none wakes a turn.
+Then it presses each run's Stop, without a report. Then it stops every agent
+task the way Pause does, killing the local or remote provider, and waits for
+the workers to exit. Last, it runs the saved cancel action of each running
+helper job and of each watched external job. A process RCP cannot confirm
+stopped, such as one on an unreachable host or whose cancel failed, does not
+block deletion. The response lists it in `unstopped`, and the Web shows those
+lines once the project is gone. Only an unfinished project transfer refuses
+Delete, from the preview onward. The transaction still refuses a task that
+outlived the stop, for example one admitted mid-stop; retrying Delete stops it.
+**Why:** a refusal named work the human often could not see, such as a
+chat-launched job, and made them hunt for it; the project is going away, so
+its work has no later owner. Deletion never edits
 the underlying research repositories or canonical state repository. For a team
 project, it also leaves the server-managed checkout and Git deploy key in place.
 Removing either is a separate operator deprovisioning action. The backend

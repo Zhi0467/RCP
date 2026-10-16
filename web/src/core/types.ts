@@ -3188,6 +3188,18 @@ export interface ProjectCard {
   delete_confirmation: string;
 }
 
+/** What confirming Delete will stop, rendered verbatim by the confirm dialog. */
+export interface ProjectDeletionPreview {
+  stops: { summary: string; items: string[] }[];
+  blocked_reason: string | null;
+}
+
+export interface ProjectDeletionResult {
+  project_id: string;
+  /** In-flight work Delete tried to stop and could not confirm stopped. */
+  unstopped: string[];
+}
+
 export interface ProjectMember {
   user_id: string;
   display_name: string | null;

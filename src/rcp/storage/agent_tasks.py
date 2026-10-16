@@ -4944,7 +4944,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         self,
         operation_id: str,
         *,
-        requested_by: Literal["human", "shutdown", "member_removal"] = "human",
+        requested_by: Literal["human", "shutdown", "member_removal", "project_deletion"] = "human",
     ) -> AgentTaskRecord:
         now = self.now()
         with self.connection() as connection:
@@ -4986,6 +4986,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     "member_removal": (
                         "Pause requested because the authorizing member is being removed."
                     ),
+                    "project_deletion": "Stopped because the project is being deleted.",
                 }[requested_by],
                 level="info",
                 created_at=now,

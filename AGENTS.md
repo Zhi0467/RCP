@@ -160,15 +160,15 @@ conversations spec; 11 `ProviderStreamEvent`.
   relations. `tests/test_project_types.py` and `web/tests/projectType.test.mjs`
   hold every other file to a falling count
   ([why](docs/specs/graph-history-and-transitions.md#product-ontology)).
-- A persisted graph field (node, edge, Proposal, glossary term, Ambiguity, or
-  Patch) has four readers; a schema change checks each: replay of records
-  written before it, equality between an older stored copy and a freshly
-  stamped one (branch merge, subsumption, dedupe), the agent Patch schema
-  (`agents/schema.py`), and Web types. A value the write path stamps is
-  bookkeeping, never a semantic difference
-  ([why](docs/specs/graph-history-and-transitions.md#replay-and-compatibility)).
-  Run `tests/test_branch_merge.py`, `tests/test_history*.py`, and
-  `tests/test_agent_schema.py`.
+- For persisted graph changes, check old-record replay, stored/restamped merge
+  equality, cached-projection upgrades, agent Patch input, and API/Web readers
+  ([owner](docs/specs/graph-history-and-transitions.md#replay-and-compatibility)).
+  Keep field ownership separate from merge identity: engine-written status,
+  standing, and rule versions can affect behavior. Exclude only fields explicitly
+  classified as irrelevant to that comparison; preserve recorded replay values.
+  Add an old-writer regression for the affected workflow; current-model fixtures
+  alone do not prove compatibility. Run the affected merge/history, agent-schema,
+  deployment, and Web checks listed in the owning spec.
 - A new external program is declared in `src/rcp/dependencies.py` with its
   purpose, roles, platforms, and tier. Required programs are checked up front
   and refuse agent runs when missing; optional ones name their feature and

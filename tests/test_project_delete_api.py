@@ -27,7 +27,7 @@ def _tree_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
-def test_delete_project_route_refuses_active_task(manifest, tmp_path) -> None:
+def test_delete_project_route_stops_an_active_task_then_deletes(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     card = app.state.catalog.card(project_id)
@@ -53,9 +53,9 @@ def test_delete_project_route_refuses_active_task(manifest, tmp_path) -> None:
 
     response = signed_in_client(app).delete(f"/api/projects/{project_id}")
 
-    assert response.status_code == 409
-    assert "Pause the active agent task" in response.json()["detail"]
-    assert app.state.catalog.card(project_id)["id"] == project_id
+    assert response.status_code == 200, response.text
+    assert response.json()["unstopped"] == []
+    assert app.state.catalog.store.project(project_id) is None
 
 
 def test_delete_project_validation_status_does_not_depend_on_exception_wording(
@@ -64,7 +64,7 @@ def test_delete_project_validation_status_does_not_depend_on_exception_wording(
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
 
-    def reject_validation(_project_id: str):
+    def reject_validation(_project_id: str, **_kwargs):
         raise ValueError("A locator validation error mentions active agent task.")
 
     monkeypatch.setattr(app.state.catalog, "delete", reject_validation)
