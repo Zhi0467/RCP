@@ -60,6 +60,7 @@ from rcp.providers import (
     require_runtime_id,
     runtime_label,
 )
+from rcp.providers.live_status import AgentStatus
 from rcp.server_ops.github import GitHubRepositoryRef
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
 from rcp.server_ops.models import (
@@ -2235,6 +2236,8 @@ class AgentTaskRecord(BaseModel):
     #: The umbrella provider name surfaces show; the runtime is a detail.
     provider_label: str = ""
     native_session_id: str | None = None
+    #: What the provider reported live about this turn; display only.
+    agent_status: AgentStatus | None = None
     history_only: bool = False
     stage_host: str | None = None
     stage_root: str | None = None

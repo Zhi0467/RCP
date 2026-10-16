@@ -106,6 +106,41 @@ class ProviderUsage(BaseModel):
     provider_fields: dict[str, object] = Field(default_factory=dict)
 
 
+class AgentCompaction(BaseModel):
+    """One context compaction the provider reported, with its token counts when known."""
+
+    trigger: Literal["auto", "manual", ""] = ""
+    before_tokens: int | None = Field(default=None, ge=0)
+    after_tokens: int | None = Field(default=None, ge=0)
+
+
+class AgentSubagent(BaseModel):
+    """A provider-native subagent as its parent stream reports it."""
+
+    id: str = Field(min_length=1)
+    kind: str = ""
+    label: str = ""
+    state: Literal["running", "completed", "failed"] = "running"
+    tokens: int | None = Field(default=None, ge=0)
+
+
+class AgentStatusDelta(BaseModel):
+    """One live observation of a running provider turn, for display only.
+
+    Never graph authority, prompt input, or turn outcome (invariant 4b): the
+    chat's agent panel is its only reader. A field left None was not observed.
+    """
+
+    #: Tokens in the model's context at its latest call.
+    context_tokens: int | None = Field(default=None, ge=0)
+    context_window: int | None = Field(default=None, ge=0)
+    #: The execution machine's auto-compact limit, when it is a token count.
+    autocompact_tokens: int | None = Field(default=None, ge=0)
+    compacting: bool | None = None
+    compaction: AgentCompaction | None = None
+    subagent: AgentSubagent | None = None
+
+
 @dataclass(frozen=True)
 class ProviderStreamEvent:
     """One decoded provider event.
@@ -121,6 +156,7 @@ class ProviderStreamEvent:
     text: str = ""
     session_id: str | None = None
     usage: ProviderUsage | None = None
+    status: AgentStatusDelta | None = None
 
 
 @dataclass(frozen=True)
