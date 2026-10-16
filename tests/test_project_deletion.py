@@ -517,3 +517,35 @@ def test_delete_stops_in_flight_work_and_names_what_it_could_not_stop(
     assert store.project(project_id) is None
     assert cancelled.exists()
     assert len(response.json()["unstopped"]) == 3
+
+
+def test_delete_stops_a_task_already_pausing(manifest, tmp_path) -> None:
+    from rcp.api.app import create_app
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "app-data")
+    store = app.state.catalog.store
+    project_id = app.state.default_project_id
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="pausing-turn",
+            project_id=project_id,
+            kind="project_chat",
+            status="queued",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="queued",
+        )
+    )
+    # A human Pause the worker never finished: a second pause request is refused.
+    store.request_agent_task_pause("pausing-turn")
+    client = signed_in_client(app)
+    preview = client.get(f"/api/projects/{project_id}/deletion-preview").json()
+
+    response = client.delete(
+        f"/api/projects/{project_id}", params={"stop_token": preview["stop_token"]}
+    )
+
+    assert response.status_code == 200, response.text
+    assert store.project(project_id) is None
