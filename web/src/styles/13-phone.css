@@ -40,6 +40,35 @@
   .chat-new-session-label {
     display: none;
   }
+  /* The agent status keeps its ring (and running subagents) as a percentage;
+     the panel becomes a bottom sheet that scrolls on its own. */
+  .agent-status-chip.compactions,
+  .agent-status-context-full {
+    display: none;
+  }
+  .agent-status-context-short {
+    display: inline;
+  }
+  .agent-status-scrim {
+    background: rgb(var(--shadow-rgb) / 35%);
+    display: block;
+    inset: 0;
+    position: fixed;
+    z-index: 79;
+  }
+  .agent-status-panel {
+    border-radius: 16px 16px 0 0;
+    border-width: 1px 0 0;
+    bottom: 0;
+    left: 0;
+    max-height: 72dvh;
+    padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+    position: fixed;
+    right: 0;
+    top: auto;
+    width: auto;
+    z-index: 80;
+  }
   /* An Experiment's limit takes the first row; its picker and Start share the
      next, the picker taking what Start leaves. */
   .experiment-control-heading > div:first-child {

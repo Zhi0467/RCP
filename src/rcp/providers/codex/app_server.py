@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from rcp.providers.base import (
+    AgentCompaction,
+    AgentStatusDelta,
+    AgentSubagent,
     ProviderRuntime,
     ProviderRuntimeStep,
     ProviderSteeringState,
@@ -436,12 +439,36 @@ class _CodexAppServerTurn(ProviderTurn):
                 self._usage_baseline = dict(usage["total"])
             elif self._phase == "running" and turn_id == self._turn_id:
                 self._usage = _usage_event(usage, turn_id, self._usage_baseline)
+                last = usage.get("last")
+                return _status_step(
+                    AgentStatusDelta(
+                        context_tokens=_usage_int(last.get("inputTokens"))
+                        if isinstance(last, dict)
+                        else None,
+                        context_window=_optional_int(usage.get("modelContextWindow")),
+                    )
+                )
             return ProviderRuntimeStep()
-        if method == "item/completed":
+        if method in {"item/started", "item/completed"}:
             item = params.get("item")
             if not isinstance(item, dict):
                 return ProviderRuntimeStep()
             item_type = item.get("type")
+            # Display only (invariant 4b). The deprecated `thread/compacted`
+            # notification repeats this item and is deliberately ignored.
+            if item_type == "contextCompaction":
+                started = method == "item/started"
+                return _status_step(
+                    AgentStatusDelta(compacting=True)
+                    if started
+                    else AgentStatusDelta(compaction=AgentCompaction(trigger="auto"))
+                )
+            if item_type == "collabAgentToolCall":
+                return _status_step(*_collab_subagents(item))
+            if item_type == "subAgentActivity" and method == "item/completed":
+                return _status_step(*_activity_subagent(item))
+            if method == "item/started":
+                return ProviderRuntimeStep()
             text = item.get("text")
             if item_type == "agentMessage" and isinstance(text, str) and text:
                 return ProviderRuntimeStep(events=(ProviderStreamEvent(event="answer", text=text),))
@@ -633,6 +660,84 @@ def _usage_event(
         reported_total_tokens=_usage_int(total.get("totalTokens")),
         provider_fields={**value, "baseline": baseline},
     )
+
+
+_COLLAB_STATES: dict[str, Literal["running", "completed", "failed"]] = {
+    "pendingInit": "running",
+    "running": "running",
+    "completed": "completed",
+    "shutdown": "completed",
+    "errored": "failed",
+    "interrupted": "failed",
+    "notFound": "failed",
+}
+
+
+def _status_step(*deltas: AgentStatusDelta) -> ProviderRuntimeStep:
+    return ProviderRuntimeStep(
+        events=tuple(ProviderStreamEvent(event="raw", status=delta) for delta in deltas)
+    )
+
+
+def _collab_subagents(item: dict[str, object]) -> list[AgentStatusDelta]:
+    """One row per receiver thread; only a spawn names the agent's kind and label."""
+
+    receivers = item.get("receiverThreadIds")
+    states = item.get("agentsStates")
+    states = states if isinstance(states, dict) else {}
+    spawn = item.get("tool") == "spawnAgent"
+    prompt = item.get("prompt")
+    label = (
+        prompt.strip().splitlines()[0][:120] if isinstance(prompt, str) and prompt.strip() else ""
+    )
+    deltas: list[AgentStatusDelta] = []
+    for thread_id in receivers if isinstance(receivers, list) else []:
+        if not isinstance(thread_id, str) or not thread_id:
+            continue
+        reported = states.get(thread_id)
+        state = _COLLAB_STATES.get(
+            str(reported.get("status")) if isinstance(reported, dict) else ""
+        )
+        if state is None and not spawn:
+            continue
+        subagent = AgentSubagent(id=thread_id, state=state or "running")
+        if spawn:
+            subagent.kind = str(item.get("model") or "")
+            subagent.label = label
+        deltas.append(AgentStatusDelta(subagent=subagent))
+    return deltas
+
+
+_ACTIVITY_STATES: dict[str, Literal["running", "completed", "failed"]] = {
+    "started": "running",
+    "interacted": "running",
+    "completed": "completed",
+    "interrupted": "failed",
+}
+
+
+def _activity_subagent(item: dict[str, object]) -> list[AgentStatusDelta]:
+    """Codex 0.162 reports a native spawn as subAgentActivity, not a spawn tool call."""
+
+    thread_id = item.get("agentThreadId")
+    state = _ACTIVITY_STATES.get(str(item.get("kind")))
+    if not isinstance(thread_id, str) or not thread_id or state is None:
+        return []
+    path = item.get("agentPath")
+    return [
+        AgentStatusDelta(
+            subagent=AgentSubagent(
+                id=thread_id,
+                kind=str(item.get("model") or ""),
+                label=path.rstrip("/").rsplit("/", 1)[-1] if isinstance(path, str) else "",
+                state=state,
+            )
+        )
+    ]
+
+
+def _optional_int(value: object) -> int | None:
+    return None if value is None else _usage_int(value)
 
 
 def _usage_int(value: object) -> int:

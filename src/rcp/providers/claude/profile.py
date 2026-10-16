@@ -9,11 +9,14 @@ import subprocess
 import uuid
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from rcp.artifact_preview import PREVIEW_COMMAND
 from rcp.providers.base import (
     AgentCapability,
+    AgentCompaction,
+    AgentStatusDelta,
+    AgentSubagent,
     ModelChoice,
     ProviderNativeUpdate,
     ProviderProfile,
@@ -109,6 +112,7 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
         self._pending: set[str] = set()
         self._generated: set[str] = {self._turn_id}
         self._outstanding: set[str] = set()
+        self._model: str | None = None
 
     @staticmethod
     def _user_input(message_id: str, text: str) -> bytes:
@@ -188,13 +192,22 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
                 return ProviderRuntimeStep()
             if value.get("type") == "user" and value.get("isReplay") is True:
                 return ProviderRuntimeStep()
+            if value.get("subtype") == "init" and isinstance(value.get("model"), str):
+                self._model = str(value["model"])
             if value.get("type") == "result":
                 finished = attributed_ids(value)
                 self._outstanding.difference_update(finished)
                 event = self._profile.decode_event(value, line)
+                window = _claude_context_window(value.get("modelUsage"), self._model)
+                if window is not None:
+                    event = replace(event, status=AgentStatusDelta(context_window=window))
                 if is_claude_task_notice(value, self._generated, finished):
                     return ProviderRuntimeStep(
-                        events=(ProviderStreamEvent(event="raw", text=line, usage=event.usage),)
+                        events=(
+                            ProviderStreamEvent(
+                                event="raw", text=line, usage=event.usage, status=event.status
+                            ),
+                        )
                     )
                 # A failing result ends the invocation even with a follow-up
                 # accepted: the task engine stops at the first error anyway, so
@@ -571,6 +584,11 @@ class ClaudeProfile(ProviderProfile):
     def decode_event(self, value: object, raw: str) -> ProviderStreamEvent:
         if not isinstance(value, dict):
             return ProviderStreamEvent(event="raw", text=raw)
+        event = self._decode_event(value, raw)
+        status = _claude_status(value)
+        return replace(event, status=status) if status is not None else event
+
+    def _decode_event(self, value: dict[str, object], raw: str) -> ProviderStreamEvent:
         event_type = str(value.get("type") or "")
         subtype = str(value.get("subtype") or "")
         usage = self.decode_usage(value, raw)
@@ -627,6 +645,98 @@ class ClaudeProfile(ProviderProfile):
             reported_total_tokens=_optional_usage_int(usage.get("total_tokens")),
             provider_fields={str(key): item for key, item in usage.items()},
         )
+
+
+_CLAUDE_SUBAGENT_STATES: dict[str, Literal["running", "completed", "failed"]] = {
+    "running": "running",
+    "completed": "completed",
+    "failed": "failed",
+    "killed": "failed",
+    "error": "failed",
+}
+
+
+def _claude_status(value: dict[str, object]) -> AgentStatusDelta | None:
+    """Live display status from one stream-json line; never turn outcome (4b)."""
+
+    event_type = value.get("type")
+    subtype = value.get("subtype")
+    if event_type == "assistant":
+        message = value.get("message")
+        usage = message.get("usage") if isinstance(message, dict) else None
+        # A subagent's own calls fill its context, not the parent's.
+        if value.get("parent_tool_use_id") is not None or not isinstance(usage, dict):
+            return None
+        return AgentStatusDelta(
+            context_tokens=_usage_int(usage.get("input_tokens"))
+            + _usage_int(usage.get("cache_read_input_tokens"))
+            + _usage_int(usage.get("cache_creation_input_tokens"))
+        )
+    if event_type == "result":
+        window = _claude_context_window(value.get("modelUsage"), None)
+        return AgentStatusDelta(context_window=window) if window is not None else None
+    if event_type != "system":
+        return None
+    if subtype == "status":
+        return AgentStatusDelta(compacting=True) if value.get("status") == "compacting" else None
+    if subtype == "compact_boundary":
+        metadata = value.get("compact_metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        trigger = metadata.get("trigger")
+        return AgentStatusDelta(
+            compaction=AgentCompaction(
+                trigger=trigger if trigger in {"auto", "manual"} else "",
+                before_tokens=_optional_usage_int(metadata.get("pre_tokens")),
+                after_tokens=_optional_usage_int(metadata.get("post_tokens")),
+            )
+        )
+    task_id = value.get("task_id")
+    if not isinstance(task_id, str) or not task_id:
+        return None
+    if subtype == "task_started":
+        return AgentStatusDelta(
+            subagent=AgentSubagent(
+                id=task_id,
+                kind=str(value.get("subagent_type") or ""),
+                label=str(value.get("description") or ""),
+            )
+        )
+    if subtype == "task_updated":
+        patch = value.get("patch")
+        status = patch.get("status") if isinstance(patch, dict) else None
+        state = _CLAUDE_SUBAGENT_STATES.get(str(status))
+        return AgentStatusDelta(subagent=AgentSubagent(id=task_id, state=state)) if state else None
+    if subtype == "task_notification":
+        usage = value.get("usage")
+        state = _CLAUDE_SUBAGENT_STATES.get(str(value.get("status")))
+        if state is None:
+            return None
+        return AgentStatusDelta(
+            subagent=AgentSubagent(
+                id=task_id,
+                state=state,
+                tokens=_optional_usage_int(usage.get("total_tokens"))
+                if isinstance(usage, dict)
+                else None,
+            )
+        )
+    return None
+
+
+def _claude_context_window(model_usage: object, model: str | None) -> int | None:
+    """The session model's window, else the largest one the result reports."""
+
+    if not isinstance(model_usage, dict):
+        return None
+    windows = {
+        str(name): window
+        for name, entry in model_usage.items()
+        if isinstance(entry, dict)
+        and (window := _optional_usage_int(entry.get("contextWindow"))) is not None
+    }
+    if model in windows:
+        return windows[model]
+    return max(windows.values(), default=None)
 
 
 def _claude_write_settings(

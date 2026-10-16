@@ -46,6 +46,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  Fragment,
   useCallback,
   useEffect,
   useId,
@@ -204,6 +205,8 @@ import {
 } from "../core/AgentConfigControls";
 import { SkillPicker, useSkillPicker } from "../core/SkillPicker";
 import { RepositoryScope } from "./RepositoryScope";
+import { AgentStatusStrip, CompactionDivider } from "./AgentStatusStrip";
+import { compactionAnchors } from "./agentStatusModel";
 import { BrowserTurnNotice, ChatBrowserControl } from "../core/BrowserControls";
 import { WorktreeChooser, WorktreeControls, useConversationWorktree } from "./WorktreeControls";
 
@@ -660,6 +663,10 @@ export function NodeChat({
   });
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const relatedActive = relatedTasks.some(isActiveTask);
+  const compactionByLine = useMemo(
+    () => compactionAnchors(transcript, relatedTasks),
+    [relatedTasks, transcript],
+  );
   // A settled turn may have published a new version of an artifact shown in place.
   const inlineArtifactRefreshToken = useMemo(
     () =>
@@ -2397,6 +2404,7 @@ export function NodeChat({
   const contextControls = (showProvider: boolean) => (
     <div className="chat-context-controls">
       {(showProvider || !readOnly) && agentSummary}
+      <AgentStatusStrip tasks={relatedTasks} />
       {!fixedConversation && !readOnly && (
         <button
           className="chat-new-session"
@@ -2538,338 +2546,348 @@ export function NodeChat({
           const collapsible =
             line.role === "human" && line.text.length > CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD;
           const expanded = expandedHumanMessageIds.has(messageId);
+          const compaction = compactionByLine.get(line.lineId);
           return (
-            <div
-              className={`node-chat-line ${line.role}${failedTurn ? " unsent" : ""}`}
-              key={line.lineId}
-            >
-              <BrowserTurnNotice status={line.browserStatus} />
-              {line.role === "human" && line.mode && (
-                <span className={`chat-turn-mode ${line.mode}`}>{modeLabel(line.mode)}</span>
+            <Fragment key={line.lineId}>
+              {compaction?.placement === "before" && (
+                <CompactionDivider compactions={compaction.compactions} />
               )}
-              {failedTurn && (
-                <button
-                  type="button"
-                  className="icon-button chat-turn-resend"
-                  aria-label="Resend"
-                  title={failedTurn.error}
-                  disabled={submitting}
-                  onClick={() => void submitTurn(failedTurn)}
-                >
-                  <RotateCcw size={14} />
-                </button>
-              )}
-              {line.trigger === "watcher" && (
-                <span className="chat-turn-trigger watcher">Watcher</span>
-              )}
-              {line.role === "agent" ? (
-                line.running ? (
-                  activeLineTask && <InlineTaskProgress task={activeLineTask} />
-                ) : (
-                  line.text && (
-                    <>
-                      <div className="chat-markdown chat-annotatable-answer">
-                        <MarkdownAnswer
-                          text={line.text}
-                          nodes={nodes}
-                          glossaryIndex={glossaryIndex}
-                          onOpenNode={onOpenNode}
-                          onOpenRepositoryFileLink={(href) =>
-                            void openRepositoryFile(messageId, line.taskId, href)
-                          }
-                          renderEmbed={(src, alt) =>
-                            renderInlineArtifact(line.taskId, line.artifacts, src, alt)
-                          }
-                        />
-                      </div>
-                      {/* Outside the annotatable wrapper: a selection clamp or the
+              <div className={`node-chat-line ${line.role}${failedTurn ? " unsent" : ""}`}>
+                <BrowserTurnNotice status={line.browserStatus} />
+                {line.role === "human" && line.mode && (
+                  <span className={`chat-turn-mode ${line.mode}`}>{modeLabel(line.mode)}</span>
+                )}
+                {failedTurn && (
+                  <button
+                    type="button"
+                    className="icon-button chat-turn-resend"
+                    aria-label="Resend"
+                    title={failedTurn.error}
+                    disabled={submitting}
+                    onClick={() => void submitTurn(failedTurn)}
+                  >
+                    <RotateCcw size={14} />
+                  </button>
+                )}
+                {line.trigger === "watcher" && (
+                  <span className="chat-turn-trigger watcher">Watcher</span>
+                )}
+                {line.role === "agent" ? (
+                  line.running ? (
+                    activeLineTask && <InlineTaskProgress task={activeLineTask} />
+                  ) : (
+                    line.text && (
+                      <>
+                        <div className="chat-markdown chat-annotatable-answer">
+                          <MarkdownAnswer
+                            text={line.text}
+                            nodes={nodes}
+                            glossaryIndex={glossaryIndex}
+                            onOpenNode={onOpenNode}
+                            onOpenRepositoryFileLink={(href) =>
+                              void openRepositoryFile(messageId, line.taskId, href)
+                            }
+                            renderEmbed={(src, alt) =>
+                              renderInlineArtifact(line.taskId, line.artifacts, src, alt)
+                            }
+                          />
+                        </div>
+                        {/* Outside the annotatable wrapper: a selection clamp or the
                         keyboard flow must never stage this diagnostic as answer text. */}
-                      {repositoryFileErrors.get(messageId) && (
-                        <strong className="chat-repository-file-error" role="alert">
-                          {repositoryFileErrors.get(messageId)}
-                        </strong>
-                      )}
-                      {!readOnly && (
-                        <button
-                          className="chat-answer-annotation-button"
-                          type="button"
-                          aria-label="Comment on this answer"
-                          disabled={submitting}
-                          onClick={(event) => {
-                            const answer =
-                              event.currentTarget.parentElement?.querySelector<HTMLElement>(
-                                ".chat-annotatable-answer",
-                              );
-                            if (answer) openKeyboardAnnotationComposer(answer, event.currentTarget);
-                          }}
-                        >
-                          <MessageCirclePlus size={12} /> Comment
-                        </button>
-                      )}
-                    </>
-                  )
-                )
-              ) : line.role === "human" ? (
-                <>
-                  <div
-                    className={`chat-human-message${collapsible && !expanded ? " collapsed" : ""}`}
-                  >
-                    <span className="node-chat-text">{line.text}</span>
-                  </div>
-                  {collapsible && (
-                    <button
-                      type="button"
-                      className="chat-message-toggle"
-                      aria-expanded={expanded}
-                      onClick={() => toggleHumanMessage(messageId)}
-                    >
-                      {expanded ? "See less" : "See more"}
-                    </button>
-                  )}
-                  {line.steering && (
-                    <div className="chat-steering-receipt" role="status">
-                      <strong>{line.steering.label}</strong>
-                      {line.steering.reason && <span>{line.steering.reason}</span>}
-                    </div>
-                  )}
-                  {line.attachments?.some((attachment) => attachment.reference) && (
-                    <div className="chat-input-references">
-                      {line.attachments.map((attachment) =>
-                        attachment.reference ? (
-                          <ReferenceChip
-                            key={attachment.attachment_id}
-                            projectId={project.id}
-                            reference={{
-                              ...sourceReference(attachment.reference),
-                              label: attachment.name,
+                        {repositoryFileErrors.get(messageId) && (
+                          <strong className="chat-repository-file-error" role="alert">
+                            {repositoryFileErrors.get(messageId)}
+                          </strong>
+                        )}
+                        {!readOnly && (
+                          <button
+                            className="chat-answer-annotation-button"
+                            type="button"
+                            aria-label="Comment on this answer"
+                            disabled={submitting}
+                            onClick={(event) => {
+                              const answer =
+                                event.currentTarget.parentElement?.querySelector<HTMLElement>(
+                                  ".chat-annotatable-answer",
+                                );
+                              if (answer)
+                                openKeyboardAnnotationComposer(answer, event.currentTarget);
                             }}
-                            version={
-                              attachment.reference.graph_head
-                                ? `r${attachment.reference.graph_head.revision}`
-                                : attachment.reference.version?.slice(0, 7)
-                            }
-                          />
-                        ) : null,
-                      )}
-                    </div>
-                  )}
-                  {line.attachments?.map((attachment) => {
-                    if (attachment.reference) return null;
-                    const expired = Date.parse(attachment.expires_at) <= expiryClock;
-                    return (
-                      <div
-                        className={`chat-input-attachment${expired ? " expired" : ""}`}
-                        key={attachment.attachment_id}
-                      >
-                        <File size={14} />
-                        <span>
-                          <strong>{attachment.name}</strong>
-                          <small>
-                            {attachment.media_type} · {formatBytes(attachment.size)}
-                          </small>
-                        </span>
-                        {expired && <em>Expired</em>}
-                      </div>
-                    );
-                  })}
-                  {pausedLineTask ? (
-                    <InlinePausedTask
-                      task={pausedLineTask}
-                      disabled={readOnly}
-                      onResume={() => onResumeTask(pausedLineTask)}
-                      onRetry={() => onRetryTask(pausedLineTask)}
-                    />
-                  ) : activeLineTask ? (
-                    <InlineTaskProgress task={activeLineTask} />
-                  ) : failedTurn ? null : pendingLine ? (
-                    <InlineTaskProgress task={null} />
-                  ) : null}
-                </>
-              ) : pausedLineTask ? null : (
-                <span className="node-chat-text">{line.text}</span>
-              )}
-              {retryLineTask && (
-                <button
-                  type="button"
-                  className="icon-button chat-error-retry"
-                  aria-label="Retry"
-                  title="Retry"
-                  disabled={readOnly}
-                  onClick={() => onRetryTask(retryLineTask)}
-                >
-                  <RotateCcw size={14} />
-                </button>
-              )}
-              {lineArtifacts(line)?.map((artifact) => {
-                // A reply that embeds an artifact shows it in place, with its actions.
-                if (
-                  line.role === "agent" &&
-                  line.text &&
-                  isInlineViewable(artifact) &&
-                  artifact.available &&
-                  artifact.can_open &&
-                  inlineArtifactIds(line.text, line.taskId, lineArtifacts(line) ?? []).has(
-                    artifact.artifact_id,
+                          >
+                            <MessageCirclePlus size={12} /> Comment
+                          </button>
+                        )}
+                      </>
+                    )
                   )
-                )
-                  return null;
-                if (artifact.view === "video" && artifact.available && artifact.can_open)
-                  return renderArtifactPlayer(line.taskId, artifact, artifact.name);
-                const taskUpdatedAt =
-                  relatedTasks.find((task) => task.operation_id === line.taskId)?.updated_at ?? "";
-                const previewFailed = failedArtifactPreviews.has(
-                  `${line.taskId}:${artifact.artifact_id}`,
-                );
-                const unavailable = !artifact.available;
-                const unavailableReason =
-                  (!artifact.available && artifact.unavailable_reason) ||
-                  (previewFailed ? "Preview unavailable" : null);
-                const shellError = artifactShellErrors.get(
-                  `${line.taskId}:${artifact.artifact_id}`,
-                );
-                return (
-                  <div
-                    className={`chat-artifact${unavailable ? " unavailable" : ""}`}
-                    key={artifact.artifact_id}
-                    id={`artifact-${line.taskId}-${artifact.artifact_id}`}
-                    tabIndex={-1}
+                ) : line.role === "human" ? (
+                  <>
+                    <div
+                      className={`chat-human-message${collapsible && !expanded ? " collapsed" : ""}`}
+                    >
+                      <span className="node-chat-text">{line.text}</span>
+                    </div>
+                    {collapsible && (
+                      <button
+                        type="button"
+                        className="chat-message-toggle"
+                        aria-expanded={expanded}
+                        onClick={() => toggleHumanMessage(messageId)}
+                      >
+                        {expanded ? "See less" : "See more"}
+                      </button>
+                    )}
+                    {line.steering && (
+                      <div className="chat-steering-receipt" role="status">
+                        <strong>{line.steering.label}</strong>
+                        {line.steering.reason && <span>{line.steering.reason}</span>}
+                      </div>
+                    )}
+                    {line.attachments?.some((attachment) => attachment.reference) && (
+                      <div className="chat-input-references">
+                        {line.attachments.map((attachment) =>
+                          attachment.reference ? (
+                            <ReferenceChip
+                              key={attachment.attachment_id}
+                              projectId={project.id}
+                              reference={{
+                                ...sourceReference(attachment.reference),
+                                label: attachment.name,
+                              }}
+                              version={
+                                attachment.reference.graph_head
+                                  ? `r${attachment.reference.graph_head.revision}`
+                                  : attachment.reference.version?.slice(0, 7)
+                              }
+                            />
+                          ) : null,
+                        )}
+                      </div>
+                    )}
+                    {line.attachments?.map((attachment) => {
+                      if (attachment.reference) return null;
+                      const expired = Date.parse(attachment.expires_at) <= expiryClock;
+                      return (
+                        <div
+                          className={`chat-input-attachment${expired ? " expired" : ""}`}
+                          key={attachment.attachment_id}
+                        >
+                          <File size={14} />
+                          <span>
+                            <strong>{attachment.name}</strong>
+                            <small>
+                              {attachment.media_type} · {formatBytes(attachment.size)}
+                            </small>
+                          </span>
+                          {expired && <em>Expired</em>}
+                        </div>
+                      );
+                    })}
+                    {pausedLineTask ? (
+                      <InlinePausedTask
+                        task={pausedLineTask}
+                        disabled={readOnly}
+                        onResume={() => onResumeTask(pausedLineTask)}
+                        onRetry={() => onRetryTask(pausedLineTask)}
+                      />
+                    ) : activeLineTask ? (
+                      <InlineTaskProgress task={activeLineTask} />
+                    ) : failedTurn ? null : pendingLine ? (
+                      <InlineTaskProgress task={null} />
+                    ) : null}
+                  </>
+                ) : pausedLineTask ? null : (
+                  <span className="node-chat-text">{line.text}</span>
+                )}
+                {retryLineTask && (
+                  <button
+                    type="button"
+                    className="icon-button chat-error-retry"
+                    aria-label="Retry"
+                    title="Retry"
+                    disabled={readOnly}
+                    onClick={() => onRetryTask(retryLineTask)}
                   >
-                    {artifact.view === "image" &&
-                      artifact.size_bytes != null &&
-                      artifact.size_bytes <= INLINE_ARTIFACT_MAX_BYTES &&
-                      artifact.can_open &&
-                      !unavailable &&
-                      !previewFailed && (
-                        <button
-                          className="chat-artifact-inline"
-                          type="button"
-                          aria-label={`Open ${artifact.name}`}
-                          onClick={() => void openArtifact(line.taskId, artifact)}
-                        >
-                          <img
-                            src={versionedArtifactContentUrl(
-                              project.id,
-                              line.taskId,
-                              artifact.artifact_id,
-                              taskUpdatedAt,
-                            )}
-                            alt={artifact.name}
-                            onError={() =>
-                              markArtifactPreviewFailed(line.taskId, artifact.artifact_id)
-                            }
-                          />
-                        </button>
-                      )}
-                    <File size={14} />
-                    <span>
-                      {artifact.name}
-                      {artifact.size_bytes != null && ` · ${formatBytes(artifact.size_bytes)}`}
-                      {(artifact.kept_at || artifact.kept_filename) && <em>Saved</em>}
-                    </span>
-                    {unavailableReason && <strong>{unavailableReason}</strong>}
-                    <div className="chat-artifact-actions">
-                      {(artifact.can_open ||
-                        (desktop && artifact.view === "pdf" && artifact.can_download)) && (
-                        <button
-                          type="button"
-                          onClick={() => void openArtifact(line.taskId, artifact)}
-                        >
-                          <ExternalLink size={12} /> Open
-                        </button>
-                      )}
-                      {artifact.can_download &&
-                        (desktop ? (
+                    <RotateCcw size={14} />
+                  </button>
+                )}
+                {lineArtifacts(line)?.map((artifact) => {
+                  // A reply that embeds an artifact shows it in place, with its actions.
+                  if (
+                    line.role === "agent" &&
+                    line.text &&
+                    isInlineViewable(artifact) &&
+                    artifact.available &&
+                    artifact.can_open &&
+                    inlineArtifactIds(line.text, line.taskId, lineArtifacts(line) ?? []).has(
+                      artifact.artifact_id,
+                    )
+                  )
+                    return null;
+                  if (artifact.view === "video" && artifact.available && artifact.can_open)
+                    return renderArtifactPlayer(line.taskId, artifact, artifact.name);
+                  const taskUpdatedAt =
+                    relatedTasks.find((task) => task.operation_id === line.taskId)?.updated_at ??
+                    "";
+                  const previewFailed = failedArtifactPreviews.has(
+                    `${line.taskId}:${artifact.artifact_id}`,
+                  );
+                  const unavailable = !artifact.available;
+                  const unavailableReason =
+                    (!artifact.available && artifact.unavailable_reason) ||
+                    (previewFailed ? "Preview unavailable" : null);
+                  const shellError = artifactShellErrors.get(
+                    `${line.taskId}:${artifact.artifact_id}`,
+                  );
+                  return (
+                    <div
+                      className={`chat-artifact${unavailable ? " unavailable" : ""}`}
+                      key={artifact.artifact_id}
+                      id={`artifact-${line.taskId}-${artifact.artifact_id}`}
+                      tabIndex={-1}
+                    >
+                      {artifact.view === "image" &&
+                        artifact.size_bytes != null &&
+                        artifact.size_bytes <= INLINE_ARTIFACT_MAX_BYTES &&
+                        artifact.can_open &&
+                        !unavailable &&
+                        !previewFailed && (
+                          <button
+                            className="chat-artifact-inline"
+                            type="button"
+                            aria-label={`Open ${artifact.name}`}
+                            onClick={() => void openArtifact(line.taskId, artifact)}
+                          >
+                            <img
+                              src={versionedArtifactContentUrl(
+                                project.id,
+                                line.taskId,
+                                artifact.artifact_id,
+                                taskUpdatedAt,
+                              )}
+                              alt={artifact.name}
+                              onError={() =>
+                                markArtifactPreviewFailed(line.taskId, artifact.artifact_id)
+                              }
+                            />
+                          </button>
+                        )}
+                      <File size={14} />
+                      <span>
+                        {artifact.name}
+                        {artifact.size_bytes != null && ` · ${formatBytes(artifact.size_bytes)}`}
+                        {(artifact.kept_at || artifact.kept_filename) && <em>Saved</em>}
+                      </span>
+                      {unavailableReason && <strong>{unavailableReason}</strong>}
+                      <div className="chat-artifact-actions">
+                        {(artifact.can_open ||
+                          (desktop && artifact.view === "pdf" && artifact.can_download)) && (
                           <button
                             type="button"
-                            onClick={() => void downloadArtifact(line.taskId, artifact)}
+                            onClick={() => void openArtifact(line.taskId, artifact)}
                           >
-                            <Download size={12} /> Download
+                            <ExternalLink size={12} /> Open
                           </button>
-                        ) : (
-                          <a
-                            href={artifactUrl(
-                              project.id,
-                              line.taskId,
-                              artifact.artifact_id,
-                              "download",
+                        )}
+                        {artifact.can_download &&
+                          (desktop ? (
+                            <button
+                              type="button"
+                              onClick={() => void downloadArtifact(line.taskId, artifact)}
+                            >
+                              <Download size={12} /> Download
+                            </button>
+                          ) : (
+                            <a
+                              href={artifactUrl(
+                                project.id,
+                                line.taskId,
+                                artifact.artifact_id,
+                                "download",
+                              )}
+                              download={artifact.name}
+                            >
+                              <Download size={12} /> Download
+                            </a>
+                          ))}
+                        {artifact.can_keep && (
+                          <button
+                            type="button"
+                            data-artifact-action="keep"
+                            disabled={keepingArtifacts.has(
+                              `${line.taskId}:${artifact.artifact_id}`,
                             )}
-                            download={artifact.name}
+                            onClick={() => void keepArtifact(line.taskId, artifact)}
                           >
-                            <Download size={12} /> Download
-                          </a>
-                        ))}
-                      {artifact.can_keep && (
-                        <button
-                          type="button"
-                          data-artifact-action="keep"
-                          disabled={keepingArtifacts.has(`${line.taskId}:${artifact.artifact_id}`)}
-                          onClick={() => void keepArtifact(line.taskId, artifact)}
-                        >
-                          Save to Artifacts
-                        </button>
+                            Save to Artifacts
+                          </button>
+                        )}
+                      </div>
+                      {shellError && (
+                        <strong className="chat-artifact-shell-error" role="alert">
+                          {shellError}
+                        </strong>
                       )}
                     </div>
-                    {shellError && (
-                      <strong className="chat-artifact-shell-error" role="alert">
-                        {shellError}
-                      </strong>
+                  );
+                })}
+                {line.artifactOmissions && (
+                  <p className="chat-artifact-omissions" role="status">
+                    {line.artifactOmissions.discovery_failed
+                      ? "Artifact discovery failed"
+                      : `Artifacts omitted: ${Object.entries(line.artifactOmissions)
+                          .filter(([, count]) => typeof count === "number" && count > 0)
+                          .map(([reason, count]) => `${reason.replaceAll("_", " ")}: ${count}`)
+                          .join("; ")}`}
+                  </p>
+                )}
+                {/* A published version shows itself; every outcome still tells new from updated. */}
+                {line.artifactEditOutcomes
+                  ?.filter((outcome) => outcome.status !== "published")
+                  .map((outcome) => (
+                    <p key={outcome.artifact_id} className="chat-artifact-omissions" role="status">
+                      {artifactEditOutcomeText(
+                        outcome,
+                        line.artifactEditOutcomes ?? [],
+                        line.artifacts ?? [],
+                      )}
+                    </p>
+                  ))}
+                {line.role === "agent" && (line.graphUpdate || line.turnOutcome) && (
+                  <div className="chat-turn-receipts">
+                    {line.turnOutcome && <TurnOutcomeChip outcome={line.turnOutcome} />}
+                    {line.graphUpdate && (
+                      <GraphUpdateReceipt
+                        update={line.graphUpdate}
+                        taskId={line.taskId}
+                        repairBusy={repairingTaskId === line.taskId}
+                        repairDisabled={
+                          readOnly ||
+                          graphChangesDisabled ||
+                          relatedActive ||
+                          submitting ||
+                          reviewPending
+                        }
+                        repairContinued={continuedTaskIds.has(line.taskId)}
+                        latestReceipt={latestGraphReceiptLineIds.has(line.lineId)}
+                        canApplyAgain={
+                          relatedTasks.find((task) => task.operation_id === line.taskId)
+                            ?.can_apply_again === true
+                        }
+                        repairError={repairErrors.get(line.taskId) ?? null}
+                        onInspectTask={onInspectTask}
+                        onOpenInbox={onOpenInbox}
+                        onRepair={() => void repairGraphUpdate(line.taskId)}
+                        onApplyAgain={() => void repairGraphUpdate(line.taskId, "apply_again")}
+                      />
                     )}
                   </div>
-                );
-              })}
-              {line.artifactOmissions && (
-                <p className="chat-artifact-omissions" role="status">
-                  {line.artifactOmissions.discovery_failed
-                    ? "Artifact discovery failed"
-                    : `Artifacts omitted: ${Object.entries(line.artifactOmissions)
-                        .filter(([, count]) => typeof count === "number" && count > 0)
-                        .map(([reason, count]) => `${reason.replaceAll("_", " ")}: ${count}`)
-                        .join("; ")}`}
-                </p>
+                )}
+              </div>
+              {compaction?.placement === "after" && (
+                <CompactionDivider compactions={compaction.compactions} />
               )}
-              {/* A published version shows itself; every outcome still tells new from updated. */}
-              {line.artifactEditOutcomes
-                ?.filter((outcome) => outcome.status !== "published")
-                .map((outcome) => (
-                  <p key={outcome.artifact_id} className="chat-artifact-omissions" role="status">
-                    {artifactEditOutcomeText(
-                      outcome,
-                      line.artifactEditOutcomes ?? [],
-                      line.artifacts ?? [],
-                    )}
-                  </p>
-                ))}
-              {line.role === "agent" && (line.graphUpdate || line.turnOutcome) && (
-                <div className="chat-turn-receipts">
-                  {line.turnOutcome && <TurnOutcomeChip outcome={line.turnOutcome} />}
-                  {line.graphUpdate && (
-                    <GraphUpdateReceipt
-                      update={line.graphUpdate}
-                      taskId={line.taskId}
-                      repairBusy={repairingTaskId === line.taskId}
-                      repairDisabled={
-                        readOnly ||
-                        graphChangesDisabled ||
-                        relatedActive ||
-                        submitting ||
-                        reviewPending
-                      }
-                      repairContinued={continuedTaskIds.has(line.taskId)}
-                      latestReceipt={latestGraphReceiptLineIds.has(line.lineId)}
-                      canApplyAgain={
-                        relatedTasks.find((task) => task.operation_id === line.taskId)
-                          ?.can_apply_again === true
-                      }
-                      repairError={repairErrors.get(line.taskId) ?? null}
-                      onInspectTask={onInspectTask}
-                      onOpenInbox={onOpenInbox}
-                      onRepair={() => void repairGraphUpdate(line.taskId)}
-                      onApplyAgain={() => void repairGraphUpdate(line.taskId, "apply_again")}
-                    />
-                  )}
-                </div>
-              )}
-            </div>
+            </Fragment>
           );
         })}
         {/* Open cards end the transcript and scroll with it, so they never

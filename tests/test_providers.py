@@ -383,7 +383,8 @@ def test_an_unknown_provider_is_rejected_by_the_schema_layer() -> None:
 def test_agent_profile_runtime_is_provider_owned_and_backward_compatible() -> None:
     from rcp.config import AgentSurfaceConfig
 
-    assert AgentSurfaceConfig(provider="codex", run_on="local").runtime == "exec"
+    assert AgentSurfaceConfig(provider="codex", run_on="local").runtime == "app-server"
+    assert AgentSurfaceConfig(provider="codex", runtime="exec", run_on="local").runtime == "exec"
     assert (
         AgentSurfaceConfig(
             provider="codex",
@@ -813,6 +814,114 @@ def test_claude_error_uses_text_then_result_subtype(fields, expected):
     )
     assert event.event == "error"
     assert event.text == expected
+
+
+def test_claude_stream_reports_live_status_for_display(tmp_path: Path):
+    """Trimmed from a real 2026-10-15 stream-json turn with a subagent and a compaction."""
+
+    from rcp.providers import ProviderTurnRequest
+    from rcp.providers.live_status import fold_agent_status
+
+    turn = (
+        ClaudeProfile()
+        .runtime("claude.stream-json.v1")
+        .turn(
+            ProviderTurnRequest(
+                prompt="p",
+                binary="claude",
+                cwd=tmp_path,
+                model=None,
+                reasoning=None,
+                session_id=None,
+                read_dirs=[],
+                write_dirs=[],
+                write_scope=None,
+                capability="discuss",
+                provider_version=None,
+            )
+        )
+    )
+    sid = {"session_id": "s"}
+    usage = {
+        "input_tokens": 2,
+        "cache_read_input_tokens": 22835,
+        "cache_creation_input_tokens": 18939,
+    }
+    frames = [
+        {"type": "system", "subtype": "init", "model": "claude-opus-5-5", **sid},
+        {"type": "assistant", "parent_tool_use_id": None, "message": {"usage": usage}, **sid},
+        {
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "a517",
+            "description": "Reply with PONG",
+            "subagent_type": "general-purpose",
+            **sid,
+        },
+        # The subagent's own call must not move the parent's context.
+        {
+            "type": "assistant",
+            "parent_tool_use_id": "toolu_01",
+            "message": {"usage": {"input_tokens": 900000}},
+            **sid,
+        },
+        {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "a517",
+            "patch": {"status": "completed"},
+            **sid,
+        },
+        {
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "a517",
+            "status": "completed",
+            "usage": {"total_tokens": 29436},
+            **sid,
+        },
+        {"type": "system", "subtype": "status", "status": "compacting", **sid},
+        {
+            "type": "system",
+            "subtype": "compact_boundary",
+            "compact_metadata": {"trigger": "manual", "pre_tokens": 45118, "post_tokens": 6881},
+            **sid,
+        },
+        {
+            "type": "result",
+            "subtype": "success",
+            "result": "PONG",
+            "usage": {"output_tokens": 3},
+            "modelUsage": {
+                "claude-opus-5-5": {"contextWindow": 200000},
+                "claude-haiku-5-5": {"contextWindow": 1000000},
+            },
+            **sid,
+        },
+    ]
+    status = None
+    events = []
+    for frame in frames:
+        for event in turn.receive_line(json.dumps(frame)).events:
+            events.append(event)
+            if event.status is not None:
+                status = fold_agent_status(status, event.status)
+        if frame.get("subtype") == "task_notification":
+            assert status is not None and status.context_tokens == 41776
+        if frame.get("subtype") == "status":
+            assert status is not None and status.compacting
+    assert status is not None
+    assert [event.event for event in events][-1] == "answer"
+    assert events[-1].usage is not None
+    assert status.context_window == 200000
+    assert status.context_tokens == 6881
+    assert not status.compacting
+    assert [(c.trigger, c.before_tokens, c.after_tokens) for c in status.compactions] == [
+        ("manual", 45118, 6881)
+    ]
+    assert [(a.id, a.kind, a.state, a.tokens) for a in status.subagents] == [
+        ("a517", "general-purpose", "completed", 29436)
+    ]
 
 
 def test_claude_work_readiness_probe_uses_the_enforced_settings_without_a_prompt():

@@ -1156,6 +1156,14 @@ class AgentLauncher:
         if shell_timeout_seconds is ...:
             shell_timeout_seconds = self.shell_timeout_seconds(provider, host)
         runtimes = profile_for(provider).runtime_candidates(runtime_id)
+        autocompact = self._autocompact(provider, host)
+        # Display only (invariant 4b): the panel's compaction mark, when the
+        # machine pins a token count rather than the provider's own default.
+        autocompact_status = (
+            AgentEvent(event="raw", status=AgentStatusDelta(autocompact_tokens=int(autocompact)))
+            if autocompact.isdigit()
+            else None
+        )
         last_failure: _PrePromptRuntimeFailure | None = None
         for index, runtime in enumerate(runtimes):
             try:
@@ -1194,6 +1202,9 @@ class AgentLauncher:
                 ) as stream:
                     async for event in stream:
                         yield event
+                        if event.event == "runtime" and autocompact_status is not None:
+                            yield autocompact_status
+                            autocompact_status = None
                 return
             except _PrePromptRuntimeFailure as exc:
                 last_failure = exc

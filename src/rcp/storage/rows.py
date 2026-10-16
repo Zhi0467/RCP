@@ -12,6 +12,7 @@ from rcp.core.authority import (
 from rcp.core.models import (
     AuthorizedHuman,
 )
+from rcp.providers.live_status import AgentStatus
 from rcp.storage.models import (
     ACTIVE_AGENT_TASK_STATUSES,
     AGENT_TASK_TRANSITIONS,
@@ -201,6 +202,10 @@ class RowMappingMixin:
         )
         result_json = data.pop("result_json", None)
         data["result"] = json.loads(result_json) if result_json else None
+        agent_status_json = data.pop("agent_status_json", None)
+        data["agent_status"] = (
+            AgentStatus.model_validate_json(agent_status_json) if agent_status_json else None
+        )
         status = data["status"]
         started = self._parse_time(data.get("started_at"))
         finished = self._parse_time(data.get("finished_at"))

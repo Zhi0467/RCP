@@ -118,8 +118,9 @@ records the accepted coupling.
 
 ## Provider runtime selection
 
-Each project profile selects a provider-owned runtime. Defaults are Codex `exec`,
-Claude `stream-json`, and OpenCode `run-json`; Codex also offers `app-server`.
+Each project profile selects a provider-owned runtime. Defaults are Codex
+`app-server`, Claude `stream-json`, and OpenCode `run-json`; Codex also offers
+`exec`. A profile that names no runtime follows the default.
 Readiness exports choices and the explicit default. Settings validates the pair,
 profiles always resolve a runtime, and task requests cannot override it. One
 profile's runtime covers all its capabilities, including Discuss and Work.
@@ -150,8 +151,8 @@ Both Codex runtimes support native subagents. App-server clears ambient custom
 roles/instructions but retains delegation and parent permissions. Child notices
 cannot answer or end the parent turn. Usage covers the parent only; RCP does not
 read private transcripts to reconstruct descendant totals. Contracts require
-native subagents to finish before the reply; RCP neither tracks nor waits for
-descendants. Only helper/scheduler jobs outlive turns; RCP workers have their
+native subagents to finish before the reply; RCP shows the subagents the parent
+stream reports ([live status](#live-agent-status)) but never waits for them. Only helper/scheduler jobs outlive turns; RCP workers have their
 own lifecycle. Claude launches set `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`,
 keeping subagents foreground while allowing parallel Agent calls.
 
@@ -707,6 +708,25 @@ A provider's final result is both its answer and its accounting boundary, and a
 labelled answer is withheld from the wire, so its usage is forwarded on its own
 frame. A turn that succeeds is counted exactly like one that fails, and a queued
 follow-up's second result is counted once more.
+
+### Live agent status
+
+Provider profiles also decode a display-only `AgentStatusDelta` from their
+stream: context tokens at the latest model call, the context window, compaction
+start and result, and native subagent changes. The background task folds the
+deltas into one `agent_status` snapshot on the task row with
+`fold_agent_status`, writing at most once per `AGENT_STATUS_WRITE_SECONDS` and
+at once for a compaction or subagent change; the task watermark carries it to
+the chat. Claude reports context per assistant message and its window only in
+the final result. Codex app-server reports both on every token-usage update,
+compactions as `contextCompaction` items, and subagents as
+`subAgentActivity` and `collabAgentToolCall` items. Codex exec reports none of these, so its chats show
+no context. When the machine card's auto-compact value is a token count, the
+launcher adds it to the snapshot.
+
+**Why:** the snapshot is display only. It never enters a prompt, Patch, answer,
+turn outcome, or usage accounting (invariant 4b), so a decoder gap degrades the
+panel and nothing else.
 
 Remote launch waits for the provider process group, including when its session
 wrapper forks. A successful SSH exit or partial assistant message cannot complete

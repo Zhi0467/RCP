@@ -600,6 +600,59 @@ def test_native_subagent_events_cannot_answer_or_finish_parent(tmp_path: Path):
     assert step.events[0].usage.processed_input_tokens == 300
 
 
+def test_app_server_reports_live_status_for_display(tmp_path: Path):
+    from rcp.providers.live_status import fold_agent_status
+
+    turn = _accounting_turn(tmp_path, resumed=False)
+    turn.receive_line(json.dumps({"id": 4, "result": {"turn": {"id": "active-turn"}}}))
+    root = {"threadId": "accounting-thread", "turnId": "active-turn"}
+    usage = {"total": {"inputTokens": 900}, "last": {"inputTokens": 400}}
+    spawn = {
+        "type": "collabAgentToolCall",
+        "id": "call-1",
+        "tool": "spawnAgent",
+        "senderThreadId": "accounting-thread",
+        "receiverThreadIds": ["child-thread"],
+        "model": "gpt-5.5-mini",
+        "prompt": "Reply with PONG\nand nothing else",
+        "agentsStates": {"child-thread": {"status": "pendingInit"}},
+        "status": "completed",
+    }
+    # Codex 0.162 reports its own spawns this way (probed 2026-10-16).
+    activity = {
+        "type": "subAgentActivity",
+        "id": "call-2",
+        "kind": "started",
+        "agentThreadId": "pong-thread",
+        "agentPath": "/root/pong",
+        "model": "gpt-6.1-sol",
+    }
+    status = None
+    for method, extra in (
+        ("thread/tokenUsage/updated", {"tokenUsage": {**usage, "modelContextWindow": 258400}}),
+        ("item/started", {"item": {"type": "contextCompaction", "id": "c1"}}),
+        ("item/completed", {"item": {"type": "contextCompaction", "id": "c1"}}),
+        ("thread/compacted", {}),
+        ("item/completed", {"item": spawn}),
+        ("item/completed", {"item": activity}),
+        ("item/completed", {"item": {**activity, "kind": "completed", "model": None}}),
+    ):
+        step = turn.receive_line(json.dumps({"method": method, "params": {**root, **extra}}))
+        assert not step.complete
+        for event in step.events:
+            assert event.usage is None and event.status is not None
+            status = fold_agent_status(status, event.status)
+        if method == "item/started":
+            assert status is not None and status.compacting
+    assert status is not None
+    assert (status.context_tokens, status.context_window) == (400, 258400)
+    assert [(c.trigger, c.before_tokens) for c in status.compactions] == [("auto", 400)]
+    assert [(a.id, a.kind, a.label, a.state) for a in status.subagents] == [
+        ("child-thread", "gpt-5.5-mini", "Reply with PONG", "running"),
+        ("pong-thread", "gpt-6.1-sol", "pong", "completed"),
+    ]
+
+
 def test_interactive_request_retains_observed_usage(tmp_path: Path):
     turn = _accounting_turn(tmp_path, resumed=False)
     turn.receive_line(json.dumps({"id": 4, "result": {"turn": {"id": "active-turn"}}}))

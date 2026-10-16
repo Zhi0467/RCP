@@ -143,6 +143,7 @@ async def test_closing_at_runtime_checkpoint_awaits_remote_and_local_cleanup(
         "prompt",
         cwd=tmp_path,
         capability="scratch_patch",
+        runtime_id="exec",
         host="test-host",
         remote_pid_file=pid_file,
         control=control,
@@ -261,6 +262,7 @@ async def test_provider_error_settles_confirmed_remote_pass_before_early_consume
         "prompt",
         cwd=tmp_path,
         capability="scratch_patch",
+        runtime_id="exec",
         host="test-host",
         remote_pid_file=str(tmp_path / "agent.pid"),
     )
@@ -297,6 +299,7 @@ async def test_remote_process_reservation_precedes_spawn_and_spawn_failure_settl
         "prompt",
         cwd=tmp_path,
         capability="scratch_patch",
+        runtime_id="exec",
         host="test-host",
         remote_pid_file=pid_file,
     )
@@ -386,6 +389,7 @@ async def test_provider_turn_rides_the_master_of_its_own_run(
         "prompt",
         cwd=tmp_path,
         capability="scratch_patch",
+        runtime_id="exec",
         host="test-host",
         remote_pid_file=str(tmp_path / "agent.pid"),
         transport_partition="test-host:/tmp/rcp-run.op-one",

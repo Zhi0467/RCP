@@ -1601,7 +1601,8 @@ class AppStoreBase:
                 authorized_user_id TEXT,
                 authorized_display_name TEXT,
                 visible INTEGER NOT NULL DEFAULT 1,
-                failure_kind TEXT
+                failure_kind TEXT,
+                agent_status_json TEXT
             );
             CREATE INDEX IF NOT EXISTS graph_runs_project
                 ON graph_runs(project_id, created_at DESC);
@@ -2188,6 +2189,7 @@ class AppStoreBase:
         )
         self._ensure_column(connection, "graph_runs", "phase", "TEXT NOT NULL DEFAULT 'queued'")
         self._ensure_column(connection, "graph_runs", "last_activity_at", "TEXT")
+        self._ensure_column(connection, "graph_runs", "agent_status_json", "TEXT")
         self._ensure_column(connection, "graph_runs", "result_json", "TEXT")
         self._ensure_column(connection, "graph_runs", "dispatch_authority_json", "TEXT")
         self._ensure_column(connection, "graph_runs", "authorized_space_id", "TEXT")
