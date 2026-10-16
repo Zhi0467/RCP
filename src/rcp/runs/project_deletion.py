@@ -150,13 +150,20 @@ def stop_project_work(
             if reason is not None:
                 unstopped.append(f"{_task_label(task, branches)}: {reason}")
         stopping.update(background.wait_for_stopped_workers([task.operation_id for task in tasks]))
+    # The watchers are already retired, so a retry would no longer find their
+    # jobs: cancel them now, even when the project must be kept below.
+    unstopped.extend(_cancel_external_work(store, project_id, work.watchers))
     # A worker can settle its task, then keep using the project's rows and
     # stage; deleting them under it would corrupt both, so keep the project.
     if background.wait_for_stopped_workers(sorted(stopping), timeout=0.0):
         raise ProjectActiveTaskConflict(
-            "An agent task is still stopping. Try Delete again in a moment."
+            " ".join(
+                [
+                    "An agent task is still stopping. Try Delete again in a moment.",
+                    *(["RCP could not stop:", "; ".join(unstopped)] if unstopped else []),
+                ]
+            )
         )
-    unstopped.extend(_cancel_external_work(store, project_id, work.watchers))
     return unstopped
 
 
