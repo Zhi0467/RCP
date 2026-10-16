@@ -21,6 +21,9 @@
   box-shadow: var(--shadow);
   width: min(500px, 96vw);
 }
+.project-delete-dialog.failed {
+  border-color: var(--red);
+}
 .project-delete-dialog > header {
   align-items: center;
   border-bottom: 1px solid var(--line);

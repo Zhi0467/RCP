@@ -4,13 +4,15 @@ Delete names what it will stop (`deletion_preview`), then stops all of it
 (`stop_project_work`) inside the catalog's deletion fence: watchers first, so
 none wakes new work; runs, so none admits another turn; then every agent task
 and its provider process; last, the compute jobs and watched external jobs RCP
-holds a cancel command for. A process RCP could not stop is returned by name;
-deletion goes ahead and reports it.
+holds a cancel command for, each confirmed by its saved check. A process RCP
+could not stop, or could not confirm stopped, is returned by name; deletion goes
+ahead and reports it.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -18,6 +20,10 @@ from pydantic import BaseModel
 
 from rcp.compute_jobs.jobs import helper_watch_spec
 from rcp.compute_jobs.models import ComputeJobRecord
+from rcp.limits import (
+    PROJECT_DELETION_CANCEL_CONFIRM_INTERVAL_SECONDS,
+    PROJECT_DELETION_CANCEL_CONFIRM_SECONDS,
+)
 from rcp.runs.membership_fence import press_episode_stop
 from rcp.storage import AppStore, EpisodeNotRunning
 from rcp.storage.models import (
@@ -27,7 +33,7 @@ from rcp.storage.models import (
     WatcherClaimConflict,
     WatcherRecord,
 )
-from rcp.watchers import WatchSpec, run_watcher_cancel
+from rcp.watchers import WatchSpec, run_watcher_cancel, run_watcher_check
 
 if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
@@ -128,7 +134,11 @@ def _cancel_external_work(
     project_id: str,
     earlier_watchers: list[StoredWatcherRecord],
 ) -> list[str]:
-    """Run each saved cancel command once: helper jobs, then watched external jobs."""
+    """Run each saved cancel command once, then confirm with the job's saved check.
+
+    A cancel's exit zero only means the command was accepted, so a job whose
+    check still reports it running at the deadline is returned as unstopped.
+    """
 
     work = store.project_live_work(project_id)
     # One action per job: watchers observing the same job share host, cwd, and command.
@@ -158,10 +168,30 @@ def _cancel_external_work(
             ),
         )
     unstopped: list[str] = []
+    accepted: list[tuple[WatchSpec, str, str]] = []
     for spec, host, label in actions.values():
         error = run_watcher_cancel(spec, host)
-        if error is not None:
+        if error is None:
+            accepted.append((spec, host, label))
+        else:
             unstopped.append(f"{label}: {error}")
+    deadline = time.monotonic() + PROJECT_DELETION_CANCEL_CONFIRM_SECONDS
+    while accepted:
+        running: list[tuple[WatchSpec, str, str]] = []
+        for spec, host, label in accepted:
+            result = run_watcher_check(spec, host)
+            if result.state == "active":
+                running.append((spec, host, label))
+            elif result.state == "error":
+                unstopped.append(f"{label}: cancel was accepted, then {result.error}")
+        accepted = running
+        if not accepted or time.monotonic() >= deadline:
+            break
+        time.sleep(PROJECT_DELETION_CANCEL_CONFIRM_INTERVAL_SECONDS)
+    unstopped.extend(
+        f"{label}: cancel was accepted, but the job still reports running"
+        for _, _, label in accepted
+    )
     return unstopped
 
 

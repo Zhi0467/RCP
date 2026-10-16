@@ -378,6 +378,10 @@ BACKGROUND_TASKS_SHUTDOWN_TIMEOUT_SECONDS = 7.0
 # Project deletion waits this long for stopped task workers to exit; it covers
 # one remote provider stop (REMOTE_PROVIDER_STOP_TIMEOUT_SECONDS) plus SSH setup.
 PROJECT_DELETION_STOP_TIMEOUT_SECONDS = 30.0
+# After an accepted cancel, Delete re-runs each job's saved check until it stops
+# reporting running; a scheduler cancel is asynchronous, so a job can lag it.
+PROJECT_DELETION_CANCEL_CONFIRM_SECONDS = 20.0
+PROJECT_DELETION_CANCEL_CONFIRM_INTERVAL_SECONDS = 2.0
 SERVER_LOCK_DEFAULT_TIMEOUT_SECONDS = 0.0
 SERVER_LOCK_OWNER_READ_ATTEMPTS = 10
 SERVER_LOCK_POLL_INTERVAL_SECONDS = 0.05

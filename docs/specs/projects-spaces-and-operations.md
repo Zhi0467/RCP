@@ -397,7 +397,9 @@ Delete stops in-flight work instead of refusing because of it. Opening the
 confirm dialog reads `GET /api/projects/{id}/deletion-preview`, which names
 what will stop: active agent tasks (including branch merges and run reports),
 live runs, running compute jobs, and live watchers. The dialog renders those
-lines verbatim and its action becomes **Stop work and delete**. Confirming
+lines verbatim and its action becomes **Stop work and delete**. The action
+stays disabled until the preview loads, so Delete never stops work the human
+was not shown; a failed load gives the dialog a red edge and a retry. Confirming
 first runs the non-destructive refusals (an unfinished transfer, unsafe file
 targets), so a refused Delete stops nothing. It then stops everything inside
 the catalog's deletion fence, which already refuses new work for the project.
@@ -405,9 +407,11 @@ First it retires the watchers so none wakes a turn.
 Then it presses each run's Stop, without a report. Then it stops every agent
 task the way Pause does, killing the local or remote provider, and waits for
 the workers to exit. Last, it runs the saved cancel action of each running
-helper job and of each watched external job. A process RCP cannot confirm
-stopped, such as one on an unreachable host or whose cancel failed, does not
-block deletion. The response lists it in `unstopped`, and the Web shows those
+helper job and of each watched external job. A cancel's success only means
+the command was accepted, so Delete re-runs that job's saved check for a short
+bounded time until it stops reporting running. A process RCP cannot confirm
+stopped, such as one on an unreachable host, whose cancel failed, or whose
+check still reports it running, does not block deletion. The response lists it in `unstopped`, and the Web shows those
 lines once the project is gone. Only an unfinished project transfer refuses
 Delete, from the preview onward. The transaction still refuses a task that
 outlived the stop, for example one admitted mid-stop; retrying Delete stops it.

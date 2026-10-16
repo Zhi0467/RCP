@@ -12,6 +12,7 @@ from rcp.agents import AgentLauncher
 from rcp.core.models import AuthorizedHuman
 from rcp.history import ProjectIdentityConflict
 from rcp.projects import ProjectCatalog
+from rcp.runs import project_deletion
 from rcp.sources import ImportedProviderSourceStore, project_cache_roots
 from rcp.storage import (
     AgentTaskRecord,
@@ -476,22 +477,28 @@ def test_delete_stops_in_flight_work_and_names_what_it_could_not_stop(
         job_record("lost-owner", project_id=project_id, job_root=str(tmp_path / "gone"))
     )
     monkeypatch.setattr(COMPUTE_BACKENDS["systemd_user"], "alive", lambda handle, context: True)
+    monkeypatch.setattr(project_deletion, "PROJECT_DELETION_CANCEL_CONFIRM_SECONDS", 0.0)
     cancelled = tmp_path / "external-job-cancelled"
+    # One cancel stops its job; the other is accepted while its job keeps running.
     store.create_watchers(
         [
             WatcherRecord(
-                watcher_id="external-job",
+                watcher_id=watcher_id,
                 project_id=project_id,
                 origin_operation_id="queued-turn",
                 origin_task_kind="project_chat",
                 chat_id="chat",
-                check_command="true",
-                cancel_command=f"touch {cancelled}",
+                check_command=check_command,
+                cancel_command=cancel_command,
                 log_path=str(tmp_path / "external.log"),
                 cwd=str(tmp_path),
                 continuation=WatcherContinuation(provider="codex", run_on="local"),
                 created_at=now,
             )
+            for watcher_id, check_command, cancel_command in [
+                ("external-job", f"test -e {cancelled}", f"touch {cancelled}"),
+                ("ignores-cancel", "false", "true"),
+            ]
         ]
     )
     client = signed_in_client(app)
@@ -505,4 +512,4 @@ def test_delete_stops_in_flight_work_and_names_what_it_could_not_stop(
     assert response.status_code == 200, response.text
     assert store.project(project_id) is None
     assert cancelled.exists()
-    assert len(response.json()["unstopped"]) == 1
+    assert len(response.json()["unstopped"]) == 2

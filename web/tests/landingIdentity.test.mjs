@@ -462,7 +462,7 @@ test("the project menu renders backend deletion and personal-only move actions",
   assert.match(teamMenu, /project-delete-action/);
 });
 
-test("the delete dialog lists each stop group and refuses only a blocked delete", () => {
+test("the delete dialog confirms only a loaded, unblocked preview", () => {
   const project = { id: "p", name: "p", can_delete: true, delete_confirmation: "c" };
   const render = (preview) =>
     renderToStaticMarkup(
@@ -473,6 +473,7 @@ test("the delete dialog lists each stop group and refuses only a blocked delete"
         error: null,
         onClose() {},
         onConfirm() {},
+        onRetryPreview() {},
       }),
     );
   const stops = [
@@ -489,6 +490,14 @@ test("the delete dialog lists each stop group and refuses only a blocked delete"
   assert.doesNotMatch(blocked, /project-delete-stops/);
   assert.match(blocked, /blocked-sentinel/);
   assert.match(blocked, /<button class="button danger" type="button" disabled/);
+
+  const loading = render(null);
+  assert.match(loading, /<button class="button danger" type="button" disabled/);
+  assert.doesNotMatch(loading, /class="icon-button"/);
+
+  const failed = render("failed");
+  assert.match(failed, /<button class="button danger" type="button" disabled/);
+  assert.equal(failed.match(/class="icon-button"/g)?.length, 1);
 });
 
 test("the delete dialog projects the selected project's backend confirmation", () => {
@@ -504,6 +513,7 @@ test("the delete dialog projects the selected project's backend confirmation", (
         error: null,
         onClose() {},
         onConfirm() {},
+        onRetryPreview() {},
       }),
     );
     assert.equal(

@@ -150,8 +150,8 @@ uses the saved execution identity even when the project manifest or graph
 history is unavailable. Transport errors remain diagnostics rather
 than evidence of completion. Helper job directories are not included in
 whole-database backup payloads; restoring a row does not recreate its outputs.
-Project deletion runs each running helper job's cancel action first; one it
-cannot run is reported, not a refusal ([deletion](projects-spaces-and-operations.md#deletion)).
+Project deletion runs each running helper job's cancel action first and
+confirms it with the job's check; one it cannot stop is reported, not a refusal ([deletion](projects-spaces-and-operations.md#deletion)).
 
 Project transfer retains watcher worker identity and cancellation attribution,
 time, and diagnostics as history. It strips executable check and cancel actions

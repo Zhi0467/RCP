@@ -8,6 +8,7 @@ import {
   Ellipsis,
   LogOut,
   Mail,
+  RotateCw,
   Server,
   Settings,
   Trash2,
@@ -142,12 +143,13 @@ export function ProjectActionsMenu({
 
 interface ProjectDeleteDialogProps {
   project: ProjectCard;
-  /** Null until the backend answers; Delete itself does not wait for it. */
-  preview: ProjectDeletionPreview | null;
+  /** Null while loading; Delete waits for the list of work it will stop. */
+  preview: ProjectDeletionPreview | "failed" | null;
   busy: boolean;
   error: string | null;
   onClose: () => void;
   onConfirm: () => void;
+  onRetryPreview: () => void;
 }
 
 export function ProjectDeleteDialog({
@@ -157,9 +159,11 @@ export function ProjectDeleteDialog({
   error,
   onClose,
   onConfirm,
+  onRetryPreview,
 }: ProjectDeleteDialogProps) {
-  const stops = preview?.stops ?? [];
-  const blocked = preview?.blocked_reason ?? null;
+  const loaded = preview !== null && preview !== "failed" ? preview : null;
+  const stops = loaded?.stops ?? [];
+  const blocked = loaded?.blocked_reason ?? null;
   return (
     <div
       className="modal-backdrop"
@@ -168,7 +172,7 @@ export function ProjectDeleteDialog({
       }}
     >
       <section
-        className="project-delete-dialog"
+        className={`project-delete-dialog${preview === "failed" ? " failed" : ""}`}
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="project-delete-title"
@@ -199,6 +203,17 @@ export function ProjectDeleteDialog({
           </div>
         )}
         <footer>
+          {preview === "failed" && (
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="Retry loading the work Delete stops"
+              title="Could not load the work Delete stops"
+              onClick={onRetryPreview}
+            >
+              <RotateCw size={16} />
+            </button>
+          )}
           <button
             className="button secondary"
             type="button"
@@ -211,7 +226,7 @@ export function ProjectDeleteDialog({
           <button
             className="button danger"
             type="button"
-            disabled={busy || blocked !== null}
+            disabled={busy || loaded === null || blocked !== null}
             onClick={onConfirm}
           >
             {busy ? "Deleting…" : stops.length > 0 ? "Stop work and delete" : "Delete project"}
@@ -321,7 +336,10 @@ export function ProjectLanding({
   const [deleteProjectId, setDeleteProjectId] = useState<string | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [deletePreview, setDeletePreview] = useState<ProjectDeletionPreview | null>(null);
+  const [deletePreview, setDeletePreview] = useState<ProjectDeletionPreview | "failed" | null>(
+    null,
+  );
+  const [deletePreviewAttempt, setDeletePreviewAttempt] = useState(0);
   const [deletedReport, setDeletedReport] = useState<{ name: string; unstopped: string[] } | null>(
     null,
   );
@@ -369,13 +387,13 @@ export function ProjectLanding({
         if (active) setDeletePreview(preview);
       },
       () => {
-        // The preview only names the work; Delete still stops all of it.
+        if (active) setDeletePreview("failed");
       },
     );
     return () => {
       active = false;
     };
-  }, [deleteProjectId]);
+  }, [deleteProjectId, deletePreviewAttempt]);
 
   const closeDeleteConfirmation = () => {
     if (deleteBusy) return;
@@ -580,6 +598,7 @@ export function ProjectLanding({
           error={deleteError}
           onClose={closeDeleteConfirmation}
           onConfirm={confirmDelete}
+          onRetryPreview={() => setDeletePreviewAttempt((attempt) => attempt + 1)}
         />
       )}
       {deletedReport && (
