@@ -373,6 +373,11 @@
 .project-cover-shell:hover {
   transform: translateY(-5px) rotate(-0.4deg);
 }
+/* The hover transform makes the shell a stacking context, so the open menu's
+   z-index only counts inside it; raise the owning shell above sibling cards. */
+.project-cover-shell:has(> .project-cover-menu) {
+  z-index: 4;
+}
 .project-cover-shell .project-cover:hover {
   transform: none;
 }
