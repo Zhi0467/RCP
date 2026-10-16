@@ -16,6 +16,8 @@ from pydantic import (
 
 from rcp.core.authority import HYPOTHESIS_PROPOSAL_FIELDS, AgentProfile
 from rcp.core.models import (
+    PROPOSAL_FILING_STAMPS,
+    PROPOSAL_RESOLUTION_FIELDS,
     Blocker,
     Decision,
     Edge,
@@ -653,33 +655,11 @@ def prepare_agent_patch(
         draft.model_dump(mode="python", exclude_none=True, exclude_unset=True)
     )
     payload = normalized.model_dump(mode="python", exclude_none=True, exclude_unset=True)
-    operations = payload["ops"]
-    for operation in operations:
-        if operation.get("op") != "create_proposals":
-            continue
-        for proposal in operation.get("proposals", []):
-            proposal.update(
-                {
-                    "related_node_ids": [],
-                    "related_edge_ids": [],
-                    "related_config_keys": [],
-                    "base_rev": 0,
-                    "status": "pending",
-                    "created_by": "agent",
-                    "created_by_operation_id": source_operation_id,
-                    "raised_rev": 0,
-                    "resolved_rev": None,
-                    "resolved_by": None,
-                    "resolved_by_operation_id": None,
-                    "resolution_reason": None,
-                    "rejection_reason": None,
-                }
-            )
     return Patch(
         kind=kind,
         author="agent",
         summary=draft.summary,
-        ops=operations,
+        ops=payload["ops"],
         run_truth_scope=list(run_truth_scope),
         repositories_read=_repositories_read_aliases(
             list(draft.repositories_read), repository_paths
@@ -745,23 +725,7 @@ def _strip_rcp_bookkeeping(operations: list[GraphOperation]) -> list[dict[str, A
                 {
                     key: value
                     for key, value in proposal.items()
-                    if key
-                    not in {
-                        "related_node_ids",
-                        "related_edge_ids",
-                        "related_config_keys",
-                        "dependency_rule",
-                        "base_rev",
-                        "status",
-                        "created_by",
-                        "created_by_operation_id",
-                        "raised_rev",
-                        "resolved_rev",
-                        "resolved_by",
-                        "resolved_by_operation_id",
-                        "resolution_reason",
-                        "rejection_reason",
-                    }
+                    if key not in PROPOSAL_FILING_STAMPS | PROPOSAL_RESOLUTION_FIELDS
                 }
                 for proposal in item.get("proposals", [])
             ]

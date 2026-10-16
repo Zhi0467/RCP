@@ -44,7 +44,9 @@ def main(root: Path, *, stale_cache: bool) -> None:
         service_account=account, projects_root=root / "projects"
     )
     data = root / "data"
-    receipt = prepare_data(data, root / "projects", account=account, empty_branch=True)
+    receipt = prepare_data(
+        data, root / "projects", account=account, empty_branch=True, merge_branch=True
+    )
     # A running server holds each project's display cache; the switched release reads it.
     app = create_app(
         data_dir=data, trusted_principal_resolver=lambda _request, _store: receipt["member_id"]
@@ -73,6 +75,7 @@ def main(root: Path, *, stale_cache: bool) -> None:
             {
                 "sqlite_receipt_path": str(capture.receipt_path),
                 "sqlite_receipt_sha256": capture.receipt_sha256,
+                "merge_branch_id": receipt["merge_branch_id"],
             }
         )
     )
