@@ -284,15 +284,21 @@ ruleset are independent. When retiring a field, update
 `adapt_persisted_patch_document` and affected replay field rules together, including
 adapter-introduced fields. Historical bytes never change.
 
-Merge identity excludes the filing provenance, rule version, revisions, and
-derived guidance-validity fields listed in `history/delta.py`. A pending source
-Proposal is filed again on main with current filing stamps while retaining its
-identity and authored content. Replay preserves the recorded dependency rule;
-that rule still controls staleness. Engine-written status and standing remain
-semantic. **Why:** v0.4.23 versioned the dependency rule, and every branch
-holding an older pending Proposal failed its merge self-check. The Proposal
-regression in `tests/test_branch_merge.py` varies the Literal and integer filing
-fields through merge preparation. Checks for a persisted graph change:
+`core/models.py` declares, beside `Proposal`, which of its fields RCP owns:
+filing stamps (dependencies, rule version, filer, revisions) and resolution
+fields, which filing resets. The agent Patch schema strips both sets, filing
+writes both, and merge identity excludes the filing stamps plus resolution
+revisions; the `history/delta.py` sets also exclude derived guidance-validity
+node fields. A pending source Proposal is filed again on main with current
+filing stamps while retaining its identity and authored content. Replay
+preserves the recorded dependency rule; that rule still controls staleness.
+Engine-written status and standing remain semantic. **Why:** v0.4.23 versioned
+the dependency rule, and every branch holding an older pending Proposal failed
+its merge self-check because the lists of filing fields had drifted apart. The
+Proposal regression in `tests/test_branch_merge.py` varies the Literal and
+integer filing fields through merge preparation, and the every-release update
+test in `tests/test_server_upgrade.py` merges a branch each published release
+populated. Checks for a persisted graph change:
 `tests/test_branch_merge*.py`, `tests/test_episode_merge.py`,
 `tests/test_history*.py`, `tests/test_agent_schema.py`, and
 `tests/test_application_deployment.py`.

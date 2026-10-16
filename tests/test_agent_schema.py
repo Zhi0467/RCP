@@ -11,8 +11,13 @@ from rcp.agents import (
     prepare_agent_patch,
     validate_agent_patch_shape,
 )
-from rcp.agents.schema import parse_agent_patch_json
-from rcp.core.models import Patch, Proposal
+from rcp.agents.schema import AgentProposal, parse_agent_patch_json
+from rcp.core.models import (
+    PROPOSAL_FILING_STAMPS,
+    PROPOSAL_RESOLUTION_FIELDS,
+    Patch,
+    Proposal,
+)
 from rcp.core.operations import graph_operations_from_proposal
 from tests.helpers import graph_operation, seed_patch
 
@@ -24,6 +29,13 @@ def test_agent_patch_schema_accepts_the_canonical_seed_shape() -> None:
             update={"ops": [operation for operation in patch.ops if operation.op != "set_coverage"]}
         )
     )
+
+
+def test_every_proposal_field_is_agent_content_or_declared_rcp_owned() -> None:
+    owned = PROPOSAL_FILING_STAMPS | PROPOSAL_RESOLUTION_FIELDS
+
+    assert not PROPOSAL_FILING_STAMPS & PROPOSAL_RESOLUTION_FIELDS
+    assert set(Proposal.model_fields) - owned == set(AgentProposal.model_fields)
 
 
 def test_agent_patch_schema_rejects_invented_node_fields_and_slug_formats() -> None:
@@ -993,7 +1005,7 @@ def test_agent_created_decisions_and_hypotheses_start_unresolved(node: dict[str,
         validate_agent_patch_shape(patch)
 
 
-def test_rcp_prepares_canonical_metadata_and_proposal_bookkeeping() -> None:
+def test_rcp_prepares_canonical_metadata() -> None:
     draft = AgentPatch.model_validate(
         {
             "summary": "Proposed promoting the hypothesis.",
@@ -1041,8 +1053,6 @@ def test_rcp_prepares_canonical_metadata_and_proposal_bookkeeping() -> None:
         run_truth_scope=["repo-a"],
         source_operation_id="task-create-proposal",
     )
-    proposal = patch.ops[0].proposals[0]
-
     assert isinstance(patch, Patch)
     assert patch.kind == "work"
     assert patch.author == "agent"
@@ -1051,19 +1061,6 @@ def test_rcp_prepares_canonical_metadata_and_proposal_bookkeeping() -> None:
     assert patch.repositories_read == ["repo-a"]
     assert patch.source_operation_id == "task-create-proposal"
     assert patch.change_summary == ["Raised a belief transition for review."]
-    assert proposal.base_rev == 0
-    assert proposal.related_node_ids == []
-    assert proposal.related_edge_ids == []
-    assert proposal.related_config_keys == []
-    assert proposal.status == "pending"
-    assert proposal.created_by == "agent"
-    assert proposal.created_by_operation_id == "task-create-proposal"
-    assert proposal.raised_rev == 0
-    assert proposal.resolved_rev is None
-    assert proposal.resolved_by is None
-    assert proposal.resolved_by_operation_id is None
-    assert proposal.resolution_reason is None
-    assert proposal.rejection_reason is None
 
 
 def test_a_repository_read_is_named_by_alias_whether_declared_as_alias_or_path() -> None:

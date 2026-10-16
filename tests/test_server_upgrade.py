@@ -270,7 +270,8 @@ def test_release_update_from_every_published_release_validates(
     This is the server's update across versions, from the releases a team server may
     still run: the copied-state validation, then the switched release's live check
     against the old release's data and display cache, current or left stale by a
-    failed refresh.
+    failed refresh. Then the candidate's merge self-check must accept a graph branch
+    the old release populated.
     """
     from rcp.server_ops.deployment import (
         PrepareRequest,
@@ -284,6 +285,7 @@ def test_release_update_from_every_published_release_validates(
     checkout = build_release_checkout(release_tag, tmp_path / "release")
     root = tmp_path / "update"
     capture = capture_release_update_with(checkout, root, stale_cache=stale_cache)
+    merge_branch_id = capture.pop("merge_branch_id")
     monkeypatch.setattr(
         storage_models,
         "DEFAULT_SERVER_LAYOUT",
@@ -329,6 +331,85 @@ def test_release_update_from_every_published_release_validates(
             assert cached["graph"]["revision"] < fresh["graph"]["revision"]
         else:
             assert cached["graph"] == fresh["graph"]
+    _assert_old_branch_merge_validates(live, str(merge_branch_id))
+
+
+def _assert_old_branch_merge_validates(live, branch_id: str) -> None:
+    """The candidate's merge self-check accepts a branch the old release populated."""
+    from rcp.core.transition_models import GraphTargetRef
+    from rcp.runs.branch_merge import build_deterministic_merge_ops
+    from rcp.runs.branch_merge_admission import start_branch_merge
+    from rcp.runs.branch_merge_context import load_branch_merge_context
+    from rcp.runs.branch_merge_request import BranchMergeRunRequest
+    from rcp.runs.tasks.branch_merge import _validate_candidate
+    from rcp.storage import EpisodeRecord
+
+    (card,) = live.state.catalog.cards()
+    service, _snapshot = live.state.catalog.open_snapshot(card["id"])
+    store = live.state.background_tasks.store
+    metadata = service.history.branch_metadata(branch_id)
+    now = store.now()
+    # The old seed wrote the branch alone; the merge reads its owner through the episode.
+    episode = store.create_episode(
+        EpisodeRecord(
+            episode_id=branch_id,
+            project_id=card["id"],
+            mode="auto_research",
+            graph_target=GraphTargetRef(kind="branch", branch_id=branch_id),
+            graph_base_head=metadata.base_head,
+            status="queued",
+            invocation_ceiling=1,
+            authorized_by=metadata.authorized_by,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+    task = start_branch_merge(
+        live.state.background_tasks,
+        card["id"],
+        BranchMergeRunRequest(
+            episode_id=branch_id,
+            provider="codex",
+            model="qualification",
+            reasoning="medium",
+            run_on="server",
+            run_truth_scope=["paper"],
+            chat_scope="project",
+            mode="work",
+            patch_kind="work",
+        ),
+        authorized_by=metadata.authorized_by,
+        launch=False,
+    )
+
+    def load_context():
+        return load_branch_merge_context(
+            service,
+            store,
+            episode,
+            operation_id=task.operation_id,
+            authorized_by=metadata.authorized_by,
+        )
+
+    context = load_context()
+    _ops, residue = build_deterministic_merge_ops(context)
+    # The node change merges deterministically; the agent carries the Proposal.
+    assert {path[0] for path in residue} == {"proposals"}
+    agent_ops = [
+        {
+            "op": "create_proposals",
+            "proposals": [
+                proposal.model_dump(mode="json", include={"id", "title", "card", "ops"})
+                for proposal in context.branch_graph.proposals.values()
+                if proposal.id not in context.base_graph.proposals
+            ],
+        }
+    ]
+    text = json.dumps({"summary": "Carry the branch.", "ops": agent_ops, "repositories_read": []})
+
+    result = _validate_candidate(service, load_context, text)
+    assert result.status == "valid", result.messages
 
 
 def _exercise_candidate_upgrade(

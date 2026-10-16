@@ -1199,6 +1199,35 @@ class Proposal(BaseModel):
         return serialized
 
 
+# RCP owns every Proposal field but id, title, card, and ops; an agent writes only
+# those four. Filing (`prepare_patch_bookkeeping`) stamps these from the graph and
+# the filer: they say where a Proposal was filed, not what it proposes. A merge that
+# files a branch Proposal again on main restamps them and carries the same Proposal.
+PROPOSAL_FILING_STAMPS = frozenset(
+    {
+        "related_node_ids",
+        "related_edge_ids",
+        "related_config_keys",
+        "dependency_rule",
+        "base_rev",
+        "created_by",
+        "created_by_operation_id",
+        "raised_rev",
+    }
+)
+# Resolution sets these; filing resets them to their defaults.
+PROPOSAL_RESOLUTION_FIELDS = frozenset(
+    {
+        "status",
+        "resolved_rev",
+        "resolved_by",
+        "resolved_by_operation_id",
+        "resolution_reason",
+        "rejection_reason",
+    }
+)
+
+
 class Ambiguity(BaseModel):
     id: str
     question: str

@@ -8,6 +8,7 @@ from pydantic import TypeAdapter
 
 from rcp.core.models import (
     CURRENT_PROPOSAL_DEPENDENCY_RULE,
+    PROPOSAL_RESOLUTION_FIELDS,
     Ambiguity,
     BeliefTransition,
     Edge,
@@ -216,6 +217,11 @@ def apply_transition_generated_operation(
     return updated
 
 
+_PROPOSAL_UNRESOLVED = {
+    name: Proposal.model_fields[name].get_default() for name in PROPOSAL_RESOLUTION_FIELDS
+}
+
+
 def prepare_patch_bookkeeping(state: GraphState, patch: Patch) -> Patch:
     """Resolve admission metadata and glossary spelling before recording operations."""
 
@@ -245,20 +251,15 @@ def prepare_patch_bookkeeping(state: GraphState, patch: Patch) -> Patch:
             proposals.append(
                 proposal.model_copy(
                     update={
+                        **_PROPOSAL_UNRESOLVED,
                         "dependency_rule": CURRENT_PROPOSAL_DEPENDENCY_RULE,
                         "related_node_ids": related_node_ids,
                         "related_edge_ids": related_edge_ids,
                         "related_config_keys": related_config_keys,
                         "base_rev": state.revision,
-                        "status": "pending",
                         "created_by": "human" if patch.author == "human" else "agent",
                         "created_by_operation_id": patch.source_operation_id,
                         "raised_rev": 0,
-                        "resolved_rev": None,
-                        "resolved_by": None,
-                        "resolved_by_operation_id": None,
-                        "resolution_reason": None,
-                        "rejection_reason": None,
                     }
                 )
             )

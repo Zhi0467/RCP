@@ -49,6 +49,7 @@ def prepare_data(
     bootstrap_code: str | None = None,
     member_token: str | None = None,
     empty_branch: bool = False,
+    merge_branch: bool = False,
     project_name: str = "Reboot qualification project",
 ) -> dict:
     previous = os.umask(0o077)
@@ -60,6 +61,7 @@ def prepare_data(
             bootstrap_code=bootstrap_code,
             member_token=member_token,
             empty_branch=empty_branch,
+            merge_branch=merge_branch,
             project_name=project_name,
         )
     finally:
@@ -74,6 +76,7 @@ def _prepare_data(
     bootstrap_code: str | None,
     member_token: str | None,
     empty_branch: bool,
+    merge_branch: bool,
     project_name: str,
 ) -> dict:
     """Use application owners to build one completed, fully capturable project."""
@@ -365,28 +368,56 @@ def _prepare_data(
     )
     empty_patches = None
     if empty_branch:
-        base = history.head_ref()
-        branch_id = str(uuid.uuid4())
-        # This script also seeds data under every published release, which named
-        # the creator create_auto_research_branch before episode isolation.
-        create_branch = getattr(history, "create_episode_branch", None) or (
-            history.create_auto_research_branch
-        )
-        branch = create_branch(
-            GraphBranchMetadata(
-                branch_id=branch_id,
-                episode_id=branch_id,
-                project_id=project.project_id,
-                base_head=base,
-                head=GraphHeadRef(
-                    target=GraphTargetRef(kind="branch", branch_id=branch_id),
-                    revision=base.revision,
-                    transition_id=base.transition_id,
-                ),
-                authorized_by=authority,
+        empty_patches = str(_create_branch(history, project.project_id, authority).patches_dir)
+    merge_branch_id = None
+    if merge_branch:
+        # The candidate must merge what this release wrote, Proposal filing stamps included.
+        branch = _create_branch(history, project.project_id, authority)
+        branch.append(
+            Patch(
+                kind="refresh",
+                author="agent",
+                summary="Narrow the blocker and propose a sharper question.",
+                run_truth_scope=["paper"],
+                repositories_read=["paper"],
+                ops=[
+                    {
+                        "op": "update_nodes",
+                        "nodes": [
+                            {
+                                "id": "blk/recovery",
+                                "changes": {"description": "The recovery host needs a disk."},
+                            }
+                        ],
+                    },
+                    {
+                        "op": "create_proposals",
+                        "proposals": [
+                            {
+                                "id": "prop/recovery-question",
+                                "title": "Sharpen the recovery question",
+                                "card": {"consequences": "Narrows the recovery question."},
+                                "ops": [
+                                    {
+                                        "op": "update_nodes",
+                                        "intent": "content_change",
+                                        "nodes": [
+                                            {
+                                                "id": "rq/recovery",
+                                                "changes": {
+                                                    "motivation": "Recovery must keep history."
+                                                },
+                                            }
+                                        ],
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                ],
             )
         )
-        empty_patches = str(branch.patches_dir)
+        merge_branch_id = branch.branch_id
     operation_id = str(uuid.uuid4())
     chat_id = str(uuid.uuid4())
     stage = data_dir / "run-stage" / operation_id
@@ -439,6 +470,7 @@ def _prepare_data(
         "attachment_id": attachment.attachment.attachment_id,
         "ledger_head": store.storage_schema_ledger_head(),
         "empty_patches": empty_patches,
+        "merge_branch_id": merge_branch_id,
     }
 
     # These bytes next model a stopped server; release every live SQLite handle.
@@ -448,6 +480,30 @@ def _prepare_data(
         if close is not None:
             close()
     return state
+
+
+def _create_branch(history: HistoryManager, project_id: str, authority: AuthorizedHuman):
+    base = history.head_ref()
+    branch_id = str(uuid.uuid4())
+    # This script also seeds data under every published release, which named
+    # the creator create_auto_research_branch before episode isolation.
+    create_branch = getattr(history, "create_episode_branch", None) or (
+        history.create_auto_research_branch
+    )
+    return create_branch(
+        GraphBranchMetadata(
+            branch_id=branch_id,
+            episode_id=branch_id,
+            project_id=project_id,
+            base_head=base,
+            head=GraphHeadRef(
+                target=GraphTargetRef(kind="branch", branch_id=branch_id),
+                revision=base.revision,
+                transition_id=base.transition_id,
+            ),
+            authorized_by=authority,
+        )
+    )
 
 
 def file_digests(root: Path) -> dict[str, str]:

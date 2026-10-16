@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from rcp.core.materialize import MaterializationResult
 from rcp.core.models import (
+    PROPOSAL_FILING_STAMPS,
     Ambiguity,
     AuthorizedHuman,
     Edge,
@@ -948,19 +949,12 @@ _SEMANTIC_NODE_BOOKKEEPING = frozenset(
     {"created_rev", "updated_rev", "current_summary_stale", "next_action_stale"}
 )
 _SEMANTIC_EDGE_BOOKKEEPING = frozenset({"created_rev"})
-# Filing (`prepare_patch_bookkeeping`) restamps the rule version and filer, so a
-# Proposal a merge carries from a branch is still the same Proposal.
-_SEMANTIC_PROPOSAL_BOOKKEEPING = frozenset(
-    {
-        "dependency_rule",
-        "created_by",
-        "base_rev",
-        "raised_rev",
-        "resolved_rev",
-        "created_by_operation_id",
-        "resolved_by_operation_id",
-    }
-)
+# A resolution's revision and operation are bookkeeping; its status, author, and
+# reasons are what the Proposal now says.
+_SEMANTIC_PROPOSAL_BOOKKEEPING = PROPOSAL_FILING_STAMPS | {
+    "resolved_rev",
+    "resolved_by_operation_id",
+}
 _SEMANTIC_AMBIGUITY_BOOKKEEPING = frozenset({"raised_rev"})
 _SEMANTIC_GLOSSARY_BOOKKEEPING = frozenset({"updated_rev"})
 
