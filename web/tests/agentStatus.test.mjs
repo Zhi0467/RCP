@@ -104,6 +104,11 @@ test("older turns outside the task list come from the transcript", () => {
     ["a", "c", "b"],
   );
   assert.equal(turns[2], listed);
+  const defaulted = chatStatusTasks(
+    [],
+    [{ role: "assistant", operation_id: "d", model: "provider-default", agent_status: status() }],
+  );
+  assert.equal(defaulted[0].request.model, null);
   // The latest turn reported no status, so the strip shows none rather than an older one.
   assert.equal(agentStatusView(turns.slice(0, 2)).contextTokens, null);
   assert.equal(agentStatusView(turns.slice(0, 2)).task.operation_id, "c");

@@ -42,7 +42,8 @@ export function chatStatusTasks(tasks: AgentTask[], messages: ChatMessage[]): St
       agent_status: message.agent_status ?? null,
       request: {
         provider: (message.provider as AgentTaskRequest["provider"]) ?? null,
-        model: message.model,
+        // The transcript names an unset model "provider-default"; a task leaves it null.
+        model: message.model === "provider-default" ? null : message.model,
       },
     });
   }
