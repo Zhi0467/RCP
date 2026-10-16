@@ -391,7 +391,16 @@ class WorkCommandHandler:
                     return refuse("question_origin_binding_unavailable")
                 origin = previous.origin
                 break
-            response = handle_ask(execution.store, request, origin)
+            # Maintenance closes the human's access before it drains turns, so a
+            # waiting ask would hold the drain on a human it locked out.
+            maintenance = execution.admission is not None and execution.admission.closed
+            response = handle_ask(execution.store, request, origin, parked=maintenance)
+            if maintenance and response.result.get("state") == "parked":
+                response.message = (
+                    "Server maintenance is under way, so the human cannot answer now. "
+                    "End your turn; the question stays on their card and their answer "
+                    "resumes this conversation."
+                )
             if current_episode_id is not None:
                 episode = execution.store.episode(current_episode_id)
                 if (

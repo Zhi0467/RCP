@@ -202,6 +202,9 @@ class StartupEffectFence:
 class RuntimeAdmissionGate(Protocol):
     """The installed-service owner may close new launches during maintenance."""
 
+    @property
+    def closed(self) -> bool: ...
+
     def require_open(self, effect: str) -> None: ...
 
 
@@ -264,6 +267,9 @@ class AgentTaskExecution:
     #: describes this attempt, not the task.
     stage_unreachable: bool = False
     command_mailbox: TaskCommandMailbox | None = field(default=None, repr=False)
+    #: This process's work admission. A question waits for the human only while
+    #: it is open; maintenance closes it and locks the human out.
+    admission: RuntimeAdmissionGate | None = field(default=None, repr=False)
 
     @property
     def reuses_native_checkpoint(self) -> bool:
@@ -2146,6 +2152,7 @@ class BackgroundAgentTasks:
             retry_feedback=(
                 self._retry_feedback(record) if continuation in {"retry", "handoff"} else ()
             ),
+            admission=self.runtime_admission_gate,
         )
         awaiting_remote_result = False
         try:

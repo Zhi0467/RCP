@@ -80,7 +80,6 @@ def test_pending_attempts_count_calls_not_rounds(tmp_path, resolution):
     assert "attempt" not in result and "max_attempts" not in result
 
 
-@pytest.mark.xfail(strict=True, reason="design PR: the update drain still waits on a pending ask")
 def test_update_drain_parks_a_waiting_ask_instead_of_waiting_on_it(tmp_path):
     # Maintenance closes the human's HTTP access before it drains turns, so a
     # turn still waiting on an answer would hold the drain until its ask expired.

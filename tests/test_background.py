@@ -365,6 +365,24 @@ def test_runtime_is_checkpointed_before_the_provider_session(tmp_path: Path) -> 
     }
 
 
+def test_running_execution_carries_the_process_admission(tmp_path: Path) -> None:
+    from rcp.server_ops.maintenance import RuntimeAdmissionGate
+
+    store = _store(tmp_path)
+    gate = RuntimeAdmissionGate()
+    seen = []
+
+    async def stream(_project_id, _kind, _request, execution):
+        seen.append(execution.admission)
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream, runtime_admission_gate=gate)
+    task = _admitted_launch_task(store, operation_id="admission-carried")
+    wait_for_task(store, tasks.launch_admitted(task.operation_id).operation_id, expect="succeeded")
+
+    assert seen == [gate]
+
+
 def test_a_passed_over_runtime_is_recorded_as_a_diagnostic(tmp_path: Path) -> None:
     """The fallback is silent to the human, so the reason must survive somewhere."""
 
