@@ -133,6 +133,39 @@ def _install(
         )
 
 
+# Every orchestrator continuation writes its chain root's branch/chat.
+_TASK_CHAT = (
+    "CASE WHEN ROW.kind='auto_research' AND json_extract(ROW.request_json,'$.role')='orchestrator' "
+    "THEN json_extract(ROW.graph_target_json,'$.branch_id') "
+    "ELSE json_extract(ROW.request_json,'$.chat_id') END"
+)
+
+
+def _install_task_progress(connection: sqlite3.Connection) -> None:
+    """Any change to a task row, in any column it has now, moves its progress views."""
+    _install(
+        connection,
+        "graph_runs",
+        [
+            _bump("ROW.project_id", "tasks.progress", predicate="ROW.visible=1"),
+            _bump("ROW.project_id", "task", "ROW.operation_id"),
+            _bump("ROW.project_id", "episode", "ROW.episode_id", "ROW.episode_id IS NOT NULL"),
+            _bump("ROW.project_id", "chat", _TASK_CHAT, f"({_TASK_CHAT}) IS NOT NULL"),
+        ],
+    )
+
+
+def migrate_agent_live_status(connection: sqlite3.Connection) -> None:
+    """A task's display-only live status; its progress triggers must compare the new column."""
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(graph_runs)")}
+    # A pre-ledger table rebuilt from the current schema template already has it.
+    if "agent_status_json" not in columns:
+        connection.execute("ALTER TABLE graph_runs ADD COLUMN agent_status_json TEXT")
+    for event in ("insert", "update", "delete"):
+        connection.execute(f"DROP TRIGGER resource_graph_runs_{event}")
+    _install_task_progress(connection)
+
+
 def migrate_resource_versions(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE TABLE resource_versions(scope TEXT NOT NULL,resource TEXT NOT NULL,"
@@ -283,12 +316,6 @@ def migrate_resource_versions(connection: sqlite3.Connection) -> None:
                 _bump(scope, "chat", chat, f"{chat} IS NOT NULL"),
             ],
         )
-    # Every orchestrator continuation writes its chain root's branch/chat.
-    task_chat = (
-        "CASE WHEN ROW.kind='auto_research' AND json_extract(ROW.request_json,'$.role')='orchestrator' "
-        "THEN json_extract(ROW.graph_target_json,'$.branch_id') "
-        "ELSE json_extract(ROW.request_json,'$.chat_id') END"
-    )
     _install(
         connection,
         "graph_runs",
@@ -311,27 +338,13 @@ def migrate_resource_versions(connection: sqlite3.Connection) -> None:
             _bump(
                 "ROW.project_id",
                 "chats",
-                predicate=f"({task_chat}) IS NOT NULL",
+                predicate=f"({_TASK_CHAT}) IS NOT NULL",
             ),
         ],
         columns=("project_id", "operation_id", "status", "finished_at", "visible", "history_only"),
         suffix="_status",
     )
-    _install(
-        connection,
-        "graph_runs",
-        [
-            _bump("ROW.project_id", "tasks.progress", predicate="ROW.visible=1"),
-            _bump("ROW.project_id", "task", "ROW.operation_id"),
-            _bump("ROW.project_id", "episode", "ROW.episode_id", "ROW.episode_id IS NOT NULL"),
-            _bump(
-                "ROW.project_id",
-                "chat",
-                task_chat,
-                f"({task_chat}) IS NOT NULL",
-            ),
-        ],
-    )
+    _install_task_progress(connection)
     # Project metadata used by settings changes independently of canonical files.
     _install(
         connection,

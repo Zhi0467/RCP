@@ -261,10 +261,13 @@ async def stream_episode_report_run(
                         event = _event_from_frame(frame)
                         if event.event == "error" and event.text.strip():
                             provider_errors.append(" ".join(event.text.split())[:1000])
-                        if event.usage is not None:
-                            # Usage is still real accounting even though intermediate report
-                            # failures and progress stay off the user-visible task stream.
-                            yield _sse(AgentEvent(event="raw", usage=event.usage))
+                        if event.usage is not None or event.status is not None:
+                            # Usage is still real accounting, and status still feeds the
+                            # live panel, even though intermediate report failures and
+                            # progress stay off the user-visible task stream.
+                            yield _sse(
+                                AgentEvent(event="raw", usage=event.usage, status=event.status)
+                            )
             except (OSError, RuntimeError, StateUnavailable, ValueError) as exc:
                 outcome.failed = True
                 provider_errors.append(" ".join(str(exc).split())[:1000])

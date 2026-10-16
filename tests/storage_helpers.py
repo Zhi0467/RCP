@@ -19,6 +19,10 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
         row[1] == "deleted_at" for row in connection.execute("PRAGMA table_info(episode_reports)")
     ):
         connection.execute("ALTER TABLE episode_reports DROP COLUMN deleted_at")
+    if any(
+        row[1] == "agent_status_json" for row in connection.execute("PRAGMA table_info(graph_runs)")
+    ):
+        connection.execute("ALTER TABLE graph_runs DROP COLUMN agent_status_json")
     for table in ("resource_versions", "resource_deadlines", "resource_watermark_epoch"):
         connection.execute(f"DROP TABLE IF EXISTS {table}")
 

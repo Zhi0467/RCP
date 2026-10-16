@@ -68,6 +68,7 @@ from rcp.providers import (
     ProviderUsage,
     profile_for,
 )
+from rcp.providers.base import AgentStatusDelta
 from rcp.providers.browser_grant import BrowserGrant
 from rcp.storage.models import ProviderLoginStateRecord, ProviderReadinessSnapshotRecord
 from rcp.transport.provider_discovery import discover_provider
@@ -222,6 +223,7 @@ class AgentEvent(BaseModel):
     session_id: str | None = None
     artifact: AgentArtifactDescriptor | None = None
     usage: ProviderUsage | None = None
+    status: AgentStatusDelta | None = None
     #: Typed cause on an `error` the launcher can name itself. Set only for a
     #: link lost before the provider started; a provider process that exits
     #: leaves its code in `provider_exit` instead, and classification reads
@@ -1154,6 +1156,14 @@ class AgentLauncher:
         if shell_timeout_seconds is ...:
             shell_timeout_seconds = self.shell_timeout_seconds(provider, host)
         runtimes = profile_for(provider).runtime_candidates(runtime_id)
+        autocompact = self._autocompact(provider, host)
+        # Display only (invariant 4b): the panel's compaction mark, when the
+        # machine pins a token count rather than the provider's own default.
+        autocompact_status = (
+            AgentEvent(event="raw", status=AgentStatusDelta(autocompact_tokens=int(autocompact)))
+            if autocompact.isdigit()
+            else None
+        )
         last_failure: _PrePromptRuntimeFailure | None = None
         for index, runtime in enumerate(runtimes):
             try:
@@ -1192,6 +1202,9 @@ class AgentLauncher:
                 ) as stream:
                     async for event in stream:
                         yield event
+                        if event.event == "runtime" and autocompact_status is not None:
+                            yield autocompact_status
+                            autocompact_status = None
                 return
             except _PrePromptRuntimeFailure as exc:
                 last_failure = exc
@@ -1642,6 +1655,7 @@ class AgentLauncher:
                         text=decoded.text,
                         session_id=decoded.session_id,
                         usage=decoded.usage,
+                        status=decoded.status,
                     )
                     event_counts[event.event] = event_counts.get(event.event, 0) + 1
                     if event.event == "error":

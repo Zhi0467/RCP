@@ -707,7 +707,7 @@ def test_cached_snapshot_names_the_runtime_on_profiles_saved_before_selection(
     profiles = migrated.json()["agent_profiles"]
     assert profiles
     for surface, profile in profiles.items():
-        expected = "exec" if profile["provider"] == "codex" else "stream-json"
+        expected = "app-server" if profile["provider"] == "codex" else "stream-json"
         assert profile["runtime"] == expected, surface
 
 

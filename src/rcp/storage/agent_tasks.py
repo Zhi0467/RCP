@@ -55,6 +55,7 @@ from rcp.limits import (
     WRITING_SESSIONS_PER_PROJECT,
 )
 from rcp.providers import ProviderUsage, classify_terminal_error, require_runtime_id
+from rcp.providers.live_status import AgentStatus
 from rcp.storage.client_requests import record_client_request
 from rcp.storage.digest import append_task_failed
 from rcp.storage.evidence_flags import record_evidence_flag_address
@@ -4301,7 +4302,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 "running",
                 assignments=(
                     "started_at = ?, updated_at = ?, last_activity_at = ?, "
-                    "phase = 'preparing', status_message = 'Preparing agent task.'"
+                    "phase = 'preparing', status_message = 'Preparing agent task.', "
+                    # A requeued operation starts its live status afresh.
+                    "agent_status_json = NULL"
                 ),
                 parameters=(now, now, now),
             )
@@ -4356,6 +4359,16 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     level="info",
                     created_at=now,
                 )
+
+    def update_agent_task_status(self, operation_id: str, status: AgentStatus) -> None:
+        """Replace the live status snapshot of a running task; display only (4b)."""
+
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE graph_runs SET agent_status_json = ? "
+                "WHERE operation_id = ? AND status IN ('running', 'pausing')",
+                (status.model_dump_json(), operation_id),
+            )
 
     def checkpoint_agent_task(
         self,

@@ -2461,6 +2461,30 @@ export interface ArtifactContextRequest {
   selections: ArtifactSelection[];
 }
 
+export interface AgentCompaction {
+  trigger: "auto" | "manual" | "";
+  before_tokens: number | null;
+  after_tokens: number | null;
+}
+
+export interface AgentSubagent {
+  id: string;
+  kind: string;
+  label: string;
+  state: "running" | "completed" | "failed";
+  tokens: number | null;
+}
+
+/** A running turn's context, compactions and subagents, as its provider reports them. */
+export interface AgentStatus {
+  context_tokens: number | null;
+  context_window: number | null;
+  autocompact_tokens: number | null;
+  compacting: boolean;
+  compactions: AgentCompaction[];
+  subagents: AgentSubagent[];
+}
+
 export interface AgentTask {
   /** Local command feedback; never sent to the backend. */
   action_error?: string;
@@ -2492,6 +2516,8 @@ export interface AgentTask {
   runtime_label: string;
   provider_label: string;
   native_session_id?: string | null;
+  /** What the provider reported live about this turn; display only. */
+  agent_status?: AgentStatus | null;
   /** Current chat binding resolved by the server, independent of this historical turn. */
   current_chat_session_id?: string | null;
   history_only: boolean;
@@ -2961,6 +2987,8 @@ export interface SteerRequest {
 export interface ChatMessage {
   turn_outcome: TurnOutcome | null;
   browser_status?: BrowserTurnStatus | null;
+  /** The turn's live agent status, joined by the chat route; display only. */
+  agent_status?: AgentStatus | null;
   message_id: string;
   steering?: SteerReceipt | null;
   operation_id?: string | null;

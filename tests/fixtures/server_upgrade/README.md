@@ -118,3 +118,8 @@ from the preceding immutable fixture.
 gained a deleted marker and report triggers refreshed every mode's graph
 (storage migration 53), ending at migration 52. It is built by the exact
 boundary source from the preceding immutable fixture.
+
+`pre-agent-live-status-v27-62398c2` retains the last shape before agent tasks
+gained a display-only live status column and their progress triggers began
+comparing it (storage migration 54), ending at migration 53. It is built by the
+exact boundary source from the preceding immutable fixture.

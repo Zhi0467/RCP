@@ -190,21 +190,16 @@ def absorb_recorded_events(
         if event.event == "session":
             frames.append(_sse(event))
             continue
-        if event.event == "answer":
-            outcome.answers.append(event.text)
-            if event.usage is not None:
-                frames.append(_sse(AgentEvent(event="raw", usage=event.usage)))
-            continue
-        if event.event == "message":
-            if event.text.strip() and len(outcome.trace_messages) < 16:
-                outcome.trace_messages.append(event.text.strip()[:16_000])
-            continue
         if event.event == "error":
             outcome.failed = True
             frames.append(_sse(event))
             continue
-        if event.usage is not None:
-            frames.append(_sse(AgentEvent(event="raw", usage=event.usage)))
+        if event.event == "answer":
+            outcome.answers.append(event.text)
+        elif event.event == "message" and event.text.strip() and len(outcome.trace_messages) < 16:
+            outcome.trace_messages.append(event.text.strip()[:16_000])
+        if event.usage is not None or event.status is not None:
+            frames.append(_sse(AgentEvent(event="raw", usage=event.usage, status=event.status)))
     outcome.completed = verdict.complete and not outcome.failed
     return frames
 

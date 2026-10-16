@@ -72,6 +72,10 @@ EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
         "cea79525562f21be7e729e507eb0aa431ca20dca",
         "384b6d716d7faea3cf418083265d5807e06eed3acc49814e73adad999d8cae4e",
     ),
+    "pre-agent-live-status-v27-62398c2": (
+        "62398c2a165a9792f60bff2fcdc63733d896a13a",
+        "f2bcbc176bfebfc78d342376bea5b028388682d360895ec728f0d25925326bbb",
+    ),
     "team-server-v1-78be62b": (
         "78be62b775fd62d7888c2e22d87569c103bffc83",
         "c6fc54845354bb000a9ae9dc26ac40446ba14f96f4f00b8ad8412338ec65da42",

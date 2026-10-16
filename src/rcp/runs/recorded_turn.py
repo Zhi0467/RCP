@@ -260,7 +260,11 @@ def decode_recorded_turn(
         step = turn.receive_line(line)
         events.extend(
             AgentEvent(
-                event=item.event, text=item.text, session_id=item.session_id, usage=item.usage
+                event=item.event,
+                text=item.text,
+                session_id=item.session_id,
+                usage=item.usage,
+                status=item.status,
             )
             for item in step.events
         )

@@ -1310,6 +1310,18 @@ message. There is no global task banner. The composer and history remain usable
 while unrelated background tasks run. A running watcher wake or episode turn has
 no human message, so it holds an Activity row in its chat until its first output.
 
+A conversation header carries the agent's live status from its current turn,
+or its latest finished one: a running-subagent count, a compaction count, and a
+context ring of tokens used against the window. Any of them opens one popover
+with Context, Subagents, Compactions, and This turn; at phone width the header
+keeps the ring and the popover opens as a bottom sheet. A window the current
+turn has not reported yet comes from the chat's latest earlier turn with the
+same provider and model. The chat route joins each assistant turn's status
+into the transcript, so an older turn outside the bounded task list still
+counts. A compaction also leaves a divider with its before and
+after tokens in the turn where it happened. A runtime that reports no context
+shows no ring.
+
 Agents lists every conversation in the project: chats on main and on every graph
 branch, Experiment episode conversations, Auto-research orchestrators and their
 children, and conversations whose first turn has no transcript yet.

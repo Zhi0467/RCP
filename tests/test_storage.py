@@ -2885,6 +2885,7 @@ def test_v02_graph_run_migrates_to_recoverable_interrupted_agent_task(tmp_path) 
     assert record.can_retry is True
     assert record.attempt == 1
     assert record.result is None
+    assert record.agent_status is None
     assert record.authorized_by is None
     assert store.agent_task_authorizer("old-operation") is None
     assert store.agent_task_events("old-operation")[0].level == "warning"

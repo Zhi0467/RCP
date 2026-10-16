@@ -27,6 +27,7 @@ from rcp.core.models import AuthorizedHuman, GraphState
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.dependency_check import DependencyChecker
 from rcp.limits import (
+    AGENT_STATUS_WRITE_SECONDS,
     AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS,
     AGENT_TRANSPORT_RETRY_LIMIT,
     BACKGROUND_TASKS_SHUTDOWN_TIMEOUT_SECONDS,
@@ -38,6 +39,8 @@ from rcp.limits import (
 )
 from rcp.machine_sleep import seconds_until_automatic_launch
 from rcp.providers import classify_terminal_error, profile_for, require_runtime_id
+from rcp.providers.base import AgentStatusDelta
+from rcp.providers.live_status import AgentStatus, fold_agent_status
 from rcp.runs.auto_research import (
     AutoResearchRunRequest,
     AutoResearchWakeAdmission,
@@ -2952,6 +2955,33 @@ class BackgroundAgentTasks:
         source: AsyncIterator[str] | None = None,
         recorded: bool = False,
     ) -> AgentTaskOutcome:
+        frames = source if source is not None else self.stream(project_id, kind, request, execution)
+        live_status = _LiveStatusWriter(self.store, execution.operation_id)
+        try:
+            outcome = await self._consume_frames(
+                frames, request, execution, live_status, recorded=recorded
+            )
+            live_status.settle(failed=False)
+            return outcome
+        except (TaskPaused, TaskAwaitingRemoteResult):
+            # The turn continues later; its live states are still live.
+            raise
+        except BaseException:
+            live_status.settle(failed=True)
+            raise
+        finally:
+            # Whatever ends the stream, the panel keeps the last observation.
+            live_status.flush()
+
+    async def _consume_frames(
+        self,
+        frames: AsyncIterator[str],
+        request: AgentTaskRequest,
+        execution: AgentTaskExecution,
+        live_status: _LiveStatusWriter,
+        *,
+        recorded: bool,
+    ) -> AgentTaskOutcome:
         applied_revision: int | None = None
         messages: list[str] = []
         artifacts: list[AgentArtifactDescriptor] = []
@@ -2961,7 +2991,6 @@ class BackgroundAgentTasks:
         # `aclosing` so an error or a pause closes the run generator here rather
         # than leaving it suspended for the garbage collector: its `finally` is
         # what releases the canonical run lock and retains the scratch folder.
-        frames = source if source is not None else self.stream(project_id, kind, request, execution)
         async with AsyncExitStack() as contexts, aclosing(frames) as stream:
             contexts.enter_context(
                 warning_context(
@@ -2972,6 +3001,8 @@ class BackgroundAgentTasks:
             )
             async for frame in stream:
                 event = _event_from_sse(frame)
+                if event.status is not None:
+                    live_status.observe(event.status)
                 if event.usage is not None:
                     usage_record = self.store.record_agent_usage(
                         execution.operation_id,
@@ -3296,6 +3327,77 @@ def _runtime_fallback_payload(text: str) -> dict[str, object]:
     except (json.JSONDecodeError, TypeError, ValueError):
         payload = None
     return payload if isinstance(payload, dict) else {"detail": text[:400]}
+
+
+class _LiveStatusWriter:
+    """One execution's live status, folded from its deltas and written throttled.
+
+    Display only (invariant 4b): a failed write warns and never fails the turn.
+    """
+
+    def __init__(self, store: AppStore, operation_id: str) -> None:
+        self._store = store
+        self._operation_id = operation_id
+        self._status: AgentStatus | None = None
+        self._pending = False
+        self._written_at: float | None = None
+        # A held meter update is written when the throttle lapses, even if the
+        # stream goes quiet, as during a long tool call.
+        self._trailing: asyncio.TimerHandle | None = None
+
+    def observe(self, delta: AgentStatusDelta) -> None:
+        self._status = fold_agent_status(self._status, delta)
+        self._pending = True
+        # A compaction or subagent change is an event the panel shows at once;
+        # token counts only move a meter and wait for the throttle.
+        urgent = (
+            delta.compaction is not None
+            or delta.subagent is not None
+            or delta.compacting is not None
+        )
+        due = (
+            self._written_at is None
+            or time.monotonic() - self._written_at >= AGENT_STATUS_WRITE_SECONDS
+        )
+        if urgent or due:
+            self.flush()
+        elif self._trailing is None and self._written_at is not None:
+            delay = AGENT_STATUS_WRITE_SECONDS - (time.monotonic() - self._written_at)
+            self._trailing = asyncio.get_running_loop().call_later(max(0.0, delay), self.flush)
+
+    def settle(self, *, failed: bool) -> None:
+        """An ended turn compacts nothing and has no subagent still running."""
+        if self._status is None:
+            return
+        ended = "failed" if failed else "completed"
+        self._status = self._status.model_copy(
+            update={
+                "compacting": False,
+                "subagents": [
+                    item.model_copy(update={"state": ended}) if item.state == "running" else item
+                    for item in self._status.subagents
+                ],
+            }
+        )
+        self._pending = True
+
+    def flush(self) -> None:
+        if self._trailing is not None:
+            self._trailing.cancel()
+            self._trailing = None
+        if not self._pending or self._status is None:
+            return
+        self._pending = False
+        self._written_at = time.monotonic()
+        try:
+            self._store.update_agent_task_status(self._operation_id, self._status)
+        except Exception as exc:
+            with suppress(Exception):
+                self._store.record_agent_task_event(
+                    self._operation_id,
+                    f"Could not record the agent's live status ({type(exc).__name__}).",
+                    level="warning",
+                )
 
 
 def _event_from_sse(frame: str) -> AgentEvent:

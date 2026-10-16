@@ -46,6 +46,17 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Agent live status (v54), fresh, immutable fixture upgrades, and
+        # in-place upgrades.
+        "0b8af07db48acdbc51e7bc49dc545c54f146e3b0498473fd33e617cf175854b9",
+        "17460cd7ec7914f53357dfc1603f5264cd35abcbaff51cd98ad2742963732f11",
+        "2ec06d805c52a9e63321a8354071156131ae72aae63d7be81a663fe9f4746c04",
+        "3de278b870f38f16344431025d4bb9d9d44b73a71aff2e5276a5d1d68e1899e3",
+        "5511fbdbfa94101781221004532e4f8454f4873ec81267918b80b22952fe9c7e",
+        "5e60570319d02f69ca1073125a99dc3c00b0d0dd2f5582fe7aa30f1aab80f6b8",
+        "6c3246d19fec9dbb6974641e108ea3bc8e0d494f24ba3f05da510120f04d4890",
+        "826eba43558c5e57a51fc419ccc4583fa19f36ced9794b5ecf1dea2abb31c6b6",
+        "ef0fb179becc223728714f075d3378614f8a905371cf17a9d542f70aaf85a9aa",
         # Episode report deletion (v53), fresh, immutable fixture upgrades, and
         # in-place upgrades.
         "00cee1bb5eba80ca1ae6dd95a8b977d7ce4a0f612ede13bcf0e1091ea11b47e3",

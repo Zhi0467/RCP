@@ -517,8 +517,12 @@ def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
     )
     with store.connection() as connection:
         connection.execute(
-            "UPDATE graph_runs SET result_json = ? WHERE operation_id = ?",
-            (json.dumps({"messages": ["First findings."]}), root_task.operation_id),
+            "UPDATE graph_runs SET result_json = ?, agent_status_json = ? WHERE operation_id = ?",
+            (
+                json.dumps({"messages": ["First findings."]}),
+                json.dumps({"context_tokens": 120}),
+                root_task.operation_id,
+            ),
         )
     monkeypatch.setattr(
         tasks, "launch_admitted", lambda operation_id: store.agent_task(operation_id)
@@ -553,4 +557,8 @@ def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
         ("assistant", root_task.operation_id, "First findings."),
         ("user", continuation.root_operation_id, "Check the control."),
     ]
+    # A turn's live status reaches the transcript even outside the bounded task list.
+    assert [message["agent_status"] for message in branch.json()["messages"]][1][
+        "context_tokens"
+    ] == 120
     assert client.get(f"{url}/{root.episode_id}").status_code == 404

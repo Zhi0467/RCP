@@ -21,6 +21,11 @@ AGENT_TASK_LIST_FINISHED_CHAT_SECONDS = 600
 # A running task's elapsed time and heuristic progress are computed from the
 # clock, so its progress token moves on this cadence while any task runs.
 TASK_PROGRESS_REFRESH_SECONDS = 5
+# A running task's live agent status is written at most this often; a
+# compaction or subagent change is written at once.
+AGENT_STATUS_WRITE_SECONDS = 1.0
+AGENT_STATUS_COMPACTION_LIMIT = 20
+AGENT_STATUS_SUBAGENT_LIMIT = 50
 AGENT_TASK_EVENT_LIST_DEFAULT_LIMIT = 200
 AGENT_TASK_EVENT_LIST_MAX_LIMIT = 500
 AGENT_TASK_EVENT_RETENTION_COUNT = 200

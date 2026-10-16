@@ -57,7 +57,7 @@ class CodexProfile(ProviderProfile):
     session_format = CodexSessionFormat()
     autocompact_hint = "a token count"
     legacy_runtime_id = "codex.exec-json.v1"
-    default_runtime = "exec"
+    default_runtime = "app-server"
     runtime_aliases = {
         "exec": legacy_runtime_id,
         "exec-json": legacy_runtime_id,

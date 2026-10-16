@@ -821,6 +821,7 @@ async def test_stream_cancellation_during_stdin_drain_reaps_and_detaches(
         cwd=tmp_path,
         control=control,
         capability="scratch_patch",
+        runtime_id="exec",
     )
     runtime_event = await anext(stream)
     assert runtime_event.event == "runtime"
