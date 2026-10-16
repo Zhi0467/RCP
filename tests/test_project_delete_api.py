@@ -27,7 +27,7 @@ def _tree_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
-def test_delete_project_route_stops_an_active_task_then_deletes(manifest, tmp_path) -> None:
+def test_delete_project_route_stops_only_the_previewed_work(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     card = app.state.catalog.card(project_id)
@@ -51,7 +51,17 @@ def test_delete_project_route_stops_an_active_task_then_deletes(manifest, tmp_pa
         )
     )
 
-    response = signed_in_client(app).delete(f"/api/projects/{project_id}")
+    client = signed_in_client(app)
+
+    # The task was never shown, so Delete refuses before stopping anything.
+    unshown = client.delete(f"/api/projects/{project_id}")
+    assert unshown.status_code == 409, unshown.text
+    assert app.state.catalog.store.agent_task("active-delete-test").status == "queued"
+
+    preview = client.get(f"/api/projects/{project_id}/deletion-preview").json()
+    response = client.delete(
+        f"/api/projects/{project_id}", params={"stop_token": preview["stop_token"]}
+    )
 
     assert response.status_code == 200, response.text
     assert response.json()["unstopped"] == []

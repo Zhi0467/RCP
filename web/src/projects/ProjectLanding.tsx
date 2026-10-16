@@ -50,7 +50,7 @@ interface Props extends AppearancePickerProps {
   onCreate: () => void;
   projectCreation: ProjectCreationControl;
   onMovePersonalProjectToTeam?: (projectId: string) => void;
-  onDelete: (projectId: string) => Promise<ProjectDeletionResult>;
+  onDelete: (projectId: string, stopToken: string) => Promise<ProjectDeletionResult>;
   openProjectTabs: ProjectTab[];
   onActivateProjectTab: (projectId: string) => void;
   onCloseProjectTab: (projectId: string) => void;
@@ -402,11 +402,12 @@ export function ProjectLanding({
   };
 
   const confirmDelete = async () => {
-    if (!deleteProject || deleteBusy) return;
+    if (!deleteProject || deleteBusy || deletePreview === null || deletePreview === "failed")
+      return;
     setDeleteBusy(true);
     setDeleteError(null);
     try {
-      const result = await onDelete(deleteProject.id);
+      const result = await onDelete(deleteProject.id, deletePreview.stop_token);
       if (result.unstopped.length > 0) {
         setDeletedReport({ name: deleteProject.name, unstopped: result.unstopped });
       }
@@ -418,6 +419,8 @@ export function ProjectLanding({
       setDeleteProjectId(null);
     } catch (error) {
       setDeleteError(error instanceof Error ? error.message : String(error));
+      // The work to stop may have changed; show the current list before a retry.
+      setDeletePreviewAttempt((attempt) => attempt + 1);
     } finally {
       setDeleteBusy(false);
     }

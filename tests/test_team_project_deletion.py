@@ -331,8 +331,13 @@ def test_team_delete_stops_an_active_task_and_leaves_the_checkout(tmp_path: Path
         )
     )
 
+    preview = client.get(
+        f"/api/projects/{project_id}/deletion-preview", headers={TEAM_SHELL_PROTOCOL_HEADER: "2"}
+    ).json()
     deleted = client.delete(
-        f"/api/projects/{project_id}", headers={TEAM_SHELL_PROTOCOL_HEADER: "2"}
+        f"/api/projects/{project_id}",
+        params={"stop_token": preview["stop_token"]},
+        headers={TEAM_SHELL_PROTOCOL_HEADER: "2"},
     )
 
     assert deleted.status_code == 200, deleted.text

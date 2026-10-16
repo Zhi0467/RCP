@@ -398,8 +398,12 @@ confirm dialog reads `GET /api/projects/{id}/deletion-preview`, which names
 what will stop: active agent tasks (including branch merges and run reports),
 live runs, running compute jobs, and live watchers. The dialog renders those
 lines verbatim and its action becomes **Stop work and delete**. The action
-stays disabled until the preview loads, so Delete never stops work the human
-was not shown; a failed load gives the dialog a red edge and a retry. Confirming
+stays disabled until the preview loads; a failed load gives the dialog a red
+edge and a retry. Delete sends back the preview's `stop_token` and stops only
+work the human was shown: inside the deletion fence, if anything is left to stop
+and it no longer matches the token, Delete refuses with 409 before stopping
+anything and the dialog reloads the list. Work that finished meanwhile never
+refuses. Confirming
 first runs the non-destructive refusals (an unfinished transfer, unsafe file
 targets), so a refused Delete stops nothing. It then stops everything inside
 the catalog's deletion fence, which already refuses new work for the project.
@@ -411,8 +415,10 @@ helper job and of each watched external job. A cancel's success only means
 the command was accepted, so Delete re-runs that job's saved check for a short
 bounded time until it stops reporting running. A process RCP cannot confirm
 stopped, such as one on an unreachable host, whose cancel failed, or whose
-check still reports it running, does not block deletion. The response lists it in `unstopped`, and the Web shows those
-lines once the project is gone. Only an unfinished project transfer refuses
+check still reports it running, does not block deletion. A watched job saved
+without a cancel action is checked once and listed if it still runs. The
+response lists each in `unstopped`, and the Web shows those lines once the
+project is gone. Only an unfinished project transfer refuses
 Delete, from the preview onward. The transaction still refuses a task that
 outlived the stop, for example one admitted mid-stop; retrying Delete stops it.
 **Why:** a refusal named work the human often could not see, such as a

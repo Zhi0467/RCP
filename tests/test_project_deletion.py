@@ -479,7 +479,8 @@ def test_delete_stops_in_flight_work_and_names_what_it_could_not_stop(
     monkeypatch.setattr(COMPUTE_BACKENDS["systemd_user"], "alive", lambda handle, context: True)
     monkeypatch.setattr(project_deletion, "PROJECT_DELETION_CANCEL_CONFIRM_SECONDS", 0.0)
     cancelled = tmp_path / "external-job-cancelled"
-    # One cancel stops its job; the other is accepted while its job keeps running.
+    # One cancel stops its job, one is accepted while its job keeps running, and
+    # one job has no cancel at all and still runs.
     store.create_watchers(
         [
             WatcherRecord(
@@ -498,6 +499,7 @@ def test_delete_stops_in_flight_work_and_names_what_it_could_not_stop(
             for watcher_id, check_command, cancel_command in [
                 ("external-job", f"test -e {cancelled}", f"touch {cancelled}"),
                 ("ignores-cancel", "false", "true"),
+                ("no-cancel", "false", None),
             ]
         ]
     )
@@ -507,9 +509,11 @@ def test_delete_stops_in_flight_work_and_names_what_it_could_not_stop(
     assert preview["blocked_reason"] is None
     assert [len(group["items"]) for group in preview["stops"]] == [1, 1, 1, 0]
 
-    response = client.delete(f"/api/projects/{project_id}")
+    response = client.delete(
+        f"/api/projects/{project_id}", params={"stop_token": preview["stop_token"]}
+    )
 
     assert response.status_code == 200, response.text
     assert store.project(project_id) is None
     assert cancelled.exists()
-    assert len(response.json()["unstopped"]) == 2
+    assert len(response.json()["unstopped"]) == 3

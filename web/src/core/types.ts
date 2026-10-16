@@ -3192,6 +3192,8 @@ export interface ProjectCard {
 export interface ProjectDeletionPreview {
   stops: { summary: string; items: string[] }[];
   blocked_reason: string | null;
+  /** Sent back with Delete, which refuses if the work to stop has changed. */
+  stop_token: string;
 }
 
 export interface ProjectDeletionResult {

@@ -6,11 +6,14 @@ none wakes new work; runs, so none admits another turn; then every agent task
 and its provider process; last, the compute jobs and watched external jobs RCP
 holds a cancel command for, each confirmed by its saved check. A process RCP
 could not stop, or could not confirm stopped, is returned by name; deletion goes
-ahead and reports it.
+ahead and reports it. Delete stops only work the human was shown: when the live
+work no longer matches the preview's `stop_token`, it refuses before stopping
+anything, and the dialog reloads the list.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from pathlib import PurePosixPath
@@ -65,6 +68,12 @@ class ProjectDeletionPreview(BaseModel):
 
     stops: list[ProjectDeletionStopGroup]
     blocked_reason: str | None
+    # Identifies the rendered `stops`; Delete sends it back to bind to them.
+    stop_token: str
+
+
+class ProjectDeletionStopsChanged(Exception):
+    """The work Delete would stop differs from the list the human confirmed."""
 
 
 def deletion_preview(store: AppStore, project_id: str) -> ProjectDeletionPreview:
@@ -76,8 +85,11 @@ def deletion_preview(store: AppStore, project_id: str) -> ProjectDeletionPreview
         _group("compute job", [_job_label(job) for job in work.compute_jobs]),
         _group("watcher", [], count=len(work.watchers)),
     ]
+    stops = [group for group in groups if group is not None]
+    rendered = "\n".join(group.model_dump_json() for group in stops)
     return ProjectDeletionPreview(
-        stops=[group for group in groups if group is not None],
+        stops=stops,
+        stop_token=hashlib.sha256(rendered.encode()).hexdigest()[:32],
         blocked_reason=(
             "Let the project transfer finish before deleting this project."
             if work.transfer_unfinished
@@ -90,9 +102,21 @@ def stop_project_work(
     store: AppStore,
     background: BackgroundAgentTasks,
     project_id: str,
+    stop_token: str | None,
 ) -> list[str]:
-    """Stop every in-flight item; return one line per process that may still run."""
+    """Stop every in-flight item; return one line per process that may still run.
 
+    Runs inside the deletion fence, which refuses new work, so the token check
+    binds what the human confirmed; only a watcher delivery already claimed can
+    still admit one turn, which the task pass stops. Work that finished since
+    the preview never refuses: with nothing left to stop, no token is needed.
+    """
+
+    current = deletion_preview(store, project_id)
+    if current.stops and current.stop_token != stop_token:
+        raise ProjectDeletionStopsChanged(
+            "The running work changed. Review it and confirm Delete again."
+        )
     unstopped: list[str] = []
     work = store.project_live_work(project_id)
     for watcher in work.watchers:
@@ -143,6 +167,7 @@ def _cancel_external_work(
     work = store.project_live_work(project_id)
     # One action per job: watchers observing the same job share host, cwd, and command.
     actions: dict[tuple[str, str, str], tuple[WatchSpec, str, str]] = {}
+    uncancellable: dict[tuple[str, str, str], tuple[WatchSpec, str, str]] = {}
     for job in work.compute_jobs:
         spec = WatchSpec.model_validate(helper_watch_spec(job))
         assert spec.cancel_command is not None
@@ -152,22 +177,33 @@ def _cancel_external_work(
             _job_label(job),
         )
     for watcher in [*earlier_watchers, *work.watchers]:
-        if not isinstance(watcher, WatcherRecord) or watcher.cancel_command is None:
+        if not isinstance(watcher, WatcherRecord):
             continue
-        actions.setdefault(
-            (watcher.execution_host, watcher.cwd, watcher.cancel_command),
-            (
-                WatchSpec(
-                    check_command=watcher.check_command,
-                    log_path=watcher.log_path,
-                    cwd=watcher.cwd,
-                    cancel_command=watcher.cancel_command,
-                ),
-                watcher.execution_host,
-                f"Watched job on {watcher.execution_host or 'this computer'}",
-            ),
+        spec = WatchSpec(
+            check_command=watcher.check_command,
+            log_path=watcher.log_path,
+            cwd=watcher.cwd,
+            cancel_command=watcher.cancel_command,
         )
+        label = f"Watched job on {watcher.execution_host or 'this computer'}"
+        if watcher.cancel_command is None:
+            uncancellable.setdefault(
+                (watcher.execution_host, watcher.cwd, watcher.check_command),
+                (spec, watcher.execution_host, label),
+            )
+        else:
+            actions.setdefault(
+                (watcher.execution_host, watcher.cwd, watcher.cancel_command),
+                (spec, watcher.execution_host, label),
+            )
     unstopped: list[str] = []
+    # Without a saved cancel, RCP can only say whether the job is still running.
+    for spec, host, label in uncancellable.values():
+        result = run_watcher_check(spec, host)
+        if result.state == "active":
+            unstopped.append(f"{label}: RCP holds no cancel for it, and it still reports running")
+        elif result.state == "error":
+            unstopped.append(f"{label}: RCP holds no cancel for it, and {result.error}")
     accepted: list[tuple[WatchSpec, str, str]] = []
     for spec, host, label in actions.values():
         error = run_watcher_cancel(spec, host)

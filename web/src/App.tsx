@@ -3805,10 +3805,11 @@ function MemberApp({
     await loadProjectIndex();
   };
 
-  const deleteProject = async (id: string) => {
-    const result = await api<ProjectDeletionResult>(`/api/projects/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    });
+  const deleteProject = async (id: string, stopToken: string) => {
+    const result = await api<ProjectDeletionResult>(
+      `/api/projects/${encodeURIComponent(id)}?stop_token=${encodeURIComponent(stopToken)}`,
+      { method: "DELETE" },
+    );
     removeProject(id);
     forgetProjectViewport(id);
     try {
