@@ -108,6 +108,7 @@ def test_update_drain_parks_a_waiting_ask_instead_of_waiting_on_it(tmp_path):
         project_id="project", owner_kind="chat", owner_id="chat"
     )
     assert [item.state for item in question] == ["pending"]
+    assert not execution.store.question_activity.is_waiting(question[0].question_id)
 
 
 def test_question_view_waiting_expires_and_resets_on_pending_round(tmp_path):
