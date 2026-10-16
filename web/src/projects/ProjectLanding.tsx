@@ -1,13 +1,14 @@
 import { useMachinePower } from "./useMachinePower";
 import { machinePowerWarnings } from "./machinePower";
 import { ProviderLoginNotice } from "./ProviderLoginNotice";
-import { loadProviderLogins } from "../core/api";
+import { loadProjectDeletionPreview, loadProviderLogins } from "../core/api";
 import {
   Check,
   Copy,
   Ellipsis,
   LogOut,
   Mail,
+  RotateCw,
   Server,
   Settings,
   Trash2,
@@ -29,6 +30,8 @@ import type {
   ProviderLoginState,
   IdentityResponse,
   ProjectCard,
+  ProjectDeletionPreview,
+  ProjectDeletionResult,
   ProjectCreationControl,
   ProjectInvitation,
   SpaceRunIndexEntry,
@@ -47,7 +50,7 @@ interface Props extends AppearancePickerProps {
   onCreate: () => void;
   projectCreation: ProjectCreationControl;
   onMovePersonalProjectToTeam?: (projectId: string) => void;
-  onDelete: (projectId: string) => Promise<void> | void;
+  onDelete: (projectId: string, stopToken: string) => Promise<ProjectDeletionResult>;
   openProjectTabs: ProjectTab[];
   onActivateProjectTab: (projectId: string) => void;
   onCloseProjectTab: (projectId: string) => void;
@@ -140,19 +143,110 @@ export function ProjectActionsMenu({
 
 interface ProjectDeleteDialogProps {
   project: ProjectCard;
+  /** Null while loading; Delete waits for the list of work it will stop. */
+  preview: ProjectDeletionPreview | "failed" | null;
   busy: boolean;
   error: string | null;
   onClose: () => void;
   onConfirm: () => void;
+  onRetryPreview: () => void;
 }
 
 export function ProjectDeleteDialog({
   project,
+  preview,
   busy,
   error,
   onClose,
   onConfirm,
+  onRetryPreview,
 }: ProjectDeleteDialogProps) {
+  const loaded = preview !== null && preview !== "failed" ? preview : null;
+  const stops = loaded?.stops ?? [];
+  const blocked = loaded?.blocked_reason ?? null;
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section
+        className={`project-delete-dialog${preview === "failed" ? " failed" : ""}`}
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="project-delete-title"
+        aria-describedby="project-delete-warning"
+      >
+        <header>
+          <Trash2 size={20} aria-hidden="true" />
+          <h2 id="project-delete-title">Delete {project.name}?</h2>
+        </header>
+        <p id="project-delete-warning">{project.delete_confirmation}</p>
+        {stops.length > 0 && (
+          <div className="project-delete-stops">
+            <p>Deleting stops this running work first:</p>
+            <ul>
+              {stops.map((group) => (
+                <li key={group.summary}>
+                  {group.summary}
+                  {group.items.length > 0 && `: ${group.items.join(", ")}`}
+                </li>
+              ))}
+            </ul>
+            <p>Nothing they are writing is kept. No run reports are made.</p>
+          </div>
+        )}
+        {(error ?? blocked) && (
+          <div className="project-delete-error" role="alert">
+            {error ?? blocked}
+          </div>
+        )}
+        <footer>
+          {preview === "failed" && (
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="Retry loading the work Delete stops"
+              title="Could not load the work Delete stops"
+              onClick={onRetryPreview}
+            >
+              <RotateCw size={16} />
+            </button>
+          )}
+          <button
+            className="button secondary"
+            type="button"
+            autoFocus
+            disabled={busy}
+            onClick={onClose}
+          >
+            Cancel
+          </button>
+          <button
+            className="button danger"
+            type="button"
+            disabled={busy || loaded === null || blocked !== null}
+            onClick={onConfirm}
+          >
+            {busy ? "Deleting…" : stops.length > 0 ? "Stop work and delete" : "Delete project"}
+          </button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
+/** Shown after Delete only when some in-flight work could not be confirmed stopped. */
+export function ProjectDeletedDialog({
+  name,
+  unstopped,
+  onClose,
+}: {
+  name: string;
+  unstopped: string[];
+  onClose: () => void;
+}) {
   return (
     <div
       className="modal-backdrop"
@@ -164,31 +258,23 @@ export function ProjectDeleteDialog({
         className="project-delete-dialog"
         role="alertdialog"
         aria-modal="true"
-        aria-labelledby="project-delete-title"
-        aria-describedby="project-delete-warning"
+        aria-labelledby="project-deleted-title"
       >
         <header>
-          <Trash2 size={20} aria-hidden="true" />
-          <h2 id="project-delete-title">Delete {project.name}?</h2>
+          <TriangleAlert size={20} aria-hidden="true" />
+          <h2 id="project-deleted-title">{name} deleted</h2>
         </header>
-        <p id="project-delete-warning">{project.delete_confirmation}</p>
-        {error && (
-          <div className="project-delete-error" role="alert">
-            {error}
-          </div>
-        )}
+        <div className="project-delete-stops">
+          <p>RCP could not stop this work. It may still be running:</p>
+          <ul>
+            {unstopped.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        </div>
         <footer>
-          <button
-            className="button secondary"
-            type="button"
-            autoFocus
-            disabled={busy}
-            onClick={onClose}
-          >
-            Cancel
-          </button>
-          <button className="button danger" type="button" disabled={busy} onClick={onConfirm}>
-            {busy ? "Deleting…" : "Delete project"}
+          <button className="button secondary" type="button" autoFocus onClick={onClose}>
+            Close
           </button>
         </footer>
       </section>
@@ -250,6 +336,13 @@ export function ProjectLanding({
   const [deleteProjectId, setDeleteProjectId] = useState<string | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deletePreview, setDeletePreview] = useState<ProjectDeletionPreview | "failed" | null>(
+    null,
+  );
+  const [deletePreviewAttempt, setDeletePreviewAttempt] = useState(0);
+  const [deletedReport, setDeletedReport] = useState<{ name: string; unstopped: string[] } | null>(
+    null,
+  );
   const [addTeamOpen, setAddTeamOpen] = useState(false);
 
   useEffect(() => {
@@ -285,6 +378,23 @@ export function ProjectLanding({
   const deleteProject =
     projects.find((project) => project.id === deleteProjectId && project.can_delete) ?? null;
 
+  useEffect(() => {
+    setDeletePreview(null);
+    if (!deleteProjectId) return;
+    let active = true;
+    loadProjectDeletionPreview(deleteProjectId).then(
+      (preview) => {
+        if (active) setDeletePreview(preview);
+      },
+      () => {
+        if (active) setDeletePreview("failed");
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [deleteProjectId, deletePreviewAttempt]);
+
   const closeDeleteConfirmation = () => {
     if (deleteBusy) return;
     setDeleteProjectId(null);
@@ -292,11 +402,15 @@ export function ProjectLanding({
   };
 
   const confirmDelete = async () => {
-    if (!deleteProject || deleteBusy) return;
+    if (!deleteProject || deleteBusy || deletePreview === null || deletePreview === "failed")
+      return;
     setDeleteBusy(true);
     setDeleteError(null);
     try {
-      await onDelete(deleteProject.id);
+      const result = await onDelete(deleteProject.id, deletePreview.stop_token);
+      if (result.unstopped.length > 0) {
+        setDeletedReport({ name: deleteProject.name, unstopped: result.unstopped });
+      }
       setCovers((current) => {
         const next = { ...current };
         delete next[deleteProject.id];
@@ -305,6 +419,8 @@ export function ProjectLanding({
       setDeleteProjectId(null);
     } catch (error) {
       setDeleteError(error instanceof Error ? error.message : String(error));
+      // The work to stop may have changed; show the current list before a retry.
+      setDeletePreviewAttempt((attempt) => attempt + 1);
     } finally {
       setDeleteBusy(false);
     }
@@ -480,10 +596,19 @@ export function ProjectLanding({
       {deleteProject && (
         <ProjectDeleteDialog
           project={deleteProject}
+          preview={deletePreview}
           busy={deleteBusy}
           error={deleteError}
           onClose={closeDeleteConfirmation}
           onConfirm={confirmDelete}
+          onRetryPreview={() => setDeletePreviewAttempt((attempt) => attempt + 1)}
+        />
+      )}
+      {deletedReport && (
+        <ProjectDeletedDialog
+          name={deletedReport.name}
+          unstopped={deletedReport.unstopped}
+          onClose={() => setDeletedReport(null)}
         />
       )}
     </div>

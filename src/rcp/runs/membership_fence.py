@@ -49,7 +49,7 @@ def fence_episodes_for_departed_member(
         if episode.status not in {"queued", "running", "stopping"}:
             continue
         try:
-            _fence_one(store, background_tasks, project_id, episode, diagnostic=diagnostic)
+            press_episode_stop(store, background_tasks, project_id, episode, diagnostic=diagnostic)
         except (EpisodeNotRunning, KeyError, ValueError) as exc:
             # An episode that settled between the read and the press is already
             # fenced, which is the outcome this wanted.
@@ -73,7 +73,7 @@ def fence_episodes_for_removed_member(
         if episode is None:
             continue
         try:
-            _fence_one(
+            press_episode_stop(
                 store,
                 background_tasks,
                 episode.project_id,
@@ -87,31 +87,34 @@ def fence_episodes_for_removed_member(
     return fenced
 
 
-def _fence_one(
+def press_episode_stop(
     store: AppStore,
     background_tasks: BackgroundAgentTasks,
     project_id: str,
     episode: EpisodeRecord,
     *,
     diagnostic: str,
+    initiated_by: str = "system:member_removed",
 ) -> None:
+    """Press the episode's own Stop owner on behalf of the system."""
+
     episode_id = episode.episode_id
     if episode.mode == "auto_research":
-        stop_auto_research(background_tasks, episode_id, initiated_by="system:member_removed")
+        stop_auto_research(background_tasks, episode_id, initiated_by=initiated_by)
         settle_auto_research_stop(store, episode_id, diagnostic=diagnostic)
         return
     node_id = _experiment_control_node(store, project_id, episode_id)
     if node_id is None:
         # Its Stop is still durable: the episode-level request is what fences
         # new admissions, and the loop reads it before claiming a wake.
-        store.request_episode_stop(episode_id, initiated_by="system:member_removed")
+        store.request_episode_stop(episode_id, initiated_by=initiated_by)
         return
     store.request_experiment_loop_stop(
         project_id,
         node_id,
         episode_id=episode.episode_id,
         graph_target=episode.graph_target,
-        initiated_by="system:member_removed",
+        initiated_by=initiated_by,
     )
 
 

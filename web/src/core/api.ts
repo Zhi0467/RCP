@@ -36,6 +36,7 @@ import type {
   ProjectProvisioningCreateRequest,
   ProjectProvisioningResponse,
   ProjectSnapshot,
+  ProjectDeletionPreview,
   ProviderLoginAccount,
   ProviderLoginState,
   ProviderSignInStatus,
@@ -788,6 +789,10 @@ export function setChatTitle(apiBase: string, chatId: string, title: string): Pr
 
 export function cancelWatcher(apiBase: string, watcherId: string): Promise<ExternalWatcherRecord> {
   return api(`${apiBase}/watchers/${encodeURIComponent(watcherId)}/cancel`, { method: "POST" });
+}
+
+export function loadProjectDeletionPreview(projectId: string): Promise<ProjectDeletionPreview> {
+  return api(`/api/projects/${encodeURIComponent(projectId)}/deletion-preview`);
 }
 
 export function loadProviderLogins(): Promise<ProviderLoginAccount[]> {

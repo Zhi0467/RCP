@@ -27,7 +27,7 @@ def _tree_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
-def test_delete_project_route_refuses_active_task(manifest, tmp_path) -> None:
+def test_delete_project_route_stops_only_the_previewed_work(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     card = app.state.catalog.card(project_id)
@@ -51,11 +51,21 @@ def test_delete_project_route_refuses_active_task(manifest, tmp_path) -> None:
         )
     )
 
-    response = signed_in_client(app).delete(f"/api/projects/{project_id}")
+    client = signed_in_client(app)
 
-    assert response.status_code == 409
-    assert "Pause the active agent task" in response.json()["detail"]
-    assert app.state.catalog.card(project_id)["id"] == project_id
+    # The task was never shown, so Delete refuses before stopping anything.
+    unshown = client.delete(f"/api/projects/{project_id}")
+    assert unshown.status_code == 409, unshown.text
+    assert app.state.catalog.store.agent_task("active-delete-test").status == "queued"
+
+    preview = client.get(f"/api/projects/{project_id}/deletion-preview").json()
+    response = client.delete(
+        f"/api/projects/{project_id}", params={"stop_token": preview["stop_token"]}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["unstopped"] == []
+    assert app.state.catalog.store.project(project_id) is None
 
 
 def test_delete_project_validation_status_does_not_depend_on_exception_wording(
@@ -64,7 +74,7 @@ def test_delete_project_validation_status_does_not_depend_on_exception_wording(
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
 
-    def reject_validation(_project_id: str):
+    def reject_validation(_project_id: str, **_kwargs):
         raise ValueError("A locator validation error mentions active agent task.")
 
     monkeypatch.setattr(app.state.catalog, "delete", reject_validation)

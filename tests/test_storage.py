@@ -30,6 +30,7 @@ from rcp.storage import (
     AppStore,
     ChatSessionContextRecord,
     ExperimentLoopRuntime,
+    ProjectActiveTaskConflict,
     ProjectRecord,
     SpaceUserRecord,
     TeamAuthenticationError,
@@ -2799,9 +2800,9 @@ def test_project_record_deletion_refuses_active_task(tmp_path, status) -> None:
     store.upsert_project(_project("project"))
     _task(store, "project", "operation", status)
 
-    with pytest.raises(ValueError, match="Pause the active agent task"):
+    with pytest.raises(ProjectActiveTaskConflict):
         store.project_deletion_stages("project")
-    with pytest.raises(ValueError, match="Pause the active agent task"):
+    with pytest.raises(ProjectActiveTaskConflict):
         store.delete_project_records("project")
 
     assert store.project("project") is not None

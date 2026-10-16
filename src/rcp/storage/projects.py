@@ -2,18 +2,51 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import dataclass
 
+from rcp.compute_jobs.models import ComputeJobRecord
 from rcp.providers import ProviderSkill
+from rcp.storage.compute_jobs import _compute_job_record
 from rcp.storage.digest import rewrite_digest_project_links
+from rcp.storage.episodes import _LIVE_EPISODE_STATUSES, EpisodeStoreMixin
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     _PROJECT_ID_TABLES,
+    AgentTaskRecord,
+    EpisodeRecord,
     ProjectActiveTaskConflict,
     ProjectRecord,
     ProjectStageRecord,
     ProviderSkillInventoryRecord,
+    StoredWatcherRecord,
     _canonical_uuid4,
 )
+
+# The rows a project's in-flight work lives in; deletion stops each before it deletes.
+_LIVE_TASKS = (
+    "SELECT * FROM graph_runs WHERE project_id = ? AND status IN ('queued', 'running', 'pausing')"
+)
+_LIVE_EPISODES = (
+    "SELECT * FROM episodes WHERE project_id = ? AND status IN "
+    f"({', '.join(repr(status) for status in _LIVE_EPISODE_STATUSES)})"
+)
+_LIVE_COMPUTE_JOBS = "SELECT * FROM compute_jobs WHERE project_id = ? AND status = 'running'"
+_LIVE_WATCHERS = (
+    "SELECT * FROM watchers WHERE project_id = ? "
+    "AND (status = 'active' OR (status IN ('degraded', 'completed') AND notified = 0))"
+)
+_UNFINISHED_TRANSFER = (
+    "SELECT 1 FROM project_transfer_requests WHERE project_id = ? AND phase != 'completed' LIMIT 1"
+)
+
+
+@dataclass(frozen=True)
+class ProjectLiveWork:
+    tasks: list[AgentTaskRecord]
+    episodes: list[EpisodeRecord]
+    compute_jobs: list[ComputeJobRecord]
+    watchers: list[StoredWatcherRecord]
+    transfer_unfinished: bool
 
 
 class ProjectStoreMixin(StoreMixinBase):
@@ -374,8 +407,15 @@ class ProjectStoreMixin(StoreMixinBase):
             return project_id
         return _canonical_uuid4(row["canonical_project_id"], label="canonical project identity")
 
-    def project_deletion_stages(self, project_id: str) -> list[ProjectStageRecord]:
-        """Return the saved scratch stages after proving deletion is currently safe."""
+    def project_deletion_stages(
+        self, project_id: str, *, work_stopped: bool = True
+    ) -> list[ProjectStageRecord]:
+        """Return the saved scratch stages after proving deletion is currently safe.
+
+        Before the in-flight work is stopped (``work_stopped=False``) only the
+        refusals that stopping cannot clear apply, so deletion can refuse
+        before it changes anything.
+        """
         with self.connection() as connection:
             if (
                 connection.execute(
@@ -384,7 +424,7 @@ class ProjectStoreMixin(StoreMixinBase):
                 is None
             ):
                 raise KeyError(project_id)
-            self._require_project_deletion_safe(connection, project_id)
+            self._require_project_deletion_safe(connection, project_id, work_stopped=work_stopped)
             rows = connection.execute(
                 """
                 SELECT DISTINCT COALESCE(stage_host, '') AS host, stage_root AS root
@@ -713,79 +753,58 @@ class ProjectStoreMixin(StoreMixinBase):
                 raise
         return counts
 
+    def project_live_work(self, project_id: str) -> ProjectLiveWork:
+        """Everything still running for one project, read in one snapshot."""
+
+        with self.connection() as connection:
+            return ProjectLiveWork(
+                tasks=[
+                    self._agent_task_record(row)
+                    for row in connection.execute(_LIVE_TASKS, (project_id,)).fetchall()
+                ],
+                episodes=[
+                    EpisodeStoreMixin._episode_record(row)
+                    for row in connection.execute(_LIVE_EPISODES, (project_id,)).fetchall()
+                ],
+                compute_jobs=[
+                    _compute_job_record(row)
+                    for row in connection.execute(_LIVE_COMPUTE_JOBS, (project_id,)).fetchall()
+                ],
+                watchers=[
+                    self._watcher_record(row)
+                    for row in connection.execute(_LIVE_WATCHERS, (project_id,)).fetchall()
+                ],
+                transfer_unfinished=connection.execute(
+                    _UNFINISHED_TRANSFER, (project_id,)
+                ).fetchone()
+                is not None,
+            )
+
     @staticmethod
     def _require_project_deletion_safe(
         connection: sqlite3.Connection,
         project_id: str,
+        *,
+        work_stopped: bool = True,
     ) -> None:
-        running_jobs = connection.execute(
-            "SELECT COUNT(*) FROM compute_jobs WHERE project_id = ? AND status = 'running'",
-            (project_id,),
-        ).fetchone()[0]
-        if running_jobs:
-            raise ProjectActiveTaskConflict(
-                f"This project has {running_jobs} running compute job(s). "
-                "Cancel or wait for those jobs first before deleting this project."
-            )
-        if (
-            connection.execute(
-                """
-                SELECT 1 FROM graph_runs
-                WHERE project_id = ? AND status IN ('queued', 'running', 'pausing')
-                LIMIT 1
-                """,
-                (project_id,),
-            ).fetchone()
-            is not None
-        ):
-            raise ProjectActiveTaskConflict(
-                "Pause the active agent task before deleting this project."
-            )
-        if (
-            connection.execute(
-                """
-                SELECT 1 FROM episodes
-                WHERE project_id = ?
-                  AND status IN ('queued', 'running', 'stopping', 'wrapping_up')
-                LIMIT 1
-                """,
-                (project_id,),
-            ).fetchone()
-            is not None
-        ):
-            raise ProjectActiveTaskConflict(
-                "Use Stop and wait for the live episode to settle before deleting this project."
-            )
-        if (
-            connection.execute(
-                """
-                SELECT 1 FROM project_transfer_requests
-                WHERE project_id = ? AND phase != 'completed'
-                LIMIT 1
-                """,
-                (project_id,),
-            ).fetchone()
-            is not None
-        ):
+        """Refuse only work deletion cannot stop: a transfer, or a task still running.
+
+        Deletion stops tasks, runs, compute jobs, and watchers before this
+        check (`rcp.runs.project_deletion`); a task here means a worker is
+        still exiting or one was admitted during the stop.
+        """
+
+        if connection.execute(_UNFINISHED_TRANSFER, (project_id,)).fetchone() is not None:
             raise ProjectActiveTaskConflict(
                 "Let the project transfer finish before deleting this project."
             )
         if (
-            connection.execute(
-                """
-                SELECT 1 FROM watchers
-                WHERE project_id = ?
-                  AND (
-                    status = 'active'
-                    OR (status IN ('degraded', 'completed') AND notified = 0)
-                  )
-                LIMIT 1
-                """,
-                (project_id,),
-            ).fetchone()
-            is not None
+            work_stopped
+            and connection.execute(_LIVE_TASKS + " LIMIT 1", (project_id,)).fetchone() is not None
         ):
-            raise ProjectActiveTaskConflict("Use stop watching before deleting this project.")
+            raise ProjectActiveTaskConflict(
+                "An agent task is still stopping. Try Delete again in a moment."
+            )
 
     def upsert_project(self, record: ProjectRecord) -> ProjectRecord:
         with self.connection() as connection:

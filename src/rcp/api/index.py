@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from rcp.agents import AgentLauncher
 from rcp.api.dependencies import (
+    get_background_tasks,
     get_catalog,
     get_experiment_operation_lock,
     get_identity_access,
@@ -34,6 +35,7 @@ from rcp.api.team_shell_protocol import (
     acknowledge_team_shell_protocol,
     team_shell_protocol_mismatch,
 )
+from rcp.background import BackgroundAgentTasks
 from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.control import ExperimentNode, experiment_node
 from rcp.core.models import CLOSED_EXPERIMENT_STATUSES, AuthorizedHuman, GraphState
@@ -51,6 +53,11 @@ from rcp.loop_status import (
 )
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import PROVIDER_IDS
+from rcp.runs.project_deletion import (
+    ProjectDeletionStopsChanged,
+    deletion_preview,
+    stop_project_work,
+)
 from rcp.service import ProjectService
 from rcp.setup import ProjectSetupManager, ProjectSetupRequest
 from rcp.skill_registry import SkillKind, official_registry
@@ -86,6 +93,7 @@ IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
 LauncherDependency = Annotated[AgentLauncher, Depends(get_launcher)]
 SetupDependency = Annotated[ProjectSetupManager, Depends(get_setup)]
 StoreDependency = Annotated[AppStore, Depends(get_store)]
+BackgroundTasksDependency = Annotated[BackgroundAgentTasks, Depends(get_background_tasks)]
 ExperimentOperationLockDependency = Annotated[
     KeyedLocks,
     Depends(get_experiment_operation_lock),
@@ -951,6 +959,31 @@ def register_project(
     return catalog.card(record.project_id)
 
 
+@membership_router.get("/api/projects/{project_id}/deletion-preview")
+def project_deletion_preview(
+    project_id: str,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> dict[str, object]:
+    try:
+        canonical = catalog.resolve_project_id(project_id)
+        _settle_project_compute_jobs(catalog, store, canonical)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+    except (OSError, RuntimeError, StateUnavailable) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return deletion_preview(store, canonical).model_dump(mode="json")
+
+
+def _settle_project_compute_jobs(catalog: ProjectCatalog, store: AppStore, project_id: str) -> None:
+    """Helper rows settle only when observed; refresh them so finished work is
+    neither listed nor stopped, and Delete's stop list matches its preview."""
+
+    if any(job.project_id == project_id for job in store.running_compute_jobs()):
+        reconcile_compute_jobs(store, None, project_id=project_id, data_dir=catalog.data_dir)
+
+
 @membership_router.delete("/api/projects/{project_id}")
 def delete_project(
     project_id: str,
@@ -959,7 +992,9 @@ def delete_project(
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
+    background_tasks: BackgroundTasksDependency,
     experiment_operation_lock: ExperimentOperationLockDependency,
+    stop_token: str | None = None,
 ) -> dict[str, object]:
     selected_protocol = acknowledge_team_shell_protocol(request, response)
     if store.space_kind == "team" and (selected_protocol is None or selected_protocol < 2):
@@ -969,15 +1004,15 @@ def delete_project(
         )
     try:
         canonical = catalog.resolve_project_id(project_id)
-        if any(job.project_id == canonical for job in store.running_compute_jobs()):
-            # Helper rows settle only when observed; refresh them so finished
-            # work does not block deletion until the next restart.
-            reconcile_compute_jobs(store, None, project_id=canonical, data_dir=catalog.data_dir)
+        _settle_project_compute_jobs(catalog, store, canonical)
         with experiment_operation_lock(canonical):
-            return catalog.delete(canonical).model_dump(mode="json")
+            return catalog.delete(
+                canonical,
+                stop_work=lambda pid: stop_project_work(store, background_tasks, pid, stop_token),
+            ).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
-    except ProjectActiveTaskConflict as exc:
+    except (ProjectActiveTaskConflict, ProjectDeletionStopsChanged) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

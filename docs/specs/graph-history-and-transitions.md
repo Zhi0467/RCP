@@ -284,6 +284,19 @@ ruleset are independent. When retiring a field, update
 `adapt_persisted_patch_document` and affected replay field rules together, including
 adapter-introduced fields. Historical bytes never change.
 
+Merge identity excludes the filing provenance, rule version, revisions, and
+derived guidance-validity fields listed in `history/delta.py`. A pending source
+Proposal is filed again on main with current filing stamps while retaining its
+identity and authored content. Replay preserves the recorded dependency rule;
+that rule still controls staleness. Engine-written status and standing remain
+semantic. **Why:** v0.4.23 versioned the dependency rule, and every branch
+holding an older pending Proposal failed its merge self-check. The Proposal
+regression in `tests/test_branch_merge.py` varies the Literal and integer filing
+fields through merge preparation. Checks for a persisted graph change:
+`tests/test_branch_merge*.py`, `tests/test_episode_merge.py`,
+`tests/test_history*.py`, `tests/test_agent_schema.py`, and
+`tests/test_application_deployment.py`.
+
 ## History reads
 
 One engine serves every history reader and materialization path. References are

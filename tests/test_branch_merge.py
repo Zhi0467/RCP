@@ -5,7 +5,7 @@ import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal, get_args, get_origin
 
 import pytest
 
@@ -15,6 +15,7 @@ from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.config import Manifest
+from rcp.core.materialize import prepare_patch_bookkeeping
 from rcp.core.models import (
     AuthorizedHuman,
     Blocker,
@@ -441,6 +442,89 @@ def test_effective_delta_accepts_compatible_main_changes_and_ignores_proposal_pr
     assert detect_branch_merge_conflicts(base, branch, main) == []
 
 
+def _filing_stamp_variants() -> list[tuple[str, object]]:
+    """Literal and integer values a stored pending Proposal may hold.
+
+    A merge files the Proposal again on main under current stamps
+    (`prepare_patch_bookkeeping`). This covers a versioned Literal stamp such as
+    `dependency_rule` without listing it; string, optional, and list fields are
+    not varied. Resolution fields and status are fixed for a pending Proposal.
+    """
+
+    variants: list[tuple[str, object]] = []
+    for name, field in Proposal.model_fields.items():
+        if name == "status" or name.startswith("resolved_"):
+            continue
+        if get_origin(field.annotation) is Literal:
+            variants.extend((name, value) for value in get_args(field.annotation))
+        elif field.annotation in (int, "int"):
+            variants.extend((name, value) for value in (2, 3))
+    return variants
+
+
+@pytest.mark.parametrize(("field", "value"), _filing_stamp_variants())
+def test_merge_carries_a_source_proposal_whatever_its_filing_stamps(
+    field: str, value: object
+) -> None:
+    proposal = Proposal.model_validate(
+        {
+            "id": "prop/merge",
+            "title": "Merge proposal",
+            "card": {},
+            "ops": [
+                {
+                    "op": "update_nodes",
+                    "intent": "content_change",
+                    "nodes": [{"id": "rq/merge", "changes": {"motivation": "Branch motivation"}}],
+                }
+            ],
+            "related_node_ids": ["rq/merge"],
+            "base_rev": 2,
+            field: value,
+        }
+    )
+    template = _context()
+    context = BranchMergeContext.create(
+        merge_task_id=template.merge_task_id,
+        authorized_by=template.authorized_by,
+        metadata=template.metadata,
+        eligibility=template.eligibility,
+        base_graph=_state(2),
+        branch_graph=_state(3, question=_question(updated_rev=2)).model_copy(
+            update={"proposals": {proposal.id: proposal}}
+        ),
+        main_head=template.main_head,
+        main_graph=template.main_graph,
+        run_truth_scope=template.run_truth_scope,
+    )
+    candidate = parse_branch_merge_candidate(
+        json.dumps(
+            {
+                "summary": "Carry the pending branch Proposal.",
+                "ops": [
+                    {
+                        "op": "create_proposals",
+                        "proposals": [
+                            proposal.model_dump(mode="json", include={"id", "title", "card", "ops"})
+                        ],
+                    }
+                ],
+                "repositories_read": [],
+            }
+        ),
+        context,
+    )
+
+    prepared = prepare_branch_merge_with_history(
+        _RejectingHistory(context, reject_count=0),
+        candidate,
+        expected_main_head=context.main_head,
+        context=context,
+    )
+
+    assert prepared.projection.graph.proposals[proposal.id].status == "pending"
+
+
 def test_merge_identity_is_branch_lineage_only_and_provenance_is_exact() -> None:
     context = _context(main_revision=4)
     moved = _context(
@@ -612,7 +696,7 @@ class _RejectingHistory:
             return patch, report, self.context.main_graph
         prepared = GraphTransitionManager().prepare_validated(
             self.context.main_graph,
-            [patch],
+            [prepare_patch_bookkeeping(self.context.main_graph, patch)],
             pre_head=self.context.main_head,
         )
         return prepared.patch, ValidationReport(), self.context.main_graph

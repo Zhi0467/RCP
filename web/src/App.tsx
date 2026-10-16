@@ -289,6 +289,7 @@ import type {
   GraphUpdateRecovery,
   Health,
   ProjectCard,
+  ProjectDeletionResult,
   ProjectInvitation,
   ProjectSnapshot,
   ProjectTransitionResponse,
@@ -3804,8 +3805,11 @@ function MemberApp({
     await loadProjectIndex();
   };
 
-  const deleteProject = async (id: string) => {
-    await api(`/api/projects/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const deleteProject = async (id: string, stopToken: string) => {
+    const result = await api<ProjectDeletionResult>(
+      `/api/projects/${encodeURIComponent(id)}?stop_token=${encodeURIComponent(stopToken)}`,
+      { method: "DELETE" },
+    );
     removeProject(id);
     forgetProjectViewport(id);
     try {
@@ -3814,6 +3818,7 @@ function MemberApp({
     } catch {
       // The project is already deleted; a stranded draft key must not fail the action.
     }
+    return result;
   };
 
   const activateProjectTab = (id: string) => {

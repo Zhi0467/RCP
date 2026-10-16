@@ -33,6 +33,7 @@ from rcp.limits import (
     CHAT_ARTIFACT_MAX_COUNT,
     COMMAND_MAILBOX_RESUME_MAX_ATTEMPTS,
     GRAPH_UPDATE_HISTORY_MAX_COUNT,
+    PROJECT_DELETION_STOP_TIMEOUT_SECONDS,
     REMOTE_RESULT_RECONCILIATION_INTERVAL_SECONDS,
 )
 from rcp.machine_sleep import seconds_until_automatic_launch
@@ -1257,6 +1258,93 @@ class BackgroundAgentTasks:
             assert settled is not None
             return settled
         return record
+
+    def stop_for_project_deletion(self, operation_id: str) -> str | None:
+        """Stop one task's provider now; return why it may still run, else None.
+
+        Unlike Pause this has no human-only refusals: the project is going away,
+        so a report turn or a task under a stopping episode is stopped too.
+        """
+
+        current = self._require_operation(operation_id)
+        if not current.active:
+            return None
+        if current.phase == "awaiting_remote_result":
+            with self._remote_result_lock:
+                current = self._require_operation(operation_id)
+                if current.phase == "awaiting_remote_result":
+                    return self._stop_detached_turn_for_deletion(current)
+        try:
+            self.store.request_agent_task_pause(operation_id, requested_by="project_deletion")
+        except ValueError:
+            # Already pausing (a human Pause, or an earlier stop pass) goes on to
+            # the worker below; one that settled after the read is already stopped.
+            current = self._require_operation(operation_id)
+            if not current.active:
+                return None
+            if not current.pausing:
+                raise
+        with self._controls_lock:
+            worker = self._workers.get(operation_id)
+        if worker is None or not worker.is_alive():
+            self.store.pause_agent_task(operation_id, detail="The project is being deleted.")
+            return None
+        self._signal_agent_task_pause(operation_id)
+        return None
+
+    def _stop_detached_turn_for_deletion(self, record: AgentTaskRecord) -> str | None:
+        host = record.stage_host or ""
+        reason: str | None = None
+        for operation_id, pid_file in self.store.unresolved_remote_provider_passes(
+            host, record.stage_root or ""
+        ):
+            if operation_id != record.operation_id:
+                continue
+            stopped, identity = AgentProcessControl.remote_process_state(host, pid_file)
+            if stopped is False and identity is not None:
+                stopped = AgentProcessControl.stop_remote_process(
+                    host, pid_file, expected_identity=identity
+                )
+            if stopped:
+                self.store.finish_remote_provider_pass(record.operation_id, pid_file)
+            else:
+                reason = (
+                    f"{host} is unreachable"
+                    if stopped is None
+                    else f"RCP could not confirm it stopped on {host}"
+                )
+        try:
+            self._settle_detached_mailbox(record.operation_id)
+        except Exception as exc:
+            self.store.record_agent_task_event(
+                record.operation_id,
+                f"Command mailbox could not be settled: {exc}",
+                level="warning",
+            )
+        self.store.request_agent_task_pause(record.operation_id, requested_by="project_deletion")
+        self.store.pause_agent_task(record.operation_id, detail="The project is being deleted.")
+        return reason
+
+    def wait_for_stopped_workers(
+        self,
+        operation_ids: list[str],
+        *,
+        timeout: float = PROJECT_DELETION_STOP_TIMEOUT_SECONDS,
+    ) -> list[str]:
+        """Join the workers of stopped tasks; return the ids still running."""
+
+        deadline = time.monotonic() + timeout
+        for operation_id in operation_ids:
+            with self._controls_lock:
+                worker = self._workers.get(operation_id)
+            if worker is not None:
+                worker.join(max(0.0, deadline - time.monotonic()))
+        with self._controls_lock:
+            return [
+                operation_id
+                for operation_id in operation_ids
+                if (worker := self._workers.get(operation_id)) is not None and worker.is_alive()
+            ]
 
     def bump_steer_revision(self, operation_id: str) -> None:
         with self._controls_lock:
