@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from types import SimpleNamespace
 from typing import cast
 from uuid import uuid4
@@ -17,10 +19,11 @@ from rcp.runs.questions import (
     work_command_handler,
 )
 from rcp.runs.tasks.work import _work_execution_instructions
+from rcp.server_ops.maintenance import RuntimeAdmissionGate
 from rcp.service import ProjectService, RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.question_activity import QuestionActivity
-from tests.helpers import signed_in_client
+from tests.helpers import signed_in_client, wait_until
 
 from .test_ask_protocol import ask_request
 
@@ -75,6 +78,37 @@ def test_pending_attempts_count_calls_not_rounds(tmp_path, resolution):
     result = handler(ask_request(call_id="third"), identity()).result
     assert result["state"] == resolution
     assert "attempt" not in result and "max_attempts" not in result
+
+
+@pytest.mark.xfail(strict=True, reason="design PR: the update drain still waits on a pending ask")
+def test_update_drain_parks_a_waiting_ask_instead_of_waiting_on_it(tmp_path):
+    # Maintenance closes the human's HTTP access before it drains turns, so a
+    # turn still waiting on an answer would hold the drain until its ask expired.
+    execution, _human = work_execution(tmp_path)
+    admission = RuntimeAdmissionGate()
+    execution.admission = admission
+    handler = work_command_handler(execution, None)
+    states = []
+
+    def asking_turn():
+        # The client's ask loop: repeat rounds while pending, as `--ask-wait` does.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            state = handler(ask_request(call_id="call"), identity()).result["state"]
+            states.append(state)
+            if state != "pending":
+                return
+            time.sleep(0.01)
+
+    turn = threading.Thread(target=asking_turn, daemon=True)
+    turn.start()
+    wait_until(lambda: states, detail="the turn never asked")
+    admission.close_and_wait(timeout=5, additional_idle=lambda: not turn.is_alive())
+    assert states[0] == "pending" and states[-1] == "parked"
+    question = execution.store.list_questions(
+        project_id="project", owner_kind="chat", owner_id="chat"
+    )
+    assert [item.state for item in question] == ["pending"]
 
 
 def test_question_view_waiting_expires_and_resets_on_pending_round(tmp_path):
