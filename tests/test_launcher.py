@@ -288,6 +288,54 @@ async def test_campaign_broker_wraps_provider_and_preserves_effective_prompt(
 
 
 @pytest.mark.asyncio
+async def test_broker_socket_survives_a_stopped_turn_for_the_next_turn(tmp_path: Path) -> None:
+    staged = stage_command_mailbox(
+        local_stage=tmp_path,
+        remote_stage=None,
+        episode_id="episode",
+        task_id="task",
+        turn_id="turn",
+    )
+    gate = staged.invocation_gate
+    assert gate is not None
+    socket_path = Path(_broker_socket_path(gate.socket_path))
+
+    async def start_broker() -> asyncio.subprocess.Process:
+        process = await asyncio.create_subprocess_exec(
+            *gate._broker_argv(),
+            "--standalone",
+            cwd=gate.workspace,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        assert process.stdin is not None and process.stdout is not None
+        process.stdin.write(gate.bootstrap(b""))
+        await process.stdin.drain()
+        line = await asyncio.wait_for(process.stdout.readline(), timeout=5)
+        assert line.decode().rstrip() == gate.ready_line
+        return process
+
+    try:
+        # The launcher stops a provider group with SIGTERM at its result.
+        first = await start_broker()
+        first.send_signal(signal.SIGTERM)
+        await asyncio.wait_for(first.wait(), timeout=5)
+        assert not socket_path.exists()
+
+        # A turn killed outright leaves its socket; the next turn reclaims it.
+        dead = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        dead.bind(str(socket_path))
+        dead.close()
+        second = await start_broker()
+        second.send_signal(signal.SIGTERM)
+        await asyncio.wait_for(second.wait(), timeout=5)
+    finally:
+        socket_path.unlink(missing_ok=True)
+        staged.cleanup()
+
+
+@pytest.mark.asyncio
 async def test_campaign_broker_failure_prevents_provider_prompt_delivery(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -307,6 +355,7 @@ async def test_campaign_broker_failure_prevents_provider_prompt_delivery(
     socket_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     occupied = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     occupied.bind(str(socket_path))
+    occupied.listen(1)
     try:
         events = [
             event

@@ -15,6 +15,7 @@ from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.config import Manifest
+from rcp.core.materialize import prepare_patch_bookkeeping
 from rcp.core.models import (
     AuthorizedHuman,
     Blocker,
@@ -441,6 +442,66 @@ def test_effective_delta_accepts_compatible_main_changes_and_ignores_proposal_pr
     assert detect_branch_merge_conflicts(base, branch, main) == []
 
 
+def test_merge_carries_a_source_proposal_filed_under_an_older_dependency_rule() -> None:
+    proposal = Proposal.model_validate(
+        {
+            "id": "prop/merge",
+            "title": "Merge proposal",
+            "card": {},
+            "ops": [
+                {
+                    "op": "update_nodes",
+                    "intent": "content_change",
+                    "nodes": [{"id": "rq/merge", "changes": {"motivation": "Branch motivation"}}],
+                }
+            ],
+            "related_node_ids": ["rq/merge"],
+            "base_rev": 2,
+            "dependency_rule": 1,
+        }
+    )
+    template = _context()
+    context = BranchMergeContext.create(
+        merge_task_id=template.merge_task_id,
+        authorized_by=template.authorized_by,
+        metadata=template.metadata,
+        eligibility=template.eligibility,
+        base_graph=_state(2),
+        branch_graph=_state(3, question=_question(updated_rev=2)).model_copy(
+            update={"proposals": {proposal.id: proposal}}
+        ),
+        main_head=template.main_head,
+        main_graph=template.main_graph,
+        run_truth_scope=template.run_truth_scope,
+    )
+    candidate = parse_branch_merge_candidate(
+        json.dumps(
+            {
+                "summary": "Carry the pending branch Proposal.",
+                "ops": [
+                    {
+                        "op": "create_proposals",
+                        "proposals": [
+                            proposal.model_dump(mode="json", include={"id", "title", "card", "ops"})
+                        ],
+                    }
+                ],
+                "repositories_read": [],
+            }
+        ),
+        context,
+    )
+
+    prepared = prepare_branch_merge_with_history(
+        _RejectingHistory(context, reject_count=0),
+        candidate,
+        expected_main_head=context.main_head,
+        context=context,
+    )
+
+    assert prepared.projection.graph.proposals[proposal.id].status == "pending"
+
+
 def test_merge_identity_is_branch_lineage_only_and_provenance_is_exact() -> None:
     context = _context(main_revision=4)
     moved = _context(
@@ -612,7 +673,7 @@ class _RejectingHistory:
             return patch, report, self.context.main_graph
         prepared = GraphTransitionManager().prepare_validated(
             self.context.main_graph,
-            [patch],
+            [prepare_patch_bookkeeping(self.context.main_graph, patch)],
             pre_head=self.context.main_head,
         )
         return prepared.patch, ValidationReport(), self.context.main_graph

@@ -11,6 +11,7 @@ import json
 import os
 import pwd
 import re
+import signal
 import socket
 import stat
 import struct
@@ -141,8 +142,36 @@ def _safe_socket_path(path):
     _private_directory(os.path.dirname(directory), exact=directory.startswith("/tmp/"))
     _private_directory(directory, exact=True)
     if os.path.lexists(absolute):
-        raise BrokerError("broker socket path is already occupied")
+        _remove_dead_socket(absolute)
     return absolute
+
+
+def _remove_dead_socket(path):
+    """Reclaim this mailbox's socket when no broker listens on it.
+
+    The name is unique to one task's mailbox, and every turn of that task
+    reuses it, so a file left by a killed earlier turn must not refuse the next.
+    """
+
+    info = os.lstat(path)
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.geteuid():
+        raise BrokerError("broker socket path is already occupied")
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.connect(path)
+    except ConnectionRefusedError:
+        os.unlink(path)
+        return
+    except OSError:
+        pass
+    finally:
+        probe.close()
+    raise BrokerError("broker socket path is already occupied")
+
+
+def _exit_on_signal(signum, _frame):
+    # Turns the stop signal into SystemExit so `main` removes its socket.
+    raise SystemExit(128 + signum)
 
 
 def _socket_directory(home):
@@ -613,6 +642,8 @@ def main(argv=None):
     server = None
     child = None
     stop = threading.Event()
+    for signum in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, _exit_on_signal)
     try:
         token = _bootstrap(mailbox_id)
         socket_path = _safe_socket_path(namespace.socket)
