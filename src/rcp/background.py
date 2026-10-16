@@ -1274,7 +1274,13 @@ class BackgroundAgentTasks:
                 current = self._require_operation(operation_id)
                 if current.phase == "awaiting_remote_result":
                     return self._stop_detached_turn_for_deletion(current)
-        self.store.request_agent_task_pause(operation_id, requested_by="project_deletion")
+        try:
+            self.store.request_agent_task_pause(operation_id, requested_by="project_deletion")
+        except ValueError:
+            # It settled after the read above; a finished task is already stopped.
+            if self._require_operation(operation_id).active:
+                raise
+            return None
         with self._controls_lock:
             worker = self._workers.get(operation_id)
         if worker is None or not worker.is_alive():

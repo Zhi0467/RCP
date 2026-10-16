@@ -153,9 +153,14 @@ def test_catalog_delete_rejects_local_stage_outside_app_boundary(manifest, tmp_p
         )
     )
 
+    stopped: list[str] = []
     with pytest.raises(ValueError, match="outside the RCP staging boundary"):
-        catalog.delete(record.project_id)
+        catalog.delete(
+            record.project_id, stop_work=lambda project_id: stopped.append(project_id) or []
+        )
 
+    # A refused deletion stops no in-flight work.
+    assert stopped == []
     assert marker.read_text(encoding="utf-8") == "source"
     assert cached.read_text(encoding="utf-8") == "saved cache"
     assert display.read_text(encoding="utf-8") == "saved display"

@@ -1946,6 +1946,41 @@ class ProjectCatalog:
             ),
         )
 
+    def _validated_deletion_targets(
+        self, project_id: str, *, work_stopped: bool
+    ) -> tuple[
+        list[ProjectStageRecord],
+        Path,
+        Path,
+        Path | None,
+        ImportedProviderSourceStore | None,
+        ImportedProviderSourceInventory | None,
+    ]:
+        """Every app file deletion removes, validated without changing any."""
+
+        stages = self.store.project_deletion_stages(project_id, work_stopped=work_stopped)
+        display_snapshot = self._cached_snapshot_path(project_id)
+        paper_snapshot = self._paper_snapshot_path(project_id)
+        project_cache_root = _validate_project_cache_roots(self.data_dir, project_id)
+        imported_sources: ImportedProviderSourceStore | None = None
+        imported_inventory: ImportedProviderSourceInventory | None = None
+        if _is_canonical_uuid4(project_id):
+            imported_sources = ImportedProviderSourceStore(self.data_dir, project_id)
+            imported_inventory = imported_sources.inventory()
+            imported_sources.validate_discard(expected_inventory=imported_inventory)
+        for stage in stages:
+            self._validate_stage_target(stage)
+        _validate_optional_regular_app_file(display_snapshot, "project display snapshot")
+        _validate_optional_regular_app_file(paper_snapshot, "project paper snapshot")
+        return (
+            stages,
+            display_snapshot,
+            paper_snapshot,
+            project_cache_root,
+            imported_sources,
+            imported_inventory,
+        )
+
     def delete(
         self,
         project_id: str,
@@ -1969,22 +2004,21 @@ class ProjectCatalog:
             if opening is not None:
                 with suppress(Exception):
                     opening.result()
-            unstopped = stop_work(project_id) if stop_work is not None else []
+            unstopped: list[str] = []
+            if stop_work is not None:
+                # Refuse before stopping anything: a transfer or an unsafe file
+                # target would otherwise leave the work stopped and the project kept.
+                self._validated_deletion_targets(project_id, work_stopped=False)
+                unstopped = stop_work(project_id)
             with self._snapshot_lock(project_id):
-                stages = self.store.project_deletion_stages(project_id)
-                display_snapshot = self._cached_snapshot_path(project_id)
-                paper_snapshot = self._paper_snapshot_path(project_id)
-                project_cache_root = _validate_project_cache_roots(self.data_dir, project_id)
-                imported_sources: ImportedProviderSourceStore | None = None
-                imported_inventory: ImportedProviderSourceInventory | None = None
-                if _is_canonical_uuid4(project_id):
-                    imported_sources = ImportedProviderSourceStore(self.data_dir, project_id)
-                    imported_inventory = imported_sources.inventory()
-                    imported_sources.validate_discard(expected_inventory=imported_inventory)
-                for stage in stages:
-                    self._validate_stage_target(stage)
-                _validate_optional_regular_app_file(display_snapshot, "project display snapshot")
-                _validate_optional_regular_app_file(paper_snapshot, "project paper snapshot")
+                (
+                    stages,
+                    display_snapshot,
+                    paper_snapshot,
+                    project_cache_root,
+                    imported_sources,
+                    imported_inventory,
+                ) = self._validated_deletion_targets(project_id, work_stopped=True)
 
                 from rcp.runs.browser_lifecycle import close_chat_browser_owners
 

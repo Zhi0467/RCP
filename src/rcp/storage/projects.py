@@ -407,8 +407,15 @@ class ProjectStoreMixin(StoreMixinBase):
             return project_id
         return _canonical_uuid4(row["canonical_project_id"], label="canonical project identity")
 
-    def project_deletion_stages(self, project_id: str) -> list[ProjectStageRecord]:
-        """Return the saved scratch stages after proving deletion is currently safe."""
+    def project_deletion_stages(
+        self, project_id: str, *, work_stopped: bool = True
+    ) -> list[ProjectStageRecord]:
+        """Return the saved scratch stages after proving deletion is currently safe.
+
+        Before the in-flight work is stopped (``work_stopped=False``) only the
+        refusals that stopping cannot clear apply, so deletion can refuse
+        before it changes anything.
+        """
         with self.connection() as connection:
             if (
                 connection.execute(
@@ -417,7 +424,7 @@ class ProjectStoreMixin(StoreMixinBase):
                 is None
             ):
                 raise KeyError(project_id)
-            self._require_project_deletion_safe(connection, project_id)
+            self._require_project_deletion_safe(connection, project_id, work_stopped=work_stopped)
             rows = connection.execute(
                 """
                 SELECT DISTINCT COALESCE(stage_host, '') AS host, stage_root AS root
@@ -777,6 +784,8 @@ class ProjectStoreMixin(StoreMixinBase):
     def _require_project_deletion_safe(
         connection: sqlite3.Connection,
         project_id: str,
+        *,
+        work_stopped: bool = True,
     ) -> None:
         """Refuse only work deletion cannot stop: a transfer, or a task still running.
 
@@ -789,7 +798,10 @@ class ProjectStoreMixin(StoreMixinBase):
             raise ProjectActiveTaskConflict(
                 "Let the project transfer finish before deleting this project."
             )
-        if connection.execute(_LIVE_TASKS + " LIMIT 1", (project_id,)).fetchone() is not None:
+        if (
+            work_stopped
+            and connection.execute(_LIVE_TASKS + " LIMIT 1", (project_id,)).fetchone() is not None
+        ):
             raise ProjectActiveTaskConflict(
                 "An agent task is still stopping. Try Delete again in a moment."
             )

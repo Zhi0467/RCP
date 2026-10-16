@@ -131,16 +131,21 @@ def _cancel_external_work(
     """Run each saved cancel command once: helper jobs, then watched external jobs."""
 
     work = store.project_live_work(project_id)
-    actions: dict[str, tuple[WatchSpec, str, str]] = {}
+    # One action per job: watchers observing the same job share host, cwd, and command.
+    actions: dict[tuple[str, str, str], tuple[WatchSpec, str, str]] = {}
     for job in work.compute_jobs:
         spec = WatchSpec.model_validate(helper_watch_spec(job))
         assert spec.cancel_command is not None
-        actions[spec.cancel_command] = (spec, job.execution_host, _job_label(job))
+        actions[(job.execution_host, spec.cwd, spec.cancel_command)] = (
+            spec,
+            job.execution_host,
+            _job_label(job),
+        )
     for watcher in [*earlier_watchers, *work.watchers]:
         if not isinstance(watcher, WatcherRecord) or watcher.cancel_command is None:
             continue
         actions.setdefault(
-            watcher.cancel_command,
+            (watcher.execution_host, watcher.cwd, watcher.cancel_command),
             (
                 WatchSpec(
                     check_command=watcher.check_command,
