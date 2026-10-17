@@ -166,3 +166,23 @@
     font-size: 16px;
   }
 }
+
+.branch-picker-parent {
+  font-weight: 400;
+}
+@media (max-width: 560px) {
+  .branch-picker-row {
+    min-height: 44px;
+    height: auto;
+  }
+  .branch-picker-action {
+    width: 44px;
+    height: 44px;
+  }
+  .branch-picker-name {
+    height: auto;
+    min-height: 44px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}

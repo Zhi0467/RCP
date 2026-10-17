@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   timelineRows,
+  timelineActorTarget,
   timelineBounds,
   clampWindow,
   zoomWindow,
@@ -197,4 +198,37 @@ test("summary partitions every shown actor and message exactly once", () => {
   assert.equal(summary.totalMessages, 6);
   assert.equal(summary.handoffs, 1);
   assert.equal(summary.truncated, true);
+});
+
+test("fork actors retain their target and archive provenance under the parent run", () => {
+  const target = { kind: "branch", branch_id: "fork" };
+  const refs = [
+    { kind: "branch", branch_id: "root", name: "source" },
+    {
+      kind: "branch",
+      branch_id: "fork",
+      name: "recheck",
+      archived: true,
+      parent_head: { target: { kind: "branch", branch_id: "root" }, revision: 7 },
+    },
+  ];
+  const actors = [
+    actor("root", "orchestrator"),
+    actor("worker", "worker", "worker", { graph_target: target }),
+    actor("original", "experiment", "branch:root:node:exp", { graph_target: refs[0] }),
+    actor("forked", "experiment", "branch:fork:node:exp", { graph_target: target }),
+  ];
+  const rows = timelineRows(data({ actors }), [], refs);
+  assert.equal(rows.length, 4);
+  assert.deepEqual(
+    rows.slice(1).map((row) => row.actors[0].actor_id),
+    ["worker", "original", "forked"],
+  );
+  assert.equal(rows[1].targetLabel, rows[3].targetLabel);
+  assert.deepEqual(
+    rows.map((row) => row.archived),
+    [false, true, false, true],
+  );
+  for (const value of ["recheck", "source@7"]) assert.ok(rows[3].targetLabel.includes(value));
+  assert.equal(timelineActorTarget(actor("legacy", "worker"), refs), null);
 });

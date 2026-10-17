@@ -147,6 +147,7 @@ import {
   startEpisode,
   startExperimentRun,
   stopEpisode,
+  createGraphFork,
 } from "./core/api";
 import {
   BACKEND_IDENTITY_EVENT,
@@ -5051,6 +5052,7 @@ function MemberApp({
               key={graphSessionKey(project.id, graphTarget)}
               graphTarget={graphTarget}
               branchChanges={project.graph_changes}
+              graphRefs={projectGraphRefs}
               mergePaths={branchMergePaths}
               onInspectTask={selectTaskInspector}
               {...graphEditingProps}
@@ -5572,7 +5574,15 @@ function MemberApp({
       )}
       {projectHistoryOpen && (
         <ProjectHistoryDrawer
+          key={graphSessionKey(project.id, graphTarget)}
           projectId={project.id}
+          onFork={async (revision, requestId) => {
+            const ref = await createGraphFork(project.id, graphTarget, revision, requestId);
+            store.invalidate(resourceKeyId(refsProfile(project.id).key));
+            closeProjectHistory();
+            if (ref.kind === "branch") selectGraphRef({ kind: "branch", branch_id: ref.branch_id });
+          }}
+          forkDisabled={mutationsDisabled}
           summaries={historyRevisionSummaries}
           tasks={projectTasks}
           loading={historySummariesRevision !== graph.revision}

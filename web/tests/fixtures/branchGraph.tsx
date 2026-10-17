@@ -1,3 +1,4 @@
+import { GraphPicker } from "../../src/graph/GraphPicker";
 import { ResourceRuntime } from "./resourceRuntime";
 import { useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -19,6 +20,7 @@ import { buildGlossaryIndex } from "../../src/graph/glossary";
 import type {
   AgentTask,
   GraphBranchChanges,
+  GraphRef,
   GraphEditOptions,
   GraphNode,
   GraphState,
@@ -173,6 +175,33 @@ const project = {
 } as unknown as ProjectSnapshot;
 
 function Fixture() {
+  const [pickerTarget, setPickerTarget] = useState(target as GraphRef["head"]["target"]);
+  const pickerRefs = [
+    { kind: "main", name: "main", archived: false },
+    {
+      kind: "branch",
+      branch_id: "parent",
+      name: "parent",
+      archived: false,
+      created_at: "2026-01-01",
+      parent_head: { target: { kind: "main" }, revision: 1 },
+    },
+    {
+      kind: "branch",
+      branch_id: "episode-branch",
+      name: "fork",
+      archived: false,
+      created_at: "2026-01-02",
+      parent_head: { target: { kind: "branch", branch_id: "parent" }, revision: 7 },
+    },
+    {
+      kind: "branch",
+      branch_id: "hidden",
+      name: "hidden",
+      archived: true,
+      created_at: "2026-01-03",
+    },
+  ] as GraphRef[];
   const viewport = useRef(null);
   const [draft, setDraft] = useState(emptyHumanDraft(graph.revision));
   const [selected, setSelected] = useState<GraphNode | null>(null);
@@ -184,6 +213,13 @@ function Fixture() {
   const selectedNode = selected ? (presented.nodes[selected.id] ?? selected) : null;
   return (
     <main style={{ padding: 24 }}>
+      <GraphPicker
+        projectId={project.id}
+        refs={pickerRefs}
+        activeRef={pickerTarget}
+        onSelect={setPickerTarget}
+        onRefUpdated={() => {}}
+      />
       <DagView
         projectId={project.id}
         graphTarget={target}

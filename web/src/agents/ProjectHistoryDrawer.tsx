@@ -1,5 +1,5 @@
-import { Clock3, ExternalLink, X } from "lucide-react";
-import { useState } from "react";
+import { Clock3, ExternalLink, GitFork, MoreHorizontal, RotateCcw, X } from "lucide-react";
+import { useRef, useState } from "react";
 import { taskKindLabel, taskStatusLabel } from "./agentTasks";
 import type { AgentTask, RevisionSummary } from "../core/types";
 import { EpisodeReportLink } from "../experiments/EpisodeReportLink";
@@ -13,6 +13,8 @@ interface Props {
   onInspectTask: (taskId: string) => void;
   episodeReportHref: (episodeId: string) => string;
   onClose: () => void;
+  onFork?: (revision: number, requestId: string) => Promise<void>;
+  forkDisabled?: boolean;
 }
 
 type HistoryEntry =
@@ -28,6 +30,8 @@ export function ProjectHistoryDrawer({
   onInspectTask,
   episodeReportHref,
   onClose,
+  onFork,
+  forkDisabled,
 }: Props) {
   const historyEntries = groupEpisodeRevisions(summaries);
 
@@ -94,11 +98,15 @@ export function ProjectHistoryDrawer({
                         episodeId={entry.episodeId}
                         summaries={entry.summaries}
                         episodeReportHref={episodeReportHref}
+                        onFork={onFork}
+                        forkDisabled={forkDisabled}
                         key={`episode:${entry.episodeId}`}
                       />
                     ) : (
                       <RevisionItem
                         summary={entry.summary}
+                        onFork={onFork}
+                        forkDisabled={forkDisabled}
                         key={`revision:${entry.summary.to_revision}`}
                       />
                     ),
@@ -120,11 +128,15 @@ function EpisodeRevisionGroup({
   episodeId,
   summaries,
   episodeReportHref,
+  onFork,
+  forkDisabled,
 }: {
   projectId: string;
   episodeId: string;
   summaries: RevisionSummary[];
   episodeReportHref: Props["episodeReportHref"];
+  onFork: Props["onFork"];
+  forkDisabled: Props["forkDisabled"];
 }) {
   const [reportOpenError, setReportOpenError] = useState<string | null>(null);
   const newest = summaries[0];
@@ -170,7 +182,12 @@ function EpisodeRevisionGroup({
         )}
         <ol className="history-campaign-revisions">
           {summaries.map((summary) => (
-            <RevisionItem summary={summary} key={summary.to_revision} />
+            <RevisionItem
+              summary={summary}
+              onFork={onFork}
+              forkDisabled={forkDisabled}
+              key={summary.to_revision}
+            />
           ))}
         </ol>
       </section>
@@ -178,16 +195,91 @@ function EpisodeRevisionGroup({
   );
 }
 
-function RevisionItem({ summary }: { summary: RevisionSummary }) {
+function RevisionItem({
+  summary,
+  onFork,
+  forkDisabled,
+}: {
+  summary: RevisionSummary;
+  onFork: Props["onFork"];
+  forkDisabled: Props["forkDisabled"];
+}) {
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const requestId = useRef<string | null>(null);
+  const fork = async () => {
+    if (!onFork || busy || forkDisabled) return;
+    requestId.current ??= crypto.randomUUID();
+    setBusy(true);
+    setFailure(null);
+    try {
+      await onFork(summary.to_revision, requestId.current);
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
-    <li className="info">
+    <li
+      className={failure ? "info history-fork-failed" : "info"}
+      data-revision={summary.to_revision}
+    >
       <Clock3 size={12} />
       <div>
-        <p>
-          <strong>
-            Revision {summary.from_revision} to revision {summary.to_revision}
-          </strong>
-        </p>
+        <div className="history-revision-heading">
+          <p>
+            <strong>
+              Revision {summary.from_revision} to revision {summary.to_revision}
+            </strong>
+          </p>
+          {onFork &&
+            (failure ? (
+              <button
+                className="icon-button"
+                aria-label="Retry fork"
+                title={failure}
+                disabled={busy || forkDisabled}
+                onClick={() => void fork()}
+              >
+                <RotateCcw size={14} />
+              </button>
+            ) : (
+              <>
+                <button
+                  className="icon-button history-fork-action"
+                  aria-label="Fork from here"
+                  title="Fork from here"
+                  disabled={busy || forkDisabled}
+                  onClick={() => void fork()}
+                >
+                  <GitFork size={14} />
+                </button>
+                <details
+                  className="history-revision-menu"
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") event.currentTarget.open = false;
+                  }}
+                >
+                  <summary className="icon-button" aria-label="Revision actions">
+                    <MoreHorizontal size={16} />
+                  </summary>
+                  <div>
+                    <button
+                      className="button compact secondary"
+                      disabled={busy || forkDisabled}
+                      onClick={(event) => {
+                        event.currentTarget.closest("details")?.removeAttribute("open");
+                        void fork();
+                      }}
+                    >
+                      <GitFork size={14} /> Fork from here
+                    </button>
+                  </div>
+                </details>
+              </>
+            ))}
+        </div>
         {summary.sentences.map((sentence, index) => (
           <p key={`${summary.to_revision}:${index}`}>{sentence}</p>
         ))}

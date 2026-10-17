@@ -535,6 +535,19 @@ export function loadGraphRefs(projectId: string): Promise<GraphRef[]> {
   return api<GraphRef[]>(`/api/projects/${encodeURIComponent(projectId)}/graph-refs`);
 }
 
+export function createGraphFork(
+  projectId: string,
+  target: GraphTargetRef,
+  revision: number,
+  requestId: string,
+): Promise<GraphRef> {
+  const ref = target.kind === "main" ? "main" : `branch:${target.branch_id}`;
+  return api<GraphRef>(`/api/projects/${encodeURIComponent(projectId)}/graph-refs`, {
+    method: "POST",
+    body: JSON.stringify({ request_id: requestId, at: `${ref}@${revision}` }),
+  });
+}
+
 export function renameGraphBranch(
   projectId: string,
   branchId: string,

@@ -1805,13 +1805,14 @@ export interface MergePreview {
 
 export interface GraphBranchSummary {
   branch_id: string;
-  episode_id: string;
+  episode_id: string | null;
   base_head: GraphHeadRef;
+  parent_head?: GraphHeadRef | null;
   head: GraphHeadRef;
   merge_eligible: boolean;
   merge_blocked_reason: string | null;
   /** The newest member of the branch's episode chain; `episode_id` is the chain root. */
-  current_episode_id: string;
+  current_episode_id: string | null;
   merge_state: "unmerged" | "running" | "merged" | "needs_action" | "failed";
   latest_successful_merge: BranchMergeReceipt | null;
   active_merge_task_id: string | null;
@@ -1824,7 +1825,7 @@ export type GraphRef =
       kind: "branch";
       archived: boolean;
       /** The chain root's mode: who made the branch. */
-      mode: EpisodeMode;
+      mode: EpisodeMode | null;
       /** The one display name: stored, or the date fallback the backend computed. */
       name: string;
       /** An agent task on this branch is active. */
@@ -2748,6 +2749,7 @@ export interface EpisodeTimelineLinks {
 }
 
 export interface EpisodeTimelineActor {
+  graph_target?: GraphTargetRef | null;
   actor_id: string;
   kind: "human" | "orchestrator" | "worker" | "experiment" | "agent" | "watcher";
   label: string;
