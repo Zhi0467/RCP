@@ -71,6 +71,8 @@ export interface ExperimentLane {
 export interface HypothesisInputs {
   /** Decisions governing, and Blockers stopping, the Hypothesis's Experiments. */
   nodes: GraphNode[];
+  /** Evidence informing those Decisions or addressing those Blockers. */
+  evidence: GraphNode[];
   openDecisions: number;
   openBlockers: number;
 }
@@ -168,6 +170,10 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
         ),
         inputs: {
           nodes: inputNodes,
+          evidence: uniqueNodes([
+            ...decisions.flatMap((node) => incoming(node.id, "informs")),
+            ...blockers.flatMap((node) => incoming(node.id, "addresses")),
+          ]),
           openDecisions: inputNodes.filter(isOpenDecision).length,
           openBlockers: inputNodes.filter(isOpenBlocker).length,
         },
@@ -180,6 +186,7 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
   const hypothesisMembers = (page: HypothesisPage) => [
     page.node,
     ...page.inputs.nodes,
+    ...page.inputs.evidence,
     ...page.experiments.flatMap((lane) => [lane.node, ...lane.evidence.map((item) => item.node)]),
     ...page.evidence.map((item) => item.node),
   ];

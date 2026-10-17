@@ -151,6 +151,7 @@ export function ResearchDrilldown({
               ) : undefined,
             }),
           )}
+          {hypothesis.inputs.evidence.map((node) => card(node))}
         </div>
       )}
       {step.kind === "evidence" && hypothesis && (

@@ -38,6 +38,7 @@ const nodes = [
   node("e/probe", "evidence"),
   node("e/survey", "evidence", { origin: "external_publication" }),
   node("b/gpu", "blocker", { status: "open" }),
+  node("e/budget", "evidence"),
   node("orphan", "decision"),
 ];
 const edges = [
@@ -49,6 +50,7 @@ const edges = [
   edge("x/run", "governed_by", "d/batch"),
   edge("x/run", "blocked_by", "b/queue"),
   edge("d/batch", "blocked_by", "b/approval"),
+  edge("e/budget", "informs", "d/batch"),
   edge("x/done", "produces", "e/for"),
   edge("x/done", "produces", "e/side"),
   edge("e/for", "supports", "h/shared"),
@@ -65,6 +67,7 @@ test("a Hypothesis page gathers its Experiments' inputs and weighs each result",
 
   assert.deepEqual(ids(page.questions).sort(), ["q/other", "q/sub"]);
   assert.deepEqual(ids(page.inputs.nodes).sort(), ["b/approval", "b/queue", "d/batch"]);
+  assert.deepEqual(ids(page.inputs.evidence), ["e/budget"]);
   assert.equal(page.inputs.openDecisions, 1);
   assert.equal(page.inputs.openBlockers, 2);
 
