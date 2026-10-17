@@ -131,21 +131,6 @@ async def serve_patch_validation_mailbox(
         request: CommandRequest,
         _identity: CommandTurnIdentity,
     ) -> CommandResponse:
-        from rcp.agents.command_protocol import BulletinCommandRequest
-        from rcp.runs.bulletin import handle_bulletin
-
-        if (
-            isinstance(request, BulletinCommandRequest)
-            and request.arguments.action == "read"
-            and execution is not None
-        ):
-            return await asyncio.to_thread(
-                handle_bulletin,
-                execution.store,
-                execution.operation_id,
-                request,
-                post_allowed=False,
-            )
         if validate is None or not isinstance(request, ValidateCommandRequest):
             if command_handler is not None:
                 return await asyncio.to_thread(command_handler, request, _identity)

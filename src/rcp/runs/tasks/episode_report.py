@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import uuid
@@ -19,10 +18,9 @@ from rcp.agents.provider_accounts import account_login_refusal, record_provider_
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.agents.write_scope import resolve_project_write_scope
 from rcp.artifacts import classify_artifact_bytes, html_document_title
-from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES, COMMAND_MAILBOX_TIMEOUT_SECONDS
+from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES
 from rcp.providers import AgentCapability, ProviderId, profile_for
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
-from rcp.runs.bulletin import stage_bulletin_pointer
 from rcp.runs.shared import (
     _ProviderOutcome,
     _record_agent_launch_receipt,
@@ -90,17 +88,11 @@ async def stream_episode_report_run(
 ) -> AsyncGenerator[str, None]:
     """Run at most three hidden report calls inside one exact episode continuation.
 
-    The native provider session supplies its retained context. Each attempt also receives
-    the current read-only Bulletin, the compact receipt, report skill, and prior diagnostic.
+    Operational context is deliberately absent. The native provider session supplies its retained
+    context; RCP adds only the immutable compact receipt, the official report skill, and an optional
+    diagnostic produced by the immediately preceding report attempt.
     """
 
-    from rcp.runs.patch_validator import (
-        cleanup_patch_validation_mailbox,
-        serve_patch_validation_mailbox,
-        stage_patch_validation_mailbox,
-    )
-
-    commands = None
     try:
         turn = _canonical_report_turn(execution, request)
         existing = execution.store.episode_report(turn.episode.episode_id, include_deleted=True)
@@ -197,14 +189,6 @@ async def stream_episode_report_run(
                 report_output_path=report_output_path,
                 correction_diagnostic_path=diagnostic_path,
             )
-            commands = stage_patch_validation_mailbox(
-                local_stage=stage.workspace if stage.remote is None else None,
-                local_input_stage=stage.local,
-                remote_stage=stage.remote,
-                task_id=execution.operation_id,
-                turn_id=f"{execution.operation_id}:report:{attempt_number}",
-                timeout_seconds=COMMAND_MAILBOX_TIMEOUT_SECONDS,
-            )
             contract_path, prompt = _stage_attempt_contract(
                 execution,
                 attempt_number,
@@ -212,16 +196,6 @@ async def stream_episode_report_run(
                 contract,
                 LaunchPhase(session_id=turn.wrapup.native_session_id, phase="report"),
             )
-
-            bulletin = stage_bulletin_pointer(
-                execution,
-                stage.local,
-                stage.remote,
-                command_client=commands.client_command(),
-                post_allowed=False,
-            )
-            if bulletin:
-                prompt += "\n\n" + bulletin
 
             # A retained output from an older operational turn or failed report attempt must never
             # be accepted as this provider call's deliverable.
@@ -263,16 +237,6 @@ async def stream_episode_report_run(
 
             outcome = _ProviderOutcome(session_id=turn.wrapup.native_session_id)
             provider_errors: list[str] = []
-            command_stop = asyncio.Event()
-            command_task = asyncio.create_task(
-                serve_patch_validation_mailbox(
-                    staged=commands,
-                    execution=execution,
-                    validate=None,
-                    budget=None,
-                    stop=command_stop,
-                )
-            )
             try:
                 async with aclosing(
                     _stream_agent_events(
@@ -289,7 +253,6 @@ async def stream_episode_report_run(
                         execution=execution,
                         remote_stage=stage.remote,
                         capability=capability,
-                        invocation_gate=commands.invocation_gate,
                         outcome=outcome,
                         binary=stage.provider_binary,
                     )
@@ -308,13 +271,6 @@ async def stream_episode_report_run(
             except (OSError, RuntimeError, StateUnavailable, ValueError) as exc:
                 outcome.failed = True
                 provider_errors.append(" ".join(str(exc).split())[:1000])
-            finally:
-                command_stop.set()
-                await command_task
-                await asyncio.to_thread(
-                    cleanup_patch_validation_mailbox, staged=commands, execution=execution
-                )
-                commands = None
 
             auth_error = next(
                 (
@@ -419,11 +375,6 @@ async def stream_episode_report_run(
         diagnostic = " ".join(str(exc).split()) or "Episode report generation failed."
         _settle_unlaunchable_existing_wrapup(execution, request.episode_id, diagnostic)
         yield _sse(AgentEvent(event="error", text=diagnostic))
-    finally:
-        if commands is not None:
-            await asyncio.to_thread(
-                cleanup_patch_validation_mailbox, staged=commands, execution=execution
-            )
 
 
 def _canonical_report_turn(

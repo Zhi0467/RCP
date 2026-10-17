@@ -104,3 +104,25 @@
     margin-left: 12px;
   }
 }
+
+.bulletin-parent {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  align-items: baseline;
+}
+.bulletin-parent-excerpt {
+  display: inline-block;
+  max-width: 30ch;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bulletin-parent > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.bulletin-reply > .bulletin-parent {
+  flex: 1;
+}

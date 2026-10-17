@@ -36,7 +36,12 @@ from rcp.agents.command_mailbox import (
     serve_command_mailbox,
     stage_command_mailbox,
 )
-from rcp.agents.command_protocol import CommandRequest, CommandResponse, ValidateCommandRequest
+from rcp.agents.command_protocol import (
+    CommandRequest,
+    CommandResponse,
+    CommandVerb,
+    ValidateCommandRequest,
+)
 from rcp.agents.continuation_prompt import (
     LaunchPhase,
     MasterRef,
@@ -1529,6 +1534,8 @@ def _actor_launch_prompt(
     staged_head: GraphHeadRef | None = None,
     report_pending: Callable[[str], bool] = lambda _session_id: False,
     fresh_parts: tuple[str, ...] = (),
+    command_client: str | None = None,
+    allowed_verbs: tuple[CommandVerb, ...] = (),
 ) -> tuple[str, str, MasterRef]:
     """Stage one actor launch; return its contract path, prompt, and the session's master.
 
@@ -1544,7 +1551,13 @@ def _actor_launch_prompt(
     )
     fresh_parts = (
         *fresh_parts,
-        stage_operational_context_pointer(execution, local_stage, remote_stage),
+        stage_operational_context_pointer(
+            execution,
+            local_stage,
+            remote_stage,
+            command_client=command_client,
+            allowed_verbs=allowed_verbs,
+        ),
     )
     key = master_key(AUTO_RESEARCH_POLICY_VERSION, ontology_extensions=ontology_extensions)
     node = classify(
@@ -1742,6 +1755,10 @@ def _orchestrator_prompt(
             else f"auto_research_orchestrator_{execution.continuation}"
         ),
         master_label_prefix="auto_research-orchestrator-master",
+        command_client=command_client,
+        allowed_verbs=auto_research_allowed_verbs(
+            "orchestrator", graph_read_scope=graph_read_scope
+        ),
         render_master=render_master,
         start_contract=start_contract,
         continuation_parts=continuation_parts,
@@ -1861,6 +1878,8 @@ def _worker_prompt(
             else f"auto_research_worker_{execution.continuation}"
         ),
         master_label_prefix="auto_research-worker-master",
+        command_client=command_client,
+        allowed_verbs=auto_research_allowed_verbs("worker", graph_read_scope=graph_read_scope),
         render_master=render_master,
         start_contract=render_master,
         continuation_parts=continuation_parts,
@@ -2285,7 +2304,11 @@ async def _settle_worker_patch(
                         graph_read_scope=graph_read_scope,
                         command_client=correction_mailbox.client_command(),
                     ),
-                    stage_operational_context_pointer(execution, stage.local, stage.remote),
+                    stage_operational_context_pointer(
+                        execution,
+                        stage.local,
+                        stage.remote,
+                    ),
                     browser_prompt_line(correction_grant),
                 ],
                 master=master,

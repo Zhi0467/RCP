@@ -17,9 +17,10 @@ def bulletin_roster(
     episodes = {episode.episode_id: episode for episode in store.episodes(project_id, limit=None)}
     waiting = {
         worker_id
-        for episode in episodes.values()
-        for worker_id in store.auto_research_waiting_child_work_ids(episode.episode_id)
+        for episode_id in {task.episode_id for task in tasks if task.episode_id}
+        for worker_id in store.auto_research_waiting_child_work_ids(episode_id)
     }
+    waiting_chats = store.bulletin_waiting_chat_ids(project_id, target)
     questions = {
         question.origin.operation_id
         for question in store.list_questions(project_id=project_id, open_only=True)
@@ -66,7 +67,12 @@ def bulletin_roster(
             else "working"
             if task.status in ACTIVE_AGENT_TASK_STATUSES
             else "waiting"
-            if work and work.worker_id in waiting
+            if (work and work.worker_id in waiting)
+            or (
+                kind == "human_chat_work"
+                and task.status == "succeeded"
+                and task.request.get("chat_id") in waiting_chats
+            )
             else "needs_you"
             if task.status in {"failed", "paused", "interrupted"}
             or (not work and episode and episode.status == "needs_action")

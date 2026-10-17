@@ -9,6 +9,7 @@ import { projectResourceKey, useProjectResource } from "../projects/projectResou
 import {
   bulletinAuthor,
   bulletinThreads,
+  bulletinReplyContext,
   type BulletinPage,
   type BulletinPost,
 } from "./bulletinModel";
@@ -17,7 +18,7 @@ import "./bulletin.css";
 interface Props {
   projectId: string;
   target: GraphTargetRef;
-  canPost: boolean;
+  isMember: boolean;
   onOpenNode?: (nodeId: string) => void;
 }
 
@@ -30,7 +31,7 @@ const kinds: Record<string, string> = {
   experiment: "Experiment",
 };
 
-export function BulletinPanel({ projectId, target, canPost, onOpenNode }: Props) {
+export function BulletinPanel({ projectId, target, isMember, onOpenNode }: Props) {
   const { store } = useRefreshRuntime();
   const [cursor, setCursor] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -49,6 +50,7 @@ export function BulletinPanel({ projectId, target, canPost, onOpenNode }: Props)
       ),
   };
   const page = useProjectResource(profile);
+  const canPost = isMember && page.value?.can_post === true;
   const resourceId = resourceKeyId(profile.key);
   const reload = () => store.invalidate(resourceId);
   const post = async () => {
@@ -80,47 +82,44 @@ export function BulletinPanel({ projectId, target, canPost, onOpenNode }: Props)
       setBusy(false);
     }
   };
-  const renderPost = (item: BulletinPost) => (
-    <article className="bulletin-post" key={item.post_id} id={`bulletin-${item.post_id}`}>
-      <header>
-        <strong>{bulletinAuthor(item)}</strong>
-        <time dateTime={item.created_at}>{new Date(item.created_at).toLocaleString()}</time>
-        {!item.reply_to && canPost && (
-          <button
-            className="icon-button"
-            aria-label="Reply"
-            onClick={() => {
-              setReply(item);
-              setKey(crypto.randomUUID());
-            }}
-          >
-            <CornerUpLeft size={15} />
-          </button>
+  const renderPost = (item: BulletinPost) => {
+    const parent = bulletinReplyContext(item, page.value?.posts ?? []);
+    return (
+      <article className="bulletin-post" key={item.post_id} id={`bulletin-${item.post_id}`}>
+        <header>
+          <strong>{bulletinAuthor(item)}</strong>
+          <time dateTime={item.created_at}>{new Date(item.created_at).toLocaleString()}</time>
+          {!item.reply_to && canPost && (
+            <button
+              className="icon-button"
+              aria-label="Reply"
+              onClick={() => {
+                setReply(item);
+                setKey(crypto.randomUUID());
+              }}
+            >
+              <CornerUpLeft size={15} />
+            </button>
+          )}
+        </header>
+        {item.reply_to && parent && (
+          <div className="bulletin-parent">
+            <span>↳ {parent.author}</span>
+            <span className="bulletin-parent-excerpt">{parent.excerpt}</span>
+          </div>
         )}
-      </header>
-      {item.reply_to && (
-        <a
-          href={`#bulletin-${item.reply_to}`}
-          onClick={(event) => {
-            event.preventDefault();
-            document
-              .getElementById(`bulletin-${item.reply_to}`)
-              ?.scrollIntoView({ block: "nearest" });
-          }}
-        >
-          ↳ {item.reply_to}
-        </a>
-      )}
-      <div className="bulletin-body">{item.text}</div>
-      <div className="bulletin-refs">
-        {item.refs.map((ref) => (
-          <button key={ref} type="button" onClick={() => onOpenNode?.(ref)}>
-            {ref}
-          </button>
-        ))}
-      </div>
-    </article>
-  );
+        {item.reply_to && !parent && <span>↳ Earlier post</span>}
+        <div className="bulletin-body">{item.text}</div>
+        <div className="bulletin-refs">
+          {item.refs.map((ref) => (
+            <button key={ref} type="button" onClick={() => onOpenNode?.(ref)}>
+              {ref}
+            </button>
+          ))}
+        </div>
+      </article>
+    );
+  };
   return (
     <section
       className={`bulletin-panel${error || page.error ? " has-error" : ""}`}
@@ -144,7 +143,10 @@ export function BulletinPanel({ projectId, target, canPost, onOpenNode }: Props)
         )}
       </header>
       <details className="bulletin-roster">
-        <summary>Agents · {page.value?.roster.length ?? 0}</summary>
+        <summary>
+          Agents · {page.value?.roster.length ?? 0}
+          {Boolean(page.value?.roster_omitted) && ` · ${page.value!.roster_omitted} omitted`}
+        </summary>
         <ul>
           {page.value?.roster.map((actor) => (
             <li key={actor.id}>
@@ -177,7 +179,10 @@ export function BulletinPanel({ projectId, target, canPost, onOpenNode }: Props)
         >
           {reply && (
             <div className="bulletin-reply">
-              <span>↳ {bulletinAuthor(reply)}</span>
+              <span className="bulletin-parent">
+                <span>↳ {bulletinAuthor(reply)}</span>
+                <span className="bulletin-parent-excerpt">{reply.text}</span>
+              </span>
               <button
                 type="button"
                 className="icon-button"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from rcp.limits import BULLETIN_KEY_MAX_CHARS, BULLETIN_REPLY_MAX_CHARS
 from rcp.storage import ProjectRecord
 from rcp.storage.bulletin import BulletinError
 
@@ -80,6 +81,8 @@ def test_limits_and_cursor_pagination(store, monkeypatch):
     for key, kwargs, code in [
         ("blank", {"text": " "}, "bulletin_text_invalid"),
         ("refs", {"refs": [""]}, "bulletin_refs_invalid"),
+        ("x" * (BULLETIN_KEY_MAX_CHARS + 1), {}, "bulletin_key_invalid"),
+        ("reply", {"reply_to": "x" * (BULLETIN_REPLY_MAX_CHARS + 1)}, "bulletin_reply_invalid"),
     ]:
         with pytest.raises(BulletinError, check=lambda exc, expected=code: exc.code == expected):
             post(store, key, **kwargs)
@@ -147,3 +150,17 @@ def test_old_episode_writer_defaults_enabled_and_lineage_off_refuses(store):
         connection.execute("UPDATE graph_runs SET episode_id=NULL WHERE operation_id='turn'")
     assert store.bulletin_enabled_for_task("turn")
     post(store, "unrelated")
+
+
+def test_reply_projection_keeps_parent_context_across_pages(store, monkeypatch):
+    monkeypatch.setattr("rcp.storage.bulletin.BULLETIN_PAGE_SIZE", 1)
+    parent = post(store, "parent")
+    reply = post(store, "reply", reply_to=parent["post_id"])
+    page = store.list_bulletin("project", "main")
+    assert [item["post_id"] for item in page["posts"]] == [reply["post_id"]]
+    assert page["posts"][0]["reply_parent"] == {
+        key: parent[key] for key in ("post_id", "author", "text")
+    }
+    with store.connection() as connection:
+        connection.execute("DELETE FROM bulletin_posts WHERE post_id=?", (parent["post_id"],))
+    assert store.list_bulletin("project", "main")["posts"][0]["reply_parent"] is None

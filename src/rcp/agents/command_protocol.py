@@ -15,7 +15,10 @@ from rcp.limits import (
     ASK_CHOICE_MAX_COUNT,
     ASK_CHOICE_MAX_LENGTH,
     ASK_QUESTION_MAX_LENGTH,
+    BULLETIN_CURSOR_MAX_CHARS,
+    BULLETIN_KEY_MAX_CHARS,
     BULLETIN_REFS_MAX_COUNT,
+    BULLETIN_REPLY_MAX_CHARS,
     BULLETIN_TEXT_MAX_CHARS,
     COMMAND_ASK_POLL_SECONDS,
     EVIDENCE_FLAG_FINDING_MAX_CHARS,
@@ -377,8 +380,8 @@ class BulletinArguments(BaseModel):
     action: Literal["post", "read"]
     text: str | None = Field(default=None, min_length=1, max_length=BULLETIN_TEXT_MAX_CHARS)
     refs: list[str] = Field(default_factory=list, max_length=BULLETIN_REFS_MAX_COUNT)
-    reply_to: str | None = Field(default=None, min_length=1, max_length=200)
-    cursor: str | None = Field(default=None, min_length=1, max_length=200)
+    reply_to: str | None = Field(default=None, min_length=1, max_length=BULLETIN_REPLY_MAX_CHARS)
+    cursor: str | None = Field(default=None, min_length=1, max_length=BULLETIN_CURSOR_MAX_CHARS)
 
     @model_validator(mode="after")
     def valid_action(self) -> BulletinArguments:
@@ -554,6 +557,10 @@ class FlagCommandRequest(_CommandRequest):
 
 
 class BulletinCommandRequest(_CommandRequest):
+    idempotency_key: str | None = Field(
+        default=None, min_length=1, max_length=BULLETIN_KEY_MAX_CHARS
+    )
+
     verb: Literal["bulletin"]
     arguments: BulletinArguments
 

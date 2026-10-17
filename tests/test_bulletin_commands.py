@@ -30,13 +30,17 @@ def test_bulletin_owner_authority(store, tmp_path):  # noqa: F811
     execution = AgentTaskExecution(operation_id="turn", store=store, control=AgentProcessControl())
     handler = work_command_handler(execution, None)
     post = request("post", key="once", text="note")
-    assert handler(post, identity("validate_only")).result["code"] == "bulletin_post_forbidden"
+    assert handler(post, identity("validate_only")).status == "invalid"
     assert handler(post, identity(task_id="other")).status == "invalid"
     assert handler(post, identity()).status == "ok"
-    assert len(handler(request("read"), identity("validate_only")).result["posts"]) == 1
+    assert handler(request("read"), identity("validate_only")).status == "invalid"
+    result = handler(request("read"), identity()).result
+    assert isinstance(result["posts"], list)
+    assert len(result["posts"]) == 1
+    assert "rendered" not in result
     handler = discuss_command_handler(execution)
-    assert handler(post, identity()).result["code"] == "bulletin_post_forbidden"
-    assert handler(request("read"), identity()).status == "ok"
+    assert handler(post, identity()).status == "invalid"
+    assert handler(request("read"), identity()).status == "invalid"
 
 
 def test_bulletin_client_file_backed_keyed_post(tmp_path, monkeypatch):
@@ -80,7 +84,7 @@ def test_bulletin_rendering_is_bounded_and_cannot_escape_fences(store, tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_validation_mailbox_allows_bulletin_read_only(tmp_path):
+async def test_validation_mailbox_refuses_bulletin(tmp_path):
     from rcp.agents.command_mailbox import _read_request, stage_command_mailbox
 
     staged = stage_command_mailbox(
@@ -103,13 +107,8 @@ async def test_validation_mailbox_allows_bulletin_read_only(tmp_path):
                 }
             )
             (tmp_path / "request.json").write_text(call.model_dump_json(), encoding="utf-8")
-            if action == "read":
-                assert (
-                    await _read_request("request.json", call.request_id, staged)
-                ).verb == "bulletin"
-            else:
-                with pytest.raises(ValueError):
-                    await _read_request("request.json", call.request_id, staged)
+            with pytest.raises(ValueError):
+                await _read_request("request.json", call.request_id, staged)
     finally:
         staged.cleanup()
 
@@ -128,3 +127,20 @@ def test_auto_research_stop_fences_posts_but_keeps_bulletin_readable(tmp_path):
         == "invalid"
     )
     assert app_store.list_bulletin(episode.project_id, episode.graph_target.key)["posts"] == []
+
+
+def test_staged_roster_cannot_starve_posts():
+    from rcp.limits import BULLETIN_ROSTER_MAX_COUNT
+
+    snapshot = {
+        "roster": [{"id": str(i), "state": "done", "text": "x" * 2000} for i in range(100)]
+        + [{"id": str(i), "state": "waiting"} for i in range(100)],
+        "posts": [{"post_id": "post", "text": "x" * 2000}],
+    }
+    rendered = render_bulletin(snapshot)
+    records = [json.loads(block.split("\n```", 1)[0]) for block in rendered.split("```json\n")[1:]]
+    assert {row["post_id"] for row in records if "post_id" in row} == {"post"}
+    agents = [row for row in records if "state" in row]
+    assert len(agents) == BULLETIN_ROSTER_MAX_COUNT
+    assert all(row["state"] == "waiting" for row in agents)
+    assert len(rendered.encode()) <= BULLETIN_RENDER_MAX_BYTES

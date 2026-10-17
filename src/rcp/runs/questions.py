@@ -167,8 +167,6 @@ def discuss_command_handler(
 ) -> WorkCommandHandler:
     """Discuss resolves questions and explicitly granted history reads."""
     verbs = {"ask"} if discuss_ask_authorized(execution) else set()
-    if execution is not None:
-        verbs.add("bulletin")
     if graph_read_scope is not None:
         verbs.update(graph_read_scope.verbs)
     return WorkCommandHandler(
@@ -338,7 +336,11 @@ class WorkCommandHandler:
             from rcp.runs.bulletin import handle_bulletin
 
             execution = self.execution
-            if execution is None or identity.task_id != execution.operation_id:
+            if (
+                execution is None
+                or identity.task_id != execution.operation_id
+                or identity.authority != "broker"
+            ):
                 return refuse(
                     "The Bulletin requires this turn's task binding.", "bulletin_task_unavailable"
                 )
@@ -507,8 +509,6 @@ def work_command_handler(
             graph_read_scope,
         )
     verbs = {"validate"}
-    if execution is not None:
-        verbs.add("bulletin")
     if graph_read_scope is not None:
         verbs.update(graph_read_scope.verbs)
     if compute_commands is not None:
@@ -520,7 +520,7 @@ def work_command_handler(
             and task.dispatch_authority is not None
             and task.dispatch_authority.task_contract == "work_auto"
         ):
-            verbs.add("lesson")
+            verbs.update({"lesson", "bulletin"})
     if work_ask_authorized(execution):
         verbs.add("ask")
     return WorkCommandHandler(

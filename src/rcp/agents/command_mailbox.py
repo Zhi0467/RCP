@@ -599,7 +599,6 @@ async def _read_request(name: str, request_id: str, staged: StagedCommandMailbox
         raise _CredentialRefused("command credential is invalid or expired")
     if (
         command_requires_idempotency_key(request.verb)
-        and not (request.verb == "bulletin" and request.arguments.action == "read")
         and staged.credential.identity.authority != "broker"
     ):
         raise ValueError(f"{request.verb} requires broker authority")

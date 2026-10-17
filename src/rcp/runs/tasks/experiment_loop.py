@@ -894,10 +894,18 @@ def _record_continuation_prompt(
     question_part = _question_snapshot_part(turn)
     if question_part:
         parts = [*parts, question_part]
+    command_client = (delta or {}).get("history_client", turn.patch_inputs.command_client)
+    assert isinstance(command_client, str)
     parts = [
         *parts,
         _loop_read_context(turn),
-        stage_operational_context_pointer(turn.execution, turn.local_stage, turn.remote_stage),
+        stage_operational_context_pointer(
+            turn.execution,
+            turn.local_stage,
+            turn.remote_stage,
+            command_client=command_client,
+            allowed_verbs=_work_turn_command_handler(turn).allowed_verbs,
+        ),
     ]
     # An episode's browser intent is fixed at launch, so "off" has nothing to revoke.
     if browser_grant is not None and browser_grant.status != "not_requested":
@@ -1238,7 +1246,11 @@ def _compose_fresh_prompt(
         contract,
     )
     prompt += "\n\n" + stage_operational_context_pointer(
-        turn.execution, turn.local_stage, turn.remote_stage
+        turn.execution,
+        turn.local_stage,
+        turn.remote_stage,
+        command_client=turn.patch_inputs.command_client,
+        allowed_verbs=_work_turn_command_handler(turn).allowed_verbs,
     )
     return _ComposedExperimentPrompt(
         contract_path=contract_path,

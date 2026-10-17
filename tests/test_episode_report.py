@@ -357,9 +357,7 @@ def test_pending_episode_report_stage_is_protected_from_age_cleanup(manifest, tm
 
 
 @pytest.mark.asyncio
-async def test_report_runner_stages_resume_inputs_and_read_only_bulletin(
-    manifest, tmp_path
-) -> None:
+async def test_report_runner_stages_only_minimal_resume_inputs(manifest, tmp_path) -> None:
     service, store, request, execution, stage = _setup_report(manifest, tmp_path)
     launcher = _ReportLauncher(["valid"])
 
@@ -367,7 +365,7 @@ async def test_report_runner_stages_resume_inputs_and_read_only_bulletin(
 
     assert [event.event for event in events] == ["message", "done"]
     assert launcher.calls == 1
-    assert (stage / "workspace" / "bulletin.md").is_file()
+    assert not (stage / "workspace" / "bulletin.md").exists()
     assert launcher.kwargs[0]["session_id"] == "native-session"
     assert launcher.kwargs[0]["read_dirs"] == [stage / "inputs"]
     assert launcher.kwargs[0]["write_dirs"] == []

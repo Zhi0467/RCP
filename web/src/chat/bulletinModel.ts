@@ -10,6 +10,7 @@ export interface BulletinPost {
   text: string;
   refs: string[];
   reply_to: string | null;
+  reply_parent?: Pick<BulletinPost, "post_id" | "author" | "text"> | null;
   created_at: string;
 }
 
@@ -24,6 +25,8 @@ export interface BulletinActor {
 
 export interface BulletinPage {
   roster: BulletinActor[];
+  roster_omitted: number;
+  can_post: boolean;
   posts: BulletinPost[];
   next_cursor: string | null;
   total: number;
@@ -40,8 +43,15 @@ export function bulletinThreads(posts: readonly BulletinPost[]) {
     }));
 }
 
-export function bulletinAuthor(post: BulletinPost): string {
+export function bulletinAuthor(post: Pick<BulletinPost, "author">): string {
   return post.author.kind === "member"
     ? (post.author.display_name ?? post.author.user_id ?? "Member")
     : (post.author.actor_label ?? post.author.operation_id ?? "Agent");
+}
+
+export function bulletinReplyContext(post: BulletinPost, posts: readonly BulletinPost[]) {
+  const parent = post.reply_parent ?? posts.find((item) => item.post_id === post.reply_to);
+  return parent
+    ? { author: bulletinAuthor(parent), excerpt: parent.text.replace(/\s+/g, " ").trim() }
+    : null;
 }

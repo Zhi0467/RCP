@@ -8,11 +8,14 @@ import sqlite3
 import uuid
 from typing import Any
 
+from rcp.core.graph_targets import graph_target_json
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import (
+    BULLETIN_KEY_MAX_CHARS,
     BULLETIN_PAGE_SIZE,
     BULLETIN_POSTS_PER_TARGET_MAX,
     BULLETIN_REFS_MAX_COUNT,
+    BULLETIN_REPLY_MAX_CHARS,
     BULLETIN_TEXT_MAX_CHARS,
 )
 from rcp.storage.membership import live_project_member
@@ -86,8 +89,27 @@ def _list(
         "SELECT count(*) FROM bulletin_posts WHERE project_id=? AND target_key=?",
         (project_id, target_key),
     ).fetchone()[0]
+    posts = [_record(row) for row in rows[:BULLETIN_PAGE_SIZE]]
+    reply_ids = {post["reply_to"] for post in posts if post["reply_to"]}
+    parents = {}
+    if reply_ids:
+        placeholders = ",".join("?" for _ in reply_ids)
+        parents = {
+            row["post_id"]: _record(row)
+            for row in connection.execute(
+                "SELECT * FROM bulletin_posts WHERE project_id=? AND target_key=? "
+                f"AND post_id IN ({placeholders})",
+                (project_id, target_key, *reply_ids),
+            )
+        }
+    for post in posts:
+        if post["reply_to"]:
+            parent = parents.get(post["reply_to"])
+            post["reply_parent"] = (
+                {key: parent[key] for key in ("post_id", "author", "text")} if parent else None
+            )
     return {
-        "posts": [_record(row) for row in rows[:BULLETIN_PAGE_SIZE]],
+        "posts": posts,
         "total": total,
         "next_cursor": str(rows[BULLETIN_PAGE_SIZE - 1]["sequence"])
         if len(rows) > BULLETIN_PAGE_SIZE
@@ -107,8 +129,14 @@ def _post(
     refs: list[str] | None,
     reply_to: str | None,
 ) -> dict[str, Any]:
-    if not isinstance(key, str) or not key.strip():
+    if not isinstance(key, str) or not key.strip() or len(key) > BULLETIN_KEY_MAX_CHARS:
         raise BulletinError("bulletin_key_invalid")
+    if reply_to is not None and (
+        not isinstance(reply_to, str)
+        or not reply_to.strip()
+        or len(reply_to) > BULLETIN_REPLY_MAX_CHARS
+    ):
+        raise BulletinError("bulletin_reply_invalid")
     refs = refs or []
     digest = hashlib.sha256(
         json.dumps({"text": text, "refs": refs, "reply_to": reply_to}, sort_keys=True).encode()
@@ -195,6 +223,18 @@ def bulletin_enabled_for_task(connection: sqlite3.Connection, operation_id: str)
 
 
 class BulletinStoreMixin(StoreMixinBase):
+    def bulletin_waiting_chat_ids(self, project_id: str, target: GraphTargetRef) -> set[str]:
+        """Human Work chats remain alive while their target has an undelivered observer."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT chat_id FROM watchers "
+                "WHERE project_id=? AND graph_target_json=? AND episode_id IS NULL "
+                "AND worker_id IS NULL AND status IN ('active','degraded','completed') "
+                "AND notified=0 AND notification_operation_id IS NULL",
+                (project_id, graph_target_json(target)),
+            ).fetchall()
+        return {str(row["chat_id"]) for row in rows}
+
     def bulletin_enabled_for_task(self, operation_id: str) -> bool:
         with self.connection() as connection:
             return bulletin_enabled_for_task(connection, operation_id)

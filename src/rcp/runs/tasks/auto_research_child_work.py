@@ -383,7 +383,9 @@ def _compose_child_wake_prompt(
         label = "mail"
         role = "auto_research_child_message_wake"
     original_contract_path = _parent_task_contract_path(
-        turn.execution, turn.local_stage, turn.remote_stage
+        turn.execution,
+        turn.local_stage,
+        turn.remote_stage,
     )
     invoked_skills = invoked_package_pointers(
         staged.skill_pointers,
@@ -525,7 +527,11 @@ def _compose_child_fresh_prompt(
             PromptFactory.launch_prompt(contract_path)
             + "\n\n"
             + stage_operational_context_pointer(
-                turn.execution, turn.local_stage, turn.remote_stage
+                turn.execution,
+                turn.local_stage,
+                turn.remote_stage,
+                command_client=turn.patch_inputs.command_client,
+                allowed_verbs=_child_allowed_verbs(turn),
             ),
             contract_path,
             render,
@@ -545,6 +551,8 @@ def _compose_child_fresh_prompt(
             auto_research_child_boundary=_auto_research_child_work_contract(turn, route),
         ),
         stable_values=values,
+        command_client=turn.patch_inputs.command_client,
+        allowed_verbs=_child_allowed_verbs(turn),
         skill_pointers=staged.skill_pointers,
         attachment_pointers=staged.attachment_pointers,
         ontology_extensions=turn.context.ontology_extensions,
@@ -619,7 +627,11 @@ def _compose_child_retry_prompt(
         role="work_retry",
     )
     prompt += "\n\n" + stage_operational_context_pointer(
-        turn.execution, turn.local_stage, turn.remote_stage
+        turn.execution,
+        turn.local_stage,
+        turn.remote_stage,
+        command_client=turn.patch_inputs.command_client,
+        allowed_verbs=_child_allowed_verbs(turn),
     )
     return _ComposedWorkPrompt(
         contract_path=contract_path,

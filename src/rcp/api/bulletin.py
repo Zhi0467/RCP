@@ -16,7 +16,13 @@ from rcp.api.dependencies import (
 from rcp.api.identity import IdentityAccess
 from rcp.bulletin import bulletin_roster
 from rcp.core.transition_models import GraphTargetRef
-from rcp.limits import BULLETIN_REFS_MAX_COUNT, BULLETIN_TEXT_MAX_CHARS
+from rcp.limits import (
+    BULLETIN_KEY_MAX_CHARS,
+    BULLETIN_REFS_MAX_COUNT,
+    BULLETIN_REPLY_MAX_CHARS,
+    BULLETIN_ROSTER_MAX_COUNT,
+    BULLETIN_TEXT_MAX_CHARS,
+)
 from rcp.storage import AppStore
 from rcp.storage.bulletin import BulletinError
 
@@ -31,9 +37,9 @@ class BulletinPost(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: str = Field(min_length=1, max_length=BULLETIN_TEXT_MAX_CHARS)
-    key: str = Field(min_length=1, max_length=200)
+    key: str = Field(min_length=1, max_length=BULLETIN_KEY_MAX_CHARS)
     refs: list[str] = Field(default_factory=list, max_length=BULLETIN_REFS_MAX_COUNT)
-    reply_to: str | None = None
+    reply_to: str | None = Field(default=None, min_length=1, max_length=BULLETIN_REPLY_MAX_CHARS)
 
 
 def _target(store: AppStore, project: str, branch_id: str | None) -> GraphTargetRef:
@@ -58,9 +64,17 @@ def list_bulletin(
     cursor: str | None = None,
 ) -> dict[str, object]:
     target = _target(store, project, branch_id)
+    roster = bulletin_roster(store, project, target)
+    try:
+        store.require_project_accepts_new_work(project)
+        can_post = True
+    except ValueError:
+        can_post = False
     try:
         return {
-            "roster": bulletin_roster(store, project, target),
+            "can_post": can_post,
+            "roster": roster[-BULLETIN_ROSTER_MAX_COUNT:],
+            "roster_omitted": max(0, len(roster) - BULLETIN_ROSTER_MAX_COUNT),
             **store.list_bulletin(project, target.key, cursor=cursor),
         }
     except BulletinError as exc:
