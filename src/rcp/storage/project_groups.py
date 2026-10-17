@@ -144,6 +144,16 @@ class ProjectGroupStoreMixin(StoreMixinBase):
                 (group_id, project_id),
             )
 
+    def project_group_for(self, project_id: str) -> ProjectGroupRecord | None:
+        """The group holding this project, regardless of who is asking."""
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT project_groups.* FROM project_groups JOIN projects "
+                "ON projects.group_id = project_groups.group_id WHERE projects.project_id = ?",
+                (project_id,),
+            ).fetchone()
+        return _record(row) if row else None
+
     def project_group_project_ids(self, project_id: str) -> list[str]:
         """Every live project sharing this project's group, itself included, by name."""
         with self.connection() as connection:
