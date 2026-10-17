@@ -95,28 +95,34 @@ export interface ResearchDrilldown {
  */
 export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): ResearchDrilldown {
   const byId = new Map(nodes.map((node) => [node.id, node]));
-  const visibleEdges = edges.filter((edge) => byId.has(edge.source) && byId.has(edge.target));
-  const outgoing = (id: string, relation: string) =>
-    sortNodes(
-      visibleEdges
-        .filter((edge) => edge.source === id && edge.relation === relation)
-        .map((edge) => byId.get(edge.target)!),
-    );
-  const incoming = (id: string, relation: string) =>
-    sortNodes(
-      visibleEdges
-        .filter((edge) => edge.target === id && edge.relation === relation)
-        .map((edge) => byId.get(edge.source)!),
-    );
-  const verdictOn = (evidenceId: string, hypothesisId: string): Verdict | null => {
-    const edge = visibleEdges.find(
-      (item) =>
-        item.source === evidenceId &&
-        item.target === hypothesisId &&
-        VERDICT_BY_RELATION[item.relation] !== undefined,
-    );
-    return edge ? VERDICT_BY_RELATION[edge.relation] : null;
+  // Index every relation once; the pages below read these maps instead of scanning edges.
+  const outgoingIndex = new Map<string, GraphNode[]>();
+  const incomingIndex = new Map<string, GraphNode[]>();
+  const verdicts = new Map<string, Verdict>();
+  const neighbourIds = new Map<string, string[]>();
+  const append = <T>(index: Map<string, T[]>, key: string, value: T) => {
+    const list = index.get(key);
+    if (list) list.push(value);
+    else index.set(key, [value]);
   };
+  edges.forEach((edge) => {
+    const source = byId.get(edge.source);
+    const target = byId.get(edge.target);
+    if (!source || !target) return;
+    append(outgoingIndex, `${source.id}\0${edge.relation}`, target);
+    append(incomingIndex, `${target.id}\0${edge.relation}`, source);
+    append(neighbourIds, source.id, target.id);
+    append(neighbourIds, target.id, source.id);
+    const verdict = VERDICT_BY_RELATION[edge.relation];
+    const pair = `${source.id}\0${target.id}`;
+    if (verdict && !verdicts.has(pair)) verdicts.set(pair, verdict);
+  });
+  outgoingIndex.forEach((list, key) => outgoingIndex.set(key, sortNodes(list)));
+  incomingIndex.forEach((list, key) => incomingIndex.set(key, sortNodes(list)));
+  const outgoing = (id: string, relation: string) => outgoingIndex.get(`${id}\0${relation}`) ?? [];
+  const incoming = (id: string, relation: string) => incomingIndex.get(`${id}\0${relation}`) ?? [];
+  const verdictOn = (evidenceId: string, hypothesisId: string): Verdict | null =>
+    verdicts.get(`${evidenceId}\0${hypothesisId}`) ?? null;
   const isOpenBlocker = (node: GraphNode) => node.type === "blocker" && node.status === "open";
 
   const hypotheses = new Map<string, HypothesisPage>();
@@ -174,25 +180,25 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
   ];
 
   const questionNodes = sortNodes(nodes.filter((node) => node.type === "research_question"));
+  // An Experiment that tests no Hypothesis belongs to a question when it, or its
+  // Evidence, touches one of the question's Decisions or Blockers.
+  const freeExperimentsByAnchor = new Map<string, GraphNode[]>();
+  sortNodes(nodes)
+    .filter((node) => node.type === "experiment" && outgoing(node.id, "tests").length === 0)
+    .forEach((experiment) => {
+      const touched = new Set(
+        [experiment.id, ...outgoing(experiment.id, "produces").map((item) => item.id)].flatMap(
+          (id) => neighbourIds.get(id) ?? [],
+        ),
+      );
+      touched.forEach((id) => append(freeExperimentsByAnchor, id, experiment));
+    });
   const looseOf = (question: GraphNode): GraphNode[] => {
     const decisions = outgoing(question.id, "has_decision");
     const blockers = [question, ...decisions].flatMap((node) => outgoing(node.id, "blocked_by"));
-    const anchors = new Set([...decisions, ...blockers].map((node) => node.id));
-    const neighbours = (id: string) =>
-      visibleEdges.flatMap((edge) =>
-        edge.source === id ? [edge.target] : edge.target === id ? [edge.source] : [],
-      );
-    // An Experiment that tests no Hypothesis belongs here when it, or its Evidence,
-    // touches one of the question's Decisions or Blockers.
-    const experiments = nodes.filter(
-      (node) =>
-        node.type === "experiment" &&
-        outgoing(node.id, "tests").length === 0 &&
-        [node.id, ...outgoing(node.id, "produces").map((item) => item.id)].some((id) =>
-          neighbours(id).some((neighbour) => anchors.has(neighbour)),
-        ),
-    );
-    return uniqueNodes([...decisions, ...blockers, ...sortNodes(experiments)]);
+    const anchors = [...decisions, ...blockers];
+    const experiments = anchors.flatMap((node) => freeExperimentsByAnchor.get(node.id) ?? []);
+    return uniqueNodes([...anchors, ...sortNodes(experiments)]);
   };
 
   const pages = new Map<string, QuestionPage>();
