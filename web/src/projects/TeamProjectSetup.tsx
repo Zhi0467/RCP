@@ -54,7 +54,6 @@ import {
 import { OperatorActionPanel } from "./OperatorActionPanel";
 import type {
   AgentExecutionProfile,
-  ProjectGroup,
   ProjectProvisioningCreateRequest,
   ProjectProvisioningResponse,
   ProviderReadiness,
@@ -63,7 +62,6 @@ import type {
 } from "../core/types";
 
 interface Props {
-  group?: ProjectGroup | null;
   intentChooser: ReactNode;
   onCancel: () => void;
   onCreated: (projectId: string) => void;
@@ -114,7 +112,7 @@ const defaultProfile = (model = ""): SetupAgentProfile => ({
   host: "",
 });
 
-export function TeamProjectSetup({ intentChooser, onCancel, onCreated, group }: Props) {
+export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) {
   const desktop = isDesktopRuntime();
   const initialHash = typeof window === "undefined" ? "#/projects/new" : window.location.hash;
   const invalidResumeLink = invalidProjectProvisioningHash(initialHash);
@@ -374,7 +372,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated, group }: 
   const provisioningBody = (): ProjectProvisioningCreateRequest =>
     buildTeamProvisioningRequest({
       name,
-      groupId: group?.id,
       stateRepository,
       defaultAutoResearchInvocationCeiling,
       machines: machines.map(({ id: _id, central_root, ...machine }) => ({

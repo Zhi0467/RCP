@@ -779,7 +779,8 @@ export function ProjectLanding({
                   </span>
                   <strong>{item.name}</strong>
                   <span className="project-cover-meta">
-                    {item.count} projects{item.waiting > 0 && ` · ${item.waiting} waiting`}
+                    {item.count} {item.count === 1 ? "project" : "projects"}
+                    {item.waiting > 0 && ` · ${item.waiting} waiting`}
                   </span>
                 </button>
               </div>

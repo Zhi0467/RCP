@@ -4111,7 +4111,19 @@ function MemberApp({
               window.location.hash = projectGroupHash(setupRoute.groupId);
             else returnToProjects();
           }}
-          onCreated={openProject}
+          onCreated={(id) => {
+            const groupId = setupRoute.kind === "create" ? setupRoute.groupId : undefined;
+            if (!groupId) return openProject(id);
+            // Creation is the same in every space; filing into a group is one move after it.
+            void api(`/api/projects/${encodeURIComponent(id)}/group`, {
+              method: "PUT",
+              body: JSON.stringify({ group_id: groupId }),
+            })
+              .catch((error) =>
+                console.warn("Could not file the new project into its group", error),
+              )
+              .then(() => openProject(id));
+          }}
           setupRoute={setupRoute}
         />
         {updateSurface}

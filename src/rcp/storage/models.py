@@ -689,7 +689,6 @@ class ProjectProvisioningProviderCheckRecord(ProjectProvisioningProviderIntent):
 
 
 class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
-    group_id: str | None = None
     request_id: str
     kind: ProjectProvisioningKind
     status: ProjectProvisioningStatus

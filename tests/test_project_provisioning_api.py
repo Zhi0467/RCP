@@ -720,22 +720,3 @@ def test_repository_confirmation_rejects_changed_review_boundary(tmp_path, monke
             )
         assert _complete_ready_request(client, ready).status_code == 409
         assert "code" not in service.manifest.repository_map
-
-
-def test_create_request_requires_visible_group(tmp_path: Path) -> None:
-    _data, (alice, bob), selected, app = _team_app(tmp_path, "Alice", "Bob")
-    store = app.state.services.store
-    group = store.create_project_group("Benchmarks", user_id=alice.user_id)
-    payload = {**_payload(), "group_id": group.group_id}
-    with signed_in_client(app) as client:
-        selected[:] = [bob.user_id]
-        refused = client.post("/api/project-provisioning/requests", json=payload)
-        assert refused.status_code == 404
-        assert refused.json()["detail"]["code"] == "project_group_not_found"
-        selected[:] = [alice.user_id]
-        created = client.post("/api/project-provisioning/requests", json=payload)
-        assert created.status_code == 201
-        assert (
-            store.project_provisioning_request(created.json()["request_id"]).group_id
-            == group.group_id
-        )

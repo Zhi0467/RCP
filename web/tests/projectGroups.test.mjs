@@ -9,7 +9,6 @@ import {
 import {
   projectCreateSetupHash,
   parseProjectSetupRoute,
-  buildTeamProvisioningRequest,
 } from "../src/projects/projectSetupModel.ts";
 
 const groups = [{ id: "g1" }, { id: "g2" }];
@@ -56,17 +55,7 @@ test("drop targets require a project and a different visible destination", () =>
   ])
     assert.equal(canDropProject(project, target, groups), false);
 });
-test("setup and provisioning preserve selected group", () => {
+test("setup route carries the selected group", () => {
   const groupId = "11111111-1111-4111-8111-111111111111";
   assert.equal(parseProjectSetupRoute(projectCreateSetupHash(groupId)).groupId, groupId);
-  const request = buildTeamProvisioningRequest({
-    name: "x",
-    groupId,
-    stateRepository: "r",
-    defaultAutoResearchInvocationCeiling: 1,
-    machines: [],
-    repositories: [],
-    providerChecks: [],
-  });
-  assert.equal(request.group_id, groupId);
 });

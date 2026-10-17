@@ -226,7 +226,6 @@ export function formatCommandArgv(argv: string[]): string {
 
 export function buildTeamProvisioningRequest({
   name,
-  groupId,
   stateRepository,
   defaultAutoResearchInvocationCeiling,
   machines,
@@ -234,7 +233,6 @@ export function buildTeamProvisioningRequest({
   providerChecks,
 }: {
   name: string;
-  groupId?: string | null;
   stateRepository: string;
   defaultAutoResearchInvocationCeiling: number;
   machines: ProjectProvisioningCreateRequest["machines"];
@@ -246,7 +244,6 @@ export function buildTeamProvisioningRequest({
   const aliases = repositories.map((repository) => repository.alias);
   return {
     name: name.trim(),
-    ...(groupId ? { group_id: groupId } : {}),
     state_repository: stateRepository,
     project_truth_scope: aliases,
     default_run_truth_scope: repositories

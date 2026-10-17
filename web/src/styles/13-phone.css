@@ -575,29 +575,11 @@
   .group-breadcrumb a {
     min-height: 44px;
   }
-  .project-cover {
-    min-height: 110px;
-    padding: 18px 44px 18px 27px;
-  }
-  .project-cover > strong {
-    font-size: var(--type-lg);
-  }
-  .project-cover-state {
-    margin-bottom: 6px;
-  }
-  .project-cover-open {
-    display: none;
-  }
-  .new-project-cover {
-    flex-direction: row;
-    align-items: center;
-    gap: 18px;
-  }
-  .new-project-plus {
-    flex-shrink: 0;
-    margin: 0;
+  .space-group-title-row:has(.group-breadcrumb) {
+    align-items: flex-end;
   }
   .project-cover.box-set {
+    min-height: 110px;
     display: grid;
     grid-template-columns: 48px minmax(0, 1fr);
     gap: 0 16px;

@@ -57,7 +57,6 @@ from rcp.storage.models import (
     ProjectTransferUploadRecord,
     _canonical_uuid4,
 )
-from rcp.storage.project_groups import ProjectGroupStoreMixin
 from rcp.transfer.records import TRANSFER_RECORD_SCHEMA_VERSION
 
 _PROVISIONING_TRANSITIONS: dict[ProjectProvisioningStatus, frozenset[ProjectProvisioningStatus]] = {
@@ -178,8 +177,6 @@ def project_provisioning_review_digest(record: ProjectProvisioningRequestRecord)
         ],
         "provider_checks": [check.model_dump(mode="json") for check in record.provider_checks],
     }
-    if record.group_id is not None:
-        payload["group_id"] = record.group_id
     if record.target_project_id is not None:
         payload["target_project_id"] = record.target_project_id
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
@@ -2969,7 +2966,6 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
         target_project_id: str | None = None,
         reviewed_boundary_sha256: str | None = None,
         name: str | None = None,
-        group_id: str | None = None,
         state_repository: str | None = None,
         project_truth_scope: list[str] | None = None,
         default_run_truth_scope: list[str] | None = None,
@@ -2998,8 +2994,6 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             ProjectProvisioningProviderIntent.model_validate(check.model_dump(mode="json"))
             for check in provider_checks
         ]
-        if group_id is not None and kind != "create_team_project":
-            raise ValueError("Only new team projects may select a project group")
         existing_project = kind in {"add_repository", "connect_repository"}
         if not existing_project and target_project_id is not None:
             raise ValueError("create provisioning cannot target an existing project")
@@ -3082,7 +3076,6 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             proposed_project_id=proposed_project_id,
             target_project_id=target_project_id,
             name=name,
-            group_id=group_id,
             state_repository=state_repository,
             project_truth_scope=list(project_truth_scope or []),
             default_run_truth_scope=list(default_run_truth_scope or []),
@@ -3115,8 +3108,6 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 is None
             ):
                 raise ValueError("project provisioning authorizer is not a current space member")
-            if group_id is not None:
-                ProjectGroupStoreMixin._visible_group(connection, group_id, authorizer.user_id)
             if existing_project:
                 if (
                     connection.execute(
@@ -3189,7 +3180,6 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             "authorized_by": record.authorized_by.model_dump(mode="json"),
             "proposed_project_id": record.proposed_project_id,
             "target_project_id": record.target_project_id,
-            "group_id": record.group_id,
             "name": record.name,
             "state_repository": record.state_repository,
             "project_truth_scope": record.project_truth_scope,
@@ -3523,12 +3513,6 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             ).rowcount
             if changed != 1:
                 raise RuntimeError("project provisioning transition lost its transaction guard")
-            if updated.status == "completed" and updated.kind == "create_team_project":
-                connection.execute(
-                    "UPDATE projects SET group_id = ? WHERE project_id = ? "
-                    "AND EXISTS (SELECT 1 FROM project_groups WHERE group_id = ?)",
-                    (updated.group_id, updated.proposed_project_id, updated.group_id),
-                )
             connection.execute(
                 """
                 INSERT INTO project_provisioning_step_receipts (
@@ -3584,8 +3568,8 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 provider_checks_json, retryable_diagnostic, operator_action_json,
                 final_review_digest, cancellation_disposition, revision,
                 created_at, updated_at, setup_started_at, ready_at,
-                completed_at, cancelled_at, group_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                completed_at, cancelled_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.request_id,
@@ -3624,7 +3608,6 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 record.ready_at,
                 record.completed_at,
                 record.cancelled_at,
-                record.group_id,
             ),
         )
 
@@ -3652,7 +3635,6 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 ProjectProvisioningRequestRecord.model_validate_json(
                     _canonical_json(
                         {
-                            "group_id": row["group_id"],
                             "request_id": row["request_id"],
                             "kind": row["kind"],
                             "status": row["status"],

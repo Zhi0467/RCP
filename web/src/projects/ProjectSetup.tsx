@@ -173,15 +173,9 @@ export function ProjectSetup({
           onCancel={onCancel}
         />
       ) : intent === "create_shared_team_project" ? (
-        <TeamProjectSetup
-          intentChooser={intentChooser}
-          onCancel={onCancel}
-          onCreated={onCreated}
-          group={group}
-        />
+        <TeamProjectSetup intentChooser={intentChooser} onCancel={onCancel} onCreated={onCreated} />
       ) : (
         <PersonalProjectSetup
-          group={group}
           intentChooser={intentChooser}
           spaceKind={spaceKind}
           onCancel={onCancel}
@@ -193,7 +187,6 @@ export function ProjectSetup({
 }
 
 function PersonalProjectSetup({
-  group,
   intentChooser,
   spaceKind,
   onCancel,
@@ -276,7 +269,6 @@ function PersonalProjectSetup({
   } as const;
   const payload = (): ProjectSetupRequest => ({
     name: name.trim(),
-    ...(group ? { group_id: group.id } : {}),
     repositories: repositories.map(({ id: _id, ...repo }) => ({
       ...repo,
       alias: repo.alias.trim(),

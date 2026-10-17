@@ -45,13 +45,6 @@ def project_group_http_error(error: ProjectGroupError) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": error.code, "message": str(error)})
 
 
-def require_visible_project_group(store: AppStore, group_id: str | None, user_id: str) -> None:
-    if group_id is not None and not any(
-        group.group_id == group_id for group in store.project_groups(user_id)
-    ):
-        raise project_group_http_error(ProjectGroupError("project_group_not_found"))
-
-
 @router.get("/api/project-groups")
 def project_groups(
     request: Request, *, store: StoreDependency, identity: IdentityDependency

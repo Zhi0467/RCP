@@ -1395,7 +1395,8 @@
   overflow: hidden;
 }
 .box-set-spines > span {
-  border: 1px solid rgb(255 255 255 / 20%);
+  /* A cover colour can be as pale as the slipcase; the edge keeps each spine visible. */
+  border: 1px solid var(--line-strong);
   border-radius: 2px;
   flex: 0 0 9px;
   height: 100%;
@@ -1420,6 +1421,9 @@
   position: static;
 }
 .group-name-dialog {
+  inset: 0;
+  margin: auto;
+  position: fixed;
   background: var(--paper);
   color: var(--ink);
   border: 1px solid var(--rule);
@@ -1454,6 +1458,9 @@
 .group-name-dialog footer {
   justify-content: flex-end;
   margin-top: 20px;
+}
+.project-cover-options + .project-cover-menu-label {
+  margin-top: 14px;
 }
 .project-cover-menu {
   max-height: min(540px, 75dvh);

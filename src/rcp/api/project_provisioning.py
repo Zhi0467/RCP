@@ -19,7 +19,6 @@ from rcp.api.dependencies import (
     require_project_membership,
 )
 from rcp.api.identity import IdentityAccess
-from rcp.api.project_groups import project_group_http_error
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,
     DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING,
@@ -64,7 +63,6 @@ from rcp.storage import (
     SpaceKind,
     TeamAuthenticationError,
 )
-from rcp.storage.project_groups import ProjectGroupError
 from rcp.storage.provisioning import project_transfer_source_configuration_sha256
 from rcp.transfer.source import (
     advance_source_project_transfer,
@@ -180,7 +178,6 @@ class ProjectProvisioningRepositoryRequest(_StrictModel):
 
 
 class ProjectProvisioningCreateRequest(_StrictModel):
-    group_id: str | None = None
     name: str = Field(min_length=1, max_length=120)
     state_repository: str
     project_truth_scope: list[str] = Field(min_length=1, max_length=64)
@@ -1185,7 +1182,6 @@ def create_project_provisioning_request(
             repositories=[repository.intent() for repository in body.repositories],
             provider_checks=body.provider_checks,
             name=body.name,
-            group_id=body.group_id,
             state_repository=body.state_repository,
             project_truth_scope=body.project_truth_scope,
             default_run_truth_scope=body.default_run_truth_scope,
@@ -1193,8 +1189,6 @@ def create_project_provisioning_request(
                 body.default_auto_research_invocation_ceiling
             ),
         )
-    except ProjectGroupError as exc:
-        raise project_group_http_error(exc) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _project_provisioning_response(record, viewer_user_id=authorized_by.user_id)

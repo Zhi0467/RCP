@@ -39,11 +39,6 @@ def migrate_project_groups(connection: sqlite3.Connection) -> None:
     if "group_id" not in columns:
         connection.execute("ALTER TABLE projects ADD COLUMN group_id TEXT")
     connection.execute("CREATE INDEX IF NOT EXISTS projects_group ON projects(group_id)")
-    request_columns = {
-        row[1] for row in connection.execute("PRAGMA table_info(project_provisioning_requests)")
-    }
-    if "group_id" not in request_columns:
-        connection.execute("ALTER TABLE project_provisioning_requests ADD COLUMN group_id TEXT")
     # Use the same settings watermark as project renames. Global invalidation
     # also reaches members whose last project moved out of a group.
     _install(connection, "project_groups", [_bump("''", "settings")])

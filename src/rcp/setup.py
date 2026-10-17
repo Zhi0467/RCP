@@ -364,8 +364,6 @@ ExistingResearchAction = Literal[
 
 class ProjectSetupRequest(_StrictSetupModel):
     name: str = Field(min_length=1, max_length=120)
-    # Operational only: the route files the new project into this group after setup.
-    group_id: str | None = None
     repositories: list[SetupRepository] = Field(min_length=1)
     state_repository: str
     default_auto_research_invocation_ceiling: int = Field(

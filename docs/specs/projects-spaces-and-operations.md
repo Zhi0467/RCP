@@ -170,11 +170,11 @@ so a project belongs to at most one group. Nothing about a group enters
 canonical history, replay, or project identity.
 
 A member sees a group when they belong to one of its live projects, or when they
-created it and it is still empty. Any member who sees a group may rename it, move
-a project they belong to into it or out of it, and create a project inside it;
-team creation saves the group on the provisioning request and applies it when
-the project registers, unless the group has since been deleted. Only an empty
-group can be deleted. Deleting a project, or transferring it to a team, leaves
+created it and it is still empty. Any member who sees a group may rename it, and
+move a project they belong to into it or out of it. Nothing about groups depends
+on the space kind: project creation is unchanged, and **New project** inside a
+group files the created project there with the same move. Only an empty group
+can be deleted. Deleting a project, or transferring it to a team, leaves
 the group; a transferred project arrives ungrouped. Backup and restore carry
 groups with the rest of SQLite.
 

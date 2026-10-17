@@ -34,7 +34,6 @@ from rcp.api.identity import IdentityAccess
 from rcp.api.project_groups import (
     ProjectGroupAssignmentRequest,
     project_group_http_error,
-    require_visible_project_group,
 )
 from rcp.api.team_shell_protocol import (
     acknowledge_team_shell_protocol,
@@ -1067,28 +1066,15 @@ def create_project(
     *,
     identity_access: IdentityDependency,
     setup: SetupDependency,
-    store: StoreDependency,
     _personal_entry: PersonalProjectEntryDependency,
 ) -> dict[str, object]:
-    user_id = identity_access.acting_user(request).user_id
-    require_visible_project_group(store, body.group_id, user_id)
     try:
-        card = setup.create(body, seat_member=user_id)
+        return setup.create(
+            body,
+            seat_member=identity_access.acting_user(request).user_id,
+        )
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if body.group_id is None:
-        return card
-    try:
-        store.set_project_group(str(card["id"]), body.group_id, user_id=user_id)
-    except ProjectGroupError:
-        # Like team provisioning: a group deleted mid-create leaves the project ungrouped.
-        logger.warning(
-            "Project group %s vanished before project %s registered; left ungrouped",
-            body.group_id,
-            card["id"],
-        )
-        return card
-    return {**card, "group_id": body.group_id}
 
 
 @membership_router.delete("/api/projects/{project_id}/caches/all")

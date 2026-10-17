@@ -48,15 +48,15 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
         # Project groups (v55), fresh, immutable fixture upgrades, and
         # in-place upgrades.
-        "0862ad56a129e9c1331bfbd3abc58e954e77aa466b9a75fa7663b6d17737c866",
-        "12f17027f2d0a1b9de2757c7cf2b5ede5396f83ecbdd3473fe6a106e65a7ac00",
-        "33f1284f9af87af7de89264bc0fdd86db7d0dc5fbd64afbb7113ae330d390312",
-        "392fe8f7d6f64db3684214df22631bc9f5880e063cbb99a8d3c20b7f459cb5ab",
-        "50ca4f4ead16b05b3ea7bc13bdfa077a7c906f0f3b5766be1bdc4dc0c3c3614d",
-        "60e13c3e3f5c3fd036e55e79578ab2362fdaed978cee92cd0c317475c7821e7b",
-        "baa4f8a0c71a92f82ba56773b944fca6a1f67f7bacaf4087749c2b41cc11f858",
-        "e31f548ea38dc4db4625c65f384354b1741f2790fdd917ed1ec4171643a7ffdb",
-        "ef6e2dd4727751c7745f0a4963aeacc0537e0234670fda27280bc277d82d4e5d",
+        "140c45bb100d25a6d15680221832c87cc0160748fbcb1d45a72b516de9be8dd7",
+        "3552237364430df622671288eee42a1f2acaaf37542b058c7e7d8bb09ec7387e",
+        "3c10f527714880a571a8920cf49eac05da034a215d838a7fc83b4cd6a6173cf2",
+        "52c70c4b2f2ef9c9f36b026bba6d3c50a0387d295e2b1e60118021e60477017f",
+        "6bff26f0875df88302ceb9cf53e7c4d5d8e8b10642e750aad2b14193b396014e",
+        "7cc09f0da05878642a2fb7d50494f7eab64254eb3f211af239cfab0eb75172f0",
+        "82aba6f3a0c7f85df958f187c1e2426c3d4f52aa40f4fb60b92e0ae46facc8f2",
+        "a74e8225bb86d4ad840689e4cc54c6be2dd688eb43438ee4f845fe54ce507354",
+        "ecaa7a5fa0e717bce9291e492ff3709f87eb5baaec3ef2cf003f1a77540c5ac7",
         # Agent live status (v54), fresh, immutable fixture upgrades, and
         # in-place upgrades.
         "0b8af07db48acdbc51e7bc49dc545c54f146e3b0498473fd33e617cf175854b9",

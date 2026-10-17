@@ -3432,8 +3432,6 @@ export type ExistingResearchAction =
 
 export interface ProjectSetupRequest {
   name: string;
-  /** Files the new project into this group. */
-  group_id?: string;
   repositories: SetupRepository[];
   state_repository: string;
   default_auto_research_invocation_ceiling: number;
