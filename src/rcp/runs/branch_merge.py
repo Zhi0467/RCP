@@ -127,7 +127,7 @@ from rcp.history.delta import (
     semantic_delta,
 )
 from rcp.history.queries import StepRecord
-from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
+from rcp.limits import MAX_BRANCH_MERGE_REBASE_ROUNDS, PATCH_CORRECTION_MAX_ROUNDS
 from rcp.runs.session_master import (
     prepare_graph_observation,
     record_inline_prompt,
@@ -148,8 +148,6 @@ from rcp.runs.shared import (
 )
 from rcp.service import ProjectService, RunRequest, _proposal_judgment_patch
 from rcp.transport import RemoteRunStage, StateUnavailable
-
-MAX_BRANCH_MERGE_REBASE_ROUNDS = 3
 
 
 class _StrictMergeModel(BaseModel):
@@ -285,36 +283,37 @@ class BranchMergeContext(_StrictMergeModel):
     review_contract: BranchMergeReviewContract = Field(default_factory=BranchMergeReviewContract)
     previous_merge_receipt: BranchMergeReceipt | None = None
     previous_branch_graph: GraphState | None = None
+    dispatcher_episode_id: str | None = None
 
     @property
     def review_base_head(self) -> GraphHeadRef:
         if self.previous_merge_receipt is not None:
             return self.previous_merge_receipt.provenance.branch_head
-        return self.metadata.base_head
+        return self.metadata.effective_parent_head
 
     @model_validator(mode="after")
     def require_exact_snapshots(self) -> BranchMergeContext:
         if self.run_truth_scope != sorted(set(self.run_truth_scope)):
             raise ValueError("branch merge run truth scope must be sorted and unique")
-        if self.metadata.base_head.revision != self.base_graph.revision:
+        if self.metadata.effective_parent_head.revision != self.base_graph.revision:
             raise ValueError("branch merge base graph does not match the exact base head")
         if self.metadata.head.revision != self.branch_graph.revision:
             raise ValueError("branch merge graph does not match the exact branch head")
         if (
-            self.main_head.target.kind != "main"
+            self.main_head.target != self.metadata.effective_parent_head.target
             or self.main_head.revision != self.main_graph.revision
         ):
             raise ValueError("branch merge main graph does not match one exact main head")
         if self.eligibility.branch_head != self.metadata.head:
             raise ValueError("merge eligibility was proved for a different branch head")
-        if self.semantic_delta.base_head != self.metadata.base_head:
+        if self.semantic_delta.base_head != self.metadata.effective_parent_head:
             raise ValueError("semantic delta names a different immutable branch base")
         if self.semantic_delta.branch_head != self.metadata.head:
             raise ValueError("semantic delta names a different branch head")
         expected_delta = build_semantic_delta(
             self.base_graph,
             self.branch_graph,
-            base_head=self.metadata.base_head,
+            base_head=self.metadata.effective_parent_head,
             branch_head=self.metadata.head,
         )
         if self.semantic_delta != expected_delta:
@@ -329,10 +328,11 @@ class BranchMergeContext(_StrictMergeModel):
             if (
                 receipt.provenance.branch_id != self.metadata.branch_id
                 or receipt.provenance.episode_id != self.metadata.episode_id
-                or receipt.provenance.branch_base_head != self.metadata.base_head
+                or receipt.provenance.branch_base_head != self.metadata.effective_parent_head
                 or receipt.provenance.branch_head.target != self.metadata.head.target
                 or receipt.provenance.branch_head.revision != self.previous_branch_graph.revision
                 or self.previous_branch_graph.revision > self.branch_graph.revision
+                or receipt.result_main_head.target != self.main_head.target
                 or receipt.result_main_head.revision > self.main_graph.revision
             ):
                 raise ValueError(
@@ -350,7 +350,8 @@ class BranchMergeContext(_StrictMergeModel):
         if revisions != sorted(set(revisions)):
             raise ValueError("branch Patch summaries must be ordered by unique revision")
         if any(
-            revision <= self.metadata.base_head.revision or revision > self.metadata.head.revision
+            revision <= self.metadata.effective_parent_head.revision
+            or revision > self.metadata.head.revision
             for revision in revisions
         ):
             raise ValueError("branch Patch summary lies outside the exact branch lineage")
@@ -358,13 +359,16 @@ class BranchMergeContext(_StrictMergeModel):
             raise ValueError("branch merge context uses a stale transition-manager contract")
         for change in self.review_contract.human_changes:
             if (
-                not self.metadata.base_head.revision
+                not self.metadata.effective_parent_head.revision
                 < change.revision
                 <= self.metadata.head.revision
             ):
                 raise ValueError("human review change lies outside the exact branch lineage")
             _require_source_human_change(merge_base, self.branch_graph, change.operation)
-        expected_id = _context_id(self.model_dump(mode="json", exclude={"context_id"}))
+        excluded = {"context_id"}
+        if self.dispatcher_episode_id is None:
+            excluded.add("dispatcher_episode_id")
+        expected_id = _context_id(self.model_dump(mode="json", exclude=excluded))
         if self.context_id != expected_id:
             raise ValueError("branch merge context id does not match its canonical content")
         return self
@@ -386,13 +390,14 @@ class BranchMergeContext(_StrictMergeModel):
         human_review_changes: list[BranchHumanReviewChange] | None = None,
         previous_merge_receipt: BranchMergeReceipt | None = None,
         previous_branch_graph: GraphState | None = None,
+        dispatcher_episode_id: str | None = None,
     ) -> BranchMergeContext:
         if run_truth_scope != sorted(set(run_truth_scope)) or not run_truth_scope:
             raise ValueError("branch merge run truth scope must be non-empty, sorted, and unique")
         delta = build_semantic_delta(
             base_graph,
             branch_graph,
-            base_head=metadata.base_head,
+            base_head=metadata.effective_parent_head,
             branch_head=metadata.head,
         )
         payload: dict[str, object] = {
@@ -420,6 +425,8 @@ class BranchMergeContext(_StrictMergeModel):
             "previous_merge_receipt": previous_merge_receipt,
             "previous_branch_graph": previous_branch_graph,
         }
+        if dispatcher_episode_id is not None:
+            payload["dispatcher_episode_id"] = dispatcher_episode_id
         encoded = _jsonable(payload)
         return cls.model_validate({**payload, "context_id": _context_id(encoded)})
 
@@ -442,11 +449,11 @@ class BranchMergeSourceChanged(ValueError):
 class _BranchMergeHistory(Protocol):
     manifest: Manifest
 
-    def validate_candidate(
-        self, patch: Patch, **kwargs: object
-    ) -> tuple[Patch, Any, GraphState]: ...
+    def validate_candidate(self, patch: Patch) -> tuple[Patch, Any, GraphState]: ...
 
-    def append(self, patch: Patch, **kwargs: object) -> tuple[Patch, Any]: ...
+    def append(
+        self, patch: Patch, *, discard_on_reject: bool, expected_revision: int
+    ) -> tuple[Patch, Any]: ...
 
 
 @dataclass
@@ -503,8 +510,8 @@ def build_semantic_delta(
 
     if base.revision != base_head.revision or branch.revision != branch_head.revision:
         raise ValueError("semantic delta snapshots do not match their exact heads")
-    if base_head.target.kind != "main" or branch_head.target.kind != "branch":
-        raise ValueError("semantic delta requires a main base and branch head")
+    if branch_head.target.kind != "branch" or base_head.target == branch_head.target:
+        raise ValueError("semantic delta requires a distinct parent base and branch head")
     return GraphSemanticDelta(
         base_head=base_head,
         branch_head=branch_head,
@@ -797,14 +804,14 @@ _PROTECTED_NAMES = _PROJECT_TYPE.label_list(_PROJECT_TYPE.protected_belief_types
 _CHOOSER_NAME = _PROJECT_TYPE.label_list(_PROJECT_TYPE.chooser_types)
 MERGE_RESIDUE_REASONS: dict[str, str] = {
     "conflict": (
-        "Branch and main changed this path differently. Resolve it from the supplied graph "
+        "Branch and destination changed this path differently. Resolve it from the supplied graph "
         "semantics; never resolve it by preferring one side wholesale."
     ),
     "node_conflict": (
         "Another path on this node conflicts, so the whole node moves as one coherent decision."
     ),
     "protected_node": (
-        f"The node is a {_PROTECTED_NAMES}. Carry the change as one pending main "
+        f"The node is a {_PROTECTED_NAMES}. Carry the change as one pending destination "
         "Proposal instead of writing it."
     ),
     "decision_outcome": (
@@ -813,7 +820,7 @@ MERGE_RESIDUE_REASONS: dict[str, str] = {
         f"{_CHOOSER_NAME}."
     ),
     "main_standing_changed": (
-        "A human moved this node's standing on main after the branch forked. Carrying the branch "
+        "A human moved this node's standing on destination after the branch forked. Carrying the branch "
         "edit would discard that judgment, so decide it explicitly."
     ),
     "system_field": (
@@ -821,7 +828,7 @@ MERGE_RESIDUE_REASONS: dict[str, str] = {
         "direct write is rejected."
     ),
     "node_absent": (
-        "The node is missing on one side. A branch removal of a node main still accepts is one "
+        "The node is missing on one side. A branch removal of a node destination still accepts is one "
         "pending removal Proposal."
     ),
     "unbuildable_create": (
@@ -840,7 +847,7 @@ MERGE_RESIDUE_REASONS: dict[str, str] = {
         "An endpoint node is still in this list, so the edge belongs to that same decision."
     ),
     "protected_restructure": (
-        "The edge restructures a protected epistemic relation. Carry it as one pending main "
+        "The edge restructures a protected epistemic relation. Carry it as one pending destination "
         "Proposal."
     ),
 }
@@ -1543,7 +1550,7 @@ def branch_merge_id(metadata: GraphBranchMetadata) -> str:
             "episode_id": metadata.episode_id,
             "project_id": metadata.project_id,
             "branch_kind": metadata.kind,
-            "branch_base_head": metadata.base_head.model_dump(mode="json"),
+            "branch_base_head": metadata.effective_parent_head.model_dump(mode="json"),
             "branch_head": metadata.head.model_dump(mode="json"),
         }
     )
@@ -1556,7 +1563,7 @@ def branch_merge_provenance(context: BranchMergeContext) -> BranchMergeProvenanc
         merge_id=branch_merge_id(context.metadata),
         branch_id=context.metadata.branch_id,
         episode_id=context.metadata.episode_id,
-        branch_base_head=context.metadata.base_head,
+        branch_base_head=context.metadata.effective_parent_head,
         branch_head=context.metadata.head,
         rebased_main_head=context.main_head,
         merge_task_id=context.merge_task_id,
@@ -1619,7 +1626,7 @@ def parse_branch_merge_candidate(
             "authorized_by": context.authorized_by,
             "profile": "orchestrator",
             "task_id": context.merge_task_id,
-            "episode_id": context.metadata.episode_id,
+            "episode_id": context.dispatcher_episode_id or context.metadata.episode_id,
             "branch_merge": branch_merge_provenance(context),
         }
     )
@@ -1634,8 +1641,6 @@ def prepare_branch_merge_with_history(
 ) -> PreparedTransition:
     """Run HistoryManager's authoritative validation/transition preparation without writing."""
 
-    if expected_main_head.target.kind != "main":
-        raise ValueError("branch merge candidates can prepare only against main")
     try:
         prepared, report, current = history.validate_candidate(candidate)
     except PatchRejected as exc:
@@ -1674,8 +1679,6 @@ def commit_branch_merge_with_history(
 ) -> CommittedTransition:
     """Append one prepared semantic merge at an exact main revision or append nothing."""
 
-    if expected_main_head.target.kind != "main":
-        raise ValueError("branch merge candidates can commit only to main")
     try:
         committed, result = history.append(
             candidate,
@@ -1713,6 +1716,7 @@ def branch_merge_receipt_from_committed_patch(patch: Patch) -> BranchMergeReceip
         outcome="committed",
         provenance=patch.branch_merge,
         result_main_head=GraphHeadRef(
+            target=patch.branch_merge.rebased_main_head.target,
             revision=patch.revision,
             transition_id=patch.transition.transition_id,
         ),
@@ -1768,6 +1772,8 @@ def classify_refreshed_context(
     stable = (
         previous.merge_task_id == current.merge_task_id
         and previous.authorized_by == current.authorized_by
+        and previous.dispatcher_episode_id == current.dispatcher_episode_id
+        and previous.main_head.target == current.main_head.target
         and previous.metadata == current.metadata
         and previous.eligibility == current.eligibility
         and previous.base_graph == current.base_graph
@@ -1817,7 +1823,7 @@ async def stream_branch_merge_run(
     """Run, correct, rebase, and atomically commit one graph-only branch merge.
 
     ``load_context`` must resolve the immutable base/branch snapshots and the
-    live main head together. ``main_history`` must be the main-target history
+    live destination head together. ``main_history`` is the destination history
     whose ``validate_candidate`` and ``append`` methods use the canonical
     transition manager and append lock.
     """
@@ -1855,7 +1861,7 @@ async def stream_branch_merge_run(
                 text=(
                     "The branch head has no net semantic graph change to merge."
                     if context.semantic_delta.is_empty
-                    else "Main already contains or has received this branch head's graph changes for review."
+                    else "The destination already contains or has received this branch head's graph changes for review."
                 ),
             )
         )
@@ -1937,6 +1943,7 @@ async def stream_branch_merge_run(
                 branch_merge_task_contract(
                     context_path=context_path,
                     context_id=context.context_id,
+                    destination=context.main_head.target.key,
                     patch_path=patch_path,
                     validator_command=validator_command,
                     review_contract_json=context.review_contract.model_dump_json(indent=2),
@@ -2272,7 +2279,7 @@ async def stream_branch_merge_run(
                         AgentEvent(
                             event="answer",
                             text=(
-                                "This graph branch head was already merged into main revision "
+                                f"This graph branch head was already merged into {receipt.result_main_head.target.key} revision "
                                 f"{receipt.result_main_head.revision}."
                             ),
                         )
@@ -2319,7 +2326,7 @@ async def stream_branch_merge_run(
                             event="answer",
                             text=(
                                 "Merged graph branch "
-                                f"{context.metadata.branch_id} into main revision "
+                                f"{context.metadata.branch_id} into {context.main_head.target.key} revision "
                                 f"{committed.projection.head.revision}."
                             ),
                         )

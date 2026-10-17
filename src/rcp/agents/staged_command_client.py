@@ -42,6 +42,8 @@ _MUTATING = frozenset(
         "flag",
         "apply",
         "spawn",
+        "merge",
+        "branch",
         "pause",
         "resume",
         "stop",
@@ -225,6 +227,13 @@ def _parser():
     status_target.add_argument("--worker-id")
     status_target.add_argument("--episode-id")
 
+    merge = subparsers.add_parser("merge")
+    merge.add_argument("--key", required=True)
+    merge.add_argument("branch_id")
+    branch = subparsers.add_parser("branch")
+    branch.add_argument("--key")
+    branch.add_argument("--archive", required=True, metavar="BRANCH_ID")
+
     spawn = subparsers.add_parser("spawn")
     spawn.add_argument("--key", required=True)
     spawn.add_argument("--seat-node", required=True)
@@ -343,6 +352,17 @@ def _request_arguments(namespace, workspace):
         if action in ("update", "delete"):
             arguments["lesson_id"] = _nonblank(namespace.id, "lesson id")
         return verb, _nonblank(namespace.key, "idempotency key"), arguments
+    if verb == "branch":
+        return (
+            verb,
+            _nonblank(namespace.key, "idempotency key")
+            if namespace.key is not None
+            else uuid.uuid4().hex,
+            {
+                "action": "archive",
+                "branch_id": _nonblank(namespace.archive, "branch id"),
+            },
+        )
     key = _nonblank(namespace.key, "idempotency key")
     if verb == "flag":
         arguments = {
@@ -364,6 +384,8 @@ def _request_arguments(namespace, workspace):
             workspace, namespace.patch_path, "patch.json", required_name="patch.json"
         )
         arguments = {"patch_file": patch_file}
+    elif verb == "merge":
+        arguments = {"branch_id": _nonblank(namespace.branch_id, "branch id")}
     elif verb == "spawn":
         instruction_file = _keyed_command_file(
             workspace, namespace.instruction_file, "instruction file"
@@ -923,6 +945,8 @@ def _requested_verb(argv):
             "apply",
             "status",
             "spawn",
+            "merge",
+            "branch",
             "pause",
             "resume",
             "stop",

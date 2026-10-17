@@ -881,3 +881,123 @@ async def test_conflicting_edge_replacement_can_be_resolved_by_provider(
     assert outcome.correction_rounds == 0
     assert launcher.sessions == [None]
     assert history.state().edges[original.id].explanation == "Resolved detail."
+
+
+@pytest.mark.parametrize("protected", [False, True])
+def test_nested_merge_uses_exact_parent_and_destination_rules(merge_history, protected):
+    import uuid
+
+    from rcp.runs.branch_merge import (
+        branch_merge_receipt_from_committed_patch,
+        commit_branch_merge_with_history,
+    )
+    from tests.test_branch_merge_proposals import _proposal
+
+    history, destination, original_context = merge_history
+    _append(destination, _update("blk/existing", description="Parent before fork."))
+    parent_head = destination.head_ref()
+    fork_id = str(uuid.uuid4())
+    metadata = GraphBranchMetadata(
+        branch_id=fork_id,
+        episode_id=destination.branch_metadata().episode_id,
+        project_id=destination.branch_metadata().project_id,
+        kind="fork",
+        base_head=destination.branch_metadata().base_head,
+        parent_head=parent_head,
+        created_by="orchestrator:root",
+        head=parent_head.model_copy(
+            update={"target": GraphTargetRef(kind="branch", branch_id=fork_id)}
+        ),
+        authorized_by=destination.branch_metadata().authorized_by,
+    )
+    fork = history.create_branch(metadata)
+    changed_id = "rq/merge" if protected else "blk/existing"
+    changes = {"question": "Fork question?"} if protected else {"description": "Fork finding."}
+    _append(fork, _update(changed_id, **changes), human=protected)
+    _append(destination, _update("blk/existing", title="Destination advanced."))
+    context = BranchMergeContext.create(
+        merge_task_id="nested-merge",
+        authorized_by=original_context().authorized_by,
+        metadata=fork.branch_metadata(),
+        eligibility=BranchMergeEligibility(branch_head=fork.head_ref()),
+        base_graph=history.history_engine.state_at(parent_head),
+        branch_graph=fork.state(),
+        main_head=destination.head_ref(),
+        main_graph=destination.state(),
+        run_truth_scope=["repo-a"],
+    )
+    ops, residue = build_deterministic_merge_ops(context)
+    assert bool(residue) is protected
+    draft_ops = []
+    if protected:
+        forbidden = parse_branch_merge_candidate(
+            json.dumps({"summary": "Direct change.", "ops": [_update(changed_id, **changes)]}),
+            context,
+        )
+        with pytest.raises(BranchMergeSemanticConflict):
+            prepare_branch_merge_with_history(
+                destination, forbidden, expected_main_head=context.main_head, context=context
+            )
+        draft_ops = [
+            {
+                "op": "create_proposals",
+                "proposals": [
+                    _proposal(
+                        {
+                            "op": "update_nodes",
+                            "intent": "content_change",
+                            "nodes": [{"id": changed_id, "changes": changes}],
+                        }
+                    )
+                ],
+            }
+        ]
+    candidate = parse_branch_merge_candidate(
+        json.dumps({"summary": "Merge fork.", "ops": draft_ops}),
+        context,
+        deterministic_ops=ops,
+    )
+    prepare_branch_merge_with_history(
+        destination, candidate, expected_main_head=context.main_head, context=context
+    )
+    committed = commit_branch_merge_with_history(
+        destination, candidate, expected_main_head=context.main_head
+    )
+    assert committed.projection.head.target == destination.graph_target
+    assert (
+        branch_merge_receipt_from_committed_patch(committed.patch).result_main_head.target
+        == destination.graph_target
+    )
+    assert committed.patch.branch_merge is not None
+    assert committed.patch.branch_merge.branch_base_head == parent_head
+    assert destination.state().nodes["blk/existing"].title == "Destination advanced."
+    if protected:
+        assert destination.state().nodes[changed_id].question == "What should the project test?"
+        assert len(destination.state().proposals) == 1
+    else:
+        assert destination.state().nodes[changed_id].description == "Fork finding."
+    assert history.state().nodes["blk/existing"].description == "Base description."
+
+
+def test_legacy_merge_request_without_binding_retains_main_dispatch():
+    from rcp.runs.branch_merge_request import BranchMergeRunRequest
+
+    request = BranchMergeRunRequest.model_validate(
+        {
+            "episode_id": "legacy-owner",
+            "provider": "codex",
+            "model": "gpt-5",
+            "reasoning": "medium",
+            "run_on": "laptop",
+            "run_truth_scope": ["repo-a"],
+            "chat_scope": "project",
+            "mode": "work",
+            "trigger": "human",
+            "patch_kind": "work",
+        }
+    )
+    assert request.merge_binding is None
+    assert request.episode_id == "legacy-owner"
+    context = _context()
+    old_context = context.model_dump(mode="json", exclude={"dispatcher_episode_id"})
+    assert BranchMergeContext.model_validate(old_context).context_id == context.context_id

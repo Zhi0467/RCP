@@ -722,13 +722,14 @@ class WatcherDelivery:
             self.deliver_ready_graph_wake_groups(project_id, source="task settlement")
             return
         task = self._store.agent_task(execution.operation_id)
-        graph_target = (
-            GraphTargetRef()
-            if kind == "branch_merge"
-            else task.graph_target
-            if task is not None
-            else GraphTargetRef()
-        )
+        graph_target = task.graph_target if task is not None else GraphTargetRef()
+        if kind == "branch_merge":
+            from rcp.runs.branch_merge_request import BranchMergeRunRequest
+
+            merge = BranchMergeRunRequest.model_validate(request)
+            graph_target = (
+                merge.merge_binding.destination if merge.merge_binding else GraphTargetRef()
+            )
         self.evaluate_graph_wake_boundary(
             project_id,
             execution.applied_graph_state,

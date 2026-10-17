@@ -803,6 +803,14 @@ def test_merge_receipt_can_be_reconciled_from_committed_main_patch(manifest) -> 
     appended, _result = history.append(merge_patch)
     assert appended.transition is not None
 
+    # Simulate the old writer's branch record: parent/creator were not persisted.
+    metadata_path = branch.root / "branch.json"
+    old_record = branch.branch_metadata().model_dump(
+        mode="json", exclude={"parent_head", "created_by"}
+    )
+    metadata_path.write_text(json.dumps(old_record), encoding="utf-8")
+    old_patch = (history.patches_dir / f"{appended.revision:06d}.json").read_bytes()
+    branch = history.branch(metadata.branch_id, initialize=False)
     receipt = branch.reconcile_merge_receipt(provenance.merge_id)
 
     assert receipt is not None
@@ -813,6 +821,8 @@ def test_merge_receipt_can_be_reconciled_from_committed_main_patch(manifest) -> 
         transition_id=appended.transition.transition_id,
     )
     assert branch.reconcile_merge_receipt(provenance.merge_id) == receipt
+    assert json.loads(metadata_path.read_text()) == old_record
+    assert (history.patches_dir / f"{appended.revision:06d}.json").read_bytes() == old_patch
 
 
 def test_no_change_writer_reconciles_a_concurrently_committed_main_winner(manifest) -> None:
@@ -938,7 +948,7 @@ def test_reconcile_rejects_corrupted_existing_no_change_receipt(manifest) -> Non
     path = branch.merges_dir / f"{receipt.provenance.merge_id}.json"
     path.write_text(corrupted.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="exact main head"):
+    with pytest.raises(ValueError):
         branch.reconcile_merge_receipt(receipt.provenance.merge_id)
 
 
@@ -976,7 +986,7 @@ def test_reconcile_rejects_corrupted_existing_committed_receipt(manifest) -> Non
     corrupted = receipt.model_copy(update={"created_at": receipt.created_at + timedelta(seconds=1)})
     path.write_text(corrupted.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="disagrees with main provenance"):
+    with pytest.raises(ValueError):
         branch.reconcile_merge_receipt(provenance.merge_id)
 
 

@@ -16,10 +16,12 @@ from rcp.agents.command_mailbox import serve_command_mailbox, stage_command_mail
 from rcp.agents.command_protocol import (
     ApplyArguments,
     ApplyCommandRequest,
+    BranchCommandRequest,
     CommandResponse,
     EpisodeCommandRequest,
     FinishCommandRequest,
     InboxCommandRequest,
+    MergeCommandRequest,
     MessageArguments,
     MessageCommandRequest,
     PauseCommandRequest,
@@ -2714,3 +2716,88 @@ def test_history_commands_bypass_effects_and_command_ledger(tmp_path, monkeypatc
         .status
         == "invalid"
     )
+
+
+@pytest.mark.parametrize("verb", ["merge", "branch"])
+def test_fork_commands_require_root_and_replay_original_intent(tmp_path, monkeypatch, verb):
+    store, episode, root = _setup_auto_research(tmp_path)
+    worker = _worker(store, episode, root, "worker")
+    fork_id = str(uuid.uuid4())
+    store.create_graph_branch(
+        project_id=episode.project_id,
+        branch_id=fork_id,
+        owner_episode_id=episode.episode_id,
+        parent_head=GraphHeadRef(target=episode.graph_target, revision=0),
+        created_by="root",
+    )
+    calls = []
+
+    def merge(context, arguments, key):
+        calls.append((context.task.operation_id, arguments.branch_id, key))
+        return AutoResearchCommandEffectResult(result={"operation_id": "merge-task"})
+
+    effects = replace(_Effects(store, episode, root).bundle(), merge=merge)
+    dispatcher = _dispatcher(store, effects)
+    arguments = {"branch_id": fork_id}
+    if verb == "branch":
+        arguments["action"] = "archive"
+    request_type = MergeCommandRequest if verb == "merge" else BranchCommandRequest
+
+    def request(request_id, key):
+        return _request(
+            request_type, request_id=request_id, verb=verb, idempotency_key=key, arguments=arguments
+        )
+
+    denied = dispatcher.dispatch(worker.operation_id, request("1" * 32, "worker-key"))
+    assert denied.status == "invalid"
+    first = dispatcher.dispatch(root.operation_id, request("2" * 32, "root-key"))
+    replay = dispatcher.dispatch(root.operation_id, request("3" * 32, "root-key"))
+    assert first.status == replay.status == "ok"
+    assert first.result == replay.result
+    if verb == "merge":
+        assert calls == [(root.operation_id, fork_id, "root-key")]
+        original_lookup = store.agent_task
+        monkeypatch.setattr(
+            store,
+            "agent_task",
+            lambda operation_id: (
+                root.model_copy(update={"status": "succeeded"})
+                if operation_id == "merge-task"
+                else original_lookup(operation_id)
+            ),
+        )
+        settled = dispatcher.dispatch(root.operation_id, request("4" * 32, "root-key"))
+        assert settled.result["status"] == "succeeded"
+        assert len(calls) == 1
+    else:
+        record = store.graph_branch(episode.project_id, fork_id)
+        assert record is not None and record.archived
+
+
+def test_archive_refuses_unowned_and_root_branches(tmp_path):
+    store, episode, root = _setup_auto_research(tmp_path)
+    foreign_id = str(uuid.uuid4())
+    store.create_graph_branch(
+        project_id=episode.project_id,
+        branch_id=foreign_id,
+        owner_episode_id=None,
+        parent_head=GraphHeadRef(revision=0),
+        created_by="human",
+    )
+    dispatcher = _dispatcher(store, _Effects(store, episode, root).bundle())
+    for branch_id in (foreign_id, episode.graph_target.branch_id):
+        response = dispatcher.dispatch(
+            root.operation_id,
+            _request(
+                BranchCommandRequest,
+                request_id=uuid.uuid4().hex,
+                verb="branch",
+                idempotency_key=branch_id,
+                arguments={"action": "archive", "branch_id": branch_id},
+            ),
+        )
+        assert response.status == "invalid"
+        assert response.result["code"] == "branch_not_owned_fork"
+        assert branch_id is not None
+        record = store.graph_branch(episode.project_id, branch_id)
+        assert record is not None and not record.archived

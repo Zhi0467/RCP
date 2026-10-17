@@ -16,6 +16,8 @@ from rcp.agents.command_protocol import (
     ApplyArguments,
     ApplyCommandRequest,
     AskCommandRequest,
+    BranchArguments,
+    BranchCommandRequest,
     CommandRequest,
     CommandResponse,
     EpisodeArguments,
@@ -28,6 +30,7 @@ from rcp.agents.command_protocol import (
     InboxArguments,
     InboxCommandRequest,
     LessonCommandRequest,
+    MergeCommandRequest,
     MessageArguments,
     MessageCommandRequest,
     PauseCommandRequest,
@@ -778,6 +781,10 @@ AutoResearchSpawnCommand = Callable[
     [AutoResearchCommandContext, SpawnArguments, str],
     AutoResearchCommandEffectResult,
 ]
+AutoResearchMergeCommand = Callable[
+    [AutoResearchCommandContext, BranchArguments, str],
+    AutoResearchCommandEffectResult,
+]
 AutoResearchWorkerCommand = Callable[
     [AutoResearchCommandContext, str],
     AutoResearchCommandEffectResult,
@@ -845,6 +852,7 @@ class AutoResearchCommandEffects:
     inbox: AutoResearchInboxCommand
     worker_lookup: AutoResearchWorkerLookup
     verify_spawn: AutoResearchSpawnVerifier
+    merge: AutoResearchMergeCommand | None = None
 
 
 @dataclass
@@ -1624,6 +1632,8 @@ class AutoResearchCommandDispatcher:
             request,
             (
                 SpawnCommandRequest,
+                MergeCommandRequest,
+                BranchCommandRequest,
                 ApplyCommandRequest,
                 PauseCommandRequest,
                 ResumeCommandRequest,
@@ -1714,6 +1724,20 @@ class AutoResearchCommandDispatcher:
     ) -> AutoResearchCommandEffectResult:
         self._recorded_planned_effect_id(context, request, prior.start_payload)
         recorded = _effect_from_recorded_invocation(prior)
+        if isinstance(request, MergeCommandRequest) and recorded.status == "ok":
+            operation_id = recorded.result.get("operation_id")
+            merge = self.store.agent_task(operation_id) if isinstance(operation_id, str) else None
+            if (
+                merge is not None
+                and merge.status == "interrupted"
+                and self.effects.merge is not None
+            ):
+                assert request.idempotency_key is not None
+                return self.effects.merge(context, request.arguments, request.idempotency_key)
+            if merge is not None:
+                return recorded.model_copy(
+                    update={"result": {**recorded.result, "status": merge.status}}
+                )
         if not isinstance(request, SpawnCommandRequest):
             return recorded
         if recorded.status != "ok":
@@ -2025,6 +2049,28 @@ class AutoResearchCommandDispatcher:
         if context.request.role != "orchestrator":
             raise AutoResearchCommandInvalid(
                 "Only the Auto-research orchestrator may issue mutating staged commands."
+            )
+        if isinstance(request, MergeCommandRequest):
+            assert request.idempotency_key is not None
+            if self.effects.merge is None:
+                raise AutoResearchCommandUnavailable("Fork merge is unavailable.")
+            return self.effects.merge(context, request.arguments, request.idempotency_key)
+        if isinstance(request, BranchCommandRequest):
+            branch_id = request.arguments.branch_id
+            owned = self.store.branches_owned_by(
+                context.task.project_id, context.episode.episode_id
+            )
+            if branch_id == context.episode.graph_target.branch_id or not any(
+                branch.branch_id == branch_id for branch in owned
+            ):
+                return AutoResearchCommandEffectResult(
+                    status="invalid",
+                    message="Archive requires a fork owned by this orchestrator lineage.",
+                    result={"code": "branch_not_owned_fork"},
+                )
+            self.store.set_branch_archived(context.task.project_id, branch_id, archived=True)
+            return AutoResearchCommandEffectResult(
+                result={"branch_id": branch_id, "archived": True}
             )
         if request.verb == "apply":
             assert isinstance(request, ApplyCommandRequest)

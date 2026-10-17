@@ -2508,3 +2508,47 @@ async def test_history_verbs_round_trip_through_staged_client_and_broker(
             "branch_changes": "b",
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_fork_commands_round_trip_through_broker(tmp_path):
+    staged = stage_command_mailbox(
+        local_stage=tmp_path,
+        remote_stage=None,
+        episode_id="episode",
+        task_id="root",
+        turn_id="turn",
+        timeout_seconds=10,
+        authority="broker",
+    )
+    seen = []
+
+    def handler(request, _identity):
+        seen.append((request.verb, request.idempotency_key, request.arguments.model_dump()))
+        return CommandResponse(request_id=request.request_id, status="ok")
+
+    stop = asyncio.Event()
+    assert staged.invocation_gate is not None
+    async with staged.invocation_gate.serve_current_session():
+        server = asyncio.create_task(
+            serve_command_mailbox(
+                staged=staged,
+                handler=handler,
+                stop=stop,
+                poll_seconds=0.01,
+                invocation_gate=staged.invocation_gate,
+            )
+        )
+        try:
+            for arguments in (
+                ("merge", "--key", "merge-key", "fork"),
+                ("branch", "--archive", "fork"),
+            ):
+                code, output = await _run_client(staged, *arguments)
+                assert code == 0, output
+        finally:
+            stop.set()
+            await server
+    assert seen[0] == ("merge", "merge-key", {"branch_id": "fork"})
+    assert seen[1][0] == "branch" and seen[1][1]
+    assert seen[1][2] == {"branch_id": "fork", "action": "archive"}

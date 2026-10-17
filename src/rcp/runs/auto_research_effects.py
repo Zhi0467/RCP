@@ -34,6 +34,7 @@ from rcp.runs.auto_research import (
     AutoResearchCommandEffects,
     AutoResearchCommandInvalid,
     AutoResearchCommandUnavailable,
+    AutoResearchMergeCommand,
     AutoResearchValidateCommand,
     project_auto_research_episode,
     validate_auto_research_worker_request,
@@ -102,6 +103,7 @@ def auto_research_command_effects(
     graph_state: AutoResearchGraphState,
     execution_host: str,
     apply_patch: AutoResearchApplyPatch | None = None,
+    merge: AutoResearchMergeCommand | None = None,
     on_graph_applied: AutoResearchGraphApplied | None = None,
     on_watcher_ready: AutoResearchWatcherReadyHook | None = None,
     experiment_coordinator: AutoResearchExperimentCoordinator | None = None,
@@ -825,6 +827,7 @@ def auto_research_command_effects(
         reconcile_unknown=reconcile_unknown,
         worker_lookup=worker_lookup,
         verify_spawn=verify_spawn,
+        merge=merge,
     )
 
 

@@ -180,3 +180,129 @@ def test_fork_before_home_transfer_retains_current_authorizer(manifest):
     branch = current.create_branch(metadata)
     assert branch.state().revision == past.revision
     assert branch.branch_metadata().authorized_by == authorizer
+
+
+def test_merge_delivery_is_bound_to_parent_across_crash_and_later_history(history):
+    from rcp.core.models import BranchMergeProvenance, BranchMergeReceipt
+    from rcp.history import BranchMergeAlreadyCommitted
+    from rcp.history.branches import read_branch_snapshots
+    from rcp.runs.branch_merge import branch_merge_id
+
+    destination = history.create_branch(fork_metadata(history, history.head_ref()))
+    destination.append(_branch_patch("ev/destination"))
+    source = history.create_branch(fork_metadata(history, destination.head_ref()))
+    source.append(_branch_patch("ev/source"))
+    metadata = source.branch_metadata()
+    provenance = BranchMergeProvenance(
+        merge_id=branch_merge_id(metadata),
+        branch_id=metadata.branch_id,
+        episode_id=metadata.episode_id,
+        branch_base_head=metadata.effective_parent_head,
+        branch_head=metadata.head,
+        rebased_main_head=destination.head_ref(),
+        merge_task_id="fork-merge",
+    )
+    patch = _branch_patch("ev/source").model_copy(
+        update={
+            "profile": "orchestrator",
+            "task_id": provenance.merge_task_id,
+            "authorized_by": metadata.authorized_by,
+            "branch_merge": provenance,
+        }
+    )
+    committed, _ = destination.append(patch)
+    destination.append(_branch_patch("ev/later"))
+    # Crash before receipt publication: reads prove delivery without writing a receipt.
+    snapshot = read_branch_snapshots(history, [(source.branch_id, None, "project")])[
+        source.branch_id
+    ]
+    assert snapshot is not None and len(snapshot.receipts) == 1
+    assert source.merge_receipts() == []
+    with pytest.raises(BranchMergeAlreadyCommitted):
+        destination.append(patch)
+    receipt = source.reconcile_merge_receipt(
+        provenance.merge_id, destination=destination.graph_target
+    )
+    assert receipt == snapshot.receipts[0]
+    assert receipt.result_main_head.target == destination.graph_target
+    assert receipt.result_main_head.revision == committed.revision
+    # A later parent-to-main merge and a descendant inheriting the Patch cannot redirect delivery.
+    parent_metadata = destination.branch_metadata()
+    parent_merge = BranchMergeProvenance(
+        merge_id=branch_merge_id(parent_metadata),
+        branch_id=destination.branch_id,
+        episode_id=None,
+        branch_base_head=parent_metadata.effective_parent_head,
+        branch_head=parent_metadata.head,
+        rebased_main_head=history.head_ref(),
+        merge_task_id="parent-merge",
+    )
+    history.append(
+        _branch_patch("ev/source").model_copy(
+            update={
+                "profile": "orchestrator",
+                "task_id": parent_merge.merge_task_id,
+                "authorized_by": parent_metadata.authorized_by,
+                "branch_merge": parent_merge,
+            }
+        )
+    )
+    descendant = history.create_branch(fork_metadata(history, destination.head_ref()))
+    assert descendant.validated_merge_receipts() == []
+    assert source.validated_merge_receipts() == [receipt]
+    with pytest.raises(ValueError):
+        source.reconcile_merge_receipt(provenance.merge_id, destination=history.graph_target)
+    with pytest.raises(ValueError):
+        history.append(patch)
+    redirected = provenance.model_copy(
+        update={
+            "branch_base_head": metadata.base_head,
+            "rebased_main_head": history.head_ref(),
+        }
+    )
+    with pytest.raises(ValueError):
+        history.append(patch.model_copy(update={"branch_merge": redirected}))
+    invalid = receipt.model_dump(mode="json")
+    invalid["result_main_head"]["target"] = {"kind": "main", "branch_id": None}
+    with pytest.raises(ValueError):
+        BranchMergeReceipt.model_validate(invalid)
+
+
+def test_no_change_fork_receipt_suppresses_later_destination_append(history):
+    from rcp.core.models import BranchMergeProvenance, BranchMergeReceipt
+    from rcp.history import BranchMergeAlreadyResolved
+    from rcp.runs.branch_merge import branch_merge_id
+
+    destination = history.create_branch(fork_metadata(history, history.head_ref()))
+    source = history.create_branch(fork_metadata(history, destination.head_ref()))
+    metadata = source.branch_metadata()
+    provenance = BranchMergeProvenance(
+        merge_id=branch_merge_id(metadata),
+        branch_id=metadata.branch_id,
+        episode_id=metadata.episode_id,
+        branch_base_head=metadata.effective_parent_head,
+        branch_head=metadata.head,
+        rebased_main_head=destination.head_ref(),
+        merge_task_id="no-change-fork",
+    )
+    receipt = source.write_merge_receipt(
+        BranchMergeReceipt(
+            outcome="no_change",
+            provenance=provenance,
+            result_main_head=destination.head_ref(),
+            authorized_by=metadata.authorized_by,
+        )
+    )
+    destination.append(_branch_patch("ev/later"))
+    patch = _branch_patch("ev/duplicate").model_copy(
+        update={
+            "profile": "orchestrator",
+            "task_id": provenance.merge_task_id,
+            "authorized_by": metadata.authorized_by,
+            "branch_merge": provenance,
+        }
+    )
+    with pytest.raises(BranchMergeAlreadyResolved) as rejected:
+        destination.append(patch)
+    assert rejected.value.receipt == receipt
+    assert "ev/duplicate" not in destination.state().nodes

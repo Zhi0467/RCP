@@ -706,3 +706,6 @@ GRAPH_HISTORY_STORE_MAX_COUNT = 4096
 GRAPH_HISTORY_STORE_TTL_SECONDS = 30 * 24 * 60 * 60
 
 RESEARCH_VIEW_PIN_LIMIT = 12
+
+# Semantic branch merge retries after its destination advances.
+MAX_BRANCH_MERGE_REBASE_ROUNDS = 3
