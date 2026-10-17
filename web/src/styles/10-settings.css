@@ -2693,19 +2693,6 @@ button.agent-provider-label {
     border-left: 0;
     border-top: 1px solid var(--line);
   }
-  .research-path {
-    grid-template-columns: 1fr 1fr;
-  }
-  .research-path-stage + .research-path-stage {
-    border-left: 0;
-    border-top: 1px solid var(--line);
-  }
-  .research-path-stage:nth-child(even) {
-    border-left: 1px solid var(--line);
-  }
-  .research-path-stage:nth-child(2) {
-    border-top: 0;
-  }
 }
 
 @media (max-width: 560px) {
@@ -2954,15 +2941,6 @@ button.agent-provider-label {
   .run-inspector-actions {
     align-items: flex-start;
     flex-direction: column;
-  }
-  .research-path {
-    grid-template-columns: 1fr;
-  }
-  .research-path-stage:nth-child(even) {
-    border-left: 0;
-  }
-  .research-path-stage:nth-child(2) {
-    border-top: 1px solid var(--line);
   }
   .agent-run-row {
     align-items: start;

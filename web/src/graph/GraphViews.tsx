@@ -53,7 +53,6 @@ import {
   PinOff,
   RotateCcw,
   Scan,
-  Search,
   Workflow,
   X,
 } from "lucide-react";
@@ -75,7 +74,6 @@ import {
   buildNodeProjectionEmphasis,
   buildDagProjection,
   edgeProjectionEmphasis,
-  projectNodes,
   relationFocus,
   type DagOntologyProjection,
 } from "./graphProjection";
@@ -93,7 +91,6 @@ import {
   type DagLayoutMode,
   type DagPosition,
 } from "./useForceDag";
-import { buildResearchPaths } from "./researchProjection";
 import { buildExperimentRun, type ExperimentRun } from "../experiments/runProjection";
 import {
   ExperimentRunDetail,
@@ -148,91 +145,9 @@ interface Props {
   changedNodeIds?: ReadonlySet<string>;
 }
 
-interface ScientificProps extends Props, GraphEditingProps {}
-
 const dagTypes = RESEARCH.nodeTypes;
 const NO_CHANGED_NODES: ReadonlySet<string> = new Set();
 const dagTypeMeta = TYPE_LENS;
-
-export function ScientificView({
-  graph,
-  trustView,
-  onSelectNode,
-  changedNodeIds = NO_CHANGED_NODES,
-}: ScientificProps) {
-  const nodes = projectNodes(Object.values(graph.nodes), trustView);
-  const projection = buildResearchPaths(nodes, Object.values(graph.edges));
-  const hidden = Object.values(graph.nodes).length - nodes.length;
-  return (
-    <section className="view-panel research-view">
-      <ViewHeading
-        title="Research paths"
-        aside={
-          hidden > 0
-            ? `${hidden} hidden`
-            : `${projection.paths.length} question${projection.paths.length === 1 ? "" : "s"}`
-        }
-      />
-      {projection.paths.length === 0 && projection.unconnected.length === 0 ? (
-        <EmptyState icon={<Search size={20} />} title="No research structure" />
-      ) : (
-        <>
-          <div className="research-path-list">
-            {projection.paths.map((path) => (
-              <article className="research-path" key={path.question.id}>
-                <div className="research-path-stage question-stage">
-                  <span className="research-stage-label">Question</span>
-                  <ResearchNodeCard
-                    node={path.question}
-                    onSelectNode={onSelectNode}
-                    changed={changedNodeIds.has(path.question.id)}
-                  />
-                </div>
-                <ResearchStage
-                  label="Ideas & decisions"
-                  changedNodeIds={changedNodeIds}
-                  nodes={path.ideas}
-                  onSelectNode={onSelectNode}
-                />
-                <ResearchStage
-                  label="Experiments"
-                  changedNodeIds={changedNodeIds}
-                  nodes={path.experiments}
-                  onSelectNode={onSelectNode}
-                />
-                <ResearchStage
-                  label="Evidence"
-                  nodes={path.evidence}
-                  changedNodeIds={changedNodeIds}
-                  onSelectNode={onSelectNode}
-                />
-              </article>
-            ))}
-          </div>
-          {projection.unconnected.length > 0 && (
-            <section className="research-unconnected">
-              <header>
-                <strong>Not yet connected</strong>
-                <span>{projection.unconnected.length}</span>
-              </header>
-              <div>
-                {projection.unconnected.map((node) => (
-                  <ResearchNodeCard
-                    node={node}
-                    onSelectNode={onSelectNode}
-                    changed={changedNodeIds.has(node.id)}
-                    compact
-                    key={node.id}
-                  />
-                ))}
-              </div>
-            </section>
-          )}
-        </>
-      )}
-    </section>
-  );
-}
 
 interface DagProps extends Props, GraphEditingProps {
   graphTarget?: GraphTargetRef;
@@ -2021,64 +1936,6 @@ export function AttentionOverview({
   );
 }
 
-function ResearchStage({
-  label,
-  nodes,
-  changedNodeIds,
-  onSelectNode,
-}: {
-  label: string;
-  nodes: GraphNode[];
-  changedNodeIds: ReadonlySet<string>;
-  onSelectNode: (node: GraphNode) => void;
-}) {
-  return (
-    <div className="research-path-stage">
-      <span className="research-stage-label">{label}</span>
-      <div className="research-stage-cards">
-        {nodes.length > 0 ? (
-          nodes.map((node) => (
-            <ResearchNodeCard
-              node={node}
-              onSelectNode={onSelectNode}
-              changed={changedNodeIds.has(node.id)}
-              key={node.id}
-            />
-          ))
-        ) : (
-          <span className="research-stage-empty">—</span>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ResearchNodeCard({
-  node,
-  onSelectNode,
-  compact = false,
-  changed = false,
-}: {
-  node: GraphNode;
-  onSelectNode: (node: GraphNode) => void;
-  compact?: boolean;
-  changed?: boolean;
-}) {
-  const { nodeIds: flaggedNodeIds } = useEvidenceFlags();
-  return (
-    <button
-      className={`research-node-card ${flaggedNodeIds.has(node.id) ? "has-evidence-flag" : ""} ${node.standing} ${node.draft_touched ? "draft-touched" : ""} ${compact ? "compact" : ""} ${changed ? "digest-changed" : ""}`}
-      onClick={() => onSelectNode(node)}
-    >
-      <span className="research-node-topline">
-        <span>{nodeTypeLabel(node)}</span>
-        <span className={`standing ${node.standing}`}>{node.standing}</span>
-      </span>
-      <strong>{node.title}</strong>
-    </button>
-  );
-}
-
 function edgeGeometry(source: DagPosition, target: DagPosition, edgeIndex: number) {
   const dx = target.x - source.x;
   const dy = target.y - source.y;
@@ -2120,7 +1977,7 @@ function readDagLayoutMode(): DagLayoutMode {
   }
 }
 
-function ViewHeading({
+export function ViewHeading({
   title,
   aside,
   action,
@@ -2138,7 +1995,7 @@ function ViewHeading({
   );
 }
 
-function EmptyState({ icon, title }: { icon: React.ReactNode; title: string }) {
+export function EmptyState({ icon, title }: { icon: React.ReactNode; title: string }) {
   return (
     <div className="empty-state">
       {icon}

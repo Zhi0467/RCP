@@ -68,8 +68,15 @@ boundaries follow [revision observation](api-web-and-desktop-projections.md#revi
 
 ## Projections
 
-Research shows question-centered paths and separates unconnected records. Research
-flow places types in the order defined by the [Research projection](api-web-and-desktop-projections.md#research).
+Research is a drill-down, one level per screen, with a trail back up. Question
+cards carry active, blocked, and digest-changed counts for everything beneath
+them. A question page lists sub-questions, Hypotheses, and work that tests no
+Hypothesis. A Hypothesis page puts its Experiments in the middle, one collapsed
+Inputs box before them, and one Evidence box after each; boxes and the verdict
+tally open as their own trail step, never a box stacked under the row. At phone
+width each Experiment keeps its Evidence box beside it. Records no question
+reaches stay explicit. Research flow places types in the order defined by the
+[Research projection](api-web-and-desktop-projections.md#research).
 
 Runs has no page title. Needs Action and In progress are unfolded, mixed-mode,
 reverse-chronological lists. Only runs stopped pending human action belong in

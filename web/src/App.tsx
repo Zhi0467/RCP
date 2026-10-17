@@ -421,8 +421,8 @@ const DagView = lazy(() =>
 const ExecutionView = lazy(() =>
   import("./graph/GraphViews").then((module) => ({ default: module.ExecutionView })),
 );
-const ScientificView = lazy(() =>
-  import("./graph/GraphViews").then((module) => ({ default: module.ScientificView })),
+const ResearchDrilldown = lazy(() =>
+  import("./graph/ResearchDrilldown").then((module) => ({ default: module.ResearchDrilldown })),
 );
 const LoadedPaperWorkspace = lazy(() =>
   import("./paper/PaperWorkspace").then((module) => ({ default: module.LoadedPaperWorkspace })),
@@ -985,6 +985,7 @@ function MemberApp({
     dagRelationFocusId,
     panelRef,
     activeDagViewportRef,
+    activeResearchTrailRef,
     captureProjectSelection,
     restoreProjectSelection,
     resetProjectSelection,
@@ -5038,12 +5039,12 @@ function MemberApp({
             </div>
           )}
           {view === "scientific" && (
-            <ScientificView
-              {...graphEditingProps}
+            <ResearchDrilldown
               graph={presentedGraph}
               trustView={trustView}
               changedNodeIds={digestChangedNodes}
               onSelectNode={openNode}
+              trailRef={activeResearchTrailRef!}
             />
           )}
           {view === "dag" && (

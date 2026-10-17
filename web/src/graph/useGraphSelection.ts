@@ -30,6 +30,7 @@ import type {
   TrustView,
 } from "../core/types";
 import type { DagViewport } from "./dagZoom";
+import type { ResearchStep } from "./ResearchDrilldown";
 
 export const emptyGraph: GraphState = {
   revision: 0,
@@ -185,6 +186,7 @@ export function useGraphSelection({
   const viewRef = useRef<AppView>(view);
   const researchSubviewRef = useRef<AppView>("scientific");
   const dagViewportRefsRef = useRef(new Map<string, ProjectViewportRef<DagViewport>>());
+  const researchTrailRefsRef = useRef(new Map<string, ProjectViewportRef<ResearchStep[]>>());
   const selectionSnapshotRef = useRef<SelectionSnapshot>({
     runScope,
     selectedNodeId: selectedNode?.id ?? null,
@@ -212,6 +214,9 @@ export function useGraphSelection({
 
   const activeDagViewportRef = projectId
     ? projectViewportRef(dagViewportRefsRef.current, graphSessionKey(projectId, graphTarget))
+    : null;
+  const activeResearchTrailRef = projectId
+    ? projectViewportRef(researchTrailRefsRef.current, graphSessionKey(projectId, graphTarget))
     : null;
 
   const captureProjectSelection = useCallback(
@@ -566,8 +571,10 @@ export function useGraphSelection({
     setDagRelationFocusId(null);
   }, []);
   const forgetProjectViewport = useCallback((id: string) => {
-    for (const key of dagViewportRefsRef.current.keys()) {
-      if (key === id || key.startsWith(`${id}:branch:`)) dagViewportRefsRef.current.delete(key);
+    for (const refs of [dagViewportRefsRef.current, researchTrailRefsRef.current]) {
+      for (const key of refs.keys()) {
+        if (key === id || key.startsWith(`${id}:branch:`)) refs.delete(key);
+      }
     }
   }, []);
 
@@ -603,6 +610,7 @@ export function useGraphSelection({
     dagRelationFocusId,
     panelRef,
     activeDagViewportRef,
+    activeResearchTrailRef,
     captureProjectSelection,
     restoreProjectSelection,
     resetProjectSelection,
