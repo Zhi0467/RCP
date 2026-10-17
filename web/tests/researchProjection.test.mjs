@@ -41,6 +41,7 @@ const nodes = [
   node("e/budget", "evidence"),
   node("d/seed-count", "decision", { status: "open" }),
   node("e/variance", "evidence"),
+  node("b/seed-budget", "blocker", { status: "open" }),
   node("orphan", "decision"),
 ];
 const edges = [
@@ -64,6 +65,7 @@ const edges = [
   edge("x/probe", "blocked_by", "b/gpu"),
   edge("x/probe", "governed_by", "d/seed-count"),
   edge("e/variance", "informs", "d/seed-count"),
+  edge("d/seed-count", "blocked_by", "b/seed-budget"),
 ];
 
 test("a Hypothesis page gathers its Experiments' inputs and weighs each result", () => {
@@ -104,6 +106,7 @@ test("question pages share Hypotheses and keep work that tests none", () => {
     "e/probe",
     "d/seed-count",
     "b/gpu",
+    "b/seed-budget",
     "e/survey",
     "e/variance",
   ]);

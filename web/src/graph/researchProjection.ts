@@ -217,10 +217,14 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
         ...outgoing(node.id, "blocked_by"),
       ]),
     ]);
-    // Evidence bearing on any Decision or Blocker shown here, from any origin.
-    return uniqueNodes([
+    // Then the Blockers of every Decision shown, and Evidence bearing on any of them.
+    const inputs = uniqueNodes([
       ...shown,
-      ...shown.flatMap((node) => [
+      ...shown.flatMap((node) => (node.type === "decision" ? outgoing(node.id, "blocked_by") : [])),
+    ]);
+    return uniqueNodes([
+      ...inputs,
+      ...inputs.flatMap((node) => [
         ...incoming(node.id, "informs"),
         ...incoming(node.id, "addresses"),
       ]),
