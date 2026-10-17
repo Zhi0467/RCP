@@ -1030,6 +1030,7 @@ def test_fork_records_transfer_parent_names_and_archive_state(manifest, tmp_path
     with store.connection() as connection:
         connection.execute("UPDATE graph_branches SET archived=1 WHERE branch_id=?", (fork_id,))
     records = store.export_project_transfer_records(project_id, attributions=attributions)
+    records.validate_canonical_branches({})
     fork = next(branch for branch in records.branches if branch.branch_id == fork_id)
     assert fork.parent_head.target.branch_id == parent_id
     assert fork.parent_head.transition_id == "a" * 64

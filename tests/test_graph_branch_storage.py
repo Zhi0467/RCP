@@ -7,6 +7,7 @@ import sqlite3
 import uuid
 from contextlib import chdir
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -15,7 +16,7 @@ from rcp.core.models import BranchMergeProvenance, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
 from rcp.runs.branch_merge import branch_merge_id
-from rcp.storage import AppStore
+from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.branch_names import BranchNameTaken
 from tests.helpers import unchecked_write_authority
 from tests.test_episode_storage import _episode
@@ -77,19 +78,45 @@ def test_branch_identity_ownership_names_and_archive_admission(tmp_path: Path) -
     store.set_branch_archived("project", child.branch_id, archived=True)
     assert not store.branch_admits_new_work("project", child.branch_id)
     assert store.branch_admits_new_work("project", branch_id)
-    with store.connection() as connection, pytest.raises(ValueError, match="graph_branch_archived"):
-        store.require_episode_binding_admission_open(
-            connection, "project", branch_id=child.branch_id
-        )
     store.set_branch_archived("project", branch_id, archived=True)
-    with store.connection() as connection, pytest.raises(ValueError, match="graph_branch_archived"):
-        store.require_episode_binding_admission_open(connection, "project", owner_episode_id="root")
     store.set_branch_archived("project", child.branch_id, archived=False)
     assert store.branch_admits_new_work("project", child.branch_id)
-    with store.connection() as connection:
-        store.require_episode_binding_admission_open(
-            connection, "project", branch_id=child.branch_id, owner_episode_id="root"
-        )
+
+
+@pytest.mark.parametrize("kind", ["artifact_edit", "project_chat"])
+def test_archived_branch_blocks_origin_bound_artifact_admission(
+    tmp_path: Path, kind: Literal["artifact_edit", "project_chat"]
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.create_episode(_episode(store, "root"))
+    branch = store.create_graph_branch(
+        project_id="project",
+        branch_id=str(uuid.uuid4()),
+        owner_episode_id=None,
+        parent_head=GraphHeadRef(revision=0),
+        created_by="human:user",
+    )
+    task = AgentTaskRecord(
+        operation_id="edit",
+        project_id="project",
+        kind=kind,
+        status="queued",
+        status_message="",
+        graph_target=GraphTargetRef(kind="branch", branch_id=branch.branch_id),
+        request={"artifact_edit": {"origin_bound": True}, "mode": "discuss"},
+        created_at=store.now(),
+        updated_at=store.now(),
+    )
+    store.set_branch_archived("project", branch.branch_id, archived=True)
+    with pytest.raises(ValueError, match="graph_branch_archived"):
+        store.create_artifact_edit_task(task)
+    assert store.agent_task(task.operation_id) is None
+    store.set_branch_archived("project", branch.branch_id, archived=False)
+    store.create_artifact_edit_task(task)
+    store.set_branch_archived("project", branch.branch_id, archived=True)
+    store.complete_agent_task(task.operation_id, applied_revision=None, result={})
+    settled = store.agent_task(task.operation_id)
+    assert settled is not None and settled.status == "succeeded"
 
 
 def test_pre55_legacy_branch_retains_replay_names_archive_and_merge(tmp_path: Path) -> None:

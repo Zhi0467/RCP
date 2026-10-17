@@ -12,6 +12,7 @@ from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history.branches import BranchHistoryManager
 from rcp.service import ProjectService
 from rcp.storage import EpisodeRecord
+from rcp.transport import StateUnavailable
 from tests.helpers import authorized_human, create_named_app, signed_in_client
 
 from .test_branch_merge_api import (
@@ -79,7 +80,7 @@ def test_graph_refs_lists_unique_branches_past_episode_window_and_archive_filter
                 updated_at=created_at,
             )
         )
-        history.create_episode_branch(
+        history.create_branch(
             GraphBranchMetadata(
                 kind=episode.mode,
                 branch_id=episode_id,
@@ -434,6 +435,10 @@ def test_human_fork_exact_parent_identity_retry_and_archive(manifest, tmp_path) 
         ).status_code
         == 200
     )
+    retried = harness.client.post(path, json=request)
+    assert retried.status_code == 201, retried.text
+    assert retried.json()["branch_id"] == fork["branch_id"]
+    assert retried.json()["name"] == "renamed-fork"
     for archived in (True, False):
         response = harness.client.put(
             f"{path}/{fork['branch_id']}/archived", json={"archived": archived}
@@ -485,3 +490,29 @@ def test_human_fork_refuses_unbound_or_missing_head(manifest, tmp_path, at) -> N
     )
     assert response.status_code in {404, 422}, response.text
     assert app.state.background_tasks.store.graph_branches(app.state.default_project_id) == []
+
+
+@pytest.mark.parametrize("phase", ["resolve", "create_graph_fork", "_branch_ref_for_http"])
+def test_human_fork_unavailable_state_is_retryable(manifest, tmp_path, monkeypatch, phase):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    client = signed_in_client(app)
+    history = app.state.catalog.open(project_id).history
+    request = {"request_id": str(uuid.uuid4()), "at": f"main@{history.head_ref().revision}"}
+    path = f"/api/projects/{project_id}/graph-refs"
+
+    def unavailable(*_args, **_kwargs):
+        raise StateUnavailable("Canonical state is temporarily unavailable.")
+
+    with monkeypatch.context() as failure:
+        failure.setattr(
+            type(history.history_engine) if phase == "resolve" else episode_routes,
+            phase,
+            unavailable,
+        )
+        response = client.post(path, json=request)
+    assert response.status_code == 503, response.text
+    response = client.post(path, json=request)
+    assert response.status_code == 201, response.text
+    assert response.json()["branch_id"] == request["request_id"]
+    assert len(app.state.background_tasks.store.graph_branches(project_id)) == 1

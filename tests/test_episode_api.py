@@ -92,7 +92,7 @@ def create_recoverable_auto_episode(
     authorizer = authorized_human(store)
     graph_base_head = history.head_ref()
     graph_target = GraphTargetRef(kind="branch", branch_id=episode_id)
-    history.create_episode_branch(
+    history.create_branch(
         GraphBranchMetadata(
             branch_id=episode_id,
             episode_id=episode_id,
@@ -199,7 +199,7 @@ def create_terminal_auto_episode(
     authorizer = authorized_human(store)
     graph_base_head = history.head_ref()
     graph_target = GraphTargetRef(kind="branch", branch_id=episode_id)
-    history.create_episode_branch(
+    history.create_branch(
         GraphBranchMetadata(
             branch_id=episode_id,
             episode_id=episode_id,
@@ -409,9 +409,12 @@ def test_episode_list_start_and_stop_use_only_the_canonical_surface(manifest, tm
         current = listed.json()[0]
         assert current["episode_id"] == episode_id
         assert current["bulletin_enabled"] is False
-        assert current["graph_target"] == {"kind": "branch", "branch_id": episode_id}
+        branch_id = payload["graph_target"]["branch_id"]
+        assert branch_id != episode_id
+        assert current["graph_target"] == {"kind": "branch", "branch_id": branch_id}
         assert current["graph_base_head"]["target"] == {"kind": "main", "branch_id": None}
-        assert current["graph_branch"]["branch_id"] == episode_id
+        assert current["graph_branch"]["branch_id"] == branch_id
+        assert current["graph_branch"]["episode_id"] == episode_id
         assert current["graph_branch"]["base_head"] == current["graph_base_head"]
         assert current["tasks"][0]["graph_target"] == current["graph_target"]
         assert current["starting_instruction"] == "Follow the contradictory evidence."
@@ -1147,7 +1150,8 @@ def test_episode_list_keeps_every_auto_research_chain_current_member(manifest, t
     store = app.state.background_tasks.store
     as_of = datetime.now(UTC)
     root_id = str(uuid.uuid4())
-    branch = json.dumps({"kind": "branch", "branch_id": root_id})
+    branch_id = str(uuid.uuid4())
+    branch = json.dumps({"kind": "branch", "branch_id": branch_id})
     base = json.dumps({"target": {"kind": "main"}, "revision": 0})
     current_id = str(uuid.uuid4())
     rows = [
@@ -1183,6 +1187,13 @@ def test_episode_list_keeps_every_auto_research_chain_current_member(manifest, t
             """,
             [(row[0], project_id, *row[1:], row[-1]) for row in rows],
         )
+    store.create_graph_branch(
+        project_id=project_id,
+        branch_id=branch_id,
+        owner_episode_id=root_id,
+        parent_head=GraphHeadRef(revision=0),
+        created_by=f"orchestrator:{root_id}",
+    )
 
     listed = {episode.episode_id for episode in listed_episodes(store, project_id)}
     # The chain's current member stays listed; its older root does not need to.
@@ -1191,16 +1202,10 @@ def test_episode_list_keeps_every_auto_research_chain_current_member(manifest, t
     assert root_id not in listed
 
     # A live member stays listed on an archived branch even when its ended root is hidden.
-    from rcp.core.models import EpisodeIsolationState
-
-    archived = EpisodeIsolationState(owner_episode_id=root_id, status="ready", graph_archived=True)
+    store.set_branch_archived(project_id, branch_id, archived=True)
     with store.connection() as connection:
         connection.execute(
             "UPDATE episodes SET status = 'running' WHERE episode_id = ?", (current_id,)
-        )
-        connection.execute(
-            "INSERT INTO episode_isolation_states VALUES (?, ?, ?)",
-            (project_id, root_id, archived.model_dump_json()),
         )
     assert current_id in {episode.episode_id for episode in listed_episodes(store, project_id)}
 

@@ -44,7 +44,7 @@ def history_query(manifest, tmp_path):
         PaperService(manifest, AppStore(tmp_path / "app.db")),
         project_id="project",
     )
-    branch = service.history.create_episode_branch(_branch_metadata(service.history))
+    branch = service.history.create_branch(_branch_metadata(service.history))
     branch.append(_branch_patch("ev/long", title="界" * 60_000))
     scope = GraphReadScope(project_id=service._project_id, target=branch.graph_target)
     return service, scope, branch

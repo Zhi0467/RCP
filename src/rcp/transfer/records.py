@@ -24,7 +24,7 @@ from pydantic import (
 
 from rcp.artifacts import kept_binding_is_complete
 from rcp.core.models import GraphBranchMetadata
-from rcp.limits import GRAPH_BRANCH_MAX_DEPTH
+from rcp.history.ancestry import branch_ancestry
 from rcp.transfer.archive import (
     TransferArchiveActor,
     TransferArchiveAttribution,
@@ -1210,24 +1210,19 @@ class TransferRecordBundle(_StrictTransferRecord):
             for episode in self.episodes
         ):
             raise ValueError("episode references an unknown graph branch")
+
+        def parent_branch(branch_id: str) -> str | None:
+            branch = branches.get(branch_id)
+            if branch is None:
+                raise ValueError("branch ancestry requires every parent")
+            return branch.parent_head.target.branch_id
+
         for branch in self.branches:
             if branch.owner_episode_id is not None:
                 owner = episodes.get(branch.owner_episode_id)
                 if owner is None or owner.continues_episode_id is not None:
                     raise ValueError("branch owner must name an episode chain root")
-            seen: set[str] = set()
-            ancestor = branch
-            while ancestor.parent_head.target.kind == "branch":
-                parent_id = ancestor.parent_head.target.branch_id
-                if parent_id in seen:
-                    raise ValueError("branch ancestry contains a cycle")
-                if parent_id not in branches:
-                    raise ValueError("branch ancestry requires every parent")
-                assert parent_id is not None
-                seen.add(parent_id)
-                if len(seen) >= GRAPH_BRANCH_MAX_DEPTH:
-                    raise ValueError("branch ancestry exceeds the depth limit")
-                ancestor = branches[parent_id]
+            branch_ancestry(branch.branch_id, parent_branch)
         reserved_names = [
             name for episode in self.episodes for name in episode.reserved_branch_names
         ] + [name for branch in self.branches for name in branch.reserved_names]
@@ -1326,10 +1321,11 @@ class TransferRecordBundle(_StrictTransferRecord):
     def validate_canonical_branches(self, metadata: Mapping[str, GraphBranchMetadata]) -> None:
         if self.schema_version < 6:
             return
-        if {branch.branch_id for branch in self.branches} != set(metadata):
-            raise ValueError("operational branch inventory differs from canonical history")
-        for branch in self.branches:
-            canonical = metadata[branch.branch_id]
+        branches = {branch.branch_id: branch for branch in self.branches}
+        if not metadata.keys() <= branches.keys():
+            raise ValueError("canonical branch history requires its operational record")
+        for branch_id, canonical in metadata.items():
+            branch = branches[branch_id]
             if (
                 canonical.project_id != self.project_id
                 or canonical.episode_id != branch.owner_episode_id

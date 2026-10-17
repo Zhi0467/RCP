@@ -138,7 +138,7 @@ def merge_history(manifest):
     template = _context()
     base_head = history.head_ref()
     branch_id = template.metadata.branch_id
-    branch = history.create_episode_branch(
+    branch = history.create_branch(
         GraphBranchMetadata(
             branch_id=branch_id,
             episode_id=branch_id,
@@ -208,7 +208,7 @@ async def test_merge_recomputes_guidance_validity_without_provider(
         _append(history, create_experiment, create_edge)
     template = _context()
     base_head = history.head_ref()
-    branch = history.create_episode_branch(
+    branch = history.create_branch(
         template.metadata.model_copy(
             update={
                 "base_head": base_head,
@@ -642,7 +642,7 @@ def _forked(manifest, *main_ops: dict, human_ops: tuple[dict, ...] = ()):
         _append(history, operation, human=True)
     template = _context()
     base_head = history.head_ref()
-    branch = history.create_episode_branch(
+    branch = history.create_branch(
         template.metadata.model_copy(
             update={
                 "base_head": base_head,

@@ -51,6 +51,50 @@ def test_fork_at_past_head_excludes_later_revisions(history):
     assert history.create_branch(branch.branch_metadata()).head_ref() == branch.head_ref()
 
 
+def test_existing_branch_reconciles_without_replaying_or_requiring_writable_main(
+    history, monkeypatch
+):
+    metadata = fork_metadata(history, history.head_ref())
+    branch = history.create_branch(metadata)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("existing branch attempted parent replay or write admission")
+
+    monkeypatch.setattr(history, "materialize", unexpected)
+    monkeypatch.setattr(history, "require_writable", unexpected)
+    monkeypatch.setattr("rcp.history.branches.branch_parent_snapshot", unexpected)
+    assert history.create_branch(metadata).branch_metadata() == branch.branch_metadata()
+
+
+def test_fork_creation_validates_parent_once(manifest, tmp_path, monkeypatch):
+    from rcp.history import branches
+    from rcp.runs.graph_forks import create_graph_fork
+    from tests.helpers import authorized_human
+    from tests.test_branch_merge_api import _create_branch_harness
+
+    harness = _create_branch_harness(manifest, tmp_path, change="evidence")
+    original = branches.branch_parent_snapshot
+    calls = []
+
+    def capture(history, parent_head, branch_id):
+        calls.append(parent_head)
+        return original(history, parent_head, branch_id)
+
+    monkeypatch.setattr(branches, "branch_parent_snapshot", capture)
+    parent = harness.branch.head_ref()
+    branch = create_graph_fork(
+        harness.service.history,
+        harness.store,
+        project_id=harness.project_id,
+        branch_id=str(uuid.uuid4()),
+        parent_head=parent,
+        authorized_by=authorized_human(harness.app),
+        created_by="human:request",
+    )
+    assert calls == [parent]
+    assert branch.state() == harness.branch.state()
+
+
 def test_nested_fork_matches_linear_replay_and_preserves_original_heads(history, tmp_path):
     first = history.create_branch(fork_metadata(history, history.head_ref()))
     first.append(_branch_patch("ev/ancestor"))
@@ -139,7 +183,7 @@ def test_cycle_refused_before_replay(history):
 
 def test_old_writer_metadata_reads_without_rewriting(history):
     metadata = _branch_metadata(history)
-    branch = history.create_episode_branch(metadata)
+    branch = history.create_branch(metadata)
     path = branch.root / "branch.json"
     raw = metadata.model_dump(mode="json", exclude={"parent_head", "created_by"})
     content = json.dumps(raw)
@@ -150,7 +194,8 @@ def test_old_writer_metadata_reads_without_rewriting(history):
     assert path.read_text() == content
 
 
-def test_fork_before_home_transfer_retains_current_authorizer(manifest):
+@pytest.mark.parametrize("kind", ["fork", "auto_research", "experiment_loop"])
+def test_fork_before_home_transfer_retains_current_authorizer(manifest, kind):
     from tests.test_project_home_transfer import (
         PROJECT_ID,
         SOURCE_SPACE_ID,
@@ -178,5 +223,15 @@ def test_fork_before_home_transfer_retains_current_authorizer(manifest):
         update={"project_id": PROJECT_ID, "authorized_by": authorizer}
     )
     branch = current.create_branch(metadata)
+    if kind != "fork":
+        path = branch.root / "branch.json"
+        path.write_text(
+            metadata.model_copy(
+                update={"kind": kind, "episode_id": str(uuid.uuid4())}
+            ).model_dump_json()
+        )
+        with pytest.raises(ValueError):
+            current.branch(metadata.branch_id, initialize=False)
+        return
     assert branch.state().revision == past.revision
     assert branch.branch_metadata().authorized_by == authorizer

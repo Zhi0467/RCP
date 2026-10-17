@@ -469,3 +469,30 @@ def test_report_delete_bumps_episode_graph_and_digest(manifest, tmp_path):
     after = generations()
     for key in (("episodes", ""), ("episode", episode.episode_id), ("graph", ""), ("digest", "")):
         assert after[key] > before.get(key, 0)
+
+
+@pytest.mark.parametrize("version", [49, 54])
+def test_historical_watermarks_work_before_branch_table(tmp_path: Path, version: int) -> None:
+    from rcp.storage.resource_versions import migrate_agent_live_status, migrate_resource_versions
+    from tests.storage_helpers import downgrade_resource_watermarks
+
+    store = AppStore(tmp_path / "store.db")
+    with store.connection() as connection:
+        downgrade_resource_watermarks(connection)
+        migrate_resource_versions(connection)
+        if version == 54:
+            migrate_agent_live_status(connection)
+        _insert(
+            connection, "episodes", {"invocation_ceiling": 1, "mode": "auto_research"}, store.now()
+        )
+        _insert(connection, "graph_runs", _CASES[0][3], store.now())
+        _insert(
+            connection,
+            "auto_research_messages",
+            {
+                "sender_role": "human",
+                "delivery_operation_id": "task",
+            },
+            store.now(),
+        )
+        assert _generation(connection, "tasks.progress") == 1
