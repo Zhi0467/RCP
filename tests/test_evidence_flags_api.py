@@ -111,6 +111,28 @@ def test_address_admits_one_ordinary_work_turn_and_replays(flagged):
     assert len(launches) == 1
 
 
+def test_address_refuses_a_consolidation_notice(flagged):
+    app, client, store, project, flag = flagged
+    launches = []
+
+    async def stream(project_id, kind, request, execution):
+        launches.append(kind)
+        yield _event_frame(AgentEvent(event="done"))
+
+    app.state.background_tasks.stream = stream
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE evidence_flags SET kind='consolidation_added' WHERE flag_id=?",
+            (flag["flag_id"],),
+        )
+    url = f"/api/projects/{project}/consolidation/evidence-flags/{flag['flag_id']}/address"
+    response = client.post(url, json={"request_id": str(uuid.uuid4())})
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "flag_not_addressable"
+    assert launches == []
+    assert store.list_evidence_flags(project)[0]["state"] == "open"
+
+
 @pytest.mark.parametrize("evidence", ["missing", "retired"])
 def test_address_refuses_absent_or_retired_evidence(flagged, evidence):
     app, client, store, project, flag = flagged

@@ -142,7 +142,10 @@ another creation returns that flag with `code: flag_exists`. Each flag captures
 the main revision, consolidation run and occurrence, and creation time.
 
 Inbox's **Evidence to check** section lists open and addressing flags with kind,
-Evidence title, and one-line finding. **Address** starts an ordinary
+Evidence title, and one-line finding. A `consolidation_added` flag is a notice,
+not a finding: its row has no **Address**, and the endpoint refuses it with
+`flag_not_addressable`, because there is nothing for an agent to correct.
+**Address** on any other kind starts an ordinary
 member-authorized node Work chat on that Evidence, with the default node-chat
 provider profile and ordinary admission and prompt construction. Its first human
 message combines the flag context with backend-authored instructions to read the

@@ -26,6 +26,9 @@ if TYPE_CHECKING:
 EVIDENCE_FLAG_KINDS = frozenset(
     {"overclaim", "underclaim", "no_source", "unverified", "consolidation_added"}
 )
+# Kinds that bring Evidence to a human's attention without reporting a problem, so
+# there is nothing for an Address Work turn to correct.
+NOTICE_FLAG_KINDS = frozenset({"consolidation_added"})
 
 # An absolute execution-host path or `<alias>/<relative path>` with an optional `:LINE`,
 # or an external http(s) URL.
@@ -193,6 +196,8 @@ class EvidenceFlagStoreMixin(StoreMixinBase):
                 row = _flag(connection, project_id, flag_id)
                 if row["state"] == "dismissed":
                     raise EvidenceFlagError("flag_dismissed")
+                if row["kind"] in NOTICE_FLAG_KINDS:
+                    raise EvidenceFlagError("flag_not_addressable")
                 previous = connection.execute(
                     "SELECT flag_id FROM evidence_flags WHERE project_id=? AND address_request_id=?",
                     (project_id, request_id),
