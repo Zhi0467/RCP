@@ -82,10 +82,10 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
-.research-count {
+.research-row-empty {
+  color: var(--faint);
   font-family: var(--mono);
   font-size: var(--type-sm);
-  min-width: 1.5ch;
 }
 .research-section {
   margin-top: 18px;

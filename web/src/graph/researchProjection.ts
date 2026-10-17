@@ -32,10 +32,8 @@ export interface QuestionSummary {
 /** A Hypothesis card's three rows: inputs, Experiments, and Evidence. */
 export interface HypothesisSummary {
   node: GraphNode;
-  inputCount: number;
   openDecisions: number;
   openBlockers: number;
-  experimentCount: number;
   activeExperiments: number;
   tally: VerdictTally;
   /** Every question this Hypothesis answers; it appears under each. */
@@ -259,10 +257,8 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
           const page = hypotheses.get(node.id)!;
           return {
             node,
-            inputCount: page.inputs.nodes.length,
             openDecisions: page.inputs.openDecisions,
             openBlockers: page.inputs.openBlockers,
-            experimentCount: page.experiments.length,
             activeExperiments: page.experiments.filter((lane) => lane.active).length,
             tally: page.tally,
             questionIds: page.questions.map((item) => item.id),

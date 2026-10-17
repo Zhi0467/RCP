@@ -477,31 +477,36 @@ function HypothesisCard({
       }
     >
       <span className="research-card-rows">
-        <span className="research-card-row">
-          <span>Inputs</span>
-          <span className="research-chips">
-            <span className="research-count">{item.inputCount}</span>
-            <OpenChips decisions={item.openDecisions} blockers={item.openBlockers} />
-          </span>
-        </span>
-        <span className="research-card-row">
-          <span>Experiments</span>
-          <span className="research-chips">
-            <span className="research-count">{item.experimentCount}</span>
-            {item.activeExperiments > 0 && (
-              <span className="research-chip active">{item.activeExperiments} active</span>
-            )}
-          </span>
-        </span>
-        <span className="research-card-row">
-          <span>Evidence</span>
-          <span className="research-chips">
-            <span className="research-count">{evidenceCount}</span>
-            <TallyChips tally={item.tally} />
-          </span>
-        </span>
+        <CardRow label="Inputs" empty={item.openDecisions + item.openBlockers === 0}>
+          <OpenChips decisions={item.openDecisions} blockers={item.openBlockers} />
+        </CardRow>
+        <CardRow label="Experiments" empty={item.activeExperiments === 0}>
+          <span className="research-chip active">{item.activeExperiments} active</span>
+        </CardRow>
+        <CardRow label="Evidence" empty={evidenceCount === 0}>
+          <TallyChips tally={item.tally} />
+        </CardRow>
       </span>
     </ResearchNodeCard>
+  );
+}
+
+function CardRow({
+  label,
+  empty,
+  children,
+}: {
+  label: string;
+  empty: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <span className="research-card-row">
+      <span>{label}</span>
+      <span className="research-chips">
+        {empty ? <span className="research-row-empty">—</span> : children}
+      </span>
+    </span>
   );
 }
 
