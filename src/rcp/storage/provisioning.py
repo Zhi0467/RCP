@@ -3652,11 +3652,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 ProjectProvisioningRequestRecord.model_validate_json(
                     _canonical_json(
                         {
-                            "group_id": (
-                                row["group_id"]
-                                if "group_id" in row.keys()  # noqa: SIM118 - Row iterates values
-                                else None
-                            ),
+                            "group_id": row["group_id"],
                             "request_id": row["request_id"],
                             "kind": row["kind"],
                             "status": row["status"],

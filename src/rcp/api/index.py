@@ -962,14 +962,20 @@ def register_project(
             body.locator,
             seat_member=user_id,
         )
-        if "group_id" in body.model_fields_set:
-            store.set_project_group(record.project_id, body.group_id, user_id=user_id)
-    except ProjectGroupError as exc:
-        raise project_group_http_error(exc) from exc
     except ProjectIdentityConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if body.group_id is not None:
+        try:
+            store.set_project_group(record.project_id, body.group_id, user_id=user_id)
+        except ProjectGroupError:
+            # Like team provisioning: a group deleted mid-create leaves the project ungrouped.
+            logger.warning(
+                "Project group %s vanished before project %s registered; left ungrouped",
+                body.group_id,
+                record.project_id,
+            )
     return catalog.card(record.project_id)
 
 
