@@ -8,6 +8,8 @@ import {
 } from "../src/projects/projectGroups.ts";
 import {
   projectCreateSetupHash,
+  projectProvisioningHash,
+  routeGroupId,
   parseProjectSetupRoute,
 } from "../src/projects/projectSetupModel.ts";
 
@@ -58,4 +60,7 @@ test("drop targets require a project and a different visible destination", () =>
 test("setup route carries the selected group", () => {
   const groupId = "11111111-1111-4111-8111-111111111111";
   assert.equal(parseProjectSetupRoute(projectCreateSetupHash(groupId)).groupId, groupId);
+  const requestId = "22222222-2222-4222-8222-222222222222";
+  assert.equal(routeGroupId(projectProvisioningHash(requestId, groupId)), groupId);
+  assert.equal(routeGroupId(projectProvisioningHash(requestId)), undefined);
 });

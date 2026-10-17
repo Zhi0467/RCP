@@ -289,14 +289,10 @@ def render_graph_history(scope: GraphReadScope, command_client: str) -> str:
     calls = "\n".join(f"- `{command_client} {verb} {forms[verb]}`" for verb in sorted(scope.verbs))
     return (
         "## Graph history queries\n\n"
-        f"Default project: `{scope.project_id}`. Readable projects: "
-        + ", ".join(
-            f"`{project_id}`"
-            for project_id in sorted(scope.readable_project_ids | {scope.project_id})
-        )
-        + ". Main and every branch of these projects are readable. "
-        f"Unqualified heads use `{scope.target.key}` in the default project, or main in a sibling "
-        "project. Reads grant no write authority.\n"
+        f"Project: `{scope.project_id}`. Readable targets: main and every branch of this project "
+        "and of each project the current turn's Project group section lists (pass `--project`). "
+        f"Unqualified heads use `{scope.target.key}` here, or main in another project. "
+        "Reads grant no write authority.\n"
         f"{calls}\n"
         "A continuation that changes `history_client` or `patch.command_client` replaces the command prefix above. "
         "Heads: `main@R`, `branch:<id>@R`, or `@R`; `head` may replace R. "

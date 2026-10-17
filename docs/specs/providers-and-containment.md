@@ -382,7 +382,10 @@ client directory is escaped for gitignore matching; intentional hidden-read glob
 keep their glob semantics. These denies merge with the launch's hidden-read
 settings. A browser grant separately adds
 `Bash(playwright-cli:*)`. Public WebSearch and WebFetch remain available under
-the provider contract.
+the provider contract. Every other launch (Discuss, Seed and Refresh, the paper
+coach) receives its read context as `Read`, `Glob`, and `Grep` allow rules per
+directory, never `--add-dir`: under `acceptEdits` an added directory is also
+editable, which would hand Discuss write access to project files.
 
 **Why:** Claude's OS sandbox is off because its Linux backend always unshares the network
 namespace and remounts a minimal `/dev`, and no setting relaxes either, so a
@@ -559,8 +562,8 @@ can ask RCP how the graph changed, through two read-only command verbs:
 That covers Discuss, Work, Experiment loops, the Auto-research orchestrator and
 its children, branch merge and its corrections, Seed and Refresh, the paper
 coach, and nightly consolidation. A run may read main and every branch of its
-project, and of its [group](#group-read-scope) where it has one; its writes stay
-pinned to its one target.
+project, and the runs that [group read scope](#group-read-scope) names also read
+every project in their group; writes stay pinned to the run's one target.
 
 Each change in an answer gives the entity id, type, title, change kind, and
 every changed field's before and after value, never unchanged fields. Each step

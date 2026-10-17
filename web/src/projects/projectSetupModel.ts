@@ -109,6 +109,11 @@ export function parseProjectSetupRoute(hash: string): ProjectSetupRoute {
   return { kind: "create", requestId, ...(groupId ? { groupId } : {}) };
 }
 
+export function routeGroupId(hash: string): string | undefined {
+  const route = parseProjectSetupRoute(hash);
+  return route.kind === "create" ? route.groupId : undefined;
+}
+
 export function projectCreateSetupHash(groupId?: string | null): string {
   if (!groupId) return "#/projects/new";
   return `#/projects/new?group=${requireCanonicalUuid4(groupId, "Project group identity")}`;
@@ -207,11 +212,14 @@ export function invalidProjectProvisioningHash(hash: string): boolean {
   return hash.startsWith("#/projects/new?") && parseProjectSetupRoute(hash).kind === "invalid";
 }
 
-export function projectProvisioningHash(requestId: string): string {
+export function projectProvisioningHash(requestId: string, groupId?: string): string {
   if (!isCanonicalUuid4(requestId)) {
     throw new Error("Project provisioning request identity must be a canonical UUID4.");
   }
-  return `#/projects/new?request=${encodeURIComponent(requestId)}`;
+  const params = new URLSearchParams({ request: requestId });
+  // A resumed setup still files the project into the group it started from.
+  if (groupId) params.set("group", requireCanonicalUuid4(groupId, "Project group identity"));
+  return `#/projects/new?${params.toString()}`;
 }
 
 export function formatCommandArgv(argv: string[]): string {
