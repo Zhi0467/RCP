@@ -1,3 +1,4 @@
+import { projectGroupHash } from "./projects/projectGroups";
 import { EvidenceFlagProvider } from "./graph/EvidenceFlagContext";
 import { EvidenceFlagInbox } from "./projects/EvidenceFlagInbox";
 import { evidenceFlagRows } from "./projects/evidenceFlags";
@@ -288,7 +289,6 @@ import type {
   GraphTargetRef,
   GraphUpdateRecovery,
   Health,
-  ProjectCard,
   ProjectDeletionResult,
   ProjectInvitation,
   ProjectSnapshot,
@@ -801,6 +801,7 @@ function MemberApp({
     projectId,
     setupOpen,
     projects,
+    projectGroups,
     openProjectTabs,
     experimentLoops,
     experimentLoopsLoaded,
@@ -810,7 +811,6 @@ function MemberApp({
     projectHeaderCollapsed,
     isActiveProject,
     getActiveProjectId,
-    replaceProjects,
     loadProjectIndex,
     refreshExperimentLoops,
     refreshProjectExperimentLoops,
@@ -1566,8 +1566,7 @@ function MemberApp({
           },
         );
       } else {
-        const nextProjects = await api<ProjectCard[]>("/api/projects");
-        if (!stopped) replaceProjects(nextProjects);
+        await loadProjectIndex();
       }
     };
     const prepareShow = async () => {
@@ -1642,8 +1641,8 @@ function MemberApp({
     getActiveProjectId,
     isActiveProject,
     recordDesktopUpdateReady,
+    loadProjectIndex,
     refreshDesktopUpdate,
-    replaceProjects,
     reportIdentityIssue,
     reverifyIdentity,
     scheduler,
@@ -4102,7 +4101,16 @@ function MemberApp({
           key={projectSetupRouteKey(setupRoute)}
           projectCreation={authenticatedHealth!.project_creation}
           spaceKind={verifiedHealth!.space_kind}
-          onCancel={returnToProjects}
+          group={
+            setupRoute.kind === "create"
+              ? projectGroups.find((group) => group.id === setupRoute.groupId)
+              : null
+          }
+          onCancel={() => {
+            if (setupRoute.kind === "create" && setupRoute.groupId)
+              window.location.hash = projectGroupHash(setupRoute.groupId);
+            else returnToProjects();
+          }}
           onCreated={openProject}
           setupRoute={setupRoute}
         />
@@ -4150,6 +4158,8 @@ function MemberApp({
           onColorModeChoiceChange={appearance.setMode}
           palette={appearance.palette}
           projects={projects}
+          groups={projectGroups}
+          onGroupsChanged={loadProjectIndex}
           invitations={projectInvitations}
           onAnswerInvitation={answerProjectInvitation}
           spaceRuns={spaceRuns}
@@ -5643,6 +5653,7 @@ function projectSetupRouteKey(route: ProjectSetupRoute): string {
       route.targetRequestId ?? "",
     ].join(":");
   }
-  if (route.kind === "create") return `${route.kind}:${route.requestId ?? ""}`;
+  if (route.kind === "create")
+    return `${route.kind}:${route.requestId ?? ""}:${route.groupId ?? ""}`;
   return route.kind;
 }
