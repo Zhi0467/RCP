@@ -42,6 +42,9 @@ const nodes = [
   node("d/seed-count", "decision", { status: "open" }),
   node("e/variance", "evidence"),
   node("b/seed-budget", "blocker", { status: "open" }),
+  node("d/quota", "decision", { status: "open" }),
+  node("e/quota-cost", "evidence"),
+  node("d/gpu-vendor", "decision", { status: "open" }),
   node("orphan", "decision"),
 ];
 const edges = [
@@ -66,15 +69,18 @@ const edges = [
   edge("x/probe", "governed_by", "d/seed-count"),
   edge("e/variance", "informs", "d/seed-count"),
   edge("d/seed-count", "blocked_by", "b/seed-budget"),
+  edge("b/queue", "requires_decision", "d/quota"),
+  edge("e/quota-cost", "informs", "d/quota"),
+  edge("b/gpu", "requires_decision", "d/gpu-vendor"),
 ];
 
 test("a Hypothesis page gathers its Experiments' inputs and weighs each result", () => {
   const page = buildResearchDrilldown(nodes, edges).hypotheses.get("h/shared");
 
   assert.deepEqual(ids(page.questions).sort(), ["q/other", "q/sub"]);
-  assert.deepEqual(ids(page.inputs.nodes).sort(), ["b/approval", "b/queue", "d/batch"]);
-  assert.deepEqual(ids(page.inputs.evidence), ["e/budget"]);
-  assert.equal(page.inputs.openDecisions, 1);
+  assert.deepEqual(ids(page.inputs.nodes).sort(), ["b/approval", "b/queue", "d/batch", "d/quota"]);
+  assert.deepEqual(ids(page.inputs.evidence).sort(), ["e/budget", "e/quota-cost"]);
+  assert.equal(page.inputs.openDecisions, 2);
   assert.equal(page.inputs.openBlockers, 2);
 
   const lanes = Object.fromEntries(page.experiments.map((lane) => [lane.node.id, lane]));
@@ -107,6 +113,7 @@ test("question pages share Hypotheses and keep work that tests none", () => {
     "d/seed-count",
     "b/gpu",
     "b/seed-budget",
+    "d/gpu-vendor",
     "e/survey",
     "e/variance",
   ]);
@@ -122,7 +129,7 @@ test("question pages share Hypotheses and keep work that tests none", () => {
   const shared = sub.hypotheses[0];
   assert.deepEqual(
     [shared.openDecisions, shared.openBlockers, shared.activeExperiments],
-    [1, 2, 1],
+    [2, 2, 1],
   );
   assert.deepEqual(ids(drilldown.unplaced), ["orphan"]);
 });

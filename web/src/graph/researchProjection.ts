@@ -155,7 +155,9 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
       const blockers = [...experiments.map((lane) => lane.node), ...decisions].flatMap((node) =>
         outgoing(node.id, "blocked_by"),
       );
-      const inputNodes = uniqueNodes([...decisions, ...blockers]);
+      // A Blocker cleared by a choice brings that Decision along.
+      const required = blockers.flatMap((node) => outgoing(node.id, "requires_decision"));
+      const inputNodes = uniqueNodes([...decisions, ...blockers, ...required]);
       const evidence = Object.keys(VERDICT_BY_RELATION)
         .flatMap((relation) => incoming(hypothesis.id, relation))
         .filter((node) => node.type === "evidence")
@@ -169,7 +171,7 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
         inputs: {
           nodes: inputNodes,
           evidence: uniqueNodes([
-            ...decisions.flatMap((node) => incoming(node.id, "informs")),
+            ...[...decisions, ...required].flatMap((node) => incoming(node.id, "informs")),
             ...blockers.flatMap((node) => incoming(node.id, "addresses")),
           ]),
           openDecisions: inputNodes.filter(isOpenDecision).length,
@@ -217,10 +219,17 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
         ...outgoing(node.id, "blocked_by"),
       ]),
     ]);
-    // Then the Blockers of every Decision shown, and Evidence bearing on any of them.
-    const inputs = uniqueNodes([
+    // Then the Blockers of every Decision shown, the Decisions those Blockers
+    // require, and Evidence bearing on any of them.
+    const withBlockers = uniqueNodes([
       ...shown,
       ...shown.flatMap((node) => (node.type === "decision" ? outgoing(node.id, "blocked_by") : [])),
+    ]);
+    const inputs = uniqueNodes([
+      ...withBlockers,
+      ...withBlockers.flatMap((node) =>
+        node.type === "blocker" ? outgoing(node.id, "requires_decision") : [],
+      ),
     ]);
     return uniqueNodes([
       ...inputs,
