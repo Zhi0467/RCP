@@ -36,6 +36,7 @@ from rcp.agents.continuation_prompt import (
     master_key,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
+from rcp.agents.group_context import build_group_context
 from rcp.agents.prompts import (
     COMMAND_CLIENT,
     WORK_POLICY_VERSION,
@@ -2741,6 +2742,10 @@ async def _stream_work_graph_repair(
         execution_host = execution_machine.host
         provider_binary = execution_machine.provider_paths.get(profile.provider)
         context = service.assemble_chat(request)
+        if request.artifact_edit is None and not is_consolidation(execution):
+            context.group_context = build_group_context(
+                service, execution.store, execution_machine.alias
+            )
         if execution is not None:
             task = execution.store.agent_task(execution.operation_id)
             if task is None:
@@ -2810,9 +2815,10 @@ async def _stream_work_graph_repair(
         task_record = execution.store.agent_task(execution.operation_id)
         if task_record is None:
             raise ValueError("The graph-reading task record is unavailable.")
-        graph_read_scope = GraphReadScope(
+        graph_read_scope = GraphReadScope.for_launch(
             project_id=task_record.project_id,
             target=service.history.graph_target,
+            group_context=context.group_context,
         )
         validator_lifecycle = _start_work_validator_mailbox(
             service,
@@ -2829,6 +2835,8 @@ async def _stream_work_graph_repair(
             service,
             execution_machine.alias,
         )
+        if context.group_context is not None:
+            read_dirs.extend(context.group_context.read_dirs())
         write_scope = _project_write_scope(
             context,
             service,

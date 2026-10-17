@@ -1281,8 +1281,13 @@ async def _serve_auto_research_child_work_mailbox(
             from rcp.runs.graph_history_queries import handle_graph_history_command
 
             assert service is not None
+            project_service = service()
             return await asyncio.to_thread(
-                handle_graph_history_command, service(), graph_read_scope, request
+                handle_graph_history_command,
+                project_service,
+                graph_read_scope,
+                request,
+                resolve_project=project_service.resolve_project_service,
             )
         if isinstance(request, ValidateCommandRequest):
             count = budget.reserve(request.request_id)

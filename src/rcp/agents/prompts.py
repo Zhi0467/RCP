@@ -21,6 +21,7 @@ from rcp.agents.continuation_prompt import (
 )
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
+from rcp.agents.group_context import GroupContext
 from rcp.agents.write_scope import ProjectWriteScope
 
 if TYPE_CHECKING:
@@ -66,7 +67,25 @@ def render_chat_read_context(context: ChatContext) -> str:
             )
             + "\n```"
         )
+    if context.group_context is not None:
+        parts.append(render_group_context(context.group_context))
     return "\n\n".join(parts)
+
+
+def render_group_context(context: GroupContext | None) -> str:
+    if context is None or not context.siblings:
+        return ""
+    return (
+        "## Project group\n\n"
+        f"Your project {context.project_name} is one of the projects in group {context.group_name}. "
+        f"You work in {context.project_name}; your writes and graph changes stay there. "
+        "You can read the available other projects as you read your own: their graph and research.md "
+        "files, repositories, and graph history including branches (pass --project with the project id). "
+        "You cannot write to them.\n"
+        + "```json\n"
+        + json.dumps({"group_context": context.model_dump(mode="json")}, ensure_ascii=False)
+        + "\n```"
+    )
 
 
 _WHAT_IS_RCP = """You are running as an automated agent inside RCP, a local research control panel.
@@ -106,7 +125,7 @@ REPLY_STYLE = """Writing the reply:
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
 
-CHAT_MASTER_CONTEXT_VERSION = 18
+CHAT_MASTER_CONTEXT_VERSION = 19
 
 # Staged RCP commands are written against this placeholder; the contract names the current
 # command client once, and a continuation that changes it sends `patch.command_client`.
@@ -257,21 +276,27 @@ def graph_read_contract(content: str, scope: GraphReadScope | None, command_clie
 
     if scope is None:
         return content
-    return content + "\n\n" + render_graph_history(scope, command_client)
+    return "\n\n".join([content, render_graph_history(scope, command_client)])
 
 
 def render_graph_history(scope: GraphReadScope, command_client: str) -> str:
     """Render the exact read grant used by this launch's command dispatcher."""
 
     forms = {
-        "graph_diff": "<head A> <head B> [ids] | --branch-changes <branch>",
-        "graph_log": "<id> [--at <head>]",
+        "graph_diff": "[--project <project id>] <head A> <head B> [ids] | --branch-changes <branch>",
+        "graph_log": "[--project <project id>] <id> [--at <head>]",
     }
     calls = "\n".join(f"- `{command_client} {verb} {forms[verb]}`" for verb in sorted(scope.verbs))
     return (
         "## Graph history queries\n\n"
-        f"Project: `{scope.project_id}`. Readable targets: main and every branch of this project. "
-        f"Unqualified heads use `{scope.target.key}`. Reads grant no write authority.\n"
+        f"Default project: `{scope.project_id}`. Readable projects: "
+        + ", ".join(
+            f"`{project_id}`"
+            for project_id in sorted(scope.readable_project_ids | {scope.project_id})
+        )
+        + ". Main and every branch of these projects are readable. "
+        f"Unqualified heads use `{scope.target.key}` in the default project, or main in a sibling "
+        "project. Reads grant no write authority.\n"
         f"{calls}\n"
         "A continuation that changes `history_client` or `patch.command_client` replaces the command prefix above. "
         "Heads: `main@R`, `branch:<id>@R`, or `@R`; `head` may replace R. "

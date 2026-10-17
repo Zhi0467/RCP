@@ -44,6 +44,7 @@ from rcp.agents.experiment_loop_prompt import (
 )
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
+from rcp.agents.group_context import build_group_context
 from rcp.agents.prompts import (
     _invoked_package_section,
     graph_read_contract,
@@ -2816,6 +2817,9 @@ async def _stream_work_graph_repair(
         execution_host = execution_machine.host
         provider_binary = execution_machine.provider_paths.get(profile.provider)
         context = service.assemble_chat(request)
+        context.group_context = build_group_context(
+            service, execution.store, execution_machine.alias
+        )
         stage_name = _chat_stage_name(service, request, execution)
         local_stage: Path | None = None
         remote_stage: RemoteRunStage | None = None
@@ -2861,9 +2865,10 @@ async def _stream_work_graph_repair(
         task_record = execution.store.agent_task(execution.operation_id)
         if task_record is None:
             raise ValueError("The graph-reading task record is unavailable.")
-        graph_read_scope = GraphReadScope(
+        graph_read_scope = GraphReadScope.for_launch(
             project_id=task_record.project_id,
             target=service.history.graph_target,
+            group_context=context.group_context,
         )
         validator_lifecycle = _start_work_validator_mailbox(
             service,
@@ -2894,6 +2899,8 @@ async def _stream_work_graph_repair(
             service,
             execution_machine.alias,
         )
+        if context.group_context is not None:
+            read_dirs.extend(context.group_context.read_dirs())
         write_dirs = [Path(item) for item in write_scope.repository_roots]
         assert validator_lifecycle is not None
         outcome = _ProviderOutcome(session_id=request.session_id)
