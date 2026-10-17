@@ -151,7 +151,8 @@ provider profile and ordinary admission and prompt construction. Its first human
 message combines the flag context with backend-authored instructions to read the
 source, correct the Evidence only as far as the source supports, and use `ask`
 when unsure. The flag grants no authority. Replaying the request or addressing an
-already-addressing flag returns the existing chat without another turn.
+already-addressing flag returns the existing chat without another turn. Address
+leaves the member in the Inbox; the chat opens only from **Open chat**.
 
 The row then offers **Open chat**, **Open Evidence**, **Open source** only when the
 source is a URL (opened in a new tab) or resolves to a configured repository file, and icon-only **Dismiss**. Addressing does not close it; Dismiss

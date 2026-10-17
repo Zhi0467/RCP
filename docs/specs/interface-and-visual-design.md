@@ -161,8 +161,8 @@ tab, or a repository alias or absolute path in the existing file preview, and is
 offered only for a URL or a path that resolves to a configured repository file.
 The section and its count appear on every graph target. On a branch, rows read
 their Evidence from the branch's graph, every open flag offers Address because
-main's endpoint decides it, and Address and Open chat switch to main, where the
-flag's chat is bound.
+main's endpoint decides it, and Open chat switches to main, where the flag's chat
+is bound. Address keeps the member where they are.
 A failed action marks the row with a red edge and replaces that action with one
 icon-only retry. Controls wrap and retain phone-sized targets at 390px.
 

@@ -65,7 +65,6 @@ function FlagRow({
         requestId.current ??= crypto.randomUUID();
         const result = await addressEvidenceFlag(apiBase, flag.flag_id, requestId.current);
         onChanged(result.flag);
-        onOpenChat(result.chat_id);
       } else if (action === "dismiss") {
         onChanged((await dismissEvidenceFlag(apiBase, flag.flag_id)).flag);
       } else if (action === "open_chat") {
