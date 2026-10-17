@@ -3214,6 +3214,15 @@ export interface ProjectCard {
   can_delete: boolean;
   delete_unavailable_reason: string | null;
   delete_confirmation: string;
+  /** The project group holding this project, or null when ungrouped. */
+  group_id: string | null;
+}
+
+/** A space-local container of related projects (`GET /api/project-groups`). */
+export interface ProjectGroup {
+  id: string;
+  name: string;
+  created_at: string;
 }
 
 /** What confirming Delete will stop, rendered verbatim by the confirm dialog. */
