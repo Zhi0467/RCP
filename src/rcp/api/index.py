@@ -122,7 +122,6 @@ PersonalProjectEntryDependency = Annotated[None, Depends(_require_personal_proje
 
 class ProjectRegisterRequest(BaseModel):
     locator: str
-    group_id: str | None = None
 
 
 class ExperimentLoopIndexEntryResponse(BaseModel):
@@ -949,33 +948,20 @@ def register_project(
     request: Request,
     *,
     catalog: CatalogDependency,
-    store: StoreDependency,
     identity_access: IdentityDependency,
     _personal_entry: PersonalProjectEntryDependency,
 ) -> dict[str, object]:
     # Deliberately not require_patch_capable_identity: creating a project
     # does not demand a display name, and S01/S112/S116 rely on that.
-    user_id = identity_access.acting_user(request).user_id
-    require_visible_project_group(store, body.group_id, user_id)
     try:
         record = catalog.register(
             body.locator,
-            seat_member=user_id,
+            seat_member=identity_access.acting_user(request).user_id,
         )
     except ProjectIdentityConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if body.group_id is not None:
-        try:
-            store.set_project_group(record.project_id, body.group_id, user_id=user_id)
-        except ProjectGroupError:
-            # Like team provisioning: a group deleted mid-create leaves the project ungrouped.
-            logger.warning(
-                "Project group %s vanished before project %s registered; left ungrouped",
-                body.group_id,
-                record.project_id,
-            )
     return catalog.card(record.project_id)
 
 
@@ -1081,15 +1067,28 @@ def create_project(
     *,
     identity_access: IdentityDependency,
     setup: SetupDependency,
+    store: StoreDependency,
     _personal_entry: PersonalProjectEntryDependency,
 ) -> dict[str, object]:
+    user_id = identity_access.acting_user(request).user_id
+    require_visible_project_group(store, body.group_id, user_id)
     try:
-        return setup.create(
-            body,
-            seat_member=identity_access.acting_user(request).user_id,
-        )
+        card = setup.create(body, seat_member=user_id)
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if body.group_id is None:
+        return card
+    try:
+        store.set_project_group(str(card["id"]), body.group_id, user_id=user_id)
+    except ProjectGroupError:
+        # Like team provisioning: a group deleted mid-create leaves the project ungrouped.
+        logger.warning(
+            "Project group %s vanished before project %s registered; left ungrouped",
+            body.group_id,
+            card["id"],
+        )
+        return card
+    return {**card, "group_id": body.group_id}
 
 
 @membership_router.delete("/api/projects/{project_id}/caches/all")

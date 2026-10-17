@@ -107,19 +107,19 @@ def test_group_mutations_invalidate_other_clients_settings(tmp_path):
         assert generation() > previous
 
 
-def test_personal_registration_accepts_group_and_rejects_missing_group_before_registration(
-    tmp_path,
-):
+def test_personal_setup_files_the_project_and_refuses_a_missing_group_first(tmp_path):
+    from .test_project_membership import _setup_payload
+
     app = create_named_app(data_dir=tmp_path / "data")
     client = signed_in_client(app)
     group_id = client.post("/api/project-groups", json={"name": "Physics"}).json()["id"]
-    project_id = _create_project(client, tmp_path / "project")
-    locator = client.get("/api/projects").json()[0]["locator"]
-    response = client.post("/api/projects", json={"locator": locator, "group_id": group_id})
+    payload = {**_setup_payload(tmp_path / "project"), "group_id": group_id}
+    response = client.post("/api/project-setup/create", json=payload)
     assert response.status_code == 200
     assert response.json()["group_id"] == group_id
-    assert client.post("/api/projects", json={"locator": locator}).json()["group_id"] == group_id
-    response = client.post("/api/projects", json={"locator": "missing", "group_id": "missing"})
+    assert client.get("/api/projects").json()[0]["group_id"] == group_id
+    missing = {**_setup_payload(tmp_path / "other", name="other"), "group_id": "missing"}
+    response = client.post("/api/project-setup/create", json=missing)
     assert response.status_code == 404
     assert response.json()["detail"]["code"] == "project_group_not_found"
-    assert client.get("/api/projects").json()[0]["id"] == project_id
+    assert len(client.get("/api/projects").json()) == 1
