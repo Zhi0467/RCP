@@ -208,7 +208,7 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
     const blockers = [question, ...decisions].flatMap((node) => outgoing(node.id, "blocked_by"));
     const anchors = [...decisions, ...blockers];
     const experiments = anchors.flatMap((node) => freeExperimentsByAnchor.get(node.id) ?? []);
-    return uniqueNodes([
+    const shown = uniqueNodes([
       ...anchors,
       ...sortNodes(experiments).flatMap((node) => [
         node,
@@ -216,9 +216,14 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
         ...outgoing(node.id, "governed_by"),
         ...outgoing(node.id, "blocked_by"),
       ]),
-      // Evidence bearing on the question's choices and Blockers, from any origin.
-      ...decisions.flatMap((node) => incoming(node.id, "informs")),
-      ...blockers.flatMap((node) => incoming(node.id, "addresses")),
+    ]);
+    // Evidence bearing on any Decision or Blocker shown here, from any origin.
+    return uniqueNodes([
+      ...shown,
+      ...shown.flatMap((node) => [
+        ...incoming(node.id, "informs"),
+        ...incoming(node.id, "addresses"),
+      ]),
     ]);
   };
 

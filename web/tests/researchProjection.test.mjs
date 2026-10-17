@@ -39,6 +39,8 @@ const nodes = [
   node("e/survey", "evidence", { origin: "external_publication" }),
   node("b/gpu", "blocker", { status: "open" }),
   node("e/budget", "evidence"),
+  node("d/seed-count", "decision", { status: "open" }),
+  node("e/variance", "evidence"),
   node("orphan", "decision"),
 ];
 const edges = [
@@ -60,6 +62,8 @@ const edges = [
   edge("e/probe", "informs", "d/metric"),
   edge("e/survey", "informs", "d/metric"),
   edge("x/probe", "blocked_by", "b/gpu"),
+  edge("x/probe", "governed_by", "d/seed-count"),
+  edge("e/variance", "informs", "d/seed-count"),
 ];
 
 test("a Hypothesis page gathers its Experiments' inputs and weighs each result", () => {
@@ -94,7 +98,15 @@ test("question pages share Hypotheses and keep work that tests none", () => {
   assert.deepEqual(ids(drilldown.questions.get("q/other").hypotheses.map((item) => item.node)), [
     "h/shared",
   ]);
-  assert.deepEqual(ids(sub.loose), ["d/metric", "x/probe", "e/probe", "b/gpu", "e/survey"]);
+  assert.deepEqual(ids(sub.loose), [
+    "d/metric",
+    "x/probe",
+    "e/probe",
+    "d/seed-count",
+    "b/gpu",
+    "e/survey",
+    "e/variance",
+  ]);
 
   // Card counts stay one relation away: the root does not count its subquestion's work.
   const root = drilldown.roots.find((item) => item.node.id === "q/root");
