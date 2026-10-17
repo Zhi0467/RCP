@@ -91,10 +91,16 @@ test("question pages share Hypotheses and keep work that tests none", () => {
   ]);
   assert.deepEqual(ids(sub.loose), ["d/metric", "x/probe", "e/probe", "b/gpu"]);
 
-  const root = drilldown.roots.find((item) => item.node.id === "q/root").rollup;
-  assert.equal(root.activeExperiments, 1);
-  assert.equal(root.openBlockers, 3);
-  assert.ok(root.memberIds.includes("e/probe"));
+  // Card counts stay one relation away: the root does not count its subquestion's work.
+  const root = drilldown.roots.find((item) => item.node.id === "q/root");
+  assert.deepEqual(
+    [root.subquestionCount, root.hypothesisCount, root.openDecisions, root.openBlockers],
+    [1, 0, 0, 0],
+  );
+  const subCard = drilldown.questions.get("q/root").subquestions[0];
+  assert.deepEqual([subCard.subquestionCount, subCard.hypothesisCount], [0, 1]);
+  const shared = sub.hypotheses[0];
+  assert.deepEqual([shared.openDecisions, shared.openBlockers], [1, 2]);
   assert.deepEqual(ids(drilldown.unplaced), ["orphan"]);
 });
 

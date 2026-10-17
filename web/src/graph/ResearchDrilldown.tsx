@@ -96,7 +96,7 @@ export function ResearchDrilldown({
                 <QuestionCard
                   key={item.node.id}
                   item={item}
-                  changedNodeIds={changedNodeIds}
+                  changed={changedNodeIds.has(item.node.id)}
                   onOpen={() => push({ kind: "question", id: item.node.id })}
                 />
               ))}
@@ -258,7 +258,7 @@ function QuestionPanel({
             <QuestionCard
               key={item.node.id}
               item={item}
-              changedNodeIds={changedNodeIds}
+              changed={changedNodeIds.has(item.node.id)}
               onOpen={() => onOpen({ kind: "question", id: item.node.id })}
             />
           ))}
@@ -417,28 +417,34 @@ function EvidenceList({ evidence, card }: { evidence: WeighedEvidence[]; card: C
 
 function QuestionCard({
   item,
-  changedNodeIds,
+  changed,
   onOpen,
 }: {
   item: QuestionSummary;
-  changedNodeIds: ReadonlySet<string>;
+  changed: boolean;
   onOpen: () => void;
 }) {
-  const changed = item.rollup.memberIds.filter((id) => changedNodeIds.has(id)).length;
-  const { activeExperiments, openBlockers } = item.rollup;
+  const { node } = item;
+  const question = typeof node.question === "string" ? node.question.trim() : "";
+  const motivation = typeof node.motivation === "string" ? node.motivation.trim() : "";
+  const restatesTitle =
+    question.replace(/[?.\s]+$/, "").toLowerCase() ===
+    node.title.replace(/[?.\s]+$/, "").toLowerCase();
   return (
-    <ResearchNodeCard node={item.node} onClick={onOpen} changed={changedNodeIds.has(item.node.id)}>
-      {(activeExperiments > 0 || openBlockers > 0 || changed > 0) && (
-        <span className="research-chips">
-          {activeExperiments > 0 && (
-            <span className="research-chip active">{activeExperiments} active</span>
-          )}
-          {openBlockers > 0 && (
-            <span className="research-chip against">{openBlockers} blocked</span>
-          )}
-          {changed > 0 && <span className="research-chip for">{changed} new</span>}
-        </span>
-      )}
+    <ResearchNodeCard node={node} onClick={onOpen} changed={changed} className="question-card">
+      {question && !restatesTitle && <span className="research-card-text">{question}</span>}
+      {motivation && <span className="research-card-text secondary">{motivation}</span>}
+      <span className="research-chips">
+        {item.subquestionCount > 0 && (
+          <span className="research-chip">{plural(item.subquestionCount, "sub-question")}</span>
+        )}
+        {(item.hypothesisCount > 0 || item.subquestionCount === 0) && (
+          <span className="research-chip">
+            {plural(item.hypothesisCount, "hypothesis", "hypotheses")}
+          </span>
+        )}
+        <OpenChips decisions={item.openDecisions} blockers={item.openBlockers} />
+      </span>
     </ResearchNodeCard>
   );
 }
@@ -455,18 +461,30 @@ function HypothesisCard({
   return (
     <ResearchNodeCard node={item.node} onClick={onOpen} changed={changed}>
       <span className="research-chips">
-        <span className="research-chip">
-          {item.experimentCount} experiment{item.experimentCount === 1 ? "" : "s"}
-        </span>
         <TallyChips tally={item.tally} />
+        <span className="research-chip">{plural(item.experimentCount, "experiment")}</span>
+        <OpenChips decisions={item.openDecisions} blockers={item.openBlockers} />
         {item.questionIds.length > 1 && (
           <span className="research-chip also">
-            +{item.questionIds.length - 1} question{item.questionIds.length > 2 ? "s" : ""}
+            +{plural(item.questionIds.length - 1, "question")}
           </span>
         )}
       </span>
     </ResearchNodeCard>
   );
+}
+
+function OpenChips({ decisions, blockers }: { decisions: number; blockers: number }) {
+  return (
+    <>
+      {decisions > 0 && <span className="research-chip open">{decisions} undecided</span>}
+      {blockers > 0 && <span className="research-chip against">{blockers} blocked</span>}
+    </>
+  );
+}
+
+function plural(count: number, word: string, many = `${word}s`): string {
+  return `${count} ${count === 1 ? word : many}`;
 }
 
 function TallyChips({ tally }: { tally: VerdictTally }) {

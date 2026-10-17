@@ -20,23 +20,21 @@ const ACTIVE_EXPERIMENT_STATUSES = new Set([
 ]);
 const OPEN_DECISION_STATUSES = new Set(["open", "ready", "revisit"]);
 
-/** What a question card shows without opening it. */
-export interface ResearchRollup {
-  activeExperiments: number;
-  openBlockers: number;
-  /** Every record the card stands for, so the view can count digest changes. */
-  memberIds: string[];
-}
-
+/** A question card's counts, all one relation away from the question. */
 export interface QuestionSummary {
   node: GraphNode;
-  rollup: ResearchRollup;
+  subquestionCount: number;
+  hypothesisCount: number;
+  openDecisions: number;
+  openBlockers: number;
 }
 
 export interface HypothesisSummary {
   node: GraphNode;
   experimentCount: number;
   tally: VerdictTally;
+  openDecisions: number;
+  openBlockers: number;
   /** Every question this Hypothesis answers; it appears under each. */
   questionIds: string[];
 }
@@ -127,6 +125,8 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
   const verdictOn = (evidenceId: string, hypothesisId: string): Verdict | null =>
     verdicts.get(`${evidenceId}\0${hypothesisId}`) ?? null;
   const isOpenBlocker = (node: GraphNode) => node.type === "blocker" && node.status === "open";
+  const isOpenDecision = (node: GraphNode) =>
+    node.type === "decision" && OPEN_DECISION_STATUSES.has(node.status ?? "");
 
   const hypotheses = new Map<string, HypothesisPage>();
   nodes
@@ -164,9 +164,7 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
         ),
         inputs: {
           nodes: inputNodes,
-          openDecisions: inputNodes.filter(
-            (node) => node.type === "decision" && OPEN_DECISION_STATUSES.has(node.status ?? ""),
-          ).length,
+          openDecisions: inputNodes.filter(isOpenDecision).length,
           openBlockers: inputNodes.filter(isOpenBlocker).length,
         },
         experiments,
@@ -226,7 +224,14 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
   };
   const summarize = (question: GraphNode): QuestionSummary => ({
     node: question,
-    rollup: { activeExperiments: 0, openBlockers: 0, memberIds: [] },
+    subquestionCount: outgoing(question.id, "has_subquestion").filter(
+      (node) => node.type === "research_question",
+    ).length,
+    hypothesisCount: outgoing(question.id, "has_hypothesis").filter((node) =>
+      hypotheses.has(node.id),
+    ).length,
+    openDecisions: outgoing(question.id, "has_decision").filter(isOpenDecision).length,
+    openBlockers: outgoing(question.id, "blocked_by").filter(isOpenBlocker).length,
   });
   questionNodes.forEach((question) => {
     pages.set(question.id, {
@@ -242,30 +247,14 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
             node,
             experimentCount: page.experiments.length,
             tally: page.tally,
+            openDecisions: page.inputs.openDecisions,
+            openBlockers: page.inputs.openBlockers,
             questionIds: page.questions.map((item) => item.id),
           };
         }),
       loose: looseOf(question),
     });
   });
-  // Fill rollups once every page exists, so subquestion cards share the totals.
-  const rollups = new Map(
-    questionNodes.map((question) => {
-      const members = uniqueNodes(membersOf(question, new Set()));
-      const rollup: ResearchRollup = {
-        activeExperiments: members.filter(
-          (node) => node.type === "experiment" && ACTIVE_EXPERIMENT_STATUSES.has(node.status ?? ""),
-        ).length,
-        openBlockers: members.filter(isOpenBlocker).length,
-        memberIds: members.map((node) => node.id),
-      };
-      return [question.id, rollup];
-    }),
-  );
-  pages.forEach((page) =>
-    page.subquestions.forEach((item) => (item.rollup = rollups.get(item.node.id)!)),
-  );
-
   const hasParent = new Set(
     questionNodes.flatMap((question) =>
       pages.get(question.id)!.subquestions.map((item) => item.node.id),
@@ -274,16 +263,19 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
   const rootIds: string[] = questionNodes
     .filter((question) => !hasParent.has(question.id))
     .map((question) => question.id);
+  const seenQuestions = new Set<string>();
+  const reached = new Set(
+    rootIds.flatMap((id) => membersOf(byId.get(id)!, seenQuestions).map((node) => node.id)),
+  );
   // A question reachable only through a subquestion cycle still gets a card.
-  const reached = new Set(rootIds.flatMap((id) => rollups.get(id)!.memberIds));
   questionNodes.forEach((question) => {
     if (reached.has(question.id)) return;
     rootIds.push(question.id);
-    rollups.get(question.id)!.memberIds.forEach((id) => reached.add(id));
+    membersOf(question, seenQuestions).forEach((node) => reached.add(node.id));
   });
 
   return {
-    roots: rootIds.map((id) => ({ node: byId.get(id)!, rollup: rollups.get(id)! })),
+    roots: rootIds.map((id) => summarize(byId.get(id)!)),
     questions: pages,
     hypotheses,
     unplaced: sortNodes(nodes.filter((node) => !reached.has(node.id))),

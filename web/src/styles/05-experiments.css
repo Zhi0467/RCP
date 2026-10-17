@@ -31,7 +31,36 @@
 .research-card-grid {
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+.research-node-card.question-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+}
+.research-node-card.question-card > .research-node-topline {
+  margin-bottom: 0;
+}
+.research-node-card.question-card > strong {
+  font-size: var(--type-lg);
+}
+.research-card-text {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  color: var(--ink);
+  display: -webkit-box;
+  font-size: var(--type-md);
+  line-height: 1.4;
+  overflow: hidden;
+}
+.research-card-text.secondary {
+  -webkit-line-clamp: 2;
+  color: var(--muted);
+}
+.research-node-card.question-card > .research-chips {
+  margin-top: auto;
+  padding-top: 4px;
 }
 .research-section {
   margin-top: 18px;
