@@ -14,6 +14,7 @@ import uuid
 from rcp.limits import PROJECT_GROUP_NAME_MAX_CHARS
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import ProjectGroupRecord
+from rcp.storage.resource_versions import _bump, _install
 
 
 class ProjectGroupError(ValueError):
@@ -38,6 +39,21 @@ def migrate_project_groups(connection: sqlite3.Connection) -> None:
     if "group_id" not in columns:
         connection.execute("ALTER TABLE projects ADD COLUMN group_id TEXT")
     connection.execute("CREATE INDEX IF NOT EXISTS projects_group ON projects(group_id)")
+    request_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(project_provisioning_requests)")
+    }
+    if "group_id" not in request_columns:
+        connection.execute("ALTER TABLE project_provisioning_requests ADD COLUMN group_id TEXT")
+    # Use the same settings watermark as project renames. Global invalidation
+    # also reaches members whose last project moved out of a group.
+    _install(connection, "project_groups", [_bump("''", "settings")])
+    _install(
+        connection,
+        "projects",
+        [_bump("''", "settings")],
+        columns=("group_id",),
+        suffix="_group",
+    )
 
 
 _VISIBLE = """
@@ -83,8 +99,9 @@ class ProjectGroupStoreMixin(StoreMixinBase):
             ).fetchall()
         return [_record(row) for row in rows]
 
+    @staticmethod
     def _visible_group(
-        self, connection: sqlite3.Connection, group_id: str, user_id: str
+        connection: sqlite3.Connection, group_id: str, user_id: str
     ) -> ProjectGroupRecord:
         row = connection.execute(
             f"SELECT * FROM project_groups WHERE group_id = :group_id AND ({_VISIBLE})",

@@ -123,3 +123,8 @@ boundary source from the preceding immutable fixture.
 gained a display-only live status column and their progress triggers began
 comparing it (storage migration 54), ending at migration 53. It is built by the
 exact boundary source from the preceding immutable fixture.
+
+`pre-project-groups-v28-ae89ee3` retains the last shape before space-local
+project groups and provisioning group assignments (storage migration 55),
+ending at migration 54. It is built by the exact boundary source from the
+preceding immutable fixture.
