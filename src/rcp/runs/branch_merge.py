@@ -1550,6 +1550,8 @@ def branch_merge_id(metadata: GraphBranchMetadata) -> str:
 
 
 def branch_merge_provenance(context: BranchMergeContext) -> BranchMergeProvenance:
+    if context.metadata.episode_id is None:
+        raise ValueError("an episode branch merge requires its owning episode")
     return BranchMergeProvenance(
         merge_id=branch_merge_id(context.metadata),
         branch_id=context.metadata.branch_id,
@@ -1878,6 +1880,8 @@ async def stream_branch_merge_run(
     delivered_head: GraphHeadRef | None = None
 
     def observe_snapshot() -> GraphHeadRef:
+        if context.metadata.episode_id is None:
+            raise ValueError("an episode branch merge requires its owning episode")
         if service is not None:
             return prepare_graph_observation(
                 execution,

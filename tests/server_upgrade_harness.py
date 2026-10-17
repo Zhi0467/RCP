@@ -76,6 +76,10 @@ EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
         "62398c2a165a9792f60bff2fcdc63733d896a13a",
         "f2bcbc176bfebfc78d342376bea5b028388682d360895ec728f0d25925326bbb",
     ),
+    "pre-graph-branches-v28-ae89ee3": (
+        "ae89ee326aaa50ae198aba96ffafc0a79900c4ab",
+        "9b7b18b18b101753cb2bcad5b29de393ced15b995870569bdb0106cda576cbe3",
+    ),
     "team-server-v1-78be62b": (
         "78be62b775fd62d7888c2e22d87569c103bffc83",
         "c6fc54845354bb000a9ae9dc26ac40446ba14f96f4f00b8ad8412338ec65da42",

@@ -563,6 +563,23 @@ class HistoryManager:
             if revisions and max(revisions) != head.revision:
                 raise ValueError("restored branch Patch inventory does not match its captured head")
 
+        from rcp.history.ancestry import validate_branch_ancestry
+
+        retained_branches = {
+            branch_id: GraphBranchMetadata.model_validate_json(
+                sources[f"branches/{branch_id}/branch.json"][0].read_bytes()
+            )
+            for branch_id in expected_branches
+        }
+        validate_branch_ancestry(retained_branches, main_revision=expected_main_head.revision)
+        for branch_id, metadata in retained_branches.items():
+            if metadata.branch_id != branch_id or metadata.head != expected_branches[branch_id]:
+                raise ValueError("restored branch metadata differs from its captured identity")
+            if sorted(branch_revisions.get(branch_id, [])) != list(
+                range(metadata.effective_parent_head.revision + 1, metadata.head.revision + 1)
+            ):
+                raise ValueError("restored branch Patch inventory is incomplete")
+
         for _key, value in sorted(ordered):
             source, sha256, size = sources[value]
             self.workspace.restore_exact_file(
@@ -853,15 +870,21 @@ class HistoryManager:
             transition_id=transition_id,
         )
 
-    def create_episode_branch(
-        self,
-        metadata: GraphBranchMetadata,
-    ) -> BranchHistoryManager:
-        """Create one episode branch at the exact current accepted main head."""
+    def validate_branch_parent(self, parent_head: GraphHeadRef, branch_id: str) -> GraphHeadRef:
+        from rcp.history.branches import branch_parent_snapshot
 
-        from rcp.history.branches import create_episode_branch
+        with self.workspace.read_snapshot():
+            base, _ = branch_parent_snapshot(self, parent_head, branch_id)
+            return base
 
-        return create_episode_branch(self, metadata)
+    def create_branch(self, metadata: GraphBranchMetadata) -> BranchHistoryManager:
+        """Create a branch from its exact immutable parent under the append fence."""
+        from rcp.history.branches import create_branch
+
+        return create_branch(self, metadata)
+
+    def create_episode_branch(self, metadata: GraphBranchMetadata) -> BranchHistoryManager:
+        return self.create_branch(metadata)
 
     def branch(
         self,
@@ -900,7 +923,7 @@ class HistoryManager:
 
     def branch_read_snapshots(
         self,
-        identities: list[tuple[str, str, str]],
+        identities: list[tuple[str, str | None, str]],
         *,
         refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
     ) -> dict[str, BranchReadSnapshot | None]:

@@ -998,3 +998,49 @@ def test_artifact_edit_exports_and_imports_as_inert_provenance(manifest, tmp_pat
         if key not in {"stage_root", "stage_host", "master_path"}
     }
     assert "session_id" not in imported.request
+
+
+def test_fork_records_transfer_parent_names_and_archive_state(manifest, tmp_path: Path) -> None:
+    from rcp.core.transition_models import GraphHeadRef
+    from rcp.transfer.records import TransferRecordBundle
+
+    store, project_id, attributions = _store(manifest, tmp_path)
+    parent_id, fork_id = str(uuid.uuid4()), str(uuid.uuid4())
+    for branch_id, parent_head, name in (
+        (parent_id, GraphHeadRef(revision=0), "parent"),
+        (
+            fork_id,
+            GraphHeadRef(
+                target=GraphTargetRef(kind="branch", branch_id=parent_id),
+                revision=7,
+                transition_id="a" * 64,
+            ),
+            "fork",
+        ),
+    ):
+        store.create_graph_branch(
+            project_id=project_id,
+            branch_id=branch_id,
+            owner_episode_id=None,
+            parent_head=parent_head,
+            created_by=f"human:{branch_id}",
+            name=name,
+        )
+    store.rename_branch(project_id, fork_id, "renamed")
+    with store.connection() as connection:
+        connection.execute("UPDATE graph_branches SET archived=1 WHERE branch_id=?", (fork_id,))
+    records = store.export_project_transfer_records(project_id, attributions=attributions)
+    fork = next(branch for branch in records.branches if branch.branch_id == fork_id)
+    assert fork.parent_head.target.branch_id == parent_id
+    assert fork.parent_head.transition_id == "a" * 64
+    assert fork.reserved_names == ("fork", "renamed")
+    assert fork.archived
+    invalid = records.model_dump(mode="python")
+    invalid["branches"] = (fork,)
+    with pytest.raises(ValueError):
+        TransferRecordBundle.model_validate(invalid)
+    with store.connection() as connection:
+        for table in ("graph_branches", "branch_names", "branch_name_reservations"):
+            connection.execute(f"DELETE FROM {table} WHERE project_id=?", (project_id,))
+        store._insert_transfer_episodes(connection, records, {})
+    assert store.export_project_transfer_records(project_id, attributions=attributions) == records

@@ -1522,39 +1522,58 @@ class ProjectHomeTransfer(BaseModel):
 
 
 class GraphBranchMetadata(BaseModel):
-    """Canonical identity and current head for one episode-owned graph branch."""
+    """Canonical branch identity, immutable ancestry, and current head.
+
+    Generation-one records without a parent retain their main base and episode
+    identity. New records name an exact parent and a separate branch UUID.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     schema_generation: Literal[1] = 1
     branch_id: str
-    episode_id: str
+    episode_id: str | None = None
     project_id: str = Field(min_length=1)
-    kind: Literal["auto_research", "experiment_loop"] = "auto_research"
+    kind: Literal["auto_research", "experiment_loop", "fork"] = "auto_research"
     base_head: GraphHeadRef
+    parent_head: GraphHeadRef | None = None
+    created_by: str | None = Field(default=None, min_length=1)
     head: GraphHeadRef
     created_at: datetime = Field(default_factory=utc_now)
     authorized_by: AuthorizedHuman
 
-    _validate_uuid4 = field_validator("branch_id", "episode_id")(_canonical_uuid4)
+    _validate_uuid4 = field_validator("branch_id")(_canonical_uuid4)
+
+    @property
+    def effective_parent_head(self) -> GraphHeadRef:
+        return self.parent_head or self.base_head
 
     @model_validator(mode="after")
     def identity_and_heads_are_coherent(self) -> GraphBranchMetadata:
-        if self.branch_id != self.episode_id:
-            raise ValueError("a graph branch must use its owner episode UUID")
+        if self.episode_id is not None:
+            _canonical_uuid4(self.episode_id)
+        if self.parent_head is None and self.branch_id != self.episode_id:
+            raise ValueError("a legacy graph branch must use its owner episode UUID")
+        if self.parent_head is not None and self.created_by is None:
+            raise ValueError("a new graph branch requires its creating operation identity")
         if self.base_head.target.kind != "main":
             raise ValueError("a graph branch base must name a main head")
+        parent = self.effective_parent_head
+        if parent.target.branch_id == self.branch_id:
+            raise ValueError("a graph branch cannot parent itself")
+        if parent.revision < self.base_head.revision:
+            raise ValueError("a graph branch parent cannot precede its root main base")
+        if parent.target.kind == "main" and parent != self.base_head:
+            raise ValueError("a main parent must be the exact root base")
         if self.head.target.kind != "branch" or self.head.target.branch_id != self.branch_id:
             raise ValueError("a graph branch head must name its exact branch")
-        if self.head.revision < self.base_head.revision:
-            raise ValueError("a graph branch head cannot precede its immutable main base")
+        if self.head.revision < parent.revision:
+            raise ValueError("a graph branch head cannot precede its immutable parent")
         if (
-            self.head.revision == self.base_head.revision
-            and self.head.transition_id != self.base_head.transition_id
+            self.head.revision == parent.revision
+            and self.head.transition_id != parent.transition_id
         ):
-            raise ValueError(
-                "a new graph branch head must preserve its exact main transition identity"
-            )
+            raise ValueError("a new graph branch head must preserve its parent transition identity")
         return self
 
 
@@ -1576,8 +1595,6 @@ class BranchMergeProvenance(BaseModel):
 
     @model_validator(mode="after")
     def source_and_rebase_heads_are_coherent(self) -> BranchMergeProvenance:
-        if self.branch_id != self.episode_id:
-            raise ValueError("branch merge provenance must use the episode branch UUID")
         if self.branch_base_head.target.kind != "main":
             raise ValueError("branch merge provenance requires a main branch base")
         if (
@@ -1623,17 +1640,17 @@ class BranchMergeReceipt(BaseModel):
 class GraphBranchSummary(BaseModel):
     """Strict episode/API projection; the browser never reconstructs branch state.
 
-    ``episode_id`` is the chain root that created the branch and whose id the
-    branch keeps; ``current_episode_id`` is the newest continuation of that chain,
-    the episode whose turns write the branch now.
+    ``episode_id`` is the optional owning chain root; ``current_episode_id`` is
+    its newest continuation. Human forks have neither episode identity.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     branch_id: str
-    episode_id: str
-    current_episode_id: str
+    episode_id: str | None
+    current_episode_id: str | None
     base_head: GraphHeadRef
+    parent_head: GraphHeadRef | None = None
     head: GraphHeadRef
     merge_eligible: bool
     merge_blocked_reason: str | None = None
@@ -1642,14 +1659,13 @@ class GraphBranchSummary(BaseModel):
     active_merge_task_id: str | None = Field(default=None, min_length=1)
     merge_diagnostic: str | None = None
 
-    _validate_uuid4 = field_validator("branch_id", "episode_id", "current_episode_id")(
-        _canonical_uuid4
-    )
+    _validate_uuid4 = field_validator("branch_id")(_canonical_uuid4)
 
     @model_validator(mode="after")
     def merge_projection_is_coherent(self) -> GraphBranchSummary:
-        if self.branch_id != self.episode_id:
-            raise ValueError("branch summary identity does not match its episode")
+        for value in (self.episode_id, self.current_episode_id):
+            if value is not None:
+                _canonical_uuid4(value)
         if self.base_head.target.kind != "main":
             raise ValueError("branch summary base must name main")
         if self.head.target.kind != "branch" or self.head.target.branch_id != self.branch_id:

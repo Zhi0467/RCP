@@ -41,6 +41,8 @@ from rcp.artifact_comments import comment_panel, selection_frame_addon
 from rcp.artifact_views import artifact_viewer_document
 from rcp.artifacts import AgentArtifactDescriptor, html_preview_document
 from rcp.background import BackgroundAgentTasks
+from rcp.core.transition_models import GraphTargetRef
+from rcp.history.queries import parse_head
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import (
     REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS,
@@ -71,6 +73,7 @@ from rcp.runs.episodes.merge import (
     merge_preview,
     reconcile_episode_merge,
 )
+from rcp.runs.graph_forks import create_graph_fork
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AppStore, AutoResearchMessageRecord, EpisodeNotRunning
 from rcp.storage.branch_names import (
@@ -182,6 +185,63 @@ def graph_refs(
         catalog=catalog,
         refresh_max_age_seconds=REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS,
     )
+
+
+class ForkBranchBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: UUID4
+    at: str
+    name: str | None = None
+
+
+@router.post(
+    "/api/projects/{project_id}/graph-refs",
+    response_model=GraphRefResponse,
+    status_code=201,
+    dependencies=[Depends(require_project_write_admission)],
+)
+def fork_graph_branch(
+    project_id: str,
+    body: ForkBranchBody,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> GraphRefResponse:
+    actor = identity_access.require_patch_capable_identity(request)
+    branch_id = str(body.request_id)
+    try:
+        name = normalize_branch_name(body.name)
+        source = parse_head(body.at)
+        if source.target is None or source.revision == "head":
+            raise ValueError("Fork creation requires an explicit target and numeric revision.")
+        service = get_project_writer(catalog, project_id)
+        parent_head = service.history.history_engine.resolve(
+            source, default_target=GraphTargetRef()
+        )
+        create_graph_fork(
+            service.history,
+            store,
+            project_id=project_id,
+            branch_id=branch_id,
+            parent_head=parent_head,
+            authorized_by=actor,
+            created_by=f"human:{body.request_id}",
+            name=name,
+        )
+    except BranchNameInvalid as exc:
+        raise HTTPException(status_code=422, detail={"code": "branch_name_invalid"}) from exc
+    except BranchNameTaken as exc:
+        raise HTTPException(status_code=409, detail={"code": "branch_name_taken"}) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail={"code": "branch_source_not_found"}) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422, detail={"code": "branch_fork_invalid", "message": str(exc)}
+        ) from exc
+    return _branch_ref_for_http(project_id, branch_id, store=store, catalog=catalog)
 
 
 class RenameBranchBody(BaseModel):

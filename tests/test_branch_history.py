@@ -397,7 +397,7 @@ def test_branch_open_rejects_identity_mismatch_and_unsafe_paths(manifest, tmp_pa
         history.branch(metadata.branch_id, expected_episode_id=str(uuid.uuid4()))
     with pytest.raises(ValueError, match="different project"):
         history.branch(metadata.branch_id, expected_project_id="other")
-    with pytest.raises(ValueError, match="canonical episode UUIDv4"):
+    with pytest.raises(ValueError):
         history.branch("../patches")
 
     symlink_id = str(uuid.uuid4())
@@ -652,6 +652,7 @@ def test_merge_receipts_are_append_only_exact_and_support_no_change(manifest) ->
     history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
+    assert metadata.episode_id is not None
     branch = history.create_episode_branch(metadata)
     branch.append(_branch_patch("ev/merge-source"))
     branch_head = branch.head_ref()
@@ -701,6 +702,7 @@ def test_independent_no_change_writers_return_the_first_canonical_receipt(manife
     first_history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     first_history.append(seed_patch())
     metadata = _branch_metadata(first_history)
+    assert metadata.episode_id is not None
     first_branch = first_history.create_episode_branch(metadata)
     first_branch.append(_branch_patch("ev/no-change-race"))
     branch_head = first_branch.head_ref()
@@ -747,6 +749,7 @@ def test_remote_present_no_change_receipt_is_parsed_and_validated(manifest) -> N
     history = HistoryManager(manifest, workspace, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
+    assert metadata.episode_id is not None
     branch = history.create_episode_branch(metadata)
     branch.append(_branch_patch("ev/remote-no-change"))
     branch_head = branch.head_ref()
@@ -775,6 +778,7 @@ def test_merge_receipt_can_be_reconciled_from_committed_main_patch(manifest) -> 
     history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
+    assert metadata.episode_id is not None
     branch = history.create_episode_branch(metadata)
     branch.append(_branch_patch("ev/merge-reconcile"))
     main_head = history.head_ref()
@@ -815,6 +819,7 @@ def test_no_change_writer_reconciles_a_concurrently_committed_main_winner(manife
     history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
+    assert metadata.episode_id is not None
     branch = history.create_episode_branch(metadata)
     branch.append(_branch_patch("ev/merge-race"))
     main_head = history.head_ref()
@@ -860,6 +865,7 @@ def test_no_change_receipt_wins_before_a_concurrent_main_append(manifest) -> Non
     history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
+    assert metadata.episode_id is not None
     branch = history.create_episode_branch(metadata)
     branch.append(_branch_patch("ev/no-change-wins"))
     main_head = history.head_ref()
@@ -901,6 +907,7 @@ def test_reconcile_rejects_corrupted_existing_no_change_receipt(manifest) -> Non
     history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
+    assert metadata.episode_id is not None
     branch = history.create_episode_branch(metadata)
     branch.append(_branch_patch("ev/corrupt-no-change"))
     branch_head = branch.head_ref()
@@ -939,6 +946,7 @@ def test_reconcile_rejects_corrupted_existing_committed_receipt(manifest) -> Non
     history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
+    assert metadata.episode_id is not None
     branch = history.create_episode_branch(metadata)
     branch.append(_branch_patch("ev/corrupt-committed"))
     provenance = BranchMergeProvenance(

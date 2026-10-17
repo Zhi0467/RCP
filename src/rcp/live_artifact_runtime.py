@@ -99,13 +99,11 @@ def _graph_history(service, task):
             return history.parent
         return history.parent.branch(
             task.graph_target.branch_id,
-            expected_episode_id=task.graph_target.branch_id,
             expected_project_id=task.project_id,
             initialize=False,
         )
     return service.for_graph_target(
         task.graph_target,
-        expected_episode_id=task.graph_target.branch_id,
         initialize=False,
     ).history
 

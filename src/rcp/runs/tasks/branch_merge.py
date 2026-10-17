@@ -76,7 +76,11 @@ async def stream_branch_merge_task(
         or task.project_id != episode.project_id
         or task.graph_target != episode.graph_target
         # A code-only owner has no graph branch; its merge carries code alone.
-        or episode.graph_target.branch_id not in {None, episode.episode_id}
+        or (
+            episode.graph_target.kind == "branch"
+            and execution.store.branch_owner(task.project_id, episode.graph_target.branch_id or "")
+            != episode.episode_id
+        )
         or task.authorized_by is None
     ):
         yield _sse(
@@ -186,7 +190,7 @@ async def stream_branch_merge_task(
             return
 
         branch = service.history.branch(
-            episode.episode_id,
+            episode.graph_target.branch_id or "",
             expected_episode_id=episode.episode_id,
             expected_project_id=task.project_id,
         )

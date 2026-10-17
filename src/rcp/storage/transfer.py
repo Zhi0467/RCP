@@ -26,7 +26,6 @@ from rcp.transfer.archive import (
     inspect_transfer_table_inventory,
 )
 from rcp.transfer.records import (
-    TRANSFER_RECORD_SCHEMA_VERSION,
     TransferArtifactReference,
     TransferAssistantHistory,
     TransferAutoResearchApplyResult,
@@ -50,6 +49,7 @@ from rcp.transfer.records import (
     TransferEpisodeReportAttempt,
     TransferEpisodeWrapup,
     TransferExperimentEpisodeHistory,
+    TransferGraphBranchRecord,
     TransferJsonDocument,
     TransferLocalId,
     TransferPaperDraft,
@@ -258,7 +258,14 @@ class ProjectTransferStoreMixin(StoreMixinBase):
     @staticmethod
     def _project_transfer_record_schema_version_in_connection(
         connection: sqlite3.Connection, project_id: str
-    ) -> Literal[1, 2, 3, 4, 5]:
+    ) -> Literal[1, 2, 3, 4, 5, 6]:
+        if (
+            connection.execute(
+                "SELECT 1 FROM graph_branches WHERE project_id = ? LIMIT 1", (project_id,)
+            ).fetchone()
+            is not None
+        ):
+            return 6
         deleted = connection.execute(
             "SELECT 1 FROM episode_reports AS report "
             "JOIN episodes AS episode ON episode.episode_id = report.episode_id "
@@ -266,7 +273,7 @@ class ProjectTransferStoreMixin(StoreMixinBase):
             (project_id,),
         ).fetchone()
         if deleted is not None:
-            return TRANSFER_RECORD_SCHEMA_VERSION
+            return 5
         named = connection.execute(
             "SELECT 1 FROM branch_name_reservations WHERE project_id = ? LIMIT 1",
             (project_id,),
@@ -311,6 +318,44 @@ class ProjectTransferStoreMixin(StoreMixinBase):
             tasks = self._transfer_tasks(connection, project_id, attributions)
             watchers = self._transfer_watchers(connection, project_id)
             episodes = self._transfer_episodes(connection, project_id, attributions)
+            branches = tuple(
+                TransferGraphBranchRecord(
+                    branch_id=row["branch_id"],
+                    owner_episode_id=row["owner_episode_id"],
+                    parent_head=TransferGraphHead(
+                        target=TransferGraphTarget.model_validate_json(row["parent_target_json"]),
+                        revision=row["parent_revision"],
+                        transition_id=row["parent_transition_id"],
+                    ),
+                    created_by=row["created_by"],
+                    created_at=row["created_at"],
+                    name=row["name"],
+                    archived=bool(row["archived"]),
+                    auto_archive=bool(row["auto_archive"]),
+                    reserved_names=tuple(
+                        item[0]
+                        for item in connection.execute(
+                            "SELECT name FROM branch_name_reservations "
+                            "WHERE project_id = ? AND branch_id = ? ORDER BY name",
+                            (project_id, row["branch_id"]),
+                        )
+                    ),
+                )
+                for row in connection.execute(
+                    "SELECT * FROM graph_branches WHERE project_id = ? ORDER BY branch_id",
+                    (project_id,),
+                )
+            )
+            if branches:
+                episodes = tuple(
+                    episode.model_copy(
+                        update={
+                            "branch_name": None,
+                            "reserved_branch_names": (),
+                        }
+                    )
+                    for episode in episodes
+                )
             paper = self._transfer_paper_draft(connection, project_id)
             schema_version = self._project_transfer_record_schema_version_in_connection(
                 connection, project_id
@@ -322,6 +367,7 @@ class ProjectTransferStoreMixin(StoreMixinBase):
             tasks=tasks,
             watchers=watchers,
             episodes=episodes,
+            branches=branches,
             paper_draft=paper,
         )
 
@@ -2317,6 +2363,29 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                         report.deleted_at,
                     ),
                 )
+        for branch in records.branches:
+            connection.execute(
+                "INSERT INTO graph_branches (project_id, branch_id, owner_episode_id, "
+                "parent_target_json, parent_revision, parent_transition_id, created_by, created_at, name, "
+                "archived, auto_archive) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    records.project_id,
+                    branch.branch_id,
+                    branch.owner_episode_id,
+                    branch.parent_head.target.model_dump_json(),
+                    branch.parent_head.revision,
+                    branch.parent_head.transition_id,
+                    branch.created_by,
+                    branch.created_at,
+                    branch.name,
+                    int(branch.archived),
+                    int(branch.auto_archive),
+                ),
+            )
+            connection.executemany(
+                "INSERT INTO branch_name_reservations (project_id, branch_id, name) VALUES (?, ?, ?)",
+                ((records.project_id, branch.branch_id, name) for name in branch.reserved_names),
+            )
         for episode in records.episodes:
             connection.executemany(
                 "INSERT INTO branch_name_reservations (project_id, branch_id, name) VALUES (?, ?, ?)",
@@ -2353,6 +2422,10 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                 "INSERT INTO episode_isolation_states VALUES (?, ?, ?)",
                 (records.project_id, episode.episode_id, state.model_dump_json()),
             )
+
+        from rcp.storage.branch_names import backfill_graph_branches
+
+        backfill_graph_branches(connection)
 
     @classmethod
     def _insert_auto_research_history(

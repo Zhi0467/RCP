@@ -399,7 +399,6 @@ def _experiment_episode_entries(
                         if target.kind == "main"
                         else main_service.for_graph_target(
                             target,
-                            expected_episode_id=target.branch_id,
                             initialize=False,
                             refresh_max_age_seconds=REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS,
                         )

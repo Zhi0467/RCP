@@ -74,6 +74,7 @@ PROJECT_LINKED_TABLES = {
     "auto_research_child_experiments",
     "auto_research_child_work",
     "branch_name_reservations",
+    "graph_branches",
     "branch_names",
     "auto_research_child_work_attempts",
     "auto_research_command_files",

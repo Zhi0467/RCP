@@ -49,7 +49,7 @@ def load_branch_merge_context(
     ):
         raise ValueError("episode_isolation_owner_changed")
     branch = service.history.branch(
-        episode.episode_id,
+        episode.graph_target.branch_id or "",
         expected_episode_id=episode.episode_id,
         expected_project_id=episode.project_id,
         initialize=False,

@@ -234,7 +234,7 @@ class AutoResearchStoreMixin(StoreMixinBase):
                 source = self._load_auto_research_episode(connection, source_id)
                 self._require_continuable_source(connection, source, episode)
                 self.require_auto_research_continuation_available(connection, source)
-                # The branch's id is the chain root's; the walk must end there.
+                # Ownership stays with the chain root across continuations.
                 current = source
                 seen = {episode.episode_id}
                 while current.continues_episode_id is not None:
@@ -244,8 +244,12 @@ class AutoResearchStoreMixin(StoreMixinBase):
                     current = self._load_auto_research_episode(
                         connection, current.continues_episode_id
                     )
-                if current.episode_id != episode.graph_target.branch_id:
-                    raise ValueError("the continuation chain does not reach its graph branch root")
+                branch = connection.execute(
+                    "SELECT owner_episode_id FROM graph_branches WHERE project_id=? AND branch_id=?",
+                    (episode.project_id, episode.graph_target.branch_id),
+                ).fetchone()
+                if branch is None or current.episode_id != branch[0]:
+                    raise ValueError("the continuation chain does not reach its graph branch owner")
                 self._require_project_accepts_new_work(connection, episode.project_id)
                 if self._live_episode_row(connection, started) is not None:
                     raise ValueError("Only one live Auto-research episode may run per branch.")

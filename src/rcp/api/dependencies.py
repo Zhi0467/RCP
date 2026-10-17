@@ -217,7 +217,6 @@ def get_graph_service(
     try:
         return service.for_graph_target(
             GraphTargetRef(kind="branch", branch_id=branch_id),
-            expected_episode_id=branch_id,
             initialize=initialize,
             refresh_max_age_seconds=refresh_max_age_seconds,
         )

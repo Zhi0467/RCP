@@ -319,6 +319,14 @@ def _capture_and_seal_source_archive(
                 service,
                 final_root,
             )
+            records.validate_canonical_branches(
+                {
+                    branch.branch_id: service.history.branch(
+                        branch.branch_id, initialize=False
+                    ).branch_metadata()
+                    for branch in canonical_plan.branches
+                }
+            )
             main_head = service.history.head_ref()
         provider_root = temporary_root / "provider"
         provider_capture = capture_provider_history(service.indexer, provider_root)

@@ -10,6 +10,7 @@ from rcp.api import episode_routes
 from rcp.core.models import EpisodeIsolation, EpisodeMergeAttempt, GraphBranchMetadata
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history.branches import BranchHistoryManager
+from rcp.service import ProjectService
 from rcp.storage import EpisodeRecord
 from tests.helpers import authorized_human, create_named_app, signed_in_client
 
@@ -156,7 +157,7 @@ def test_graph_refs_carries_live_and_completed_merge_projection(manifest, tmp_pa
     assert branch["active_merge_task_id"] == task.operation_id
     assert branch["merge_eligible"] is False
 
-    receipt = harness.branch.write_merge_receipt(
+    receipt = cast(BranchHistoryManager, harness.branch).write_merge_receipt(
         _current_receipt(harness, task_id=task.operation_id)
     )
     harness.store.complete_agent_task(task.operation_id, applied_revision=None, result={})
@@ -318,6 +319,13 @@ def test_branch_mutations_require_project_membership(tmp_path) -> None:
     path = f"/api/projects/{project_id}/graph-refs/{uuid.uuid4()}"
     assert client.put(path + "/name", json={"name": "valid-name"}).status_code == 404
     assert client.put(path + "/archived", json={"archived": True}).status_code == 404
+    assert (
+        client.post(
+            f"/api/projects/{project_id}/graph-refs",
+            json={"request_id": str(uuid.uuid4()), "at": "main@0"},
+        ).status_code
+        == 404
+    )
 
 
 def test_graph_refs_attention_tracks_branch_graph_and_pending_questions(manifest, tmp_path) -> None:
@@ -394,3 +402,86 @@ def test_graph_refs_decision_uses_inbox_attention(manifest, tmp_path) -> None:
     response = harness.client.get(f"/api/projects/{harness.project_id}/graph-refs")
     assert response.status_code == 200, response.text
     assert response.json()[1]["needs_you"] is True
+
+
+def test_human_fork_exact_parent_identity_retry_and_archive(manifest, tmp_path) -> None:
+    harness = _create_branch_harness(manifest, tmp_path, change="evidence")
+    path = f"/api/projects/{harness.project_id}/graph-refs"
+    parent_history = cast(BranchHistoryManager, harness.branch)
+    service = cast(ProjectService, harness.service)
+    parent = parent_history.head_ref()
+    request = {
+        "request_id": str(uuid.uuid4()),
+        "at": f"{parent.target.key}@{parent.revision}",
+        "name": "human-fork",
+    }
+    response = harness.client.post(path, json=request)
+    assert response.status_code == 201, response.text
+    fork = response.json()
+    assert fork["episode_id"] is None and fork["current_episode_id"] is None
+    assert fork["parent_head"] == parent.model_dump(mode="json")
+    assert fork["branch_id"] == request["request_id"]
+    assert harness.client.post(path, json=request).json() == fork
+    history = service.history.branch(fork["branch_id"])
+    assert history.materialize().state.nodes == parent_history.materialize().state.nodes
+    record = harness.store.graph_branch(harness.project_id, fork["branch_id"])
+    assert record is not None and record.owner_episode_id is None
+    assert record.created_by == f"human:{request['request_id']}"
+    assert len(harness.store.episodes(harness.project_id, limit=None)) == 1
+    assert (
+        harness.client.put(
+            f"{path}/{fork['branch_id']}/name", json={"name": "renamed-fork"}
+        ).status_code
+        == 200
+    )
+    for archived in (True, False):
+        response = harness.client.put(
+            f"{path}/{fork['branch_id']}/archived", json={"archived": archived}
+        )
+        assert response.status_code == 200, response.text
+        assert (
+            harness.store.branch_admits_new_work(harness.project_id, fork["branch_id"])
+            is not archived
+        )
+    listed = {ref["branch_id"]: ref for ref in harness.client.get(path).json()}
+    assert listed[fork["branch_id"]]["name"] == "renamed-fork"
+
+
+def test_human_fork_past_head_has_no_later_nodes_and_changes_start_at_parent(
+    manifest, tmp_path
+) -> None:
+    from rcp.api.graph_changes import branch_changes
+
+    harness = _create_branch_harness(manifest, tmp_path, change="evidence")
+    parent_history = cast(BranchHistoryManager, harness.branch)
+    service = cast(ProjectService, harness.service)
+    parent = parent_history.branch_metadata().base_head
+    path = f"/api/projects/{harness.project_id}/graph-refs"
+    response = harness.client.post(
+        path,
+        json={
+            "request_id": str(uuid.uuid4()),
+            "at": f"{parent_history.graph_target.key}@{parent.revision}",
+        },
+    )
+    assert response.status_code == 201, response.text
+    fork = response.json()
+    history = service.history.branch(fork["branch_id"])
+    assert "ev/branch-result" not in history.materialize().state.nodes
+    service = service.for_graph_target(history.graph_target)
+    _, changes = branch_changes(service)
+    assert changes.base_head.target == parent_history.graph_target
+    assert changes.base_head.revision == parent.revision
+    assert changes.nodes == [] and changes.edges == []
+
+
+@pytest.mark.parametrize("at", ["main@head", "@0", "main@999999", "branch:missing@0"])
+def test_human_fork_refuses_unbound_or_missing_head(manifest, tmp_path, at) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = signed_in_client(app)
+    response = client.post(
+        f"/api/projects/{app.state.default_project_id}/graph-refs",
+        json={"request_id": str(uuid.uuid4()), "at": at},
+    )
+    assert response.status_code in {404, 422}, response.text
+    assert app.state.background_tasks.store.graph_branches(app.state.default_project_id) == []

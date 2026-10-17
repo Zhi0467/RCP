@@ -23,6 +23,8 @@ from pydantic import (
 )
 
 from rcp.artifacts import kept_binding_is_complete
+from rcp.core.models import GraphBranchMetadata
+from rcp.limits import GRAPH_BRANCH_MAX_DEPTH
 from rcp.transfer.archive import (
     TransferArchiveActor,
     TransferArchiveAttribution,
@@ -30,10 +32,11 @@ from rcp.transfer.archive import (
     TransferGraphTarget,
 )
 
-TRANSFER_RECORD_SCHEMA_VERSION = 5
+TRANSFER_RECORD_SCHEMA_VERSION = 6
 
 TRANSFER_RECORD_TABLES = frozenset(
     {
+        "graph_branches",
         "branch_names",
         "branch_name_reservations",
         "agent_usage",
@@ -1082,13 +1085,8 @@ class TransferEpisodeRecord(_StrictTransferRecord):
             or self.experiment is not None
         ):
             raise ValueError("Auto-research history requires only its sanitized mode record")
-        if self.mode == "auto_research" and (
-            self.graph_target.kind != "branch"
-            or (
-                self.graph_target.branch_id != self.episode_id and self.continues_episode_id is None
-            )
-        ):
-            raise ValueError("Auto-research history must retain its same-id graph branch")
+        if self.mode == "auto_research" and self.graph_target.kind != "branch":
+            raise ValueError("Auto-research history must retain its graph branch")
         if self.continues_episode_id == self.episode_id:
             raise ValueError("episode history cannot continue itself")
         if self.graph_archived and self.graph_target.kind != "branch":
@@ -1140,13 +1138,40 @@ class TransferPaperDraft(_StrictTransferRecord):
     updated_at: AwareTimestamp
 
 
+class TransferGraphBranchRecord(_StrictTransferRecord):
+    branch_id: str
+    owner_episode_id: str | None = None
+    parent_head: TransferGraphHead
+    created_by: str
+    created_at: AwareTimestamp
+    name: str
+    archived: bool = False
+    auto_archive: bool = False
+    reserved_names: tuple[str, ...]
+
+    @model_validator(mode="after")
+    def validate_branch(self) -> TransferGraphBranchRecord:
+        from rcp.storage.branch_names import validate_branch_name
+
+        if _UUID4.fullmatch(self.branch_id) is None:
+            raise ValueError("branch identity must be a canonical UUID4")
+        if self.name not in self.reserved_names:
+            raise ValueError("a stored branch name requires its reservation")
+        for name in self.reserved_names:
+            validate_branch_name(name)
+        if self.parent_head.target.branch_id == self.branch_id:
+            raise ValueError("a branch cannot parent itself")
+        return self
+
+
 class TransferRecordBundle(_StrictTransferRecord):
-    schema_version: Literal[1, 2, 3, 4, 5] = 1
+    schema_version: Literal[1, 2, 3, 4, 5, 6] = 1
     project_id: str = Field(min_length=1)
     attributions: tuple[TransferArchiveAttribution, ...]
     tasks: tuple[TransferTaskRecord, ...]
     watchers: tuple[TransferWatcherRecord, ...]
     episodes: tuple[TransferEpisodeRecord, ...]
+    branches: tuple[TransferGraphBranchRecord, ...] = ()
     paper_draft: TransferPaperDraft | None = None
 
     @field_validator("project_id")
@@ -1172,9 +1197,38 @@ class TransferRecordBundle(_StrictTransferRecord):
             for episode in self.episodes
         ):
             raise ValueError("deleted reports require transfer record schema version 5")
+        if self.schema_version < 6 and self.branches:
+            raise ValueError("branch records require transfer record schema version 6")
+        branches = {branch.branch_id: branch for branch in self.branches}
+        if len(branches) != len(self.branches):
+            raise ValueError("transfer bundle repeats a branch identity")
+        episodes = {episode.episode_id: episode for episode in self.episodes}
+        if self.schema_version >= 6 and any(
+            episode.graph_target.kind == "branch" and episode.graph_target.branch_id not in branches
+            for episode in self.episodes
+        ):
+            raise ValueError("episode references an unknown graph branch")
+        for branch in self.branches:
+            if branch.owner_episode_id is not None:
+                owner = episodes.get(branch.owner_episode_id)
+                if owner is None or owner.continues_episode_id is not None:
+                    raise ValueError("branch owner must name an episode chain root")
+            seen: set[str] = set()
+            ancestor = branch
+            while ancestor.parent_head.target.kind == "branch":
+                parent_id = ancestor.parent_head.target.branch_id
+                if parent_id in seen:
+                    raise ValueError("branch ancestry contains a cycle")
+                if parent_id not in branches:
+                    raise ValueError("branch ancestry requires every parent")
+                assert parent_id is not None
+                seen.add(parent_id)
+                if len(seen) >= GRAPH_BRANCH_MAX_DEPTH:
+                    raise ValueError("branch ancestry exceeds the depth limit")
+                ancestor = branches[parent_id]
         reserved_names = [
             name for episode in self.episodes for name in episode.reserved_branch_names
-        ]
+        ] + [name for branch in self.branches for name in branch.reserved_names]
         if len(reserved_names) != len(set(reserved_names)):
             raise ValueError("transfer bundle repeats a reserved branch name")
         attribution_ids = {item.archive_actor_id for item in self.attributions}
@@ -1267,9 +1321,25 @@ class TransferRecordBundle(_StrictTransferRecord):
                 )
         return self
 
+    def validate_canonical_branches(self, metadata: Mapping[str, GraphBranchMetadata]) -> None:
+        if self.schema_version < 6:
+            return
+        if {branch.branch_id for branch in self.branches} != set(metadata):
+            raise ValueError("operational branch inventory differs from canonical history")
+        for branch in self.branches:
+            canonical = metadata[branch.branch_id]
+            if (
+                canonical.project_id != self.project_id
+                or canonical.episode_id != branch.owner_episode_id
+                or TransferGraphHead.capture(canonical.effective_parent_head) != branch.parent_head
+            ):
+                raise ValueError("operational branch binding differs from canonical history")
+
     @model_serializer(mode="wrap")
     def serialize_version(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
         data = handler(self)
+        if self.schema_version < 6:
+            data.pop("branches", None)
         if self.schema_version < 4:
             for episode in data.get("episodes", []):
                 episode.pop("branch_name", None)

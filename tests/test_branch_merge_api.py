@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Literal
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, AgentProcessControl
@@ -31,6 +32,7 @@ from rcp.core.models import (
 )
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import BranchMergeAlreadyCommitted
+from rcp.history.branches import BranchHistoryManager
 from rcp.limits import (
     REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS,
     REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
@@ -48,7 +50,7 @@ from rcp.runs.branch_merge import branch_merge_id
 from rcp.runs.branch_merge_admission import start_branch_merge
 from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.tasks.branch_merge import _apply_receipt_to_execution
-from rcp.service import RunRequest, resolve_dispatch_authority
+from rcp.service import ProjectService, RunRequest, resolve_dispatch_authority
 from rcp.setup import ProjectSetupRequest
 from rcp.storage import (
     AgentTaskRecord,
@@ -76,14 +78,14 @@ BranchChange = Literal["none", "evidence", "status", "bookkeeping"]
 
 @dataclass(frozen=True)
 class _BranchHarness:
-    app: object
+    app: FastAPI
     client: TestClient
     project_id: str
     store: AppStore
-    service: object
+    service: ProjectService
     episode: EpisodeRecord
     root: AgentTaskRecord
-    branch: object
+    branch: BranchHistoryManager
 
 
 def _main_fixture_patch() -> Patch:
@@ -183,6 +185,7 @@ def _create_branch_harness(
     *,
     change: BranchChange,
     ended: bool = True,
+    independent: bool = False,
 ) -> _BranchHarness:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
@@ -195,13 +198,17 @@ def _create_branch_harness(
     base_head = service.history.head_ref()
     assert base_head.transition_id is not None
     episode_id = str(uuid.uuid4())
-    target = GraphTargetRef(kind="branch", branch_id=episode_id)
+    branch_id = str(uuid.uuid4()) if independent else episode_id
+    root_id = str(uuid.uuid4())
+    target = GraphTargetRef(kind="branch", branch_id=branch_id)
     branch = service.history.create_episode_branch(
         GraphBranchMetadata(
-            branch_id=episode_id,
+            branch_id=branch_id,
             episode_id=episode_id,
             project_id=project_id,
             base_head=base_head,
+            parent_head=base_head if independent else None,
+            created_by=f"orchestrator:{root_id}" if independent else None,
             head=GraphHeadRef(
                 target=target,
                 revision=base_head.revision,
@@ -212,7 +219,6 @@ def _create_branch_harness(
     )
 
     now = store.now()
-    root_id = str(uuid.uuid4())
     episode = EpisodeRecord(
         episode_id=episode_id,
         project_id=project_id,
@@ -355,7 +361,7 @@ def _current_receipt(harness: _BranchHarness, *, task_id: str) -> BranchMergeRec
         provenance=BranchMergeProvenance(
             merge_id=branch_merge_id(metadata),
             branch_id=metadata.branch_id,
-            episode_id=metadata.episode_id,
+            episode_id=harness.episode.episode_id,
             branch_base_head=metadata.base_head,
             branch_head=metadata.head,
             rebased_main_head=main_head,
@@ -519,7 +525,7 @@ def test_start_episode_projects_the_exact_main_transition_into_its_branch_head(
         episode = tasks.store.episode(record.episode_id)
         assert episode is not None
         service.history.branch(
-            episode.episode_id,
+            episode.graph_target.branch_id,
             expected_episode_id=episode.episode_id,
             expected_project_id=episode.project_id,
         )
@@ -538,10 +544,15 @@ def test_start_episode_projects_the_exact_main_transition_into_its_branch_head(
     assert payload["graph_base_head"] == exact_main.model_dump(mode="json")
     assert branch["base_head"] == exact_main.model_dump(mode="json")
     assert branch["head"] == {
-        "target": {"kind": "branch", "branch_id": payload["episode_id"]},
+        "target": payload["graph_target"],
         "revision": exact_main.revision,
         "transition_id": exact_main.transition_id,
     }
+    assert branch["branch_id"] != payload["episode_id"]
+    assert (
+        tasks.store.branch_owner(payload["project_id"], branch["branch_id"])
+        == payload["episode_id"]
+    )
     assert launch_observations == [payload["root_operation_id"]]
 
     # A second start runs beside the first on its own branch.
@@ -553,7 +564,7 @@ def test_start_episode_projects_the_exact_main_transition_into_its_branch_head(
     branches = service.manifest.research_dir / "branches"
     assert sorted(
         path.name for path in branches.iterdir() if not path.name.startswith(".")
-    ) == sorted([payload["episode_id"], second.json()["episode_id"]])
+    ) == sorted([branch["branch_id"], second.json()["graph_branch"]["branch_id"]])
 
 
 def test_start_episode_keeps_a_visible_failed_reservation_when_branch_creation_fails(
@@ -681,21 +692,9 @@ def test_restart_reconciles_an_already_published_reserved_branch(
     )
 
     def ensure(reserved: EpisodeRecord) -> None:
-        service.history.create_episode_branch(
-            GraphBranchMetadata(
-                branch_id=reserved.episode_id,
-                episode_id=reserved.episode_id,
-                project_id=reserved.project_id,
-                base_head=reserved.graph_base_head,
-                head=GraphHeadRef(
-                    target=reserved.graph_target,
-                    revision=base_head.revision,
-                    transition_id=base_head.transition_id,
-                ),
-                created_at=reserved.created_at,
-                authorized_by=reserved.authorized_by,
-            )
-        )
+        from rcp.api.episode_branches import ensure_episode_graph_target
+
+        ensure_episode_graph_target(reserved, catalog=app.state.catalog)
 
     ensure(episode)
     restarted = BackgroundAgentTasks(tasks.store, tasks.stream)
@@ -725,6 +724,7 @@ def test_episode_projection_and_merge_admission_are_exact_and_recover_by_fresh_d
         "branch_id",
         "episode_id",
         "base_head",
+        "parent_head",
         "head",
         "merge_eligible",
         "merge_blocked_reason",
@@ -740,6 +740,7 @@ def test_episode_projection_and_merge_admission_are_exact_and_recover_by_fresh_d
         "branch_id": metadata.branch_id,
         "episode_id": metadata.episode_id,
         "base_head": metadata.base_head.model_dump(mode="json"),
+        "parent_head": metadata.effective_parent_head.model_dump(mode="json"),
         "head": metadata.head.model_dump(mode="json"),
         "merge_eligible": True,
         "merge_blocked_reason": None,
@@ -1190,7 +1191,10 @@ def test_committed_merge_persists_its_receipt_before_success_and_evaluates_main_
     task = wait_for_task(harness.store, operation_id, expect="succeeded")
     assert launcher.calls == 0
     assert task.applied_revision == harness.service.history.state().revision
-    assert harness.service.history.state().nodes["blk/merge-ready"].status == "resolved"
+    assert (
+        harness.service.history.state().nodes["blk/merge-ready"].model_dump()["status"]
+        == "resolved"
+    )
     receipts = harness.branch.merge_receipts()
     assert len(receipts) == 1
     assert receipts[0].outcome == "committed"
@@ -1219,7 +1223,7 @@ def test_graph_projection_reconciles_a_crashed_commit_and_blocks_duplicate_merge
     provenance = BranchMergeProvenance(
         merge_id=merge_id,
         branch_id=metadata.branch_id,
-        episode_id=metadata.episode_id,
+        episode_id=harness.episode.episode_id,
         branch_base_head=metadata.base_head,
         branch_head=metadata.head,
         rebased_main_head=main_head,
@@ -1291,7 +1295,7 @@ def test_crash_receipt_reconciliation_accepts_later_main_history(
     provenance = BranchMergeProvenance(
         merge_id=branch_merge_id(metadata),
         branch_id=metadata.branch_id,
-        episode_id=metadata.episode_id,
+        episode_id=harness.episode.episode_id,
         branch_base_head=metadata.base_head,
         branch_head=metadata.head,
         rebased_main_head=harness.service.history.head_ref(),
@@ -1495,3 +1499,25 @@ def test_merge_history_client_and_main_observation(manifest, tmp_path, monkeypat
     )
     assert seen == harness.service.history.head_ref()
     assert seen.revision == task.applied_revision
+
+
+def test_independent_episode_branch_merges_into_main(manifest, tmp_path, monkeypatch):
+    harness = _create_branch_harness(manifest, tmp_path, change="status", independent=True)
+    monkeypatch.setattr(
+        harness.app.state.launcher,
+        "stream",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("provider launched")),
+    )
+    response = harness.client.post(
+        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge",
+        json={"keep_branch_open": True},
+    )
+    assert response.status_code == 202, response.text
+    assert harness.branch.branch_id != harness.episode.episode_id
+    (receipt,) = harness.branch.validated_merge_receipts()
+    assert receipt.provenance.branch_id == harness.branch.branch_id
+    assert receipt.provenance.episode_id == harness.episode.episode_id
+    assert (
+        harness.service.history.state().nodes["blk/merge-ready"].model_dump()["status"]
+        == "resolved"
+    )

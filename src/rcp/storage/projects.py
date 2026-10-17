@@ -498,6 +498,9 @@ class ProjectStoreMixin(StoreMixinBase):
                     "conversation_worktrees": connection.execute(
                         "DELETE FROM conversation_worktrees WHERE project_id = ?", (project_id,)
                     ).rowcount,
+                    "graph_branches": connection.execute(
+                        "DELETE FROM graph_branches WHERE project_id = ?", (project_id,)
+                    ).rowcount,
                     "branch_names": connection.execute(
                         "DELETE FROM branch_names WHERE project_id = ?", (project_id,)
                     ).rowcount,
@@ -1148,7 +1151,13 @@ class ProjectStoreMixin(StoreMixinBase):
                 "UPDATE chat_pins SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),
             )
-            for table in ("episode_isolations", "episode_isolation_states"):
+            for table in (
+                "episode_isolations",
+                "episode_isolation_states",
+                "graph_branches",
+                "branch_names",
+                "branch_name_reservations",
+            ):
                 connection.execute(
                     f"UPDATE {table} SET project_id = ? WHERE project_id = ?",
                     (project_id, legacy_id),

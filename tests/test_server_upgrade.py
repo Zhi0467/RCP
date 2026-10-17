@@ -143,6 +143,7 @@ def test_pre_ledger_fixture_records_migrations_and_never_rescans(
             (52,),
             (53,),
             (54,),
+            (55,),
         ]
 
         plan = connection.execute(
@@ -194,7 +195,9 @@ def test_pre_ledger_fixture_records_migrations_and_never_rescans(
 @pytest.fixture(scope="module")
 def baseline_schema(tmp_path_factory: pytest.TempPathFactory) -> list[tuple[str, str, str, str]]:
     baseline = tmp_path_factory.mktemp("baseline") / "baseline.sqlite3"
-    AppStore(baseline).close()
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr("rcp.rcp_home.rcp_home", lambda: baseline.parent / "rcp-home")
+        AppStore(baseline).close()
     return _normalized_schema(baseline)
 
 

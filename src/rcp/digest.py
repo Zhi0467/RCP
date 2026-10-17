@@ -18,7 +18,6 @@ from rcp.history.engine import ProjectHistoryEngine
 from rcp.history.queries import HeadSpec
 from rcp.limits import DIGEST_RECHECK_SECONDS, DIGEST_STOP_TIMEOUT_SECONDS
 from rcp.server_ops.maintenance import MaintenanceAdmissionClosed
-from rcp.storage.branch_names import resolve_branch_names
 from rcp.storage.digest import append_digest_event
 from rcp.transport import StateUnavailable
 
@@ -186,14 +185,22 @@ def graph_event(
     }
     if patch.branch_merge is not None:
         payload["merged_branch_revision"] = patch.branch_merge.branch_head.revision
+        payload["merged_branch_id"] = patch.branch_merge.branch_id
     kind = "graph_change"
     if target != "main":
         kind = "branch_change"
-        episode_id = target.removeprefix("branch:")
+        branch_id = target.removeprefix("branch:")
+        branch = store.graph_branch(project_id, branch_id)
+        episode_id = branch.owner_episode_id if branch else None
         payload.update(
+            branch_id=branch_id,
             episode_id=episode_id,
-            title=_episode_title(store, episode_id),
-            deep_link=deep_link(project_id, target, "episode", episode_id),
+            title=_episode_title(store, episode_id)
+            if episode_id
+            else (branch.name if branch else "Branch"),
+            deep_link=deep_link(project_id, target, "episode", episode_id)
+            if episode_id
+            else _app_hash(project_id, "graph", branch_id=branch_id),
             needs_action=any(kind == "decision" for kind, _ in new),
         )
     return dict(
@@ -214,9 +221,9 @@ def _app_hash(project_id: str, view: str, **params: str) -> str:
     return f"#/projects/{quote(project_id, safe='')}?{query}"
 
 
-def _run_link(project_id: str, branch_id: str) -> str:
+def _run_link(project_id: str, branch_id: str, episode_id: str) -> str:
     """An Auto-research run opens its orchestrator card on its own branch."""
-    return _app_hash(project_id, "chats", chat=branch_id, branch_id=branch_id)
+    return _app_hash(project_id, "chats", chat=episode_id, branch_id=branch_id)
 
 
 def _experiment_link(project_id: str, episode) -> str:
@@ -236,8 +243,7 @@ def _experiment_link(project_id: str, episode) -> str:
 def _run_child(event_target: str, episode_id: str, runs: dict[str, str], chain) -> bool:
     """An episode on a run's branch that is no orchestrator: neither the chain
     root nor a continuation, which keeps the root's branch under a new id."""
-    root = event_target.removeprefix("branch:")
-    return event_target in runs and episode_id != root and episode_id not in chain
+    return event_target in runs and episode_id not in chain
 
 
 def assemble_digest(
@@ -261,7 +267,7 @@ def assemble_digest(
     episode id, roots and continuations. Only main's own edits are main's changes; a
     run reaches main's digest solely as one Needs you line, while something on
     its branch waits for the human: an open question, Proposal, or Decision
-    there, or its own orchestrator episode, whose id is its branch id. Its
+    there, or its own orchestrator episode. Its
     child episodes' health is never a line, here or on its branch.
     """
     runs = runs or {}
@@ -282,15 +288,19 @@ def assemble_digest(
     merged = {}
     for event in events:
         if "merged_branch_revision" in event["payload"]:
-            episode_id = event["source_key"].removeprefix("episode:")
-            merged[episode_id] = max(
-                merged.get(episode_id, 0), event["payload"]["merged_branch_revision"]
+            branch_id = event["payload"].get("merged_branch_id") or event[
+                "source_key"
+            ].removeprefix("episode:")
+            merged[branch_id] = max(
+                merged.get(branch_id, 0), event["payload"]["merged_branch_revision"]
             )
     for event in events:
         payload = event["payload"]
         kind, item_id, event_target = event["kind"], event["item_id"], event["target"]
         if kind in {"graph_change", "branch_change"}:
-            if kind == "branch_change" and int(item_id) <= merged.get(payload["episode_id"], -1):
+            if kind == "branch_change" and int(item_id) <= merged.get(
+                payload.get("branch_id", payload.get("episode_id")), -1
+            ):
                 continue
             in_scope = event_target == target
             if not in_scope and not (target == "main" and event_target in runs):
@@ -369,7 +379,7 @@ def assemble_digest(
                 item_id=branch_id,
                 title=runs[run_target],
                 target=run_target,
-                deep_link=_run_link(project_id, branch_id),
+                deep_link=_app_hash(project_id, "chats", branch_id=branch_id),
                 created_at=created_at,
             )
         )
@@ -460,8 +470,7 @@ def _archived_branches(conn, project_id: str) -> frozenset[str]:
     return frozenset(
         "branch:" + str(row[0])
         for row in conn.execute(
-            "SELECT owner_episode_id FROM episode_isolation_states WHERE project_id=? "
-            "AND json_extract(state_json, '$.graph_archived') = 1",
+            "SELECT branch_id FROM graph_branches WHERE project_id=? AND archived=1",
             (project_id,),
         )
     )
@@ -469,16 +478,16 @@ def _archived_branches(conn, project_id: str) -> frozenset[str]:
 
 def _auto_research_runs(conn, project_id: str) -> dict[str, str]:
     """Each Auto-research run's branch target key and its branch name."""
-    names = resolve_branch_names(conn, project_id)
-    branch_ids = [
-        str(row[0])
+    return {
+        "branch:" + row[0]: row[1]
         for row in conn.execute(
-            "SELECT episode_id FROM episodes WHERE project_id=? AND mode='auto_research' "
-            "AND json_extract(graph_target_json, '$.branch_id') = episode_id",
+            "SELECT b.branch_id, b.name FROM graph_branches AS b JOIN episodes AS e "
+            "ON e.project_id=b.project_id AND e.episode_id=b.owner_episode_id "
+            "WHERE b.project_id=? AND e.mode='auto_research' "
+            "AND json_extract(e.graph_target_json, '$.branch_id')=b.branch_id",
             (project_id,),
         )
-    ]
-    return {"branch:" + branch_id: names.get(branch_id, branch_id[:8]) for branch_id in branch_ids}
+    }
 
 
 def _drop_closed_attention(store, project_id: str, events: list[dict]) -> list[dict]:
@@ -589,15 +598,22 @@ def _present_current(store, project_id, result, state, runs) -> None:
     }
     episodes = store.episodes_by_ids(sorted(episode_ids)) if episode_ids else {}
 
+    def run_link(branch_id: str) -> str:
+        owner = store.branch_owner(project_id, branch_id)
+        assert owner is not None  # Only episode-owned root branches are in runs.
+        return _run_link(project_id, branch_id, owner)
+
     def episode_link(episode) -> str | None:
         if episode.graph_target.key in runs:
-            return _run_link(project_id, episode.graph_target.branch_id)
+            return run_link(episode.graph_target.branch_id)
         if episode.mode == "experiment_loop" and episode.control_node_id:
             return _experiment_link(project_id, episode)
         return None
 
     for item in needs:
-        if item["kind"] == "episode" and (episode := episodes.get(item["item_id"])):
+        if item["kind"] == "auto_research":
+            item["deep_link"] = run_link(item["target"].removeprefix("branch:"))
+        elif item["kind"] == "episode" and (episode := episodes.get(item["item_id"])):
             node = state.nodes.get(episode.control_node_id or "") if state else None
             item["title"] = node.title if node else (episode.control_node_id or item["title"])
             item["deep_link"] = episode_link(episode) or item["deep_link"]
@@ -621,10 +637,10 @@ def _present_current(store, project_id, result, state, runs) -> None:
             episode = store.episode(group["source_key"].removeprefix("episode:"))
             if episode and episode.graph_target.key in runs:
                 group["label"] = runs[episode.graph_target.key]
-                group["deep_link"] = _run_link(project_id, episode.graph_target.branch_id)
+                group["deep_link"] = run_link(episode.graph_target.branch_id)
     if result["target"] in runs:
         for group in result["changed"]:
-            group["deep_link"] = _run_link(project_id, result["target"].removeprefix("branch:"))
+            group["deep_link"] = run_link(result["target"].removeprefix("branch:"))
 
 
 def digest_counts(store, project_ids: list[str], user_id: str) -> dict[str, int]:
@@ -642,10 +658,12 @@ def digest_counts(store, project_ids: list[str], user_id: str) -> dict[str, int]
 def _merged_revision(conn, project_id, target):
     row = conn.execute(
         "SELECT payload_json FROM digest_events WHERE project_id=? AND kind='graph_change' "
-        "AND source_key=? ORDER BY seq DESC LIMIT 1",
-        (project_id, "episode:" + target.removeprefix("branch:")),
+        "AND coalesce(json_extract(payload_json, '$.merged_branch_id'), substr(source_key, 9))=? "
+        "AND json_extract(payload_json, '$.merged_branch_revision') IS NOT NULL "
+        "ORDER BY seq DESC LIMIT 1",
+        (project_id, target.removeprefix("branch:")),
     ).fetchone()
-    return json.loads(row[0]).get("merged_branch_revision", -1) if row else -1
+    return json.loads(row[0])["merged_branch_revision"] if row else -1
 
 
 class DigestProjector:
@@ -731,15 +749,13 @@ class DigestProjector:
                     _LOG.exception("Digest reconciliation failed for %s", project_id)
 
     def _branch_targets(self, project_id):
+        live = {episode.graph_target.key for episode in self.store.live_episodes(project_id)}
         with self.store.connection() as conn:
             return {
-                episode.graph_target.key: episode.graph_target.branch_id
-                for episode in self.store.episodes(project_id, limit=None)
-                if episode.graph_target.kind == "branch"
-                and (
-                    episode.status in {"queued", "running", "stopping", "wrapping_up"}
-                    or _merged_revision(conn, project_id, episode.graph_target.key) < 0
-                )
+                "branch:" + branch.branch_id: branch.branch_id
+                for branch in self.store.graph_branches(project_id)
+                if "branch:" + branch.branch_id in live
+                or _merged_revision(conn, project_id, "branch:" + branch.branch_id) < 0
             }
 
     def _lagging(self, project_id):
@@ -762,7 +778,7 @@ class DigestProjector:
                 metadata = GraphBranchMetadata.model_validate_json(path.read_text())
                 revision = (
                     metadata.head.revision
-                    if metadata.head.revision > metadata.base_head.revision
+                    if metadata.head.revision > metadata.effective_parent_head.revision
                     else 0
                 )
                 if revision != heads.get(target):
