@@ -56,6 +56,7 @@ import { ReconnectOverlay } from "./desktop/ReconnectOverlay";
 import { useUpdateNotice } from "./desktop/useUpdateNotice";
 import { TerminalTab } from "./terminals/TerminalTab";
 import { GraphPicker } from "./graph/GraphPicker";
+import { ViewPicker, type ResearchLayout } from "./graph/ViewPicker";
 import { selectionAfterGraphSwitch } from "./graph/graphPickerModel";
 import {
   branchOwnerEpisode,
@@ -294,7 +295,6 @@ import type {
   ProjectSnapshot,
   ProjectTransitionResponse,
   TransitionPreviewResponse,
-  TrustView,
   WatcherRecord,
 } from "./core/types";
 import { decodeProjectTransitionResponse, DISPLAY_NAME_MAX_LENGTH } from "./core/types";
@@ -4619,19 +4619,12 @@ function MemberApp({
       />
     </>
   );
-  const trustFilter = showTrustFilter && (
-    <label className="trust-filter">
-      <span>Show</span>
-      <select
-        value={trustView}
-        onChange={(event) => changeTrustView(event.target.value as TrustView)}
-      >
-        <option value="working">Working graph</option>
-        <option value="accepted">Accepted only</option>
-        <option value="review">Everything</option>
-      </select>
-    </label>
-  );
+  const viewChoice = {
+    layout: (view === "dag" ? "dag" : "scientific") as ResearchLayout,
+    trustView,
+    onLayout: changeView,
+    onTrustView: changeTrustView,
+  };
   const phonePrimaryViews = new Set<AppView>(["overview", "attention", "scientific", "execution"]);
   const projectDock = (
     <ProjectDock
@@ -4693,7 +4686,7 @@ function MemberApp({
           sync={syncControls}
           menu={
             <>
-              {trustFilter}
+              {showTrustFilter && <ViewPicker inline {...viewChoice} />}
               {autoResearchButton}
               {projectUtilities}
             </>
@@ -4769,7 +4762,7 @@ function MemberApp({
             />
           )}
           {navItems.map(renderNavItem)}
-          {trustFilter}
+          {showTrustFilter && <ViewPicker {...viewChoice} />}
           {branchPicker}
         </nav>
       )}
@@ -4915,28 +4908,6 @@ function MemberApp({
             </div>
           }
         >
-          {(view === "scientific" || view === "dag") && (
-            <div className="research-subpanel" role="tablist" aria-label="Research panels">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={view === "scientific"}
-                className={view === "scientific" ? "active" : ""}
-                onClick={() => changeView("scientific")}
-              >
-                <GitBranch size={14} /> Research
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={view === "dag"}
-                className={view === "dag" ? "active" : ""}
-                onClick={() => changeView("dag")}
-              >
-                <Network size={14} /> DAG
-              </button>
-            </div>
-          )}
           {view === "overview" && (
             <ProjectOverview
               project={projectWithTransitionProjection(

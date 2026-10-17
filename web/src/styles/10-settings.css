@@ -2602,12 +2602,6 @@ button.agent-provider-label {
   .project-tabs > button.project-tabs-back svg {
     display: block;
   }
-  .trust-filter {
-    padding-right: 9px;
-  }
-  .research-subpanel {
-    padding: 0 20px;
-  }
   .overview-page {
     padding: 38px 20px 70px;
   }
@@ -2753,13 +2747,6 @@ button.agent-provider-label {
   .project-tabs-toggle {
     margin-left: -4px;
     width: 25px;
-  }
-  .trust-filter {
-    display: none;
-  }
-  .research-subpanel {
-    margin-top: 16px;
-    padding: 0 16px;
   }
   .overview-heading h1 {
     font-size: var(--type-5xl);

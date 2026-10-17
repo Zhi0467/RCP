@@ -49,7 +49,10 @@ magnifies the page without resizing RCP windows. Verify at 390px.
 
 No wordmark, logo, or revision label sits beside the project name. Group labelled
 Sync/Ask together and icon-only History/Refresh together. Agent tasks are
-icon-only and accessible. Inbox carries a colored count; DAG is under Research.
+icon-only and accessible. Inbox carries a colored count; DAG is under Research. Research has no page
+heading: one View picker at the end of the tab strip switches between the
+drill-down and the DAG and sets which records show; on phones it sits in the ⋯
+menu. The DAG toolbar's type and layer filter is its Lens menu.
 Paper is under Artifacts' Files | Paper switch, retaining route `paper` and an
 unsynced badge on Artifacts. The member's pinned pages follow Paper in that
 switch; on phones it scrolls within its own width, pin titles truncate, and
@@ -69,9 +72,10 @@ boundaries follow [revision observation](api-web-and-desktop-projections.md#revi
 ## Projections
 
 Research is a drill-down, one level per screen, with a trail back up. Question
-cards show the question and its motivation, and count only what is one relation
+cards show the question and its motivation (text that only restates the title
+is skipped), and count only what is one relation
 away: sub-questions, Hypotheses, undecided Decisions, open Blockers. Hypothesis
-cards have three rows in page order: inputs (with undecided Decisions and open
+cards show the statement, then three rows in page order: inputs (with undecided Decisions and open
 Blockers), Experiments (with active ones), and Evidence (with the verdict tally). A question page lists sub-questions, Hypotheses, and work
 that tests no Hypothesis. A Hypothesis page puts its Experiments in the middle, one collapsed
 Inputs box before them, and one Evidence box after each; boxes and the verdict

@@ -45,6 +45,12 @@
 .research-node-card.question-card > strong {
   font-size: var(--type-lg);
 }
+.research-node-card > .research-card-text {
+  margin-top: 6px;
+}
+.research-node-card.question-card > .research-card-text {
+  margin-top: 0;
+}
 .research-card-text {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;

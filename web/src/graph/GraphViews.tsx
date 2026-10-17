@@ -625,10 +625,6 @@ export function DagView({
           : "Wide";
   return (
     <section className="view-panel dag-panel">
-      <ViewHeading
-        title={branchChanges ? "Branch graph" : "DAG view"}
-        aside={`${projection.nodes.length} nodes · ${projection.edges.length} edges`}
-      />
       {branchChanges && (
         <div className="branch-graph-controls">
           <div className="segmented" role="group" aria-label="Branch graph lens">
@@ -741,12 +737,12 @@ export function DagView({
             </button>
             <button
               type="button"
-              aria-label="View"
+              aria-label="Lens"
               aria-expanded={toolbarMenu === "view"}
               onClick={() => setToolbarMenu((open) => (open === "view" ? null : "view"))}
             >
               <Eye size={15} />
-              <span>View</span>
+              <span>Lens</span>
               <ChevronDown size={13} />
             </button>
           </div>
@@ -824,7 +820,7 @@ export function DagView({
             </div>
           )}
           {toolbarMenu === "view" && (
-            <div className="dag-toolbar-menu" role="group" aria-label="View options">
+            <div className="dag-toolbar-menu" role="group" aria-label="Lens options">
               <div
                 className="segmented dag-projection-switch"
                 role="group"

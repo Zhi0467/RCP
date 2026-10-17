@@ -4,7 +4,7 @@ import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import type { GraphNode, GraphState, TrustView } from "../core/types";
 import type { ProjectViewportRef } from "../projects/projectTabs";
 import { useEvidenceFlags } from "./EvidenceFlagContext";
-import { EmptyState, ViewHeading } from "./GraphViews";
+import { EmptyState } from "./GraphViews";
 import { projectNodes } from "./graphProjection";
 import { humanize, nodeTypeLabel } from "./nodePresentation";
 import {
@@ -74,19 +74,10 @@ export function ResearchDrilldown({
       {...props}
     />
   );
-  const hidden = Object.values(graph.nodes).length - nodes.length;
 
   if (!step) {
     return (
       <section className="view-panel research-view">
-        <ViewHeading
-          title="Research"
-          aside={
-            hidden > 0
-              ? `${hidden} hidden`
-              : `${drilldown.roots.length} question${drilldown.roots.length === 1 ? "" : "s"}`
-          }
-        />
         {drilldown.roots.length === 0 && drilldown.unplaced.length === 0 ? (
           <EmptyState icon={<Search size={20} />} title="No research structure" />
         ) : (
@@ -426,14 +417,11 @@ function QuestionCard({
   onOpen: () => void;
 }) {
   const { node } = item;
-  const question = typeof node.question === "string" ? node.question.trim() : "";
-  const motivation = typeof node.motivation === "string" ? node.motivation.trim() : "";
-  const restatesTitle =
-    question.replace(/[?.\s]+$/, "").toLowerCase() ===
-    node.title.replace(/[?.\s]+$/, "").toLowerCase();
+  const question = cardText(node, "question");
+  const motivation = cardText(node, "motivation");
   return (
     <ResearchNodeCard node={node} onClick={onOpen} changed={changed} className="question-card">
-      {question && !restatesTitle && <span className="research-card-text">{question}</span>}
+      {question && <span className="research-card-text">{question}</span>}
       {motivation && <span className="research-card-text secondary">{motivation}</span>}
       <span className="research-chips">
         {item.subquestionCount > 0 && (
@@ -459,6 +447,7 @@ function HypothesisCard({
   changed: boolean;
   onOpen: () => void;
 }) {
+  const statement = cardText(item.node, "statement");
   const evidenceCount = VERDICTS.reduce((total, verdict) => total + item.tally[verdict], 0);
   return (
     <ResearchNodeCard
@@ -476,6 +465,7 @@ function HypothesisCard({
         ) : undefined
       }
     >
+      {statement && <span className="research-card-text">{statement}</span>}
       <span className="research-card-rows">
         <CardRow label="Inputs" empty={item.openDecisions + item.openBlockers === 0}>
           <OpenChips decisions={item.openDecisions} blockers={item.openBlockers} />
@@ -489,6 +479,15 @@ function HypothesisCard({
       </span>
     </ResearchNodeCard>
   );
+}
+
+/** A node's text field for a card, or "" when it only restates the title. */
+function cardText(node: GraphNode, field: string): string {
+  const value = node[field];
+  if (typeof value !== "string") return "";
+  const text = value.trim();
+  const bare = (line: string) => line.replace(/[?.\s]+$/, "").toLowerCase();
+  return bare(text) === bare(node.title) ? "" : text;
 }
 
 function CardRow({
