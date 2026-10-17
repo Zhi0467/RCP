@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from rcp.agents.group_context import GroupContext
 from rcp.config import Manifest
 from rcp.core.models import GraphState, Patch
 from rcp.core.operations import SetCoverageOperation
@@ -79,6 +80,7 @@ class ChatContext(BaseModel):
     graph_path: str
     main_graph_path: str | None = None
     shared_repositories: list[RepositoryPointer] = Field(default_factory=list)
+    group_context: GroupContext | None = None
     loop_status: dict[str, Any] | None = None
     research_md_path: str
     introduction_path: str | None

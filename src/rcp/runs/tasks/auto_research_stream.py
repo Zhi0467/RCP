@@ -47,7 +47,9 @@ from rcp.agents.continuation_prompt import (
     master_key,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
+from rcp.agents.group_context import build_group_context
 from rcp.agents.loop_overlap import render_auto_research_overlap, render_loop_overlap
+from rcp.agents.prompts import render_group_context
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
 from rcp.core.research_md import render_research_md
@@ -254,8 +256,14 @@ async def stream_auto_research_orchestrator_run(
             local_stage=stage.local,
             remote_stage=stage.remote,
         )
-        graph_read_scope = GraphReadScope(
-            project_id=turn.task.project_id, target=turn.task.graph_target
+        context = _orchestrator_launch_context(service, turn.request, stage)
+        context.group_context = build_group_context(
+            service, execution.store, turn.request.run_on or ""
+        )
+        graph_read_scope = GraphReadScope.for_launch(
+            project_id=turn.task.project_id,
+            target=turn.task.graph_target,
+            group_context=context.group_context,
         )
         command_dispatcher = command_dispatcher.with_command_files(
             service=service,
@@ -268,7 +276,6 @@ async def stream_auto_research_orchestrator_run(
                 stage,
             ),
         )
-        context = _orchestrator_launch_context(service, turn.request, stage)
         _prepare_turn_handoffs(execution, turn, stage)
 
         messages_path = _stage_claimed_mail(execution, turn, stage)
@@ -369,6 +376,8 @@ async def stream_auto_research_orchestrator_run(
                 service,
                 turn.request.run_on or "",
             )
+            if context.group_context is not None:
+                read_dirs.extend(context.group_context.read_dirs())
             write_dirs = [Path(item) for item in write_scope.repository_roots]
             retry_patch_digest = (
                 _existing_exact_patch_digest(stage.workspace, stage.remote)
@@ -581,6 +590,9 @@ async def stream_auto_research_worker_run(
             )
         )
         context = _auto_research_context(service, turn.request, stage)
+        context.group_context = build_group_context(
+            service, execution.store, turn.request.run_on or ""
+        )
         _prepare_turn_handoffs(execution, turn, stage)
 
         messages_path = _stage_claimed_mail(execution, turn, stage)
@@ -595,8 +607,10 @@ async def stream_auto_research_worker_run(
             f"auto_research-patch-schema-{schema_digest}.json",
             schema,
         )
-        graph_read_scope = GraphReadScope(
-            project_id=turn.task.project_id, target=turn.task.graph_target
+        graph_read_scope = GraphReadScope.for_launch(
+            project_id=turn.task.project_id,
+            target=turn.task.graph_target,
+            group_context=context.group_context,
         )
         staged_head = prepare_graph_observation(
             execution,
@@ -665,6 +679,8 @@ async def stream_auto_research_worker_run(
                 service,
                 turn.request.run_on or "",
             )
+            if context.group_context is not None:
+                read_dirs.extend(context.group_context.read_dirs())
             write_dirs = [Path(item) for item in write_scope.repository_roots]
             retry_patch_digest = (
                 _existing_exact_patch_digest(stage.workspace, stage.remote)
@@ -1743,6 +1759,7 @@ def _orchestrator_prompt(
         start_contract=start_contract,
         continuation_parts=continuation_parts,
         fresh_parts=(
+            render_group_context(context.group_context),
             question_part,
             auto_research_branch_read_pointers(
                 context.main_graph_path, shared_repositories, repositories
@@ -1861,6 +1878,7 @@ def _worker_prompt(
         render_master=render_master,
         start_contract=render_master,
         continuation_parts=continuation_parts,
+        fresh_parts=(render_group_context(context.group_context),),
     )
     return contract_path, prompt, master, values
 
@@ -1895,7 +1913,11 @@ async def _serve_auto_research_commands(
 
             assert service is not None
             response = await asyncio.to_thread(
-                handle_graph_history_command, service, graph_read_scope, request
+                handle_graph_history_command,
+                service,
+                graph_read_scope,
+                request,
+                resolve_project=service.resolve_project_service,
             )
             # Graph reads are commands too, so they carry the pending-inbox note.
             return await asyncio.to_thread(
@@ -2216,10 +2238,15 @@ async def _settle_worker_patch(
             f"task-{token}-auto_research-work-correction-{correction_rounds}.json",
             {"kind": "work", "problem": failure.message},
         )
-        graph_read_scope = GraphReadScope(
-            project_id=turn.task.project_id, target=turn.task.graph_target
-        )
         context = _auto_research_context(service, turn.request, stage)
+        context.group_context = build_group_context(
+            service, execution.store, turn.request.run_on or ""
+        )
+        graph_read_scope = GraphReadScope.for_launch(
+            project_id=turn.task.project_id,
+            target=turn.task.graph_target,
+            group_context=context.group_context,
+        )
         correction_head = prepare_graph_observation(
             execution,
             service,
@@ -2282,6 +2309,7 @@ async def _settle_worker_patch(
                         graph_read_scope=graph_read_scope,
                         command_client=correction_mailbox.client_command(),
                     ),
+                    render_group_context(context.group_context),
                     stage_lessons_pointer(execution, stage.local, stage.remote),
                     browser_prompt_line(correction_grant),
                 ],

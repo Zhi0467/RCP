@@ -1145,3 +1145,73 @@ def test_a_chat_prompt_past_the_receipt_cap_still_resumes_from_its_contract(
 
     path = _parent_task_contract_path(wake, Path(first.stage_root), None)
     assert Path(path).read_text(encoding="utf-8") == launcher.prompts[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("grouped", [False, True])
+async def test_discuss_group_payload_occurs_once_per_actual_turn(
+    manifest, tmp_path, monkeypatch, grouped
+):
+    import re
+
+    from rcp.agents.group_context import GroupContext, GroupProjectContext
+    from rcp.transport import RepositoryAccess
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    pointer = RepositoryAccess(alias="state", machine="laptop", path=str(tmp_path / "sibling"))
+    group = (
+        GroupContext(
+            group_name="Benchmarks",
+            project_id=project_id,
+            project_name="Own",
+            siblings=(
+                GroupProjectContext(
+                    project_id="sibling",
+                    name="Sibling",
+                    graph=pointer,
+                    research_md=pointer,
+                    repositories=(pointer,),
+                ),
+            ),
+        )
+        if grouped
+        else None
+    )
+    monkeypatch.setattr("rcp.runs.tasks.discuss.build_group_context", lambda *_: group)
+    session_id = "group-context-native-session"
+    launcher = _RecordingLauncher(session_id)
+    request = RunRequest(
+        chat_scope="project",
+        chat_id="group-chat",
+        message="Inspect",
+        mode="discuss",
+        run_truth_scope=["repo-a"],
+    )
+    for turn in range(2):
+        if turn:
+            request = request.model_copy(update={"session_id": session_id})
+        execution = _execution(
+            store,
+            operation_id=f"group-turn-{turn}",
+            project_id=project_id,
+            request=request,
+            native_session_id=session_id,
+        )
+        async for _ in stream_discuss_run(
+            service, launcher, request, tmp_path / "data", execution=execution
+        ):
+            pass
+        store.complete_agent_task(execution.operation_id, applied_revision=None, result={})
+        prompt = launcher.prompts[turn]
+        # Include the referenced master: a group section there would duplicate the live pointer.
+        text = prompt + "\n" + launch_contract_path(prompt).read_text()
+        payloads = [json.loads(block) for block in re.findall(r"```json\n(.*?)\n```", text, re.S)]
+        groups = [
+            payload["group_context"]
+            for payload in payloads
+            if isinstance(payload, dict) and "group_context" in payload
+        ]
+        assert groups == ([group.model_dump(mode="json")] if group is not None else [])

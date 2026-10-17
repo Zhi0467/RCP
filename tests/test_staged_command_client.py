@@ -2482,7 +2482,7 @@ async def test_history_verbs_round_trip_through_staged_client_and_broker(
         try:
             for arguments in (
                 ("graph_diff", "main@0", "@head", "node-1", "--cursor", "previous"),
-                ("graph_log", "node-1", "--at", "branch:b@head"),
+                ("graph_log", "node-1", "--at", "branch:b@head", "--project", "sibling"),
                 ("graph-diff", "--branch-changes", "b", "--ids", "node-1", "node-2"),
             ):
                 code, output = await _run_client(staged, *arguments)
@@ -2498,13 +2498,15 @@ async def test_history_verbs_round_trip_through_staged_client_and_broker(
             "ids": ["node-1"],
             "cursor": "previous",
             "branch_changes": None,
+            "project": None,
         },
-        {"id": "node-1", "at": "branch:b@head", "cursor": None},
+        {"id": "node-1", "at": "branch:b@head", "cursor": None, "project": "sibling"},
         {
             "from": None,
             "to": None,
             "ids": ["node-1", "node-2"],
             "cursor": None,
             "branch_changes": "b",
+            "project": None,
         },
     ]
