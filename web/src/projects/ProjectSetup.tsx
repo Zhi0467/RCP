@@ -45,6 +45,7 @@ import type {
   ExistingResearchAction,
   ProviderReadiness,
   ProjectCard,
+  ProjectGroup,
   ProjectCreationControl,
   ProjectCreationIntent,
   ProjectSetupRequest,
@@ -61,6 +62,7 @@ interface Props {
   onCancel: () => void;
   onCreated: (projectId: string) => void;
   setupRoute: ProjectSetupRoute;
+  group?: ProjectGroup | null;
 }
 
 interface DraftRepository extends SetupRepository {
@@ -102,6 +104,7 @@ export function ProjectSetup({
   onCancel,
   onCreated,
   setupRoute = { kind: "create", requestId: null },
+  group,
 }: Props) {
   const routeIntent =
     setupRoute.kind === "move" ? ("move_personal_project_to_team" as const) : null;
@@ -154,6 +157,7 @@ export function ProjectSetup({
           </span>
         </button>
         <span className="setup-header-title">
+          {group && intent !== "move_personal_project_to_team" && `${group.name} › `}
           {intent === "move_personal_project_to_team" ? "Move project" : "Add project"}
         </span>
         <button className="button ghost" onClick={onCancel}>
@@ -169,9 +173,15 @@ export function ProjectSetup({
           onCancel={onCancel}
         />
       ) : intent === "create_shared_team_project" ? (
-        <TeamProjectSetup intentChooser={intentChooser} onCancel={onCancel} onCreated={onCreated} />
+        <TeamProjectSetup
+          intentChooser={intentChooser}
+          onCancel={onCancel}
+          onCreated={onCreated}
+          group={group}
+        />
       ) : (
         <PersonalProjectSetup
+          group={group}
           intentChooser={intentChooser}
           spaceKind={spaceKind}
           onCancel={onCancel}
@@ -183,6 +193,7 @@ export function ProjectSetup({
 }
 
 function PersonalProjectSetup({
+  group,
   intentChooser,
   spaceKind,
   onCancel,
@@ -265,6 +276,7 @@ function PersonalProjectSetup({
   } as const;
   const payload = (): ProjectSetupRequest => ({
     name: name.trim(),
+    ...(group ? { group_id: group.id } : {}),
     repositories: repositories.map(({ id: _id, ...repo }) => ({
       ...repo,
       alias: repo.alias.trim(),

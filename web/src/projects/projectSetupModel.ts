@@ -15,7 +15,7 @@ export interface ProjectMoveSetupRouteInput {
 
 export type ProjectSetupRoute =
   | { kind: "none" }
-  | { kind: "create"; requestId: string | null }
+  | { kind: "create"; requestId: string | null; groupId?: string }
   | ({ kind: "move"; intent: "move_personal_project_to_team" } & ProjectMoveSetupRouteInput & {
         sourceRequestId: string | null;
         targetRequestId: string | null;
@@ -96,9 +96,22 @@ export function parseProjectSetupRoute(hash: string): ProjectSetupRoute {
   // Preserve the existing create/resume behavior. Its old parser ignored
   // unrelated query keys, so keep accepting them for compatibility.
   const requestId = oneQueryValue(params, "request");
-  return requestId !== null && requestId !== undefined && isCanonicalUuid4(requestId)
-    ? { kind: "create", requestId }
-    : { kind: "invalid", reason: "invalid_provisioning_route" };
+  const groupId = oneQueryValue(params, "group");
+  if (
+    requestId === undefined ||
+    groupId === undefined ||
+    (requestId !== null && !isCanonicalUuid4(requestId)) ||
+    (groupId !== null && !isCanonicalUuid4(groupId)) ||
+    (requestId === null && groupId === null)
+  ) {
+    return { kind: "invalid", reason: "invalid_provisioning_route" };
+  }
+  return { kind: "create", requestId, ...(groupId ? { groupId } : {}) };
+}
+
+export function projectCreateSetupHash(groupId?: string | null): string {
+  if (!groupId) return "#/projects/new";
+  return `#/projects/new?group=${requireCanonicalUuid4(groupId, "Project group identity")}`;
 }
 
 export function projectMoveSetupHash(input: ProjectMoveSetupRouteInput): string {
@@ -194,11 +207,13 @@ export function invalidProjectProvisioningHash(hash: string): boolean {
   return hash.startsWith("#/projects/new?") && parseProjectSetupRoute(hash).kind === "invalid";
 }
 
-export function projectProvisioningHash(requestId: string): string {
+export function projectProvisioningHash(requestId: string, groupId?: string | null): string {
   if (!isCanonicalUuid4(requestId)) {
     throw new Error("Project provisioning request identity must be a canonical UUID4.");
   }
-  return `#/projects/new?request=${encodeURIComponent(requestId)}`;
+  const params = new URLSearchParams({ request: requestId });
+  if (groupId) params.set("group", requireCanonicalUuid4(groupId, "Project group identity"));
+  return `#/projects/new?${params.toString()}`;
 }
 
 export function formatCommandArgv(argv: string[]): string {
@@ -213,6 +228,7 @@ export function formatCommandArgv(argv: string[]): string {
 
 export function buildTeamProvisioningRequest({
   name,
+  groupId,
   stateRepository,
   defaultAutoResearchInvocationCeiling,
   machines,
@@ -220,6 +236,7 @@ export function buildTeamProvisioningRequest({
   providerChecks,
 }: {
   name: string;
+  groupId?: string | null;
   stateRepository: string;
   defaultAutoResearchInvocationCeiling: number;
   machines: ProjectProvisioningCreateRequest["machines"];
@@ -231,6 +248,7 @@ export function buildTeamProvisioningRequest({
   const aliases = repositories.map((repository) => repository.alias);
   return {
     name: name.trim(),
+    ...(groupId ? { group_id: groupId } : {}),
     state_repository: stateRepository,
     project_truth_scope: aliases,
     default_run_truth_scope: repositories
