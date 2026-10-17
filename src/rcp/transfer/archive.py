@@ -88,6 +88,7 @@ TRANSFER_GLOBAL_TABLES = frozenset(
         "resource_deadlines",
         "resource_watermark_epoch",
         "space_identity",
+        "project_groups",
         "space_machines",
         "notification_devices",
         "notification_phone_pairings",

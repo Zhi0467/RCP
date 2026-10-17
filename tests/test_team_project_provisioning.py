@@ -982,6 +982,7 @@ def _ready_team_app(
     *,
     include_appendix: bool = False,
     server_only: bool = False,
+    grouped: bool = False,
 ):
     layout = _test_server_layout(tmp_path / "installation")
     monkeypatch.setattr(storage_models, "DEFAULT_SERVER_LAYOUT", layout)
@@ -1001,10 +1002,12 @@ def _ready_team_app(
         "paper",
         *(("appendix",) if include_appendix else ()),
     ]
+    group = store.create_project_group("Benchmarks", user_id=alice.user_id) if grouped else None
     request = store.create_project_provisioning_request(
         kind="create_team_project",
         authorized_by=authorized_by,
         name="Reviewed team project",
+        group_id=group.group_id if group else None,
         state_repository="paper",
         project_truth_scope=repository_aliases,
         default_run_truth_scope=repository_aliases,
@@ -1390,3 +1393,22 @@ def test_existing_project_coordinator_prepares_add_and_connect(tmp_path, monkeyp
             if body["kind"] == "connect_repository":
                 assert credentials.probe_calls == 0
                 assert ready.repositories[0].git_check.write_verified
+
+
+@pytest.mark.parametrize("delete_group", [False, True])
+def test_final_review_applies_requested_group_unless_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, delete_group: bool
+) -> None:
+    app, ready, alice, bob, _path = _ready_team_app(tmp_path, monkeypatch, grouped=True)
+    store = app.state.services.store
+    assert store.project_provisioning_request(ready.request_id).group_id == ready.group_id
+    if delete_group:
+        store.delete_project_group(ready.group_id, user_id=alice.user_id)
+    with TestClient(app) as client:
+        assert _complete_ready_request(client, ready).status_code == 200
+        assert store.project(ready.proposed_project_id).group_id == (
+            None if delete_group else ready.group_id
+        )
+        store.set_project_group(ready.proposed_project_id, None, user_id=bob.user_id)
+        assert _complete_ready_request(client, ready).status_code == 200
+        assert store.project(ready.proposed_project_id).group_id is None

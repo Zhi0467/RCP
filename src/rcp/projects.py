@@ -2743,6 +2743,7 @@ class ProjectCatalog:
     ) -> dict[str, object]:
         card: dict[str, object] = {
             "id": record.project_id,
+            "group_id": record.group_id,
             "home_space_id": record.home_space_id,
             "name": record.name,
             "locator": record.locator,

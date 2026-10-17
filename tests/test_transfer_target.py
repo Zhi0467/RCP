@@ -104,6 +104,7 @@ def test_sealed_target_archive_activates_once_and_retry_returns_same_receipt(
     assert first.target_request_id == archive.target_request_id
     assert first.project_id == archive.project_id
     assert target.project(archive.project_id) is not None
+    assert target.project(archive.project_id).group_id is None
     assert target.target_project_transfer_activation(archive.target_request_id) == first
     upload = target.target_project_transfer_upload(archive.target_request_id)
     assert upload is not None and upload.status == "consumed"
