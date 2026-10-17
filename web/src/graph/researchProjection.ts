@@ -47,7 +47,7 @@ export interface QuestionPage {
   hypotheses: HypothesisSummary[];
   /**
    * Decisions, Blockers, and Experiments that belong to the question but test no
-   * Hypothesis, each such Experiment followed by the Evidence it produced.
+   * Hypothesis, each such Experiment followed by its Evidence, Decisions, and Blockers.
    */
   loose: GraphNode[];
 }
@@ -203,7 +203,12 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
     const experiments = anchors.flatMap((node) => freeExperimentsByAnchor.get(node.id) ?? []);
     return uniqueNodes([
       ...anchors,
-      ...sortNodes(experiments).flatMap((node) => [node, ...outgoing(node.id, "produces")]),
+      ...sortNodes(experiments).flatMap((node) => [
+        node,
+        ...outgoing(node.id, "produces"),
+        ...outgoing(node.id, "governed_by"),
+        ...outgoing(node.id, "blocked_by"),
+      ]),
     ]);
   };
 

@@ -36,6 +36,7 @@ const nodes = [
   node("d/metric", "decision", { status: "decided" }),
   node("x/probe", "experiment", { status: "completed" }),
   node("e/probe", "evidence"),
+  node("b/gpu", "blocker", { status: "open" }),
   node("orphan", "decision"),
 ];
 const edges = [
@@ -54,6 +55,7 @@ const edges = [
   edge("q/sub", "has_decision", "d/metric"),
   edge("x/probe", "produces", "e/probe"),
   edge("e/probe", "informs", "d/metric"),
+  edge("x/probe", "blocked_by", "b/gpu"),
 ];
 
 test("a Hypothesis page gathers its Experiments' inputs and weighs each result", () => {
@@ -87,11 +89,11 @@ test("question pages share Hypotheses and keep work that tests none", () => {
   assert.deepEqual(ids(drilldown.questions.get("q/other").hypotheses.map((item) => item.node)), [
     "h/shared",
   ]);
-  assert.deepEqual(ids(sub.loose), ["d/metric", "x/probe", "e/probe"]);
+  assert.deepEqual(ids(sub.loose), ["d/metric", "x/probe", "e/probe", "b/gpu"]);
 
   const root = drilldown.roots.find((item) => item.node.id === "q/root").rollup;
   assert.equal(root.activeExperiments, 1);
-  assert.equal(root.openBlockers, 2);
+  assert.equal(root.openBlockers, 3);
   assert.ok(root.memberIds.includes("e/probe"));
   assert.deepEqual(ids(drilldown.unplaced), ["orphan"]);
 });
