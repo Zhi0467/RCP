@@ -389,11 +389,13 @@ def test_episode_list_start_and_stop_use_only_the_canonical_surface(manifest, tm
             json={
                 "mode": "auto_research",
                 "invocation_ceiling": 3,
+                "bulletin_enabled": False,
                 "starting_instruction": "  Follow the contradictory evidence.  ",
             },
         )
         assert started.status_code == 202
         payload = started.json()
+        assert payload["bulletin_enabled"] is False
         episode_id = payload["episode_id"]
         operation_id = payload["root_operation_id"]
         wait_for_task(store, operation_id, expect="succeeded")
@@ -406,6 +408,7 @@ def test_episode_list_start_and_stop_use_only_the_canonical_surface(manifest, tm
         assert len(listed.json()) == 1
         current = listed.json()[0]
         assert current["episode_id"] == episode_id
+        assert current["bulletin_enabled"] is False
         assert current["graph_target"] == {"kind": "branch", "branch_id": episode_id}
         assert current["graph_base_head"]["target"] == {"kind": "main", "branch_id": None}
         assert current["graph_branch"]["branch_id"] == episode_id

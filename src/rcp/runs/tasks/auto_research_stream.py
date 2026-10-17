@@ -36,7 +36,12 @@ from rcp.agents.command_mailbox import (
     serve_command_mailbox,
     stage_command_mailbox,
 )
-from rcp.agents.command_protocol import CommandRequest, CommandResponse, ValidateCommandRequest
+from rcp.agents.command_protocol import (
+    CommandRequest,
+    CommandResponse,
+    CommandVerb,
+    ValidateCommandRequest,
+)
 from rcp.agents.continuation_prompt import (
     LaunchPhase,
     MasterRef,
@@ -88,7 +93,7 @@ from rcp.runs.chat import (
     _project_write_scope,
     _read_chat_patch,
 )
-from rcp.runs.lessons import stage_lessons_pointer
+from rcp.runs.lessons import stage_operational_context_pointer
 from rcp.runs.patch_validator import command_rejection_recorder
 from rcp.runs.session_master import (
     commit_prepared_graph_observation,
@@ -1532,6 +1537,8 @@ def _actor_launch_prompt(
     staged_head: GraphHeadRef | None = None,
     report_pending: Callable[[str], bool] = lambda _session_id: False,
     fresh_parts: tuple[str, ...] = (),
+    command_client: str | None = None,
+    allowed_verbs: tuple[CommandVerb, ...] = (),
 ) -> tuple[str, str, MasterRef]:
     """Stage one actor launch; return its contract path, prompt, and the session's master.
 
@@ -1545,7 +1552,16 @@ def _actor_launch_prompt(
     values["browser"] = browser_grant.model_dump(
         include={"status", "reason_code", "session_name", "invocation_dir"}
     )
-    fresh_parts = (*fresh_parts, stage_lessons_pointer(execution, local_stage, remote_stage))
+    fresh_parts = (
+        *fresh_parts,
+        stage_operational_context_pointer(
+            execution,
+            local_stage,
+            remote_stage,
+            command_client=command_client,
+            allowed_verbs=allowed_verbs,
+        ),
+    )
     key = master_key(AUTO_RESEARCH_POLICY_VERSION, ontology_extensions=ontology_extensions)
     node = classify(
         LaunchPhase(session_id=session_id, phase=_LAUNCH_PHASES[execution.continuation])
@@ -1742,6 +1758,10 @@ def _orchestrator_prompt(
             else f"auto_research_orchestrator_{execution.continuation}"
         ),
         master_label_prefix="auto_research-orchestrator-master",
+        command_client=command_client,
+        allowed_verbs=auto_research_allowed_verbs(
+            "orchestrator", graph_read_scope=graph_read_scope
+        ),
         render_master=render_master,
         start_contract=start_contract,
         continuation_parts=continuation_parts,
@@ -1861,6 +1881,8 @@ def _worker_prompt(
             else f"auto_research_worker_{execution.continuation}"
         ),
         master_label_prefix="auto_research-worker-master",
+        command_client=command_client,
+        allowed_verbs=auto_research_allowed_verbs("worker", graph_read_scope=graph_read_scope),
         render_master=render_master,
         start_contract=render_master,
         continuation_parts=continuation_parts,
@@ -2285,7 +2307,11 @@ async def _settle_worker_patch(
                         graph_read_scope=graph_read_scope,
                         command_client=correction_mailbox.client_command(),
                     ),
-                    stage_lessons_pointer(execution, stage.local, stage.remote),
+                    stage_operational_context_pointer(
+                        execution,
+                        stage.local,
+                        stage.remote,
+                    ),
                     browser_prompt_line(correction_grant),
                 ],
                 master=master,

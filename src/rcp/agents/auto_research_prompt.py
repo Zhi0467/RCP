@@ -124,6 +124,10 @@ def _command_invocations(
         "finish": ("finish --key <key>",),
         "ask": ("ask --key <key> --question <text> [--choice <text> ...] [--multiple]",),
         "lesson": ("lesson add --key <key> --text <text>",),
+        "bulletin": (
+            "bulletin --read [--cursor <cursor>]",
+            "bulletin --post --key <key> [--reply-to <post-id>] [--ref <node-id>] <body-file>",
+        ),
     }
     commands = "\n".join(
         f"  - `{invocation}`"

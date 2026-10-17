@@ -365,6 +365,7 @@ async def test_report_runner_stages_only_minimal_resume_inputs(manifest, tmp_pat
 
     assert [event.event for event in events] == ["message", "done"]
     assert launcher.calls == 1
+    assert not (stage / "workspace" / "bulletin.md").exists()
     assert launcher.kwargs[0]["session_id"] == "native-session"
     assert launcher.kwargs[0]["read_dirs"] == [stage / "inputs"]
     assert launcher.kwargs[0]["write_dirs"] == []

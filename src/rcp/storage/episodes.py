@@ -2375,8 +2375,8 @@ class EpisodeStoreMixin(StoreMixinBase):
                 stop_settled_at, ending, ending_diagnostic, wrapup_state,
                 wrapup_error, report_attempts_used, created_at, updated_at, ended_at,
                 continues_episode_id, continuation_request_id,
-                code_worktree, graph_isolation, isolation_owner_episode_id, browser_requested
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                code_worktree, graph_isolation, isolation_owner_episode_id, browser_requested, bulletin_enabled
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.episode_id,
@@ -2408,6 +2408,7 @@ class EpisodeStoreMixin(StoreMixinBase):
                 int(record.graph_isolation),
                 record.isolation_owner_episode_id,
                 int(record.browser_requested),
+                int(record.bulletin_enabled),
             ),
         )
 

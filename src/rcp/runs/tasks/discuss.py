@@ -65,7 +65,7 @@ from rcp.runs.chat import (
     stage_artifact_context,
 )
 from rcp.runs.experiment_loop import stage_chat_experiment_watcher_resources, stage_chat_loop_status
-from rcp.runs.lessons import stage_lessons_pointer
+from rcp.runs.lessons import stage_operational_context_pointer
 from rcp.runs.patch_validator import cleanup_patch_validation_mailbox
 from rcp.runs.question_snapshots import (
     QuestionSnapshot,
@@ -214,7 +214,7 @@ def _prepare_discuss_chat_prompt(
         human_message=request.message,
         node=node,
         master=master,
-        lessons_pointer=stage_lessons_pointer(execution, local_stage, remote_stage),
+        lessons_pointer=stage_operational_context_pointer(execution, local_stage, remote_stage),
         context_delta=context_delta,
         read_context=read_context,
         invoked_skill_pointers=invoked_package_pointers(
@@ -1018,7 +1018,7 @@ async def stream_discuss_run(
                         parts=[
                             continuation_contract,
                             render_chat_read_context(context),
-                            stage_lessons_pointer(execution, local_stage, remote_stage),
+                            stage_operational_context_pointer(execution, local_stage, remote_stage),
                             question_part,
                         ],
                         master=master,
@@ -1050,7 +1050,9 @@ async def stream_discuss_run(
                         role="discuss_retry_base",
                     )
                     prompt += "\n\n" + render_chat_read_context(context)
-                    prompt += "\n\n" + stage_lessons_pointer(execution, local_stage, remote_stage)
+                    prompt += "\n\n" + stage_operational_context_pointer(
+                        execution, local_stage, remote_stage
+                    )
                     if execution is not None:
                         record_session_master(
                             execution.store,

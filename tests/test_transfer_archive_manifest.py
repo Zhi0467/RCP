@@ -120,6 +120,8 @@ PROJECT_LINKED_TABLES = {
     "graph_watcher_reconciliation",
     "operational_lessons",
     "lesson_command_receipts",
+    "bulletin_posts",
+    "bulletin_command_receipts",
     "evidence_flags",
     "evidence_flag_command_receipts",
     "notification_preferences",

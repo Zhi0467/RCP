@@ -15,6 +15,11 @@ from rcp.limits import (
     ASK_CHOICE_MAX_COUNT,
     ASK_CHOICE_MAX_LENGTH,
     ASK_QUESTION_MAX_LENGTH,
+    BULLETIN_CURSOR_MAX_CHARS,
+    BULLETIN_KEY_MAX_CHARS,
+    BULLETIN_REFS_MAX_COUNT,
+    BULLETIN_REPLY_MAX_CHARS,
+    BULLETIN_TEXT_MAX_CHARS,
     COMMAND_ASK_POLL_SECONDS,
     EVIDENCE_FLAG_FINDING_MAX_CHARS,
     EVIDENCE_FLAG_SOURCE_MAX_CHARS,
@@ -48,6 +53,7 @@ CommandVerb = Literal[
     "launch",
     "ask",
     "lesson",
+    "bulletin",
     "flag",
 ]
 CommandStatus = Literal["ok", "invalid", "unavailable"]
@@ -65,6 +71,7 @@ MutatingCommandVerb = Literal[
     "launch",
     "ask",
     "lesson",
+    "bulletin",
     "flag",
 ]
 
@@ -83,6 +90,7 @@ MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
         "launch",
         "ask",
         "lesson",
+        "bulletin",
         "flag",
     }
 )
@@ -366,6 +374,27 @@ class FlagArguments(BaseModel):
         return value
 
 
+class BulletinArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    action: Literal["post", "read"]
+    text: str | None = Field(default=None, min_length=1, max_length=BULLETIN_TEXT_MAX_CHARS)
+    refs: list[str] = Field(default_factory=list, max_length=BULLETIN_REFS_MAX_COUNT)
+    reply_to: str | None = Field(default=None, min_length=1, max_length=BULLETIN_REPLY_MAX_CHARS)
+    cursor: str | None = Field(default=None, min_length=1, max_length=BULLETIN_CURSOR_MAX_CHARS)
+
+    @model_validator(mode="after")
+    def valid_action(self) -> BulletinArguments:
+        if self.action == "read":
+            if self.text is not None or self.refs or self.reply_to is not None:
+                raise ValueError("Bulletin reads accept only a cursor")
+        elif self.text is None or not self.text.strip() or self.cursor is not None:
+            raise ValueError("Bulletin posts require nonblank text and accept no cursor")
+        if any(not ref.strip() for ref in self.refs):
+            raise ValueError("Bulletin references must not be blank")
+        return self
+
+
 class LessonArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -527,6 +556,21 @@ class FlagCommandRequest(_CommandRequest):
         return self
 
 
+class BulletinCommandRequest(_CommandRequest):
+    idempotency_key: str | None = Field(
+        default=None, min_length=1, max_length=BULLETIN_KEY_MAX_CHARS
+    )
+
+    verb: Literal["bulletin"]
+    arguments: BulletinArguments
+
+    @model_validator(mode="after")
+    def mutation_is_keyed(self) -> BulletinCommandRequest:
+        if self.arguments.action == "post" and self.idempotency_key is None:
+            raise ValueError("Bulletin posts require an idempotency key")
+        return self
+
+
 class LessonCommandRequest(_CommandRequest):
     verb: Literal["lesson"]
     arguments: LessonArguments
@@ -555,6 +599,7 @@ CommandRequest: TypeAlias = Annotated[
     | FinishCommandRequest
     | LaunchCommandRequest
     | AskCommandRequest
+    | BulletinCommandRequest
     | LessonCommandRequest
     | FlagCommandRequest,
     Field(discriminator="verb"),

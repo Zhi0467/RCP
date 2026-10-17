@@ -84,6 +84,7 @@ class StartEpisodeBody(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     mode: Literal["auto_research"]
+    bulletin_enabled: bool = True
     browser_requested: bool = False
     code_worktree: bool | None = None
     graph_isolation: Literal[True] = True
@@ -241,6 +242,7 @@ class EpisodeResponse(EpisodeLoopMetadata):
     episode_id: str
     project_id: str
     mode: EpisodeMode
+    bulletin_enabled: bool = True
     browser_requested: bool = False
     code_worktree: bool
     graph_isolation: bool
@@ -432,6 +434,7 @@ def serialize_episode(
         episode_id=episode.episode_id,
         project_id=episode.project_id,
         mode=episode.mode,
+        bulletin_enabled=episode.bulletin_enabled,
         browser_requested=episode.browser_requested,
         code_worktree=episode.code_worktree,
         graph_isolation=episode.graph_isolation,

@@ -5,7 +5,7 @@ import hashlib
 import json
 import shlex
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Collection
 from contextlib import AsyncExitStack, aclosing, suppress
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
@@ -105,7 +105,7 @@ from rcp.runs.experiment_loop import (
     stage_chat_loop_status,
 )
 from rcp.runs.lesson_commands import lesson_command_usage
-from rcp.runs.lessons import stage_lessons_pointer
+from rcp.runs.lessons import stage_operational_context_pointer
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,
@@ -288,6 +288,8 @@ def _prepare_work_chat_prompt(
     artifact_path: str,
     master_context: str,
     stable_values: dict[str, object],
+    command_client: str,
+    allowed_verbs: Collection[str],
     skill_pointers: list[dict[str, object]],
     attachment_pointers: list[dict[str, object]],
     launch_instructions: str,
@@ -320,7 +322,13 @@ def _prepare_work_chat_prompt(
         human_message=request.message,
         node=node,
         master=master,
-        lessons_pointer=stage_lessons_pointer(execution, local_stage, remote_stage),
+        lessons_pointer=stage_operational_context_pointer(
+            execution,
+            local_stage,
+            remote_stage,
+            command_client=command_client,
+            allowed_verbs=allowed_verbs,
+        ),
         context_delta=context_delta,
         read_context=read_context,
         invoked_skill_pointers=invoked_package_pointers(
@@ -1005,7 +1013,19 @@ def _work_continuation(
     if browser_grant is not None and browser_grant.status != "not_requested":
         delta = {**(delta or {}), "browser": browser_prompt_line(browser_grant)}
     parts.append(render_chat_read_context(turn.context))
-    parts.append(stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage))
+    patch_values = values["patch"]
+    assert isinstance(patch_values, dict)
+    command_client = patch_values["command_client"]
+    assert isinstance(command_client, str)
+    parts.append(
+        stage_operational_context_pointer(
+            turn.execution,
+            turn.local_stage,
+            turn.remote_stage,
+            command_client=command_client,
+            allowed_verbs=_work_turn_command_handler(turn).allowed_verbs,
+        )
+    )
     return compose(node, parts=parts, master=master, delta=delta)
 
 
@@ -1117,7 +1137,13 @@ def _compose_fresh_prompt(
         prompt = (
             PromptFactory.launch_prompt(contract_path)
             + "\n\n"
-            + stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage)
+            + stage_operational_context_pointer(
+                turn.execution,
+                turn.local_stage,
+                turn.remote_stage,
+                command_client=turn.patch_inputs.command_client,
+                allowed_verbs=_work_turn_command_handler(turn).allowed_verbs,
+            )
             + "\n\n"
             + render_chat_read_context(turn.context)
         )
@@ -1151,6 +1177,8 @@ def _compose_fresh_prompt(
         artifact_path=str(staged.artifact_directory),
         master_context=_work_chat_master_context(turn, staged),
         stable_values=values,
+        command_client=turn.patch_inputs.command_client,
+        allowed_verbs=_work_turn_command_handler(turn).allowed_verbs,
         skill_pointers=staged.skill_pointers,
         attachment_pointers=staged.attachment_pointers,
         ontology_extensions=turn.context.ontology_extensions,
@@ -1226,7 +1254,13 @@ def _compose_retry_prompt(
         role="work_retry",
     )
     prompt += "\n\n" + render_chat_read_context(turn.context)
-    prompt += "\n\n" + stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage)
+    prompt += "\n\n" + stage_operational_context_pointer(
+        turn.execution,
+        turn.local_stage,
+        turn.remote_stage,
+        command_client=turn.patch_inputs.command_client,
+        allowed_verbs=_work_turn_command_handler(turn).allowed_verbs,
+    )
     return _ComposedWorkPrompt(
         contract_path=contract_path,
         prompt=prompt,

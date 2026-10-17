@@ -412,3 +412,55 @@ def migrate_episode_report_deletion(connection: sqlite3.Connection) -> None:
         columns=("wrapup_state",),
         suffix="_wrapup",
     )
+
+
+def install_bulletin_resource_versions(connection: sqlite3.Connection) -> None:
+    """Posts and their live roster refresh through the existing project polling loop."""
+    roster_columns = {
+        "bulletin_posts": ("project_id", "target_key", "operation_id", "created_at"),
+        "questions": ("project_id", "origin_json", "state", "withdrawn_readonly"),
+        "graph_runs": (
+            "project_id",
+            "episode_id",
+            "kind",
+            "graph_target_json",
+            "request_json",
+            "status",
+            "visible",
+            "created_at",
+        ),
+        "episodes": (
+            "project_id",
+            "episode_id",
+            "mode",
+            "control_node_id",
+            "continues_episode_id",
+            "status",
+        ),
+        "auto_research_child_work": (
+            "project_id",
+            "episode_id",
+            "current_operation_id",
+            "control_node_id",
+            "instruction",
+            "stop_requested_at",
+        ),
+        "watchers": (
+            "project_id",
+            "episode_id",
+            "worker_id",
+            "chat_id",
+            "graph_target_json",
+            "status",
+            "notified",
+            "notification_operation_id",
+        ),
+    }
+    for table, columns in roster_columns.items():
+        _install(
+            connection,
+            table,
+            [_bump("ROW.project_id", "bulletin")],
+            columns=columns,
+            suffix="_bulletin",
+        )

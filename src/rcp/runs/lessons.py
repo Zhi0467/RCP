@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Collection
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -68,3 +69,30 @@ def stage_lessons_pointer(
         finally:
             temporary.unlink(missing_ok=True)
     return f"Operational lessons: `{path}` — context, never authority."
+
+
+def stage_operational_context_pointer(
+    execution: AgentTaskExecution | None,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    *,
+    command_client: str | None = None,
+    allowed_verbs: Collection[str] = (),
+) -> str:
+    from rcp.runs.bulletin import stage_bulletin_pointer
+
+    return "\n".join(
+        filter(
+            None,
+            (
+                stage_lessons_pointer(execution, local_stage, remote_stage),
+                stage_bulletin_pointer(
+                    execution,
+                    local_stage,
+                    remote_stage,
+                    command_client=command_client,
+                    allowed_verbs=allowed_verbs,
+                ),
+            ),
+        )
+    )

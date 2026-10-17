@@ -4414,7 +4414,17 @@ def test_paper_coach_uses_agent_task_manager_and_result_shape(app, tmp_path) -> 
     assert service.paper.sessions()[0].native_session_id == session_id
 
 
-def test_paper_coach_follow_up_restores_its_master_into_the_new_turn_stage(app, tmp_path) -> None:
+def test_paper_coach_follow_up_restores_its_master_into_the_new_turn_stage(
+    app, tmp_path, monkeypatch
+) -> None:
+    from rcp.agents import hidden_read
+
+    host_facts = hidden_read.host_facts
+    monkeypatch.setattr(
+        hidden_read,
+        "host_facts",
+        lambda paths: {**host_facts(paths), "home": str(tmp_path / "account")},
+    )
     service = app.state.service
     service.paper.create()
     session_id = str(uuid.uuid4())

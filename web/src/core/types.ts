@@ -2682,6 +2682,7 @@ export interface ExperimentStartResponse extends AgentTask {
 }
 
 export interface Episode extends EpisodeLoopMetadata {
+  bulletin_enabled: boolean;
   browser_requested: boolean;
   code_worktree: boolean;
   graph_isolation: boolean;
@@ -2861,6 +2862,7 @@ export interface EpisodeMessage {
 }
 
 export interface StartEpisodeRequest {
+  bulletin_enabled?: boolean;
   browser_requested?: boolean;
   mode: "auto_research";
   code_worktree?: boolean | null;
