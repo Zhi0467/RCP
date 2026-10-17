@@ -39,6 +39,7 @@ _MUTATING = frozenset(
     (
         "ask",
         "lesson",
+        "bulletin",
         "flag",
         "apply",
         "spawn",
@@ -194,6 +195,16 @@ def _parser():
     flag.add_argument("--finding", required=True)
     flag.add_argument("--source")
 
+    bulletin = subparsers.add_parser("bulletin")
+    bulletin_actions = bulletin.add_mutually_exclusive_group(required=True)
+    bulletin_actions.add_argument("--post", action="store_true")
+    bulletin_actions.add_argument("--read", action="store_true")
+    bulletin.add_argument("--key")
+    bulletin.add_argument("--reply-to")
+    bulletin.add_argument("--ref", action="append", default=[])
+    bulletin.add_argument("--cursor")
+    bulletin.add_argument("body_file", nargs="?")
+
     lesson = subparsers.add_parser("lesson")
     lesson_actions = lesson.add_subparsers(dest="lesson_action", required=True)
     for action in ("add", "list", "update", "delete"):
@@ -331,6 +342,29 @@ def _request_arguments(namespace, workspace):
             arguments.update({"from": namespace.from_head, "to": namespace.to_head})
             arguments["ids"] = namespace.ids + namespace.filter_ids
         return verb, None, arguments
+    if verb == "bulletin":
+        if namespace.read:
+            if namespace.key or namespace.reply_to or namespace.ref or namespace.body_file:
+                raise ClientInputError("Bulletin reads accept only a cursor")
+            return verb, None, {"action": "read", "cursor": namespace.cursor}
+        if namespace.cursor or not namespace.body_file:
+            raise ClientInputError("Bulletin posts require a body file and accept no cursor")
+        path = _regular_workspace_file(workspace, namespace.body_file, "Bulletin body")
+        try:
+            with open(path, encoding="utf-8") as stream:
+                text = stream.read(COMMAND_MAILBOX_MAX_REQUEST_BYTES + 1)
+        except (OSError, UnicodeError) as exc:
+            raise ClientInputError(f"Bulletin body could not be read: {exc}") from exc
+        return (
+            verb,
+            _nonblank(namespace.key, "idempotency key"),
+            {
+                "action": "post",
+                "text": _nonblank(text, "Bulletin body"),
+                "refs": namespace.ref,
+                "reply_to": namespace.reply_to,
+            },
+        )
     if verb == "lesson":
         action = namespace.lesson_action
         arguments = {"action": action}
@@ -914,6 +948,7 @@ def _requested_verb(argv):
         if argument in (
             "ask",
             "lesson",
+            "bulletin",
             "flag",
             "validate",
             "graph_diff",

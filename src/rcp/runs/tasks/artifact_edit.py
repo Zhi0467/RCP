@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 from contextlib import aclosing
@@ -11,6 +12,8 @@ from typing import TYPE_CHECKING
 from rcp.agents import AgentEvent, AgentLauncher
 from rcp.agents.continuation_prompt import compose
 from rcp.agents.prompts import _attachment_items
+from rcp.limits import COMMAND_MAILBOX_TIMEOUT_SECONDS
+from rcp.runs.bulletin import stage_bulletin_pointer
 from rcp.runs.chat import (
     _append_chat_exchange,
     _clear_stale_turn_handoffs,
@@ -149,6 +152,12 @@ async def stream_artifact_edit_run(
     data_dir: Path,
     execution: AgentTaskExecution,
 ) -> AsyncGenerator[str, None]:
+    from rcp.runs.patch_validator import (
+        cleanup_patch_validation_mailbox,
+        serve_patch_validation_mailbox,
+        stage_patch_validation_mailbox,
+    )
+
     edit = request.artifact_edit
     if edit is None or edit.launch_kind != "revoking" or request.mode != "discuss":
         raise ValueError("A revoking edit requires its admitted file-only request.")
@@ -168,69 +177,107 @@ async def stream_artifact_edit_run(
         edit_path=sync_session_artifacts(execution, request, directory, remote),
     )
     assert attachment is not None
-    prompt = compose(
-        "report",
-        master=None,
-        delta=None,
-        parts=[
-            "You have writable scratch only. Do not change project files, the graph, watchers, "
-            "or episode controls. Reply to the human when finished.",
-            _attachment_items([attachment.pointer]),
-            request.message or "",
-        ],
-    )
-    contract_path = record_inline_prompt(
-        execution,
-        local_stage=local,
+    commands = stage_patch_validation_mailbox(
+        local_stage=workspace if remote is None else None,
+        local_input_stage=local,
         remote_stage=remote,
-        label="artifact-edit-" + execution.operation_id + ".md",
-        role="artifact_edit_prompt",
-        prompt=prompt,
+        task_id=execution.operation_id,
+        turn_id=execution.operation_id + ":artifact-edit",
+        timeout_seconds=COMMAND_MAILBOX_TIMEOUT_SECONDS,
     )
-    if remote:
-        remote.finalize_inputs()
-    content = request.model_dump_json()
-    execution.store.record_agent_task_contract(
-        execution.operation_id,
-        ARTIFACT_EDIT_FINALIZATION_ROLE,
-        content,
-        hashlib.sha256(content.encode()).hexdigest(),
-    )
-    _record_agent_launch_receipt(
-        execution,
-        request,
-        prompt=prompt,
-        contract_path=contract_path,
-        remote=bool(remote),
-        resumed=bool(request.session_id),
-        continuation=execution.continuation,
-        extra={"capability": "discuss", "graph_authority": "none"},
-    )
-    outcome = _ProviderOutcome(session_id=request.session_id)
-    async with aclosing(
-        _stream_agent_events(
-            launcher,
-            request,
-            prompt,
-            service=service,
-            data_dir=data_dir,
-            workspace=workspace,
-            session_id=request.session_id,
-            read_dirs=[],
-            write_dirs=[],
-            write_scope=None,
-            execution_host=machine.host,
-            execution=execution,
-            remote_stage=remote,
-            capability="discuss",
-            outcome=outcome,
-            binary=machine.provider_paths.get(request.provider),
-            supervise_remote=bool(remote),
-            required_session_id=request.session_id,
+    try:
+        bulletin_context = stage_bulletin_pointer(
+            execution,
+            local,
+            remote,
+            command_client=commands.client_command(),
+            post_allowed=False,
         )
-    ) as stream:
-        async for frame in stream:
-            yield frame
+        prompt = compose(
+            "report",
+            master=None,
+            delta=None,
+            parts=[
+                "You have writable scratch only. Do not change project files, the graph, watchers, "
+                "or episode controls. Reply to the human when finished.",
+                _attachment_items([attachment.pointer]),
+                request.message or "",
+                bulletin_context,
+            ],
+        )
+        contract_path = record_inline_prompt(
+            execution,
+            local_stage=local,
+            remote_stage=remote,
+            label="artifact-edit-" + execution.operation_id + ".md",
+            role="artifact_edit_prompt",
+            prompt=prompt,
+        )
+        if remote:
+            remote.finalize_inputs()
+        content = request.model_dump_json()
+        execution.store.record_agent_task_contract(
+            execution.operation_id,
+            ARTIFACT_EDIT_FINALIZATION_ROLE,
+            content,
+            hashlib.sha256(content.encode()).hexdigest(),
+        )
+        _record_agent_launch_receipt(
+            execution,
+            request,
+            prompt=prompt,
+            contract_path=contract_path,
+            remote=bool(remote),
+            resumed=bool(request.session_id),
+            continuation=execution.continuation,
+            extra={"capability": "discuss", "graph_authority": "none"},
+        )
+    except BaseException:
+        cleanup_patch_validation_mailbox(staged=commands, execution=execution)
+        raise
+    stop = asyncio.Event()
+    command_task = asyncio.create_task(
+        serve_patch_validation_mailbox(
+            staged=commands,
+            execution=execution,
+            validate=None,
+            budget=None,
+            stop=stop,
+        )
+    )
+    try:
+        outcome = _ProviderOutcome(session_id=request.session_id)
+        async with aclosing(
+            _stream_agent_events(
+                launcher,
+                request,
+                prompt,
+                service=service,
+                data_dir=data_dir,
+                workspace=workspace,
+                session_id=request.session_id,
+                read_dirs=[],
+                write_dirs=[],
+                write_scope=None,
+                execution_host=machine.host,
+                execution=execution,
+                remote_stage=remote,
+                capability="discuss",
+                invocation_gate=commands.invocation_gate,
+                outcome=outcome,
+                binary=machine.provider_paths.get(request.provider),
+                supervise_remote=bool(remote),
+                required_session_id=request.session_id,
+            )
+        ) as stream:
+            async for frame in stream:
+                yield frame
+    finally:
+        stop.set()
+        await command_task
+        await asyncio.to_thread(
+            cleanup_patch_validation_mailbox, staged=commands, execution=execution
+        )
     if not outcome.remote_result_pending:
         for frame in _settle(
             service, request, execution, workspace, remote, Path(str(directory)), outcome

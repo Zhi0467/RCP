@@ -3067,6 +3067,9 @@ def _provider_turn(
     hidden_read_scope: HiddenReadScope | None,
     invocation_gate: ProviderInvocationGate | None = None,
 ) -> tuple[_ProviderOutcome, AsyncIterator[str]]:
+    from rcp.runs.bulletin import stage_bulletin_pointer
+
+    prompt += "\n\n" + stage_bulletin_pointer(execution, stage.local_stage, stage.remote_stage)
     provider_outcome = _ProviderOutcome(session_id=session_id)
     inputs = (
         Path(str(stage.remote_stage.root / "inputs"))

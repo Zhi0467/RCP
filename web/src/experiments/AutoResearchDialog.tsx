@@ -102,6 +102,7 @@ interface Props {
     browserRequested: boolean,
     launchConfig: AgentRunConfig | undefined,
     branchName: string | null,
+    bulletinEnabled: boolean,
   ) => void;
   /** The server's branch-name refusal code from the last start, if any. */
   branchNameRefusal?: string | null;
@@ -145,6 +146,7 @@ export function AutoResearchDialog({
   const [budget, setBudget] = useState(String(initialInvocationCeiling));
   const [instruction, setInstruction] = useState("");
   const [browserRequested, setBrowserRequested] = useState(false);
+  const [bulletinEnabled, setBulletinEnabled] = useState(true);
   const [codeWorktree, setCodeWorktree] = useState(true);
   const [branch, setBranch] = useState("");
   const [addTurns, setAddTurns] = useState("3");
@@ -173,6 +175,7 @@ export function AutoResearchDialog({
     setInstruction("");
     setCodeWorktree(true);
     setBrowserRequested(false);
+    setBulletinEnabled(true);
     setBranch("");
     setAddTurns("3");
     setContinueError(null);
@@ -263,6 +266,7 @@ export function AutoResearchDialog({
             browserRequested,
             launchConfig,
             branchNameRequest(branch),
+            bulletinEnabled,
           );
         }}
       >
@@ -394,6 +398,16 @@ export function AutoResearchDialog({
                 Experiments it spawns use the Settings Node chat profile.
               </p>
               <div className="agent-config-options" role="group" aria-label="Launch options">
+                <label>
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    checked={bulletinEnabled}
+                    disabled={busy}
+                    onChange={(event) => setBulletinEnabled(event.target.checked)}
+                  />
+                  Bulletin
+                </label>
                 <BrowserToggle
                   checked={browserRequested}
                   disabled={busy}

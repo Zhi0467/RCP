@@ -215,6 +215,7 @@ async def test_revoking_edit_uses_recorded_workspace_and_publishes_cas(
     assert launcher.before == [b"<p>base</p>"]
     kwargs = launcher.calls[0][1]
     assert kwargs["cwd"] == workspace
+    assert (workspace / "bulletin.md").is_file()
     assert kwargs["capability"] == "discuss"
     assert kwargs["write_dirs"] == []
     assert kwargs["write_scope"] is None

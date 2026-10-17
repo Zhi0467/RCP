@@ -88,7 +88,7 @@ from rcp.runs.chat import (
     _project_write_scope,
     _read_chat_patch,
 )
-from rcp.runs.lessons import stage_lessons_pointer
+from rcp.runs.lessons import stage_operational_context_pointer
 from rcp.runs.patch_validator import command_rejection_recorder
 from rcp.runs.session_master import (
     commit_prepared_graph_observation,
@@ -1542,7 +1542,10 @@ def _actor_launch_prompt(
     values["browser"] = browser_grant.model_dump(
         include={"status", "reason_code", "session_name", "invocation_dir"}
     )
-    fresh_parts = (*fresh_parts, stage_lessons_pointer(execution, local_stage, remote_stage))
+    fresh_parts = (
+        *fresh_parts,
+        stage_operational_context_pointer(execution, local_stage, remote_stage),
+    )
     key = master_key(AUTO_RESEARCH_POLICY_VERSION, ontology_extensions=ontology_extensions)
     node = classify(
         LaunchPhase(session_id=session_id, phase=_LAUNCH_PHASES[execution.continuation])
@@ -2282,7 +2285,7 @@ async def _settle_worker_patch(
                         graph_read_scope=graph_read_scope,
                         command_client=correction_mailbox.client_command(),
                     ),
-                    stage_lessons_pointer(execution, stage.local, stage.remote),
+                    stage_operational_context_pointer(execution, stage.local, stage.remote),
                     browser_prompt_line(correction_grant),
                 ],
                 master=master,

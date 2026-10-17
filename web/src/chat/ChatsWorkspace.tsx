@@ -61,6 +61,7 @@ import type {
   WatcherRecord,
 } from "../core/types";
 import { AgentBoard, type AgentBoardCard } from "./AgentBoard";
+import { BulletinPanel } from "./BulletinPanel";
 import { ProviderMark, hasProviderLogo } from "../projects/ProviderMark";
 import { EpisodeAuthor } from "../experiments/EpisodeRunControls";
 import { loadChatDisplay, setChatArchived, setChatPinned, setChatTitle } from "../core/api";
@@ -831,6 +832,13 @@ export function ChatsWorkspace({
             {archiveError}
           </p>
         )}
+        <BulletinPanel
+          key={`${project.id}:${graphTarget.kind === "branch" ? graphTarget.branch_id : "main"}`}
+          projectId={project.id}
+          target={graphTarget}
+          canPost={actorId !== null && !graphChangesDisabled}
+          onOpenNode={onOpenNode}
+        />
         <AgentBoard
           columns={boardColumns}
           labels={BOARD_LABELS}

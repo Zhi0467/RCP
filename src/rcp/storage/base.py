@@ -23,6 +23,7 @@ from rcp.storage.artifact_imports import migrate_artifact_imports
 from rcp.storage.artifacts import migrate_artifacts
 from rcp.storage.auto_research import migrate_legacy_auto_research
 from rcp.storage.branch_names import migrate_branch_names
+from rcp.storage.bulletin import migrate_graph_bulletin
 from rcp.storage.client_requests import migrate_client_requests
 from rcp.storage.connections import ConnectionCache
 from rcp.storage.digest import migrate_digest
@@ -123,6 +124,7 @@ class AppStoreBase:
         (52, "per_branch_auto_research_v1"),
         (53, "episode_report_deletion_v1"),
         (54, "agent_live_status_v1"),
+        (55, "graph_bulletin_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -892,6 +894,9 @@ class AppStoreBase:
             version=54,
             name="agent_live_status_v1",
             migration=migrate_agent_live_status,
+        )
+        self._run_storage_schema_migration(
+            connection, version=55, name="graph_bulletin_v1", migration=migrate_graph_bulletin
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

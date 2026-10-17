@@ -12,6 +12,7 @@ from rcp.agents.command_protocol import (
     ApplyCommandRequest,
     AskCommandRequest,
     AskResult,
+    BulletinCommandRequest,
     CommandRequest,
     CommandResponse,
     FlagCommandRequest,
@@ -166,6 +167,8 @@ def discuss_command_handler(
 ) -> WorkCommandHandler:
     """Discuss resolves questions and explicitly granted history reads."""
     verbs = {"ask"} if discuss_ask_authorized(execution) else set()
+    if execution is not None:
+        verbs.add("bulletin")
     if graph_read_scope is not None:
         verbs.update(graph_read_scope.verbs)
     return WorkCommandHandler(
@@ -331,6 +334,20 @@ class WorkCommandHandler:
             ):
                 return refuse("Evidence flags require this consolidation turn's broker authority.")
             return handle_flag(self.service, execution.store, execution.operation_id, request)
+        if isinstance(request, BulletinCommandRequest):
+            from rcp.runs.bulletin import handle_bulletin
+
+            execution = self.execution
+            if execution is None or identity.task_id != execution.operation_id:
+                return refuse(
+                    "The Bulletin requires this turn's task binding.", "bulletin_task_unavailable"
+                )
+            return handle_bulletin(
+                execution.store,
+                execution.operation_id,
+                request,
+                post_allowed="lesson" in self.allowed_verbs and identity.authority == "broker",
+            )
         if isinstance(request, LessonCommandRequest):
             execution = self.execution
             if (
@@ -483,13 +500,15 @@ def work_command_handler(
         return WorkCommandHandler(
             execution,
             None,
-            frozenset({"validate", "apply", "lesson", "flag"})
+            frozenset({"validate", "apply", "lesson", "flag", "bulletin"})
             | (graph_read_scope.verbs if graph_read_scope else frozenset()),
             consolidation_apply,
             service,
             graph_read_scope,
         )
     verbs = {"validate"}
+    if execution is not None:
+        verbs.add("bulletin")
     if graph_read_scope is not None:
         verbs.update(graph_read_scope.verbs)
     if compute_commands is not None:

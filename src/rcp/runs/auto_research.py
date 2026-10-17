@@ -16,6 +16,7 @@ from rcp.agents.command_protocol import (
     ApplyArguments,
     ApplyCommandRequest,
     AskCommandRequest,
+    BulletinCommandRequest,
     CommandRequest,
     CommandResponse,
     EpisodeArguments,
@@ -84,6 +85,7 @@ class AutoResearchStartRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    bulletin_enabled: bool = True
     browser_requested: bool = False
     code_worktree: bool = False
     graph_isolation: Literal[True] = True
@@ -179,7 +181,9 @@ def auto_research_root_request(
 ) -> AutoResearchRunRequest:
     """Capture a resolved Auto-research start as its first orchestrator turn."""
 
-    values = request.model_dump(mode="json", exclude={"invocation_ceiling", "starting_instruction"})
+    values = request.model_dump(
+        mode="json", exclude={"invocation_ceiling", "starting_instruction", "bulletin_enabled"}
+    )
     return AutoResearchRunRequest.model_validate(
         {
             **values,
@@ -959,6 +963,19 @@ class AutoResearchCommandDispatcher:
                     message="The task is outside this graph history scope.",
                 )
             return handle_graph_history_command(self.service, self.graph_read_scope, request)
+
+        if isinstance(request, BulletinCommandRequest):
+            from rcp.runs.bulletin import handle_bulletin
+
+            try:
+                if request.arguments.action == "post":
+                    self._check_admission(context, request)
+                self._canonical_command_actor(context)
+            except (AutoResearchCommandInvalid, AutoResearchCommandUnavailable) as exc:
+                return CommandResponse(
+                    request_id=request.request_id, status="invalid", message=str(exc)
+                )
+            return handle_bulletin(self.store, operation_id, request, post_allowed=True)
 
         if isinstance(request, LessonCommandRequest):
             from rcp.runs.lesson_commands import handle_lesson

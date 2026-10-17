@@ -30,6 +30,7 @@ from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import COMMAND_MAILBOX_TIMEOUT_SECONDS
 from rcp.paper import PaperService, WritingSession
 from rcp.providers import ProviderSkillReference, configured_runtime_id
+from rcp.runs.bulletin import stage_bulletin_pointer
 from rcp.runs.patch_validator import (
     cleanup_patch_validation_mailbox,
     serve_patch_validation_mailbox,
@@ -346,6 +347,23 @@ async def stream_coach(
                 remote_stage=None,
                 label=f"task-{token}-{recovery_mode or 'initial'}.md",
                 role=f"paper_coach_{recovery_mode}" if recovery_mode else "paper_coach",
+                prompt=prompt,
+            )
+        bulletin = stage_bulletin_pointer(
+            execution,
+            local_stage,
+            None,
+            command_client=history_staged.client_command(),
+            post_allowed=False,
+        )
+        if bulletin:
+            prompt += "\n\n" + bulletin
+            contract_path = record_inline_prompt(
+                execution,
+                local_stage=local_stage,
+                remote_stage=None,
+                label=f"task-{token}-bulletin-launch.md",
+                role="paper_coach_launch",
                 prompt=prompt,
             )
         read_dirs.extend([service.manifest.research_dir, local_stage / "inputs"])

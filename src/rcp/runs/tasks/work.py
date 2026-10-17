@@ -105,7 +105,7 @@ from rcp.runs.experiment_loop import (
     stage_chat_loop_status,
 )
 from rcp.runs.lesson_commands import lesson_command_usage
-from rcp.runs.lessons import stage_lessons_pointer
+from rcp.runs.lessons import stage_operational_context_pointer
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,
@@ -320,7 +320,7 @@ def _prepare_work_chat_prompt(
         human_message=request.message,
         node=node,
         master=master,
-        lessons_pointer=stage_lessons_pointer(execution, local_stage, remote_stage),
+        lessons_pointer=stage_operational_context_pointer(execution, local_stage, remote_stage),
         context_delta=context_delta,
         read_context=read_context,
         invoked_skill_pointers=invoked_package_pointers(
@@ -1005,7 +1005,9 @@ def _work_continuation(
     if browser_grant is not None and browser_grant.status != "not_requested":
         delta = {**(delta or {}), "browser": browser_prompt_line(browser_grant)}
     parts.append(render_chat_read_context(turn.context))
-    parts.append(stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage))
+    parts.append(
+        stage_operational_context_pointer(turn.execution, turn.local_stage, turn.remote_stage)
+    )
     return compose(node, parts=parts, master=master, delta=delta)
 
 
@@ -1117,7 +1119,7 @@ def _compose_fresh_prompt(
         prompt = (
             PromptFactory.launch_prompt(contract_path)
             + "\n\n"
-            + stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage)
+            + stage_operational_context_pointer(turn.execution, turn.local_stage, turn.remote_stage)
             + "\n\n"
             + render_chat_read_context(turn.context)
         )
@@ -1226,7 +1228,9 @@ def _compose_retry_prompt(
         role="work_retry",
     )
     prompt += "\n\n" + render_chat_read_context(turn.context)
-    prompt += "\n\n" + stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage)
+    prompt += "\n\n" + stage_operational_context_pointer(
+        turn.execution, turn.local_stage, turn.remote_stage
+    )
     return _ComposedWorkPrompt(
         contract_path=contract_path,
         prompt=prompt,

@@ -29,6 +29,7 @@ from rcp.agents.git_access import provider_git_access
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api.artifacts import router as artifacts_router
+from rcp.api.bulletin import router as bulletin_router
 from rcp.api.chats import router as chats_router
 from rcp.api.consolidation import router as consolidation_router
 from rcp.api.dependencies import (
@@ -2375,6 +2376,7 @@ def create_app(
     app.include_router(notifications_router)
     app.include_router(digest_router)
     app.include_router(lessons_router)
+    app.include_router(bulletin_router)
     app.include_router(machine_power_router)
     app.include_router(index_router)
     app.include_router(index_membership_router)

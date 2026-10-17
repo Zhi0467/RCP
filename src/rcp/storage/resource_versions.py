@@ -389,3 +389,16 @@ def migrate_episode_report_deletion(connection: sqlite3.Connection) -> None:
         columns=("wrapup_state",),
         suffix="_wrapup",
     )
+
+
+def install_bulletin_resource_versions(connection: sqlite3.Connection) -> None:
+    """Posts and their live roster refresh through the existing project polling loop."""
+    for table in (
+        "bulletin_posts",
+        "questions",
+        "graph_runs",
+        "episodes",
+        "auto_research_child_work",
+        "watchers",
+    ):
+        _install(connection, table, [_bump("ROW.project_id", "bulletin")], suffix="_bulletin")

@@ -1433,8 +1433,12 @@ async def _stream_graph_agent_events(
     run_truth_scope: list[str],
     graph_read_scope: GraphReadScope,
 ) -> AsyncGenerator[str, None]:
+    from rcp.runs.bulletin import stage_bulletin_pointer
     from rcp.runs.graph_history_queries import handle_graph_history_command
 
+    prompt += "\n\n" + stage_bulletin_pointer(
+        execution, None if remote_stage else workspace, remote_stage
+    )
     stop = asyncio.Event()
     mailbox = asyncio.create_task(
         serve_patch_validation_mailbox(

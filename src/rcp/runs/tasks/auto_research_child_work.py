@@ -19,6 +19,7 @@ from rcp.agents.command_mailbox import (
     stage_command_mailbox,
 )
 from rcp.agents.command_protocol import (
+    BulletinCommandRequest,
     CommandRequest,
     CommandResponse,
     CommandVerb,
@@ -51,7 +52,7 @@ from rcp.runs.chat import (
     _clear_stale_turn_handoffs,
     _stage_chat_patch_inputs,
 )
-from rcp.runs.lessons import stage_lessons_pointer
+from rcp.runs.lessons import stage_operational_context_pointer
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,
@@ -291,7 +292,7 @@ source of graph truth. A wake names the newly claimed mail to read before contin
 
 def _child_allowed_verbs(turn: WorkTurn) -> frozenset[str]:
     return (
-        frozenset({"validate", "message", "lesson"})
+        frozenset({"validate", "message", "lesson", "bulletin"})
         | (turn.graph_read_scope.verbs if turn.graph_read_scope is not None else frozenset())
         | (
             turn.compute_commands.allowed_verbs
@@ -523,7 +524,9 @@ def _compose_child_fresh_prompt(
             contract_path,
             PromptFactory.launch_prompt(contract_path)
             + "\n\n"
-            + stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage),
+            + stage_operational_context_pointer(
+                turn.execution, turn.local_stage, turn.remote_stage
+            ),
             contract_path,
             render,
             values,
@@ -615,7 +618,9 @@ def _compose_child_retry_prompt(
         execution=turn.execution,
         role="work_retry",
     )
-    prompt += "\n\n" + stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage)
+    prompt += "\n\n" + stage_operational_context_pointer(
+        turn.execution, turn.local_stage, turn.remote_stage
+    )
     return _ComposedWorkPrompt(
         contract_path=contract_path,
         prompt=prompt,
@@ -1323,6 +1328,15 @@ async def _serve_auto_research_child_work_mailbox(
                 if status == "ok"
                 else (diagnostic[:2_000] or f"Patch validation was {result.status}."),
                 result=result.model_dump(mode="json"),
+            )
+        if isinstance(request, BulletinCommandRequest):
+            from rcp.runs.bulletin import handle_bulletin
+
+            return handle_bulletin(
+                execution.store,
+                execution.operation_id,
+                request,
+                post_allowed=identity.authority == "broker",
             )
         if isinstance(request, LessonCommandRequest):
             from rcp.runs.lesson_commands import handle_lesson

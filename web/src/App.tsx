@@ -3137,6 +3137,7 @@ function MemberApp({
       requestId?: string,
       launchConfig?: AgentRunConfig,
       branchName: string | null = null,
+      bulletinEnabled = true,
     ): Promise<Episode> => {
       if (autoResearchRefusal) throw new Error(autoResearchRefusal);
       const finishTaskStart = beginTaskStart();
@@ -3152,6 +3153,7 @@ function MemberApp({
           {
             mode: "auto_research",
             browser_requested: browserRequested,
+            bulletin_enabled: bulletinEnabled,
             invocation_ceiling: invocationCeiling,
             starting_instruction: startingInstruction,
             branch_name: branchName,
@@ -3205,6 +3207,7 @@ function MemberApp({
     browserRequested = false,
     launchConfig?: AgentRunConfig,
     branchName: string | null = null,
+    bulletinEnabled = true,
   ) => {
     reportAutoResearchStartError(null);
     setAutoResearchBranchRefusal(null);
@@ -3217,6 +3220,7 @@ function MemberApp({
         undefined,
         launchConfig,
         branchName,
+        bulletinEnabled,
       );
     } catch (error) {
       setAutoResearchBranchRefusal(branchNameRefusal(error));
@@ -5538,6 +5542,7 @@ function MemberApp({
           browserRequested,
           launchConfig,
           branchName,
+          bulletinEnabled,
         ) =>
           void authorizeAutoResearch(
             invocationCeiling,
@@ -5546,6 +5551,7 @@ function MemberApp({
             browserRequested,
             launchConfig,
             branchName,
+            bulletinEnabled,
           )
         }
         branchNameRefusal={autoResearchBranchRefusal}
