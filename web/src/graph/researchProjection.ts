@@ -45,7 +45,10 @@ export interface QuestionPage {
   node: GraphNode;
   subquestions: QuestionSummary[];
   hypotheses: HypothesisSummary[];
-  /** Decisions, Blockers, and Experiments that belong to the question but test no Hypothesis. */
+  /**
+   * Decisions, Blockers, and Experiments that belong to the question but test no
+   * Hypothesis, each such Experiment followed by the Evidence it produced.
+   */
   loose: GraphNode[];
 }
 
@@ -198,7 +201,10 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
     const blockers = [question, ...decisions].flatMap((node) => outgoing(node.id, "blocked_by"));
     const anchors = [...decisions, ...blockers];
     const experiments = anchors.flatMap((node) => freeExperimentsByAnchor.get(node.id) ?? []);
-    return uniqueNodes([...anchors, ...sortNodes(experiments)]);
+    return uniqueNodes([
+      ...anchors,
+      ...sortNodes(experiments).flatMap((node) => [node, ...outgoing(node.id, "produces")]),
+    ]);
   };
 
   const pages = new Map<string, QuestionPage>();
@@ -208,9 +214,7 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
     const page = pages.get(question.id)!;
     return [
       question,
-      ...page.loose.flatMap((node) =>
-        node.type === "experiment" ? [node, ...outgoing(node.id, "produces")] : [node],
-      ),
+      ...page.loose,
       ...page.hypotheses.flatMap((item) => hypothesisMembers(hypotheses.get(item.node.id)!)),
       ...page.subquestions.flatMap((item) => membersOf(item.node, seen)),
     ];

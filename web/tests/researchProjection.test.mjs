@@ -87,7 +87,7 @@ test("question pages share Hypotheses and keep work that tests none", () => {
   assert.deepEqual(ids(drilldown.questions.get("q/other").hypotheses.map((item) => item.node)), [
     "h/shared",
   ]);
-  assert.deepEqual(ids(sub.loose), ["d/metric", "x/probe"]);
+  assert.deepEqual(ids(sub.loose), ["d/metric", "x/probe", "e/probe"]);
 
   const root = drilldown.roots.find((item) => item.node.id === "q/root").rollup;
   assert.equal(root.activeExperiments, 1);
