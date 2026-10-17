@@ -395,6 +395,8 @@ authenticates maintenance RPC against service PID, account, instance and data
 identity. The application closes mutations, launches, watchers, machine work
 and recovery, drains entered work (up to two hours for agent turns), and returns
 a SQLite capture bound to that quiet boundary. A drain timeout refuses cleanly.
+The drain never waits on a human answer: closed admission parks every waiting
+`ask` ([why](conversations-episodes-and-watchers.md#conversation-scratch-and-human-input)).
 
 The candidate inventories local roots from captured SQLite. It rechecks failed
 backup inventories; unreadable projects become named warnings and are excluded

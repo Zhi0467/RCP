@@ -331,6 +331,8 @@ def live_ask_contract(wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS) -> str:
         f"After attempt {ASK_MAX_ATTEMPTS} with no answer, stop asking and end your turn; "
         "the question stays on the human's card and their answer resumes this conversation. "
         "The human answers on its question card; composer messages are separate steering.\n"
+        "- `parked` means the human cannot answer right now, such as during server "
+        "maintenance: end your turn; their answer resumes this conversation.\n"
         "- A single blocking wait is always preferred over polling. If your shell returns "
         "before a command finishes and you choose to poll it, use long waits of about 5 minutes."
     )

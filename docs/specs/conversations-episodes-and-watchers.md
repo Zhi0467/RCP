@@ -227,6 +227,9 @@ attempt. Clients without an id omit the count. A thread-safe process-local
 record retains the last 32 calls per question; restart resets this advice.
 Repeat the exact call while blocked, or check later while doing independent
 work. After three unanswered attempts, end the turn and leave the card open.
+Once maintenance closes the process's work admission, a waiting ask replies
+`parked` instead: maintenance locks the human out, so the turn ends and the
+answer after reopening resumes the conversation.
 Prefer one blocking shell wait; unfinished-command polling uses roughly
 five-minute waits.
 
