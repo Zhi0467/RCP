@@ -45,7 +45,8 @@ export interface QuestionPage {
   hypotheses: HypothesisSummary[];
   /**
    * Decisions, Blockers, and Experiments that belong to the question but test no
-   * Hypothesis, each such Experiment followed by its Evidence, Decisions, and Blockers.
+   * Hypothesis, each such Experiment followed by its Evidence, Decisions, and Blockers,
+   * then other Evidence informing those Decisions or addressing those Blockers.
    */
   loose: GraphNode[];
 }
@@ -207,6 +208,9 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
         ...outgoing(node.id, "governed_by"),
         ...outgoing(node.id, "blocked_by"),
       ]),
+      // Evidence bearing on the question's choices and Blockers, from any origin.
+      ...decisions.flatMap((node) => incoming(node.id, "informs")),
+      ...blockers.flatMap((node) => incoming(node.id, "addresses")),
     ]);
   };
 
