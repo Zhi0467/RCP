@@ -8,7 +8,6 @@ import {
 } from "../src/projects/projectGroups.ts";
 import {
   projectCreateSetupHash,
-  projectProvisioningHash,
   parseProjectSetupRoute,
   buildTeamProvisioningRequest,
 } from "../src/projects/projectSetupModel.ts";
@@ -59,13 +58,7 @@ test("drop targets require a project and a different visible destination", () =>
 });
 test("setup and provisioning preserve selected group", () => {
   const groupId = "11111111-1111-4111-8111-111111111111";
-  const requestId = "22222222-2222-4222-8222-222222222222";
   assert.equal(parseProjectSetupRoute(projectCreateSetupHash(groupId)).groupId, groupId);
-  assert.deepEqual(parseProjectSetupRoute(projectProvisioningHash(requestId, groupId)), {
-    kind: "create",
-    requestId,
-    groupId,
-  });
   const request = buildTeamProvisioningRequest({
     name: "x",
     groupId,

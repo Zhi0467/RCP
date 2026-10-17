@@ -411,7 +411,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated, group }: 
       window.history.replaceState(
         null,
         "",
-        `${window.location.pathname}${window.location.search}${projectProvisioningHash(next.request_id, group?.id)}`,
+        `${window.location.pathname}${window.location.search}${projectProvisioningHash(next.request_id)}`,
       );
     }
   };

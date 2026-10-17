@@ -207,13 +207,11 @@ export function invalidProjectProvisioningHash(hash: string): boolean {
   return hash.startsWith("#/projects/new?") && parseProjectSetupRoute(hash).kind === "invalid";
 }
 
-export function projectProvisioningHash(requestId: string, groupId?: string | null): string {
+export function projectProvisioningHash(requestId: string): string {
   if (!isCanonicalUuid4(requestId)) {
     throw new Error("Project provisioning request identity must be a canonical UUID4.");
   }
-  const params = new URLSearchParams({ request: requestId });
-  if (groupId) params.set("group", requireCanonicalUuid4(groupId, "Project group identity"));
-  return `#/projects/new?${params.toString()}`;
+  return `#/projects/new?request=${encodeURIComponent(requestId)}`;
 }
 
 export function formatCommandArgv(argv: string[]): string {
