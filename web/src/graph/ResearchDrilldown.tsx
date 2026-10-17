@@ -458,17 +458,47 @@ function HypothesisCard({
   changed: boolean;
   onOpen: () => void;
 }) {
+  const evidenceCount = VERDICTS.reduce((total, verdict) => total + item.tally[verdict], 0);
   return (
-    <ResearchNodeCard node={item.node} onClick={onOpen} changed={changed}>
-      <span className="research-chips">
-        <TallyChips tally={item.tally} />
-        <span className="research-chip">{plural(item.experimentCount, "experiment")}</span>
-        <OpenChips decisions={item.openDecisions} blockers={item.openBlockers} />
-        {item.questionIds.length > 1 && (
-          <span className="research-chip also">
-            +{plural(item.questionIds.length - 1, "question")}
+    <ResearchNodeCard
+      node={item.node}
+      onClick={onOpen}
+      changed={changed}
+      badge={
+        item.questionIds.length > 1 ? (
+          <span className="research-chips">
+            <span className="research-chip also">
+              +{plural(item.questionIds.length - 1, "question")}
+            </span>
+            <span className={`standing ${item.node.standing}`}>{item.node.standing}</span>
           </span>
-        )}
+        ) : undefined
+      }
+    >
+      <span className="research-card-rows">
+        <span className="research-card-row">
+          <span>Inputs</span>
+          <span className="research-chips">
+            <span className="research-count">{item.inputCount}</span>
+            <OpenChips decisions={item.openDecisions} blockers={item.openBlockers} />
+          </span>
+        </span>
+        <span className="research-card-row">
+          <span>Experiments</span>
+          <span className="research-chips">
+            <span className="research-count">{item.experimentCount}</span>
+            {item.activeExperiments > 0 && (
+              <span className="research-chip active">{item.activeExperiments} active</span>
+            )}
+          </span>
+        </span>
+        <span className="research-card-row">
+          <span>Evidence</span>
+          <span className="research-chips">
+            <span className="research-count">{evidenceCount}</span>
+            <TallyChips tally={item.tally} />
+          </span>
+        </span>
       </span>
     </ResearchNodeCard>
   );

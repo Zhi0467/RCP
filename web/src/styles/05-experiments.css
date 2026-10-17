@@ -62,6 +62,31 @@
   margin-top: auto;
   padding-top: 4px;
 }
+.research-card-rows {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 5px;
+  margin-top: 9px;
+  padding-top: 8px;
+}
+.research-card-row {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 78px minmax(0, 1fr);
+}
+.research-card-row > span:first-child {
+  color: var(--muted);
+  font-size: var(--type-4xs);
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.research-count {
+  font-family: var(--mono);
+  font-size: var(--type-sm);
+  min-width: 1.5ch;
+}
 .research-section {
   margin-top: 18px;
 }

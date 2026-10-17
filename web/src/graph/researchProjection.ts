@@ -29,12 +29,15 @@ export interface QuestionSummary {
   openBlockers: number;
 }
 
+/** A Hypothesis card's three rows: inputs, Experiments, and Evidence. */
 export interface HypothesisSummary {
   node: GraphNode;
-  experimentCount: number;
-  tally: VerdictTally;
+  inputCount: number;
   openDecisions: number;
   openBlockers: number;
+  experimentCount: number;
+  activeExperiments: number;
+  tally: VerdictTally;
   /** Every question this Hypothesis answers; it appears under each. */
   questionIds: string[];
 }
@@ -249,10 +252,12 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
           const page = hypotheses.get(node.id)!;
           return {
             node,
-            experimentCount: page.experiments.length,
-            tally: page.tally,
+            inputCount: page.inputs.nodes.length,
             openDecisions: page.inputs.openDecisions,
             openBlockers: page.inputs.openBlockers,
+            experimentCount: page.experiments.length,
+            activeExperiments: page.experiments.filter((lane) => lane.active).length,
+            tally: page.tally,
             questionIds: page.questions.map((item) => item.id),
           };
         }),

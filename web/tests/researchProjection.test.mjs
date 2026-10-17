@@ -102,7 +102,10 @@ test("question pages share Hypotheses and keep work that tests none", () => {
   const subCard = drilldown.questions.get("q/root").subquestions[0];
   assert.deepEqual([subCard.subquestionCount, subCard.hypothesisCount], [0, 1]);
   const shared = sub.hypotheses[0];
-  assert.deepEqual([shared.openDecisions, shared.openBlockers], [1, 2]);
+  assert.deepEqual(
+    [shared.inputCount, shared.openDecisions, shared.openBlockers, shared.activeExperiments],
+    [3, 1, 2, 1],
+  );
   assert.deepEqual(ids(drilldown.unplaced), ["orphan"]);
 });
 
