@@ -1,0 +1,30 @@
+{
+  "active_operation_id": "72efcc7f-ace8-4ba4-b0ef-b51188241ef6",
+  "boundary": "pre-project-worker-seats-v29-be8377b",
+  "created_with_commit": "be8377bdc48fb61a2c2d667e949cf544e6291040",
+  "expected_repair": null,
+  "expected_revision": 1,
+  "experiment_episode_id": "dd443a42-d787-4f63-8136-99180dc63eff",
+  "experiment_operation_id": "7c993b2b-0490-4d55-9ae7-15984089f423",
+  "files": {
+    "data/rcp.sqlite3.gz": "fd28fe751de4bc06c213fc1943a591a881e96619af76a2a26d939c5e1469c878",
+    "project/.research/cursors.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+    "project/.research/glossary.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+    "project/.research/graph.json": "67efe54f64e662ea10a301dd6b01467667797bf358e68e5aa243a0f0419e684e",
+    "project/.research/manifest.toml": "62f859b330e6b40bf5ee9f1e452a0519ff2750d39d97c358d7ce16db28cefd5b",
+    "project/.research/patches/000001.json": "5ee123cae5b5786fbadfd83f8ef1a8b446ad6db40fb0c9dd1cf3df0a22dd9321",
+    "project/.research/proposals.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+    "project/.research/research.md": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "project/.research/scope-base.json": "0c19495c5a23742881ee23daeec8a3aaee130f1006971539f3818aa135149390"
+  },
+  "member_session_hash": "2cd8cef61cafea23a5df51f03ca84064b9563e85000c1e41061b67acbc56004b",
+  "member_token_hash": "9038b9268e36adf228f078846d0475d12ce2ab9da75dc851b6897c4ab9e984a1",
+  "member_token_id": "e6e12b77-b01b-4045-b575-0cb31652fd11",
+  "project_id": "04a369cf-28de-439c-be39-1c3261a06ec3",
+  "provisioning_configuration_complete": true,
+  "provisioning_project_id": "a3d3da1a-4b92-4ca2-89e5-18b1929ed8d7",
+  "provisioning_request_id": "579ebfa8-26df-4868-868a-fe7ca1a9f67c",
+  "schema_version": 1,
+  "space_id": "95effaef-459e-4935-a612-0b42a63936c1",
+  "user_id": "7bd5ae9a-64f6-4691-94cb-4ad04c9e7eef"
+}

@@ -58,6 +58,8 @@ def render_chat_read_context(context: ChatContext) -> str:
             + json.dumps(
                 {
                     "main_graph_path": context.main_graph_path,
+                    "branch_name": context.branch_name,
+                    "branch_parent": context.branch_parent,
                     "shared_repositories": [
                         item.model_dump(mode="json") for item in context.shared_repositories
                     ],
@@ -270,7 +272,7 @@ def render_graph_history(scope: GraphReadScope, command_client: str) -> str:
     calls = "\n".join(f"- `{command_client} {verb} {forms[verb]}`" for verb in sorted(scope.verbs))
     return (
         "## Graph history queries\n\n"
-        f"Project: `{scope.project_id}`. Readable targets: main and every branch of this project. "
+        f"Project: `{scope.project_id}`. Readable targets: {scope.readable_targets}. "
         f"Unqualified heads use `{scope.target.key}`. Reads grant no write authority.\n"
         f"{calls}\n"
         "A continuation that changes `history_client` or `patch.command_client` replaces the command prefix above. "

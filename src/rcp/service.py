@@ -92,6 +92,7 @@ from rcp.core.validation.proposals import (
     proposal_updates_node,
 )
 from rcp.history import HistoryManager
+from rcp.history.branches import BranchHistoryManager
 from rcp.history.queries import HistoryEngine
 from rcp.limits import (
     ACTIVE_COMPUTE_ID_MAX_COUNT,
@@ -1232,18 +1233,24 @@ class ProjectService:
     ) -> ProjectService:
         """Return a service whose graph reads and writes stay on one exact target."""
 
+        main = (
+            self.history.parent if isinstance(self.history, BranchHistoryManager) else self.history
+        )
         if target.kind == "main":
             if expected_episode_id is not None:
                 raise ValueError("an episode-target service requires a graph branch")
-            return self
-        assert target.branch_id is not None
-        history = self.history.branch(
-            target.branch_id,
-            expected_episode_id=expected_episode_id,
-            expected_project_id=self._project_id,
-            initialize=initialize,
-            refresh_max_age_seconds=refresh_max_age_seconds,
-        )
+            if main is self.history:
+                return self
+            history = main
+        else:
+            assert target.branch_id is not None
+            history = main.branch(
+                target.branch_id,
+                expected_episode_id=expected_episode_id,
+                expected_project_id=self._project_id,
+                initialize=initialize,
+                refresh_max_age_seconds=refresh_max_age_seconds,
+            )
         return ProjectService(
             history.manifest,
             history,

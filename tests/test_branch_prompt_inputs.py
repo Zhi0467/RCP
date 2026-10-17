@@ -299,7 +299,7 @@ def test_branch_graph_repair_refreshes_inline_read_context(manifest, tmp_path, m
         payload.update(node_id="exp/bounded-loop", message="Inspect this node.", mode="work")
     else:
         route = "experiments/exp%2Fbounded-loop/run"
-    started = client.post(f"{base}/{route}?branch_id={branch.episode_id}", json=payload)
+    started = client.post(f"{base}/{route}?branch_id={branch.graph_target.branch_id}", json=payload)
     assert started.status_code == 202, started.text
     previous = wait_for_task(store, started.json()["operation_id"])
     assert previous.result is not None and isinstance(previous.result.get("graph_update"), dict), (
@@ -366,3 +366,40 @@ async def test_branch_turn_prepares_hidden_reads_with_its_project_identity(
     inventory = launches[0]["repository_inventory"]
     assert inventory
     assert {item.project_id for item in inventory} == {service.history.branch_metadata().project_id}
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_parent_snapshot_and_location_exclude_post_parent_graph(
+    branch_services, tmp_path, monkeypatch, remote
+):
+    from .test_branch_history import _branch_patch
+    from .test_history_forks import fork_metadata
+
+    main, parent = branch_services
+    head = parent.history.head_ref()
+    fork = main.history.create_episode_branch(fork_metadata(main.history, head))
+    parent.history.append(_branch_patch("ev/after-parent"))
+    service = main.for_graph_target(fork.graph_target)
+    stage = tmp_path / "fork-stage"
+    stage.mkdir()
+    remote_stage = RemoteRunStage("execution.example") if remote else None
+    uploaded = {}
+    if remote_stage is not None:
+        remote_stage.root = PurePosixPath("/remote/task")
+        monkeypatch.setattr(remote_stage, "prepare_read_context_input", lambda label: False)
+
+        def upload(source, label, **kwargs):
+            uploaded[label] = source.read_text()
+            return f"/remote/task/inputs/{label}"
+
+        monkeypatch.setattr(remote_stage, "put_file", upload)
+    context = service.assemble_chat(RunRequest(chat_scope="project"))
+    fields = stage_branch_read_context(context, service, None if remote else stage, remote_stage)
+    path = fields["main_graph_path"]
+    assert isinstance(path, str)
+    content = uploaded[PurePosixPath(path).name] if remote else Path(path).read_text()
+    assert json.loads(content) == main.history_engine.state_at(head).model_dump(mode="json")
+    assert fields["branch_name"] == fork.branch_id
+    assert fields["branch_parent"] == f"{head.target.key}@{head.revision}"
+    assert "ev/after-parent" not in json.loads(content)["nodes"]
+    assert "ev/main-only" not in json.loads(content)["nodes"]

@@ -60,6 +60,47 @@ class ClientInputError(Exception):
 
 
 _PROFILE_PICK_FLAGS = (("provider", "--provider"), ("model", "--model"), ("reasoning", "--effort"))
+# Parser enforcement and root prompt invocations share these option records.
+SPAWN_SEAT_OPTIONS = (("seat_node", "--seat-node", "<node-id>"), ("project", "--project", None))
+AVAILABLE_CHILD_TARGET_OPTIONS = (("target", "--target", "<branch>"),)
+CHILD_TARGET_OPTIONS = (("at", "--at", "<ref@R>"), *AVAILABLE_CHILD_TARGET_OPTIONS)
+CHILD_SEED_OPTION = ("seed_file", "--seed-file", "<filename>")
+
+
+def child_target_usage():
+    alternatives = " | ".join(
+        f"{flag} {value}" for _, flag, value in AVAILABLE_CHILD_TARGET_OPTIONS
+    )
+    return f"[{alternatives}]"
+
+
+def spawn_seat_usage():
+    return (
+        "("
+        + " | ".join(f"{flag} {value}" if value else flag for _, flag, value in SPAWN_SEAT_OPTIONS)
+        + ")"
+    )
+
+
+def _add_child_target_arguments(parser):
+    target = parser.add_mutually_exclusive_group()
+    for dest, flag, value in CHILD_TARGET_OPTIONS:
+        target.add_argument(flag, dest=dest, metavar=value)
+    dest, flag, value = CHILD_SEED_OPTION
+    parser.add_argument(flag, dest=dest, metavar=value)
+
+
+def _child_target_arguments(namespace, workspace):
+    arguments = {
+        dest: _nonblank(getattr(namespace, dest), flag)
+        for dest, flag, _ in CHILD_TARGET_OPTIONS
+        if getattr(namespace, dest) is not None
+    }
+    if namespace.seed_file is not None:
+        if namespace.at is None:
+            raise ClientInputError("--seed-file requires --at")
+        arguments["seed_file"] = _keyed_command_file(workspace, namespace.seed_file, "seed file")
+    return arguments
 
 
 def _add_profile_pick_arguments(parser):
@@ -227,7 +268,13 @@ def _parser():
 
     spawn = subparsers.add_parser("spawn")
     spawn.add_argument("--key", required=True)
-    spawn.add_argument("--seat-node", required=True)
+    seat = spawn.add_mutually_exclusive_group(required=True)
+    for dest, flag, value in SPAWN_SEAT_OPTIONS:
+        if value is None:
+            seat.add_argument(flag, dest=dest, action="store_true")
+        else:
+            seat.add_argument(flag, dest=dest, metavar=value)
+    _add_child_target_arguments(spawn)
     spawn.add_argument("--instruction-file", required=True)
     _add_profile_pick_arguments(spawn)
 
@@ -256,6 +303,7 @@ def _parser():
     episode.add_argument("--goal-file")
     episode.add_argument("--invocation-limit", type=int)
     _add_profile_pick_arguments(episode)
+    _add_child_target_arguments(episode)
 
     inbox = subparsers.add_parser("inbox")
     inbox.add_argument("--key", required=True)
@@ -369,7 +417,12 @@ def _request_arguments(namespace, workspace):
             workspace, namespace.instruction_file, "instruction file"
         )
         arguments = {
-            "seat_node_id": _nonblank(namespace.seat_node, "seat node"),
+            **(
+                {"project": True}
+                if namespace.project
+                else {"seat_node_id": _nonblank(namespace.seat_node, "seat node")}
+            ),
+            **_child_target_arguments(namespace, workspace),
             "instruction_file": instruction_file,
             **_profile_pick(namespace),
         }
@@ -409,6 +462,7 @@ def _request_arguments(namespace, workspace):
                 goal_file = _keyed_command_file(workspace, goal_file, "goal file")
             arguments = {
                 "action": "kick_off_experiment",
+                **_child_target_arguments(namespace, workspace),
                 "node_id": _nonblank(node_id, "Experiment node"),
                 "goal_file": goal_file,
                 "invocation_limit": invocation_limit,
@@ -423,6 +477,9 @@ def _request_arguments(namespace, workspace):
                 raise ClientInputError(
                     "--invocation-limit is available only for Experiment kickoff"
                 )
+            for dest, flag, _ in (*CHILD_TARGET_OPTIONS, CHILD_SEED_OPTION):
+                if getattr(namespace, dest) is not None:
+                    raise ClientInputError(f"{flag} is available only for Experiment kickoff")
             for dest, flag in _PROFILE_PICK_FLAGS:
                 if getattr(namespace, dest) is not None:
                     raise ClientInputError(

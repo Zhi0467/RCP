@@ -111,7 +111,7 @@ def handle_graph_history_command(
     except ValueError:
         return refuse("graph_history_cursor_invalid")
     if continuation is not None and any(
-        not scope.readable(project_id, head.target) for head in continuation.heads
+        not scope.readable(project_id, head.target, head.revision) for head in continuation.heads
     ):
         return refuse("graph_history_scope_refused")
     try:
@@ -133,7 +133,7 @@ def handle_graph_history_command(
             if isinstance(request, GraphDiffCommandRequest) and request.arguments.branch_changes:
                 steps = engine.steps(heads[0])
                 heads.insert(0, steps[0].before_head if steps else heads[0])
-        if any(not scope.readable(project_id, head.target) for head in heads):
+        if any(not scope.readable(project_id, head.target, head.revision) for head in heads):
             return refuse("graph_history_scope_refused")
         cursor = continuation.engine_cursor if continuation else None
         if isinstance(request, GraphDiffCommandRequest):

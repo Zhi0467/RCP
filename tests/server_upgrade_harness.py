@@ -20,6 +20,10 @@ EXACT_BASE_ENV = "RCP_RUN_EXACT_BASE_UPGRADE"
 # Ordered by the real upgrade chain. Each entry starts a distinct stored-shape
 # or migration-interpretation era; transaction-only refactors are not eras.
 EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
+    "pre-project-worker-seats-v29-be8377b": (
+        "be8377bdc48fb61a2c2d667e949cf544e6291040",
+        "b9918cc0fd4e1f32f6db0d8afb7af213667096a326dc0efb0597234f9334e6d6",
+    ),
     "pre-artifacts-v15-ff090e1": (
         "ff090e1fa0374d30374449ecc85283733025e416",
         "a97c8058c371e65730b8eee460847e0f39bf1601207d1cd4eb255176f923f0da",

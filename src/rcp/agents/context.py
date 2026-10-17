@@ -32,6 +32,8 @@ class RunContext(BaseModel):
     graph_revision: int = Field(ge=0)
     graph_path: str
     main_graph_path: str | None = None
+    branch_name: str | None = None
+    branch_parent: str | None = None
     shared_repositories: list[RepositoryPointer] = Field(default_factory=list)
     research_md_path: str
     introduction_path: str | None
@@ -78,6 +80,8 @@ class ChatContext(BaseModel):
     repositories: list[RepositoryPointer]
     graph_path: str
     main_graph_path: str | None = None
+    branch_name: str | None = None
+    branch_parent: str | None = None
     shared_repositories: list[RepositoryPointer] = Field(default_factory=list)
     loop_status: dict[str, Any] | None = None
     research_md_path: str

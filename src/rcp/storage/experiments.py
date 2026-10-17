@@ -17,6 +17,7 @@ from rcp.limits import (
     QUESTION_SNAPSHOT_MAX_RECORDS,
     SPACE_RUNS_COMPLETED_TTL,
 )
+from rcp.storage.branch_names import _chain_root
 from rcp.storage.digest import append_question_attention
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES, _VISIBLE_EPISODE_REPORTS
 from rcp.storage.mixin_base import StoreMixinBase
@@ -289,7 +290,16 @@ class ExperimentStoreMixin(StoreMixinBase):
         if auto_research_route is not None and (
             parent_episode is None
             or parent_episode.mode != "auto_research"
-            or record.graph_target != parent_episode.graph_target
+            or (
+                record.graph_target != parent_episode.graph_target
+                and record.graph_target.branch_id
+                not in {
+                    branch.branch_id
+                    for branch in cast("AppStore", self).branches_owned_by(
+                        record.project_id, parent_episode.episode_id
+                    )
+                }
+            )
         ):
             raise ValueError("an Auto-research child Experiment changed its parent graph target")
         graph_branch = (
@@ -716,9 +726,18 @@ class ExperimentStoreMixin(StoreMixinBase):
             # Recovery settles an already-paid invocation, including behind its
             # parent's Stop or ending fence. Only a new invocation needs E and
             # the parent's new-work admission check.
-            if (
-                parent.project_id != episode.project_id
-                or parent.graph_target != episode.graph_target
+            if parent.project_id != episode.project_id or (
+                parent.graph_target != episode.graph_target
+                and connection.execute(
+                    "SELECT 1 FROM graph_branches WHERE project_id=? AND branch_id=? "
+                    "AND owner_episode_id=?",
+                    (
+                        episode.project_id,
+                        episode.graph_target.branch_id,
+                        _chain_root(connection, episode.project_id, parent.episode_id),
+                    ),
+                ).fetchone()
+                is None
             ):
                 raise ValueError("The Experiment recovery changed its parent graph target.")
         if (

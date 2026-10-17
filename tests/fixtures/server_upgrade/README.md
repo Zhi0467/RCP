@@ -128,3 +128,5 @@ exact boundary source from the preceding immutable fixture.
 records (migration 55), including a same-id legacy branch, its Evidence patch,
 renamed and retired names, and its archive state. The exact boundary source
 upgrades the preceding fixture and creates that branch through its public APIs.
+
+- `pre-project-worker-seats-v29-be8377b`: migration 55 before nullable project worker seats; captured from `be8377bdc48fb61a2c2d667e949cf544e6291040`.

@@ -124,6 +124,7 @@ class AppStoreBase:
         (53, "episode_report_deletion_v1"),
         (54, "agent_live_status_v1"),
         (55, "graph_branches_v1"),
+        (56, "project_worker_seats_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -897,11 +898,34 @@ class AppStoreBase:
         self._run_storage_schema_migration(
             connection, version=55, name="graph_branches_v1", migration=migrate_graph_branches
         )
+        self._run_storage_schema_migration(
+            connection,
+            version=56,
+            name="project_worker_seats_v1",
+            migration=self._migrate_project_worker_seats,
+        )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
         if not schema_template:
             self._validate_storage_schema(connection)
         return bootstrap_code
+
+    def _migrate_project_worker_seats(self, connection: sqlite3.Connection) -> None:
+        """Project workers have no node seat; retain old worker/attempt identities."""
+        columns = {
+            row[1]: row for row in connection.execute("PRAGMA table_info(auto_research_child_work)")
+        }
+        if not columns["control_node_id"][3]:
+            return
+        schema = [
+            row for row in self._storage_schema(connection) if row[2] == "auto_research_child_work"
+        ]
+        create_sql = next(row[3] for row in schema if row[0] == "table")
+        create_sql = create_sql.replace("control_node_id TEXT NOT NULL", "control_node_id TEXT", 1)
+        self._rebuild_storage_table(connection, "auto_research_child_work", create_sql)
+        for kind, _name, _table, sql in schema:
+            if kind in {"index", "trigger"}:
+                connection.execute(sql)
 
     @staticmethod
     def _migrate_per_branch_auto_research(connection: sqlite3.Connection) -> None:

@@ -135,6 +135,7 @@ from rcp.runs.auto_research_delivery import (
 )
 from rcp.runs.auto_research_effects import auto_research_command_effects
 from rcp.runs.auto_research_experiments import AutoResearchExperimentCoordinator
+from rcp.runs.auto_research_forks import archive_settled_auto_research_forks
 from rcp.runs.auto_research_recovery import reconcile_orphaned_auto_research_failures
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.episodes.reconcile import EpisodeReconciler
@@ -952,6 +953,7 @@ def create_app(
                     source="Auto-research graph condition",
                 ),
                 experiment_coordinator=auto_research_experiment_coordinator,
+                branch_head=lambda target: service.for_graph_target(target).history.head_ref(),
             )
             dispatcher = AutoResearchCommandDispatcher(store, effects)
             stream_auto_research = (
@@ -1142,7 +1144,9 @@ def create_app(
         instruction: str,
         worker_id: str,
     ) -> RunRequest:
-        service = _branch_service(context.episode.graph_target, context.task.project_id)
+        service = _branch_service(
+            context.child_graph_target or context.episode.graph_target, context.task.project_id
+        )
         return _auto_research_worker_request(
             service,
             context,
@@ -1222,6 +1226,9 @@ def create_app(
                 deferral.episode_id,
                 deferral.reason,
             )
+        archive_settled_auto_research_forks(
+            store, catalog.open_execution, episode_id=episode_id, logger=logger
+        )
         return reconciliation
 
     episode_reconciler = EpisodeReconciler(store, background_tasks, logger=logger)
@@ -2522,18 +2529,26 @@ def _auto_research_worker_request(
 ) -> RunRequest:
     """Resolve a spawned child through the node-Work profile and the orchestrator's pick."""
 
+    target = _context.child_graph_target or _context.episode.graph_target
+    service = service.for_graph_target(target)
+    if (
+        arguments.seat_node_id is not None
+        and arguments.seat_node_id not in service.history.state().nodes
+    ):
+        raise ValueError("The worker seat must name an existing node on its target.")
     reasoning = require_auto_research_child_profile_pick(
         service,
         provider=arguments.provider,
         model=arguments.model,
         reasoning=arguments.reasoning,
+        kind="project_chat" if arguments.project else "node_chat",
     )
     return _resolved_graph_request(
         service,
-        "node_chat",
+        "project_chat" if arguments.project else "node_chat",
         RunRequest(
             chat_id=worker_id,
-            chat_scope="node",
+            chat_scope="project" if arguments.project else "node",
             node_id=arguments.seat_node_id,
             message=instruction,
             mode="work",

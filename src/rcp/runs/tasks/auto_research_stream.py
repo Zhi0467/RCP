@@ -48,6 +48,7 @@ from rcp.agents.continuation_prompt import (
 )
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.loop_overlap import render_auto_research_overlap, render_loop_overlap
+from rcp.agents.prompts import render_chat_read_context
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
 from rcp.core.research_md import render_research_md
@@ -254,9 +255,7 @@ async def stream_auto_research_orchestrator_run(
             local_stage=stage.local,
             remote_stage=stage.remote,
         )
-        graph_read_scope = GraphReadScope(
-            project_id=turn.task.project_id, target=turn.task.graph_target
-        )
+        graph_read_scope = GraphReadScope.resolve(turn.task.project_id, service.history)
         command_dispatcher = command_dispatcher.with_command_files(
             service=service,
             graph_read_scope=graph_read_scope,
@@ -581,6 +580,9 @@ async def stream_auto_research_worker_run(
             )
         )
         context = _auto_research_context(service, turn.request, stage)
+        context = context.model_copy(
+            update=stage_branch_read_context(context, service, stage.local, stage.remote)
+        )
         _prepare_turn_handoffs(execution, turn, stage)
 
         messages_path = _stage_claimed_mail(execution, turn, stage)
@@ -595,9 +597,7 @@ async def stream_auto_research_worker_run(
             f"auto_research-patch-schema-{schema_digest}.json",
             schema,
         )
-        graph_read_scope = GraphReadScope(
-            project_id=turn.task.project_id, target=turn.task.graph_target
-        )
+        graph_read_scope = GraphReadScope.resolve(turn.task.project_id, service.history)
         staged_head = prepare_graph_observation(
             execution,
             service,
@@ -1748,7 +1748,11 @@ def _orchestrator_prompt(
         fresh_parts=(
             question_part,
             auto_research_branch_read_pointers(
-                context.main_graph_path, shared_repositories, repositories
+                context.main_graph_path,
+                shared_repositories,
+                repositories,
+                branch_name=context.branch_name,
+                branch_parent=context.branch_parent,
             ),
             render_loop_overlap(
                 loops, ask_allowed="ask" in auto_research_allowed_verbs("orchestrator")
@@ -1864,6 +1868,7 @@ def _worker_prompt(
         render_master=render_master,
         start_contract=render_master,
         continuation_parts=continuation_parts,
+        fresh_parts=(render_chat_read_context(context),),
     )
     return contract_path, prompt, master, values
 
@@ -2219,10 +2224,11 @@ async def _settle_worker_patch(
             f"task-{token}-auto_research-work-correction-{correction_rounds}.json",
             {"kind": "work", "problem": failure.message},
         )
-        graph_read_scope = GraphReadScope(
-            project_id=turn.task.project_id, target=turn.task.graph_target
-        )
+        graph_read_scope = GraphReadScope.resolve(turn.task.project_id, service.history)
         context = _auto_research_context(service, turn.request, stage)
+        context = context.model_copy(
+            update=stage_branch_read_context(context, service, stage.local, stage.remote)
+        )
         correction_head = prepare_graph_observation(
             execution,
             service,
@@ -2285,6 +2291,7 @@ async def _settle_worker_patch(
                         graph_read_scope=graph_read_scope,
                         command_client=correction_mailbox.client_command(),
                     ),
+                    render_chat_read_context(context),
                     stage_lessons_pointer(execution, stage.local, stage.remote),
                     browser_prompt_line(correction_grant),
                 ],

@@ -162,6 +162,7 @@ COMMAND_REJECTION_NOTICE_MAX_BYTES = 8 * 1024
 COMMAND_REJECTION_NOTICE_MAX_COUNT = 20
 AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES = 16 * 1024
 AUTO_RESEARCH_APPLY_MAX_PER_TURN = 32
+AUTO_RESEARCH_FORK_STATUS_MAX_ROWS = 32
 # One turn's in-turn Applies plus the end-of-turn settlement disposition. The
 # capture side and the storage side must agree, so it is derived once here.
 GRAPH_UPDATE_HISTORY_MAX_COUNT = AUTO_RESEARCH_APPLY_MAX_PER_TURN + 1

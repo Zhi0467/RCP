@@ -853,3 +853,33 @@ def test_unrecoverable_oversized_messages_stop_polling(monkeypatch):
     bare = runtime._bounded_message(message)
     assert (bare.snapshots, bare.static, bare.reason) == ([], True, "message_too_large")
     assert len(bare.model_dump_json().encode()) <= 200
+
+
+def test_fork_child_live_artifact_keeps_its_own_target(live):
+    from tests.test_auto_research_children_storage import _auto_parent, _owned_fork, _work_pair
+
+    parent, root = _auto_parent(live.store)
+    target = _owned_fork(live.store, parent)
+    route, task = _work_pair(live.store, parent, root, worker_id="artifact-worker")
+    task = task.model_copy(update={"graph_target": target})
+    live.store.create_auto_research_child_work(route, task)
+    artifact = live.store.create_artifact(
+        Artifact(
+            artifact_id="fork-artifact",
+            project_id="project",
+            supplier="turn",
+            supplier_id=task.operation_id,
+            origin_operation_id=task.operation_id,
+            episode_id=parent.episode_id,
+            source_name="page.html",
+            media_type="text/html",
+            created_at=live.store.now(),
+        ),
+        data=b'<html><script type="application/json" id="rcp-live">{"version":1,"needs":[{"kind":"episode"}]}</script></html>',
+    )
+    resolve_artifact_live_version(
+        live.store, live.service, artifact.artifact_id, artifact.current_version
+    )
+    binding = version(live, artifact).live
+    assert binding.invalid_reason is None
+    assert binding.graph_branch_id == target.branch_id

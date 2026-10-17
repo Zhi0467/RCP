@@ -18,6 +18,7 @@ from rcp.agents.prompts import (
     selected_skill_section,
     write_scope_section,
 )
+from rcp.agents.staged_command_client import child_target_usage, spawn_seat_usage
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.core.project_types import ProjectType, project_type_of
@@ -30,7 +31,7 @@ from rcp.limits import (
 )
 
 # Bumped when the stable policy prose of either Auto-research actor contract changes.
-AUTO_RESEARCH_POLICY_VERSION = "auto-research-v6"
+AUTO_RESEARCH_POLICY_VERSION = "auto-research-v7"
 
 
 def _repositories(repositories: list[dict[str, str]]) -> str:
@@ -60,10 +61,17 @@ def auto_research_branch_read_pointers(
     main_graph_path: str | None,
     shared_repositories: list[dict[str, str]],
     repositories: list[dict[str, str]],
+    *,
+    branch_name: str | None = None,
+    branch_parent: str | None = None,
 ) -> str:
     """Render fresh read-only pointers separately from the working repositories."""
 
-    rows = [f"- Main graph snapshot: `{main_graph_path}`"] if main_graph_path else []
+    rows = [f"- Branch: `{branch_name}`"] if branch_name else []
+    if branch_parent:
+        rows.append(f"- Parent: `{branch_parent}`")
+    if main_graph_path:
+        rows.append(f"- Graph snapshot: `{main_graph_path}`")
     working = {(item["alias"], item["host"], item["path"]) for item in repositories}
     rows.extend(
         f"- Shared checkout {item['alias']}: host=`{item['host']}` path=`{item['path']}`"
@@ -101,7 +109,8 @@ def _command_invocations(
         "apply": ("apply --key <key> patch.json",),
         "status": ("status [--worker-id <worker-id> | --episode-id <episode-id>]",),
         "spawn": (
-            "spawn --key <key> --seat-node <node-id> --instruction-file <filename> "
+            f"spawn --key <key> {spawn_seat_usage()} --instruction-file <filename> "
+            f"{child_target_usage()} "
             "[--provider <provider>] [--model <model>] [--effort <effort>]",
         ),
         "pause": ("pause --key <key> <worker-id>",),
@@ -115,6 +124,7 @@ def _command_invocations(
         "watch_graph": ("watch-graph --key <key> --condition-json <json> --reason <text>",),
         "episode": (
             "episode --key <key> --kick-off-experiment --node <node-id> "
+            f"{child_target_usage()} "
             "[--goal-file <filename>] [--invocation-limit <positive-int>] "
             "[--provider <provider>] [--model <model>] [--effort <effort>]",
             "episode --key <key> --stop <episode-id>",
@@ -235,9 +245,13 @@ def _auto_research_commands(
   accepts at most {AUTO_RESEARCH_APPLY_MAX_PER_TURN} distinct keyed Apply admissions, including
   effects that return `unavailable`; a same-key retry uses no additional place. The next distinct
   key is refused before its file is read, so finish the turn before applying again.
-- `spawn` starts ordinary node Work, not another Auto-research actor. A worker or child Experiment
-  runs the human-configured node Work profile unless you name `--provider`, `--model`, or
-  `--effort`; an omitted flag keeps that profile's value. Naming only a different provider takes
+- Seat a worker on a node when its job belongs to that node; use a project seat when it does not,
+  for example independently auditing candidates from a search.
+  These tools let you double-check in place or put agents on an owned branch;
+  see the official `counterfactual-research` skill package.
+- `spawn` starts ordinary Work, not another Auto-research actor. Workers use the human-configured
+  Work profile for their seat; child Experiments use node Work. You may name `--provider`,
+  `--model`, or `--effort`; an omitted flag keeps that profile's value. Naming only a different provider takes
   that provider's default model and effort; naming only the profile's own provider keeps the
   profile unchanged. Pick a different provider when it helps, such as an independent
   reviewer. The child stays on the profile's machine, where these `child_profiles` are ready

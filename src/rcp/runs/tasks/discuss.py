@@ -840,10 +840,7 @@ async def stream_discuss_run(
             if project_id is None:
                 raise ValueError("Graph history reads require a canonical project identity.")
             graph_read_scope = (
-                GraphReadScope(
-                    project_id=project_id,
-                    target=service.history.graph_target,
-                )
+                GraphReadScope.resolve(project_id, service.history)
                 if request.artifact_edit is None or not request.artifact_edit.origin_bound
                 else None
             )

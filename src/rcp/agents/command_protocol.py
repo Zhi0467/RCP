@@ -186,10 +186,53 @@ class GraphLogArguments(BaseModel):
         return value
 
 
-class SpawnArguments(BaseModel):
+class _ChildTargetArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    seat_node_id: str = Field(min_length=1, max_length=200)
+    at: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    target: str | None = Field(
+        default=None, min_length=1, max_length=200, exclude_if=lambda value: value is None
+    )
+    seed_file: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+        pattern=_SAFE_WORKSPACE_FILENAME,
+        exclude_if=lambda value: value is None,
+    )
+
+    @field_validator("at")
+    @classmethod
+    def exact_fork_head(cls, value: str | None) -> str | None:
+        if value is not None:
+            head = parse_head(value)
+            if head.target is None or head.revision == "head":
+                raise ValueError("at requires an explicit graph ref and numeric revision")
+        return value
+
+    @field_validator("target")
+    @classmethod
+    def nonblank_target(cls, value: str | None) -> str | None:
+        if value is not None:
+            value = value.strip()
+            if not value:
+                raise ValueError("target must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def valid_target_options(self) -> _ChildTargetArguments:
+        if self.at is not None and self.target is not None:
+            raise ValueError("at and target are mutually exclusive")
+        if self.seed_file is not None and self.at is None:
+            raise ValueError("seed_file requires at")
+        return self
+
+
+class SpawnArguments(_ChildTargetArguments):
+    seat_node_id: str | None = Field(
+        default=None, min_length=1, max_length=200, exclude_if=lambda value: value is None
+    )
+    project: bool = Field(default=False, exclude_if=lambda value: not value)
     instruction_file: str = Field(
         min_length=1,
         max_length=255,
@@ -208,11 +251,19 @@ class SpawnArguments(BaseModel):
 
     @field_validator("seat_node_id")
     @classmethod
-    def strip_nonblank_text(cls, value: str) -> str:
+    def strip_nonblank_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         stripped = value.strip()
         if not stripped:
             raise ValueError("seat node id must not be blank")
         return stripped
+
+    @model_validator(mode="after")
+    def exactly_one_seat(self) -> SpawnArguments:
+        if (self.seat_node_id is not None) == self.project:
+            raise ValueError("spawn requires exactly one of seat_node_id and project")
+        return self
 
 
 class WorkerControlArguments(BaseModel):
@@ -251,9 +302,7 @@ class WatchGraphArguments(BaseModel):
         return stripped
 
 
-class ExperimentKickoffArguments(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
+class ExperimentKickoffArguments(_ChildTargetArguments):
     action: Literal["kick_off_experiment"]
     node_id: str = Field(min_length=1, max_length=200)
     goal_file: str | None = Field(

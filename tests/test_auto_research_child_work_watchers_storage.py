@@ -10,16 +10,19 @@ from tests.storage_helpers import downgrade_resource_watermarks
 from tests.test_auto_research_children_storage import (
     _auto_parent,
     _child_work_mail_wake,
+    _owned_fork,
     _project,
     _work_pair,
 )
 
 
-def _waiting_child(tmp_path, *, ceiling=5):
+def _waiting_child(tmp_path, *, ceiling=5, fork=False):
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)
     parent, root = _auto_parent(store, ceiling=ceiling)
     route, task = _work_pair(store, parent, root, worker_id="worker-watch")
+    if fork:
+        task = task.model_copy(update={"graph_target": _owned_fork(store, parent)})
     store.create_auto_research_child_work(route, task)
     store.checkpoint_agent_task(
         task.operation_id, native_session_id="saved-child-session", stage_root="/tmp/child-stage"
@@ -34,7 +37,7 @@ def _waiting_child(tmp_path, *, ceiling=5):
         origin_task_kind="node_chat",
         episode_id=parent.episode_id,
         worker_id=route.worker_id,
-        graph_target=parent.graph_target,
+        graph_target=task.graph_target,
         chat_id=task.request["chat_id"],
         node_id=task.request["node_id"],
         continuation=WatcherContinuation.model_validate(
@@ -57,8 +60,9 @@ def _waiting_child(tmp_path, *, ceiling=5):
     return store, parent, route, watcher, wake
 
 
-def test_child_watcher_wake_claims_once_on_saved_route_and_spends_one_b(tmp_path):
-    store, parent, route, watcher, wake = _waiting_child(tmp_path)
+@pytest.mark.parametrize("fork", [False, True])
+def test_child_watcher_wake_claims_once_on_saved_route_and_spends_one_b(tmp_path, fork):
+    store, parent, route, watcher, wake = _waiting_child(tmp_path, fork=fork)
     before = store.episode_budget_meter(parent.episode_id).invocations_used
     candidates = [wake, wake.model_copy(update={"operation_id": "another-wake"})]
 
@@ -73,7 +77,7 @@ def test_child_watcher_wake_claims_once_on_saved_route_and_spends_one_b(tmp_path
     result = admitted[0]
     assert result.native_session_id == "saved-child-session"
     assert result.stage_root == "/tmp/child-stage"
-    assert result.graph_target == parent.graph_target
+    assert result.graph_target == watcher.graph_target
     assert (
         store.auto_research_child_work(route.worker_id).current_operation_id == result.operation_id
     )
