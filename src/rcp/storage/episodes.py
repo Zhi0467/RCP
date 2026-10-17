@@ -261,8 +261,7 @@ class EpisodeStoreMixin(StoreMixinBase):
     def episode_chain(self, root_episode_id: str) -> list[EpisodeRecord]:
         """The chain root followed by each continuation, oldest first.
 
-        A graph branch keeps its chain root's id as ``branch_id`` forever, so the
-        root is also the branch; the last member is the branch's current writer.
+        Branch ownership stays with the chain root; the last member is its current writer.
         """
 
         with self.connection() as connection:

@@ -774,3 +774,32 @@ def test_unused_machine_does_not_weaken_checkout_recovery_proof(
         ValidationError, match="machines differ|no resolved central root|route differs"
     ):
         type(recovery).model_validate(payload)
+
+
+def test_backup_requires_complete_branch_ancestor_chain(manifest: Manifest) -> None:
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
+    history.initialize()
+    root_id, fork_id = str(uuid.uuid4()), str(uuid.uuid4())
+    parent = GraphHeadRef(revision=0)
+    authorizer = AuthorizedHuman(space_id=SPACE_ID, user_id=USER_ID, display_name="Alice")
+    for branch_id in (root_id, fork_id):
+        branch = history.create_branch(
+            GraphBranchMetadata(
+                branch_id=branch_id,
+                episode_id=None,
+                project_id=PROJECT_ID,
+                kind="fork",
+                parent_head=parent,
+                base_head=GraphHeadRef(revision=0),
+                head=GraphHeadRef(
+                    target=GraphTargetRef(kind="branch", branch_id=branch_id), revision=0
+                ),
+                created_by=f"human:{branch_id}",
+                authorized_by=authorizer,
+            )
+        )
+        parent = branch.head_ref(branch.materialize(write_outputs=False))
+    assert len(history.workspace.backup_canonical_source_plan().branches) == 2
+    (manifest.research_dir / "branches" / root_id / "branch.json").unlink()
+    with pytest.raises(RuntimeError):
+        history.workspace.backup_canonical_source_plan()

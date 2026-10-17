@@ -248,6 +248,7 @@ def test_current_schema_classifies_every_table_and_installs_all_owner_triggers(t
         | set(_TASK_TABLES)
         | {
             "graph_runs",
+            "graph_branches",
             "projects",
             "chat_reads",
             "chat_pins",
@@ -367,8 +368,18 @@ def test_artifact_edit_lifecycle_invalidates_viewer(tmp_path):
 @pytest.mark.parametrize("owner", ["graph_runs", "auto_research_messages"])
 def test_orchestrator_chat_invalidates_chain_root(tmp_path, owner):
     store = AppStore(tmp_path / "store.db")
-    target = '{"kind":"branch","branch_id":"root"}'
+    target = '{"kind":"branch","branch_id":"independent-branch"}'
     with store.connection() as connection:
+        _insert(
+            connection,
+            "graph_branches",
+            {
+                "branch_id": "independent-branch",
+                "owner_episode_id": "root",
+                "parent_target_json": '{"kind":"main","branch_id":null}',
+            },
+            store.now(),
+        )
         for episode in ("root", "continuation"):
             _insert(
                 connection,
@@ -378,6 +389,7 @@ def test_orchestrator_chat_invalidates_chain_root(tmp_path, owner):
                     "mode": "auto_research",
                     "invocation_ceiling": 1,
                     "graph_target_json": target,
+                    "continues_episode_id": "root" if episode == "continuation" else None,
                 },
                 store.now(),
             )
@@ -401,6 +413,13 @@ def test_orchestrator_chat_invalidates_chain_root(tmp_path, owner):
                 "sender_role": "human",
             },
             store.now(),
+        )
+        assert store._orchestrator_chat_summaries(connection, "p", None)[0]["chat_id"] == "root"
+        assert (
+            store._orchestrator_chat_summaries(connection, "p", None)[0]["graph_target"][
+                "branch_id"
+            ]
+            == "independent-branch"
         )
         before = _generation(connection, "chats")
         root_before = connection.execute(

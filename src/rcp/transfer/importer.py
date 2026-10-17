@@ -90,6 +90,17 @@ def import_project_transfer(
     operational_payload = _read_entry_bytes(archive_root, operational_entry)
     capture = parse_transfer_project_file_payload(operational_payload)
     _validate_capture(archive, capture)
+    from rcp.core.models import GraphBranchMetadata
+
+    capture.records.validate_canonical_branches(
+        {
+            PurePosixPath(entry.archive_path).parts[2]: GraphBranchMetadata.model_validate_json(
+                _read_entry_bytes(archive_root, entry)
+            )
+            for entry in archive.entries
+            if entry.group == "canonical_history" and entry.archive_path.endswith("/branch.json")
+        }
+    )
     kept_html = _kept_result_view_html(archive_root, capture)
     owners = _target_owners(catalog, archive, target_configuration)
     for item in capture.artifact_inventory:

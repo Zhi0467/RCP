@@ -802,15 +802,22 @@ def create_app(
             layout=server_layout,
         )
         if task.graph_target.kind == "branch" and kind != "branch_merge":
-            owner = store.episode(task.graph_target.branch_id or "")
-            if owner is None:
-                raise ValueError("episode_isolation_owner_missing")
-            if owner.mode == "experiment_loop" and task.episode_id == owner.episode_id:
+            branch = store.graph_branch(project_id, task.graph_target.branch_id or "")
+            if branch is None:
+                raise ValueError("graph_branch_missing")
+            owner = store.episode(branch.owner_episode_id) if branch.owner_episode_id else None
+            if (
+                owner is not None
+                and owner.mode == "experiment_loop"
+                and task.episode_id == owner.episode_id
+            ):
                 await asyncio.to_thread(ensure_episode_graph_target, owner)
             service = await asyncio.to_thread(
                 service.for_graph_target,
                 task.graph_target,
-                expected_episode_id=task.graph_target.branch_id,
+                expected_episode_id=store.branch_owner(
+                    task.project_id, task.graph_target.branch_id or ""
+                ),
             )
         if kind == "branch_merge":
             if not isinstance(request, BranchMergeRunRequest):
@@ -1053,7 +1060,9 @@ def create_app(
             service = await asyncio.to_thread(
                 service.for_graph_target,
                 task.graph_target,
-                expected_episode_id=task.graph_target.branch_id,
+                expected_episode_id=store.branch_owner(
+                    task.project_id, task.graph_target.branch_id or ""
+                ),
             )
         async with aclosing(
             finalizer(service, launcher, request, app_data, execution, recorded)
@@ -1071,7 +1080,9 @@ def create_app(
             if task.graph_target.kind == "branch":
                 service = service.for_graph_target(
                     task.graph_target,
-                    expected_episode_id=task.graph_target.branch_id,
+                    expected_episode_id=store.branch_owner(
+                        task.project_id, task.graph_target.branch_id or ""
+                    ),
                 )
             return service
 
@@ -1105,11 +1116,14 @@ def create_app(
         )
 
     def _branch_service(graph_target: GraphTargetRef, project_id: str) -> ProjectService:
-        # The branch is named after the chain root; a continuation episode
-        # shares it, so the expected episode is the branch id, not the member.
+        # Continuations retain the branch's stable lineage owner.
         return catalog.open_execution(project_id).for_graph_target(
             graph_target,
-            expected_episode_id=graph_target.branch_id,
+            expected_episode_id=(
+                store.branch_owner(project_id, graph_target.branch_id or "")
+                if graph_target.kind == "branch"
+                else None
+            ),
         )
 
     auto_research_experiment_coordinator = AutoResearchExperimentCoordinator(
@@ -1148,7 +1162,9 @@ def create_app(
         service = catalog.open_execution(project_id).for_graph_target(
             episode.graph_target,
             expected_episode_id=(
-                episode.graph_target.branch_id if episode.graph_target.kind == "branch" else None
+                store.branch_owner(project_id, episode.graph_target.branch_id or "")
+                if episode.graph_target.kind == "branch"
+                else None
             ),
         )
         node = service.history.state().nodes.get(node_id)
@@ -1222,7 +1238,11 @@ def create_app(
             project_id
         ).for_graph_target(
             target,
-            expected_episode_id=(target.branch_id if target.kind == "branch" else None),
+            expected_episode_id=(
+                store.branch_owner(project_id, target.branch_id or "")
+                if target.kind == "branch"
+                else None
+            ),
         ),
         generic_request=_generic_watcher_delivery_request,
         experiment_operation_lock=experiment_operation_lock,

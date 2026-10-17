@@ -171,7 +171,7 @@ def run_experiment(
                     state,
                     node_id,
                     graph_target=(
-                        GraphTargetRef(kind="branch", branch_id=episode_id)
+                        GraphTargetRef(kind="branch", branch_id=str(uuid.uuid4()))
                         if creates_branch
                         else target
                     ),
@@ -342,7 +342,9 @@ def stop_bound_experiment_episode(
             if episode.graph_target.kind == "main"
             else main_service.for_graph_target(
                 episode.graph_target,
-                expected_episode_id=episode.graph_target.branch_id,
+                expected_episode_id=store.branch_owner(
+                    project_id, episode.graph_target.branch_id or ""
+                ),
                 initialize=False,
             )
         )
@@ -433,7 +435,7 @@ def continue_experiment_episode(
         if source.graph_target.kind == "main"
         else main_service.for_graph_target(
             source.graph_target,
-            expected_episode_id=source.graph_target.branch_id,
+            expected_episode_id=store.branch_owner(project_id, source.graph_target.branch_id or ""),
         )
     )
     state = target_service.history.state()

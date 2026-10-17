@@ -46,7 +46,7 @@ class MainGraphRefResponse(BaseModel):
 class BranchGraphRefResponse(GraphBranchSummary):
     kind: Literal["branch"] = "branch"
     archived: bool
-    mode: EpisodeMode
+    mode: EpisodeMode | None
     name: str
     running: bool
     needs_you: bool
@@ -65,50 +65,52 @@ def project_graph_refs(
     catalog: ProjectCatalog,
     refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 ) -> list[GraphRefResponse]:
-    """Main first, then unique branches in newest-chain-member order, without filtering."""
+    """Main first, then durable branch rows, including human forks and archives."""
 
     service = get_project_service(catalog, project_id)
     with service.history.workspace.read_snapshot():
-        branches: dict[str, EpisodeRecord] = {}
-        episodes = store.episodes(project_id, limit=None)
-        by_id = {episode.episode_id: episode for episode in episodes}
-        for episode in episodes:
-            if episode.graph_target.kind == "branch":
-                assert episode.graph_target.branch_id is not None
-                branches.setdefault(episode.graph_target.branch_id, episode)
-        summaries, attention = _graph_branch_projections(
-            list(branches.values()),
+        records = sorted(
+            store.graph_branches(project_id),
+            key=lambda record: (
+                store.episode_chain(record.owner_episode_id)[-1].created_at
+                if record.owner_episode_id
+                else record.created_at,
+                record.branch_id,
+            ),
+            reverse=True,
+        )
+        summaries, attention = _branch_projections(
+            project_id,
+            [record.branch_id for record in records],
             store=store,
             catalog=catalog,
             refresh_max_age_seconds=refresh_max_age_seconds,
         )
         refs: list[GraphRefResponse] = [MainGraphRefResponse(head=service.history.head_ref())]
-        isolation = store.episode_isolation_states(project_id)
-        names = store.branch_names(project_id)
         question_branches = {
             question.origin.graph_target.branch_id
             for question in store.list_questions(project_id=project_id, open_only=True)
             if question.origin.graph_target.kind == "branch"
         }
-        for episode in branches.values():
-            summary = summaries[episode.episode_id]
-            state = isolation.get(episode.isolation_owner_episode_id or summary.episode_id)
-            root = by_id[summary.episode_id]
+        for record in records:
+            summary = summaries.get(record.branch_id)
+            if summary is None:
+                continue  # A reserved fork has not completed canonical publication yet.
+            owner = store.episode(record.owner_episode_id) if record.owner_episode_id else None
             refs.append(
                 BranchGraphRefResponse(
                     **summary.model_dump(),
-                    archived=state.graph_archived if state else False,
-                    mode=root.mode,
-                    name=names[summary.branch_id],
+                    archived=record.archived,
+                    mode=owner.mode if owner else None,
+                    name=record.name,
                     running=any(
                         task.status in ACTIVE_AGENT_TASK_STATUSES
                         for task in store.unsettled_graph_target_tasks(
-                            project_id, root.graph_target
+                            project_id, summary.head.target
                         )
                     ),
-                    needs_you=attention[summary.branch_id]
-                    or summary.branch_id in question_branches,
-                    created_at=root.created_at,
+                    needs_you=attention[record.branch_id] or record.branch_id in question_branches,
+                    created_at=record.created_at,
                 )
             )
         return refs
@@ -121,19 +123,34 @@ def ensure_episode_graph_target(
 ) -> None:
     if (
         episode.graph_target.kind != "branch"
-        or episode.graph_target.branch_id != episode.episode_id
+        or episode.graph_target.branch_id is None
         or episode.graph_base_head is None
         or episode.authorized_by is None
     ):
         raise ValueError("Episode reservation lost its exact graph branch identity.")
+    record = catalog.store.graph_branch(episode.project_id, episode.graph_target.branch_id)
+    if (
+        record is None
+        or record.owner_episode_id != episode.episode_id
+        or record.parent_head != episode.graph_base_head
+    ):
+        raise ValueError("Episode reservation lost its exact graph branch record.")
     service = catalog.open_execution(episode.project_id)
     service.history.create_episode_branch(
         GraphBranchMetadata(
             kind=episode.mode,
-            branch_id=episode.episode_id,
+            branch_id=episode.graph_target.branch_id,
             episode_id=episode.episode_id,
             project_id=episode.project_id,
             base_head=episode.graph_base_head,
+            parent_head=(
+                episode.graph_base_head
+                if episode.graph_target.branch_id != episode.episode_id
+                else None
+            ),
+            created_by=(
+                record.created_by if episode.graph_target.branch_id != episode.episode_id else None
+            ),
             head=GraphHeadRef(
                 target=episode.graph_target,
                 revision=episode.graph_base_head.revision,
@@ -169,60 +186,23 @@ def _graph_branch_projections(
 ) -> tuple[dict[str, GraphBranchSummary], dict[str, bool]]:
     """One summary per episode; every member of a chain shares its branch's summary."""
 
-    branches: dict[str, EpisodeRecord] = {}
+    grouped: dict[str, set[str]] = {}
     for episode in episodes:
-        if episode.graph_target.kind != "branch":
+        if episode.graph_target.kind != "branch" or episode.graph_target.branch_id is None:
             raise ValueError("only a branch-target episode has a graph branch summary")
-        branch_id = episode.graph_target.branch_id
-        assert branch_id is not None
-        root = episode if episode.episode_id == branch_id else store.episode(branch_id)
-        if (
-            root is None
-            or root.project_id != episode.project_id
-            or root.graph_target != episode.graph_target
-        ):
-            raise ValueError("a graph branch requires its owner episode")
-        branches[branch_id] = root
-
-    grouped: dict[str, list[EpisodeRecord]] = {}
-    for root in branches.values():
-        grouped.setdefault(root.project_id, []).append(root)
+        grouped.setdefault(episode.project_id, set()).add(episode.graph_target.branch_id)
     by_branch: dict[str, GraphBranchSummary] = {}
     attention: dict[str, bool] = {}
-    for project_id, roots in grouped.items():
-        service = get_project_service(catalog, project_id)
-        snapshots = service.history.branch_read_snapshots(
-            [(root.episode_id, root.episode_id, root.project_id) for root in roots],
+    for project_id, branch_ids in grouped.items():
+        summaries, branch_attention = _branch_projections(
+            project_id,
+            list(branch_ids),
+            store=store,
+            catalog=catalog,
             refresh_max_age_seconds=refresh_max_age_seconds,
         )
-        for root in roots:
-            snapshot = snapshots[root.episode_id]
-            projection = project_graph_attention(snapshot.state) if snapshot else None
-            attention[root.episode_id] = bool(
-                projection
-                and (projection.decisions_awaiting_choice_ids or projection.open_blocker_ids)
-            )
-            current_episode_id = store.episode_chain(root.episode_id)[-1].episode_id
-            summary = (
-                missing_graph_branch_summary(root, store=store)
-                if snapshot is None
-                else graph_branch_summary_from_snapshot(
-                    root,
-                    snapshot.metadata,
-                    list(snapshot.receipts),
-                    store=store,
-                    current_episode_id=current_episode_id,
-                )
-            )
-            if snapshot is not None and snapshot.state.replay_status == "degraded":
-                # A damaged branch stays readable but is never offered for merge.
-                summary = summary.model_copy(
-                    update={
-                        "merge_eligible": False,
-                        "merge_blocked_reason": "This branch's history is damaged and read-only.",
-                    }
-                )
-            by_branch[root.episode_id] = summary
+        by_branch.update(summaries)
+        attention.update(branch_attention)
     return (
         {
             episode.episode_id: by_branch[episode.graph_target.branch_id or ""]
@@ -230,6 +210,54 @@ def _graph_branch_projections(
         },
         attention,
     )
+
+
+def _branch_projections(
+    project_id: str,
+    branch_ids: list[str],
+    *,
+    store: AppStore,
+    catalog: ProjectCatalog,
+    refresh_max_age_seconds: float,
+) -> tuple[dict[str, GraphBranchSummary], dict[str, bool]]:
+    records = {record.branch_id: record for record in store.graph_branches(project_id)}
+    service = get_project_service(catalog, project_id)
+    snapshots = service.history.branch_read_snapshots(
+        [(branch_id, records[branch_id].owner_episode_id, project_id) for branch_id in branch_ids],
+        refresh_max_age_seconds=refresh_max_age_seconds,
+    )
+    summaries: dict[str, GraphBranchSummary] = {}
+    attention: dict[str, bool] = {}
+    for branch_id in branch_ids:
+        record = records[branch_id]
+        root = store.episode(record.owner_episode_id) if record.owner_episode_id else None
+        snapshot = snapshots[branch_id]
+        projection = project_graph_attention(snapshot.state) if snapshot else None
+        attention[branch_id] = bool(
+            projection and (projection.decisions_awaiting_choice_ids or projection.open_blocker_ids)
+        )
+        if snapshot is None:
+            if root is not None and root.graph_target.branch_id == branch_id:
+                summaries[branch_id] = missing_graph_branch_summary(root, store=store)
+            continue
+        summary = graph_branch_summary_from_snapshot(
+            root,
+            snapshot.metadata,
+            list(snapshot.receipts),
+            store=store,
+            current_episode_id=store.episode_chain(root.episode_id)[-1].episode_id
+            if root
+            else None,
+        )
+        if snapshot.state.replay_status == "degraded":
+            summary = summary.model_copy(
+                update={
+                    "merge_eligible": False,
+                    "merge_blocked_reason": "This branch's history is damaged and read-only.",
+                }
+            )
+        summaries[branch_id] = summary
+    return summaries, attention
 
 
 def missing_graph_branch_summary(
@@ -245,7 +273,7 @@ def missing_graph_branch_summary(
         else None
     )
     return GraphBranchSummary(
-        branch_id=episode.episode_id,
+        branch_id=episode.graph_target.branch_id or "",
         episode_id=episode.episode_id,
         current_episode_id=episode.episode_id,
         base_head=episode.graph_base_head,
@@ -268,7 +296,7 @@ def missing_graph_branch_summary(
 
 
 def graph_branch_summary_from_snapshot(
-    episode: EpisodeRecord,
+    episode: EpisodeRecord | None,
     metadata: GraphBranchMetadata,
     receipts: list[BranchMergeReceipt],
     *,
@@ -288,10 +316,10 @@ def graph_branch_summary_from_snapshot(
     )
     merge_tasks = [
         item
-        for item in store.episode_tasks(episode.episode_id)
+        for item in (store.episode_tasks(episode.episode_id) if episode else [])
         if item.kind == "branch_merge"
-        and item.project_id == episode.project_id
-        and item.graph_target == episode.graph_target
+        and item.project_id == metadata.project_id
+        and item.graph_target == metadata.head.target
     ]
     active_task = next(
         (item for item in reversed(merge_tasks) if item.status in ACTIVE_AGENT_TASK_STATUSES),
@@ -301,8 +329,8 @@ def graph_branch_summary_from_snapshot(
     active_branch_writers = [
         item
         for item in store.unsettled_graph_target_tasks(
-            episode.project_id,
-            episode.graph_target,
+            metadata.project_id,
+            metadata.head.target,
         )
         if item.kind != "branch_merge"
         and item.status in {"queued", "running", "pausing"}
@@ -327,7 +355,7 @@ def graph_branch_summary_from_snapshot(
         blocked_reason = "A merge is already running for this branch. Wait for it to finish."
     elif current_receipt is not None:
         blocked_reason = "This branch head has already been merged to main."
-    elif metadata.head.revision <= metadata.base_head.revision:
+    elif metadata.head.revision <= metadata.effective_parent_head.revision:
         blocked_reason = "This branch has no changes to merge."
     elif active_branch_writers:
         writers = ", ".join(
@@ -336,11 +364,11 @@ def graph_branch_summary_from_snapshot(
         blocked_reason = f"Branch writers must settle before merging: {writers}."
     else:
         blocked_reason = None
-    binding = store.episode_isolation(
-        episode.project_id, episode.isolation_owner_episode_id or episode.episode_id
-    )
+    if episode is None or episode.graph_target != metadata.head.target:
+        blocked_reason = "This fork has no episode merge dispatcher."
+    binding = store.episode_isolation_for_branch(metadata.project_id, metadata.branch_id)
     state = (
-        store.episode_isolation_state(episode.project_id, binding.owner_episode_id)
+        store.episode_isolation_state(metadata.project_id, binding.owner_episode_id)
         if binding
         else None
     )
@@ -352,6 +380,7 @@ def graph_branch_summary_from_snapshot(
         episode_id=metadata.episode_id,
         current_episode_id=current_episode_id or metadata.episode_id,
         base_head=metadata.base_head,
+        parent_head=metadata.effective_parent_head,
         head=metadata.head,
         merge_eligible=blocked_reason is None,
         merge_blocked_reason=blocked_reason,

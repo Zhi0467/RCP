@@ -1442,16 +1442,6 @@
                 }
             }
         ],
-        "./src/rcp/api/graph_changes.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 40,
-                    "endColumn": 56,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/rcp/api/history.py": [
             {
                 "code": "reportArgumentType",
@@ -8038,14 +8028,6 @@
                 "range": {
                     "startColumn": 20,
                     "endColumn": 30,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 17,
-                    "endColumn": 24,
                     "lineCount": 1
                 }
             },

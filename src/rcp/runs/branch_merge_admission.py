@@ -36,7 +36,11 @@ def start_branch_merge(
     if (
         episode is None
         or episode.project_id != project_id
-        or episode.graph_target.branch_id not in {None, episode.episode_id}
+        or (
+            episode.graph_target.kind == "branch"
+            and tasks.store.branch_owner(project_id, episode.graph_target.branch_id or "")
+            != episode.episode_id
+        )
     ):
         raise ValueError("branch merge requires its exact owner episode branch")
     isolation = tasks.store.episode_isolation(project_id, episode.episode_id)

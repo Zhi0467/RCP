@@ -1094,7 +1094,10 @@ def _orchestrator_stage_actor_id(
     episode = execution.store.episode(turn.task.episode_id or "")
     if episode is None or episode.continues_episode_id is None:
         return turn.binding.actor_operation_id
-    root = execution.store.episode(episode.graph_target.branch_id or "")
+    owner_id = execution.store.branch_owner(
+        episode.project_id, episode.graph_target.branch_id or ""
+    )
+    root = execution.store.episode(owner_id) if owner_id else None
     if root is None or root.root_operation_id is None:
         raise ValueError("The continued Auto-research episode lost its chain root.")
     return root.root_operation_id

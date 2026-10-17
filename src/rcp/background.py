@@ -1559,7 +1559,7 @@ class BackgroundAgentTasks:
         ):
             if graph_base_head is None or ensure_graph_target is None:
                 raise ValueError("experiment_graph_isolation_requires_base")
-            task_graph_target = GraphTargetRef(kind="branch", branch_id=request.control_episode_id)
+            task_graph_target = GraphTargetRef(kind="branch", branch_id=str(uuid.uuid4()))
         operation_id = operation_id or str(uuid.uuid4())
         dispatch_authority = resolved_dispatch_authority(
             self.store,

@@ -319,7 +319,7 @@ def reserve_auto_research(
     episode_id = episode_id or str(uuid.uuid4())
     if graph_base_head.target.kind != "main":
         raise ValueError("Auto-research must branch from an exact main graph head.")
-    graph_target = GraphTargetRef(kind="branch", branch_id=episode_id)
+    graph_target = GraphTargetRef(kind="branch", branch_id=str(uuid.uuid4()))
     operation_id = operation_id or str(uuid.uuid4())
     run_request = auto_research_root_request(request, episode_id=episode_id).model_copy(
         update={"actor_operation_id": operation_id}

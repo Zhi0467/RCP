@@ -8,7 +8,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from rcp.core.graph_targets import graph_target_json
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
@@ -51,6 +51,7 @@ from rcp.storage.question_models import QuestionOrigin
 from rcp.storage.questions import _question_record
 
 if TYPE_CHECKING:
+    from rcp.storage import AppStore
     from rcp.watchers import ExperimentWatchSpec, WatcherBinding
 
 
@@ -292,13 +293,11 @@ class ExperimentStoreMixin(StoreMixinBase):
         ):
             raise ValueError("an Auto-research child Experiment changed its parent graph target")
         graph_branch = (
-            self.episode(record.graph_target.branch_id)
-            if record.graph_target.kind == "branch"
+            cast("AppStore", self).graph_branch(record.project_id, record.graph_target.branch_id)
+            if record.graph_target.kind == "branch" and record.graph_target.branch_id is not None
             else None
         )
-        owns_branch = (
-            graph_base_head is not None and record.graph_target.branch_id == record.episode_id
-        )
+        owns_branch = graph_base_head is not None and graph_branch is None
         if graph_base_head is not None and (
             not owns_branch
             or graph_base_head.target.kind != "main"
@@ -310,22 +309,23 @@ class ExperimentStoreMixin(StoreMixinBase):
         if (
             record.graph_target.kind == "branch"
             and not owns_branch
-            and (
-                graph_branch is None
-                or graph_branch.project_id != record.project_id
-                or graph_branch.graph_target != record.graph_target
-            )
+            and (graph_branch is None or graph_branch.project_id != record.project_id)
         ):
             raise ValueError("a branch Experiment requires its exact project graph branch")
         episode = self._new_experiment_episode(
             record,
             auto_research_route=auto_research_route,
-            graph_base_head=(graph_branch.graph_base_head if graph_branch else graph_base_head),
+            graph_base_head=(graph_branch.parent_head if graph_branch else graph_base_head),
             continues_episode_id=continues_episode_id,
             continuation_request_id=continuation_request_id,
         )
         source = self.episode(continues_episode_id) if continues_episode_id else None
-        isolation_parent = source or parent_episode or graph_branch
+        branch_owner = (
+            cast("AppStore", self).episode(graph_branch.owner_episode_id)
+            if graph_branch is not None and graph_branch.owner_episode_id is not None
+            else None
+        )
+        isolation_parent = source or parent_episode or branch_owner
         if isolation_parent is not None:
             episode = episode.model_copy(
                 update={

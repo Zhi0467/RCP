@@ -643,6 +643,7 @@ def _canonical_backup_source_plan(root: Path) -> BackupCanonicalSourcePlan:
         if parts[0] == "branches":
             branch_files.setdefault(parts[1], []).append(item)
     branches: list[BackupBranchSourcePlan] = []
+    branch_metadata: dict[str, GraphBranchMetadata] = {}
     for branch_id in sorted(branch_files):
         metadata_path = root / "branches" / branch_id / "branch.json"
         try:
@@ -664,7 +665,8 @@ def _canonical_backup_source_plan(root: Path) -> BackupCanonicalSourcePlan:
         ]
         if len(revisions) != len(set(revisions)):
             raise StateUnavailable(f"Graph branch {branch_id} repeats a Patch revision.")
-        observed_revision = max(revisions, default=metadata.base_head.revision)
+        branch_metadata[branch_id] = metadata
+        observed_revision = max(revisions, default=metadata.effective_parent_head.revision)
         if observed_revision != metadata.head.revision:
             raise StateUnavailable(
                 f"Graph branch {branch_id} metadata and retained Patch head disagree."
@@ -686,6 +688,12 @@ def _canonical_backup_source_plan(root: Path) -> BackupCanonicalSourcePlan:
             )
         )
 
+    from rcp.history.ancestry import validate_branch_ancestry
+
+    try:
+        validate_branch_ancestry(branch_metadata, main_revision=max(main_revisions, default=0))
+    except ValueError as exc:
+        raise StateUnavailable(str(exc)) from exc
     observed_bytes = sum(item.observed_size_bytes for item in files)
     return BackupCanonicalSourcePlan(
         main_observed_revision=max(main_revisions, default=0),

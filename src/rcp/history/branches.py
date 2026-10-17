@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rcp import limits
 from rcp.core.authority import refused_authorizer
 from rcp.core.materialize import (
     AcceptedPatchObserver,
@@ -61,14 +62,14 @@ def canonical_branch_id(value: str) -> str:
     try:
         parsed = uuid.UUID(value)
     except (AttributeError, ValueError) as exc:
-        raise ValueError("graph branch id must be a canonical episode UUIDv4") from exc
+        raise ValueError("graph branch id must be a canonical UUIDv4") from exc
     if str(parsed) != value or parsed.version != 4:
-        raise ValueError("graph branch id must be a canonical episode UUIDv4")
+        raise ValueError("graph branch id must be a canonical UUIDv4")
     return value
 
 
 class BranchHistoryManager:
-    """One episode-owned graph history layered on an immutable main prefix."""
+    """One graph history layered on an exact immutable parent prefix."""
 
     def __init__(self, parent: HistoryManager, metadata: GraphBranchMetadata) -> None:
         self.parent = parent
@@ -147,9 +148,9 @@ class BranchHistoryManager:
 
     def head_ref(self, materialization: MaterializationResult | None = None) -> GraphHeadRef:
         result = materialization or self.current_materialization()
-        transition_id = self._metadata.base_head.transition_id
+        transition_id = self._metadata.effective_parent_head.transition_id
         for patch in result.patches:
-            if patch.revision <= self._metadata.base_head.revision:
+            if patch.revision <= self._metadata.effective_parent_head.revision:
                 continue
             if patch.admission == "accepted" and patch.transition is not None:
                 transition_id = patch.transition.transition_id
@@ -165,16 +166,16 @@ class BranchHistoryManager:
             (
                 revision
                 for revision, report in result.reports.items()
-                if revision > self._metadata.base_head.revision and not report.rejected
+                if revision > self._metadata.effective_parent_head.revision and not report.rejected
             ),
-            default=self._metadata.base_head.revision,
+            default=self._metadata.effective_parent_head.revision,
         )
 
     def state(self) -> GraphState:
         return self.current_materialization().state
 
     def base_state(self) -> GraphState:
-        """Replay and return the immutable accepted main prefix for this branch."""
+        """Replay and return the immutable parent prefix for this branch."""
 
         if self.workspace.remote:
             with self.read_view() as reader:
@@ -495,7 +496,7 @@ class BranchHistoryManager:
         events: list[dict[str, object]] = []
         for patch in self.current_materialization().patches:
             if (
-                patch.revision <= max(revision, self._metadata.base_head.revision)
+                patch.revision <= max(revision, self._metadata.effective_parent_head.revision)
                 or patch.admission != "accepted"
                 or patch.transition is None
             ):
@@ -515,7 +516,7 @@ class BranchHistoryManager:
         if self.workspace.remote:
             with self.read_view() as reader:
                 return reader.transition_trace_at_revision(revision)
-        if revision <= self._metadata.base_head.revision:
+        if revision <= self._metadata.effective_parent_head.revision:
             return None
         path = self.patches_dir / f"{revision:06d}.json"
         if not path.is_file():
@@ -787,7 +788,10 @@ class BranchHistoryManager:
 
     def _require_receipt_identity(self, receipt: BranchMergeReceipt) -> None:
         provenance = receipt.provenance
-        if provenance.branch_id != self.branch_id or provenance.episode_id != self.branch_id:
+        if (
+            provenance.branch_id != self.branch_id
+            or provenance.episode_id != self._metadata.episode_id
+        ):
             raise ValueError("branch merge receipt belongs to a different episode branch")
 
     def _head_at_revision(
@@ -795,11 +799,11 @@ class BranchHistoryManager:
         result: MaterializationResult,
         revision: int,
     ) -> GraphHeadRef:
-        if not self._metadata.base_head.revision <= revision <= result.state.revision:
+        if not self._metadata.effective_parent_head.revision <= revision <= result.state.revision:
             raise ValueError("branch merge receipt names a revision outside branch history")
-        transition_id = self._metadata.base_head.transition_id
+        transition_id = self._metadata.effective_parent_head.transition_id
         for patch in result.patches:
-            if patch.revision <= self._metadata.base_head.revision:
+            if patch.revision <= self._metadata.effective_parent_head.revision:
                 continue
             if patch.revision > revision:
                 break
@@ -925,7 +929,9 @@ class BranchHistoryManager:
 
     def _next_revision(self) -> int:
         paths = self._patch_paths()
-        return int(paths[-1].stem) + 1 if paths else self._metadata.base_head.revision + 1
+        return (
+            int(paths[-1].stem) + 1 if paths else self._metadata.effective_parent_head.revision + 1
+        )
 
     def _reconcile_patch_publish_failure(
         self,
@@ -1001,7 +1007,7 @@ def existing_receipt_for_main_append(
 
 def read_branch_snapshots(
     parent: HistoryManager,
-    identities: list[tuple[str, str, str]],
+    identities: list[tuple[str, str | None, str]],
     *,
     refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 ) -> dict[str, BranchReadSnapshot | None]:
@@ -1018,7 +1024,7 @@ def read_branch_snapshots(
         with parent.read_view() as reader:
             return read_branch_snapshots(reader, identities)
 
-    expected: dict[str, tuple[str, str]] = {}
+    expected: dict[str, tuple[str | None, str]] = {}
     for branch_id, episode_id, project_id in identities:
         canonical_branch_id(branch_id)
         identity = (episode_id, project_id)
@@ -1046,11 +1052,6 @@ def read_branch_snapshots(
     generations = parent.history_engine.snapshots(targets, refresh=False)
     main = generations["main"].result
     main_heads = _main_heads_by_revision(main)
-    main_states = {
-        generation.initial_head.revision: generation.initial
-        for key, generation in generations.items()
-        if key != "main"
-    }
     main_receipts = _main_merge_receipts(main)
     with parent._process_lock:
         for branch_id, content in metadata_contents.items():
@@ -1066,7 +1067,6 @@ def read_branch_snapshots(
                 expected_project_id=project_id,
                 main=main,
                 main_heads=main_heads,
-                main_states=main_states,
                 main_receipts=main_receipts.get(branch_id, ()),
                 materialization=generations[
                     GraphTargetRef(kind="branch", branch_id=branch_id).key
@@ -1082,11 +1082,10 @@ def _read_branch_snapshot(
     parent: HistoryManager,
     branch_id: str,
     *,
-    expected_episode_id: str,
+    expected_episode_id: str | None,
     expected_project_id: str,
     main: MaterializationResult,
     main_heads: dict[int, GraphHeadRef],
-    main_states: dict[int, GraphState],
     main_receipts: tuple[BranchMergeReceipt, ...],
     materialization: MaterializationResult,
 ) -> BranchReadSnapshot | None:
@@ -1116,13 +1115,7 @@ def _read_branch_snapshot(
     if exact_base != metadata.base_head:
         raise ValueError("graph branch immutable main base is not an exact accepted main head")
 
-    base_state = main_states.get(metadata.base_head.revision)
-    if base_state is None:
-        raise ValueError("graph branch immutable main base has no coherent main state")
-
     branch = BranchHistoryManager(parent, metadata)
-    if base_state.revision != metadata.base_head.revision:
-        raise ValueError("graph branch snapshot has a different immutable main base")
     # A read projection: a degraded branch stays readable at its coherent prefix.
     replayed = materialization
     exact_metadata = metadata.model_copy(update={"head": branch.head_ref(replayed)})
@@ -1232,7 +1225,30 @@ def _branch_merge_id(metadata: GraphBranchMetadata) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def create_episode_branch(
+def branch_parent_snapshot(
+    parent: HistoryManager, source_head: GraphHeadRef, branch_id: str
+) -> tuple[GraphHeadRef, MaterializationResult]:
+    """Resolve and validate one exact fork source with all its ancestor proofs."""
+    canonical_branch_id(branch_id)
+    generations = parent.history_engine.snapshots([source_head.target], refresh=False)
+    source = generations[source_head.target.key]
+    source.prefix(source_head)
+    chain = source
+    depth = 1
+    while chain.source.metadata is not None:
+        if chain.source.metadata.branch_id == branch_id:
+            raise ValueError("graph branch ancestry contains a cycle")
+        depth += 1
+        chain = generations[chain.source.metadata.effective_parent_head.target.key]
+    if depth > limits.GRAPH_BRANCH_MAX_DEPTH:
+        raise ValueError("graph branch ancestry exceeds the depth limit")
+    root_base = source.source.metadata.base_head if source.source.metadata else source_head
+    initial = parent.history_engine._prefix_result(source, source_head, use_store=False)
+    parent.require_writable(initial.state)
+    return root_base, initial
+
+
+def create_branch(
     parent: HistoryManager,
     metadata: GraphBranchMetadata,
 ) -> BranchHistoryManager:
@@ -1240,31 +1256,35 @@ def create_episode_branch(
     _require_parent_identity(parent, metadata)
     expected_initial = GraphHeadRef(
         target=GraphTargetRef(kind="branch", branch_id=metadata.branch_id),
-        revision=metadata.base_head.revision,
-        transition_id=metadata.base_head.transition_id,
+        revision=metadata.effective_parent_head.revision,
+        transition_id=metadata.effective_parent_head.transition_id,
     )
     if metadata.head != expected_initial:
-        raise ValueError("new graph branch head must begin at its immutable main base")
+        raise ValueError("new graph branch head must begin at its immutable parent")
     with parent.workspace.transaction(), parent._append_lock():
         parent._reload_manifest()
         branches_root = _safe_branches_root(parent.root, create=True)
         root = branches_root / metadata.branch_id
+        existing = None
         if os.path.lexists(root):
             existing = BranchHistoryManager(parent, metadata)._read_metadata()
             if existing.model_copy(update={"head": metadata.head}) != metadata:
                 raise ValueError("graph branch already exists with different canonical metadata")
-            return BranchHistoryManager(parent, existing)
         current = parent.materialize(write_outputs=False)
         parent.require_writable(current.state)
         parent._require_writable_home_locked(current)
-        expected_base = parent.head_ref(current)
-        if metadata.base_head != expected_base:
-            raise ValueError("graph branch base must be the exact current main head")
+        root_base, initial = branch_parent_snapshot(
+            parent, metadata.effective_parent_head, metadata.branch_id
+        )
+        if metadata.base_head != root_base:
+            raise ValueError("graph branch root base disagrees with its parent")
+        if existing is not None:
+            return BranchHistoryManager(parent, existing)
         root.mkdir(mode=0o700)
         branch = BranchHistoryManager(parent, metadata)
         branch.ensure_layout()
         branch._write_metadata(metadata)
-        branch._write_materialized_outputs(current)
+        branch._write_materialized_outputs(initial)
         relative_metadata = (root / "branch.json").relative_to(parent.root)
         paths = [relative_metadata, *branch._published_paths(include_metadata=False)]
         try:
@@ -1361,6 +1381,23 @@ def _require_parent_identity(
 ) -> None:
     if parent.project_id is not None and metadata.project_id != parent.project_id:
         raise ValueError("graph branch belongs to a different project")
+    if allow_historical_home and metadata.parent_head is not None:
+        # A fork can start before the current home's admission. Creation proves
+        # the current home under its write fence; later reads retain that authorizer
+        # through further transfers instead of attributing it to the fork point.
+        result = materialization or parent.current_materialization()
+        parent.project_identity(result)  # Validate the complete home-transfer chain.
+        homes = set()
+        for patch in result.patches:
+            if patch.admission != "accepted":
+                continue
+            if patch.project_identity is not None:
+                homes.add(patch.project_identity.home_space_id)
+            if patch.project_home_transfer is not None:
+                homes.add(patch.project_home_transfer.new_home_space_id)
+        if homes and metadata.authorized_by.space_id not in homes:
+            raise ValueError("graph branch authorizer belongs to a different space")
+        return
     expected_space_id = (
         parent.project_home_space_id_at_revision(
             metadata.base_head.revision,

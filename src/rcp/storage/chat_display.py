@@ -102,12 +102,13 @@ class ChatDisplayStoreMixin(StoreMixinBase):
     def _orchestrator_chat_summaries(
         self, connection: Any, project_id: str, chat_id: str | None
     ) -> list[dict[str, Any]]:
-        """One conversation per Auto-research chain, named by its root, which is its branch."""
+        """One conversation per Auto-research chain, named by its owning branch."""
         roots = connection.execute(
-            "SELECT episode_id, graph_target_json FROM episodes "
-            "WHERE project_id = ? AND mode = 'auto_research' "
-            "AND json_extract(graph_target_json, '$.branch_id') = episode_id "
-            "AND (? IS NULL OR episode_id = ?)",
+            "SELECT e.episode_id, e.graph_target_json FROM episodes e "
+            "JOIN graph_branches b ON b.project_id=e.project_id AND b.owner_episode_id=e.episode_id "
+            "AND b.branch_id=json_extract(e.graph_target_json, '$.branch_id') "
+            "WHERE e.project_id = ? AND e.mode = 'auto_research' "
+            "AND (? IS NULL OR e.episode_id = ?)",
             (project_id, chat_id, chat_id),
         ).fetchall()
         names = resolve_branch_names(connection, project_id) if roots else {}
@@ -126,7 +127,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                     "graph_title": target["branch_id"][:8],
                     "kind": "project_chat",
                     "node_id": None,
-                    "title": names.get(root["episode_id"]) or "Orchestrator",
+                    "title": names.get(target["branch_id"]) or "Orchestrator",
                     "updated_at": updated_at,
                     "message_count": len(messages),
                     "last_message_preview": "",
@@ -156,10 +157,11 @@ class ChatDisplayStoreMixin(StoreMixinBase):
         runs = connection.execute(
             "SELECT run.operation_id, run.request_json, run.result_json, run.created_at, "
             "run.updated_at, run.finished_at FROM episodes AS root "
+            "JOIN graph_branches b ON b.project_id=root.project_id AND b.owner_episode_id=root.episode_id "
+            "AND b.branch_id=json_extract(root.graph_target_json, '$.branch_id') "
             "JOIN graph_runs AS run ON run.project_id = root.project_id "
             "AND run.graph_target_json = root.graph_target_json "
             "WHERE root.project_id = ? AND root.episode_id = ? AND root.mode = 'auto_research' "
-            "AND json_extract(root.graph_target_json, '$.branch_id') = root.episode_id "
             "AND run.kind = 'auto_research' AND run.visible = 1 "
             "AND json_extract(run.request_json, '$.role') = 'orchestrator' "
             "ORDER BY run.created_at, run.operation_id",

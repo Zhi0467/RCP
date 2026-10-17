@@ -419,6 +419,17 @@ def _archive_fixture(
                 path.read_bytes(),
             )
         )
+    canonical_plan = service.history.workspace.backup_canonical_source_plan()
+    for branch in canonical_plan.branches:
+        for item in branch.files:
+            entries.append(
+                _entry(
+                    archive_root,
+                    f"canonical/{item.relative_path}",
+                    "canonical_history",
+                    (manifest.research_dir / item.relative_path).read_bytes(),
+                )
+            )
     for item in capture.entries:
         source_path = file_capture_root / item.archive_path
         destination = archive_root / item.archive_path
@@ -486,7 +497,9 @@ def _archive_fixture(
         source_release_proof_sha256=hashlib.sha256(source_proof).hexdigest(),
         target_activation_proof_sha256=target_request.target_activation_proof_sha256,
         main_head=TransferGraphHead.capture(fence_head),
-        branch_heads=(),
+        branch_heads=tuple(
+            TransferGraphHead.capture(branch.head) for branch in canonical_plan.branches
+        ),
         attributions=(attribution,),
         diagnostics=(),
         entries=ordered,
@@ -817,7 +830,7 @@ def test_deleted_report_transfers_as_tombstone(manifest, tmp_path, monkeypatch):
     capture = parse_transfer_project_file_payload(
         (fixture["archive_root"] / "records/project.jsonl").read_bytes()
     )
-    assert capture.records.schema_version == 5
+    assert capture.records.schema_version == 6
     for changes in (
         {"schema_version": 4},
         {"html": "<h1>Report</h1>"},
@@ -870,10 +883,25 @@ def test_deleted_report_transfers_as_tombstone(manifest, tmp_path, monkeypatch):
 def test_record_v4_still_admitted(manifest, tmp_path, monkeypatch):
     from rcp.api.project_provisioning import ProjectTransferSourceConfigurationRequest
     from rcp.project_transfer import capture_project_transfer_source
-    from rcp.transfer.project_files import parse_transfer_project_file_payload
+    from rcp.transfer.project_files import (
+        parse_transfer_project_file_payload,
+        transfer_project_file_payload,
+    )
+    from rcp.transfer.records import TransferRecordBundle
 
     fixture = _archive_fixture(manifest, tmp_path, monkeypatch, deleted_report=False)
     payload = (fixture["archive_root"] / "records/project.jsonl").read_bytes()
+    capture = parse_transfer_project_file_payload(payload)
+    legacy = capture.records.model_dump(mode="python")
+    legacy["schema_version"] = 4
+    branches = {branch["branch_id"]: branch for branch in legacy.pop("branches")}
+    for episode in legacy["episodes"]:
+        branch = branches.get(episode["episode_id"])
+        if branch is not None:
+            episode["branch_name"] = branch["name"]
+            episode["reserved_branch_names"] = branch["reserved_names"]
+    capture = capture.model_copy(update={"records": TransferRecordBundle.model_validate(legacy)})
+    payload = transfer_project_file_payload(capture)
     capture = parse_transfer_project_file_payload(payload)
     assert capture.records.schema_version == 4
     assert b'"deleted_at"' not in payload

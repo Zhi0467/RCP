@@ -605,11 +605,17 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     raise KeyError(record.episode_id)
                 stored_episode = self._episode_record(episode)
                 code_only = record.graph_target.kind == "main"
+                branch_owner = connection.execute(
+                    "SELECT owner_episode_id FROM graph_branches WHERE project_id=? AND branch_id=?",
+                    (record.project_id, record.graph_target.branch_id),
+                ).fetchone()
                 if (
-                    stored_episode.graph_target.branch_id
-                    != (None if code_only else stored_episode.episode_id)
-                    or stored_episode.project_id != record.project_id
+                    stored_episode.project_id != record.project_id
                     or stored_episode.graph_target != record.graph_target
+                    or (
+                        not code_only
+                        and (branch_owner is None or branch_owner[0] != stored_episode.episode_id)
+                    )
                 ):
                     raise ValueError("branch merge requires its exact owner episode")
                 # A branch merges on branch facts: nothing about the episode's
@@ -1004,15 +1010,10 @@ class AgentTaskStoreMixin(StoreMixinBase):
                         "only an ordinary conversation may independently target a branch"
                     )
                 branch = connection.execute(
-                    "SELECT project_id, graph_target_json FROM episodes WHERE episode_id = ?",
-                    (record.graph_target.branch_id,),
+                    "SELECT 1 FROM graph_branches WHERE project_id=? AND branch_id=?",
+                    (record.project_id, record.graph_target.branch_id),
                 ).fetchone()
-                if (
-                    branch is None
-                    or branch["project_id"] != record.project_id
-                    or GraphTargetRef.model_validate_json(branch["graph_target_json"])
-                    != record.graph_target
-                ):
+                if branch is None:
                     raise ValueError(
                         "a branch conversation requires its exact project graph branch"
                     )

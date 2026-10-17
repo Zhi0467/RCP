@@ -63,7 +63,8 @@ def validate_episode_admission(
         if owner is None or owner.project_id != project_id:
             raise ValueError("episode_isolation_owner_missing")
     if owner is None and graph_target is not None and graph_target.kind == "branch":
-        branch = store.episode(graph_target.branch_id or "")
+        owner_id = store.branch_owner(project_id, graph_target.branch_id or "")
+        branch = store.episode(owner_id) if owner_id else None
         if branch is not None:
             owner = store.episode(branch.isolation_owner_episode_id or branch.episode_id)
     if episode is not None and episode.project_id != project_id:

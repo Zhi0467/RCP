@@ -154,7 +154,10 @@ def proven_reserved_experiment_branch_roots(
                 episode.mode != "experiment_loop"
                 or episode.root_operation_id is None
                 or episode.graph_target.kind != "branch"
-                or episode.graph_target.branch_id != episode.episode_id
+                or tasks.store.branch_owner(
+                    episode.project_id, episode.graph_target.branch_id or ""
+                )
+                != episode.episode_id
                 or episode.status not in {"queued", "running"}
             ):
                 continue

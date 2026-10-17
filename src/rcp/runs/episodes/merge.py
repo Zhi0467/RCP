@@ -198,7 +198,13 @@ def episode_code_merge(
 
 def merge_owner(store: AppStore, member: EpisodeRecord) -> EpisodeRecord:
     owner_id = (
-        member.isolation_owner_episode_id or member.graph_target.branch_id or member.episode_id
+        member.isolation_owner_episode_id
+        or (
+            store.branch_owner(member.project_id, member.graph_target.branch_id or "")
+            if member.graph_target.kind == "branch"
+            else None
+        )
+        or member.episode_id
     )
     owner = store.episode(owner_id)
     if owner is None or owner.project_id != member.project_id:
@@ -374,7 +380,9 @@ def _graph_receipt(service, store, owner, attempt):
         service, store, owner, operation_id=attempt.attempt_id, authorized_by=attempt.authorized_by
     )
     branch = service.history.branch(
-        owner.episode_id, expected_episode_id=owner.episode_id, expected_project_id=owner.project_id
+        owner.graph_target.branch_id or "",
+        expected_episode_id=owner.episode_id,
+        expected_project_id=owner.project_id,
     )
     existing = branch.reconcile_merge_receipt(branch_merge_id(context.metadata))
     return (
@@ -392,7 +400,9 @@ def _commit_graph_once(service, store, owner, attempt):
     if attempt.graph_head is not None and context.metadata.head != attempt.graph_head:
         raise ValueError("merge_graph_head_changed")
     branch = service.history.branch(
-        owner.episode_id, expected_episode_id=owner.episode_id, expected_project_id=owner.project_id
+        owner.graph_target.branch_id or "",
+        expected_episode_id=owner.episode_id,
+        expected_project_id=owner.project_id,
     )
     existing = branch.reconcile_merge_receipt(branch_merge_id(context.metadata))
     if existing is not None:
