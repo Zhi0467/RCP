@@ -237,6 +237,7 @@ def _archive_fixture(
     seal_archive: bool = False,
     include_local_commits: bool = False,
     include_episode_archive: bool = False,
+    include_pending_branch: bool = False,
     deleted_report: bool | None = None,
 ):
     from rcp.rcp_home import rcp_temp_dir
@@ -295,6 +296,15 @@ def _archive_fixture(
         source.rename_branch(records.project_id, report.episode_id, "report")
         if deleted_report:
             source.delete_artifact(records.project_id, report.artifact_id)
+    if include_pending_branch:
+        source.create_graph_branch(
+            project_id=records.project_id,
+            branch_id=str(uuid.uuid4()),
+            owner_episode_id=None,
+            parent_head=service.history.head_ref(),
+            created_by="human:pending",
+            name="pending",
+        )
     target_data = tmp_path / "target-data"
     target = AppStore(target_data / "rcp.sqlite3", space_kind="team")
     target_actor = _target_actor(target)
@@ -572,8 +582,8 @@ def _archive_fixture(
 
 # Local commits without an archived episode is covered by the retry test below.
 @pytest.mark.parametrize(
-    ("include_episode_archive", "include_local_commits"),
-    [(False, False), (True, False), (True, True)],
+    ("include_episode_archive", "include_local_commits", "include_pending_branch"),
+    [(False, False, False), (True, False, False), (True, True, False), (False, False, True)],
 )
 def test_target_import_publishes_exact_history_but_does_not_activate(
     manifest,
@@ -581,6 +591,7 @@ def test_target_import_publishes_exact_history_but_does_not_activate(
     monkeypatch: pytest.MonkeyPatch,
     include_local_commits: bool,
     include_episode_archive: bool,
+    include_pending_branch: bool,
 ) -> None:
     fixture = _archive_fixture(
         manifest,
@@ -588,6 +599,7 @@ def test_target_import_publishes_exact_history_but_does_not_activate(
         monkeypatch,
         include_local_commits=include_local_commits,
         include_episode_archive=include_episode_archive,
+        include_pending_branch=include_pending_branch,
     )
 
     receipt = import_project_transfer(
@@ -602,6 +614,11 @@ def test_target_import_publishes_exact_history_but_does_not_activate(
     archive = fixture["archive"]
     assert receipt.status == "complete"
     assert target.project(archive.project_id) is None
+    assert target.graph_branches(archive.project_id) == fixture["source"].graph_branches(
+        archive.project_id
+    )
+    assert bool(target.graph_branches(archive.project_id)) == include_pending_branch
+    assert archive.branch_heads == ()
     assert bool(target.archived_episodes(archive.project_id)) == include_episode_archive
     if include_episode_archive:
         assert target.archived_episodes(archive.project_id) == fixture["source"].archived_episodes(

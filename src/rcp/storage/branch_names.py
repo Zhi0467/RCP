@@ -217,7 +217,15 @@ def _insert_graph_branch(
             stored.owner_episode_id != owner_episode_id
             or stored.parent_head != parent_head
             or stored.created_by != created_by
-            or (name is not None and stored.name != name)
+            or (
+                name is not None
+                and connection.execute(
+                    "SELECT 1 FROM branch_name_reservations "
+                    "WHERE project_id=? AND branch_id=? AND name=?",
+                    (project_id, branch_id, name),
+                ).fetchone()
+                is None
+            )
         ):
             raise ValueError("graph branch identity cannot be replaced")
         return stored

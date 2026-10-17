@@ -156,6 +156,10 @@ def _content(*, question: str = "Revised?", **changes) -> dict:
 
 
 def _merge(harness, monkeypatch, *ops, expect: str = "succeeded"):
+    # Each review starts a new admission after the previous merge auto-archived its source.
+    harness.store.set_branch_archived(
+        harness.project_id, harness.episode.graph_target.branch_id, archived=False
+    )
     launcher = merge_api._PatchWritingLauncher(
         json.dumps(
             {

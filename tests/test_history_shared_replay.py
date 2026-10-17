@@ -26,7 +26,7 @@ def history(manifest):
 
 @pytest.mark.parametrize("scope", [None, "{", "{}", '{"truth_scope":1}', "[]"])
 def test_scope_failures_are_the_same_degraded_read_for_every_owner(history, scope):
-    branch = history.create_episode_branch(_branch_metadata(history))
+    branch = history.create_branch(_branch_metadata(history))
     path = history.root / "scope-base.json"
     if scope is None:
         path.unlink()
@@ -52,9 +52,7 @@ def test_scope_failures_are_the_same_degraded_read_for_every_owner(history, scop
 @pytest.mark.parametrize("later_failure", ["schema", "chain"])
 @pytest.mark.parametrize("target", ["main", "branch"])
 def test_first_replay_halt_wins_over_later_structural_failure(history, target, later_failure):
-    owner = (
-        history if target == "main" else history.create_episode_branch(_branch_metadata(history))
-    )
+    owner = history if target == "main" else history.create_branch(_branch_metadata(history))
     first, _ = owner.append(_branch_patch("ev/first"))
     second, _ = owner.append(_branch_patch("ev/second"))
     third, _ = owner.append(_branch_patch("ev/third"))
@@ -112,9 +110,7 @@ def test_pending_tail_is_not_published_or_retained(history, tmp_path):
 @pytest.mark.parametrize("cold", [False, True])
 @pytest.mark.parametrize("target", ["main", "branch"])
 def test_append_never_calls_optional_store(history, tmp_path, monkeypatch, cold, target):
-    owner = (
-        history if target == "main" else history.create_episode_branch(_branch_metadata(history))
-    )
+    owner = history if target == "main" else history.create_branch(_branch_metadata(history))
     if cold:
         history._history_engine = ProjectHistoryEngine(history)
     engine = history.history_engine
@@ -135,9 +131,7 @@ def test_append_never_calls_optional_store(history, tmp_path, monkeypatch, cold,
 
 @pytest.mark.parametrize("target", ["main", "branch"])
 def test_shared_materialization_preserves_output_bytes_and_observer_boundaries(history, target):
-    owner = (
-        history if target == "main" else history.create_episode_branch(_branch_metadata(history))
-    )
+    owner = history if target == "main" else history.create_branch(_branch_metadata(history))
     owner.append(proposal_patch())
     owner.append(
         Patch(
@@ -194,7 +188,7 @@ def test_shared_materialization_preserves_output_bytes_and_observer_boundaries(h
 
 
 def test_branch_replays_its_base_when_main_halts_after_that_base(history):
-    branch = history.create_episode_branch(_branch_metadata(history))
+    branch = history.create_branch(_branch_metadata(history))
     branch.append(_branch_patch("ev/branch"))
     patch, _ = history.append(_branch_patch("ev/main"))
     (history.patches_dir / f"{patch.revision:06d}.json").write_text("{")
@@ -230,7 +224,7 @@ def test_transient_patch_read_failure_keeps_prefix_and_recovers(history, monkeyp
 
 
 def test_branch_revision_gap_and_zero_head_stay_degraded(history):
-    branch = history.create_episode_branch(_branch_metadata(history))
+    branch = history.create_branch(_branch_metadata(history))
     branch.append(_branch_patch("ev/one"))
     branch.append(_branch_patch("ev/two"))
     first, second = sorted((branch.root / "patches").glob("*.json"))

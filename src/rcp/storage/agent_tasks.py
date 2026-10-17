@@ -1047,15 +1047,19 @@ class AgentTaskStoreMixin(StoreMixinBase):
     def _require_graph_branch_admission_open(
         connection: sqlite3.Connection, record: AgentTaskRecord
     ) -> None:
-        """Serialize new graph writers with merge while admitting read-only tasks."""
+        """Refuse archived targets; serialize graph writers with an active merge."""
 
         from rcp.runs.task_policy import task_graph_capable
 
-        if (
-            record.graph_target.kind != "branch"
-            or record.kind == "branch_merge"
-            or not task_graph_capable(record.kind, record.request)
-        ):
+        if record.graph_target.kind != "branch":
+            return
+        archived = connection.execute(
+            "SELECT archived FROM graph_branches WHERE project_id=? AND branch_id=?",
+            (record.project_id, record.graph_target.branch_id),
+        ).fetchone()
+        if archived is not None and archived[0]:
+            raise ValueError("graph_branch_archived")
+        if record.kind == "branch_merge" or not task_graph_capable(record.kind, record.request):
             return
         merging = connection.execute(
             """

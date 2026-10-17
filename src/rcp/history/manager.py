@@ -883,9 +883,6 @@ class HistoryManager:
 
         return create_branch(self, metadata)
 
-    def create_episode_branch(self, metadata: GraphBranchMetadata) -> BranchHistoryManager:
-        return self.create_branch(metadata)
-
     def branch(
         self,
         branch_id: str,

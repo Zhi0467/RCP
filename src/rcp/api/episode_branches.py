@@ -136,7 +136,7 @@ def ensure_episode_graph_target(
     ):
         raise ValueError("Episode reservation lost its exact graph branch record.")
     service = catalog.open_execution(episode.project_id)
-    service.history.create_episode_branch(
+    service.history.create_branch(
         GraphBranchMetadata(
             kind=episode.mode,
             branch_id=episode.graph_target.branch_id,

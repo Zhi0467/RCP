@@ -180,7 +180,7 @@ def _record_branch_target_child_experiment(
     parent_id = str(uuid.uuid4())
     parent_target = GraphTargetRef(kind="branch", branch_id=parent_id)
     base_head = service.history.head_ref()
-    service.history.create_episode_branch(
+    service.history.create_branch(
         GraphBranchMetadata(
             branch_id=parent_id,
             episode_id=parent_id,

@@ -231,6 +231,9 @@ def fork_graph_branch(
             created_by=f"human:{body.request_id}",
             name=name,
         )
+        return _branch_ref_for_http(project_id, branch_id, store=store, catalog=catalog)
+    except StateUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except BranchNameInvalid as exc:
         raise HTTPException(status_code=422, detail={"code": "branch_name_invalid"}) from exc
     except BranchNameTaken as exc:
@@ -241,7 +244,6 @@ def fork_graph_branch(
         raise HTTPException(
             status_code=422, detail={"code": "branch_fork_invalid", "message": str(exc)}
         ) from exc
-    return _branch_ref_for_http(project_id, branch_id, store=store, catalog=catalog)
 
 
 class RenameBranchBody(BaseModel):

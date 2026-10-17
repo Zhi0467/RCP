@@ -485,11 +485,13 @@ def _prepare_data(
 def _create_branch(history: HistoryManager, project_id: str, authority: AuthorizedHuman):
     base = history.head_ref()
     branch_id = str(uuid.uuid4())
-    # This script also seeds data under every published release, which named
-    # the creator create_auto_research_branch before episode isolation.
-    create_branch = getattr(history, "create_episode_branch", None) or (
-        history.create_auto_research_branch
+    # Published releases used the older names; each fixture runs its own binary.
+    create_branch = (
+        getattr(history, "create_branch", None)
+        or getattr(history, "create_episode_branch", None)
+        or getattr(history, "create_auto_research_branch", None)
     )
+    assert create_branch is not None
     return create_branch(
         GraphBranchMetadata(
             branch_id=branch_id,

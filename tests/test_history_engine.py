@@ -26,7 +26,7 @@ def test_resolve_inheritance_cross_target_diff_and_absent_log(history):
     engine = history.history_engine
     assert engine.state_at(head(engine, "main@0")).revision == 0
     metadata = _branch_metadata(history)
-    branch = history.create_episode_branch(metadata)
+    branch = history.create_branch(metadata)
     branch.append(_branch_patch("ev/branch"))
     history.append(_branch_patch("ev/main"))
     branch_head = head(engine, f"branch:{metadata.branch_id}@head")
@@ -341,7 +341,7 @@ def test_cached_snapshots_preserve_derived_edge_layers(tmp_path):
 
 def test_branch_patch_inventory_refuses_symlinks(history, tmp_path):
     metadata = _branch_metadata(history)
-    branch = history.create_episode_branch(metadata)
+    branch = history.create_branch(metadata)
     outside = tmp_path / "outside-patch.json"
     outside.write_text(
         _branch_patch("ev/outside")
@@ -360,7 +360,7 @@ def test_shared_branch_prefix_is_charged_once_to_memory_budget(history, monkeypa
     from rcp.history.memory_size import retained_size
 
     metadata = _branch_metadata(history)
-    history.create_episode_branch(metadata).append(_branch_patch("ev/shared"))
+    history.create_branch(metadata).append(_branch_patch("ev/shared"))
     engine = history.history_engine
     generations = engine._pin([metadata.head.target])
     shared_bytes = retained_size(tuple(generations.values()))
@@ -412,7 +412,7 @@ def test_canonical_append_lock_is_free_during_cold_publication(
     from rcp.api.graph_changes import branch_changes
 
     metadata = _branch_metadata(history)
-    branch = history.create_episode_branch(metadata)
+    branch = history.create_branch(metadata)
     branch.append(_branch_patch("ev/branch"))
     history._history_engine = module.ProjectHistoryEngine(history)
     engine = history.history_engine
@@ -504,7 +504,7 @@ def test_metadata_projections_do_not_reconstruct_history(history, monkeypatch):
     from rcp.api.graph_changes import branch_changes
 
     metadata = _branch_metadata(history)
-    branch = history.create_episode_branch(metadata)
+    branch = history.create_branch(metadata)
     branch.append(_branch_patch("ev/branch"))
     engine = history.history_engine
     engine.snapshot(branch.graph_target)

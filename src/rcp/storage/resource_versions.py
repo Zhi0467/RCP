@@ -133,8 +133,13 @@ def _install(
         )
 
 
-# Every orchestrator continuation writes its chain root's branch/chat.
+# Migrations 49 and 54 retain their original same-ID branch/chat SQL.
 _TASK_CHAT = (
+    "CASE WHEN ROW.kind='auto_research' AND json_extract(ROW.request_json,'$.role')='orchestrator' "
+    "THEN json_extract(ROW.graph_target_json,'$.branch_id') "
+    "ELSE json_extract(ROW.request_json,'$.chat_id') END"
+)
+_BRANCH_TASK_CHAT = (
     "CASE WHEN ROW.kind='auto_research' AND json_extract(ROW.request_json,'$.role')='orchestrator' "
     "THEN (SELECT owner_episode_id FROM graph_branches WHERE project_id=ROW.project_id "
     "AND branch_id=json_extract(ROW.graph_target_json,'$.branch_id')) "
@@ -142,7 +147,7 @@ _TASK_CHAT = (
 )
 
 
-def _install_task_status(connection: sqlite3.Connection) -> None:
+def _install_task_status(connection: sqlite3.Connection, chat: str = _TASK_CHAT) -> None:
     _install(
         connection,
         "graph_runs",
@@ -165,7 +170,7 @@ def _install_task_status(connection: sqlite3.Connection) -> None:
             _bump(
                 "ROW.project_id",
                 "chats",
-                predicate=f"({_TASK_CHAT}) IS NOT NULL",
+                predicate=f"({chat}) IS NOT NULL",
             ),
         ],
         columns=("project_id", "operation_id", "status", "finished_at", "visible", "history_only"),
@@ -173,7 +178,7 @@ def _install_task_status(connection: sqlite3.Connection) -> None:
     )
 
 
-def _install_task_progress(connection: sqlite3.Connection) -> None:
+def _install_task_progress(connection: sqlite3.Connection, chat: str = _TASK_CHAT) -> None:
     """Any change to a task row, in any column it has now, moves its progress views."""
     _install(
         connection,
@@ -182,7 +187,7 @@ def _install_task_progress(connection: sqlite3.Connection) -> None:
             _bump("ROW.project_id", "tasks.progress", predicate="ROW.visible=1"),
             _bump("ROW.project_id", "task", "ROW.operation_id"),
             _bump("ROW.project_id", "episode", "ROW.episode_id", "ROW.episode_id IS NOT NULL"),
-            _bump("ROW.project_id", "chat", _TASK_CHAT, f"({_TASK_CHAT}) IS NOT NULL"),
+            _bump("ROW.project_id", "chat", chat, f"({chat}) IS NOT NULL"),
         ],
     )
 
@@ -198,12 +203,12 @@ def migrate_agent_live_status(connection: sqlite3.Connection) -> None:
     _install_task_progress(connection)
 
 
-def _human_mail_chat_bumps(scope: str) -> list[str]:
+def _human_mail_chat_bumps(
+    scope: str,
+    root: str = "(SELECT json_extract(graph_target_json,'$.branch_id') "
+    "FROM episodes WHERE episode_id=ROW.episode_id)",
+) -> list[str]:
     delivered = "ROW.sender_role='human' AND ROW.delivery_operation_id IS NOT NULL"
-    root = (
-        "(SELECT b.owner_episode_id FROM graph_branches b JOIN episodes e ON e.project_id=b.project_id "
-        "AND b.branch_id=json_extract(e.graph_target_json,'$.branch_id') WHERE e.episode_id=ROW.episode_id)"
-    )
     return [_bump(scope, "chats", predicate=delivered), _bump(scope, "chat", root, delivered)]
 
 
@@ -211,8 +216,8 @@ def migrate_graph_branch_versions(connection: sqlite3.Connection) -> None:
     for table in ("graph_runs", "graph_runs_status", "auto_research_messages"):
         for event in ("insert", "update", "delete"):
             connection.execute(f"DROP TRIGGER resource_{table}_{event}")
-    _install_task_status(connection)
-    _install_task_progress(connection)
+    _install_task_status(connection, _BRANCH_TASK_CHAT)
+    _install_task_progress(connection, _BRANCH_TASK_CHAT)
     scope = "(SELECT project_id FROM episodes WHERE episode_id=ROW.episode_id)"
     _install(
         connection,
@@ -220,7 +225,11 @@ def migrate_graph_branch_versions(connection: sqlite3.Connection) -> None:
         [
             _bump(scope, "episodes"),
             _bump(scope, "episode", "ROW.episode_id"),
-            *_human_mail_chat_bumps(scope),
+            *_human_mail_chat_bumps(
+                scope,
+                "(SELECT b.owner_episode_id FROM graph_branches b JOIN episodes e ON e.project_id=b.project_id "
+                "AND b.branch_id=json_extract(e.graph_target_json,'$.branch_id') WHERE e.episode_id=ROW.episode_id)",
+            ),
         ],
     )
     _install(

@@ -221,11 +221,8 @@ class ProjectHistoryEngine:
         pending_patch_paths: list[Path] | None = None,
         refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
     ) -> dict[str, _Source]:
-        from rcp.history.branches import (
-            _require_regular_file,
-            _safe_branch_root,
-            canonical_branch_id,
-        )
+        from rcp.history.ancestry import branch_ancestry
+        from rcp.history.branches import read_branch_metadata
 
         parent = self.manager
         if refresh and not parent.workspace.refresh_if_stale(refresh_max_age_seconds):
@@ -311,52 +308,41 @@ class ProjectHistoryEngine:
                 scope_failure=scope_failure,
             )
         }
-        depths = {"main": 0}
+        captured: dict[str, _Source] = {}
 
-        def capture_target(target: GraphTargetRef, chain: frozenset[str]) -> int:
-            if target.key in chain:
-                raise ValueError("graph branch ancestry contains a cycle")
-            if target.key in depths:
-                return depths[target.key]
-            if len(chain) >= limits.GRAPH_BRANCH_MAX_DEPTH:
-                raise ValueError("graph branch ancestry exceeds the depth limit")
-            assert target.branch_id is not None
-            canonical_branch_id(target.branch_id)
-            root = _safe_branch_root(parent.root, target.branch_id, create=False)
-            try:
-                _require_regular_file(root / "branch.json", "graph branch metadata")
-                metadata = GraphBranchMetadata.model_validate_json(
-                    (root / "branch.json").read_bytes()
+        def parent_of(branch_id: str) -> str | None:
+            target = GraphTargetRef(kind="branch", branch_id=branch_id)
+            if branch_id not in captured:
+                metadata = read_branch_metadata(parent, branch_id)
+                captured[branch_id] = _Source(
+                    target,
+                    manifest,
+                    key,
+                    scope,
+                    _inventory(
+                        parent.root / "branches" / branch_id / "patches",
+                        inventories.get(target.key, ()),
+                    ),
+                    metadata,
                 )
-            except FileNotFoundError:
-                raise KeyError(target.branch_id) from None
-            if metadata.branch_id != target.branch_id:
-                raise ValueError("branch path and identity disagree")
-            if parent.project_id is not None and metadata.project_id != parent.project_id:
-                raise ValueError("branch belongs to another project")
-            ancestor = metadata.effective_parent_head.target
-            depth = capture_target(ancestor, chain | {target.key}) + 1
-            if depth > limits.GRAPH_BRANCH_MAX_DEPTH:
-                raise ValueError("graph branch ancestry exceeds the depth limit")
-            ancestor_metadata = sources[ancestor.key].metadata
-            if ancestor_metadata is not None and (
-                metadata.base_head != ancestor_metadata.base_head
-                or metadata.project_id != ancestor_metadata.project_id
-            ):
-                raise ValueError("graph branch root base or project disagrees with its parent")
-            depths[target.key] = depth
-            sources[target.key] = _Source(
-                target,
-                manifest,
-                key,
-                scope,
-                _inventory(root / "patches", inventories.get(target.key, ())),
-                metadata,
-            )
-            return depth
+            metadata = captured[branch_id].metadata
+            assert metadata is not None
+            return metadata.effective_parent_head.target.branch_id
 
         for target in targets:
-            capture_target(target, frozenset())
+            if target.branch_id is None:
+                continue
+            for branch_id in reversed(branch_ancestry(target.branch_id, parent_of)):
+                source = captured[branch_id]
+                metadata = source.metadata
+                assert metadata is not None
+                ancestor = sources[metadata.effective_parent_head.target.key].metadata
+                if ancestor is not None and (
+                    metadata.base_head != ancestor.base_head
+                    or metadata.project_id != ancestor.project_id
+                ):
+                    raise ValueError("graph branch root base or project disagrees with its parent")
+                sources[source.target.key] = source
         return sources
 
     def _build(

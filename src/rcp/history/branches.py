@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from rcp import limits
 from rcp.core.authority import refused_authorizer
 from rcp.core.materialize import (
     AcceptedPatchObserver,
@@ -1233,15 +1232,18 @@ def branch_parent_snapshot(
     generations = parent.history_engine.snapshots([source_head.target], refresh=False)
     source = generations[source_head.target.key]
     source.prefix(source_head)
-    chain = source
-    depth = 1
-    while chain.source.metadata is not None:
-        if chain.source.metadata.branch_id == branch_id:
-            raise ValueError("graph branch ancestry contains a cycle")
-        depth += 1
-        chain = generations[chain.source.metadata.effective_parent_head.target.key]
-    if depth > limits.GRAPH_BRANCH_MAX_DEPTH:
-        raise ValueError("graph branch ancestry exceeds the depth limit")
+    from rcp.history.ancestry import branch_ancestry
+
+    def parent_of(current_id: str) -> str | None:
+        if current_id == branch_id:
+            return source_head.target.branch_id
+        metadata = generations[
+            GraphTargetRef(kind="branch", branch_id=current_id).key
+        ].source.metadata
+        assert metadata is not None
+        return metadata.effective_parent_head.target.branch_id
+
+    branch_ancestry(branch_id, parent_of)
     root_base = source.source.metadata.base_head if source.source.metadata else source_head
     initial = parent.history_engine._prefix_result(source, source_head, use_store=False)
     parent.require_writable(initial.state)
@@ -1252,34 +1254,50 @@ def create_branch(
     parent: HistoryManager,
     metadata: GraphBranchMetadata,
 ) -> BranchHistoryManager:
-    canonical_branch_id(metadata.branch_id)
-    _require_parent_identity(parent, metadata)
-    expected_initial = GraphHeadRef(
-        target=GraphTargetRef(kind="branch", branch_id=metadata.branch_id),
-        revision=metadata.effective_parent_head.revision,
-        transition_id=metadata.effective_parent_head.transition_id,
+    return _create_branch(
+        parent, metadata.branch_id, metadata.effective_parent_head, lambda _base: metadata
     )
-    if metadata.head != expected_initial:
-        raise ValueError("new graph branch head must begin at its immutable parent")
+
+
+def _create_branch(
+    parent: HistoryManager,
+    branch_id: str,
+    parent_head: GraphHeadRef,
+    metadata_for_base: Callable[[GraphHeadRef], GraphBranchMetadata],
+) -> BranchHistoryManager:
+    """Validate once under the write fence, then reserve identity and publish."""
+    canonical_branch_id(branch_id)
     with parent.workspace.transaction(), parent._append_lock():
         parent._reload_manifest()
         branches_root = _safe_branches_root(parent.root, create=True)
-        root = branches_root / metadata.branch_id
-        existing = None
-        if os.path.lexists(root):
-            existing = BranchHistoryManager(parent, metadata)._read_metadata()
+        root = branches_root / branch_id
+        existing = read_branch_metadata(parent, branch_id) if os.path.lexists(root) else None
+        initial = None
+        if existing is not None:
+            root_base = existing.base_head
+        else:
+            current = parent.materialize(write_outputs=False)
+            parent.require_writable(current.state)
+            parent._require_writable_home_locked(current)
+            root_base, initial = branch_parent_snapshot(parent, parent_head, branch_id)
+        metadata = metadata_for_base(root_base)
+        _require_parent_identity(parent, metadata)
+        if (
+            metadata.branch_id != branch_id
+            or metadata.effective_parent_head != parent_head
+            or metadata.base_head != root_base
+        ):
+            raise ValueError("graph branch identity disagrees with its parent")
+        expected_initial = parent_head.model_copy(
+            update={"target": GraphTargetRef(kind="branch", branch_id=branch_id)}
+        )
+        if metadata.head != expected_initial:
+            raise ValueError("new graph branch head must begin at its immutable parent")
+        if existing is not None:
             if existing.model_copy(update={"head": metadata.head}) != metadata:
                 raise ValueError("graph branch already exists with different canonical metadata")
-        current = parent.materialize(write_outputs=False)
-        parent.require_writable(current.state)
-        parent._require_writable_home_locked(current)
-        root_base, initial = branch_parent_snapshot(
-            parent, metadata.effective_parent_head, metadata.branch_id
-        )
-        if metadata.base_head != root_base:
-            raise ValueError("graph branch root base disagrees with its parent")
-        if existing is not None:
             return BranchHistoryManager(parent, existing)
+        assert initial is not None
         root.mkdir(mode=0o700)
         branch = BranchHistoryManager(parent, metadata)
         branch.ensure_layout()
@@ -1317,6 +1335,21 @@ def create_branch(
         return branch
 
 
+def read_branch_metadata(parent: HistoryManager, branch_id: str) -> GraphBranchMetadata:
+    """Read immutable identity without replay; the caller owns the workspace snapshot."""
+    root = _safe_branch_root(parent.root, branch_id, create=False)
+    try:
+        _require_regular_file(root / "branch.json", "graph branch metadata")
+        metadata = GraphBranchMetadata.model_validate_json((root / "branch.json").read_bytes())
+    except FileNotFoundError:
+        raise KeyError(branch_id) from None
+    if metadata.branch_id != branch_id:
+        raise ValueError("graph branch path disagrees with branch.json identity")
+    if parent.project_id is not None and metadata.project_id != parent.project_id:
+        raise ValueError("graph branch belongs to a different project")
+    return metadata
+
+
 def open_branch(
     parent: HistoryManager,
     branch_id: str,
@@ -1345,16 +1378,7 @@ def open_branch(
         else None
     )
     with parent._process_lock:
-        root = _safe_branch_root(parent.root, branch_id, create=False)
-        try:
-            _require_regular_file(root / "branch.json", "graph branch metadata")
-            metadata = GraphBranchMetadata.model_validate_json(
-                (root / "branch.json").read_text(encoding="utf-8")
-            )
-        except FileNotFoundError:
-            raise KeyError(branch_id) from None
-        if metadata.branch_id != branch_id:
-            raise ValueError("graph branch path disagrees with branch.json identity")
+        metadata = read_branch_metadata(parent, branch_id)
         if expected_episode_id is not None and metadata.episode_id != expected_episode_id:
             raise ValueError("graph branch belongs to a different episode")
         if expected_project_id is not None and metadata.project_id != expected_project_id:
@@ -1381,10 +1405,9 @@ def _require_parent_identity(
 ) -> None:
     if parent.project_id is not None and metadata.project_id != parent.project_id:
         raise ValueError("graph branch belongs to a different project")
-    if allow_historical_home and metadata.parent_head is not None:
-        # A fork can start before the current home's admission. Creation proves
-        # the current home under its write fence; later reads retain that authorizer
-        # through further transfers instead of attributing it to the fork point.
+    if allow_historical_home and metadata.kind == "fork" and metadata.parent_head is not None:
+        # Past-head forks may predate their creating home's admission; episode
+        # branches still bind their authorizer to the exact home at their base.
         result = materialization or parent.current_materialization()
         parent.project_identity(result)  # Validate the complete home-transfer chain.
         homes = set()

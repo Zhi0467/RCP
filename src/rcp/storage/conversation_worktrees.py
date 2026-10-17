@@ -187,14 +187,6 @@ class ConversationWorktreeStoreMixin(StoreMixinBase):
         owner_episode_id: str | None = None,
         branch_id: str | None = None,
     ) -> None:
-        archived = connection.execute(
-            "SELECT 1 FROM graph_branches WHERE project_id=? AND archived=1 "
-            "AND branch_id=COALESCE(?, (SELECT json_extract(graph_target_json, '$.branch_id') "
-            "FROM episodes WHERE project_id=? AND episode_id=?))",
-            (project_id, branch_id, project_id, episode_id or owner_episode_id),
-        ).fetchone()
-        if archived is not None:
-            raise ValueError("graph_branch_archived")
         row = connection.execute(
             "SELECT s.state_json FROM episode_isolation_states s "
             "JOIN episode_isolations i USING (project_id, owner_episode_id) "
