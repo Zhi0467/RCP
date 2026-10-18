@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 
 from rcp.core.models import AuthorizedHuman, GraphBranchMetadata
@@ -23,6 +24,7 @@ def create_graph_fork(
     owner_episode_id: str | None = None,
     name: str | None = None,
     auto_archive: bool = False,
+    before_publish: Callable[[], None] | None = None,
 ) -> BranchHistoryManager:
     """A caller retains ``branch_id`` and repeats the same request after uncertainty.
 
@@ -57,4 +59,6 @@ def create_graph_fork(
             authorized_by=authorized_by,
         )
 
-    return _create_branch(history, branch_id, parent_head, reserve_metadata)
+    return _create_branch(
+        history, branch_id, parent_head, reserve_metadata, before_publish=before_publish
+    )

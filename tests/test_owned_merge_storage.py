@@ -93,13 +93,22 @@ def test_owned_merge_admission_reserves_one_allocation_with_binding(
         store.agent_task_authority(task.project_id, task.operation_id)
 
 
-def test_owned_merge_exhausted_budget_rolls_back_task_and_intent(manifest, tmp_path):
+@pytest.mark.parametrize("pending", [False, True])
+def test_owned_merge_exhausted_budget_rolls_back_task_and_intent(manifest, tmp_path, pending):
     harness, task = _owned_merge(manifest, tmp_path)
     store = harness.store
     with store.connection() as connection:
         connection.execute(
-            "UPDATE episodes SET invocations_used=invocation_ceiling WHERE episode_id=?",
-            (task.episode_id,),
+            "UPDATE episodes SET invocation_ceiling=invocations_used+? WHERE episode_id=?",
+            (int(pending), task.episode_id),
+        )
+    if pending:
+        from .test_auto_research_children_storage import _admission
+
+        store.record_auto_research_child_admission(
+            _admission(
+                store, harness.episode, admission_id="pending", child_kind="work", child_id="worker"
+            )
         )
     with pytest.raises(ValueError, match="merge_budget_exhausted"):
         store.create_branch_merge_task(task)
@@ -158,7 +167,9 @@ async def test_owned_merge_delivers_to_parent_and_reuses_key(
 ):
     import asyncio
     import json
+    from unittest.mock import Mock
 
+    import rcp.runs.tasks.branch_merge as merge_task
     from rcp.agents.hidden_read import host_facts
     from rcp.core.models import Patch
     from rcp.history.manager import HistoryManager
@@ -178,7 +189,19 @@ async def test_owned_merge_delivers_to_parent_and_reuses_key(
         harness.service.history.workspace,
         write_authority=unchecked_write_authority(),
     )
-    source = history.branch(fixture_task.graph_target.branch_id or "")
+    destination = history.branch(fixture_task.graph_target.branch_id or "")
+    source = create_graph_fork(
+        history,
+        harness.store,
+        project_id=harness.project_id,
+        branch_id=str(uuid.uuid4()),
+        parent_head=destination.head_ref(),
+        authorized_by=harness.episode.authorized_by,
+        created_by=harness.root.operation_id,
+        owner_episode_id=harness.episode.episode_id,
+    )
+    stream = Mock(wraps=merge_task.stream_branch_merge_run)
+    monkeypatch.setattr(merge_task, "stream_branch_merge_run", stream)
     ops = [
         {
             "op": "update_nodes",
@@ -198,7 +221,7 @@ async def test_owned_merge_delivers_to_parent_and_reuses_key(
         )
     )
     if residue:
-        history.branch(harness.branch.branch_id).append(
+        destination.append(
             Patch.model_validate(
                 dict(
                     kind="work",
@@ -242,15 +265,20 @@ async def test_owned_merge_delivers_to_parent_and_reuses_key(
         command_key="deliver",
     )
     assert replay["operation_id"] == task.operation_id
+    if residue:
+        scope = stream.call_args.kwargs["graph_read_scope"]
+        assert not scope.readable(
+            harness.project_id, harness.branch.graph_target, harness.branch.head_ref().revision + 1
+        )
     assert launcher.calls == int(residue)
     assert harness.store.episode_budget_meter(
         harness.episode.episode_id
     ).invocations_used == before + int(residue)
-    assert harness.branch.state().nodes["blk/merge-ready"].title == "Fork choice"
+    assert destination.state().nodes["blk/merge-ready"].title == "Fork choice"
     assert harness.service.history.state().nodes["blk/merge-ready"].title == "Merge gate"
     receipt = source.reconcile_merge_receipt(source.merge_receipts()[0].provenance.merge_id)
     assert receipt is not None
-    assert receipt.result_main_head.target == harness.branch.graph_target
+    assert receipt.result_main_head.target == destination.graph_target
 
 
 @pytest.mark.parametrize("root_status", ["succeeded", "interrupted"])

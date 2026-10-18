@@ -868,7 +868,7 @@ class TransferAutoResearchChildWorkAttempt(_StrictTransferRecord):
 
 class TransferAutoResearchChildWork(_StrictTransferRecord):
     worker_id: str = Field(min_length=1)
-    control_node_id: str = Field(min_length=1)
+    control_node_id: str | None = Field(min_length=1)
     root_operation_id: str = Field(min_length=1)
     final_operation_id: str = Field(min_length=1)
     admitted_by_operation_id: str = Field(min_length=1)
@@ -1094,10 +1094,8 @@ class TransferEpisodeRecord(_StrictTransferRecord):
             raise ValueError("only a branch episode's graph archive state can transfer")
         if self.graph_target.kind == "main" and self.graph_base_head is not None:
             raise ValueError("main-target episode history cannot carry a branch base head")
-        if self.graph_target.kind == "branch" and (
-            self.graph_base_head is None or self.graph_base_head.target.kind != "main"
-        ):
-            raise ValueError("branch episode history requires its immutable main base head")
+        if self.graph_target.kind == "branch" and self.graph_base_head is None:
+            raise ValueError("branch episode history requires its immutable parent head")
         if len(self.invocations) != self.invocations_used:
             raise ValueError("episode invocation history does not match its used count")
         if len(self.report_attempts) != self.report_attempts_used:
@@ -1209,6 +1207,11 @@ class TransferRecordBundle(_StrictTransferRecord):
             for episode in self.episodes
         ):
             raise ValueError("episode references an unknown graph branch")
+        for episode in self.episodes:
+            if (branch_id := episode.graph_target.branch_id) is not None:
+                branch = branches.get(branch_id)
+                if branch is not None and episode.graph_base_head != branch.parent_head:
+                    raise ValueError("episode base head differs from its graph branch parent")
 
         # Imported here: ``rcp.history`` imports storage, which imports this module.
         from rcp.history.ancestry import branch_ancestry

@@ -1376,16 +1376,6 @@
                 }
             }
         ],
-        "./src/rcp/api/experiments.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 51,
-                    "endColumn": 81,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/rcp/api/history.py": [
             {
                 "code": "reportArgumentType",

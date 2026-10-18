@@ -39,7 +39,7 @@ def render_bulletin(snapshot: dict[str, Any]) -> str:
             entry = f"## {kind}\n\n```json\n{encoded}\n```\n\n"
             size = len(entry.encode())
             if size > remaining:
-                break
+                continue
             entries[kind].append(entry)
             remaining -= size
     return (

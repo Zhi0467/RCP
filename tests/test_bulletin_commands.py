@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -113,20 +114,32 @@ async def test_validation_mailbox_refuses_bulletin(tmp_path):
         staged.cleanup()
 
 
-def test_auto_research_stop_fences_posts_but_keeps_bulletin_readable(tmp_path):
+def test_auto_research_stop_fences_posts_but_keeps_bulletin_readable(tmp_path, monkeypatch):
     from rcp.runs.auto_research import request_auto_research_stop
 
     from .test_auto_research_commands import _dispatcher, _Effects, _setup_auto_research
 
     app_store, episode, root = _setup_auto_research(tmp_path)
     dispatcher = _dispatcher(app_store, _Effects(app_store, episode, root).bundle())
-    request_auto_research_stop(app_store, episode.episode_id)
-    assert dispatcher.dispatch(root.operation_id, request("read")).status == "ok"
+    monkeypatch.setattr("rcp.storage.bulletin.live_project_member", lambda *_: True)
+    post = request("post", key="once", text="note")
+    receipt = dispatcher.dispatch(root.operation_id, post)
+    assert receipt.status == "ok"
+    execute = app_store.execute_bulletin_command
+
+    def stopped_post(*args, **kwargs):
+        request_auto_research_stop(app_store, episode.episode_id)
+        return execute(*args, **kwargs)
+
+    monkeypatch.setattr(app_store, "execute_bulletin_command", stopped_post)
     assert (
         dispatcher.dispatch(root.operation_id, request("post", key="late", text="note")).status
         == "invalid"
     )
-    assert app_store.list_bulletin(episode.project_id, episode.graph_target.key)["posts"] == []
+    assert dispatcher.dispatch(root.operation_id, post).result == receipt.result
+    assert dispatcher.dispatch(root.operation_id, request("read")).result["posts"] == [
+        receipt.result["post"]
+    ]
 
 
 def test_staged_roster_cannot_starve_posts():
@@ -135,12 +148,16 @@ def test_staged_roster_cannot_starve_posts():
     snapshot = {
         "roster": [{"id": str(i), "state": "done", "text": "x" * 2000} for i in range(100)]
         + [{"id": str(i), "state": "waiting"} for i in range(100)],
-        "posts": [{"post_id": "post", "text": "x" * 2000}],
+        "posts": [
+            {"post_id": "oversized", "refs": ["x" * 2000] * 20},
+            {"post_id": "post", "text": "x" * 2000},
+        ],
     }
     rendered = render_bulletin(snapshot)
     records = [json.loads(block.split("\n```", 1)[0]) for block in rendered.split("```json\n")[1:]]
     assert {row["post_id"] for row in records if "post_id" in row} == {"post"}
     agents = [row for row in records if "state" in row]
     assert len(agents) == BULLETIN_ROSTER_MAX_COUNT
+    assert list(map(int, re.findall(r"\d+", rendered.splitlines()[-1]))) == [100 - len(agents), 1]
     assert all(row["state"] == "waiting" for row in agents)
     assert len(rendered.encode()) <= BULLETIN_RENDER_MAX_BYTES
