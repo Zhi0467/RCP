@@ -2863,7 +2863,15 @@ class AgentTaskStoreMixin(StoreMixinBase):
         rows = connection.execute(
             """
             SELECT run.* FROM graph_runs AS run
-            WHERE run.project_id = ? AND run.graph_target_json = ?
+            WHERE run.project_id = ?
+              AND (
+                run.graph_target_json = ?
+                OR (
+                  run.kind = 'branch_merge'
+                  AND json_extract(run.request_json, '$.merge_binding.destination.kind') = ?
+                  AND json_extract(run.request_json, '$.merge_binding.destination.branch_id') IS ?
+                )
+              )
               AND (
                 run.status IN ('queued', 'running', 'pausing')
                 OR (
@@ -2887,7 +2895,12 @@ class AgentTaskStoreMixin(StoreMixinBase):
               )
             ORDER BY run.created_at, run.operation_id
             """,
-            (project_id, graph_target_json(graph_target)),
+            (
+                project_id,
+                graph_target_json(graph_target),
+                graph_target.kind,
+                graph_target.branch_id,
+            ),
         ).fetchall()
         return [self._agent_task_record(row) for row in rows]
 
