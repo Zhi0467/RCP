@@ -47,7 +47,7 @@ from rcp.agents.continuation_prompt import (
     master_key,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
-from rcp.agents.group_context import build_group_context
+from rcp.agents.group_context import GroupContext, build_group_context
 from rcp.agents.loop_overlap import render_auto_research_overlap, render_loop_overlap
 from rcp.agents.prompts import render_group_context
 from rcp.agents.write_scope import ProjectWriteScope
@@ -485,6 +485,7 @@ async def stream_auto_research_orchestrator_run(
             native_session_id=outcome.session_id,
             retry_patch_digest=retry_patch_digest,
             command_dispatcher=command_dispatcher,
+            group_context=context.group_context,
         )
         for frame in settlement.frames:
             yield frame
@@ -785,6 +786,7 @@ async def stream_auto_research_worker_run(
             native_session_id=outcome.session_id,
             retry_patch_digest=retry_patch_digest,
             command_dispatcher=command_dispatcher,
+            group_context=context.group_context,
         )
         for frame in settlement.frames:
             yield frame
@@ -1644,6 +1646,7 @@ def _orchestrator_prompt(
         output_schema_path=schema_path,
         command_client=command_client,
         write_scope=write_scope,
+        group_context=context.group_context,
         skill_pointers=skill_pointers,
         allowed_verbs=auto_research_allowed_verbs(
             "orchestrator", graph_read_scope=graph_read_scope
@@ -1825,6 +1828,7 @@ def _worker_prompt(
         output_schema_path=schema_path,
         command_client=command_client,
         write_scope=write_scope,
+        group_context=context.group_context,
         reply_key=reply_key,
         allowed_verbs=auto_research_allowed_verbs("worker", graph_read_scope=graph_read_scope),
     )
@@ -2125,6 +2129,7 @@ async def _settle_worker_patch(
     staged_head: GraphHeadRef | None = None,
     retry_patch_digest: str | None,
     command_dispatcher: AutoResearchCommandDispatcher,
+    group_context: GroupContext | None,
     _actor_role: Literal["worker", "orchestrator"] = "worker",
     _profile: Literal["ordinary", "orchestrator"] = "ordinary",
     _capability: Literal["work_auto", "orchestrate"] = "work_auto",
@@ -2239,9 +2244,8 @@ async def _settle_worker_patch(
             {"kind": "work", "problem": failure.message},
         )
         context = _auto_research_context(service, turn.request, stage)
-        context.group_context = build_group_context(
-            service, execution.store, turn.request.run_on or ""
-        )
+        # The launch's group, which the reused read_dirs were built from.
+        context.group_context = group_context
         graph_read_scope = GraphReadScope.for_launch(
             project_id=turn.task.project_id,
             target=turn.task.graph_target,
@@ -2482,6 +2486,7 @@ async def _settle_orchestrator_patch(
     staged_head: GraphHeadRef | None = None,
     retry_patch_digest: str | None,
     command_dispatcher: AutoResearchCommandDispatcher,
+    group_context: GroupContext | None,
 ) -> _PatchSettlement:
     return await _settle_worker_patch(
         service,
@@ -2500,6 +2505,7 @@ async def _settle_orchestrator_patch(
         native_session_id=native_session_id,
         retry_patch_digest=retry_patch_digest,
         command_dispatcher=command_dispatcher,
+        group_context=group_context,
         _actor_role="orchestrator",
         _profile="orchestrator",
         _capability="orchestrate",

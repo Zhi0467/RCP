@@ -611,9 +611,9 @@ The prompt renders the same object as a group section: the group, which project
 is the run's own, and for each other project its canonical `graph.json` and
 `research.md` paths and its repository pointers, with an SSH host when they sit
 on another machine. These are pointers to live files, never staged copies.
-A chat renders the section every turn and keeps the group name and readable
-project ids among its master values, so a continuation learns when its project
-leaves the group.
+Each of these runs renders the section every turn, and its master values keep
+the group name and readable project ids, so a continued chat or episode learns
+when its project leaves the group. A Patch correction reuses its launch's group.
 Sibling repositories never become write roots, admitted repositories, run truth
 scope, or Patch repository declarations, and a Patch still validates against
 the run's own graph only (invariant 4b).

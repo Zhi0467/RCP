@@ -171,3 +171,17 @@ def _canonical_manifest(locator: str, data_dir: Path | None) -> Manifest:
     return load_remote_workspace_manifest(
         bootstrap, workspace, project_root=bootstrap.path.parent.parent
     )
+
+
+def group_prompt_value(context: GroupContext | None) -> dict[str, object] | None:
+    """The group a master states, so a continuation learns when the project leaves it.
+
+    The per-turn group section is not retained, and an absent section says nothing.
+    """
+
+    if context is None:
+        return None
+    return {
+        "name": context.group_name,
+        "readable_project_ids": sorted(context.readable_project_ids),
+    }

@@ -44,7 +44,7 @@ from rcp.agents.experiment_loop_prompt import (
 )
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
-from rcp.agents.group_context import build_group_context
+from rcp.agents.group_context import build_group_context, group_prompt_value
 from rcp.agents.prompts import (
     _invoked_package_section,
     graph_read_contract,
@@ -609,6 +609,7 @@ def _experiment_values(
     return {
         **values,
         "history_client": turn.patch_inputs.command_client,
+        "group": group_prompt_value(turn.context.group_context),
         "execution": execution,
         "repositories": {
             item["alias"]: {"host": item["host"], "path": item["path"]}

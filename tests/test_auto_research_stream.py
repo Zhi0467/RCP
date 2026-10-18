@@ -3135,7 +3135,7 @@ def test_orchestrator_receives_the_project_settings_package_paths() -> None:
         original_contract_path="/stage/inputs/original.md", mode="continuation", **common
     )
     assert "/stage/inputs/original.md" in continued
-    values = auto_research_prompt_values(**common)
+    values = auto_research_prompt_values(group_context=None, **common)
     assert "other_branch_loops" not in values
     assert values["history_client"] == common["command_client"]
     assert package_path in fresh
@@ -3144,11 +3144,11 @@ def test_orchestrator_receives_the_project_settings_package_paths() -> None:
     master = MasterRef(
         path="/stage/inputs/master.md",
         bootstrap=False,
-        values=auto_research_prompt_values(skill_pointers=pointers, **common),
+        values=auto_research_prompt_values(skill_pointers=pointers, group_context=None, **common),
     )
-    unchanged = auto_research_prompt_values(skill_pointers=pointers, **common)
+    unchanged = auto_research_prompt_values(skill_pointers=pointers, group_context=None, **common)
     upgraded = auto_research_prompt_values(
-        skill_pointers=[{**pointers[0], "version": "1.1.0"}], **common
+        skill_pointers=[{**pointers[0], "version": "1.1.0"}], group_context=None, **common
     )
     assert changed_since_master(master, unchanged) is None
     assert changed_since_master(master, upgraded) == {
