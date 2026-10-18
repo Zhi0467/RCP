@@ -627,11 +627,28 @@ def test_human_fork_merge_uses_parent_without_episode_or_budget(
     )
     parent = destination.head_ref()
     refs = f"/api/projects/{harness.project_id}/graph-refs"
-    response = harness.client.post(
-        refs, json={"request_id": str(uuid.uuid4()), "at": f"{parent.target.key}@{parent.revision}"}
-    )
-    assert response.status_code == 201, response.text
-    fork_id = response.json()["branch_id"]
+    if destination_kind == "main":
+        # An orchestrator's fork of main has no owned destination; a member merges it.
+        from rcp.runs.graph_forks import create_graph_fork
+
+        fork_id = str(uuid.uuid4())
+        create_graph_fork(
+            harness.service.history,
+            harness.store,
+            branch_id=fork_id,
+            owner_episode_id=harness.episode.episode_id,
+            project_id=harness.project_id,
+            parent_head=parent,
+            created_by=f"orchestrator:{harness.episode.episode_id}",
+            authorized_by=harness.episode.authorized_by,
+        )
+    else:
+        response = harness.client.post(
+            refs,
+            json={"request_id": str(uuid.uuid4()), "at": f"{parent.target.key}@{parent.revision}"},
+        )
+        assert response.status_code == 201, response.text
+        fork_id = response.json()["branch_id"]
     source = history.branch(fork_id)
     operations = [
         {
@@ -664,6 +681,11 @@ def test_human_fork_merge_uses_parent_without_episode_or_budget(
                 }
             )
         )
+
+    def fork_row():
+        return next(row for row in harness.client.get(refs).json() if row["branch_id"] == fork_id)
+
+    assert fork_row()["merge_eligible"] is True
     launcher = _PatchWritingLauncher(json.dumps({"summary": "Resolve fork", "ops": operations}))
     monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
     before = harness.store.episode_budget_meter(harness.episode.episode_id)
@@ -703,10 +725,11 @@ def test_human_fork_merge_uses_parent_without_episode_or_budget(
     assert retry.json()["status"] == "succeeded"
     assert destination.head_ref() == head
     assert source.merge_receipts()[0].result_main_head.target == parent.target
+    assert (fork_row()["merge_state"], fork_row()["merge_eligible"]) == ("merged", False)
 
 
 @pytest.mark.parametrize("refusal", ["episode_owned", "archived_destination"])
-def test_human_fork_merge_refuses_wrong_owner_or_archived_parent(manifest, tmp_path, refusal):
+def test_human_fork_merge_refuses_episode_branch_or_archived_parent(manifest, tmp_path, refusal):
     harness = _create_branch_harness(manifest, tmp_path, change="evidence")
     refs = f"/api/projects/{harness.project_id}/graph-refs"
     if refusal == "episode_owned":
@@ -728,7 +751,7 @@ def test_human_fork_merge_refuses_wrong_owner_or_archived_parent(manifest, tmp_p
     )
     assert response.status_code == 409, response.text
     assert response.json()["detail"]["code"] in {
-        "merge_source_not_human_owned",
+        "merge_source_is_episode_branch",
         "merge_destination_archived",
     }
     assert len(harness.store.episode_tasks(harness.episode.episode_id)) == before

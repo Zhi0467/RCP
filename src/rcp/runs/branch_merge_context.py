@@ -148,6 +148,7 @@ def load_branch_merge_context(
     return BranchMergeContext.create(
         merge_task_id=operation_id,
         dispatcher_episode_id=merge_binding.dispatcher_episode_id if merge_binding else None,
+        member_merge=merge_binding is not None and merge_binding.dispatcher_episode_id is None,
         authorized_by=authorized_by,
         metadata=metadata,
         eligibility=eligibility,

@@ -17,6 +17,7 @@ const { parseProjectHash, projectHashAfterViewChange } = await server.ssrLoadMod
 );
 const {
   graphPickerOptions,
+  graphRefCanMerge,
   graphRefParentLabel,
   graphRefDepth,
   refNeedsYou,
@@ -166,4 +167,20 @@ test("forks nest under their visible parent and retain exact provenance through 
     ["nested", "root"],
   );
   assert.equal(graphRefParentLabel({ ...root, parent_head: null }, refs), null);
+});
+
+test("only an open, eligible fork offers Merge; episode branches use episode Merge", () => {
+  const fork = {
+    kind: "branch",
+    branch_id: "f",
+    episode_id: null,
+    archived: false,
+    merge_eligible: true,
+  };
+  assert.equal(graphRefCanMerge(fork), true);
+  assert.equal(graphRefCanMerge({ ...fork, episode_id: "e" }), true);
+  assert.equal(graphRefCanMerge({ ...fork, branch_id: "e", episode_id: "e" }), false);
+  assert.equal(graphRefCanMerge({ ...fork, archived: true }), false);
+  assert.equal(graphRefCanMerge({ ...fork, merge_eligible: false }), false);
+  assert.equal(graphRefCanMerge({ kind: "main", merge_eligible: false }), false);
 });

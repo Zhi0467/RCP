@@ -241,7 +241,6 @@ def _branch_projections(
                 summaries[branch_id] = missing_graph_branch_summary(root, store=store)
             continue
         summary = graph_branch_summary_from_snapshot(
-            root,
             snapshot.metadata,
             list(snapshot.receipts),
             store=store,
@@ -296,7 +295,6 @@ def missing_graph_branch_summary(
 
 
 def graph_branch_summary_from_snapshot(
-    episode: EpisodeRecord | None,
     metadata: GraphBranchMetadata,
     receipts: list[BranchMergeReceipt],
     *,
@@ -314,13 +312,7 @@ def graph_branch_summary_from_snapshot(
         (item for item in reversed(receipts) if item.provenance.branch_head == metadata.head),
         None,
     )
-    merge_tasks = [
-        item
-        for item in (store.episode_tasks(episode.episode_id) if episode else [])
-        if item.kind == "branch_merge"
-        and item.project_id == metadata.project_id
-        and item.graph_target == metadata.head.target
-    ]
+    merge_tasks = store.branch_merge_tasks(metadata.project_id, metadata.head.target)
     active_task = next(
         (item for item in reversed(merge_tasks) if item.status in ACTIVE_AGENT_TASK_STATUSES),
         None,
@@ -354,7 +346,7 @@ def graph_branch_summary_from_snapshot(
     if active_task is not None:
         blocked_reason = "A merge is already running for this branch. Wait for it to finish."
     elif current_receipt is not None:
-        blocked_reason = "This branch head has already been merged to main."
+        blocked_reason = "This branch head has already been merged."
     elif metadata.head.revision <= metadata.effective_parent_head.revision:
         blocked_reason = "This branch has no changes to merge."
     elif active_branch_writers:
@@ -364,8 +356,6 @@ def graph_branch_summary_from_snapshot(
         blocked_reason = f"Branch writers must settle before merging: {writers}."
     else:
         blocked_reason = None
-    if episode is None or episode.graph_target != metadata.head.target:
-        blocked_reason = "This fork has no episode merge dispatcher."
     binding = store.episode_isolation_for_branch(metadata.project_id, metadata.branch_id)
     state = (
         store.episode_isolation_state(metadata.project_id, binding.owner_episode_id)

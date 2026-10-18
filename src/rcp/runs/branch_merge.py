@@ -284,6 +284,8 @@ class BranchMergeContext(_StrictMergeModel):
     previous_merge_receipt: BranchMergeReceipt | None = None
     previous_branch_graph: GraphState | None = None
     dispatcher_episode_id: str | None = None
+    # A member's merge runs with no episode, even out of an episode-owned fork.
+    member_merge: bool = False
 
     @property
     def review_base_head(self) -> GraphHeadRef:
@@ -368,6 +370,8 @@ class BranchMergeContext(_StrictMergeModel):
         excluded = {"context_id"}
         if self.dispatcher_episode_id is None:
             excluded.add("dispatcher_episode_id")
+        if not self.member_merge:
+            excluded.add("member_merge")
         expected_id = _context_id(self.model_dump(mode="json", exclude=excluded))
         if self.context_id != expected_id:
             raise ValueError("branch merge context id does not match its canonical content")
@@ -391,6 +395,7 @@ class BranchMergeContext(_StrictMergeModel):
         previous_merge_receipt: BranchMergeReceipt | None = None,
         previous_branch_graph: GraphState | None = None,
         dispatcher_episode_id: str | None = None,
+        member_merge: bool = False,
     ) -> BranchMergeContext:
         if run_truth_scope != sorted(set(run_truth_scope)) or not run_truth_scope:
             raise ValueError("branch merge run truth scope must be non-empty, sorted, and unique")
@@ -427,6 +432,8 @@ class BranchMergeContext(_StrictMergeModel):
         }
         if dispatcher_episode_id is not None:
             payload["dispatcher_episode_id"] = dispatcher_episode_id
+        if member_merge:
+            payload["member_merge"] = True
         encoded = _jsonable(payload)
         return cls.model_validate({**payload, "context_id": _context_id(encoded)})
 
@@ -1624,7 +1631,9 @@ def parse_branch_merge_candidate(
             "authorized_by": context.authorized_by,
             "profile": "orchestrator",
             "task_id": context.merge_task_id,
-            "episode_id": context.dispatcher_episode_id or context.metadata.episode_id,
+            "episode_id": None
+            if context.member_merge
+            else context.dispatcher_episode_id or context.metadata.episode_id,
             "branch_merge": branch_merge_provenance(context),
         }
     )

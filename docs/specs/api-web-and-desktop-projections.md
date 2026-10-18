@@ -64,7 +64,7 @@ published branch record, episode branches and forks alike, archives included,
 newest first (an owned branch by its newest chain member, a member fork by its
 own creation), under project membership. A fork reserved but not yet published
 has no row. `POST .../graph-refs` and `POST .../graph-refs/{branch_id}/merge`
-fork and merge member forks as described in
+fork and merge forks as described in
 [Forks](auto-research-and-branch-merge.md#forks).
 
 Rows carry `kind`, `branch_id`, `head`, `base_head`, `episode_id` (chain root),
@@ -76,7 +76,8 @@ and `needs_you`; there is no `title`. Running means an active task on that targe
 attention means an open Decision/Blocker or answerable question. Names use the
 shared SQLite owner with date fallbacks. `branch_id == episode_id` names the root.
 Main has its exact head, name `main`, false flags, and null branch/episode/base/
-merge details. Merge fields use the episode owner's reservation and writer checks.
+merge details. Merge state reads every merge task out of the branch, whoever
+dispatched it; eligibility uses the isolation reservation and writer checks.
 
 `PUT .../graph-refs/{branch_id}/name` takes `{"name": str}`;
 `PUT .../graph-refs/{branch_id}/archived` takes `{"archived": bool}`.

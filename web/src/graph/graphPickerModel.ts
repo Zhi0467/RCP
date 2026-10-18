@@ -58,6 +58,13 @@ export function graphRefParentLabel(ref: GraphRef, refs: readonly GraphRef[]): s
   return head ? `from ${branchName(refs, head.target)}@${head.revision}` : null;
 }
 
+/** A fork a member can merge into its parent now; episode branches use episode Merge. */
+export function graphRefCanMerge(ref: GraphRef): boolean {
+  return (
+    ref.kind === "branch" && ref.branch_id !== ref.episode_id && !ref.archived && ref.merge_eligible
+  );
+}
+
 export function graphRefDepth(ref: GraphRef, refs: readonly GraphRef[]): number {
   const seen = new Set<string>();
   let depth = 0;

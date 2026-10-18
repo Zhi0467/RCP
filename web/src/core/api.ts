@@ -548,6 +548,17 @@ export function createGraphFork(
   });
 }
 
+export function mergeGraphFork(
+  projectId: string,
+  branchId: string,
+  requestId: string,
+): Promise<{ operation_id: string; status: string }> {
+  return api(
+    `/api/projects/${encodeURIComponent(projectId)}/graph-refs/${encodeURIComponent(branchId)}/merge`,
+    { method: "POST", body: JSON.stringify({ request_id: requestId }) },
+  );
+}
+
 export function renameGraphBranch(
   projectId: string,
   branchId: string,

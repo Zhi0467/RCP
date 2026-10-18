@@ -878,8 +878,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
         if binding.dispatcher_episode_id is None:
             from rcp.storage.membership import live_project_member
 
-            if record.episode_id is not None or source["owner_episode_id"] is not None:
-                raise ValueError("merge_source_not_human_owned")
+            # A member merges any fork; an episode branch delivers through episode Merge.
+            if record.episode_id is not None or source["branch_id"] == source["owner_episode_id"]:
+                raise ValueError("merge_source_is_episode_branch")
             if record.authorized_by is None or not live_project_member(
                 connection, record.project_id, record.authorized_by.user_id
             ):
@@ -2939,6 +2940,17 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 ) ORDER BY created_at, operation_id
                 """,
                 (episode_id, int(include_hidden)) + (() if newest is None else (newest,)),
+            ).fetchall()
+        return [self._agent_task_record(row) for row in rows]
+
+    def branch_merge_tasks(self, project_id: str, source: GraphTargetRef) -> list[AgentTaskRecord]:
+        """Every merge out of one branch, whoever dispatched it, in creation order."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM graph_runs WHERE project_id=? AND kind='branch_merge' "
+                "AND graph_target_json=? ORDER BY created_at, operation_id",
+                (project_id, graph_target_json(source)),
             ).fetchall()
         return [self._agent_task_record(row) for row in rows]
 

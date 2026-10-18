@@ -164,10 +164,16 @@ truth changes only by human dispatch.
 
 Any member may fork an explicit `main@R` or `branch:<id>@R` with
 `POST /api/projects/{project_id}/graph-refs` (`{request_id, at, name?}`; the
-UUID4 `request_id` becomes the branch id) and deliver a member fork into its
-parent with `POST .../graph-refs/{branch_id}/merge` (`{request_id}`), without an
-episode or budget. A member fork has no owner episode, so the first Experiment on
-it creates the isolation binding that later Experiments there share.
+UUID4 `request_id` becomes the branch id) and deliver any fork, member or
+lineage, into its parent with `POST .../graph-refs/{branch_id}/merge`
+(`{request_id}`), without an episode or budget; the branch picker offers Merge on
+each open, merge-eligible fork. An episode branch refuses
+(`merge_source_is_episode_branch`) and delivers through episode Merge. A member
+merge carries no episode attribution, even out of a lineage fork. **Why:** a
+lineage fork of main, or of a branch the lineage does not own, has no owned
+destination, so only a member can deliver it. A member fork has no owner episode,
+so the first Experiment on it creates the isolation binding that later
+Experiments there share.
 
 ## Graph and code isolation
 
