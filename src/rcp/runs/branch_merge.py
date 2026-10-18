@@ -1243,11 +1243,14 @@ def validate_branch_merge_candidate_conformance(
                         "This source change is already represented by a main Proposal; omit its duplicate."
                     )
                 _require_human_review_provenance(context, proposal)
-                if graph.proposals[proposal.id].status != "pending":
+                applied = graph.proposals[proposal.id]
+                if applied.status != "pending":
                     raise BranchMergeSemanticConflict(
                         "A new merge review Proposal must remain pending."
                     )
-                review_proposals.append(proposal)
+                # The prepared copy predates the merge revision, so a node this
+                # same Patch creates or edits would read as moved past it.
+                review_proposals.append(applied)
                 operation_allowed.add(("proposals", proposal.id, "$"))
         undeclared = sorted(
             path

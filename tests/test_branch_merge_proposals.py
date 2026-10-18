@@ -255,6 +255,45 @@ def test_human_branch_standing_returns_to_main_inbox_and_replays_exactly(
     assert harness.service.history.materialize(write_outputs=False).state == approved
 
 
+def test_review_of_a_node_the_merge_itself_creates_is_not_stale(review_branch, monkeypatch):
+    harness = review_branch
+    node = {
+        "id": "hyp/new",
+        "type": "hypothesis",
+        "title": "New hypothesis",
+        "statement": "A branch claim.",
+    }
+    edge = {
+        "id": "edge/question-new",
+        "source": "rq/review",
+        "target": "hyp/new",
+        "relation": "has_hypothesis",
+    }
+    _agent_patch(
+        harness,
+        {"op": "create_nodes", "nodes": [node]},
+        {"op": "create_edges", "edges": [edge]},
+    )
+    _human_patch(harness, {"op": "set_standing", "node_id": "hyp/new", "standing": "accepted"})
+    review = {
+        "op": "set_standing",
+        "intent": "standing_change",
+        "node_id": "hyp/new",
+        "standing": "accepted",
+    }
+    _merge(
+        harness,
+        monkeypatch,
+        {"op": "create_nodes", "nodes": [node]},
+        {"op": "create_edges", "edges": [edge]},
+        {"op": "create_proposals", "proposals": [_proposal(review)]},
+    )
+    main = harness.service.history.state()
+    proposal = next(iter(main.proposals.values()))
+    assert main.nodes["hyp/new"].standing == "asserted"
+    assert proposal.status == "pending"
+
+
 def test_later_merge_reviews_human_standing_reverted_to_the_original_base(
     review_branch, monkeypatch
 ):
