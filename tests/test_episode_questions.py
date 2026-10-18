@@ -68,7 +68,10 @@ def test_continuations_reopen_ancestor_questions_without_changing_origins(tmp_pa
     store.end_episode_without_report("original", ending="exhausted", diagnostic=None)
     for episode_id in ("second", "third"):
         continuation = _episode(store, episode_id, mode="auto_research").model_copy(
-            update={"continues_episode_id": episode.episode_id}
+            update={
+                "continues_episode_id": episode.episode_id,
+                "graph_target": episode.graph_target,
+            }
         )
         episode = store.create_episode(continuation)
         carried = store.episode_questions(episode.project_id, episode.episode_id)

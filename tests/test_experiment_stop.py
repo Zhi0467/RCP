@@ -3042,7 +3042,7 @@ def test_run_pins_experiment_graph_isolation(loop, isolated) -> None:
     binding = ensure_episode_isolation(
         loop.service, loop.store, episode.episode_id, RunRequest.model_validate(task["request"])
     )
-    assert binding.graph_branch_id == (episode.episode_id if isolated else None)
+    assert binding.graph_branch_id == episode.graph_target.branch_id
     assert loop.service.history.head_ref() == main_head
     assert episode.graph_base_head == (main_head if isolated else None)
 
@@ -3071,9 +3071,9 @@ def test_run_reserves_experiment_branch_name(loop, monkeypatch, name, isolated, 
         assert response.json()["detail"]["code"] == "branch_name_invalid"
         assert loop.store.episodes(loop.project_id) == []
         return
-    episode_id = response.json()["episode_id"]
+    branch_id = loop.store.episode(response.json()["episode_id"]).graph_target.branch_id
     refs = loop.client.get(f"/api/projects/{loop.project_id}/graph-refs").json()
-    branch = next(ref for ref in refs if ref["branch_id"] == episode_id)
+    branch = next(ref for ref in refs if ref["branch_id"] == branch_id)
     assert branch["name"] == name if name else branch["name"].startswith("experiment-")
     if name:
         collision = loop.client.post(

@@ -236,6 +236,7 @@ def test_overlap_skips_terminal_metadata_but_target_status_retains_old_loop(loop
         episode.model_copy(
             update={
                 "episode_id": "live-elsewhere",
+                "isolation_owner_episode_id": "live-elsewhere",
                 "graph_target": branch,
                 "status": "queued",
                 "invocations_used": 0,
@@ -290,6 +291,7 @@ def test_overlap_caps_compact_rows_and_reports_omitted(loop, monkeypatch):
             original.model_copy(
                 update={
                     "episode_id": f"overlap-{index:03}",
+                    "isolation_owner_episode_id": f"overlap-{index:03}",
                     "status": "queued",
                     "invocations_used": 0,
                     "graph_target": GraphTargetRef(kind="branch", branch_id=f"branch-{index:03}"),

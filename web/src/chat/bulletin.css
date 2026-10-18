@@ -14,16 +14,10 @@
 }
 .bulletin-head {
   align-items: center;
-  border-bottom: 1px solid var(--line);
   display: flex;
   gap: 8px;
-  padding: 9px 12px 9px 16px;
-}
-.bulletin-head h2 {
-  flex: 1;
-  font-size: var(--type-base);
-  font-weight: 650;
-  margin: 0;
+  justify-content: flex-end;
+  padding: 8px 12px 0;
 }
 .bulletin-members {
   align-items: center;

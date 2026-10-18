@@ -43,6 +43,9 @@ if TYPE_CHECKING:
     from rcp.storage import AppStore
 
 
+# The child kind of an admitted child Experiment episode.
+_EXPERIMENT_CHILD: Literal["experiment"] = "experiment"
+
 # The one selection a Harvest consumes and the pending counts report.
 _PENDING_NOTICES = """FROM auto_research_lifecycle_notices
     WHERE episode_id = ? AND delivered_at IS NULL AND acknowledged_at IS NULL"""
@@ -1330,7 +1333,10 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
             raise ValueError("the child Experiment invocation has no live parent route")
         allowance = self._auto_research_experiment_allowance(connection, auto_research_episode_id)
         pending = self._pending_child_budget_reservations(
-            connection, auto_research_episode_id, "experiment", exclude_child_id=child_episode_id
+            connection,
+            auto_research_episode_id,
+            _EXPERIMENT_CHILD,
+            exclude_child_id=child_episode_id,
         )
         if allowance.remaining <= pending:
             raise AutoResearchExperimentAllowanceReached(allowance)
@@ -1371,7 +1377,7 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
             connection,
             admission_id=admission_id,
             episode_id=record.auto_research_episode_id,
-            child_kind="experiment",
+            child_kind=_EXPERIMENT_CHILD,
             child_id=record.child_episode_id,
             updated_at=record.updated_at,
         )
@@ -1512,7 +1518,7 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
             source_id = operation_id
             parent_episode_id = str(experiment["auto_research_episode_id"])
             payload = {
-                "kind": "experiment",
+                "kind": _EXPERIMENT_CHILD,
                 "episode_id": str(experiment["child_episode_id"]),
                 "operation_id": operation_id,
                 "status": status,

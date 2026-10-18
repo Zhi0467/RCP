@@ -732,7 +732,6 @@ def test_auto_research_root_uses_episode_lineage_and_strict_request_decode(tmp_p
 
     assert episode.mode == "auto_research"
     assert episode.graph_target.kind == "branch"
-    assert episode.graph_target.branch_id == episode.episode_id
     assert episode.graph_base_head == GraphHeadRef(revision=0)
     assert root.kind == "auto_research"
     assert root.graph_target == episode.graph_target

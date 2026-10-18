@@ -510,7 +510,8 @@ def test_require_dispatch_is_unchanged_and_carries_no_membership_argument() -> N
     """require_dispatch sees no user and no project, so it is not where the check goes."""
 
     dispatch = inspect.signature(require_dispatch)
-    assert list(dispatch.parameters) == ["authority"]
+    # A member-dispatched merge names its branch source, never a user or project.
+    assert list(dispatch.parameters) == ["authority", "member_merge_source"]
 
     apply_signature = inspect.signature(require_apply)
     membership = apply_signature.parameters["is_project_member"]

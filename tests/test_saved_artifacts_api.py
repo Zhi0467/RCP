@@ -444,11 +444,11 @@ def test_report_links_to_its_concluding_chat_on_exact_target(
         assert query == {
             "view": ["chats"],
             "chat": [task.request["chat_id"]],
-            "branch_id": [parent.episode_id],
+            "branch_id": [parent.graph_target.branch_id],
         }
         transcript = client.get(
             f"/api/projects/{project_id}/chats/{task.request['chat_id']}",
-            params={"branch_id": parent.episode_id},
+            params={"branch_id": parent.graph_target.branch_id},
         )
         assert transcript.status_code == 200, transcript.text
     else:
@@ -493,7 +493,9 @@ def test_auto_research_worker_artifact_opens_its_validated_branch_chat(manifest,
     assert entry["episode_mode"] == "auto_research"
     assert client.get(entry["viewer_url"]).status_code == 200
     # The tag names the branch even when no source link survives.
-    assert entry["graph_branch_name"] == store.branch_names(project_id)[parent.episode_id]
+    assert (
+        entry["graph_branch_name"] == store.branch_names(project_id)[parent.graph_target.branch_id]
+    )
     if not routed:
         assert entry["source_chat_href"] is None
         return
@@ -502,11 +504,11 @@ def test_auto_research_worker_artifact_opens_its_validated_branch_chat(manifest,
     assert parse_qs(route.query) == {
         "view": ["chats"],
         "chat": [worker_id],
-        "branch_id": [parent.episode_id],
+        "branch_id": [parent.graph_target.branch_id],
     }
     transcript = client.get(
         f"/api/projects/{project_id}/chats/{worker_id}",
-        params={"branch_id": parent.episode_id},
+        params={"branch_id": parent.graph_target.branch_id},
     )
     assert transcript.status_code == 200, transcript.text
     assert transcript.json()["graph_target"] == parent.graph_target.model_dump(mode="json")

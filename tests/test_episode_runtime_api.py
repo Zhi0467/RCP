@@ -13,7 +13,7 @@ from rcp.runs.auto_research import AutoResearchCommandContext, AutoResearchRunRe
 from rcp.storage import AgentTaskRecord, EpisodeRecord
 from tests.helpers import signed_in_client
 
-from .helpers import create_named_app, wait_for_task
+from .helpers import append_fixture_patch, create_named_app, seed_patch, wait_for_task
 from .test_episode_api import settling_auto_research_stream
 
 _EXECUTION_PROFILES = (
@@ -400,6 +400,9 @@ def test_worker_request_uses_the_node_work_profile_or_the_orchestrator_pick(
         display_name="Researcher",
     )
     graph_target = GraphTargetRef(kind="branch", branch_id=episode_id)
+    # The worker seat must exist on the target graph; main stands in for the branch.
+    append_fixture_patch(service, seed_patch())
+    monkeypatch.setattr(service, "for_graph_target", lambda _target: service)
     episode = EpisodeRecord(
         episode_id=episode_id,
         project_id=project_id,
@@ -431,7 +434,9 @@ def test_worker_request_uses_the_node_work_profile_or_the_orchestrator_pick(
     worker = _auto_research_worker_request(
         service,
         AutoResearchCommandContext(episode=episode, task=task, request=request),
-        SpawnArguments(seat_node_id="blocker-1", instruction_file="worker-task.md"),
+        SpawnArguments(
+            seat_node_id="hyp/replanning-restores-plasticity", instruction_file="worker-task.md"
+        ),
         "Resolve the blocker.",
         worker_id,
     )
@@ -445,7 +450,7 @@ def test_worker_request_uses_the_node_work_profile_or_the_orchestrator_pick(
     assert worker.run_truth_scope == list(manifest.agent.default_run_truth_scope)
     assert worker.chat_id == worker_id
     assert worker.chat_scope == "node"
-    assert worker.node_id == "blocker-1"
+    assert worker.node_id == "hyp/replanning-restores-plasticity"
     assert worker.message == "Resolve the blocker."
     assert worker.mode == "work"
     assert worker.trigger == "orchestrator"
@@ -468,7 +473,7 @@ def test_worker_request_uses_the_node_work_profile_or_the_orchestrator_pick(
         service,
         AutoResearchCommandContext(episode=episode, task=task, request=request),
         SpawnArguments(
-            seat_node_id="blocker-1",
+            seat_node_id="hyp/replanning-restores-plasticity",
             instruction_file="worker-task.md",
             provider="codex",
             model="reviewer",

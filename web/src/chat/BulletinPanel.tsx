@@ -29,7 +29,7 @@ const kinds: Record<string, string> = {
   auto_research_root: "Auto-research",
   worker_node: "Node worker",
   worker_project: "Project worker",
-  experiment: "Experiment",
+  experiment_loop: "Experiment",
 };
 
 export function BulletinPanel({ projectId, target, isMember, onOpenNode }: Props) {
@@ -191,7 +191,6 @@ export function BulletinPanel({ projectId, target, isMember, onOpenNode }: Props
       aria-label="Bulletin"
     >
       <header className="bulletin-head">
-        <h2>Bulletin</h2>
         {Boolean(error || page.error) && (
           <button
             type="button"
@@ -283,7 +282,7 @@ export function BulletinPanel({ projectId, target, isMember, onOpenNode }: Props
             ref={input}
             rows={1}
             aria-label="Bulletin post"
-            placeholder={reply ? "Reply…" : "Message the bulletin"}
+            placeholder={reply ? "Reply…" : "Message all agents"}
             value={draft}
             disabled={busy}
             onChange={(event) => {

@@ -86,7 +86,7 @@ def test_branch_discuss_and_work_share_normal_session_during_and_after_episode(
     client = signed_in_client(app)
     store = app.state.catalog.store
     project_id = app.state.default_project_id
-    branch_id = episode.episode_id
+    branch_id = episode.graph_target.branch_id
     branch = main.for_graph_target(episode.graph_target)
     launcher = ScriptedLauncher(
         [{}, {"patch.json": agent_patch_json(_branch_patch("ev/human-review"))}, {}],
@@ -112,7 +112,7 @@ def test_branch_discuss_and_work_share_normal_session_during_and_after_episode(
     assert launcher.launch_kwargs[0]["capability"] == "discuss"
 
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
-    store.mark_episode_stop_skipped(branch_id)
+    store.mark_episode_stop_skipped(episode.episode_id)
     second = client.post(
         url,
         json={**payload, "mode": "work", "session_id": first_task.native_session_id},
@@ -210,7 +210,7 @@ def test_branch_merge_admits_fresh_discuss_without_graph_authority(
         "mode": "discuss",
         "run_truth_scope": ["repo-a"],
     }
-    url = f"/api/projects/{episode.project_id}/tasks/{kind}?branch_id={episode.episode_id}"
+    url = f"/api/projects/{episode.project_id}/tasks/{kind}?branch_id={episode.graph_target.branch_id}"
 
     response = client.post(url, json=payload)
     assert response.status_code == 202, response.json()
@@ -248,7 +248,9 @@ def test_branch_chat_api_requires_existing_canonical_branch_and_explicit_route(m
         == 404
     )
     assert (
-        client.post(f"{base}/tasks/refresh?branch_id={episode.episode_id}", json={}).status_code
+        client.post(
+            f"{base}/tasks/refresh?branch_id={episode.graph_target.branch_id}", json={}
+        ).status_code
         == 422
     )
     assert (
@@ -284,7 +286,7 @@ def test_branch_chat_recovery_uses_original_graph_target(manifest, tmp_path, mon
 
     monkeypatch.setattr(app.state.launcher, "stream", launch)
     started = client.post(
-        f"{base}/tasks/project_chat?branch_id={episode.episode_id}",
+        f"{base}/tasks/project_chat?branch_id={episode.graph_target.branch_id}",
         json={"chat_id": str(uuid.uuid4()), "message": "Record the result.", "mode": "work"},
     )
     assert started.status_code == 202, started.json()
@@ -320,7 +322,7 @@ def test_branch_chat_patch_repair_does_not_apply_to_main(manifest, tmp_path, mon
     )
     monkeypatch.setattr(app.state.launcher, "stream", launcher.stream)
     started = client.post(
-        f"{base}/tasks/project_chat?branch_id={episode.episode_id}",
+        f"{base}/tasks/project_chat?branch_id={episode.graph_target.branch_id}",
         json={"chat_id": str(uuid.uuid4()), "message": "Record the result.", "mode": "work"},
     )
     assert started.status_code == 202, started.json()
@@ -385,7 +387,7 @@ def test_human_branch_experiment_has_own_episode_and_target_bound_recovery(
         store.mark_episode_stop_skipped(branch_episode.episode_id)
     monkeypatch.setattr(app.state.launcher, "stream", launch)
     started = client.post(
-        f"{base}/experiments/exp%2Fbounded-loop/run?branch_id={branch_episode.episode_id}",
+        f"{base}/experiments/exp%2Fbounded-loop/run?branch_id={branch_episode.graph_target.branch_id}",
         json={"chat_id": str(uuid.uuid4())},
     )
     assert started.status_code == 202, started.json()
@@ -438,8 +440,9 @@ def test_restart_creates_and_launches_a_reserved_experiment_branch(
     assert response.status_code == 202, response.json()
     root = tasks.store.agent_task(response.json()["operation_id"])
     assert root.status == "queued"
+    branch_id = tasks.store.episode(root.episode_id).graph_target.branch_id
     with pytest.raises(KeyError):
-        service.history.branch(root.episode_id)
+        service.history.branch(branch_id)
 
     restarted = BackgroundAgentTasks(tasks.store, tasks.stream)
     spawned: list[str] = []
@@ -449,7 +452,7 @@ def test_restart_creates_and_launches_a_reserved_experiment_branch(
     ensure = partial(ensure_episode_graph_target, catalog=app.state.catalog)
     assert reconcile_reserved_experiment_branch_roots(restarted, ensure) == [root.operation_id]
     assert spawned == [root.operation_id]
-    assert service.history.branch(root.episode_id).head_ref().target.branch_id == root.episode_id
+    assert service.history.branch(branch_id).head_ref().target.branch_id == branch_id
 
 
 def test_branch_retry_does_not_initialize_branch(manifest, tmp_path, monkeypatch):
@@ -466,7 +469,7 @@ def test_branch_retry_does_not_initialize_branch(manifest, tmp_path, monkeypatch
     with signed_in_client(app) as client:
         started = client.post(
             f"/api/projects/{project_id}/tasks/project_chat",
-            params={"branch_id": episode.episode_id},
+            params={"branch_id": episode.graph_target.branch_id},
             json={"chat_id": str(uuid.uuid4()), "message": "Explain.", "mode": "discuss"},
         )
         assert started.status_code == 202, started.text

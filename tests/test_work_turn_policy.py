@@ -100,7 +100,7 @@ def test_resumed_mailbox_preserves_validation_policy_without_opening_graph(
     )
     resume(open_service, execution)
     assert opened == []
-    assert restored["command_handler"].allowed_verbs == {"validate", "lesson"}
+    assert restored["command_handler"].allowed_verbs == {"validate", "lesson", "bulletin"}
     assert restored["validate"]("candidate").status == "valid"
     assert opened == [True]
     expected = {"run_truth_scope": ["rq-launch"], "source_operation_id": "accepted-turn"}
@@ -208,7 +208,7 @@ def test_resumed_mailbox_retains_ask_without_compute_and_rechecks_authority(
     if ask_allowed and mode == "work":
         assert restored is not None and "ask" in restored.allowed_verbs
     elif mode == "work":
-        assert restored is not None and restored.allowed_verbs == {"validate", "lesson"}
+        assert restored is not None and restored.allowed_verbs == {"validate", "lesson", "bulletin"}
     else:
         assert restored is None
 

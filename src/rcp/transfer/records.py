@@ -24,7 +24,6 @@ from pydantic import (
 
 from rcp.artifacts import kept_binding_is_complete
 from rcp.core.models import GraphBranchMetadata
-from rcp.history.ancestry import branch_ancestry
 from rcp.transfer.archive import (
     TransferArchiveActor,
     TransferArchiveAttribution,
@@ -1210,6 +1209,9 @@ class TransferRecordBundle(_StrictTransferRecord):
             for episode in self.episodes
         ):
             raise ValueError("episode references an unknown graph branch")
+
+        # Imported here: ``rcp.history`` imports storage, which imports this module.
+        from rcp.history.ancestry import branch_ancestry
 
         def parent_branch(branch_id: str) -> str | None:
             branch = branches.get(branch_id)

@@ -49,7 +49,7 @@ def bulletin_roster(
             while root.continues_episode_id in episodes:
                 root = episodes[root.continues_episode_id]
             actor_id = f"episode:{root.episode_id}"
-            kind = "auto_research_root" if episode.mode == "auto_research" else "experiment"
+            kind = "auto_research_root" if episode.mode == "auto_research" else "experiment_loop"
             seat = episode.control_node_id
             auto = store.auto_research_state(root.episode_id)
             if auto:
