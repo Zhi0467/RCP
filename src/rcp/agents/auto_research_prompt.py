@@ -20,8 +20,10 @@ from rcp.agents.prompts import (
     write_scope_section,
 )
 from rcp.agents.staged_command_client import (
+    branch_usage,
     bulletin_usages,
     child_target_usage,
+    merge_usage,
     spawn_seat_usage,
 )
 from rcp.agents.write_scope import ProjectWriteScope
@@ -120,8 +122,8 @@ def _command_invocations(
             f"{child_target_usage()} "
             "[--provider <provider>] [--model <model>] [--effort <effort>]",
         ),
-        "merge": ("merge --key <key> <branch-id>",),
-        "branch": ("branch --archive <branch-id>",),
+        "merge": (merge_usage(),),
+        "branch": (branch_usage(),),
         "pause": ("pause --key <key> <worker-id>",),
         "resume": ("resume --key <key> <worker-id>",),
         "stop": ("stop --key <key> <worker-id>",),

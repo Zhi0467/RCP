@@ -2556,27 +2556,39 @@ async def test_fork_commands_round_trip_through_broker(tmp_path):
     assert seen[1][2] == {"branch_id": "fork", "action": "archive"}
 
 
-def test_every_advertised_bulletin_usage_parses():
+def test_every_advertised_shared_record_usage_parses():
     from rcp.agents import staged_command_client as client
 
-    samples = {"<cursor>": "c1", "<key>": "k1", "<post-id>": "p1", "<body-file>": "body.md"}
-    actions = []
-    for usage in client.bulletin_usages():
+    samples = {
+        "<cursor>": "c1",
+        "<key>": "k1",
+        "<post-id>": "p1",
+        "<body-file>": "body.md",
+        "<branch-id>": "b1",
+    }
+
+    def parse(usage):
         words = usage.replace("[", "").replace("]", "").split()
-        namespace = client._parser().parse_args(
+        return client._parser().parse_args(
             ["--timeout", "1", "--workspace", "/w", "--credential", "c"]
             + [samples.get(word, word) for word in words]
         )
-        actions.append(
-            next(
-                dest
-                for dest, _, _ in (
-                    client.BULLETIN_READ,
-                    client.BULLETIN_POST,
-                    client.BULLETIN_EDIT,
-                    client.BULLETIN_DELETE,
-                )
-                if getattr(namespace, dest)
+
+    actions = [
+        next(
+            dest
+            for dest, _, _ in (
+                client.BULLETIN_READ,
+                client.BULLETIN_POST,
+                client.BULLETIN_EDIT,
+                client.BULLETIN_DELETE,
             )
+            if getattr(parse(usage), dest)
         )
+        for usage in client.bulletin_usages()
+    ]
     assert actions == ["read", "post", "edit", "delete"]
+    merge = parse(client.merge_usage())
+    assert (merge.verb, merge.key, merge.branch_id) == ("merge", "k1", "b1")
+    branch = parse(client.branch_usage())
+    assert (branch.verb, branch.archive) == ("branch", "b1")
