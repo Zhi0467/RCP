@@ -583,6 +583,9 @@ MACHINE_POWER_WATCHDOG_INTERVAL_SECONDS = 1
 EVIDENCE_FLAG_FINDING_MAX_CHARS = 400
 EVIDENCE_FLAG_SOURCE_MAX_CHARS = 1000
 
+# Project groups are space-local labels over related projects.
+PROJECT_GROUP_NAME_MAX_CHARS = 120
+
 # Operational lessons are bounded context, independent of graph authority.
 LESSON_TEXT_MAX_CHARS = 600
 LESSONS_PER_PROJECT_MAX = 200

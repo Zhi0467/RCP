@@ -34,6 +34,7 @@ from rcp.agents.prompts import (
     _invoked_package_section,
     invoked_package_pointers,
     invoked_provider_skill_section,
+    render_chat_read_context,
 )
 from rcp.background import AgentTaskContinuation, AgentTaskExecution
 from rcp.history import ReplayHalted
@@ -526,6 +527,8 @@ def _compose_child_fresh_prompt(
             contract_path,
             PromptFactory.launch_prompt(contract_path)
             + "\n\n"
+            + render_chat_read_context(turn.context)
+            + "\n\n"
             + stage_operational_context_pointer(
                 turn.execution,
                 turn.local_stage,
@@ -556,6 +559,7 @@ def _compose_child_fresh_prompt(
         skill_pointers=staged.skill_pointers,
         attachment_pointers=staged.attachment_pointers,
         ontology_extensions=turn.context.ontology_extensions,
+        read_context=render_chat_read_context(turn.context),
     )
     return _ComposedWorkPrompt(contract_path, prompt, contract_path, render, values)
 
@@ -626,6 +630,7 @@ def _compose_child_retry_prompt(
         execution=turn.execution,
         role="work_retry",
     )
+    prompt += "\n\n" + render_chat_read_context(turn.context)
     prompt += "\n\n" + stage_operational_context_pointer(
         turn.execution,
         turn.local_stage,
@@ -1298,8 +1303,13 @@ async def _serve_auto_research_child_work_mailbox(
             from rcp.runs.graph_history_queries import handle_graph_history_command
 
             assert service is not None
+            project_service = service()
             return await asyncio.to_thread(
-                handle_graph_history_command, service(), graph_read_scope, request
+                handle_graph_history_command,
+                project_service,
+                graph_read_scope,
+                request,
+                resolve_project=project_service.resolve_project_service,
             )
         if isinstance(request, ValidateCommandRequest):
             count = budget.reserve(request.request_id)

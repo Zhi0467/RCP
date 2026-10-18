@@ -940,6 +940,7 @@ class ProjectCatalog:
             repository_inventory=self.repository_ownership_inventory,
             task_continuation_session=self.store.agent_task_continuation_session_id,
             chat_graph_target=self.store.chat_graph_target,
+            project_service_resolver=self.open,
         )
         if root != workspace.root:
             self._display_services[project_id] = (root, service, materialization)
@@ -1257,6 +1258,7 @@ class ProjectCatalog:
                 repository_inventory=self.repository_ownership_inventory,
                 task_continuation_session=self.store.agent_task_continuation_session_id,
                 chat_graph_target=self.store.chat_graph_target,
+                project_service_resolver=self.open,
             )
             snapshot = _snapshot_payload(service.project_snapshot(materialization=materialization))
             self._stamp_snapshot_identity(snapshot, project_id)
@@ -1716,6 +1718,7 @@ class ProjectCatalog:
             repository_inventory=self.repository_ownership_inventory,
             task_continuation_session=self.store.agent_task_continuation_session_id,
             chat_graph_target=self.store.chat_graph_target,
+            project_service_resolver=self.open,
         )
 
     def discard_retired_transfer_source(self, request_id: str) -> None:
@@ -2587,6 +2590,7 @@ class ProjectCatalog:
             repository_inventory=self.repository_ownership_inventory,
             task_continuation_session=self.store.agent_task_continuation_session_id,
             chat_graph_target=self.store.chat_graph_target,
+            project_service_resolver=self.open,
         )
         return service, initialized
 
@@ -2743,6 +2747,7 @@ class ProjectCatalog:
     ) -> dict[str, object]:
         card: dict[str, object] = {
             "id": record.project_id,
+            "group_id": record.group_id,
             "home_space_id": record.home_space_id,
             "name": record.name,
             "locator": record.locator,

@@ -74,7 +74,7 @@ def test_flag_admission_binding_rolls_back_with_task_transaction(store):
         }
     )
     with store.evidence_flag_admission(
-        "project", original["flag_id"], user_id=store.local_owner.user_id, request_id="address"
+        "project", original["flag_id"], user_id=store.local_owner.user_id
     ):
         with pytest.raises(RuntimeError), store.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")

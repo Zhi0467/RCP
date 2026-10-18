@@ -124,7 +124,12 @@ gained a display-only live status column and their progress triggers began
 comparing it (storage migration 54), ending at migration 53. It is built by the
 exact boundary source from the preceding immutable fixture.
 
+`pre-project-groups-v28-ae89ee3` retains the last shape before space-local
+project groups and provisioning group assignments (storage migration 55),
+ending at migration 54. It is built by the exact boundary source from the
+preceding immutable fixture.
+
 `pre-graph-branches-v28-ae89ee3` retains migration 54 before independent branch
-records (migration 55), including a same-id legacy branch, its Evidence patch,
+records (migration 56), including a same-id legacy branch, its Evidence patch,
 renamed and retired names, and its archive state. The exact boundary source
 upgrades the preceding fixture and creates that branch through its public APIs.

@@ -60,9 +60,10 @@ test("the phone project chrome keeps one bar on top and the panels at the bottom
         await history.evaluate((element) => getComputedStyle(element, "::after").content),
         /Project history/,
       );
-      // Research's graph filter, hidden with the tab strip, is reachable here.
-      await page.getByRole("combobox").selectOption("review");
-      assert.equal(await page.locator("#phone-project-menu").isHidden(), false);
+      // Research's view picker, hidden with the tab strip, is reachable here.
+      await page.locator("#phone-project-menu").getByRole("button", { name: "Everything" }).click();
+      assert.equal(await page.locator("#phone-project-menu").isHidden(), true);
+      await more.click();
       await history.click();
       assert.equal(await page.locator("#phone-project-menu").isHidden(), true);
       await more.click();
@@ -82,6 +83,7 @@ test("the phone project chrome keeps one bar on top and the panels at the bottom
 
       assert.deepEqual(await page.evaluate(() => window.chosen), [
         "project-29",
+        "review",
         "history",
         "settings",
       ]);

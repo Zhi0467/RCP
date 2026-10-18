@@ -255,6 +255,7 @@ def test_current_schema_classifies_every_table_and_installs_all_owner_triggers(t
             "graph_branches",
             "bulletin_posts",
             "projects",
+            "project_groups",
             "chat_reads",
             "chat_pins",
             "research_view_pins",

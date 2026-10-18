@@ -51,12 +51,13 @@ const BASELINE = fileURLToPath(
 );
 
 // The research layer: the research type and wire-model mirror, and the
-// research-only features (Research paths, the Experiment board, Auto-research,
+// research-only features (the Research drill-down, the Experiment board, Auto-research,
 // the paper). Another project type would replace these modules, not edit them.
 const RESEARCH_LAYER = new Set([
   "core/types.ts",
   "graph/researchType.ts",
   "graph/researchProjection.ts",
+  "graph/ResearchDrilldown.tsx",
   "experiments/experimentBoardModel.ts",
   "core/experimentGuidance.ts",
   "experiments/ExperimentBoard.tsx",

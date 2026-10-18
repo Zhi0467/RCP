@@ -46,42 +46,33 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
-        # Bulletin channels without shared read-cursor invalidation.
-        "00c0b6c14b77405e1d47dd09ff41cd88e86430823af88dc6371eeed77ba94778",
-        "08645d9816b51375707893a88017486ec75c352d38dffff888abf5f177ae9e23",
-        "32b5a73dbf749358b0a8ce42f863097d4c2cdafc6f2def3597c74aeeb930f570",
-        "3343cdb72370536bb77c542c3d2b113767e74017629b125d182c87f6f3770b98",
-        "71a8ddacc31ded89a5cb3e92ae6593f7b74bebbed23378dca4582e367954408f",
-        "a6124b7d54623785335eae5a83e7186f3446bbba578e8c079ffdc11812cbae10",
-        "af0cdea0919535c273dc62c4237aed28d8f571a3daff30dcd652c682ed4e033e",
-        "c7ec2a49bb6e004714fbe04788e4efbc0147352dbaa312b6f73e140eab410a21",
-        "d5c5bcd62b91b4707a895aa45a1e82ad1233864ff74832e8c6154b3d6ec39d2e",
-        "dcdeff1c0c75e0ebc193a79091b32dd79a85d3e13d4bd755ce5f3011b9bc963a",
-        "fcf1206635640bfe38715f61a29e903efedf0505ec06dc229e766f2741dfee4e",
-        # Graph Bulletin (v56) and project worker seats (v57): fresh, fixture and in-place upgrades.
-        "1dabcec04d1e675fdba28a69f57bf09034afb548583be4207d8611f118238f4d",
+        # Graph branches (v56), Bulletin channels (v57), and project worker seats
+        # (v58) after project groups: fresh, immutable fixture upgrades, and in-place
+        # upgrades.
+        "0349cd178a6673c8ad8b8e14eb282b58f1eba5a353f62914e49a4a8ff237a1e2",
         "1dbb1fded84d064ef1d5af68c833701f619ae364ef8aaca367f8c36d8ae12dcb",
-        "2e0e06f111366246e044c78f78270906afeecfde091dee7cb8976ac56931d1af",
-        "5b047dd3e4e8b70904d1c0176c576dce21feaf2bdd8a30ac6d0e096d5f533b81",
-        "9d57bfc1f4b6bcf80c3760fb53363af716cc776d0881d92873922d7f41f7ba9f",
+        "2a0424f28f11e78e211562714bb1a52e76b94cb2af0623dba90508fec872c8e5",
+        "3346b8974c91119f133b21d263c32ed349305ec822d08f3a8d69754313e7c82f",
+        "381262e8aa1fedea8cbb4ed66a649a3c407c7d85fb6d9b19f33c776ba3b937a3",
+        "41f6d11bf33e252bb79e6b7ea8941f5d0ec8162b1ba2b1c2d194e069c6ce74e9",
+        "49c149981b132d103730f8c0ada875c009d8e5356de0dfc969da962d78e4a3fd",
+        "860ca895942d74b5597f0589418c5130719d8e62814ce0f3d9d88ee1cde877a7",
+        "9aeede4782272b2b0153f372439ca68b979202aae5e69ce96e40a528f12a5cfc",
+        "a19337b38c0d3f3ca38d34734bcdc85d49ed7af38befaad19f0566ce70b9102d",
         "a57a3301208d9894f43eeb33139d671501878789035ce5883801057a35b97c41",
-        "aff5b2a126c1cd0ad44d00d943c7d9b0465f508177f9e5e476ff78753dc2b800",
-        "d4d156d48b0fc394f05a74742a103f44cac6801436c7b3dae9fb2fec9ef1c37d",
-        "dad9509621a28e8ed9412f027b16bf6063a925bb1495926f70f353dfcc483899",
-        "f080bf8598b2abf53a8c8c5955c8d2b213f85547d23ccffd3a1d5d54f53ff652",
-        "f3fc15fe5a9a203f10d40034c5872f1569c0c5e4d4266e61dde5b27c65d5271e",
-        "f43936da954ac960da99398c5cd602524841b3ba45b42f252d549d23460a4ed8",
-        "f9ce64dfc6414f166f568ef1f185607d13b67522c7acf43e468324a1616e6349",
-        # Independent graph branches (v55): fresh, fixture and in-place upgrades.
-        "4176278fea141b3e334bf43733a20fbd884ace1dac87e78e4c873958bedda8d8",
-        "7fcf2c73bf75ec773e1cb720e33efc74eae24953d4bf97345119d5a2c5e15ca9",
-        "8cbba76ed1314b1a736ec68fdb7efbec52591d4415b2bb21f67d3a0bfdbd23a3",
-        "941bc4f00749e36a7e910160454afc98fd7c5d6f61622d753bd804a3ca6eaee6",
-        "a5962a7949aa3dd5ce3f4f75853bd8754513f497dc9cf0af23167da69ea74543",
-        "b909e2aea0b507a321efa13b66457582ba16df9717f70f9d18dd7cfc34bf3a7f",
-        "bdb62db94af3ae0ec129ef5122c2be8405be1e26329a7b2530164aea0f24affc",
-        "cd116b6a0d8b671539f3cd69fa9f85e28013af82ecd8da6be1b855b6aa988365",
-        "cdf3183a3609d462eb5bfb6e6bf8f7563db3e1bf3b4672fa34f53c0e5495ab63",
+        "c018be254903440cadc0070417b15621bd6619d8f23ca9657af12d7dc937bc44",
+        "c55c51153edb4810651a785e5b1dea83fd328a3c3a5c015378853e504725271d",
+        # Project groups (v55), fresh, immutable fixture upgrades, and
+        # in-place upgrades.
+        "140c45bb100d25a6d15680221832c87cc0160748fbcb1d45a72b516de9be8dd7",
+        "3552237364430df622671288eee42a1f2acaaf37542b058c7e7d8bb09ec7387e",
+        "3c10f527714880a571a8920cf49eac05da034a215d838a7fc83b4cd6a6173cf2",
+        "52c70c4b2f2ef9c9f36b026bba6d3c50a0387d295e2b1e60118021e60477017f",
+        "6bff26f0875df88302ceb9cf53e7c4d5d8e8b10642e750aad2b14193b396014e",
+        "7cc09f0da05878642a2fb7d50494f7eab64254eb3f211af239cfab0eb75172f0",
+        "82aba6f3a0c7f85df958f187c1e2426c3d4f52aa40f4fb60b92e0ae46facc8f2",
+        "a74e8225bb86d4ad840689e4cc54c6be2dd688eb43438ee4f845fe54ce507354",
+        "ecaa7a5fa0e717bce9291e492ff3709f87eb5baaec3ef2cf003f1a77540c5ac7",
         # Agent live status (v54), fresh, immutable fixture upgrades, and
         # in-place upgrades.
         "0b8af07db48acdbc51e7bc49dc545c54f146e3b0498473fd33e617cf175854b9",

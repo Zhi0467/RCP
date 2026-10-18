@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import secrets
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
@@ -18,7 +19,7 @@ from rcp.agents.command_protocol import (
     GraphLogCommandRequest,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
-from rcp.core.transition_models import GraphHeadRef
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history.queries import HeadSpec, parse_head
 from rcp.limits import (
     GRAPH_HISTORY_COMMAND_CURSOR_MAX_LENGTH,
@@ -77,7 +78,11 @@ def _decode_cursor(token: str, binding: str) -> _Cursor:
 
 
 def handle_graph_history_command(
-    service: ProjectService, scope: GraphReadScope, request: CommandRequest
+    service: ProjectService,
+    scope: GraphReadScope,
+    request: CommandRequest,
+    *,
+    resolve_project: Callable[[str], ProjectService] | None = None,
 ) -> CommandResponse:
     """Resolve once, then bind each engine continuation to its query and read scope."""
 
@@ -90,10 +95,20 @@ def handle_graph_history_command(
         return refuse("graph_history_verb_not_granted")
     if request.verb not in scope.verbs:
         return refuse("graph_history_verb_not_granted")
-    project_id = service._project_id
-    if project_id is None or not scope.readable(project_id, scope.target):
-        return refuse("graph_history_scope_refused")
     arguments = request.arguments
+    project_id = arguments.project or scope.project_id
+    default_target = scope.target if project_id == scope.project_id else GraphTargetRef()
+    if not scope.readable(project_id, default_target):
+        return refuse("graph_history_scope_refused")
+    if project_id != service._project_id:
+        if resolve_project is None:
+            return refuse("graph_history_scope_refused")
+        try:
+            service = resolve_project(project_id)
+        except KeyError:
+            return refuse("graph_history_scope_refused")
+    if service._project_id != project_id:
+        return refuse("graph_history_scope_refused")
     if isinstance(request, GraphDiffCommandRequest):
         args = request.arguments
         specs = (
@@ -106,7 +121,7 @@ def handle_graph_history_command(
     if any(
         not scope.readable(
             project_id,
-            spec.target or scope.target,
+            spec.target or default_target,
             spec.revision if isinstance(spec.revision, int) else None,
         )
         for spec in specs
@@ -129,14 +144,14 @@ def handle_graph_history_command(
             if any(
                 engine.resolve(
                     HeadSpec(target=head.target, revision=head.revision),
-                    default_target=scope.target,
+                    default_target=default_target,
                 )
                 != head
                 for head in heads
             ):
                 return refuse("graph_history_cursor_invalid")
         else:
-            heads = [engine.resolve(spec, default_target=scope.target) for spec in specs]
+            heads = [engine.resolve(spec, default_target=default_target) for spec in specs]
             if isinstance(request, GraphDiffCommandRequest) and request.arguments.branch_changes:
                 steps = engine.steps(heads[0])
                 heads.insert(0, steps[0].before_head if steps else heads[0])

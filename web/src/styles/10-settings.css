@@ -2597,12 +2597,6 @@ button.agent-provider-label {
   .project-tabs > button.project-tabs-back svg {
     display: block;
   }
-  .trust-filter {
-    padding-right: 9px;
-  }
-  .research-subpanel {
-    padding: 0 20px;
-  }
   .overview-page {
     padding: 38px 20px 70px;
   }
@@ -2688,19 +2682,6 @@ button.agent-provider-label {
     border-left: 0;
     border-top: 1px solid var(--line);
   }
-  .research-path {
-    grid-template-columns: 1fr 1fr;
-  }
-  .research-path-stage + .research-path-stage {
-    border-left: 0;
-    border-top: 1px solid var(--line);
-  }
-  .research-path-stage:nth-child(even) {
-    border-left: 1px solid var(--line);
-  }
-  .research-path-stage:nth-child(2) {
-    border-top: 0;
-  }
 }
 
 @media (max-width: 560px) {
@@ -2761,13 +2742,6 @@ button.agent-provider-label {
   .project-tabs-toggle {
     margin-left: -4px;
     width: 25px;
-  }
-  .trust-filter {
-    display: none;
-  }
-  .research-subpanel {
-    margin-top: 16px;
-    padding: 0 16px;
   }
   .overview-heading h1 {
     font-size: var(--type-5xl);
@@ -2949,15 +2923,6 @@ button.agent-provider-label {
   .run-inspector-actions {
     align-items: flex-start;
     flex-direction: column;
-  }
-  .research-path {
-    grid-template-columns: 1fr;
-  }
-  .research-path-stage:nth-child(even) {
-    border-left: 0;
-  }
-  .research-path-stage:nth-child(2) {
-    border-top: 1px solid var(--line);
   }
   .agent-run-row {
     align-items: start;

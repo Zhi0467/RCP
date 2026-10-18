@@ -1,3 +1,4 @@
+import { projectGroupHash } from "./projects/projectGroups";
 import { EvidenceFlagProvider } from "./graph/EvidenceFlagContext";
 import { EvidenceFlagInbox } from "./projects/EvidenceFlagInbox";
 import { evidenceFlagRows } from "./projects/evidenceFlags";
@@ -56,6 +57,7 @@ import { ReconnectOverlay } from "./desktop/ReconnectOverlay";
 import { useUpdateNotice } from "./desktop/useUpdateNotice";
 import { TerminalTab } from "./terminals/TerminalTab";
 import { GraphPicker } from "./graph/GraphPicker";
+import { ViewPicker, type ResearchLayout } from "./graph/ViewPicker";
 import { selectionAfterGraphSwitch } from "./graph/graphPickerModel";
 import {
   branchOwnerEpisode,
@@ -289,13 +291,11 @@ import type {
   GraphTargetRef,
   GraphUpdateRecovery,
   Health,
-  ProjectCard,
   ProjectDeletionResult,
   ProjectInvitation,
   ProjectSnapshot,
   ProjectTransitionResponse,
   TransitionPreviewResponse,
-  TrustView,
   WatcherRecord,
 } from "./core/types";
 import { decodeProjectTransitionResponse, DISPLAY_NAME_MAX_LENGTH } from "./core/types";
@@ -422,8 +422,8 @@ const DagView = lazy(() =>
 const ExecutionView = lazy(() =>
   import("./graph/GraphViews").then((module) => ({ default: module.ExecutionView })),
 );
-const ScientificView = lazy(() =>
-  import("./graph/GraphViews").then((module) => ({ default: module.ScientificView })),
+const ResearchDrilldown = lazy(() =>
+  import("./graph/ResearchDrilldown").then((module) => ({ default: module.ResearchDrilldown })),
 );
 const LoadedPaperWorkspace = lazy(() =>
   import("./paper/PaperWorkspace").then((module) => ({ default: module.LoadedPaperWorkspace })),
@@ -645,6 +645,9 @@ function MemberApp({
     setupOpen: isSetupHash(window.location.hash),
   }));
   const [graphTarget, setGraphTarget] = useState<GraphTargetRef>(initialRoute.graphTarget);
+  const [groupFiling, setGroupFiling] = useState<{ projectId: string; groupId: string } | null>(
+    null,
+  );
   const [requestedChat, setRequestedChat] = useState(() => ({
     hash: window.location.hash,
     projectId: initialRoute.project.projectId,
@@ -802,6 +805,7 @@ function MemberApp({
     projectId,
     setupOpen,
     projects,
+    projectGroups,
     openProjectTabs,
     experimentLoops,
     experimentLoopsLoaded,
@@ -811,7 +815,6 @@ function MemberApp({
     projectHeaderCollapsed,
     isActiveProject,
     getActiveProjectId,
-    replaceProjects,
     loadProjectIndex,
     refreshExperimentLoops,
     refreshProjectExperimentLoops,
@@ -986,6 +989,7 @@ function MemberApp({
     dagRelationFocusId,
     panelRef,
     activeDagViewportRef,
+    activeResearchTrailRef,
     captureProjectSelection,
     restoreProjectSelection,
     resetProjectSelection,
@@ -1567,8 +1571,7 @@ function MemberApp({
           },
         );
       } else {
-        const nextProjects = await api<ProjectCard[]>("/api/projects");
-        if (!stopped) replaceProjects(nextProjects);
+        await loadProjectIndex();
       }
     };
     const prepareShow = async () => {
@@ -1643,8 +1646,8 @@ function MemberApp({
     getActiveProjectId,
     isActiveProject,
     recordDesktopUpdateReady,
+    loadProjectIndex,
     refreshDesktopUpdate,
-    replaceProjects,
     reportIdentityIssue,
     reverifyIdentity,
     scheduler,
@@ -4107,8 +4110,24 @@ function MemberApp({
           key={projectSetupRouteKey(setupRoute)}
           projectCreation={authenticatedHealth!.project_creation}
           spaceKind={verifiedHealth!.space_kind}
-          onCancel={returnToProjects}
-          onCreated={openProject}
+          group={
+            setupRoute.kind === "create"
+              ? projectGroups.find((group) => group.id === setupRoute.groupId)
+              : null
+          }
+          onCancel={() => {
+            if (setupRoute.kind === "create" && setupRoute.groupId)
+              window.location.hash = projectGroupHash(setupRoute.groupId);
+            else returnToProjects();
+          }}
+          onCreated={(id) => {
+            const groupId = setupRoute.kind === "create" ? setupRoute.groupId : undefined;
+            if (!groupId) return openProject(id);
+            // Creation is the same in every space; the group's shelf files the project
+            // with one move, where a failed move keeps its retry.
+            setGroupFiling({ projectId: id, groupId });
+            window.location.hash = projectGroupHash(groupId);
+          }}
           setupRoute={setupRoute}
         />
         {updateSurface}
@@ -4155,6 +4174,10 @@ function MemberApp({
           onColorModeChoiceChange={appearance.setMode}
           palette={appearance.palette}
           projects={projects}
+          groups={projectGroups}
+          onGroupsChanged={loadProjectIndex}
+          groupFiling={groupFiling}
+          onGroupFilingTaken={() => setGroupFiling(null)}
           invitations={projectInvitations}
           onAnswerInvitation={answerProjectInvitation}
           spaceRuns={spaceRuns}
@@ -4623,19 +4646,12 @@ function MemberApp({
       />
     </>
   );
-  const trustFilter = showTrustFilter && (
-    <label className="trust-filter">
-      <span>Show</span>
-      <select
-        value={trustView}
-        onChange={(event) => changeTrustView(event.target.value as TrustView)}
-      >
-        <option value="working">Working graph</option>
-        <option value="accepted">Accepted only</option>
-        <option value="review">Everything</option>
-      </select>
-    </label>
-  );
+  const viewChoice = {
+    layout: (view === "dag" ? "dag" : "scientific") as ResearchLayout,
+    trustView,
+    onLayout: changeView,
+    onTrustView: changeTrustView,
+  };
   const phonePrimaryViews = new Set<AppView>(["overview", "attention", "scientific", "execution"]);
   const projectDock = (
     <ProjectDock
@@ -4697,7 +4713,7 @@ function MemberApp({
           sync={syncControls}
           menu={
             <>
-              {trustFilter}
+              {showTrustFilter && <ViewPicker inline {...viewChoice} />}
               {autoResearchButton}
               {projectUtilities}
             </>
@@ -4773,7 +4789,7 @@ function MemberApp({
             />
           )}
           {navItems.map(renderNavItem)}
-          {trustFilter}
+          {showTrustFilter && <ViewPicker {...viewChoice} />}
           {branchPicker}
         </nav>
       )}
@@ -4919,28 +4935,6 @@ function MemberApp({
             </div>
           }
         >
-          {(view === "scientific" || view === "dag") && (
-            <div className="research-subpanel" role="tablist" aria-label="Research panels">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={view === "scientific"}
-                className={view === "scientific" ? "active" : ""}
-                onClick={() => changeView("scientific")}
-              >
-                <GitBranch size={14} /> Research
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={view === "dag"}
-                className={view === "dag" ? "active" : ""}
-                onClick={() => changeView("dag")}
-              >
-                <Network size={14} /> DAG
-              </button>
-            </div>
-          )}
           {view === "overview" && (
             <ProjectOverview
               project={projectWithTransitionProjection(
@@ -5043,12 +5037,12 @@ function MemberApp({
             </div>
           )}
           {view === "scientific" && (
-            <ScientificView
-              {...graphEditingProps}
+            <ResearchDrilldown
               graph={presentedGraph}
               trustView={trustView}
               changedNodeIds={digestChangedNodes}
               onSelectNode={openNode}
+              trailRef={activeResearchTrailRef!}
             />
           )}
           {view === "dag" && (
@@ -5660,6 +5654,7 @@ function projectSetupRouteKey(route: ProjectSetupRoute): string {
       route.targetRequestId ?? "",
     ].join(":");
   }
-  if (route.kind === "create") return `${route.kind}:${route.requestId ?? ""}`;
+  if (route.kind === "create")
+    return `${route.kind}:${route.requestId ?? ""}:${route.groupId ?? ""}`;
   return route.kind;
 }

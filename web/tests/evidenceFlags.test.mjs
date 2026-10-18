@@ -25,6 +25,8 @@ test("flag rows keep open records, mark only current Evidence, and offer resolva
           chat_id: "chat",
           source: "repo/log:4",
         },
+        { ...base, flag_id: "added", kind: "consolidation_added" },
+        { ...base, flag_id: "failed-turn", chat_id: "chat" },
         { ...base, flag_id: "dismissed", state: "dismissed" },
         { ...base, flag_id: "missing", evidence_id: "gone" },
         { ...base, flag_id: "retired", evidence_id: "e2" },
@@ -37,7 +39,10 @@ test("flag rows keep open records, mark only current Evidence, and offer resolva
       [
         ["open", "e1", ["address", "open_evidence", "dismiss"]],
         ["paper", "e1", ["address", "open_evidence", "open_source", "dismiss"]],
-        ["addressing", "e1", ["open_chat", "open_evidence", "open_source", "dismiss"]],
+        ["addressing", "e1", ["open_chat"]],
+        // A consolidation notice reports no problem, so there is nothing to Address.
+        ["added", "e1", ["open_evidence", "dismiss"]],
+        ["failed-turn", "e1", ["address", "open_chat", "open_evidence", "dismiss"]],
         ["missing", null, ["dismiss"]],
         ["retired", null, ["dismiss"]],
       ],

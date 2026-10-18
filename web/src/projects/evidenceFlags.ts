@@ -2,6 +2,9 @@ import type { EvidenceFlag, GraphNode, Repository } from "../core/types";
 import { resolveRepositoryFileHref, type RepositoryFileTarget } from "../core/repositoryFileLinks";
 import { isOutcome, lifecycleField, projectType } from "../graph/researchType";
 
+/** Kinds that only bring Evidence to a human's attention; there is nothing to Address. */
+const NOTICE_FLAG_KINDS: ReadonlySet<EvidenceFlag["kind"]> = new Set(["consolidation_added"]);
+
 export type EvidenceFlagSource =
   { kind: "file"; target: RepositoryFileTarget } | { kind: "url"; href: string };
 export type EvidenceFlagAction =
@@ -36,12 +39,17 @@ export function evidenceFlagRows(
         ? recorded
         : null;
     const source = flag.source ? flagSourceTarget(flag.source, repositories) : null;
+    // An addressing flag is a strip that only opens its chat; an open one that
+    // keeps a chat had a failed attempt, which that chat explains.
     const actions: EvidenceFlagAction[] = [];
     if (flag.state === "addressing") actions.push("open_chat");
-    else if (node || !onMain) actions.push("address");
-    if (node) actions.push("open_evidence");
-    if (source) actions.push("open_source");
-    actions.push("dismiss");
+    else {
+      if ((node || !onMain) && !NOTICE_FLAG_KINDS.has(flag.kind)) actions.push("address");
+      if (flag.chat_id) actions.push("open_chat");
+      if (node) actions.push("open_evidence");
+      if (source) actions.push("open_source");
+      actions.push("dismiss");
+    }
     return [{ flag, node, title: recorded?.title ?? flag.evidence_id, source, actions }];
   });
 }

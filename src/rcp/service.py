@@ -1164,6 +1164,7 @@ class ProjectService:
         repository_inventory: Callable[[], list[RegisteredRepositoryRoot]] | None = None,
         task_continuation_session: Callable[[str, str], str | None] | None = None,
         chat_graph_target: Callable[[str, str], GraphTargetRef | None] | None = None,
+        project_service_resolver: Callable[[str], ProjectService] | None = None,
     ) -> None:
         self.history = history
         self.paper = paper
@@ -1177,6 +1178,7 @@ class ProjectService:
         self._repository_inventory = repository_inventory
         self._task_continuation_session = task_continuation_session
         self._chat_graph_target = chat_graph_target
+        self._project_service_resolver = project_service_resolver
         state_repository = manifest.repository_map[manifest.state.repository]
         state_machine = manifest.machine_map[state_repository.machine]
         app_chat_origin = AppChatOrigin(
@@ -1262,7 +1264,16 @@ class ProjectService:
             repository_inventory=self._repository_inventory,
             task_continuation_session=self._task_continuation_session,
             chat_graph_target=self._chat_graph_target,
+            project_service_resolver=self._project_service_resolver,
         )
+
+    def resolve_project_service(self, project_id: str) -> ProjectService:
+        """Open a canonical project; callers enforce their own read authority first."""
+        if project_id == self._project_id:
+            return self
+        if self._project_service_resolver is None:
+            raise KeyError(project_id)
+        return self._project_service_resolver(project_id)
 
     def chat_path(
         self,

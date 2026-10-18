@@ -975,7 +975,12 @@ class AutoResearchCommandDispatcher:
                     result={"code": "graph_history_scope_refused"},
                     message="The task is outside this graph history scope.",
                 )
-            return handle_graph_history_command(self.service, self.graph_read_scope, request)
+            return handle_graph_history_command(
+                self.service,
+                self.graph_read_scope,
+                request,
+                resolve_project=self.service.resolve_project_service,
+            )
 
         if isinstance(request, BulletinCommandRequest):
             from rcp.runs.bulletin import handle_bulletin

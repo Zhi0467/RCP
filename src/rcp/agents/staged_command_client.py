@@ -221,11 +221,13 @@ def _parser():
     graph_diff.add_argument("--branch-changes")
     graph_diff.add_argument("--ids", nargs="+", dest="filter_ids", default=[])
     graph_diff.add_argument("--cursor")
+    graph_diff.add_argument("--project")
 
     graph_log = subparsers.add_parser("graph_log", aliases=["graph-log"])
     graph_log.add_argument("id")
     graph_log.add_argument("--at", default="@head")
     graph_log.add_argument("--cursor")
+    graph_log.add_argument("--project")
 
     flag = subparsers.add_parser("flag")
     flag.add_argument("--key", required=True)
@@ -383,6 +385,8 @@ def _request_arguments(namespace, workspace):
         return verb, None, {"worker_id": worker_id, "episode_id": episode_id}
     if verb in ("graph_diff", "graph_log"):
         arguments = {}
+        if namespace.project is not None:
+            arguments["project"] = _nonblank(namespace.project, "project id")
         if namespace.cursor is not None:
             arguments["cursor"] = _nonblank(namespace.cursor, "cursor")
         if verb == "graph_log":

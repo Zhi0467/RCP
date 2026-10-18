@@ -25,6 +25,7 @@ from rcp.agents.continuation_prompt import (
     classify,
     master_key,
 )
+from rcp.agents.group_context import group_prompt_value
 from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION, chat_master_contract_key
 from rcp.agents.write_scope import (
     ProjectWriteScope,
@@ -247,6 +248,7 @@ def chat_prompt_values(
             for item in skill_pointers
         ],
         "workspace": {"path": workspace},
+        "group": group_prompt_value(context.group_context),
     }
     if patch is not None:
         values["patch"] = dict(patch)

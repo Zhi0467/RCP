@@ -8,6 +8,7 @@ from rcp.agents.auto_research_commands import auto_research_allowed_verbs
 from rcp.agents.command_protocol import CommandVerb
 from rcp.agents.graph_read_scope import GRAPH_HISTORY_VERBS, GraphReadScope
 from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
+from rcp.agents.group_context import GroupContext, group_prompt_value
 from rcp.agents.loop_overlap import render_loop_interference_rule
 from rcp.agents.prompts import (
     PROVIDER_NATIVE_SUBAGENT_LIFETIME,
@@ -441,6 +442,7 @@ def auto_research_prompt_values(
     output_schema_path: str,
     command_client: str,
     write_scope: ProjectWriteScope,
+    group_context: GroupContext | None,
     skill_pointers: list[dict[str, object]] | None = None,
     reply_key: str | None = None,
     allowed_verbs: tuple[CommandVerb, ...] | None = None,
@@ -478,6 +480,7 @@ def auto_research_prompt_values(
             }
             for item in skill_pointers or []
         },
+        "group": group_prompt_value(group_context),
     }
     if allowed_verbs is not None:
         values["allowed_verbs"] = list(allowed_verbs)

@@ -64,6 +64,7 @@ from rcp.api.machine_power import router as machine_power_router
 from rcp.api.notifications import router as notifications_router
 from rcp.api.owner import router as owner_router
 from rcp.api.paper import router as paper_router
+from rcp.api.project_groups import router as project_groups_router
 from rcp.api.project_provisioning import router as project_provisioning_router
 from rcp.api.project_state import router as project_state_router
 from rcp.api.proposal_refresh import router as proposal_refresh_router
@@ -2453,6 +2454,7 @@ def create_app(
     app.include_router(bulletin_router)
     app.include_router(machine_power_router)
     app.include_router(index_router)
+    app.include_router(project_groups_router)
     app.include_router(index_membership_router)
     app.include_router(project_provisioning_router)
     from rcp.api.research_views import router as research_views_router

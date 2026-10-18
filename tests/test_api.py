@@ -5489,6 +5489,7 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
         "skills",
         "patch",
         "workspace",
+        "group",
         "work",
         "browser",
     }

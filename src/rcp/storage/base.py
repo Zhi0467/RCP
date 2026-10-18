@@ -41,6 +41,7 @@ from rcp.storage.models import (
     normalize_space_name,
 )
 from rcp.storage.notifications import migrate_notifications, migrate_question_notifications
+from rcp.storage.project_groups import migrate_project_groups
 from rcp.storage.question_activity import QuestionActivity
 from rcp.storage.questions import migrate_questions
 from rcp.storage.research_views import migrate_research_views
@@ -124,9 +125,10 @@ class AppStoreBase:
         (52, "per_branch_auto_research_v1"),
         (53, "episode_report_deletion_v1"),
         (54, "agent_live_status_v1"),
-        (55, "graph_branches_v1"),
-        (56, "graph_bulletin_v1"),
-        (57, "project_worker_seats_v1"),
+        (55, "project_groups_v1"),
+        (56, "graph_branches_v1"),
+        (57, "graph_bulletin_v1"),
+        (58, "project_worker_seats_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -899,14 +901,20 @@ class AppStoreBase:
             migration=migrate_agent_live_status,
         )
         self._run_storage_schema_migration(
-            connection, version=55, name="graph_branches_v1", migration=migrate_graph_branches
+            connection,
+            version=55,
+            name="project_groups_v1",
+            migration=migrate_project_groups,
         )
         self._run_storage_schema_migration(
-            connection, version=56, name="graph_bulletin_v1", migration=migrate_graph_bulletin
+            connection, version=56, name="graph_branches_v1", migration=migrate_graph_branches
+        )
+        self._run_storage_schema_migration(
+            connection, version=57, name="graph_bulletin_v1", migration=migrate_graph_bulletin
         )
         self._run_storage_schema_migration(
             connection,
-            version=57,
+            version=58,
             name="project_worker_seats_v1",
             migration=self._migrate_project_worker_seats,
         )

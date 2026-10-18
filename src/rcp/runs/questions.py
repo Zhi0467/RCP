@@ -321,7 +321,12 @@ class WorkCommandHandler:
                 )
             if self.execution is not None and identity.task_id != self.execution.operation_id:
                 return refuse("Graph history requires this turn's broker authority.")
-            return handle_graph_history_command(self.service, self.graph_read_scope, request)
+            return handle_graph_history_command(
+                self.service,
+                self.graph_read_scope,
+                request,
+                resolve_project=self.service.resolve_project_service,
+            )
         if isinstance(request, FlagCommandRequest):
             execution = self.execution
             if (

@@ -174,6 +174,7 @@ _SAFE_WORKSPACE_FILENAME = r"^[A-Za-z0-9._-]+$"
 class GraphDiffArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, serialize_by_alias=True)
 
+    project: str | None = Field(default=None, min_length=1)
     from_head: str | None = Field(default=None, alias="from")
     to_head: str | None = Field(default=None, alias="to")
     branch_changes: str | None = Field(default=None, pattern=r"^[A-Za-z0-9._-]{1,200}$")
@@ -204,6 +205,7 @@ class GraphDiffArguments(BaseModel):
 class GraphLogArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
+    project: str | None = Field(default=None, min_length=1)
     id: str = Field(min_length=1)
     at: str = "@head"
     cursor: str | None = Field(

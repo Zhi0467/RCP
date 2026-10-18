@@ -1,3 +1,4 @@
+import { projectCreateSetupHash } from "./projectSetupModel";
 import { useRefreshRuntime, useResource } from "../core/useResource";
 import { resourceKeyId } from "../core/resourceStore";
 import { experimentIndexProfile } from "../experiments/episodeResources";
@@ -17,6 +18,7 @@ import type {
   ExperimentLoopIndex,
   ExperimentLoopIndexEntry,
   ProjectCard,
+  ProjectGroup,
   ProjectSnapshot,
   SpaceRunIndexEntry,
 } from "../core/types";
@@ -95,6 +97,7 @@ export function useProjectTabs<
   const [projectId, setProjectId] = useState<string | null>(initialProjectId);
   const [setupOpen, setSetupOpen] = useState(initialSetupOpen);
   const [projects, setProjects] = useState<ProjectCard[]>([]);
+  const [projectGroups, setProjectGroups] = useState<ProjectGroup[]>([]);
   const [openProjectTabs, setOpenProjectTabs] = useState<ProjectTab[]>([]);
   const { store } = useRefreshRuntime();
   const experimentIndex = useResource(
@@ -180,16 +183,21 @@ export function useProjectTabs<
     [store],
   );
   const loadProjectIndex = useCallback(async () => {
-    setProjects(await api<ProjectCard[]>("/api/projects"));
+    const [projects, groups] = await Promise.all([
+      api<ProjectCard[]>("/api/projects"),
+      api<ProjectGroup[]>("/api/project-groups"),
+    ]);
+    setProjects(projects);
+    setProjectGroups(groups);
   }, []);
   const applyHashRoute = useCallback((nextProjectId: string | null, nextSetupOpen: boolean) => {
     setSetupOpen(nextSetupOpen);
     setProjectId(nextProjectId);
   }, []);
-  const openSetup = useCallback(() => {
+  const openSetup = useCallback((groupId?: string) => {
     setSetupOpen(true);
     setProjectId(null);
-    window.location.hash = "/projects/new";
+    window.location.hash = projectCreateSetupHash(groupId);
   }, []);
   const returnToProjects = useCallback(() => {
     setSetupOpen(false);
@@ -374,6 +382,7 @@ export function useProjectTabs<
     projectId,
     setupOpen,
     projects,
+    projectGroups,
     openProjectTabs,
     experimentLoops,
     experimentLoopsUnavailableRows: unavailableExperimentLoops.filter(

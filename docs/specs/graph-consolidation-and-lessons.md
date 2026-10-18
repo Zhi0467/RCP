@@ -49,8 +49,14 @@ the same bytes shares the canonical effect. At settlement, a matching final
 `patch.json` is not reapplied; a new Patch follows ordinary Work Apply.
 
 The workflow consolidates and rewrites unreadable asserted nodes under graph
-writing rules, and defines shared terms in the glossary. It only suggests accepted
-node rewrites, since editing resets standing. Existing protected beliefs still
+writing rules, and defines shared terms in the glossary. Experiments get their
+own check: one study per node, an objective and design that state the operation
+(what runs, conditions, run matrix and count, what is logged) rather than the
+record's history, defined internal names, and fields that agree. What it cannot
+fix from sources, such as a node mixing two studies, becomes a Suggestion. It
+checks every asserted Experiment closely and rewrites an accepted one only when
+a reader could not tell what it runs, since the rewrite returns it to asserted
+for another review; for other accepted nodes it only suggests rewrites. Existing protected beliefs still
 require [Proposals](authority-and-proposals.md#protected-belief-proposals).
 
 Its charter is "Tidy and check sources; do not run experiments." After the
@@ -58,13 +64,17 @@ audit, a fact-check reads Evidence created or changed since the covered head
 against the sources themselves: cited artifacts, producing Experiment job logs,
 and repository files on the execution host, and papers or web pages through the
 provider's web and network tools, never conversation transcripts.
-Provider-native subagents may check batches in parallel inside the turn. Prose
-problems and missing or wrong citations are fixed directly in the Patch when
-the right source is found. Scientific or semantic problems raise `overclaim`,
-`underclaim`, `no_source`, or `unverified` flags: `no_source` means the sources
-read do not contain the claim, `unverified` that a named source could not be
-read. The workflow never changes the flagged claim, validity, or standing to
-resolve such a finding.
+The workflow invites provider-native subagents for independent pieces (audit by
+question, fact-check by Evidence batch, literature search by question) and keeps
+combining, the Patch, apply, and the report in the root turn. A fix the agent is
+sure of, having read the full source and any relevant code or results, goes
+directly in the Patch: prose, citations, a wrong number, or an omitted or
+overstated result. Only what it cannot settle, such as a claim checked only
+against an abstract, raises `overclaim`, `underclaim`, `no_source`, or
+`unverified` flags, at most five a night: `no_source` means the sources read do
+not contain the claim, `unverified` that a named source could not be read. The
+cap is prompt guidance, not enforced. The workflow never changes the flagged
+claim, validity, or standing to resolve such a finding.
 
 The same pass then uses the turn's web search for recent work bearing on open
 ResearchQuestions and Hypotheses, recording each query, date, source, and
@@ -142,17 +152,33 @@ another creation returns that flag with `code: flag_exists`. Each flag captures
 the main revision, consolidation run and occurrence, and creation time.
 
 Inbox's **Evidence to check** section lists open and addressing flags with kind,
-Evidence title, and one-line finding. **Address** starts an ordinary
+Evidence title, and one-line finding. A `consolidation_added` flag is a notice,
+not a finding: its row has no **Address**, and the endpoint refuses it with
+`flag_not_addressable`, because there is nothing for an agent to correct.
+**Address** on any other kind starts an ordinary
 member-authorized node Work chat on that Evidence, with the default node-chat
 provider profile and ordinary admission and prompt construction. Its first human
 message combines the flag context with backend-authored instructions to read the
 source, correct the Evidence only as far as the source supports, and use `ask`
 when unsure. The flag grants no authority. Replaying the request or addressing an
-already-addressing flag returns the existing chat without another turn.
+already-addressing flag returns the existing chat without another turn. Address
+leaves the member in the Inbox; the chat opens only from **Open chat**.
 
-The row then offers **Open chat**, **Open Evidence**, **Open source** only when the
-source is a URL (opened in a new tab) or resolves to a configured repository file, and icon-only **Dismiss**. Addressing does not close it; Dismiss
-closes it for all members. Open or addressing flags give the Evidence node a red
+The Address turn's end settles the flag in the same transition that records it:
+a turn that succeeds, reports its Work outcome as `done`, and has no rejected or
+unavailable graph update closes the flag, so a member need not remember to
+Dismiss it. Any other end, including a `partial` or `could_not` outcome, failure,
+interruption, or Stop, reopens it with its chat kept, and a new Address starts
+another turn. The chat's own Resume or Retry of that turn takes the flag back to
+addressing, unless it was since dismissed or bound to another attempt. Startup
+settles any addressing flag whose turn already ended, including flags an older
+release left addressing, after following the binding to that turn's latest
+Resume or Retry and moving any Address request id an older release
+kept on the flag into the client request receipts replays read. While addressing, the row is a strip that only opens the chat. An
+open row offers **Address**, **Open chat** after a failed attempt, **Open
+Evidence**, **Open source** only when the source is a URL (opened in a new tab) or
+resolves to a configured repository file, and icon-only **Dismiss**, which closes
+it for all members. Open or addressing flags give the Evidence node a red
 left edge and one icon-only flag action opening Inbox. Dismissed flags cannot be
 addressed. Address also refuses when main's authoritative state, read at
 admission, holds no current Evidence node with that id. Like any node chat, it

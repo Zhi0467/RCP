@@ -312,6 +312,7 @@ def test_archive_migration_defaults_legacy_episodes_visible_and_project_deletion
         "per_branch_auto_research_v1",
         "episode_report_deletion_v1",
         "agent_live_status_v1",
+        "project_groups_v1",
         "graph_branches_v1",
         "graph_bulletin_v1",
         "project_worker_seats_v1",

@@ -563,12 +563,17 @@ class ClaudeProfile(ProviderProfile):
                 and browser_grant.status == "granted"
             ):
                 command.extend(["Bash(playwright-cli:*)", f"Bash({PREVIEW_COMMAND}:*)"])
+            # Under acceptEdits an --add-dir also grants edits, so read context is
+            # granted as read-only tool rules (probed on Claude Code 2.1.296).
+            for directory in dict.fromkeys(str(item) for item in read_dirs):
+                pattern = _claude_absolute_pattern(directory)
+                command.extend(f"{tool}({pattern})" for tool in ("Read", "Glob", "Grep"))
         command.extend(["--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}'])
         if session_id:
             command.extend(["--resume", session_id])
         # Deduplicate while preserving first-seen order: one --add-dir per source
         # session directory previously blew past the argv size limit.
-        additional_dirs = [*read_dirs, *write_dirs]
+        additional_dirs = [*write_dirs]
         if scope is not None:
             additional_dirs = [*read_dirs, *(Path(item) for item in scope.repository_roots)]
         for directory in dict.fromkeys(str(item) for item in additional_dirs):

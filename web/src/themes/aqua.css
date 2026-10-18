@@ -179,15 +179,10 @@
   margin-bottom: 0;
 }
 
-:root[data-theme="aqua"] .research-subpanel > button {
-  border-radius: 6px;
-}
-
 :root[data-theme="aqua"]
   :is(
     .project-tabs > button.active,
     .project-tabs > button:active,
-    .research-subpanel > button.active,
     .conversation-list [role="option"].active
   ) {
   background: var(--aqua-selected);

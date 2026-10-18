@@ -295,7 +295,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             connection.execute(
                 """
                 UPDATE projects
-                SET retired_at = ?, retired_transfer_request_id = ?
+                SET retired_at = ?, retired_transfer_request_id = ?, group_id = NULL
                 WHERE project_id = ? AND retired_at IS NULL
                 """,
                 (self.now(), canonical_request_id, current.project_id),

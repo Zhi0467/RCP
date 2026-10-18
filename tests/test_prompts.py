@@ -976,6 +976,7 @@ def test_auto_research_stable_values_capture_allowed_verbs_and_ask_limits(actor)
         output_schema_path="/stage/schema.json",
         command_client="test-command-client",
         write_scope=_work_write_scope(),
+        group_context=None,
         allowed_verbs=allowed,
     )
     assert values["allowed_verbs"] == list(allowed)

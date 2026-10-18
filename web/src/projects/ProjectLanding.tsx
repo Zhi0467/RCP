@@ -1,11 +1,18 @@
+import { projectGroupShelf, parseProjectGroupHash, projectGroupHash } from "./projectGroups";
+import {
+  GroupNameDialog,
+  useProjectGroupActions,
+  useProjectGroupDrag,
+} from "./ProjectGroupControls";
 import { useMachinePower } from "./useMachinePower";
 import { machinePowerWarnings } from "./machinePower";
 import { ProviderLoginNotice } from "./ProviderLoginNotice";
-import { loadProjectDeletionPreview, loadProviderLogins } from "../core/api";
+import { api, loadProjectDeletionPreview, loadProviderLogins } from "../core/api";
 import {
   Check,
   Copy,
   Ellipsis,
+  FolderPlus,
   LogOut,
   Mail,
   RotateCw,
@@ -30,6 +37,7 @@ import type {
   ProviderLoginState,
   IdentityResponse,
   ProjectCard,
+  ProjectGroup,
   ProjectDeletionPreview,
   ProjectDeletionResult,
   ProjectCreationControl,
@@ -41,13 +49,17 @@ import { projectCreationPrimaryLabel } from "./projectSetupModel";
 interface Props extends AppearancePickerProps {
   palette: ResolvedTheme;
   projects: ProjectCard[];
+  groups: ProjectGroup[];
+  onGroupsChanged: () => Promise<void>;
+  groupFiling: { projectId: string; groupId: string } | null;
+  onGroupFilingTaken: () => void;
   invitations: ProjectInvitation[];
   onAnswerInvitation: (invitationId: string, response: "accept" | "decline") => Promise<void>;
   spaceRuns: SpaceRunIndexEntry[];
   onOpen: (projectId: string) => void;
   onOpenExperiment: (projectId: string, experimentRoute?: string) => void;
   onArchiveEpisode: ArchiveEpisodeAction;
-  onCreate: () => void;
+  onCreate: (groupId?: string) => void;
   projectCreation: ProjectCreationControl;
   onMovePersonalProjectToTeam?: (projectId: string) => void;
   onDelete: (projectId: string, stopToken: string) => Promise<ProjectDeletionResult>;
@@ -79,6 +91,9 @@ interface ProjectActionsMenuProps {
   project: ProjectCard;
   cover: CoverStyle;
   onChooseCover: (cover: CoverStyle) => void;
+  groups: ProjectGroup[];
+  onMoveToGroup: (id: string | null) => void;
+  onNewGroup: () => void;
   onMoveToTeam?: () => void;
   onDelete: () => void;
 }
@@ -87,6 +102,9 @@ export function ProjectActionsMenu({
   project,
   cover,
   onChooseCover,
+  groups = [],
+  onMoveToGroup,
+  onNewGroup,
   onMoveToTeam,
   onDelete,
 }: ProjectActionsMenuProps) {
@@ -115,6 +133,31 @@ export function ProjectActionsMenu({
           </button>
         ))}
       </div>
+      <span className="project-cover-menu-label">Move to group</span>
+      {groups
+        .filter((group) => group.id !== project.group_id)
+        .map((group) => (
+          <button
+            key={group.id}
+            className="project-cover-menu-action"
+            role="menuitem"
+            onClick={() => onMoveToGroup(group.id)}
+          >
+            {group.name}
+          </button>
+        ))}
+      {project.group_id && (
+        <button
+          className="project-cover-menu-action"
+          role="menuitem"
+          onClick={() => onMoveToGroup(null)}
+        >
+          No group
+        </button>
+      )}
+      <button className="project-cover-menu-action" role="menuitem" onClick={onNewGroup}>
+        New group…
+      </button>
       {onMoveToTeam && (
         <button
           className="project-cover-menu-action project-move-action"
@@ -284,6 +327,10 @@ export function ProjectDeletedDialog({
 
 export function ProjectLanding({
   projects,
+  groups = [],
+  onGroupsChanged,
+  groupFiling,
+  onGroupFilingTaken,
   invitations,
   onAnswerInvitation,
   spaceRuns,
@@ -310,6 +357,80 @@ export function ProjectLanding({
   onColorModeChoiceChange,
   palette,
 }: Props) {
+  const [groupId, setGroupId] = useState(() =>
+    parseProjectGroupHash(typeof window === "undefined" ? "" : window.location.hash),
+  );
+  useEffect(() => {
+    const update = () => {
+      setGroupId(parseProjectGroupHash(window.location.hash));
+      setGroupMenu(false);
+    };
+    window.addEventListener("hashchange", update);
+    return () => window.removeEventListener("hashchange", update);
+  }, []);
+  const shelf = projectGroupShelf(projects, groups);
+  const group = shelf.groups.find((item) => item.id === groupId);
+  const shownProjects = group ? group.projects : shelf.ungrouped;
+  const spaceTitle =
+    identity?.space_kind === "team" ? identity.space_name || "Team space" : "Personal space";
+  const actions = useProjectGroupActions(onGroupsChanged);
+  const drag = useProjectGroupDrag(projects, groups, actions.move);
+  useEffect(() => {
+    if (!groupFiling) return;
+    onGroupFilingTaken();
+    // A failed filing is keyed to the group, so its shelf header keeps the retry.
+    void actions
+      .run(groupFiling.groupId, () =>
+        api(`/api/projects/${encodeURIComponent(groupFiling.projectId)}/group`, {
+          method: "PUT",
+          body: JSON.stringify({ group_id: groupFiling.groupId }),
+        }),
+      )
+      .then((filed) => filed && onOpen(groupFiling.projectId));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per handed-over filing; actions and callbacks are recreated every render
+  }, [groupFiling]);
+  const [groupMenu, setGroupMenu] = useState(false);
+  const [nameDialog, setNameDialog] = useState<{
+    group?: ProjectGroup;
+    projectId?: string;
+    created?: ProjectGroup;
+  } | null>(null);
+  const saveGroup = async (name: string) => {
+    if (!nameDialog) return;
+    if (nameDialog.group) {
+      const id = nameDialog.group.id;
+      await actions.run(id, () =>
+        api(`/api/project-groups/${encodeURIComponent(id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ name }),
+        }),
+      );
+      return;
+    }
+    let saved = nameDialog.created;
+    if (!saved) {
+      saved = await api<ProjectGroup>("/api/project-groups", {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      });
+      setNameDialog({ ...nameDialog, created: saved });
+    }
+    if (saved.name !== name) {
+      saved = await api<ProjectGroup>(`/api/project-groups/${encodeURIComponent(saved.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name }),
+      });
+      setNameDialog({ ...nameDialog, created: saved });
+    }
+    if (nameDialog.projectId) {
+      await onGroupsChanged();
+      await api(`/api/projects/${encodeURIComponent(nameDialog.projectId)}/group`, {
+        method: "PUT",
+        body: JSON.stringify({ group_id: saved.id }),
+      });
+    }
+    await onGroupsChanged();
+  };
   const machinePower = useMachinePower(identity?.space_kind);
   const [providerLogins, setProviderLogins] = useState<ProviderLoginState[]>([]);
   const [loginError, setLoginError] = useState<string | null>(null);
@@ -358,10 +479,12 @@ export function ProjectLanding({
       if (!(event.target instanceof Element) || event.target.closest(".project-cover-shell"))
         return;
       setOpenMenuProject(null);
+      setGroupMenu(false);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       setOpenMenuProject(null);
+      setGroupMenu(false);
       if (!deleteBusy) {
         setDeleteProjectId(null);
         setDeleteError(null);
@@ -472,38 +595,108 @@ export function ProjectLanding({
         {machinePower.error && <p role="alert">{machinePower.error}</p>}
         <ProviderLoginNotice states={providerLogins} />
         {loginError && <p role="alert">{loginError}</p>}
-        {identity?.space_kind === "personal" && (
-          <h1 className="space-group-title">Personal space</h1>
-        )}
-        {identity?.space_kind === "team" && (
-          // This index belongs to the team server. Say so, and put the one way
-          // back to the local index here, so returning to projects can keep
-          // meaning "this space's projects".
-          <div className="space-group-title-row">
-            <h1 className="space-group-title">{identity.space_name || "Team space"}</h1>
-            {onExitTeamSpace && (
-              <button className="team-space-exit" type="button" onClick={onExitTeamSpace}>
-                <LogOut size={14} aria-hidden="true" />
-                Exit team space
+        <div
+          className={`space-group-title-row${group && actions.failure?.id === group.id ? " group-failed" : ""}`}
+        >
+          {group ? (
+            <nav className="group-breadcrumb" aria-label="Project group">
+              <a
+                href="#"
+                className={drag.over === null ? "group-drop-target" : ""}
+                {...drag.target(null)}
+              >
+                {spaceTitle}
+              </a>
+              <span aria-hidden="true">›</span>
+              <h1 className="space-group-title">{group.name}</h1>
+            </nav>
+          ) : (
+            <h1 className="space-group-title">{spaceTitle}</h1>
+          )}
+          {group ? (
+            <div className="group-header-actions project-cover-shell">
+              {actions.retry(group.id)}
+              <button
+                className="icon-button"
+                aria-label="Group actions"
+                aria-haspopup="menu"
+                aria-expanded={groupMenu}
+                onClick={() => setGroupMenu(!groupMenu)}
+              >
+                <Ellipsis size={18} />
               </button>
-            )}
-          </div>
-        )}
+              {groupMenu && (
+                <div
+                  className="project-cover-menu"
+                  role="menu"
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") setGroupMenu(false);
+                  }}
+                >
+                  <button
+                    className="project-cover-menu-action"
+                    role="menuitem"
+                    onClick={() => {
+                      setGroupMenu(false);
+                      setNameDialog({ group });
+                    }}
+                  >
+                    Rename
+                  </button>
+                  {group.count === 0 && (
+                    <button
+                      className="project-cover-menu-action project-delete-action"
+                      role="menuitem"
+                      disabled={actions.busy}
+                      onClick={() => {
+                        setGroupMenu(false);
+                        void actions.run(group.id, async () => {
+                          await api(`/api/project-groups/${encodeURIComponent(group.id)}`, {
+                            method: "DELETE",
+                          });
+                          window.location.hash = projectGroupHash(null);
+                        });
+                      }}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <button className="group-create" onClick={() => setNameDialog({})}>
+              <FolderPlus size={16} />
+              New group
+            </button>
+          )}
+          {!group && identity?.space_kind === "team" && onExitTeamSpace && (
+            <button className="team-space-exit" onClick={onExitTeamSpace}>
+              <LogOut size={14} />
+              Exit team space
+            </button>
+          )}
+        </div>
         <section className="project-shelf" aria-label="RCP projects">
-          {invitations.map((invitation) => (
-            <ProjectInvitationCard
-              key={invitation.invitation_id}
-              invitation={invitation}
-              onAnswer={onAnswerInvitation}
-            />
-          ))}
-          {projects.map((project) => {
+          {!group &&
+            invitations.map((invitation) => (
+              <ProjectInvitationCard
+                key={invitation.invitation_id}
+                invitation={invitation}
+                onAnswer={onAnswerInvitation}
+              />
+            ))}
+          {shownProjects.map((project) => {
             const unavailable = project.reachable === false;
             const cover = covers[project.id] || "wood";
             return (
-              <div className="project-cover-shell" key={project.id}>
+              <div
+                className={`project-cover-shell${actions.failure?.id === project.id ? " group-failed" : ""}`}
+                key={project.id}
+              >
                 <button
                   className={`project-cover project-material-${cover}`}
+                  {...drag.source(project.id)}
                   onClick={() => onOpen(project.id)}
                 >
                   <span className="project-cover-spine" aria-hidden="true" />
@@ -539,9 +732,19 @@ export function ProjectLanding({
                 >
                   <Ellipsis size={14} aria-hidden="true" />
                 </button>
+                {actions.retry(project.id)}
                 {openMenuProject === project.id && (
                   <ProjectActionsMenu
                     project={project}
+                    groups={groups}
+                    onMoveToGroup={(id) => {
+                      setOpenMenuProject(null);
+                      void actions.move(project.id, id);
+                    }}
+                    onNewGroup={() => {
+                      setOpenMenuProject(null);
+                      setNameDialog({ projectId: project.id });
+                    }}
                     cover={cover}
                     onChooseCover={(style) => {
                       setCovers((current) => ({ ...current, [project.id]: style }));
@@ -566,7 +769,41 @@ export function ProjectLanding({
             );
           })}
 
-          <button className="project-cover new-project-cover" onClick={onCreate}>
+          {!group &&
+            shelf.groups.map((item) => (
+              <div className="project-cover-shell box-set-shell" key={item.id}>
+                {item.projects.slice(0, 2).map((project, index) => (
+                  <span
+                    key={project.id}
+                    aria-hidden="true"
+                    className={`box-set-peek peek-${index} project-material-${covers[project.id] || "wood"}`}
+                  />
+                ))}
+                <button
+                  className={`project-cover box-set${drag.over === item.id ? " group-drop-target" : ""}`}
+                  {...drag.target(item.id)}
+                  onClick={() => {
+                    setGroupMenu(false);
+                    window.location.hash = projectGroupHash(item.id);
+                  }}
+                >
+                  <span className="box-set-spines" aria-hidden="true">
+                    {item.projects.map((project) => (
+                      <span
+                        key={project.id}
+                        className={`project-material-${covers[project.id] || "wood"}`}
+                      />
+                    ))}
+                  </span>
+                  <strong>{item.name}</strong>
+                  <span className="project-cover-meta">
+                    {item.count} {item.count === 1 ? "project" : "projects"}
+                    {item.waiting > 0 && ` · ${item.waiting} waiting`}
+                  </span>
+                </button>
+              </div>
+            ))}
+          <button className="project-cover new-project-cover" onClick={() => onCreate(group?.id)}>
             <span className="new-project-plus" aria-hidden="true">
               +
             </span>
@@ -602,6 +839,13 @@ export function ProjectLanding({
           onClose={closeDeleteConfirmation}
           onConfirm={confirmDelete}
           onRetryPreview={() => setDeletePreviewAttempt((attempt) => attempt + 1)}
+        />
+      )}
+      {nameDialog && (
+        <GroupNameDialog
+          name={nameDialog.group?.name ?? ""}
+          onClose={() => setNameDialog(null)}
+          onSave={saveGroup}
         />
       )}
       {deletedReport && (

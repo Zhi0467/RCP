@@ -22,6 +22,11 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
         row[1] == "bulletin_enabled" for row in connection.execute("PRAGMA table_info(episodes)")
     ):
         connection.execute("ALTER TABLE episodes DROP COLUMN bulletin_enabled")
+    connection.execute("DROP INDEX IF EXISTS projects_group")
+    connection.execute("DROP TABLE IF EXISTS project_groups")
+    for table in ("projects", "project_provisioning_requests"):
+        if any(row[1] == "group_id" for row in connection.execute(f"PRAGMA table_info({table})")):
+            connection.execute(f"ALTER TABLE {table} DROP COLUMN group_id")
     if any(
         row[1] == "deleted_at" for row in connection.execute("PRAGMA table_info(episode_reports)")
     ):

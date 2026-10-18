@@ -274,6 +274,13 @@ class ProjectInvitationRecord(BaseModel):
     responded_at: str | None = None
 
 
+class ProjectGroupRecord(BaseModel):
+    group_id: str
+    name: str
+    created_at: str
+    created_by: str
+
+
 class ProjectRecord(BaseModel):
     project_id: str
     home_space_id: str | None = None
@@ -291,6 +298,7 @@ class ProjectRecord(BaseModel):
     error: str | None = None
     retired_at: str | None = None
     retired_transfer_request_id: str | None = None
+    group_id: str | None = None
 
     @field_validator("home_space_id")
     @classmethod
@@ -3914,6 +3922,7 @@ __all__ = [
     "ProjectTransferUploadCompleteReceipt",
     "ProjectTransferUploadRecord",
     "ProjectTransferUploadStatus",
+    "ProjectGroupRecord",
     "ProjectRecord",
     "ProjectActiveTaskConflict",
     "ProjectStageRecord",

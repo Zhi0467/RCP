@@ -2,7 +2,7 @@
 id: graph-consolidation
 kind: workflow
 label: Graph consolidation
-version: 1.5.0
+version: 1.6.0
 description: Consolidate a project's main research graph and operational lessons while nobody is watching, apply the result inside the turn, and leave one short visual report of every change for the human to read in the morning.
 dependencies:
 - graph-audit@3.4.0
@@ -13,11 +13,20 @@ dependencies:
 # Graph consolidation
 
 The graph is this project's memory. Your job tonight is to make it easier to
-read and act on, to check its Evidence against its sources, and to check
-recent literature against its open claims, without changing what it claims on
-your own authority. Tidy and check sources; do not run experiments. A human
+read and act on, to check its Evidence against its sources and correct what
+they plainly show, and to check recent literature against its open claims,
+without changing what the project believes on your own authority. Tidy and check sources; do not run experiments. A human
 reads your report tomorrow and can undo anything you did with a later Patch, so
 every change must be one they would make themselves after a careful read.
+
+## Working in parallel
+
+When your provider offers native subagents, use them for work that splits into
+independent pieces, and wait for all of them before the step that needs their
+results. The audit can split by ResearchQuestion, the fact-check by batches of
+Evidence, and the literature search by question. Keep the sequential steps
+yourself: combining findings, the shared Patch, `apply`, the re-read, and the
+report.
 
 ## Pass 1: audit
 
@@ -32,13 +41,26 @@ this run; if there is no covered head yet, check all current Evidence. Read
 the cited sources themselves: artifact refs, producing Experiment job logs, and
 repository files on the execution host, and papers, web pages, or datasets
 through your web and network tools. Conversation transcripts and earlier agent
-summaries are pointers, not substitutes for reading sources. When your provider
-offers native subagents, give each a batch of Evidence to check in parallel and
-wait for all of them before you continue.
+summaries are pointers, not substitutes for reading sources.
 
-Fix prose problems and missing or wrong citations directly in your Patch when
-you find the right source, preserving the claim, scope, and qualifications.
-For scientific or semantic problems, use the command client's keyed `flag`:
+Correct what you are sure of; flag only what needs a human. When you read the
+full source, and the relevant code, logs, or results where they apply, and the
+fix is unambiguous, correct the Evidence directly in your Patch: a wrong number,
+a result the source reports that the Evidence omits, or a claim broader than the
+source states. For example, if a paper's main results are A, B, and C and the
+Evidence states only A, add B and C. Keep every qualification the source
+supports and cite it. Correcting accepted Evidence returns it to `asserted`,
+which puts it back in front of the human; that is expected. Fix prose problems
+and missing or wrong citations the same way.
+
+Flag what you cannot settle yourself: you read only an abstract or a summary,
+the source is ambiguous, or the fix would change what the Evidence means for a
+question or Hypothesis in a way a careful reader could dispute. The same
+literature Evidence you would correct after reading the full paper and its code
+is a flag when all you have is its abstract. Each flag costs the human a check,
+so raise at most five a night, counting Pass 4's check; when more qualify, flag
+the ones most likely to mislead a reader and list the rest under Suggestions.
+Use the command client's keyed `flag`:
 
 - `overclaim`: the Evidence claims more than the source supports;
 - `underclaim`: the Evidence omits or understates a result the source supports;
@@ -120,10 +142,25 @@ Read the graph as a newcomer would, against the "Writing for a reader" rules
 in your graph rules.
 
 - Rewrite the title and prose of nodes that fall short, keeping every claim,
-  scope, qualification, and relation. Rewrite only `asserted` nodes: editing an
-  accepted node returns it to `asserted`, so list accepted nodes that need it
-  under Suggestions instead. ResearchQuestions and Hypotheses are protected
+  scope, qualification, and relation. Rewrite only `asserted` nodes, except
+  Experiments: editing an accepted node returns it to `asserted`, so list other
+  accepted nodes that need it under Suggestions instead. ResearchQuestions and Hypotheses are protected
   beliefs: carry their rewrites in a Proposal, never a direct edit.
+- Read every Experiment as someone deciding whether to run it, and check it
+  against the Experiment rules in your graph rules. Check every `asserted`
+  Experiment's prose closely. Rewrite an accepted one only when a reader could
+  not tell what it runs: the rewrite returns it to `asserted` and costs the
+  human another review, so leave small flaws in accepted Experiments alone.
+  Rewrite its objective and
+  design as the operational plan when they are compressed, narrate the record's
+  own history, or use internal names they never define: what runs, under which
+  conditions, the run matrix and run count, and what is logged. Recover those
+  facts from the attempt ledger, job logs, configs, and repository; never
+  invent a level or a count. Refresh a `current_summary` that contradicts the
+  status or the attempts. When an Experiment mixes two studies, when its fields
+  contradict in a way you cannot fix, or when the sources cannot tell you the
+  operation, list it under Suggestions with what a human must split, settle, or
+  supply.
 - Make one concept use the same words across nodes.
 - Build the glossary: add an entry for each term that several nodes use
   without defining it and sharpen entries that are vague or out of date. List
@@ -140,7 +177,8 @@ now shows and `apply` that as one more validated Patch. When you cannot tell
 what is now true, leave the field and list the Experiment under Suggestions.
 
 Last, fact-check every Evidence node your Patches added, exactly as in Pass 2,
-and raise the flags that check finds.
+correcting what you are sure of in one more validated Patch and flagging the
+rest within the same nightly limit.
 
 ## Pass 5: lessons
 
@@ -156,7 +194,7 @@ turn's artifact folder. Give it a `<title>` naming what changed most, such as
 "Merged three duplicate caching Hypotheses" or "No consolidation needed".
 
 Lead with one sentence on the state of the graph. Then list every change you
-applied, grouped as merged, superseded, rewritten, refreshed, readability,
+applied, grouped as corrected Evidence, merged, superseded, rewritten, refreshed, readability,
 glossary, and relations, each with the node titles before and after and one line of reason.
 Then list the nodes you added, Evidence first, every Decision you queued or
 reopened, every Proposal you raised and why, and the lesson changes. List the
