@@ -15,6 +15,7 @@ from typing import Any, cast
 import pytest
 
 from rcp.agents import AgentEvent, AgentProcessControl
+from rcp.agents.auto_research_commands import auto_research_allowed_verbs
 from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.agents.command_mailbox import stage_command_mailbox as _stage_command_mailbox
 from rcp.agents.command_protocol import GraphDiffCommandRequest, MessageCommandRequest
@@ -3128,11 +3129,15 @@ def test_orchestrator_receives_the_project_settings_package_paths() -> None:
         ),
         repositories=[],
     )
+    verbs = auto_research_allowed_verbs("orchestrator")
     fresh = auto_research_orchestrator_task_contract(
-        project_name="project", skill_pointers=pointers, **common
+        project_name="project", skill_pointers=pointers, allowed_verbs=verbs, **common
     )
     continued = auto_research_orchestrator_continuation_contract(
-        original_contract_path="/stage/inputs/original.md", mode="continuation", **common
+        original_contract_path="/stage/inputs/original.md",
+        mode="continuation",
+        allowed_verbs=verbs,
+        **common,
     )
     assert "/stage/inputs/original.md" in continued
     values = auto_research_prompt_values(group_context=None, **common)
@@ -3162,7 +3167,9 @@ def test_orchestrator_inbox_prompt_exposes_harvest_data_contract() -> None:
     from rcp.agents.auto_research_prompt import _auto_research_commands
     from rcp.storage import AutoResearchLifecycleNoticeRecord
 
-    prompt = _auto_research_commands("/stage/rcp-agent", {})
+    prompt = _auto_research_commands(
+        "/stage/rcp-agent", {}, auto_research_allowed_verbs("orchestrator")
+    )
     assert "inbox --harvest" in prompt
     assert "inbox --clear" in prompt
     assert "wake_suppressed" in prompt

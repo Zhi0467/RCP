@@ -155,6 +155,13 @@ conversations spec; 11 `ProviderStreamEvent`.
   a command string.
 - Prompt prose describing enforcement must render the same resolved object used
   by enforcement. Do not maintain parallel human-written allowlists.
+- Resolve a launch's command verbs and read/write scopes once and pass those
+  objects; prompt call sites never re-derive them or branch on their fields.
+  Command usage belongs to each run family's contract builder, rendered from the
+  handler's verbs; per-launch context lines only point at staged files. Filtering
+  that depends on a scope belongs to the builder of that context, which takes the
+  scope. Usage text shares the parser's option records, and changed stable
+  contract prose bumps its policy version.
 - Kernel code asks `project_type_of(state)` which node types play which part;
   only the listed research layer names research node types, classes, or
   relations. `tests/test_project_types.py` and `web/tests/projectType.test.mjs`

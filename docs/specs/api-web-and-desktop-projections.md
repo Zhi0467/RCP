@@ -71,10 +71,11 @@ Rows carry `kind`, `branch_id`, `head`, `base_head`, `episode_id` (chain root),
 `current_episode_id` (newest member), graph-isolation `archived`, and merge fields
 `merge_state`, `merge_eligible`, `merge_blocked_reason`,
 `latest_successful_merge`, `active_merge_task_id`, and `merge_diagnostic`.
-Rows also carry `parent_head`. Branches also carry the root's `mode` (null for a member fork), `created_at`, resolved `name`, `running`,
-and `needs_you`; there is no `title`. Running means an active task on that target;
-attention means an open Decision/Blocker or answerable question. Names use the
-shared SQLite owner with date fallbacks. `branch_id == episode_id` names the root.
+Rows also carry `parent_head`. Branches also carry the root's `mode` (null for a
+member fork), `created_at`, resolved `name`, `running`, and `needs_you`; there is
+no `title`. Running means an active task on that target; attention means an open
+Decision/Blocker or answerable question. Names use the shared SQLite owner with
+date fallbacks. On an episode branch, `branch_id == episode_id` names the root.
 Main has its exact head, name `main`, false flags, and null branch/episode/base/
 merge details. Merge state reads every merge task out of the branch, whoever
 dispatched it; eligibility uses the isolation reservation and writer checks.
@@ -306,8 +307,8 @@ every item it covers, and a rejected one leaves them for retry.
 
 `GET` and `PATCH /api/projects/{project_id}/notifications` read and update the
 calling member's toggles: `proposal`, `decision`, `blocker`,
-`episode_needs_action`, `episode_finished`, `consolidation`, and `bulletin_mention`. All default on except
-`episode_finished`. These routes require project membership. Project Settings
+`episode_needs_action`, `episode_finished`, `consolidation`, and
+`bulletin_mention`. All default on except `episode_finished`. These routes require project membership. Project Settings
 shows them as a **Notifications** card after Machines, which also says the
 project name appears on the lock screen.
 
@@ -723,8 +724,9 @@ Desktop supports `[3, 7]`, server `[1, 7]`. Protocol 1 forbids team deletion;
 while accepting omitted commits/v1 archives; 4 adds optional
 `record_schema_version=2` for episode archives; 5 also allows 3 (an archived
 graph branch) and 4 (branch names); 6 also allows 5 (a deleted episode
-report); 7 also allows 6 (graph branch records). The desktop refuses preparation, before any target mutation, when the
-source needs a record version the negotiated protocol lacks, so a new record
+report); 7 also allows 6 (graph branch records). The desktop refuses preparation,
+before any target mutation, when the source needs a record version the
+negotiated protocol lacks, so a new record
 version needs a new protocol. Archive-free transfers retain prior bytes; incompatible peers refuse preparation before source release.
 Breaking contracts get a new immutable version; retirement is explicit.
 The range governs native bootstrap and relay, not server operations, provider
@@ -1386,12 +1388,12 @@ the branch. Its transcript is projected from the chain's orchestrator-role
 turns and the artifact edits that reply to the chain: each turn's starting
 instruction or the human mail it delivered, then its answers; worker turns keep
 their own cards. An artifact edit with a `chat_id` belongs to that chat's card and
-refreshes its order and status, but never creates a card by itself. Loaded turns supply live status and
-progress, and the episode's `needs_action` health (an open question) files the
-card under needs-you. While the chain runs, the card's `human_turn_refusal` is
-`auto_research_orchestrator_running` and its composer, with the episode's open
-questions, sends **Message orchestrator** to the newest chain member, gated by
-that member's `can_message`, `message_refusal`, and
+refreshes its order and status, but never creates a card by itself. Loaded turns
+supply live status and progress, and the episode's `needs_action` health (an open
+question) files the card under needs-you. While the chain runs, the card's
+`human_turn_refusal` is `auto_research_orchestrator_running` and its composer,
+with the episode's open questions, sends **Message orchestrator** to the newest
+chain member, gated by that member's `can_message`, `message_refusal`, and
 `message_requires_continuation` exactly as Runs is. The composer explains
 `episode_merge_reserved` and `episode_isolation_unavailable` refusals. Once the
 chain ends, the card has the ordinary chat composer and posts project-chat turns
@@ -1896,6 +1898,5 @@ and mentioned member, including mentions first added by an edit, excluding
 self-mentions. This preference defaults on. Reconciliation retains durable
 observations across restarts. Deleting a post before reconciliation suppresses
 its notification; editing away a mention preserves the accepted event. Links open
-the channel's Chats route, `#/projects/{project_id}?view=chats`, with `branch_id`
-for a branch channel.
-Agent mentions never wake or launch work.
+the channel in the Agents view, `#/projects/{project_id}?view=chats`, with
+`branch_id` for a branch channel. Agent mentions never wake or launch work.

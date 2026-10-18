@@ -133,6 +133,11 @@ CHAT_MASTER_CONTEXT_VERSION = 19
 # command client once, and a continuation that changes it sends `patch.command_client`.
 COMMAND_CLIENT = "<command client>"
 
+BULLETIN_BODY_RULE = (
+    "Bulletin bodies may hold `#node-id` links and `<@member:USER_ID>` or `<@agent:ACTOR_ID>` "
+    "mention tokens; edit or delete only your own posts."
+)
+
 
 def chat_master_contract_key(*, ontology_extensions: bool, owner: str | None = None) -> str:
     """Identify one master-context shape; changed graph rules re-send it to existing chats.

@@ -864,10 +864,9 @@ def _loop_read_context(turn: WorkTurn) -> str:
             task.project_id,
             graph_target=task.graph_target,
             node_id=turn.request.control_node_id,
+            read_scope=turn.graph_read_scope,
         )
-        if execution is not None
-        and task is not None
-        and GraphReadScope.resolve(task.project_id, turn.service.history).ancestry_ceilings is None
+        if execution is not None and task is not None
         else LoopOverlap()
     )
     return experiment_loop_read_context(
@@ -898,8 +897,6 @@ def _record_continuation_prompt(
     question_part = _question_snapshot_part(turn)
     if question_part:
         parts = [*parts, question_part]
-    command_client = (delta or {}).get("history_client", turn.patch_inputs.command_client)
-    assert isinstance(command_client, str)
     parts = [
         *parts,
         _loop_read_context(turn),
@@ -907,8 +904,6 @@ def _record_continuation_prompt(
             turn.execution,
             turn.local_stage,
             turn.remote_stage,
-            command_client=command_client,
-            allowed_verbs=_work_turn_command_handler(turn).allowed_verbs,
         ),
     ]
     # An episode's browser intent is fixed at launch, so "off" has nothing to revoke.
@@ -1253,8 +1248,6 @@ def _compose_fresh_prompt(
         turn.execution,
         turn.local_stage,
         turn.remote_stage,
-        command_client=turn.patch_inputs.command_client,
-        allowed_verbs=_work_turn_command_handler(turn).allowed_verbs,
     )
     return _ComposedExperimentPrompt(
         contract_path=contract_path,

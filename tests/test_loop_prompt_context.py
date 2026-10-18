@@ -327,6 +327,7 @@ def test_loop_interference_prompt_uses_resolved_launch_verbs(
     from rcp.agents import AgentProcessControl
     from rcp.agents.graph_read_scope import GraphReadScope
     from rcp.background import AgentTaskExecution
+    from rcp.loop_status import LoopOverlap
     from rcp.runs.experiment_loop import stage_chat_loop_status
     from rcp.runs.questions import work_command_handler
     from rcp.runs.tasks.experiment_loop import _loop_read_context
@@ -361,14 +362,10 @@ def test_loop_interference_prompt_uses_resolved_launch_verbs(
         ancestry_ceilings=() if blind else None,
     )
 
-    def resolve(cls, project_id, history):
-        assert project_id == episode.project_id and history is service.history
-        return scope
-
-    monkeypatch.setattr(GraphReadScope, "resolve", classmethod(resolve))
     if blind:
         monkeypatch.setattr(
-            "rcp.runs.tasks.experiment_loop.other_branch_loops",
+            store,
+            "project_experiment_control_projection_snapshots",
             lambda *args, **kwargs: pytest.fail("blind overlap must not be queried"),
         )
     staged = stage_chat_loop_status(
@@ -378,9 +375,11 @@ def test_loop_interference_prompt_uses_resolved_launch_verbs(
         None,
         state=service.history.state(),
         graph_target=episode.graph_target,
-        history=service.history,
+        read_scope=scope,
     )
-    assert staged is not None and ("live_elsewhere" not in staged) is blind
+    assert staged is not None
+    if blind:
+        assert staged["live_elsewhere"] == LoopOverlap().model_dump(mode="json", exclude_none=True)
     turn = cast(
         WorkTurn,
         SimpleNamespace(
@@ -389,7 +388,7 @@ def test_loop_interference_prompt_uses_resolved_launch_verbs(
             context=service.assemble_chat(request),
             compute_commands=None,
             service=service,
-            graph_read_scope=None,
+            graph_read_scope=scope,
         ),
     )
     prompt = _loop_read_context(turn)

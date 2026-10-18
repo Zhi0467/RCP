@@ -142,6 +142,8 @@ a new fork.
 A run whose target is a fork reads graph history only on the fork and its
 ancestors, each through the revision it was forked at; other runs read main and
 every branch. The prompt renders that same scope, and reading grants no writes.
+The loop-overlap builder takes the same scope, so such a run is shown no live
+loops on other branches; human views stay unfiltered.
 
 An orchestrator fork archives automatically when its head still equals its parent
 head and no writer can reach it: no unsettled task using it as graph target or
@@ -259,7 +261,8 @@ control, which excludes Experiment graph conditions.
 The exact RCP-authored prefix exposes validation/keyed Apply, status, keyed worker
 spawn and pause/resume/stop, star mail, graph-condition registration, child
 Experiment kickoff/stop/exact-resume, keyed fork merge and fork archive (see
-[Forks](#forks)), inbox harvest/clear, ask, and guarded finish.
+[Forks](#forks)), inbox harvest/clear, the Bulletin while it is on, ask, and
+guarded finish.
 Spawn/kickoff may select provider/model/effort. Root commands expose no compute
 helper verbs; child Work uses `launch` on the generic route or direct scheduler
 submission. Validation/reply policy remains surface-specific.

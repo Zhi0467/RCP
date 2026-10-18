@@ -5,7 +5,7 @@ import hashlib
 import json
 import shlex
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Collection
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import AsyncExitStack, aclosing, suppress
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
@@ -65,6 +65,7 @@ from rcp.limits import (
 )
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.browser_lifecycle import browser_turn
+from rcp.runs.bulletin import bulletin_command_usage
 from rcp.runs.chat import (
     _append_chat_exchange,
     _append_chat_graph_receipt,
@@ -289,8 +290,6 @@ def _prepare_work_chat_prompt(
     artifact_path: str,
     master_context: str,
     stable_values: dict[str, object],
-    command_client: str,
-    allowed_verbs: Collection[str],
     skill_pointers: list[dict[str, object]],
     attachment_pointers: list[dict[str, object]],
     launch_instructions: str,
@@ -327,8 +326,6 @@ def _prepare_work_chat_prompt(
             execution,
             local_stage,
             remote_stage,
-            command_client=command_client,
-            allowed_verbs=allowed_verbs,
         ),
         context_delta=context_delta,
         read_context=read_context,
@@ -386,6 +383,10 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
                 ),
                 client=client or turn.patch_inputs.validator_staged.client_command(),
             )
+        )
+    if "bulletin" in handler.allowed_verbs:
+        instructions.append(
+            bulletin_command_usage(client or turn.patch_inputs.validator_staged.client_command())
         )
     if "ask" in handler.allowed_verbs:
         instructions.append(live_ask_contract(turn.patch_inputs.validator_staged.ask_wait_seconds))
@@ -754,7 +755,7 @@ async def _stage_work_turn(
         )
 
     async def stage_chat_resources(
-        layout: WorkStageLayout,
+        layout: WorkStageLayout, read_scope: GraphReadScope
     ) -> list[StagedExperimentWatcherResource]:
         layout.context.loop_status = stage_chat_loop_status(
             request,
@@ -763,7 +764,7 @@ async def _stage_work_turn(
             layout.remote_stage,
             state=service.history.state(),
             graph_target=service.history.graph_target,
-            history=service.history,
+            read_scope=read_scope,
         )
         return await stage_chat_experiment_watcher_resources(
             request,
@@ -1015,17 +1016,11 @@ def _work_continuation(
     if browser_grant is not None and browser_grant.status != "not_requested":
         delta = {**(delta or {}), "browser": browser_prompt_line(browser_grant)}
     parts.append(render_chat_read_context(turn.context))
-    patch_values = values["patch"]
-    assert isinstance(patch_values, dict)
-    command_client = patch_values["command_client"]
-    assert isinstance(command_client, str)
     parts.append(
         stage_operational_context_pointer(
             turn.execution,
             turn.local_stage,
             turn.remote_stage,
-            command_client=command_client,
-            allowed_verbs=_work_turn_command_handler(turn).allowed_verbs,
         )
     )
     return compose(node, parts=parts, master=master, delta=delta)
@@ -1143,8 +1138,6 @@ def _compose_fresh_prompt(
                 turn.execution,
                 turn.local_stage,
                 turn.remote_stage,
-                command_client=turn.patch_inputs.command_client,
-                allowed_verbs=_work_turn_command_handler(turn).allowed_verbs,
             )
             + "\n\n"
             + render_chat_read_context(turn.context)
@@ -1179,8 +1172,6 @@ def _compose_fresh_prompt(
         artifact_path=str(staged.artifact_directory),
         master_context=_work_chat_master_context(turn, staged),
         stable_values=values,
-        command_client=turn.patch_inputs.command_client,
-        allowed_verbs=_work_turn_command_handler(turn).allowed_verbs,
         skill_pointers=staged.skill_pointers,
         attachment_pointers=staged.attachment_pointers,
         ontology_extensions=turn.context.ontology_extensions,
@@ -1260,8 +1251,6 @@ def _compose_retry_prompt(
         turn.execution,
         turn.local_stage,
         turn.remote_stage,
-        command_client=turn.patch_inputs.command_client,
-        allowed_verbs=_work_turn_command_handler(turn).allowed_verbs,
     )
     return _ComposedWorkPrompt(
         contract_path=contract_path,
@@ -2816,6 +2805,12 @@ async def _stream_work_graph_repair(
                 execution=execution,
                 saved_stage=True,
             )
+        task_record = execution.store.agent_task(execution.operation_id)
+        if task_record is None:
+            raise ValueError("The graph-reading task record is unavailable.")
+        graph_read_scope = GraphReadScope.resolve(
+            task_record.project_id, service.history, context.group_context
+        )
         context = context.model_copy(
             update=stage_branch_read_context(context, service, local_stage, remote_stage)
         )
@@ -2828,7 +2823,7 @@ async def _stream_work_graph_repair(
                     remote_stage,
                     state=service.history.state(),
                     graph_target=service.history.graph_target,
-                    history=service.history,
+                    read_scope=graph_read_scope,
                 )
             }
         )
@@ -2847,12 +2842,6 @@ async def _stream_work_graph_repair(
             episode_id=request.control_episode_id,
             ask_wait_seconds=ask_hold_seconds(shell_timeout),
             shell_timeout_seconds=shell_timeout,
-        )
-        task_record = execution.store.agent_task(execution.operation_id)
-        if task_record is None:
-            raise ValueError("The graph-reading task record is unavailable.")
-        graph_read_scope = GraphReadScope.resolve(
-            task_record.project_id, service.history, context.group_context
         )
         validator_lifecycle = _start_work_validator_mailbox(
             service,

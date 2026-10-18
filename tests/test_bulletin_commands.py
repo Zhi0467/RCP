@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,6 +12,7 @@ from rcp.background import AgentTaskExecution
 from rcp.limits import BULLETIN_RENDER_MAX_BYTES
 from rcp.runs.bulletin import render_bulletin, stage_bulletin_pointer
 from rcp.runs.questions import discuss_command_handler, work_command_handler
+from rcp.runs.tasks.work import _work_execution_instructions
 
 from .test_lessons_store import store  # noqa: F401
 from .test_work_questions import identity
@@ -42,6 +44,25 @@ def test_bulletin_owner_authority(store, tmp_path):  # noqa: F811
     handler = discuss_command_handler(execution)
     assert handler(post, identity()).status == "invalid"
     assert handler(request("read"), identity()).status == "invalid"
+
+
+def test_contract_usage_and_enforcement_share_the_bulletin_verb(store, tmp_path, monkeypatch):  # noqa: F811
+    execution = AgentTaskExecution(operation_id="turn", store=store, control=AgentProcessControl())
+    turn = SimpleNamespace(
+        execution=execution,
+        compute_commands=None,
+        service=None,
+        graph_read_scope=None,
+        patch_inputs=SimpleNamespace(validator_staged=SimpleNamespace(ask_wait_seconds=1.0)),
+    )
+    post = request("post", key="once", text="note")
+    assert "bulletin" in work_command_handler(execution, None).allowed_verbs
+    assert "rcp-client bulletin --post" in _work_execution_instructions(turn, client="rcp-client")
+    monkeypatch.setattr(store, "bulletin_enabled_for_task", lambda _operation_id: False)
+    handler = work_command_handler(execution, None)
+    assert "bulletin" not in handler.allowed_verbs
+    assert "bulletin" not in _work_execution_instructions(turn, client="rcp-client")
+    assert handler(post, identity()).status == "invalid"
 
 
 def test_bulletin_client_file_backed_keyed_post(tmp_path, monkeypatch):
