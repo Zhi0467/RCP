@@ -122,6 +122,8 @@ PROJECT_LINKED_TABLES = {
     "lesson_command_receipts",
     "bulletin_posts",
     "bulletin_command_receipts",
+    "bulletin_reads",
+    "bulletin_mention_observations",
     "evidence_flags",
     "evidence_flag_command_receipts",
     "notification_preferences",

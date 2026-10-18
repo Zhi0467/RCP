@@ -147,7 +147,7 @@ def test_auto_start_reserves_branch_name(manifest, tmp_path, monkeypatch, name):
     episode_id = response.json()["episode_id"]
     refs = client.get(f"/api/projects/{project_id}/graph-refs").json()
     branch_id = store.episode(episode_id).graph_target.branch_id
-    assert branch_id != episode_id
+    assert branch_id == episode_id
     branch = next(ref for ref in refs if ref["branch_id"] == branch_id)
     if name:
         assert branch["name"] == name

@@ -548,7 +548,7 @@ def test_start_episode_projects_the_exact_main_transition_into_its_branch_head(
         "revision": exact_main.revision,
         "transition_id": exact_main.transition_id,
     }
-    assert branch["branch_id"] != payload["episode_id"]
+    assert branch["branch_id"] == payload["episode_id"]
     assert (
         tasks.store.branch_owner(payload["project_id"], branch["branch_id"])
         == payload["episode_id"]

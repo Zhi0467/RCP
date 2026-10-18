@@ -410,7 +410,7 @@ def test_episode_list_start_and_stop_use_only_the_canonical_surface(manifest, tm
         assert current["episode_id"] == episode_id
         assert current["bulletin_enabled"] is False
         branch_id = payload["graph_target"]["branch_id"]
-        assert branch_id != episode_id
+        assert branch_id == episode_id
         assert current["graph_target"] == {"kind": "branch", "branch_id": branch_id}
         assert current["graph_base_head"]["target"] == {"kind": "main", "branch_id": None}
         assert current["graph_branch"]["branch_id"] == branch_id
