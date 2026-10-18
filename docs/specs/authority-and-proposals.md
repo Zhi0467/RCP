@@ -218,8 +218,8 @@ accepts only written subjects, leaving read-only dependencies unchanged. Earlier
 rules retain their same-node bundle admission and approval-standing behavior.
 Approval replays the stored effects plus their exact implicit standing operations.
 Merge may also propose exact removal of an accepted ordinary node.
-Merge conformance proves every effect against the source delta; none of
-these forms grants direct approval or accepted-node removal.
+RCP builds every merge effect from the planned three-way diff and the agent's
+answers; none of these forms grants direct approval or accepted-node removal.
 
 Every agent Proposal waits for a human. An orchestrator writes its children's
 instructions and cannot independently approve them. Any agent may withdraw a

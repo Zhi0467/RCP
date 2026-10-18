@@ -478,12 +478,13 @@ remain the independent graph delivery record.
 
 `GET /api/projects/{project_id}/episodes/{episode_id}/merge-preview` accepts an
 optional `target_branch`. It recomputes `MergePreview`; no preview is stored.
-The response contains `delivered_baseline`, graph operation count, residue
-paths with reasons, per-path `paths`, optional code status, and `needs_agent`.
-Each path names its entity, id, and field path, its base, branch, and main
-values, and the builder's `delivered`, `conflict`, `needs_agent`,
-`needs_proposal`, and `residue_reason`, from the same builder call as the
-residue. `needs_agent` also covers a code conflict. Code reports its
+The response contains `delivered_baseline`, the graph counts `direct`,
+`conflicts`, and `reviews` (one per connected review group), per-path `paths`,
+optional code status, and `needs_agent`. Each path names its entity, id, and
+field path (`$` for whole-entity presence), its base, branch, and destination
+(`main`) values, and the plan's `delivered`, `conflict`, `needs_agent`, and
+`needs_proposal`, all from the same merge plan. `needs_agent` is true when the
+plan has a conflict or a review group, or code conflicts. Code reports its
 repository alias, source and target branches, commits ahead, leftovers, and
 conflict files. Its status is `clean`, `conflict`, `already_merged`,
 `target_dirty`, or `target_missing`.
