@@ -291,6 +291,27 @@
     0 0 0 2px rgb(82 133 181 / 20%);
 }
 
+:root[data-theme="aqua"] .bulletin-composer {
+  background: var(--aqua-field);
+  border-color: transparent;
+  border-radius: 12px;
+  box-shadow: var(--aqua-inset);
+}
+
+:root[data-theme="aqua"] .bulletin-composer textarea {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+:root[data-theme="aqua"] .bulletin-composer:focus-within {
+  border-color: var(--aqua-selected-border);
+  box-shadow:
+    var(--aqua-inset),
+    0 0 0 2px rgb(82 133 181 / 20%);
+}
+
 :root[data-theme="aqua"] .conversation-list {
   background: var(--paper-deep);
   box-shadow: inset -2px 0 5px rgb(var(--shadow-rgb) / 9%);

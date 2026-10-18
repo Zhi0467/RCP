@@ -55,3 +55,11 @@ export function bulletinReplyContext(post: BulletinPost, posts: readonly Bulleti
     ? { author: bulletinAuthor(parent), excerpt: parent.text.replace(/\s+/g, " ").trim() }
     : null;
 }
+
+/** Clock time for today's posts, a short date for older ones. */
+export function bulletinTime(iso: string, now: Date = new Date()): string {
+  const at = new Date(iso);
+  return at.toDateString() === now.toDateString()
+    ? at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : at.toLocaleDateString([], { month: "short", day: "numeric" });
+}

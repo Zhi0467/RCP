@@ -330,10 +330,31 @@ class BulletinStoreMixin(StoreMixinBase):
                 project_id,
                 target_key,
                 now=self.now(),
-                author={"kind": "agent", "operation_id": operation_id, "actor_label": task["kind"]},
+                author={
+                    "kind": "agent",
+                    "operation_id": operation_id,
+                    "actor_label": _agent_label(task),
+                },
                 key=key,
                 text=text,
                 refs=refs,
                 reply_to=reply_to,
             )
         return _result(outcome)
+
+
+def _agent_label(task: sqlite3.Row) -> str:
+    """The author name a member reads: the agent's part, then its seat node."""
+
+    request = json.loads(task["request_json"] or "{}")
+    part = (
+        "Worker"
+        if request.get("role") == "worker"
+        else "Orchestrator"
+        if task["kind"] == "auto_research"
+        else "Experiment"
+        if request.get("patch_kind") == "experiment_loop"
+        else "Agent"
+    )
+    seat = request.get("node_id") or request.get("control_node_id")
+    return f"{part} · {seat}" if seat else part

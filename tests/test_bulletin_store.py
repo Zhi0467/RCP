@@ -60,6 +60,16 @@ def test_target_and_project_isolation_and_reply_depth(store):
     assert store.list_bulletin("other", "main")["posts"] == [member]
 
 
+def test_agent_author_names_its_seat_not_its_task_kind(store):
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=json_set(request_json, '$.role', 'worker', "
+            "'$.node_id', 'exp/seat') WHERE operation_id='turn'"
+        )
+    author = post(store, "a")["author"]
+    assert author["kind"] == "agent" and "exp/seat" in author["actor_label"]
+
+
 def test_discuss_reads_but_cannot_post(store):
     post(store, "a")
     with store.connection() as connection:
