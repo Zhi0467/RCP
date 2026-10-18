@@ -227,7 +227,8 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
       setDraft("");
       setReply(null);
       setKey(crypto.randomUUID());
-      setCursor(null);
+      // A reply stays on its thread's page; a new post lands on the newest page.
+      if (!parent) setCursor(null);
       reload();
     });
   };
