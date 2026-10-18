@@ -62,7 +62,9 @@ class MergeChange(_MergeModel):
     field_name=None means entity presence; global collections use entity_id=None.
     change_id is stable for collection/entity/field, independent of graph heads.
     Values retain all three snapshots so the builder can preserve destination
-    work and construct semantic supersede/merge operations rather than field writes.
+    work. The planner records supersede/merge-node retirement as its ordinary
+    field and edge changes; only the builder reconstructs the semantic
+    supersede/merge operation from them (no separate semantic descriptor).
     """
 
     change_id: str = Field(min_length=1)
@@ -222,7 +224,8 @@ class MergePlanningContext(_MergeModel):
 
     The loader captures live authority with capture_change_authority using an empty
     Patch template, exact source/destination heads and immutable snapshots. Both
-    planner and builder classify candidates made by replacing only template.ops;
+    planner and builder classify candidates made by replacing template.ops and
+    setting agent_action to core's derived_agent_action(state, candidate);
     no synthetic membership resolver is permitted. The capture is preflight
     evidence, never a substitute for live admission at preparation/commit.
     Source human facts and prior reviews come only from canonical history.

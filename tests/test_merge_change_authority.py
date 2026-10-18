@@ -293,6 +293,8 @@ def test_captured_authority_is_pure_but_cannot_widen_or_replace_live_authority()
         {"profile": "orchestrator"},
         {"run_truth_scope": ["repo-b"]},
         {"task_id": "another-task"},
+        # The Decision action is derived from the ops; these ops record no outcome.
+        {"agent_action": "decision_choice"},
     ):
         result = classify(patch.model_copy(update=change), capture)
         assert result.disposition == "refused"

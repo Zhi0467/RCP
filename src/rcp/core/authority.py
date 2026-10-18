@@ -633,6 +633,14 @@ def operation_actions(
     raise ValueError(f"Unknown graph operation {getattr(operation, 'op', None)!r}.")
 
 
+def derived_agent_action(state: GraphState, patch: Patch) -> Literal["decision_choice"] | None:
+    """The agent action an orchestrator Patch must declare for its own ops."""
+
+    from rcp.core.validation.patch import patch_has_decision_outcome
+
+    return "decision_choice" if patch_has_decision_outcome(state, patch) else None
+
+
 def is_existing_protected_node(state: GraphState, node_id: str) -> bool:
     """Whether ``node_id`` names a pre-Patch protected belief."""
 
@@ -1305,11 +1313,14 @@ def classify_graph_changes(
         raise ValueError("change classification requires admission validation")
     try:
         if isinstance(authority, CapturedChangeAuthority):
+            # The Decision action follows from the ops, so a candidate may differ
+            # from its template there only by carrying exactly the derived action.
             if (
                 project_id != authority.project_id
                 or apply_target != authority.apply_target
-                or patch.model_dump(exclude={"ops"})
-                != authority.patch_template.model_dump(exclude={"ops"})
+                or patch.model_dump(exclude={"ops", "agent_action"})
+                != authority.patch_template.model_dump(exclude={"ops", "agent_action"})
+                or patch.agent_action != derived_agent_action(state, patch)
                 or (authorized_by is not None and authorized_by != patch.authorized_by)
             ):
                 raise ValueError("candidate Patch does not match captured planning authority")
