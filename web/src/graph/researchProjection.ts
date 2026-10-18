@@ -118,9 +118,11 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
     append(incomingIndex, `${target.id}\0${edge.relation}`, source);
     append(neighbourIds, source.id, target.id);
     append(neighbourIds, target.id, source.id);
+    // Evidence assessed both ways on one Hypothesis reads as unclear, whatever the edge order.
     const verdict = VERDICT_BY_RELATION[edge.relation];
     const pair = `${source.id}\0${target.id}`;
-    if (verdict && !verdicts.has(pair)) verdicts.set(pair, verdict);
+    const previous = verdicts.get(pair);
+    if (verdict) verdicts.set(pair, previous && previous !== verdict ? "unclear" : verdict);
   });
   outgoingIndex.forEach((list, key) => outgoingIndex.set(key, sortNodes(list)));
   incomingIndex.forEach((list, key) => incomingIndex.set(key, sortNodes(list)));
@@ -128,6 +130,27 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
   const incoming = (id: string, relation: string) => incomingIndex.get(`${id}\0${relation}`) ?? [];
   const verdictOn = (evidenceId: string, hypothesisId: string): Verdict | null =>
     verdicts.get(`${evidenceId}\0${hypothesisId}`) ?? null;
+  // What must clear first, to the end of the chain: each Decision's Blockers and
+  // each Blocker's required Decisions.
+  const withPrerequisites = (start: GraphNode[]): GraphNode[] => {
+    const result = uniqueNodes(start);
+    const seen = new Set(result.map((node) => node.id));
+    for (let index = 0; index < result.length; index += 1) {
+      const node = result[index];
+      const next =
+        node.type === "decision"
+          ? outgoing(node.id, "blocked_by")
+          : node.type === "blocker"
+            ? outgoing(node.id, "requires_decision")
+            : [];
+      next.forEach((item) => {
+        if (seen.has(item.id)) return;
+        seen.add(item.id);
+        result.push(item);
+      });
+    }
+    return result;
+  };
   const isOpenBlocker = (node: GraphNode) => node.type === "blocker" && node.status === "open";
   const isOpenDecision = (node: GraphNode) =>
     node.type === "decision" && OPEN_DECISION_STATUSES.has(node.status ?? "");
@@ -151,13 +174,12 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
             tally: tallyOf(evidence),
           };
         });
-      const decisions = experiments.flatMap((lane) => outgoing(lane.node.id, "governed_by"));
-      const blockers = [...experiments.map((lane) => lane.node), ...decisions].flatMap((node) =>
-        outgoing(node.id, "blocked_by"),
+      const inputNodes = withPrerequisites(
+        experiments.flatMap((lane) => [
+          ...outgoing(lane.node.id, "governed_by"),
+          ...outgoing(lane.node.id, "blocked_by"),
+        ]),
       );
-      // A Blocker cleared by a choice brings that Decision along.
-      const required = blockers.flatMap((node) => outgoing(node.id, "requires_decision"));
-      const inputNodes = uniqueNodes([...decisions, ...blockers, ...required]);
       const evidence = Object.keys(VERDICT_BY_RELATION)
         .flatMap((relation) => incoming(hypothesis.id, relation))
         .filter((node) => node.type === "evidence")
@@ -170,10 +192,11 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
         ),
         inputs: {
           nodes: inputNodes,
-          evidence: uniqueNodes([
-            ...[...decisions, ...required].flatMap((node) => incoming(node.id, "informs")),
-            ...blockers.flatMap((node) => incoming(node.id, "addresses")),
-          ]),
+          evidence: uniqueNodes(
+            inputNodes.flatMap((node) =>
+              incoming(node.id, node.type === "decision" ? "informs" : "addresses"),
+            ),
+          ),
           openDecisions: inputNodes.filter(isOpenDecision).length,
           openBlockers: inputNodes.filter(isOpenBlocker).length,
         },
@@ -209,11 +232,7 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
     const decisions = outgoing(question.id, "has_decision");
     const blockers = [question, ...decisions].flatMap((node) => outgoing(node.id, "blocked_by"));
     // A Decision that clears one of these Blockers anchors the work it governs too.
-    const anchors = uniqueNodes([
-      ...decisions,
-      ...blockers,
-      ...blockers.flatMap((node) => outgoing(node.id, "requires_decision")),
-    ]);
+    const anchors = withPrerequisites([...decisions, ...blockers]);
     // Work that tests no Hypothesis also joins through a Hypothesis's inputs,
     // which its page already lists, so only that work is added here.
     const hypothesisInputs = outgoing(question.id, "has_hypothesis").flatMap(
@@ -233,18 +252,8 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
         ...outgoing(node.id, "blocked_by"),
       ]),
     ]);
-    // Then the Blockers of every Decision shown, the Decisions those Blockers
-    // require, and Evidence bearing on any of them.
-    const withBlockers = uniqueNodes([
-      ...shown,
-      ...shown.flatMap((node) => (node.type === "decision" ? outgoing(node.id, "blocked_by") : [])),
-    ]);
-    const inputs = uniqueNodes([
-      ...withBlockers,
-      ...withBlockers.flatMap((node) =>
-        node.type === "blocker" ? outgoing(node.id, "requires_decision") : [],
-      ),
-    ]);
+    // Then what must clear before anything shown, and Evidence bearing on any of it.
+    const inputs = withPrerequisites(shown);
     return uniqueNodes([
       ...inputs,
       ...inputs.flatMap((node) => [

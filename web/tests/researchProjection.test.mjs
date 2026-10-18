@@ -51,6 +51,8 @@ const nodes = [
   node("e/region", "evidence"),
   node("x/batch-sweep", "experiment", { status: "completed" }),
   node("e/sweep", "evidence"),
+  node("d/budget-cap", "decision", { status: "open" }),
+  node("b/finance", "blocker", { status: "open" }),
   node("orphan", "decision"),
 ];
 const edges = [
@@ -83,6 +85,9 @@ const edges = [
   edge("x/region-bench", "governed_by", "d/region"),
   edge("x/region-bench", "produces", "e/region"),
   edge("x/batch-sweep", "governed_by", "d/batch"),
+  edge("b/approval", "requires_decision", "d/budget-cap"),
+  edge("d/budget-cap", "blocked_by", "b/finance"),
+  edge("e/paper", "supports", "h/shared"),
   edge("x/batch-sweep", "produces", "e/sweep"),
 ];
 
@@ -90,10 +95,18 @@ test("a Hypothesis page gathers its Experiments' inputs and weighs each result",
   const page = buildResearchDrilldown(nodes, edges).hypotheses.get("h/shared");
 
   assert.deepEqual(ids(page.questions).sort(), ["q/other", "q/sub"]);
-  assert.deepEqual(ids(page.inputs.nodes).sort(), ["b/approval", "b/queue", "d/batch", "d/quota"]);
+  // Prerequisites follow the chain: Blocker, its required Decision, that Decision's Blocker.
+  assert.deepEqual(ids(page.inputs.nodes).sort(), [
+    "b/approval",
+    "b/finance",
+    "b/queue",
+    "d/batch",
+    "d/budget-cap",
+    "d/quota",
+  ]);
   assert.deepEqual(ids(page.inputs.evidence).sort(), ["e/budget", "e/quota-cost"]);
-  assert.equal(page.inputs.openDecisions, 2);
-  assert.equal(page.inputs.openBlockers, 2);
+  assert.equal(page.inputs.openDecisions, 3);
+  assert.equal(page.inputs.openBlockers, 3);
 
   const lanes = Object.fromEntries(page.experiments.map((lane) => [lane.node.id, lane]));
   assert.equal(lanes["x/run"].active, true);
@@ -105,8 +118,8 @@ test("a Hypothesis page gathers its Experiments' inputs and weighs each result",
       ["e/side", null],
     ],
   );
-  // Evidence from no listed Experiment still counts toward the Hypothesis.
-  assert.deepEqual(page.tally, { for: 1, against: 1, unclear: 0 });
+  // Evidence from no listed Experiment still counts; assessed both ways, it reads as unclear.
+  assert.deepEqual(page.tally, { for: 1, against: 0, unclear: 1 });
 });
 
 test("question pages share Hypotheses and keep work that tests none", () => {
@@ -134,6 +147,8 @@ test("question pages share Hypotheses and keep work that tests none", () => {
     "b/approval",
     "b/seed-budget",
     "d/gpu-vendor",
+    "d/budget-cap",
+    "b/finance",
     "e/survey",
     "e/budget",
     "e/variance",
@@ -150,7 +165,7 @@ test("question pages share Hypotheses and keep work that tests none", () => {
   const shared = sub.hypotheses[0];
   assert.deepEqual(
     [shared.openDecisions, shared.openBlockers, shared.activeExperiments],
-    [2, 2, 1],
+    [3, 3, 1],
   );
   assert.deepEqual(ids(drilldown.unplaced), ["orphan"]);
 });
