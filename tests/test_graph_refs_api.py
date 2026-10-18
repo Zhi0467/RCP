@@ -320,6 +320,7 @@ def test_branch_mutations_require_project_membership(tmp_path) -> None:
     path = f"/api/projects/{project_id}/graph-refs/{uuid.uuid4()}"
     assert client.put(path + "/name", json={"name": "valid-name"}).status_code == 404
     assert client.put(path + "/archived", json={"archived": True}).status_code == 404
+    assert client.post(path + "/merge", json={"request_id": str(uuid.uuid4())}).status_code == 404
     assert (
         client.post(
             f"/api/projects/{project_id}/graph-refs",
@@ -516,3 +517,140 @@ def test_human_fork_unavailable_state_is_retryable(manifest, tmp_path, monkeypat
     assert response.status_code == 201, response.text
     assert response.json()["branch_id"] == request["request_id"]
     assert len(app.state.background_tasks.store.graph_branches(project_id)) == 1
+
+
+@pytest.mark.parametrize("destination_kind", ["main", "branch"])
+@pytest.mark.parametrize("residue", [False, True])
+def test_human_fork_merge_uses_parent_without_episode_or_budget(
+    manifest, tmp_path, monkeypatch, destination_kind, residue
+):
+    import json
+
+    from rcp.agents.hidden_read import host_facts
+    from rcp.core.models import Patch
+    from rcp.history import HistoryManager
+    from rcp.runs.branch_merge_admission import recover_branch_merge_task
+
+    from .helpers import unchecked_write_authority, wait_for_task
+    from .test_branch_merge_api import _PatchWritingLauncher
+
+    harness = _create_branch_harness(manifest, tmp_path, change="none")
+    monkeypatch.setattr(
+        "rcp.agents.hidden_read.host_facts",
+        lambda paths: {**host_facts(paths), "home": str(tmp_path / "execution-home")},
+    )
+    history = HistoryManager(
+        harness.service.manifest,
+        harness.service.history.workspace,
+        write_authority=unchecked_write_authority(),
+    )
+    destination = (
+        history if destination_kind == "main" else history.branch(harness.branch.branch_id)
+    )
+    parent = destination.head_ref()
+    refs = f"/api/projects/{harness.project_id}/graph-refs"
+    response = harness.client.post(
+        refs, json={"request_id": str(uuid.uuid4()), "at": f"{parent.target.key}@{parent.revision}"}
+    )
+    assert response.status_code == 201, response.text
+    fork_id = response.json()["branch_id"]
+    source = history.branch(fork_id)
+    operations = [
+        {
+            "op": "update_nodes",
+            "nodes": [{"id": "blk/merge-ready", "changes": {"title": "Fork choice"}}],
+        }
+    ]
+    payload = dict(
+        kind="work",
+        author="agent",
+        producer="agent",
+        summary="Fork change",
+        run_truth_scope=["repo-a"],
+        ops=operations,
+    )
+    source.append(Patch.model_validate(payload))
+    if residue:
+        destination.append(
+            Patch.model_validate(
+                {
+                    **payload,
+                    "ops": [
+                        {
+                            "op": "update_nodes",
+                            "nodes": [
+                                {"id": "blk/merge-ready", "changes": {"title": "Parent choice"}}
+                            ],
+                        }
+                    ],
+                }
+            )
+        )
+    launcher = _PatchWritingLauncher(json.dumps({"summary": "Resolve fork", "ops": operations}))
+    monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
+    before = harness.store.episode_budget_meter(harness.episode.episode_id)
+    request = {"request_id": str(uuid.uuid4())}
+    route = f"{refs}/{fork_id}/merge"
+    if destination_kind == "branch" and not residue:
+
+        def crash_before_receipt(*_args):
+            raise OSError("Injected crash after destination commit")
+
+        with monkeypatch.context() as crash:
+            crash.setattr(BranchHistoryManager, "write_merge_receipt", crash_before_receipt)
+            with pytest.raises(OSError):
+                harness.client.post(route, json=request)
+        [pending] = harness.store.recoverable_bound_merge_tasks()
+        harness.store.fail_agent_task(pending.operation_id, "Crash after commit")
+        [pending] = harness.store.recoverable_bound_merge_tasks()
+        recovered = recover_branch_merge_task(
+            harness.app.state.background_tasks, harness.service, pending
+        )
+        assert recovered["status"] == "succeeded"
+    response = harness.client.post(route, json=request)
+    assert response.status_code == 200, response.text
+    task = wait_for_task(harness.store, response.json()["operation_id"], expect="succeeded")
+    assert task.episode_id is None
+    assert task.graph_target == source.graph_target
+    binding = task.request["merge_binding"]
+    assert isinstance(binding, dict)
+    assert binding["destination"] == parent.target.model_dump(mode="json")
+    assert launcher.calls == int(residue)
+    assert harness.store.episode_budget_meter(harness.episode.episode_id) == before
+    assert destination.state().nodes["blk/merge-ready"].title == "Fork choice"
+    head = destination.head_ref()
+    retry = harness.client.post(route, json=request)
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["operation_id"] == task.operation_id
+    assert retry.json()["status"] == "succeeded"
+    assert destination.head_ref() == head
+    assert source.merge_receipts()[0].result_main_head.target == parent.target
+
+
+@pytest.mark.parametrize("refusal", ["episode_owned", "archived_destination"])
+def test_human_fork_merge_refuses_wrong_owner_or_archived_parent(manifest, tmp_path, refusal):
+    harness = _create_branch_harness(manifest, tmp_path, change="evidence")
+    refs = f"/api/projects/{harness.project_id}/graph-refs"
+    if refusal == "episode_owned":
+        branch_id = harness.branch.branch_id
+    else:
+        parent = harness.branch.head_ref()
+        response = harness.client.post(
+            refs,
+            json={"request_id": str(uuid.uuid4()), "at": f"{parent.target.key}@{parent.revision}"},
+        )
+        assert response.status_code == 201, response.text
+        branch_id = response.json()["branch_id"]
+        harness.store.set_branch_archived(
+            harness.project_id, harness.branch.branch_id, archived=True
+        )
+    before = len(harness.store.episode_tasks(harness.episode.episode_id))
+    response = harness.client.post(
+        f"{refs}/{branch_id}/merge", json={"request_id": str(uuid.uuid4())}
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] in {
+        "merge_source_not_human_owned",
+        "merge_destination_archived",
+    }
+    assert len(harness.store.episode_tasks(harness.episode.episode_id)) == before

@@ -884,7 +884,8 @@ async def test_conflicting_edge_replacement_can_be_resolved_by_provider(
 
 
 @pytest.mark.parametrize("protected", [False, True])
-def test_nested_merge_uses_exact_parent_and_destination_rules(merge_history, protected):
+@pytest.mark.parametrize("human", [False, True])
+def test_nested_merge_uses_exact_parent_and_destination_rules(merge_history, protected, human):
     import uuid
 
     from rcp.runs.branch_merge import (
@@ -899,7 +900,7 @@ def test_nested_merge_uses_exact_parent_and_destination_rules(merge_history, pro
     fork_id = str(uuid.uuid4())
     metadata = GraphBranchMetadata(
         branch_id=fork_id,
-        episode_id=destination.branch_metadata().episode_id,
+        episode_id=None if human else destination.branch_metadata().episode_id,
         project_id=destination.branch_metadata().project_id,
         kind="fork",
         base_head=destination.branch_metadata().base_head,
@@ -969,6 +970,8 @@ def test_nested_merge_uses_exact_parent_and_destination_rules(merge_history, pro
         == destination.graph_target
     )
     assert committed.patch.branch_merge is not None
+    assert (committed.patch.episode_id is None) is human
+    assert (committed.patch.branch_merge.episode_id is None) is human
     assert committed.patch.branch_merge.branch_base_head == parent_head
     assert destination.state().nodes["blk/existing"].title == "Destination advanced."
     if protected:
@@ -997,6 +1000,8 @@ def test_legacy_merge_request_without_binding_retains_main_dispatch():
         }
     )
     assert request.merge_binding is None
+    assert "merge_binding" not in request.model_dump(mode="json")
+    assert "merge_binding" not in json.loads(request.model_dump_json())
     assert request.episode_id == "legacy-owner"
     context = _context()
     old_context = context.model_dump(mode="json", exclude={"dispatcher_episode_id"})

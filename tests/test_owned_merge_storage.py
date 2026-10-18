@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -221,7 +222,7 @@ async def test_owned_merge_delivers_to_parent_and_reuses_key(
     # This test exercises merge dispatch and Apply; delivery wakes have independent coverage.
     monkeypatch.setattr(harness.app.state.background_tasks, "on_task_settled", None)
     before = harness.store.episode_budget_meter(harness.episode.episode_id).invocations_used
-    result = await start_owned_branch_merge(
+    result = start_owned_branch_merge(
         harness.app.state.background_tasks,
         harness.service,
         episode=harness.episode,
@@ -232,7 +233,7 @@ async def test_owned_merge_delivers_to_parent_and_reuses_key(
     operation_id = result["operation_id"]
     assert isinstance(operation_id, str)
     task = await asyncio.to_thread(wait_for_task, harness.store, operation_id, expect="succeeded")
-    replay = await start_owned_branch_merge(
+    replay = start_owned_branch_merge(
         harness.app.state.background_tasks,
         harness.service,
         episode=harness.episode,
@@ -252,38 +253,29 @@ async def test_owned_merge_delivers_to_parent_and_reuses_key(
     assert receipt.result_main_head.target == harness.branch.graph_target
 
 
-@pytest.mark.parametrize("paused_source_writer", [False, True])
-def test_interrupted_merge_keeps_allocation_and_fences_wrapup(
-    manifest, tmp_path, paused_source_writer
-):
-    from rcp.core.graph_targets import graph_target_json
-
+@pytest.mark.parametrize("root_status", ["succeeded", "interrupted"])
+def test_interrupted_merge_keeps_allocation_and_fences_wrapup(manifest, tmp_path, root_status):
     harness, task = _owned_merge(manifest, tmp_path)
     store = harness.store
     store.create_branch_merge_task(task)
-    store.complete_agent_task(harness.root.operation_id, applied_revision=None, result={})
-    assert not store.auto_research_is_quiescent(harness.episode.episode_id)
     store.fail_agent_task(task.operation_id, "Process restarted", status="interrupted")
+    if root_status == "succeeded":
+        store.complete_agent_task(harness.root.operation_id, applied_revision=None, result={})
+    else:
+        store.fail_agent_task(harness.root.operation_id, "Process restarted", status="interrupted")
+    with pytest.raises(ValueError, match="^merge_episode_not_accepting_work$"):
+        store.create_branch_merge_task(task.model_copy(update={"operation_id": str(uuid.uuid4())}))
     assert not store.auto_research_is_quiescent(harness.episode.episode_id)
-    if paused_source_writer:
-        with store.connection() as connection:
-            connection.execute(
-                "UPDATE graph_runs SET status='paused', graph_target_json=? WHERE operation_id=?",
-                (graph_target_json(task.graph_target), harness.root.operation_id),
-            )
     recovered = store.requeue_owned_merge_task(task.operation_id)
     assert recovered.attempt == task.attempt + 1
     assert recovered.status == "queued"
     assert len(store.episode_invocations(harness.episode.episode_id)) == 2
     assert store.episode_budget_meter(harness.episode.episode_id).invocations_used == 2
+    assert not store.auto_research_is_quiescent(harness.episode.episode_id)
     store.complete_agent_task(task.operation_id, applied_revision=None, result={})
-    if paused_source_writer:
-        with store.connection() as connection:
-            connection.execute(
-                "UPDATE graph_runs SET status='succeeded', graph_target_json=? WHERE operation_id=?",
-                (graph_target_json(harness.root.graph_target), harness.root.operation_id),
-            )
-    assert store.auto_research_is_quiescent(harness.episode.episode_id)
+    assert store.auto_research_is_quiescent(harness.episode.episode_id) == (
+        root_status == "succeeded"
+    )
 
 
 def test_owned_merge_refuses_live_source_writer(manifest, tmp_path):
@@ -303,8 +295,7 @@ def test_owned_merge_refuses_live_source_writer(manifest, tmp_path):
     assert harness.store.episode_budget_meter(harness.episode.episode_id).invocations_used == 1
 
 
-@pytest.mark.asyncio
-async def test_committed_merge_recovers_after_destination_archived(manifest, tmp_path, monkeypatch):
+def test_committed_merge_recovers_after_destination_archived(manifest, tmp_path, monkeypatch):
     from rcp.core.models import Patch
     from rcp.history.branches import BranchHistoryManager
     from rcp.history.manager import HistoryManager
@@ -346,8 +337,8 @@ async def test_committed_merge_recovers_after_destination_archived(manifest, tmp
     tasks = harness.app.state.background_tasks
     monkeypatch.setattr(tasks, "on_task_settled", None)
 
-    async def merge():
-        return await start_owned_branch_merge(
+    def merge():
+        return start_owned_branch_merge(
             tasks,
             harness.service,
             episode=harness.episode,
@@ -357,7 +348,7 @@ async def test_committed_merge_recovers_after_destination_archived(manifest, tmp
         )
 
     with pytest.raises(OSError):
-        await merge()
+        merge()
     operation_id = str(
         uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:merge:{harness.root.operation_id}:crash")
     )
@@ -365,8 +356,138 @@ async def test_committed_merge_recovers_after_destination_archived(manifest, tmp
     committed_head = harness.branch.head_ref()
     harness.store.set_branch_archived(harness.project_id, harness.branch.branch_id, archived=True)
     monkeypatch.setattr(BranchHistoryManager, "write_merge_receipt", original)
-    result = await merge()
+    result = merge()
     assert result["status"] == "succeeded"
     assert harness.branch.head_ref() == committed_head
     assert harness.branch.state().nodes["blk/merge-ready"].title == "Recovered"
     assert harness.store.episode_budget_meter(harness.episode.episode_id).invocations_used == 1
+
+
+def test_merge_fences_both_outgoing_destination_and_incoming_source(manifest, tmp_path):
+    harness, task = _owned_merge(manifest, tmp_path)
+    store = harness.store
+    admitted = store.create_branch_merge_task(task)
+    later = (datetime.fromisoformat(task.created_at) + timedelta(seconds=1)).isoformat()
+    duplicate = task.model_copy(update={"created_at": later, "updated_at": later})
+    assert store.create_branch_merge_task(duplicate) == admitted
+    binding = MergeBinding.model_validate(task.request["merge_binding"]).model_dump(mode="json")
+    assert task.authorized_by is not None
+    for change in (
+        {"graph_target": harness.branch.graph_target},
+        {
+            "request": {
+                **task.request,
+                "merge_binding": {
+                    **binding,
+                    "destination": GraphTargetRef().model_dump(mode="json"),
+                },
+            }
+        },
+        {"authorized_by": task.authorized_by.model_copy(update={"display_name": "Another actor"})},
+    ):
+        with pytest.raises(ValueError):
+            store.create_branch_merge_task(duplicate.model_copy(update=change))
+    store.fail_agent_task(task.operation_id, "Process restarted", status="interrupted")
+    store.complete_agent_task(harness.root.operation_id, applied_revision=None, result={})
+    outgoing = task.model_copy(
+        update={
+            "operation_id": str(uuid.uuid4()),
+            "graph_target": harness.branch.graph_target,
+            "request": {**task.request, "merge_binding": None},
+        }
+    )
+    store.create_branch_merge_task(outgoing)
+    with pytest.raises(ValueError, match="^merge_destination_merging$"):
+        store.create_branch_merge_task(task.model_copy(update={"operation_id": str(uuid.uuid4())}))
+    with pytest.raises(ValueError, match="^merge_destination_merging$"):
+        store.agent_task_authority(task.project_id, task.operation_id)
+    store.fail_agent_task(outgoing.operation_id, "Finished")
+    store.requeue_owned_merge_task(task.operation_id)
+    with pytest.raises(ValueError, match="^merge_source_has_live_writer$"):
+        store.create_branch_merge_task(
+            outgoing.model_copy(update={"operation_id": str(uuid.uuid4())})
+        )
+    assert store.episode_budget_meter(harness.episode.episode_id).invocations_used == 2
+
+
+@pytest.mark.parametrize("fence", ["stop", "ending", "status"])
+def test_merge_recovery_fails_behind_episode_fence_without_refunding_budget(
+    manifest, tmp_path, fence
+):
+    harness, task = _owned_merge(manifest, tmp_path)
+    store = harness.store
+    store.create_branch_merge_task(task)
+    store.fail_agent_task(task.operation_id, "Process restarted", status="interrupted")
+    if fence == "stop":
+        store.request_auto_research_stop_and_settle_watchers(harness.episode.episode_id)
+    else:
+        field, value = ("ending", "completed") if fence == "ending" else ("status", "stopping")
+        with store.connection() as connection:
+            connection.execute(
+                f"UPDATE episodes SET {field}=? WHERE episode_id=?",
+                (value, harness.episode.episode_id),
+            )
+    with pytest.raises(ValueError, match="^merge_episode_not_accepting_work$"):
+        store.requeue_owned_merge_task(task.operation_id)
+    failed = store.agent_task(task.operation_id)
+    assert failed is not None and failed.status == "failed" and failed.attempt == 1
+    assert store.episode_budget_meter(harness.episode.episode_id).invocations_used == 2
+    assert len(store.episode_invocations(harness.episode.episode_id)) == 2
+    assert [item.operation_id for item in store.recoverable_bound_merge_tasks()] == [
+        task.operation_id
+    ]
+
+
+@pytest.mark.parametrize("parent_branch", [False, True])
+def test_human_fork_merge_admits_and_recovers_without_episode_budget(
+    manifest, tmp_path, parent_branch
+):
+    harness, template = _owned_merge(manifest, tmp_path)
+    store = harness.store
+    assert harness.episode.authorized_by is not None
+    source = create_graph_fork(
+        harness.service.history,
+        store,
+        project_id=harness.project_id,
+        branch_id=str(uuid.uuid4()),
+        parent_head=harness.branch.head_ref()
+        if parent_branch
+        else harness.service.history.head_ref(),
+        authorized_by=harness.episode.authorized_by,
+        created_by="human:fork",
+        owner_episode_id=None,
+    )
+    binding = MergeBinding(
+        source=source.graph_target,
+        source_head=source.head_ref(),
+        destination=source.branch_metadata().effective_parent_head.target,
+        requires_agent=False,
+    )
+    authority = template.dispatch_authority
+    assert authority is not None
+    task = template.model_copy(
+        update={
+            "episode_id": None,
+            "graph_target": source.graph_target,
+            "request": {
+                **template.request,
+                "episode_id": None,
+                "merge_binding": binding.model_dump(mode="json"),
+            },
+            "dispatch_authority": authority.model_copy(
+                update={"scope": authority.scope.model_copy(update={"episode_id": None})}
+            ),
+        }
+    )
+    store.create_branch_merge_task(task)
+    store.reserve_branch_merge_invocation(task.operation_id)
+    store.fail_agent_task(task.operation_id, "Process restarted", status="interrupted")
+    assert store.requeue_owned_merge_task(task.operation_id).episode_id is None
+    assert store.episode_budget_meter(harness.episode.episode_id).invocations_used == 1
+    resolved = store.agent_task_authority(task.project_id, task.operation_id)
+    assert resolved.merge_source == source.graph_target and resolved.merge_dispatcher == "member"
+    assert resolved.episode_id is None and resolved.apply_target == binding.destination
+    with store.connection() as connection:
+        connection.execute("DELETE FROM project_members WHERE project_id=?", (task.project_id,))
+    with pytest.raises(ValueError, match="^merge_member_required$"):
+        store.agent_task_authority(task.project_id, task.operation_id)

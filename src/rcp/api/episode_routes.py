@@ -60,7 +60,11 @@ from rcp.runs.auto_research_delivery import (
     deliver_pending_auto_research_mail,
     record_auto_research_message,
 )
-from rcp.runs.branch_merge_admission import settle_agentless_merge, start_branch_merge
+from rcp.runs.branch_merge_admission import (
+    settle_agentless_merge,
+    start_branch_merge,
+    start_human_branch_merge,
+)
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.episodes.isolation import auto_research_code_worktree_eligible
 from rcp.runs.episodes.merge import (
@@ -244,6 +248,44 @@ def fork_graph_branch(
         raise HTTPException(
             status_code=422, detail={"code": "branch_fork_invalid", "message": str(exc)}
         ) from exc
+
+
+class MergeBranchBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: UUID4
+
+
+@router.post(
+    "/api/projects/{project_id}/graph-refs/{branch_id}/merge",
+    dependencies=[Depends(require_project_write_admission)],
+)
+def merge_graph_branch(
+    project_id: str,
+    branch_id: str,
+    body: MergeBranchBody,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    identity_access: IdentityDependency,
+    background_tasks: BackgroundTasksDependency,
+) -> dict[str, object]:
+    actor = identity_access.require_patch_capable_identity(request)
+    try:
+        service = get_project_writer(catalog, project_id)
+        return start_human_branch_merge(
+            background_tasks,
+            service,
+            branch_id=branch_id,
+            request_id=str(body.request_id),
+            authorized_by=actor,
+        )
+    except StateUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail={"code": "branch_not_found"}) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=_merge_refusal(exc)) from exc
 
 
 class RenameBranchBody(BaseModel):
