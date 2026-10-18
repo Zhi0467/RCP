@@ -470,5 +470,7 @@ and soft-delete timestamps. Membership, author identity, receipt lookup, Stop
 admission, and mutation are checked within the storage transaction. These rows
 are operational records and do not mutate canonical graph history. Restore
 schema fingerprints, backup integrity, and resource-version registries include
-the migration's tables and triggers. Post retention also prunes observed mention
+the migration's tables and triggers. Each target keeps at most 200 posts by
+evicting whole threads, least recently active first, so an accepted post is never
+the one evicted. Post retention also prunes observed mention
 rows whose posts no longer exist; unobserved rows remain for reconciliation.

@@ -1862,7 +1862,9 @@ roster; unknown tokens remain ordinary text.
 A page holds whole threads: up to the page size of top-level posts, newest
 first, each with all of its visible replies. The cursor follows the oldest
 top-level post on the page, so a reply never lands on a different page from its
-parent and `reply_count` matches the replies shown. The Agents view shows the
+parent and `reply_count` matches the replies shown. Every page also carries
+`newest_post_id`, the target's latest post including a reply in an older thread;
+showing the newest page marks the channel read up to it. The Agents view shows the
 channel of the workspace's graph target; picking another channel switches the
 workspace to that target, so `#node` links and suggestions resolve in the
 channel's own graph.

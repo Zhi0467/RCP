@@ -174,13 +174,61 @@ def _list(
         if post["reply_to"]:
             parent = parents[post["reply_to"]]
             post["reply_parent"] = {key: parent[key] for key in ("post_id", "author", "text")}
+    # The channel's latest post anywhere, a reply in an older thread included.
+    newest = connection.execute(
+        "SELECT post_id FROM bulletin_posts WHERE project_id=? AND target_key=? "
+        "ORDER BY sequence DESC LIMIT 1",
+        (project_id, target_key),
+    ).fetchone()
     return {
         "posts": posts,
+        "newest_post_id": newest["post_id"] if newest else None,
         "total": total,
         "next_cursor": str(rows[BULLETIN_PAGE_SIZE - 1]["sequence"])
         if len(rows) > BULLETIN_PAGE_SIZE
         else None,
     }
+
+
+def _retain_recent_threads(
+    connection: sqlite3.Connection, project_id: str, target_key: str
+) -> None:
+    """Keep whole threads, most recently active first, within the per-target post cap.
+
+    The thread that just received a post is the most recently active, so an accepted
+    post is never evicted; only its own oldest replies go if it alone exceeds the cap.
+    """
+    threads = connection.execute(
+        "SELECT COALESCE(reply_to, post_id) AS root, MAX(sequence) AS last, count(*) AS size "
+        "FROM bulletin_posts WHERE project_id=? AND target_key=? GROUP BY root ORDER BY last DESC",
+        (project_id, target_key),
+    ).fetchall()
+    kept = 0
+    for index, thread in enumerate(threads):
+        if index and kept + thread["size"] > BULLETIN_POSTS_PER_TARGET_MAX:
+            evicted = [row["root"] for row in threads[index:]]
+            connection.execute(
+                "DELETE FROM bulletin_posts WHERE project_id=? AND target_key=? "
+                f"AND COALESCE(reply_to, post_id) IN ({','.join('?' for _ in evicted)})",
+                (project_id, target_key, *evicted),
+            )
+            return
+        kept += thread["size"]
+    if threads and threads[0]["size"] > BULLETIN_POSTS_PER_TARGET_MAX:
+        connection.execute(
+            "DELETE FROM bulletin_posts WHERE project_id=? AND target_key=? AND reply_to=? "
+            "AND sequence NOT IN (SELECT sequence FROM bulletin_posts WHERE project_id=? "
+            "AND target_key=? AND reply_to=? ORDER BY sequence DESC LIMIT ?)",
+            (
+                project_id,
+                target_key,
+                threads[0]["root"],
+                project_id,
+                target_key,
+                threads[0]["root"],
+                BULLETIN_POSTS_PER_TARGET_MAX - 1,
+            ),
+        )
 
 
 def _post(
@@ -324,15 +372,7 @@ def _post(
                 ).fetchone()
             )
         }
-        connection.execute(
-            "DELETE FROM bulletin_posts WHERE project_id=? AND target_key=? AND sequence NOT IN (SELECT sequence FROM bulletin_posts WHERE project_id=? AND target_key=? ORDER BY sequence DESC LIMIT ?)",
-            (project_id, target_key, project_id, target_key, BULLETIN_POSTS_PER_TARGET_MAX),
-        )
-        # Retention keeps whole threads: a reply leaves with its parent.
-        connection.execute(
-            "DELETE FROM bulletin_posts WHERE project_id=? AND target_key=? AND reply_to IS NOT NULL AND reply_to NOT IN (SELECT post_id FROM bulletin_posts WHERE project_id=? AND target_key=?)",
-            (project_id, target_key, project_id, target_key),
-        )
+        _retain_recent_threads(connection, project_id, target_key)
         connection.execute(
             "DELETE FROM bulletin_mention_observations WHERE project_id=? AND target_key=? "
             "AND observed_at IS NOT NULL "

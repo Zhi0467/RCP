@@ -46,6 +46,8 @@ export interface BulletinPage {
   roster_omitted: number;
   can_post: boolean;
   posts: BulletinPost[];
+  /** The channel's latest post anywhere, a reply in an older thread included. */
+  newest_post_id: string | null;
   members?: BulletinMember[];
   next_cursor: string | null;
   total: number;

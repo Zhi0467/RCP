@@ -160,19 +160,21 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
     document.addEventListener("pointerdown", close);
     return () => document.removeEventListener("pointerdown", close);
   }, [pickerOpen]);
-  // Showing a channel's newest page marks it read up to its newest post.
+  // Showing a channel's newest page marks the channel read up to its latest post,
+  // including a reply in an older thread, as opening a chat channel does.
+  const readUpTo = cursor ? null : (page.value?.newest_post_id ?? null);
   useEffect(() => {
-    if (!isMember || cursor || !newest || marked.current.get(channelKey) === newest) return;
-    marked.current.set(channelKey, newest);
+    if (!isMember || !readUpTo || marked.current.get(channelKey) === readUpTo) return;
+    marked.current.set(channelKey, readUpTo);
     api(graphTargetUrl(`${base}/read`, channel), {
       method: "POST",
-      body: JSON.stringify({ sequence_post_id: newest }),
+      body: JSON.stringify({ sequence_post_id: readUpTo }),
     })
       .then(() => store.invalidate(channelsId))
       .catch(() => marked.current.delete(channelKey));
     // The channel key identifies the target; base and ids follow from it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isMember, cursor, newest, channelKey]);
+  }, [isMember, readUpTo, channelKey]);
 
   const trigger = canPost && focused ? bulletinTrigger(draft, caret) : null;
   const shownTrigger = trigger && trigger.start !== dismissedAt ? trigger : null;

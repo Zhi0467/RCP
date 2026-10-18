@@ -177,11 +177,19 @@ def test_pages_hold_whole_threads_and_retention_drops_replies_with_parent(store,
         key: parent[key] for key in ("post_id", "author", "text")
     }
     assert older["next_cursor"] is None
-    monkeypatch.setattr("rcp.storage.bulletin.BULLETIN_POSTS_PER_TARGET_MAX", 2)
-    post(store, "newest")
-    with store.connection() as connection:
-        kept = {row[0] for row in connection.execute("SELECT post_id FROM bulletin_posts")}
-    assert parent["post_id"] not in kept and reply["post_id"] not in kept
+    # The newest page still names the channel's latest post for read tracking.
+    assert page["newest_post_id"] == reply["post_id"]
+    # Retention evicts whole threads, least recently active first.
+    monkeypatch.setattr("rcp.storage.bulletin.BULLETIN_POSTS_PER_TARGET_MAX", 3)
+    late = post(store, "late reply", reply_to=parent["post_id"])
+
+    def kept():
+        with store.connection() as connection:
+            return {row[0] for row in connection.execute("SELECT post_id FROM bulletin_posts")}
+
+    assert kept() == {parent["post_id"], reply["post_id"], late["post_id"]}
+    newest = post(store, "newest")
+    assert kept() == {newest["post_id"]}
 
 
 def other_member(store):
