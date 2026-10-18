@@ -836,7 +836,8 @@ export function ChatsWorkspace({
           key={`${project.id}:${graphTarget.kind === "branch" ? graphTarget.branch_id : "main"}`}
           projectId={project.id}
           target={graphTarget}
-          isMember={actorId !== null}
+          actorId={actorId}
+          nodes={nodes}
           onOpenNode={onOpenNode}
         />
         <AgentBoard
