@@ -146,6 +146,17 @@ in your graph rules.
   accepted node returns it to `asserted`, so list accepted nodes that need it
   under Suggestions instead. ResearchQuestions and Hypotheses are protected
   beliefs: carry their rewrites in a Proposal, never a direct edit.
+- Read every Experiment as someone deciding whether to run it, and check it
+  against the Experiment rules in your graph rules. Rewrite its objective and
+  design as the operational plan when they are compressed, narrate the record's
+  own history, or use internal names they never define: what runs, under which
+  conditions, the run matrix and run count, and what is logged. Recover those
+  facts from the attempt ledger, job logs, configs, and repository; never
+  invent a level or a count. Refresh a `current_summary` that contradicts the
+  status or the attempts. When an Experiment mixes two studies, when its fields
+  contradict in a way you cannot fix, or when the sources cannot tell you the
+  operation, list it under Suggestions with what a human must split, settle, or
+  supply.
 - Make one concept use the same words across nodes.
 - Build the glossary: add an entry for each term that several nodes use
   without defining it and sharpen entries that are vague or out of date. List

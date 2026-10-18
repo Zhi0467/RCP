@@ -77,6 +77,14 @@ Writing for a reader (every node you create or edit):
 - Expand a technical term the first time a node uses it. Keep ids, run names, and paths out of
   prose; cite paths only in the fields meant for them.
 - Call one concept by the same words in every node, so related nodes read as related.
+- An Experiment is read to learn what will be done. Keep one study per Experiment: a second study
+  with its own objective is another Experiment, so every field speaks about the same test.
+- Its objective and design state the operation in full sentences: what runs, under which
+  conditions, the run matrix and run count, and what is logged. Write the protocol, not the
+  record's history: no "now", "this update", or notes on what was renamed or transcribed. Define
+  each internal name, such as a run label, a setup, or a condition, where it first appears.
+- Keep a node's fields consistent: its status with its `current_summary`, and the expectations on
+  its edges with its current outcomes. When one changes, update the others in the same Patch.
 
 Causal check:
 - Separate an Experiment's inputs from what its results will decide. A Decision or Blocker the

@@ -49,7 +49,11 @@ the same bytes shares the canonical effect. At settlement, a matching final
 `patch.json` is not reapplied; a new Patch follows ordinary Work Apply.
 
 The workflow consolidates and rewrites unreadable asserted nodes under graph
-writing rules, and defines shared terms in the glossary. It only suggests accepted
+writing rules, and defines shared terms in the glossary. Experiments get their
+own check: one study per node, an objective and design that state the operation
+(what runs, conditions, run matrix and count, what is logged) rather than the
+record's history, defined internal names, and fields that agree. What it cannot
+fix from sources, such as a node mixing two studies, becomes a Suggestion. It only suggests accepted
 node rewrites, since editing resets standing. Existing protected beliefs still
 require [Proposals](authority-and-proposals.md#protected-belief-proposals).
 

@@ -600,12 +600,20 @@ class ExperimentProxy(BaseModel):
 
 class Experiment(BaseNode):
     type: Literal["experiment"]
-    objective: str = Field(description="What this bounded test is meant to establish.")
+    objective: str = Field(
+        description=(
+            "What this bounded test is meant to establish and why, in plain sentences a reader "
+            "who knows the field but not this project understands."
+        )
+    )
     design: str = Field(
         default="",
         description=(
-            "The protocol: how data will be collected and what runs, in enough detail to repeat. "
-            "Written before results exist."
+            "The operational plan, so a reader knows exactly what will be done: what is run (the "
+            "model, method, or system), under which conditions, the run matrix (each factor and "
+            "its levels, seeds or repeats, and the total number of runs), what is measured and "
+            "logged, and what the results are compared against. Enough detail to repeat. Say what "
+            "a script or config does rather than only naming it. Written before results exist."
         ),
     )
     proxies: list[ExperimentProxy] = Field(
@@ -628,7 +636,8 @@ class Experiment(BaseNode):
         default_factory=list,
         description=(
             "What this measurement should show if the tested claim holds, in the proxies' terms. "
-            "Written before results exist."
+            "What would count against the claim belongs in `interpretation_rules`. Written before "
+            "results exist."
         ),
     )
     interpretation_rules: list[str] = Field(
