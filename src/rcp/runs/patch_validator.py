@@ -136,6 +136,10 @@ class MergeAnswersCheck:
             expected = self._receipt(content)
             if expected in self.receipts:
                 return expected
+            if self.refusal is not None:
+                raise self.refusal
+            if self.hidden_clash is not None:
+                raise self.hidden_clash
             if self.unavailable:
                 raise StateUnavailable(self.unavailable)
             raise ValueError(
@@ -226,14 +230,14 @@ class MergeAnswersCheck:
                 self.diagnostic = str(failure)
                 result: dict[str, object] = {}
                 if isinstance(failure, MergeHiddenClash):
-                    result["outcome"] = "promotion"
+                    result["outcome"] = failure.outcome
                     self.hidden_clash = failure
                     result["promotion"] = failure.promotion.model_dump(mode="json")
                 elif isinstance(failure, MergeRefused):
-                    result["outcome"] = "refused"
+                    result["outcome"] = failure.outcome
                     self.refusal = failure
                 else:
-                    result["outcome"] = "answers_rejected"
+                    result["outcome"] = MergeAnswersRejected.outcome
                 if isinstance(failure, (MergeAnswersRejected, MergeRefused)):
                     result["diagnostics"] = [
                         item.model_dump(mode="json") for item in failure.diagnostics

@@ -652,7 +652,14 @@ def test_remerge_withdraws_pending_predecessor_and_keeps_outstanding_effect(revi
     _edit(harness, "rq/review", {"question": "Revised?", "motivation": "New motivation."})
     operation = _content(motivation="New motivation.")
     plan = _plan(
-        harness, reviews=[("question", [("nodes", "rq/review", "motivation")], [operation])]
+        harness,
+        reviews=[
+            (
+                "question",
+                [("nodes", "rq/review", "question"), ("nodes", "rq/review", "motivation")],
+                [operation],
+            )
+        ],
     )
     predecessor = Proposal.model_validate(
         {
@@ -674,6 +681,7 @@ def test_remerge_withdraws_pending_predecessor_and_keeps_outstanding_effect(revi
         }
     )
     prior = PriorReview(
+        filing_graph=plan.destination_graph,
         subject_key=group.subject_key,
         proposal=predecessor,
         provenance=plan.provenance,
@@ -1039,6 +1047,7 @@ def test_later_branch_head_does_not_resurrect_resolved_prior_review(review_branc
             update={"question": "A later destination judgment?"}
         )
     review = PriorReview(
+        filing_graph=plan.destination_graph,
         subject_key="question",
         proposal=prior,
         provenance=plan.provenance,
@@ -1220,6 +1229,7 @@ def test_remerge_does_not_restore_prior_field_declined_by_answer(review_branch):
         }
     )
     review = PriorReview(
+        filing_graph=plan.destination_graph,
         subject_key=group.subject_key,
         proposal=prior,
         provenance=plan.provenance,
@@ -1267,24 +1277,29 @@ def test_standing_uses_core_admission_instead_of_its_planned_review_slot(
         )
 
 
-def test_carried_source_proposal_cannot_overlap_a_new_merge_review(review_branch):
+def test_carried_source_proposal_joins_and_approves_with_overlapping_merge_review(review_branch):
+    from rcp.runs.merge_contract import MergePlanningContext
+    from rcp.runs.merge_plan import plan_merge
+
     harness = review_branch
     _edit(harness, "rq/review", {"question": "Revised?"})
     source_proposal = _proposal(
         _content(question="A further source proposal?"), identity="prop/live-source"
     )
     _agent_patch(harness, {"op": "create_proposals", "proposals": [source_proposal]})
-    assert not proposal_is_stale(
-        harness.branch.state(), harness.branch.state().proposals["prop/live-source"]
+    captured = _plan(harness)
+    context = MergePlanningContext.model_validate(
+        captured.model_dump(exclude={"plan_id", "direct_changes", "conflicts", "review_groups"})
     )
-    plan = _plan(
-        harness,
-        direct=[("proposals", "prop/live-source", None)],
-        reviews=[("question", [("nodes", "rq/review", "question")], [_content()])],
-    )
-    with pytest.raises(MergeRefused) as caught:
-        build_merge_patch(plan, _answers(plan))
-    assert [item.code for item in caught.value.diagnostics] == ["merge-review-groups-changed"]
+    plan = plan_merge(context)
+    assert len(plan.review_groups) == 1
+    assert plan.review_groups[0].carried_proposal_ids == ("prop/live-source",)
+    merged = _apply(plan, build_merge_patch(plan, _answers(plan)))
+    assert "prop/live-source" not in merged.proposals
+    assert len(merged.proposals) == 1
+    assert merged.nodes["rq/review"].question == "Original?"
+    approved = _approve(merged, next(iter(merged.proposals.values())))
+    assert approved.nodes["rq/review"].question == "A further source proposal?"
     assert (
         plan.source_graph.proposals["prop/live-source"].model_dump(mode="json")["ops"]
         == source_proposal["ops"]

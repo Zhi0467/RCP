@@ -103,7 +103,39 @@ def _refuse(code: str, message: str, *nodes: str) -> NoReturn:
 
 def _answer_error(conflict_id: str, message: str) -> NoReturn:
     raise MergeAnswersRejected(
-        (_diagnostic("invalid-merge-answer", f"{conflict_id}: {message}", conflict_id),)
+        (
+            _diagnostic(
+                "invalid-merge-answer", f"{conflict_id}: {message}", conflict_id
+            ).model_copy(update={"conflict_ids": (conflict_id,)}),
+        )
+    )
+
+
+def _reject_answer_effect(plan: MergePlan, diagnostics: tuple[MergeDiagnostic, ...]) -> NoReturn:
+    """Construction failures on answered subjects belong to the answer check."""
+    nodes = {node for diagnostic in diagnostics for node in diagnostic.related_node_ids}
+    conflicts = []
+    for conflict in plan.conflicts:
+        subjects = (
+            set(conflict.node_ids)
+            if isinstance(conflict, NodeGroupConflict)
+            else {conflict.node_id}
+            if isinstance(conflict, IncidentEdgeConflict)
+            else {conflict.entity_id}
+        )
+        if not nodes or nodes & subjects:
+            conflicts.append(conflict.conflict_id)
+    if not conflicts:
+        raise MergeRefused(diagnostics)
+    raise MergeAnswersRejected(
+        tuple(
+            diagnostic.model_copy(
+                update={
+                    "conflict_ids": tuple(conflicts),
+                }
+            )
+            for diagnostic in diagnostics
+        )
     )
 
 
@@ -254,7 +286,11 @@ def _documents(
             raw = deepcopy(value.value) if isinstance(value, PresentValue) else None
         else:
             if raw is None or isinstance(value, MissingValue):
-                _refuse("invalid-merge-change", f"Cannot write absent field {coordinate!r}")
+                _refuse(
+                    "invalid-merge-change",
+                    f"Cannot write absent field {coordinate!r}",
+                    *([identity] if identity else []),
+                )
             raw[field] = deepcopy(value.value)
         documents[key] = raw, coordinates
     return documents
@@ -377,8 +413,10 @@ def construct_effects(
                     _refuse("malformed-operation", str(exc), identity)
                 raw = node.model_dump(
                     mode="json",
-                    exclude=set(graph_fields(type(node), role="engine")),
-                    exclude_defaults=True,
+                    exclude=set(
+                        graph_fields(type(node), role="engine")
+                        | graph_fields(type(node), node_update="replay_only")
+                    ),
                 )
                 standing = raw.pop("standing", "asserted")
                 status = getattr(node, "status", None)
@@ -411,6 +449,13 @@ def construct_effects(
                                     "changes": {"status": "decided", "selected_option": chosen},
                                 }
                             ],
+                        }
+                    )
+                if choice and not retired and status != "decided":
+                    operations.append(
+                        {
+                            "op": "update_nodes",
+                            "nodes": [{"id": identity, "changes": {"status": status}}],
                         }
                     )
                 if not belief and not retired and standing != "asserted":
@@ -636,43 +681,6 @@ def _combine_review_ops(operations: Iterable[ProposalOperation]) -> list[Proposa
     return result
 
 
-def _outstanding_review_ops(
-    plan: MergePlan,
-    operations: list[ProposalOperation],
-    selected: dict[Coordinate, MergeValue],
-) -> list[ProposalOperation]:
-    """Do not resurrect an earlier effect explicitly resolved to destination."""
-
-    def retains_destination(identity: str, field: str) -> bool:
-        value = selected.get(("nodes", identity, field))
-        node = plan.destination_graph.nodes.get(identity)
-        return (
-            isinstance(value, PresentValue)
-            and node is not None
-            and value.value == node.model_dump(mode="json")[field]
-        )
-
-    result: list[ProposalOperation] = []
-    for operation in operations:
-        if operation.op == "update_nodes":
-            updates = []
-            for update in operation.nodes:
-                changes = {
-                    key: value
-                    for key, value in update.changes.items()
-                    if not retains_destination(update.id, key)
-                }
-                if changes:
-                    updates.append(update.model_copy(update={"changes": changes}))
-            if updates:
-                result.append(operation.model_copy(update={"nodes": updates}))
-        elif operation.op != "set_standing" or not retains_destination(
-            operation.node_id, "standing"
-        ):
-            result.append(operation)
-    return result
-
-
 def _review_proposal(
     plan: MergePlan, group: ReviewGroup, operations: list[ProposalOperation], answers: MergeAnswers
 ) -> Proposal:
@@ -706,7 +714,19 @@ def build_merge_patch(plan: MergePlan, answers: MergeAnswers) -> Patch:
     _check_plan(plan)
     selected = _resolved_changes(plan, answers)
     flags: list[ValidationMessage] = []
-    effects = construct_effects(plan, selected, flags)
+    absorbed = {identity for group in plan.review_groups for identity in group.carried_proposal_ids}
+    try:
+        effects = construct_effects(
+            plan,
+            {
+                coordinate: value
+                for coordinate, value in selected.items()
+                if not (coordinate[0] == "proposals" and coordinate[1] in absorbed)
+            },
+            flags,
+        )
+    except MergeRefused as exc:
+        _reject_answer_effect(plan, exc.diagnostics)
     group_coordinates = {
         group.subject_key: {_coordinate(change) for change in group.changes}
         for group in plan.review_groups
@@ -719,7 +739,15 @@ def build_merge_patch(plan: MergePlan, answers: MergeAnswers) -> Patch:
     for effect in effects:
         keys = [key for key, coords in group_coordinates.items() if coords & effect.coordinates]
         if len(keys) > 1:
-            _refuse("merge-review-groups-changed", "A coherent effect spans multiple review groups")
+            _reject_answer_effect(
+                plan,
+                (
+                    _diagnostic(
+                        "merge-review-groups-changed",
+                        "A coherent effect spans multiple review groups",
+                    ),
+                ),
+            )
         groups.append(
             (
                 effect.operations,
@@ -750,7 +778,6 @@ def build_merge_patch(plan: MergePlan, answers: MergeAnswers) -> Patch:
     withdrawals: list[dict[str, str]] = []
     for group in sorted(plan.review_groups, key=lambda item: item.subject_key):
         operations = reviews.get(group.subject_key, [])
-        old_ops: list[ProposalOperation] = []
         for identity in sorted(group.replaces_proposal_ids):
             prior = next(
                 (review for review in plan.prior_reviews if review.proposal.id == identity),
@@ -762,11 +789,19 @@ def build_merge_patch(plan: MergePlan, answers: MergeAnswers) -> Patch:
                     "invalid-merge-review-replacement",
                     f"No scoped live pending review {identity!r}",
                 )
-            old_ops.extend(_outstanding_review_ops(plan, prior.proposal.ops, selected))
             withdrawals.append(
                 {"id": identity, "reason": "Replaced by a newer branch merge review."}
             )
-        combined = _combine_review_ops([*old_ops, *operations])
+        combined = _combine_review_ops(
+            [
+                *operations,
+                *(
+                    operation
+                    for identity in group.carried_proposal_ids
+                    for operation in plan.source_graph.proposals[identity].ops
+                ),
+            ]
+        )
         if not combined:
             continue
         proposal = _review_proposal(plan, group, combined, answers)
@@ -797,15 +832,20 @@ def build_merge_patch(plan: MergePlan, answers: MergeAnswers) -> Patch:
         try:
             footprint = proposal_dependencies_and_effects(staged, proposal)
         except ProposalEffectRejected as exc:
-            raise MergeRefused(_diagnostics(exc.diagnostics)) from exc
+            _reject_answer_effect(plan, _diagnostics(exc.diagnostics))
         for previous in footprints:
             if (
                 footprint.effects & previous.dependencies
                 or previous.effects & footprint.dependencies
             ):
-                _refuse(
-                    "merge-review-groups-changed",
-                    "Answered review groups now affect one another; replan them together",
+                _reject_answer_effect(
+                    plan,
+                    (
+                        _diagnostic(
+                            "merge-review-groups-changed",
+                            "Answered review groups now affect one another; revise the answers",
+                        ),
+                    ),
                 )
         footprints.append(footprint)
     final = list(direct)
@@ -843,12 +883,8 @@ def _reject_preparation(plan: MergePlan, messages: Iterable[ValidationMessage]) 
     for conflict in plan.conflicts:
         if isinstance(conflict, NodeGroupConflict):
             open_nodes.update(conflict.node_ids)
-        elif isinstance(conflict, IncidentEdgeConflict):
-            open_nodes.add(conflict.node_id)
-        elif conflict.collection == "nodes" and conflict.entity_id is not None:
-            open_nodes.add(conflict.entity_id)
     if nodes & open_nodes:
-        raise MergeAnswersRejected(diagnostics)
+        _reject_answer_effect(plan, diagnostics)
     raise MergeHiddenClash(
         NodeGroupPromotion(node_ids=tuple(sorted(nodes)), diagnostics=diagnostics)
     )

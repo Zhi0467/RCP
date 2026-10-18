@@ -431,9 +431,12 @@ and different changes to one field conflict. Removal on one side against an edit
 reference, or a new or edited incident edge on the other is a presence conflict.
 Re-merge compares from the last delivered source snapshot; a field under a still-pending
 earlier merge review compares against the destination's current value, so the new
-review replaces it with the outstanding and new effects together, while a rejected
-earlier review is not resurrected and an approved one yields to later destination
-judgments.
+review replaces it with the resolved outstanding and new effects together. Outstanding
+effects come from the canonical filing snapshot; historical operations never run against
+the live destination. A stale review contributes no outstanding effect, so its subjects
+use ordinary three-way comparison. Reverting source work can cancel a pending effect:
+the predecessor is withdrawn without re-filing its operations. Rejected work is not
+resurrected, and approved work yields to later destination judgments.
 **Why:** a second, merge-only model of graph semantics drifted from core on every
 schema or rule change; whole-field comparison over declared roles has nothing to drift.
 
@@ -441,22 +444,31 @@ Core decides each change's route (`classify_graph_changes`): admitted changes ar
 written directly, reviewable ones become pending Proposals, refused ones fail the merge
 with the exact diagnostic. Protected changes are grouped by their core-reported approval
 dependencies and effects into one Proposal per connected group, so approving one merge
-Proposal never makes another from the same merge stale. The builder
+Proposal never makes another from the same merge stale. Planning, splitting answered
+groups, and core filing admission share one connectivity function, which recomputes
+combined approval footprints until stable. The builder
 (`runs/merge_patch.py`) encodes Decision outcomes, decided creation, supersede and merge,
 and edge replacement with the operation sequences core accepts; a carried status keeps the
 cause its source transition recorded, and only an exact canonical human source fact keeps
-`human_edit`. Live pending source Proposals keep identity and content and are refiled with
-destination stamps.
+`human_edit`. Creation keeps every writable content field, including explicit default
+values, and restores a Decision's selected lifecycle after reconstructing its choice.
+Live source Proposals that overlap a review join its connected group: their operations
+are filed in that group's Proposal. Independent source Proposals retain identity and
+content with destination filing stamps.
 
 The agent answers only real conflicts and writes card prose for review groups, in
 `answers.json`: `branch`, `destination`, or a `merged` value (node `status` and
 `standing` pick a side), keep-removal or keep-node for presence conflicts. It runs
 `merge-answers check`, which dry-runs the same preparation as commit and binds a
 receipt to the exact answers bytes, plan, and heads; a turn ends only with a passing
-receipt for the collected bytes, or the task fails with the reason. There is no
-self-check budget and no correction round. When core rejects a built Patch naming nodes
-that carry no open conflict (a cross-field clash), those nodes become one node-level
-question once; a repeated rejection goes back to the agent's check. A plan with no
+receipt for the collected bytes, or the task fails with the reason. A matching receipt
+takes precedence over refusal or clash diagnostics from other attempted answer files.
+There is no self-check budget and no correction round. Core coherence clashes become
+node-level questions during planning or preparation, even when those nodes already
+have ordinary field conflicts. Promotion happens once per node group; repeated clashes
+go back to the agent's check. Answer-dependent construction and review-footprint
+failures also return answer diagnostics with conflict ids; authority and other hard
+refusals remain terminal. A plan with no
 conflicts and no review cards commits without a provider.
 **Why:** deterministic paths already have a specified result; the agent is needed only
 for judgment, and a check that runs the commit path cannot disagree with commit.

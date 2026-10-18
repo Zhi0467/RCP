@@ -7,10 +7,17 @@ from typing import Literal
 
 from rcp.agents.continuation_prompt import MASTER_OVERLAY_RULE
 from rcp.agents.prompts import PROVIDER_NATIVE_SUBAGENT_LIFETIME
-from rcp.runs.merge_contract import MergeAnswers, MergePlan, merge_contract_digest
+from rcp.runs.merge_contract import (
+    MergeAnswers,
+    MergeAnswersRejected,
+    MergeHiddenClash,
+    MergePlan,
+    MergeRefused,
+    merge_contract_digest,
+)
 
 # Bumped when the branch-merge task contract's stable policy prose changes.
-BRANCH_MERGE_POLICY_VERSION = "branch-merge-v5"
+BRANCH_MERGE_POLICY_VERSION = "branch-merge-v6"
 
 
 def branch_merge_task_contract(
@@ -51,6 +58,10 @@ def branch_merge_task_contract(
             plan.preparation_contract.model_dump(mode="json")
         ),
     }
+    outcomes = "\n".join(
+        f"- `{outcome.outcome}`: {outcome.instruction}"
+        for outcome in (MergeAnswersRejected, MergeHiddenClash, MergeRefused)
+    )
     return f"""# RCP episode merge
 
 {PROVIDER_NATIVE_SUBAGENT_LIFETIME}
@@ -101,13 +112,15 @@ adds no project configuration, ontology, membership, or Proposal approval author
 Run the exact check command before finishing. It dry-prepares this plan and answers without
 committing. Exit 0 records a successful check bound to this task, turn, plan, source and
 destination heads, preparation contract, and exact output bytes. Exit 1 supplies an answer
-error to fix and check again in this turn. Exit 2 means the check is unavailable. Merge
-checks have no count budget. A check result with outcome `promotion` means RCP must add
-coupled questions: end this turn so RCP can stage the promoted plan and continue your session.
-An outcome `refused` is terminal; end the turn with its diagnostic. Otherwise finish only
-with the exact successfully checked answers bytes; changing the file after a successful
-check requires another check. Missing or mismatched
-successful checks fail the task; there is no correction turn after you finish. RCP performs
+diagnostic with one of these outcomes. Exit 2 means the check is unavailable. Merge
+checks have no count budget.
+
+{outcomes}
+
+Finish with the exact successfully checked answers bytes. Restoring bytes with a successful
+receipt in this turn remains valid even after another candidate was refused or needed
+promotion. Other changed bytes require another check. Missing or mismatched successful
+checks fail the task; there is no correction turn after you finish. RCP performs
 live preparation again and commits atomically, or commits nothing.
 
 {MASTER_OVERLAY_RULE}

@@ -31,6 +31,7 @@ from rcp.core.transitions import GraphTransitionManager
 from rcp.core.validation import ValidationContext
 from rcp.core.validation.proposals import (
     ProposalDependenciesAndEffects,
+    connected_proposal_groups,
     proposal_approval_operations,
     proposal_dependencies_and_effects,
     proposal_is_stale,
@@ -43,6 +44,7 @@ from rcp.runs.merge_contract import (
     MergeChange,
     MergeConflict,
     MergeDiagnostic,
+    MergeHiddenClash,
     MergePlan,
     MergePlanningContext,
     MergeRefused,
@@ -241,6 +243,7 @@ class ReviewCandidate:
     changes: tuple[MergeChange, ...]
     operations: tuple[ProposalOperation, ...]
     replaces_proposal_ids: tuple[str, ...] = ()
+    carried_proposal_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -275,35 +278,18 @@ def group_reviews(
     Recompute combined footprints until stable: combined approval can generate
     effects not present in either individual draft. Read/read overlap never joins.
     """
-    components = [[candidate] for candidate in candidates]
-    while True:
-        footprints = [
-            proposal_dependencies_and_effects(
-                state, _draft([op for candidate in component for op in candidate.operations])
-            )
-            for component in components
-        ]
-        # A predecessor is withdrawn once, even when some of its replacement
-        # members are now admitted directly or cancel out to no-ops.
-        predecessors = [
-            {identity for candidate in component for identity in candidate.replaces_proposal_ids}
-            for component in components
-        ]
-        for i in range(len(components)):
-            joined = next(
-                (
-                    j
-                    for j in range(i + 1, len(components))
-                    if _interferes(footprints[i], footprints[j])
-                    or predecessors[i] & predecessors[j]
-                ),
-                None,
-            )
-            if joined is not None:
-                components[i].extend(components.pop(joined))
-                break
-        else:
-            break
+    memberships = connected_proposal_groups(
+        state,
+        [_draft(candidate.operations) for candidate in candidates],
+        links=[frozenset(candidate.replaces_proposal_ids) for candidate in candidates],
+    )
+    components = [[candidates[index] for index in component] for component in memberships]
+    footprints = [
+        proposal_dependencies_and_effects(
+            state, _draft([op for candidate in component for op in candidate.operations])
+        )
+        for component in components
+    ]
     groups = []
     for component, footprint in zip(components, footprints, strict=True):
         changes = tuple(
@@ -323,6 +309,9 @@ def group_reviews(
                 changes=changes,
                 footprint=footprint,
                 effect_digest=_effect_digest(state, operations, footprint),
+                carried_proposal_ids=tuple(
+                    sorted({p for candidate in component for p in candidate.carried_proposal_ids})
+                ),
                 replaces_proposal_ids=tuple(
                     sorted({p for candidate in component for p in candidate.replaces_proposal_ids})
                 ),
@@ -394,10 +383,40 @@ def plan_merge(context: MergePlanningContext) -> MergePlan:
     changes, conflicts = compare_graphs(baseline, source, context.destination_graph)
     changes = retain_pending_effects(context, changes)
     conflicts = _pending_conflicts(context, changes, conflicts)
-    direct, reviews = _route_changes(context, changes, conflicts)
-    return MergePlan(
-        **context.model_dump(), direct_changes=direct, conflicts=conflicts, review_groups=reviews
-    )
+    while True:
+        try:
+            direct, reviews = _route_changes(context, changes, conflicts)
+        except MergeHiddenClash as clash:
+            provisional = MergePlan(
+                **context.model_dump(), direct_changes=changes, conflicts=conflicts
+            )
+            promoted = promote_node_group(provisional, clash.promotion)
+            conflicts = promoted.conflicts
+            by_id = {change.change_id: change for change in changes}
+            for conflict in conflicts:
+                if isinstance(conflict, NodeGroupConflict):
+                    by_id.update(
+                        (
+                            field.conflict_id,
+                            _change(
+                                field.collection,
+                                field.entity_id,
+                                field.field_name,
+                                field.base,
+                                field.branch,
+                                field.destination,
+                            ),
+                        )
+                        for field in conflict.fields
+                    )
+            changes = tuple(by_id.values())
+        else:
+            return MergePlan(
+                **context.model_dump(),
+                direct_changes=direct,
+                conflicts=conflicts,
+                review_groups=reviews,
+            )
 
 
 def pending_reviews(context: MergePlanningContext) -> tuple[PriorReview, ...]:
@@ -412,24 +431,29 @@ def pending_reviews(context: MergePlanningContext) -> tuple[PriorReview, ...]:
             and review.provenance.rebased_main_head.target == context.destination_head.target
         ):
             latest[review.subject_key] = review
-    return tuple(r for _, r in sorted(latest.items()) if r.proposal.status == "pending")
+    return tuple(
+        r
+        for _, r in sorted(latest.items())
+        if r.proposal.status == "pending"
+        and not proposal_is_stale(context.destination_graph, r.proposal)
+    )
 
 
 def _pending_changes(context: MergePlanningContext, review: PriorReview) -> tuple[MergeChange, ...]:
-    # Replay the recorded, outstanding operations; approval's implicit effects
-    # are derived by core when computing the review footprint, not synthesized
-    # as new source edits here. Canonical Proposal bytes are never changed.
+    # Derive recorded effects from the canonical filing snapshot. Approval's
+    # implicit effects belong to core's review footprint, not new source edits.
+    # Historical operations are never replayed against the live destination.
     patch = Patch(
         kind="approval",
         author="human",
         producer="human",
         summary="Inspect outstanding merge work",
-        revision=context.destination_graph.revision + 1,
+        revision=review.filing_graph.revision + 1,
         created_at=context.captured_authority.patch_template.created_at,
         ops=graph_operations_from_proposal(review.proposal.ops),
     )
-    proposed = apply_valid_patch(context.destination_graph, patch)
-    changes, _ = compare_graphs(context.destination_graph, proposed, context.destination_graph)
+    proposed = apply_valid_patch(review.filing_graph, patch)
+    changes, _ = compare_graphs(review.filing_graph, proposed, context.destination_graph)
     return changes
 
 
@@ -690,9 +714,16 @@ def classify_candidates(
         if isinstance(conflict, IncidentEdgeConflict)
         for change in conflict.incident_edges
     }
+    conflicted.update(
+        field.conflict_id
+        for conflict in conflicts
+        if isinstance(conflict, NodeGroupConflict)
+        for field in conflict.fields
+    )
     direct: list[MergeChange] = []
     reviews: list[ReviewCandidate] = []
     admitted: list[GraphOperation] = []
+    carried: list[ReviewCandidate] = []
     pending = [(review, _pending_changes(context, review)) for review in pending_reviews(context)]
     for candidate in candidates:
         subjects = {(c.collection, c.entity_id) for c in candidate.changes}
@@ -712,11 +743,9 @@ def classify_candidates(
         patch = patch.model_copy(
             update={"agent_action": derived_agent_action(context.destination_graph, patch)}
         )
-        groups = None
-        if admitted and patch.agent_action == derived_agent_action(
-            context.destination_graph, prefix
-        ):
-            groups = (tuple(range(len(admitted))), tuple(range(len(admitted), len(patch.ops))))
+        operation_groups = ((tuple(range(len(admitted))),) if admitted else ()) + (
+            tuple(range(len(admitted), len(patch.ops))),
+        )
         patch = prepare_patch_bookkeeping(context.destination_graph, patch)
         results = classify_graph_changes(
             context.destination_graph,
@@ -728,17 +757,45 @@ def classify_candidates(
             context=ValidationContext(
                 project_truth_scope=context.destination_graph.project_truth_scope
             ),
-            operation_groups=groups,
+            operation_groups=operation_groups,
         )
         result = next((item for item in results if item.disposition == "refused"), results[-1])
         if result.disposition == "admitted":
             direct.extend(c for c in candidate.changes if c.change_id not in conflicted)
             admitted.extend(candidate.operations)
+            for operation in candidate.operations:
+                if operation.op == "create_proposals":
+                    for proposal in operation.proposals:
+                        proposal_changes = tuple(
+                            change
+                            for change in candidate.changes
+                            if change.collection == "proposals" and change.entity_id == proposal.id
+                        )
+                        carried.append(
+                            ReviewCandidate(
+                                proposal_changes,
+                                tuple(proposal.ops),
+                                carried_proposal_ids=(proposal.id,),
+                            )
+                        )
             if predecessors:
                 reviews.append(ReviewCandidate(candidate.changes, (), predecessors))
         elif result.disposition == "reviewable":
             reviews.append(
                 ReviewCandidate(candidate.changes, result.review_operations, predecessors)
+            )
+        elif result.disposition == "clash":
+            diagnostics = tuple(
+                MergeDiagnostic(
+                    code=d.code, message=d.message, related_node_ids=tuple(d.related_node_ids)
+                )
+                for d in result.diagnostics
+            )
+            raise MergeHiddenClash(
+                NodeGroupPromotion(
+                    node_ids=tuple(sorted({n for d in diagnostics for n in d.related_node_ids})),
+                    diagnostics=diagnostics,
+                )
             )
         else:
             # A refused core classification must never silently drop work, even
@@ -762,7 +819,21 @@ def classify_candidates(
             .prepare_validated(staged, [patch], pre_head=context.destination_head)
             .projection.graph
         )
-    return tuple(direct), _connected_pending_reviews(context, staged, reviews)
+    groups = _connected_pending_reviews(context, staged, [*reviews, *carried])
+    groups = tuple(
+        group
+        for group in groups
+        if any(
+            change.collection != "proposals" or change.entity_id not in group.carried_proposal_ids
+            for change in group.changes
+        )
+    )
+    absorbed = {identity for group in groups for identity in group.carried_proposal_ids}
+    return tuple(
+        change
+        for change in direct
+        if not (change.collection == "proposals" and change.entity_id in absorbed)
+    ), groups
 
 
 def _connected_pending_reviews(
@@ -869,6 +940,11 @@ def promote_node_group(plan: MergePlan, promotion: NodeGroupPromotion) -> MergeP
                         operation.model_dump(mode="json")
                         for operation in predecessors[identity].proposal.ops
                     )
+            for identity in review.carried_proposal_ids:
+                effects.extend(
+                    operation.model_dump(mode="json")
+                    for operation in plan.source_graph.proposals[identity].ops
+                )
             review = review.model_copy(update={"effect_digest": merge_contract_digest(effects)})
         reviews.append(review)
     context = MergePlanningContext.model_validate(

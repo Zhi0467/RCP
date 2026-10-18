@@ -22,9 +22,7 @@ from rcp.core.validation import NODE_PREFIXES, ValidationContext, validate_patch
 from rcp.core.validation.proposals import proposal_approval_operations, proposal_is_stale
 from rcp.runs.merge_contract import (
     MergeAnswers,
-    MergeAnswersRejected,
-    MergeHiddenClash,
-    MergeRefused,
+    NodeGroupConflict,
 )
 from rcp.runs.merge_patch import prepare_merge_candidate
 from tests.helpers import seed_patch
@@ -141,7 +139,10 @@ class _Generator:
         node_type = node_type or self.rng.choice(sorted(REQUIRED))
         node_id = f"{NODE_PREFIXES[node_type]}/{suffix or f'n{self.rng.randrange(8)}'}"
         self.ever.append(node_id)
-        return {"id": node_id, "type": node_type, "title": "Node", **REQUIRED[node_type]}
+        node = {"id": node_id, "type": node_type, "title": "Node", **REQUIRED[node_type]}
+        if node_type == "evidence":
+            node["origin"] = self.rng.choice(["analytic", "unknown"])
+        return node
 
     def edge(self, state: GraphState) -> dict[str, Any]:
         relation = self.rng.choice(sorted(RELATION_SPEC))
@@ -416,6 +417,37 @@ def test_generated_three_way_merge_preserves_content_through_approval(manifest, 
             _append(
                 owner, {"op": "create_nodes", "nodes": [generator.new_node(kind, f"{side}{seed}")]}
             )
+    # A carried choice and its queued lifecycle are independent content fields.
+    decision_id = f"dec/branch{seed}"
+    _append(
+        branch,
+        {
+            "op": "update_nodes",
+            "nodes": [
+                {
+                    "id": decision_id,
+                    "changes": {
+                        "status": "decided",
+                        "selected_option": REQUIRED["decision"]["options"][0],
+                    },
+                }
+            ],
+        },
+    )
+    _append(
+        branch,
+        {
+            "op": "update_nodes",
+            "nodes": [
+                {
+                    "id": decision_id,
+                    "changes": {
+                        "status": "revisit",
+                    },
+                }
+            ],
+        },
+    )
     for owner, standing in ((branch, "accepted"), (history, "contested")):
         for node in nodes:
             _append(owner, {"op": "set_standing", "node_id": node["id"], "standing": standing})
@@ -474,7 +506,7 @@ def test_generated_three_way_merge_preserves_content_through_approval(manifest, 
 
 
 @pytest.mark.parametrize("seed", range(4))
-def test_generated_incompatible_decision_choices_refuse_without_partial_write(manifest, seed):
+def test_generated_incompatible_decision_choices_plan_a_group_without_partial_write(manifest, seed):
     rng = random.Random(seed)
     options = [f"Option {value}" for value in rng.sample(range(100), 3)]
     generator = _Generator(rng)
@@ -504,15 +536,49 @@ def test_generated_incompatible_decision_choices_refuse_without_partial_write(ma
     )
     before = history.state().model_dump_json(), history.head_ref(), history.slice(1)
     source_before = branch.state().model_dump_json(), branch.head_ref()
-    with pytest.raises((MergeRefused, MergeAnswersRejected, MergeHiddenClash)) as rejected:
-        plan = _plan(history, branch)
-        prepare_merge_candidate(plan, _answers(plan), history)
-    diagnostics = (
-        rejected.value.promotion.diagnostics
-        if isinstance(rejected.value, MergeHiddenClash)
-        else rejected.value.diagnostics
-    )
-    assert diagnostics
+    plan = _plan(history, branch)
+    assert len(plan.conflicts) == 1
+    conflict = plan.conflicts[0]
+    assert isinstance(conflict, NodeGroupConflict)
+    assert conflict.node_ids == (decision["id"],)
+    assert {field.field_name for field in conflict.fields} >= {
+        "options",
+        "selected_option",
+        "status",
+    }
+    for side, expected in (("branch", branch.state()), ("destination", history.state())):
+        answers = MergeAnswers.model_validate(
+            {
+                **_answers(plan).model_dump(),
+                "answers": {conflict.conflict_id: {"kind": side}},
+            }
+        )
+        prepared = prepare_merge_candidate(plan, answers, history)
+        result = prepared.projection.graph.nodes[decision["id"]]
+        for field in ("options", "selected_option", "status"):
+            assert getattr(result, field) == getattr(expected.nodes[decision["id"]], field)
+        if side == "destination":
+            assert prepared.patch.ops == []
     assert (history.state().model_dump_json(), history.head_ref(), history.slice(1)) == before
     assert (branch.state().model_dump_json(), branch.head_ref()) == source_before
     assert branch.validated_merge_receipts() == []
+
+
+@pytest.mark.parametrize("seed", range(2))
+def test_generated_remerge_cancels_reverted_pending_removal(manifest, seed):
+    generator = _Generator(random.Random(seed))
+    question = generator.new_node("research_question", "reverted")
+    history, branch = _fork_history(manifest, [question])
+    _append(branch, {"op": "remove_nodes", "node_ids": [question["id"]]})
+    plan = _plan(history, branch)
+    _commit(history, branch, plan, _answers(plan))
+    predecessor = next(iter(history.state().proposals.values()))
+    assert predecessor.status == "pending"
+    assert question["id"] in history.state().nodes
+    _append(branch, {"op": "create_nodes", "nodes": [question]})
+    plan = _plan(history, branch)
+    _commit(history, branch, plan, _answers(plan))
+    state = history.state()
+    assert state.proposals[predecessor.id].status == "withdrawn"
+    assert not [proposal for proposal in state.proposals.values() if proposal.status == "pending"]
+    assert state.nodes[question["id"]].question == question["question"]

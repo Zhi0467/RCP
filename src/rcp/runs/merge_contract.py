@@ -182,10 +182,11 @@ class ReviewGroup(_MergeModel):
     dependencies. subject_key identifies the sorted subjects, independent of
     Proposal ids, heads, and card prose. effect_digest binds the exact proposed
     effect, including outstanding pending effects on re-merge. The planner computes
-    it as merge_contract_digest of the ordered changes' model_dump(mode="json")
-    values followed by outstanding pending predecessors' operation
-    model_dump(mode="json") values, ordered by Proposal id and then recorded
-    operation order, and recomputes it when promotion leaves member values open.
+    it as merge_contract_digest of the ordered encoded operations and core's
+    resulting approval effects, and recomputes it when
+    promotion leaves member values open. Overlapping live source Proposals join
+    the group through carried_proposal_ids; their operations are filed in this
+    review rather than as a separate source filing.
     The run loop reuses card prose on rebase only when the new group's digest
     equals the old one. Recompute footprints after answers change effects; never
     infer dependencies in the merge layer. Unfiled footprint drafts
@@ -198,6 +199,7 @@ class ReviewGroup(_MergeModel):
     footprint: ProposalDependenciesAndEffects
     effect_digest: Digest
     replaces_proposal_ids: tuple[str, ...] = ()
+    carried_proposal_ids: tuple[str, ...] = ()
 
 
 class SourceHumanFact(_MergeModel):
@@ -211,7 +213,10 @@ class SourceHumanFact(_MergeModel):
 class PriorReview(_MergeModel):
     """Canonical earlier merge filing, scoped by source/destination/subject.
 
-    proposal retains its current resolution and outstanding ops. Only reviews
+    proposal retains its current resolution and outstanding ops. filing_graph is
+    the canonical snapshot immediately after filing: derive outstanding effects
+    there, never by replaying historical operations against the live destination.
+    A review stale on the destination has no outstanding effect. Only reviews
     filed by provenance for this source/destination may be replaced; carried
     source Proposals and another branch's reviews are never replacement inputs.
     Pending effects are retained in a replacement, rejected effects suppressed,
@@ -220,6 +225,7 @@ class PriorReview(_MergeModel):
 
     subject_key: str = Field(min_length=1)
     proposal: Proposal
+    filing_graph: GraphState
     provenance: BranchMergeProvenance
     effect_digest: Digest
 
@@ -411,19 +417,23 @@ class MergeDiagnostic(_MergeModel):
     code: str = Field(min_length=1)
     message: str
     related_node_ids: tuple[str, ...] = ()
+    conflict_ids: tuple[str, ...] = ()
 
 
 class NodeGroupPromotion(_MergeModel):
-    """Core rejected the built Patch naming nodes that carry no open conflict."""
+    """Core rejected the built Patch naming nodes not yet in a promoted group."""
 
     node_ids: tuple[str, ...] = Field(min_length=1)
     diagnostics: tuple[MergeDiagnostic, ...] = Field(min_length=1)
 
 
 class MergeAnswersRejected(ValueError):
-    """Agent-fixable: bad keys/kinds/types, or a core rejection naming nodes that
-    already sit under an open conflict (including an already-promoted group).
-    The check returns these diagnostics; the agent edits answers and rechecks."""
+    """Agent-fixable answer values, construction failures, or a core clash on an
+    already-promoted node group. Diagnostics identify the affected conflicts;
+    the agent edits answers and rechecks."""
+
+    outcome = "answers_rejected"
+    instruction = "Revise the identified conflict answers and check again in this turn."
 
     def __init__(self, diagnostics: tuple[MergeDiagnostic, ...]) -> None:
         self.diagnostics = diagnostics
@@ -431,8 +441,12 @@ class MergeAnswersRejected(ValueError):
 
 
 class MergeHiddenClash(ValueError):
-    """Core rejected the built Patch naming nodes with no open conflict on them.
-    The run loop calls promote_node_group once and asks the agent again."""
+    """Core rejected the built Patch naming nodes not already promoted together.
+    Ordinary field conflicts do not count as promotion. The planner or run loop
+    calls promote_node_group once per group and asks the agent to resolve it."""
+
+    outcome = "promotion"
+    instruction = "End this turn so RCP can stage the coupled questions and continue this session."
 
     def __init__(self, promotion: NodeGroupPromotion) -> None:
         self.promotion = promotion
@@ -443,6 +457,9 @@ class MergeRefused(ValueError):
     """Hard refusal (lost authority, malformed data, missing dependency, forbidden
     configuration, invalid proposed effect, or a rejection naming no node).
     The merge task fails with these diagnostics; no Proposal fallback."""
+
+    outcome = "refused"
+    instruction = "This candidate is refused; end the turn with its diagnostic."
 
     def __init__(self, diagnostics: tuple[MergeDiagnostic, ...]) -> None:
         self.diagnostics = diagnostics
@@ -498,8 +515,9 @@ def build_merge_patch(plan: MergePlan, answers: MergeAnswers) -> Patch:
     allowed only for an exact SourceHumanFact; any other carried status keeps the
     cause its source transition recorded. Connected protected effects become one pending Proposal
     per ReviewGroup; recheck footprints after answers. Carry live source Proposals
-    with identity/content intact and new filing stamps, but keep source resolutions
-    on source. Withdraw scoped pending predecessors and file replacements in the
+    with identity/content intact and new filing stamps unless they overlap a
+    review group; overlapping filings contribute their operations to that group's
+    Proposal. Keep source resolutions on source. Withdraw scoped pending predecessors and file replacements in the
     same Patch. No timestamps/random ids may make identical inputs differ. Return
     operations only through Patch; no runtime graph-equivalence proof or IO.
     """
@@ -520,10 +538,11 @@ def prepare_merge_candidate(
     append, consume publication receipts, or route a hard refusal into a Proposal.
     A moved destination requires a new plan and revalidation; it is not an answer
     error. Outcomes: success returns the PreparedTransition; answer problems raise
-    MergeAnswersRejected; a core rejection whose related_node_ids carry no open
-    conflict raises MergeHiddenClash; one naming any node under an open conflict
-    raises MergeAnswersRejected; one naming no node, or any hard refusal from core
-    classification, raises MergeRefused. build_merge_patch raises the same types. Caller compares the exact task/turn/file digest check receipt before
+    MergeAnswersRejected with conflict ids. A core coherence clash on nodes not
+    yet in a NodeGroupConflict raises MergeHiddenClash; a repeat clash on a
+    promoted group raises MergeAnswersRejected. Independent hard refusals from
+    core classification raise MergeRefused. build_merge_patch raises the same
+    types. Caller compares the exact task/turn/file digest check receipt before
     commit and retains canonical receipt reconciliation for uncertain publication.
     """
     from rcp.runs.merge_patch import prepare_merge_candidate as implementation

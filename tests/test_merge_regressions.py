@@ -29,6 +29,7 @@ from rcp.runs.branch_merge import (
     branch_merge_receipt_from_committed_patch,
     commit_branch_merge_with_history,
 )
+from rcp.runs.branch_merge_context import _prior_merge_reviews
 from rcp.runs.merge_contract import (
     MergeAnswers,
     MergePlanningContext,
@@ -204,7 +205,17 @@ def _plan(history, branch):
         apply_target=history.graph_target,
     )
     base, source = branch.base_state(), branch.state()
-    facts = branch_human_review_changes(history.history_engine.steps(metadata.head), base, source)
+    engine = history.history_engine
+    receipts = branch.validated_merge_receipts()
+    previous_receipt = max(
+        receipts, key=lambda receipt: receipt.provenance.branch_head.revision, default=None
+    )
+    previous_source = (
+        engine.state_at(previous_receipt.provenance.branch_head) if previous_receipt else None
+    )
+    facts = branch_human_review_changes(
+        engine.steps(metadata.head), previous_source or base, source
+    )
     context = MergePlanningContext(
         context_id=merge_contract_digest(provenance.model_dump(mode="json")),
         captured_authority=captured,
@@ -222,6 +233,15 @@ def _plan(history, branch):
             SourceHumanFact.model_validate(fact.model_dump(mode="python")) for fact in facts
         ),
         preparation_contract=_preparation_contract(),
+        previous_merge_receipt=previous_receipt,
+        previous_source_graph=previous_source,
+        prior_reviews=_prior_merge_reviews(
+            engine,
+            engine.steps(history.head_ref()),
+            destination,
+            source=metadata.head.target,
+            target=history.head_ref().target,
+        ),
     )
     return plan_merge(context)
 
@@ -254,7 +274,7 @@ def _commit(history, branch, plan, answers):
         prepared.projection.graph.model_dump(exclude={"validation_messages"})
     )
     receipt = branch.write_merge_receipt(branch_merge_receipt_from_committed_patch(committed.patch))
-    assert branch.validated_merge_receipts() == [receipt]
+    assert branch.validated_merge_receipts()[-1] == receipt
     assert history.materialize(write_outputs=False).state == history.state()
     return committed
 

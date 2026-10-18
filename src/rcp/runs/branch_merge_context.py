@@ -221,6 +221,7 @@ def _prior_merge_reviews(
                     PriorReview(
                         subject_key=merge_contract_digest(subjects),
                         proposal=live,
+                        filing_graph=step.after_state,
                         provenance=provenance,
                         effect_digest=merge_contract_digest(
                             [op.model_dump(mode="json", exclude_unset=True) for op in filed.ops]

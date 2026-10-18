@@ -304,6 +304,106 @@ def test_judgment_conflict_disallows_merged_answer():
     ]
 
 
+@pytest.mark.parametrize("cause", ["missing", "unproven"])
+def test_chosen_status_without_source_proof_rejects_answer_and_allows_destination(cause):
+    from rcp.core.models import BeliefTransition, Hypothesis
+    from rcp.runs.merge_patch import build_merge_patch
+
+    node = Hypothesis(id="hyp/one", type="hypothesis", title="Claim", statement="A claim")
+    base = GraphState(revision=1, project_truth_scope=["repo-a"], nodes={node.id: node})
+    source = base.model_copy(deep=True, update={"revision": 2})
+    source.nodes[node.id] = node.model_copy(update={"status": "supported"})
+    if cause == "unproven":
+        source.belief_transitions.append(
+            BeliefTransition(
+                hypothesis_id=node.id,
+                from_status="proposed",
+                to_status="supported",
+                revision=2,
+                cause={"kind": "human_edit"},
+            )
+        )
+    destination = base.model_copy(deep=True)
+    destination.nodes[node.id] = node.model_copy(update={"status": "active"})
+    conflict = FieldConflict(
+        conflict_id="status/hyp/one",
+        collection="nodes",
+        entity_id=node.id,
+        field_name="status",
+        base=value("proposed"),
+        branch=value("supported"),
+        destination=value("active"),
+        allowed_answer_kinds=("branch", "destination"),
+    )
+    plan = make_plan(base=base, source=source, destination=destination, conflicts=(conflict,))
+    with pytest.raises(MergeAnswersRejected) as rejected:
+        build_merge_patch(plan, answers(plan))
+    (diagnostic,) = rejected.value.diagnostics
+    assert diagnostic.code == (
+        "missing-status-cause" if cause == "missing" else "unproven-human-judgment"
+    )
+    assert diagnostic.related_node_ids == (node.id,)
+    assert diagnostic.conflict_ids == (conflict.conflict_id,)
+    assert not build_merge_patch(
+        plan, answers(plan, {conflict.conflict_id: {"kind": "destination"}})
+    ).ops
+
+
+def test_answer_writing_field_on_absent_node_is_correctable():
+    from rcp.runs.merge_patch import build_merge_patch
+
+    initial = title_plan()
+    destination = initial.destination_graph.model_copy(deep=True)
+    destination.nodes.pop("blk/one")
+    conflict = field_conflict(destination=MISSING)
+    plan = make_plan(source=initial.source_graph, destination=destination, conflicts=(conflict,))
+    with pytest.raises(MergeAnswersRejected) as rejected:
+        build_merge_patch(plan, answers(plan))
+    (diagnostic,) = rejected.value.diagnostics
+    assert diagnostic.code == "invalid-merge-change"
+    assert diagnostic.related_node_ids == ("blk/one",)
+    assert diagnostic.conflict_ids == (conflict.conflict_id,)
+
+
+def test_answer_that_connects_separate_reviews_is_correctable():
+    from rcp.core.models import Edge, Hypothesis, ResearchQuestion
+    from rcp.runs.merge_patch import build_merge_patch
+    from rcp.runs.merge_plan import plan_merge
+    from tests.test_merge_plan import _context
+
+    question = ResearchQuestion(
+        id="rq/one", type="research_question", title="Question", question="Which claim?"
+    )
+    claims = [
+        Hypothesis(id=f"hyp/{index}", type="hypothesis", title="Claim", statement="A claim")
+        for index in range(4)
+    ]
+    edge = Edge(id="edge/claim", source=question.id, target=claims[0].id, relation="has_hypothesis")
+    base = GraphState(
+        revision=1,
+        project_truth_scope=["repo-a"],
+        nodes={node.id: node for node in [question, *claims]},
+        edges={edge.id: edge},
+    )
+    source = base.model_copy(deep=True, update={"revision": 2})
+    source.edges[edge.id] = edge.model_copy(update={"target": claims[1].id})
+    source.nodes[claims[2].id] = claims[2].model_copy(update={"statement": "Revised claim"})
+    destination = base.model_copy(deep=True, update={"revision": 2})
+    destination.edges[edge.id] = edge.model_copy(update={"target": claims[3].id})
+    plan = plan_merge(_context(base, source, destination))
+    assert len(plan.review_groups) == 2
+    (conflict,) = plan.conflicts
+    assert conflict.field_name == "target"
+    selected = answers(plan, {conflict.conflict_id: {"kind": "merged", "value": claims[2].id}})
+    with pytest.raises(MergeAnswersRejected) as rejected:
+        build_merge_patch(plan, selected)
+    (diagnostic,) = rejected.value.diagnostics
+    assert diagnostic.code == "merge-review-groups-changed"
+    assert diagnostic.conflict_ids == (conflict.conflict_id,)
+    patch = build_merge_patch(plan, answers(plan))
+    assert len(next(op for op in patch.ops if op.op == "create_proposals").proposals) == 2
+
+
 @pytest.mark.parametrize("mutation", ["missing", "unknown", "extra-card"])
 def test_answers_bind_exact_conflict_and_review_subject_keys(mutation):
     from rcp.runs.merge_patch import build_merge_patch
@@ -430,16 +530,18 @@ def test_preparation_keeps_structured_rejections_and_promotes_each_group_once(op
     report = ValidationReport()
     report.flag("advisory", "Do not promote advisories", related_node_ids=["blk/other"])
     report.reject("incoherent-decision-transition", "Fields conflict", related_node_ids=["blk/one"])
-    expected = MergeAnswersRejected if open_conflict else MergeHiddenClash
+    expected = MergeAnswersRejected if open_conflict == "promoted" else MergeHiddenClash
     with pytest.raises(expected) as rejected:
         prepare_merge_candidate(plan, answers(plan), DiagnosticHistory(plan, report))
     diagnostics = (
-        rejected.value.diagnostics if open_conflict else rejected.value.promotion.diagnostics
+        rejected.value.diagnostics
+        if open_conflict == "promoted"
+        else rejected.value.promotion.diagnostics
     )
     assert [(item.code, item.related_node_ids) for item in diagnostics] == [
         ("incoherent-decision-transition", ("blk/one",))
     ]
-    if not open_conflict:
+    if open_conflict != "promoted":
         assert rejected.value.promotion.node_ids == ("blk/one",)
 
 
@@ -795,7 +897,7 @@ def test_real_cross_side_decision_clash_returns_typed_promotion_or_answer_error(
                 }
             },
         )
-    expected = MergeAnswersRejected if open_conflict else MergeHiddenClash
+    expected = MergeAnswersRejected if open_conflict == "group" else MergeHiddenClash
     for action in (
         lambda: build_merge_patch(plan, selected),
         lambda: prepare_merge_candidate(
@@ -805,12 +907,14 @@ def test_real_cross_side_decision_clash_returns_typed_promotion_or_answer_error(
         with pytest.raises(expected) as rejected:
             action()
         diagnostics = (
-            rejected.value.diagnostics if open_conflict else rejected.value.promotion.diagnostics
+            rejected.value.diagnostics
+            if open_conflict == "group"
+            else rejected.value.promotion.diagnostics
         )
         assert {(item.code, item.related_node_ids) for item in diagnostics} == {
             ("incoherent-decision-transition", (decision.id,))
         }
-        if not open_conflict:
+        if open_conflict != "group":
             assert rejected.value.promotion.node_ids == (decision.id,)
 
 

@@ -955,10 +955,6 @@ async def stream_branch_merge_run(
                 needs_code = False
                 if checks.internal_error is not None:
                     raise ValueError(checks.internal_error)
-                if checks.refusal is not None:
-                    raise checks.refusal
-                if checks.hidden_clash is not None:
-                    raise checks.hidden_clash
                 if checks.destination_moved:
                     if classify_refreshed_context(context, load_context()) == "unchanged":
                         raise StateUnavailable(

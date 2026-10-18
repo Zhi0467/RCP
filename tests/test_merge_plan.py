@@ -349,6 +349,7 @@ def test_promotion_keeps_review_slots_and_binds_outstanding_effects():
     )
     context = _context(base, source, base)
     prior = PriorReview(
+        filing_graph=context.destination_graph,
         subject_key=selected.subject_key,
         effect_digest="1" * 64,
         provenance=context.provenance,
@@ -416,6 +417,7 @@ def test_remerge_keeps_pending_effects_and_never_resurrects_settled_work(status)
         }
     )
     review = PriorReview(
+        filing_graph=context.destination_graph,
         subject_key="subject",
         proposal=proposal,
         provenance=context.provenance,
@@ -524,7 +526,7 @@ def test_core_hard_refusal_propagates_without_creating_review():
     assert failure.value.diagnostics[0].code == "graph-action-refused"
 
 
-def test_decision_action_is_derived_for_each_coherent_candidate():
+def test_decision_action_is_derived_for_each_coherent_candidate(monkeypatch):
     from rcp.core.models import Blocker
     from rcp.core.operations import CreateNodesOperation, NodeUpdate, UpdateNodesOperation
     from rcp.runs.merge_plan import CandidateGroup, classify_candidates
@@ -569,7 +571,17 @@ def test_decision_action_is_derived_for_each_coherent_candidate():
             ),
         ),
     )
+    classifications = []
+    classify = merge_plan.classify_graph_changes
+
+    def record_classification(state, patch, **kwargs):
+        classifications.append((patch.agent_action, kwargs["operation_groups"]))
+        return classify(state, patch, **kwargs)
+
+    monkeypatch.setattr(merge_plan, "classify_graph_changes", record_classification)
     direct, reviews = classify_candidates(_context(base, source, base), (creation, choice))
+    assert classifications[0][0] != classifications[1][0]
+    assert [groups for _, groups in classifications] == [((0,),), ((0,), (1,))]
     assert not reviews
     assert {c.entity_id for c in direct} == {blocker.id, decision.id}
 
@@ -598,6 +610,7 @@ def test_pending_effect_cancelled_by_new_source_agreement_is_explicit(monkeypatc
         }
     )
     review = PriorReview(
+        filing_graph=context.destination_graph,
         subject_key="subject",
         proposal=proposal,
         provenance=context.provenance,
@@ -642,11 +655,14 @@ def test_connected_pending_predecessor_retains_its_other_subject(monkeypatch):
         {
             "id": "prop/earlier",
             "title": "Removal",
+            "raised_rev": destination.revision,
+            "related_edge_ids": [edge.id],
             "card": {},
             "ops": [{"op": "remove_nodes", "intent": "removal", "node_ids": ["rq/question"]}],
         }
     )
     review = PriorReview(
+        filing_graph=context.destination_graph,
         subject_key="earlier-subject",
         proposal=proposal,
         provenance=context.provenance,
@@ -685,6 +701,7 @@ def test_context_rejects_prior_review_from_another_source():
         }
     )
     review = PriorReview(
+        filing_graph=context.destination_graph,
         subject_key="subject",
         proposal=Proposal(id="prop/foreign", title="Foreign", card=GatedCard(), ops=[]),
         provenance=provenance,
@@ -744,6 +761,7 @@ def _with_prior(context, operations, *, status="pending"):
         }
     )
     review = PriorReview(
+        filing_graph=context.destination_graph,
         subject_key="earlier-subject",
         proposal=proposal,
         provenance=context.provenance,
@@ -917,3 +935,58 @@ def test_direct_incident_edge_replaces_pending_removal_on_other_subject(monkeypa
     assert [c.entity_id for c in group.changes] == ["rq/question"]
     assert ProposalResource(kind="edge", id=edge.id) in group.footprint.effects
     assert ProposalResource(kind="edge", id=edge.id) in group.footprint.dependencies
+
+
+def test_stale_prior_review_subject_plans_as_an_ordinary_three_way_change(manifest):
+    from rcp.runs.merge_patch import prepare_merge_candidate
+    from tests.test_merge_regressions import _answers, _append, _commit, _fork_history, _plan
+
+    history, branch = _fork_history(
+        manifest,
+        [
+            {
+                "id": "rq/review",
+                "type": "research_question",
+                "title": "Question",
+                "question": "Original?",
+            }
+        ],
+    )
+    _append(
+        branch,
+        {
+            "op": "update_nodes",
+            "nodes": [{"id": "rq/review", "changes": {"question": "Pending?"}}],
+        },
+    )
+    first = _plan(history, branch)
+    _commit(history, branch, first, _answers(first))
+    predecessor = next(iter(history.state().proposals.values()))
+    _append(history, {"op": "remove_nodes", "node_ids": ["rq/review"]})
+    _append(
+        branch,
+        {
+            "op": "update_nodes",
+            "nodes": [{"id": "rq/review", "changes": {"question": "Latest?"}}],
+        },
+    )
+    plan = _plan(history, branch)
+    assert plan.prior_reviews[0].filing_graph.nodes["rq/review"].question == "Original?"
+    assert plan.prior_reviews[0].proposal.id == predecessor.id
+    assert not plan.review_groups
+    assert len(plan.conflicts) == 1
+    conflict = plan.conflicts[0]
+    assert isinstance(conflict, PresenceConflict)
+    assert conflict.removed_on == "destination"
+    prepared = prepare_merge_candidate(
+        plan,
+        _answers(
+            plan,
+            {
+                conflict.conflict_id: {"kind": "keep-removal"},
+            },
+        ),
+        history,
+    )
+    assert prepared.patch.ops == []
+    assert history.state().proposals[predecessor.id].status == "pending"

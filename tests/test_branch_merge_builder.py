@@ -314,6 +314,98 @@ async def test_provider_merge_without_session_cannot_restart_after_main_moves(
     assert all(patch.branch_merge is None for patch in history.load_patches())
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_check", ["refused", "hidden_clash"])
+async def test_merge_collects_restored_checked_answers_after_failed_alternative(
+    merge_history, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_check
+) -> None:
+    from rcp.runs import merge_contract
+    from rcp.runs.merge_contract import (
+        MergeDiagnostic,
+        MergeHiddenClash,
+        MergeRefused,
+        NodeGroupPromotion,
+    )
+
+    history, branch, load_context = merge_history
+    _append(branch, _update("blk/existing", description="Branch description."))
+    _append(history, _update("blk/existing", description="Main description."))
+    diagnostics = (
+        MergeDiagnostic(
+            code="invalid-alternative", message="Rejected", related_node_ids=("blk/existing",)
+        ),
+    )
+    failure = (
+        MergeRefused(diagnostics)
+        if failed_check == "refused"
+        else MergeHiddenClash(
+            NodeGroupPromotion(node_ids=("blk/existing",), diagnostics=diagnostics)
+        )
+    )
+    prepare = merge_contract.prepare_merge_candidate
+
+    def prepare_alternative(plan, answers, candidate_history):
+        if any(
+            answer.kind == "merged" and answer.value == "Rejected alternative."
+            for answer in answers.answers.values()
+        ):
+            raise failure
+        return prepare(plan, answers, candidate_history)
+
+    monkeypatch.setattr(merge_contract, "prepare_merge_candidate", prepare_alternative)
+
+    class RestoreCheckedAnswers:
+        checks: MergeAnswersCheck
+        launches = 0
+
+        async def stream(self, _provider, _prompt, *, cwd, **_kwargs):
+            self.launches += 1
+            assert self.launches == 1
+            checked = None
+            for index, value in enumerate(("Checked resolution.", "Rejected alternative.")):
+                content = MergeAnswers(
+                    answers={
+                        conflict.conflict_id: {"kind": "merged", "value": value}
+                        for conflict in self.checks.plan.conflicts
+                    },
+                    cards={},
+                ).model_dump_json()
+                (cwd / "answers.json").write_text(content)
+                result = self.checks(
+                    MergeAnswersCommandRequest(
+                        mailbox_id="a" * 32,
+                        request_id=f"{index:032x}",
+                        credential="c" * 64,
+                        verb="merge_answers",
+                        arguments={"action": "check", "answers": content},
+                    ),
+                    CommandTurnIdentity(
+                        episode_id=None,
+                        task_id=self.checks.task_id,
+                        turn_id=self.checks.turn_id,
+                        authority="broker",
+                    ),
+                )
+                assert result.status == ("ok" if index == 0 else "invalid")
+                if index == 0:
+                    checked = content
+                else:
+                    with pytest.raises(type(failure)):
+                        self.checks.require_receipt(content.encode())
+            assert checked is not None
+            (cwd / "answers.json").write_text(checked)
+            yield AgentEvent(event="provider_exit", text='{"return_code":0}')
+            yield AgentEvent(event="done")
+
+    launcher = RestoreCheckedAnswers()
+    outcome, _frames, _workspace = await _run(tmp_path, history, load_context, launcher)
+
+    assert outcome.status == "committed", outcome.diagnostic
+    assert launcher.launches == 1
+    assert history.state().nodes["blk/existing"].description == "Checked resolution."
+    assert outcome.receipt is not None
+
+
 def _forked(manifest, *main_ops: dict, human_ops: tuple[dict, ...] = ()):
     """One main history and a branch forked after the given main operations."""
 
