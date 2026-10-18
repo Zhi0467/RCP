@@ -156,7 +156,7 @@ includes its rows in the open total. Each row shows the kind, night, current
 Evidence title, and finding. **Address** starts the backend-authorized node Work
 chat and keeps the member where they are. While the turn runs the row collapses to
 one strip: a spinner, the kind, the title, and an icon-only **Open chat**. A
-successful turn removes the row. A failed or stopped turn brings the full row back
+turn that finishes the work removes the row. Any other end brings the full row back
 with a red edge, an icon-only retry in place of Address, and **Open chat**.
 Otherwise the row stays until its icon-only **Dismiss** action succeeds.
 **Open Evidence** opens node detail. **Open source** opens a URL source in a new

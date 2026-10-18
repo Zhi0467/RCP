@@ -165,12 +165,15 @@ already-addressing flag returns the existing chat without another turn. Address
 leaves the member in the Inbox; the chat opens only from **Open chat**.
 
 The Address turn's end settles the flag in the same transition that records it:
-success closes the flag, so a member need not remember to Dismiss it; failure,
-interruption, or Stop reopens it with its chat kept, and a new Address starts
+a turn that succeeds, reports its Work outcome as `done`, and has no rejected or
+unavailable graph update closes the flag, so a member need not remember to
+Dismiss it. Any other end, including a `partial` or `could_not` outcome, failure,
+interruption, or Stop, reopens it with its chat kept, and a new Address starts
 another turn. The chat's own Resume or Retry of that turn takes the flag back to
 addressing, unless it was since dismissed or bound to another attempt. Startup
 settles any addressing flag whose turn already ended, including flags an older
-release left addressing, after moving any Address request id an older release
+release left addressing, after following the binding to that turn's latest
+Resume or Retry and moving any Address request id an older release
 kept on the flag into the client request receipts replays read. While addressing, the row is a strip that only opens the chat. An
 open row offers **Address**, **Open chat** after a failed attempt, **Open
 Evidence**, **Open source** only when the source is a URL (opened in a new tab) or

@@ -148,16 +148,37 @@ def record_evidence_flag_address(
         raise EvidenceFlagError("flag_address_conflict")
 
 
+_ENDED_TASK_STATUSES = frozenset({"succeeded", "failed", "interrupted", "paused"})
+
+
+def _address_resolved(connection: sqlite3.Connection, operation_id: str) -> bool:
+    """A finished turn resolves its flag only when it reports `done` and its graph update landed."""
+    row = connection.execute(
+        "SELECT result_json FROM graph_runs WHERE operation_id=?", (operation_id,)
+    ).fetchone()
+    result = json.loads(row["result_json"]) if row is not None and row["result_json"] else {}
+    outcome = (result.get("turn_outcome") or {}).get("status")
+    graph = (result.get("graph_update") or {}).get("status")
+    return outcome == "done" and graph not in {"rejected", "unavailable"}
+
+
 def settle_evidence_flag_address(
     connection: sqlite3.Connection, operation_id: str, status: str
 ) -> None:
-    """Close a flag when its Address turn succeeds; any other end reopens it.
+    """Close a flag when its Address turn resolved it; any other end reopens it.
 
     A reopened flag keeps its chat, which is how readers tell a failed attempt.
     """
+    bound = connection.execute(
+        "SELECT 1 FROM evidence_flags WHERE operation_id=? AND state='addressing'",
+        (operation_id,),
+    ).fetchone()
+    if bound is None:
+        return
+    resolved = status == "succeeded" and _address_resolved(connection, operation_id)
     connection.execute(
         "UPDATE evidence_flags SET state=? WHERE operation_id=? AND state='addressing'",
-        ("dismissed" if status == "succeeded" else "open", operation_id),
+        ("dismissed" if resolved else "open", operation_id),
     )
 
 
@@ -197,18 +218,35 @@ def adopt_legacy_evidence_flag_requests(connection: sqlite3.Connection) -> None:
 
 
 def settle_ended_evidence_flag_addresses(connection: sqlite3.Connection) -> None:
-    """Settle addressing flags whose turn already ended.
+    """Bring addressing flags in line with their turns at startup.
 
-    Releases before turn-end settlement left such flags addressing; startup
-    brings them in line, and finds nothing on later starts.
+    Older releases neither moved a flag to a Resume or Retry of its turn nor
+    settled it when the turn ended, so the binding first follows recovery turns
+    to the latest one, then settles if that turn ended. Later starts find
+    nothing to change.
     """
-    connection.execute(
-        "UPDATE evidence_flags SET state=CASE (SELECT status FROM graph_runs "
-        "WHERE graph_runs.operation_id=evidence_flags.operation_id) "
-        "WHEN 'succeeded' THEN 'dismissed' ELSE 'open' END "
-        "WHERE state='addressing' AND operation_id IN (SELECT operation_id FROM graph_runs "
-        "WHERE status IN ('succeeded','failed','interrupted','paused'))"
-    )
+    flags = connection.execute(
+        "SELECT flag_id,operation_id FROM evidence_flags WHERE state='addressing'"
+    ).fetchall()
+    for flag in flags:
+        operation_id = flag["operation_id"]
+        while (
+            child := connection.execute(
+                "SELECT operation_id FROM graph_runs WHERE parent_operation_id=? AND attempt>1 "
+                "ORDER BY created_at DESC,operation_id DESC LIMIT 1",
+                (operation_id,),
+            ).fetchone()
+        ) is not None:
+            operation_id = child["operation_id"]
+        connection.execute(
+            "UPDATE evidence_flags SET operation_id=? WHERE flag_id=?",
+            (operation_id, flag["flag_id"]),
+        )
+        row = connection.execute(
+            "SELECT status FROM graph_runs WHERE operation_id=?", (operation_id,)
+        ).fetchone()
+        if row is not None and row["status"] in _ENDED_TASK_STATUSES:
+            settle_evidence_flag_address(connection, operation_id, row["status"])
 
 
 class EvidenceFlagStoreMixin(StoreMixinBase):

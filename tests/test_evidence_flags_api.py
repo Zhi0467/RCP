@@ -10,9 +10,19 @@ import pytest
 from rcp.agents import AgentEvent
 from rcp.api.consolidation import evidence_flag_message
 from rcp.core.models import Patch
+from rcp.turn_outcomes import TurnOutcome
 from tests.helpers import append_fixture_patch, create_named_app, signed_in_client, wait_for_task
 from tests.test_api_tasks import _event_frame
 from tests.test_consolidation_work import _admit
+
+
+def _turn(execution, event, outcome="done"):
+    """Finish a fake Address turn; a successful one reports its Work outcome."""
+    if event == "done":
+        execution.turn_outcome = TurnOutcome(
+            status=outcome, reason=None if outcome == "done" else "x"
+        )
+    return _event_frame(AgentEvent(event=event, text="provider failed"))
 
 
 @pytest.fixture
@@ -76,7 +86,7 @@ def test_address_admits_one_ordinary_work_turn_and_replays(flagged):
 
     async def stream(project_id, kind, request, execution):
         launches.append((project_id, kind, request, execution))
-        yield _event_frame(AgentEvent(event="done"))
+        yield _turn(execution, "done")
 
     app.state.background_tasks.stream = stream
     base = f"/api/projects/{project}/consolidation"
@@ -119,7 +129,7 @@ def test_a_failed_address_turn_reopens_the_flag_for_another(flagged):
     outcomes = iter(["error", "error", "done"])
 
     async def stream(project_id, kind, request, execution):
-        yield _event_frame(AgentEvent(event=next(outcomes), text="provider failed"))
+        yield _turn(execution, next(outcomes))
 
     app.state.background_tasks.stream = stream
     base = f"/api/projects/{project}/consolidation"
@@ -142,12 +152,28 @@ def test_a_failed_address_turn_reopens_the_flag_for_another(flagged):
     assert len({first["operation_id"], second["operation_id"], third["operation_id"]}) == 3
 
 
+@pytest.mark.parametrize("outcome", ["could_not", "partial"])
+def test_an_address_turn_that_did_not_finish_the_work_reopens_the_flag(flagged, outcome):
+    app, client, store, project, flag = flagged
+
+    async def stream(project_id, kind, request, execution):
+        yield _turn(execution, "done", outcome)
+
+    app.state.background_tasks.stream = stream
+    base = f"/api/projects/{project}/consolidation"
+    url = f"{base}/evidence-flags/{flag['flag_id']}/address"
+    result = client.post(url, json={"request_id": "unfinished"}).json()
+    wait_for_task(store, result["operation_id"], expect="succeeded")
+    [reopened] = client.get(base).json()["evidence_flags"]
+    assert (reopened["state"], reopened["chat_id"]) == ("open", result["chat_id"])
+
+
 def test_a_retried_address_turn_carries_the_flag(flagged):
     app, client, store, project, flag = flagged
     outcomes = iter(["error", "done"])
 
     async def stream(project_id, kind, request, execution):
-        yield _event_frame(AgentEvent(event=next(outcomes), text="provider failed"))
+        yield _turn(execution, next(outcomes))
 
     app.state.background_tasks.stream = stream
     base = f"/api/projects/{project}/consolidation"
@@ -156,6 +182,14 @@ def test_a_retried_address_turn_carries_the_flag(flagged):
     wait_for_task(store, first["operation_id"], expect="failed")
     retried = client.post(f"/api/projects/{project}/tasks/{first['operation_id']}/retry", json={})
     wait_for_task(store, retried.json()["operation_id"], expect="succeeded")
+    assert client.get(base).json()["evidence_flags"] == []
+    # An older release left the flag addressing on the failed first turn.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE evidence_flags SET state='addressing', operation_id=? WHERE flag_id=?",
+            (first["operation_id"], flag["flag_id"]),
+        )
+    store.interrupt_active_agent_tasks()
     assert client.get(base).json()["evidence_flags"] == []
 
 
@@ -167,7 +201,7 @@ def test_a_request_answered_by_a_running_turn_replays_it(flagged):
     async def stream(project_id, kind, request, execution):
         launches.append(execution)
         await asyncio.to_thread(release.wait, 10)
-        yield _event_frame(AgentEvent(event="error", text="provider failed"))
+        yield _turn(execution, "error")
 
     app.state.background_tasks.stream = stream
     url = f"/api/projects/{project}/consolidation/evidence-flags/{flag['flag_id']}/address"
@@ -190,7 +224,7 @@ def test_a_restart_reopens_an_addressing_flag(flagged):
 
     async def stream(project_id, kind, request, execution):
         await asyncio.to_thread(release.wait, 10)
-        yield _event_frame(AgentEvent(event="done"))
+        yield _turn(execution, "done")
 
     app.state.background_tasks.stream = stream
     base = f"/api/projects/{project}/consolidation"
@@ -209,7 +243,7 @@ def test_startup_settles_a_flag_an_older_release_left_addressing(flagged, outcom
     app, client, store, project, flag = flagged
 
     async def stream(project_id, kind, request, execution):
-        yield _event_frame(AgentEvent(event=outcome, text="provider failed"))
+        yield _turn(execution, outcome)
 
     app.state.background_tasks.stream = stream
     base = f"/api/projects/{project}/consolidation"
@@ -233,7 +267,7 @@ def test_startup_adopts_an_address_request_an_older_release_kept_on_the_flag(fla
 
     async def stream(project_id, kind, request, execution):
         launches.append(execution)
-        yield _event_frame(AgentEvent(event="done"))
+        yield _turn(execution, "done")
 
     app.state.background_tasks.stream = stream
     url = f"/api/projects/{project}/consolidation/evidence-flags/{flag['flag_id']}/address"
@@ -260,7 +294,7 @@ def test_address_refuses_a_consolidation_notice(flagged):
 
     async def stream(project_id, kind, request, execution):
         launches.append(kind)
-        yield _event_frame(AgentEvent(event="done"))
+        yield _turn(execution, "done")
 
     app.state.background_tasks.stream = stream
     with store.connection() as connection:
