@@ -420,8 +420,8 @@ export function AutoResearchEpisodeCard({
               </header>
               <div className="campaign-branch-heads">
                 <GraphHeadFact
-                  label={`From ${branchName(graphRefs, (episode.graph_branch.parent_head ?? episode.graph_branch.base_head).target)}`}
-                  head={episode.graph_branch.parent_head ?? episode.graph_branch.base_head}
+                  label={`From ${branchName(graphRefs, episode.graph_branch.parent_head?.target)}`}
+                  head={episode.graph_branch.parent_head}
                 />
                 <span className="campaign-branch-head-path" aria-hidden="true" />
                 <GraphHeadFact label="Branch head" head={episode.graph_branch.head} />

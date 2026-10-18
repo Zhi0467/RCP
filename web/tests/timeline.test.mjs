@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   timelineRows,
   timelineActorTarget,
+  timelineActorLabel,
   timelineBounds,
   clampWindow,
   zoomWindow,
@@ -218,7 +219,7 @@ test("fork actors retain their target and archive provenance under the parent ru
     actor("original", "experiment", "branch:root:node:exp", { graph_target: refs[0] }),
     actor("forked", "experiment", "branch:fork:node:exp", { graph_target: target }),
   ];
-  const rows = timelineRows(data({ actors }), [], refs);
+  const rows = timelineRows(data({ actors }), [], refs, { kind: "branch", branch_id: "root" });
   assert.equal(rows.length, 4);
   assert.deepEqual(
     rows.slice(1).map((row) => row.actors[0].actor_id),
@@ -229,6 +230,24 @@ test("fork actors retain their target and archive provenance under the parent ru
     rows.map((row) => row.archived),
     [false, true, false, true],
   );
-  for (const value of ["recheck", "source@7"]) assert.ok(rows[3].targetLabel.includes(value));
+  assert.deepEqual(rows[3].actors[0].graph_target, target);
+  assert.equal(rows[2].targetLabel, null);
+  assert.deepEqual(refs[1].parent_head, {
+    target: { kind: "branch", branch_id: "root" },
+    revision: 7,
+  });
+  assert.notEqual(rows[3].targetLabel, null);
   assert.equal(timelineActorTarget(actor("legacy", "worker"), refs), null);
+});
+
+test("same-target actors retain their node subtitle and branch row keys resolve the node id", () => {
+  const target = { kind: "branch", branch_id: "root" };
+  const item = actor("child", "experiment", "branch:root:node:exp/check", {
+    graph_target: target,
+    links: { control_node_id: "exp/check" },
+  });
+  const [row] = timelineRows(data({ actors: [item] }), [], [], target);
+  assert.equal(row.targetLabel, null);
+  assert.equal(row.subtitle, item.links.control_node_id);
+  assert.equal(timelineActorLabel({ ...item, links: {} }), item.links.control_node_id);
 });

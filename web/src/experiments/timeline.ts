@@ -5,8 +5,10 @@ import type {
   EpisodeTimelineSignal,
   ExperimentLoopIndexEntry,
   GraphRef,
+  GraphTargetRef,
 } from "../core/types";
 
+import { sameGraphTarget } from "../core/graphTarget.ts";
 import { branchName } from "../core/branchNames.ts";
 import { graphRefParentLabel } from "../graph/graphPickerModel.ts";
 
@@ -40,7 +42,7 @@ export function timelineActorLabel(
       children.find((child) => child.episode.episode_id === actor.links.episode_id)?.node.title ??
       actor.links.control_node_id ??
       actor.subtitle ??
-      actor.row_key.replace(/^node:/, "")
+      actor.row_key.replace(/^(?:branch:[^:]+:)?node:/, "")
     );
   return actor.label;
 }
@@ -84,6 +86,7 @@ export function timelineRows(
   data: EpisodeTimelineResponse,
   children: ExperimentLoopIndexEntry[] = [],
   refs: readonly GraphRef[] = [],
+  graphTarget?: GraphTargetRef,
 ): TimelineRow[] {
   const rows = new Map<string, TimelineRow>();
   for (const actor of [...data.actors].sort(
@@ -105,7 +108,10 @@ export function timelineRows(
             ? (actor.links.control_node_id ?? actor.subtitle)
             : actor.subtitle,
         actors: [actor],
-        targetLabel: timelineActorTarget(actor, refs),
+        targetLabel:
+          actor.graph_target && !sameGraphTarget(actor.graph_target, graphTarget)
+            ? timelineActorTarget(actor, refs)
+            : null,
         archived: refs.some(
           (ref) =>
             ref.kind === "branch" &&

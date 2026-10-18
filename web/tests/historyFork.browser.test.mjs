@@ -22,29 +22,58 @@ test("history forks exact main and branch revisions with phone overflow and idem
       await route.fulfill(
         requests.length === 1
           ? { status: 503, json: { detail: "temporary" } }
-          : { json: { kind: "branch", branch_id: requests.at(-1).request_id } },
+          : requests.length === 3
+            ? { status: 422, json: { detail: { code: "branch_fork_invalid", message: "refused" } } }
+            : { json: { kind: "branch", branch_id: requests.at(-1).request_id } },
       );
     });
     const url = `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/historyFork.html`;
     await page.goto(url);
-    await page.locator(".history-fork-action").click();
-    await page.locator(".history-fork-failed").waitFor();
+    await page
+      .locator('[data-revision="7"]')
+      .getByRole("button", { name: "Fork from here", exact: true })
+      .click();
+    await page.getByRole("button", { name: "Retry fork" }).waitFor();
     await Promise.all([
       page.waitForResponse((response) => response.url().endsWith("/graph-refs")),
       page.getByRole("button", { name: "Retry fork" }).click(),
     ]);
-    await page.locator(".history-fork-action").waitFor();
+    await page
+      .locator('[data-revision="7"]')
+      .getByRole("button", { name: "Fork from here", exact: true })
+      .waitFor();
     assert.deepEqual(requests[0], requests[1]);
     assert.equal(requests[0].at, "main@7");
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`${url}?branch=1`);
-    assert.equal(await page.locator(".history-fork-action").isVisible(), false);
-    await page.getByLabel("Revision actions").click();
+    assert.equal(
+      await page
+        .locator('[data-revision="7"]')
+        .getByRole("button", { name: "Fork from here", exact: true })
+        .isVisible(),
+      false,
+    );
+    const menuButton = page.getByRole("button", { name: "Revision actions" });
+    await menuButton.click();
+    await page.getByRole("heading", { name: "Project history", exact: true }).click();
+    assert.equal(await page.getByRole("menu").count(), 0);
+    await menuButton.click();
+    await page.keyboard.press("Escape");
+    assert.equal(await page.getByRole("menu").count(), 0);
+    await menuButton.click();
     await Promise.all([
       page.waitForResponse((response) => response.url().endsWith("/graph-refs")),
-      page.getByRole("button", { name: "Fork from here" }).click(),
+      page.getByRole("menuitem", { name: "Fork from here" }).click(),
     ]);
     assert.equal(requests[2].at, "branch:source@7");
+    await page.getByRole("alert").filter({ hasText: /.+/ }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Retry fork" }).count(), 0);
+    await menuButton.click();
+    await Promise.all([
+      page.waitForResponse((response) => response.url().endsWith("/graph-refs")),
+      page.getByRole("menuitem", { name: "Fork from here" }).click(),
+    ]);
+    assert.notEqual(requests[2].request_id, requests[3].request_id);
     assert.equal(
       await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
       true,

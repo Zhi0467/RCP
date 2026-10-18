@@ -22,6 +22,9 @@ createRoot(document.getElementById("root")).render(
         created_at: "2026-08-03T08:00:00Z",
       },
     ],
+    reportError(message) {
+      document.querySelector("[role=alert]").textContent = message;
+    },
     onClose() {},
     onInspectTask() {},
     episodeReportHref: () => "",

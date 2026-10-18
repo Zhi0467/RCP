@@ -1807,7 +1807,7 @@ export interface GraphBranchSummary {
   branch_id: string;
   episode_id: string | null;
   base_head: GraphHeadRef;
-  parent_head?: GraphHeadRef | null;
+  parent_head: GraphHeadRef | null;
   head: GraphHeadRef;
   merge_eligible: boolean;
   merge_blocked_reason: string | null;

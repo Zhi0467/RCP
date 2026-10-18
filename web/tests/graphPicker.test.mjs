@@ -157,16 +157,13 @@ test("forks nest under their visible parent and retain exact provenance through 
     ["root", "fork", "nested"],
   );
   assert.equal(graphRefDepth(nested, refs), 2);
-  assert.equal(graphRefParentLabel(fork, refs), "from root@7");
+  assert.deepEqual(graphPickerOptions(refs, main)[1].parent_head, {
+    target: { kind: "branch", branch_id: "root" },
+    revision: 7,
+  });
   assert.deepEqual(
     graphPickerOptions([nested, { ...fork, archived: true }, root], main).map((r) => r.branch_id),
     ["nested", "root"],
   );
-  assert.equal(
-    graphRefParentLabel(
-      { ...root, parent_head: undefined, base_head: { target: main, revision: 2 } },
-      refs,
-    ),
-    "from main@2",
-  );
+  assert.equal(graphRefParentLabel({ ...root, parent_head: null }, refs), null);
 });
