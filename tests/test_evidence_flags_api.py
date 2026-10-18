@@ -179,6 +179,29 @@ def test_a_restart_reopens_an_addressing_flag(flagged):
         release.set()
 
 
+@pytest.mark.parametrize(("outcome", "state"), [("done", None), ("error", "open")])
+def test_startup_settles_a_flag_an_older_release_left_addressing(flagged, outcome, state):
+    app, client, store, project, flag = flagged
+
+    async def stream(project_id, kind, request, execution):
+        yield _event_frame(AgentEvent(event=outcome, text="provider failed"))
+
+    app.state.background_tasks.stream = stream
+    base = f"/api/projects/{project}/consolidation"
+    url = f"{base}/evidence-flags/{flag['flag_id']}/address"
+    result = client.post(url, json={"request_id": "old-release"}).json()
+    wait_for_task(store, result["operation_id"])
+    # An older release never settled the flag when its turn ended.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE evidence_flags SET state='addressing' WHERE flag_id=?", (flag["flag_id"],)
+        )
+    store.interrupt_active_agent_tasks()
+    assert [item["state"] for item in client.get(base).json()["evidence_flags"]] == (
+        [state] if state else []
+    )
+
+
 def test_address_refuses_a_consolidation_notice(flagged):
     app, client, store, project, flag = flagged
     launches = []

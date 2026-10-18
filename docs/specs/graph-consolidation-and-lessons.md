@@ -162,7 +162,9 @@ The Address turn's end settles the flag in the same transition that records it:
 success closes the flag, so a member need not remember to Dismiss it; failure,
 interruption, or Stop reopens it with its chat kept, and a new Address starts
 another turn. The chat's own Resume or Retry of that turn takes the flag back to
-addressing, unless it was since dismissed or bound to another attempt. While addressing, the row is a strip that only opens the chat. An
+addressing, unless it was since dismissed or bound to another attempt. Startup
+settles any addressing flag whose turn already ended, including flags an older
+release left addressing. While addressing, the row is a strip that only opens the chat. An
 open row offers **Address**, **Open chat** after a failed attempt, **Open
 Evidence**, **Open source** only when the source is a URL (opened in a new tab) or
 resolves to a configured repository file, and icon-only **Dismiss**, which closes

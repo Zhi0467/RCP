@@ -161,6 +161,21 @@ def settle_evidence_flag_address(
     )
 
 
+def settle_ended_evidence_flag_addresses(connection: sqlite3.Connection) -> None:
+    """Settle addressing flags whose turn already ended.
+
+    Releases before turn-end settlement left such flags addressing; startup
+    brings them in line, and finds nothing on later starts.
+    """
+    connection.execute(
+        "UPDATE evidence_flags SET state=CASE (SELECT status FROM graph_runs "
+        "WHERE graph_runs.operation_id=evidence_flags.operation_id) "
+        "WHEN 'succeeded' THEN 'dismissed' ELSE 'open' END "
+        "WHERE state='addressing' AND operation_id IN (SELECT operation_id FROM graph_runs "
+        "WHERE status IN ('succeeded','failed','interrupted','paused'))"
+    )
+
+
 class EvidenceFlagStoreMixin(StoreMixinBase):
     def list_evidence_flags(self, project_id: str) -> list[dict[str, Any]]:
         with self.connection() as connection:

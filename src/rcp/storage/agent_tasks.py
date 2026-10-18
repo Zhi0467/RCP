@@ -60,6 +60,7 @@ from rcp.storage.client_requests import record_client_request
 from rcp.storage.digest import append_task_failed
 from rcp.storage.evidence_flags import (
     record_evidence_flag_address,
+    settle_ended_evidence_flag_addresses,
     settle_evidence_flag_address,
 )
 from rcp.storage.mixin_base import StoreMixinBase
@@ -5582,6 +5583,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     tier="summary",
                     created_at=now,
                 )
+            settle_ended_evidence_flag_addresses(connection)
 
     def prune_operational_storage(self, *, now: datetime | None = None) -> dict[str, int]:
         """Age out bulky run payloads. `graph_runs` rows are never deleted, so
