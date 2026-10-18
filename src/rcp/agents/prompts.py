@@ -127,7 +127,7 @@ REPLY_STYLE = """Writing the reply:
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
 
-CHAT_MASTER_CONTEXT_VERSION = 19
+CHAT_MASTER_CONTEXT_VERSION = 20
 
 # Staged RCP commands are written against this placeholder; the contract names the current
 # command client once, and a continuation that changes it sends `patch.command_client`.
@@ -854,9 +854,9 @@ _INLINE_CONTINUATION_RULES = {
 
 
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
-DISCUSS_POLICY_VERSION = "discuss-v5"
+DISCUSS_POLICY_VERSION = "discuss-v6"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v6"
+WORK_POLICY_VERSION = "work-v7"
 
 
 class PromptFactory:
@@ -1100,7 +1100,7 @@ Turn protocol:
         )
 
     # Bumped when the Seed and Refresh task contract's stable policy prose changes.
-    GRAPH_TASK_POLICY_VERSION = "ingestion-v2"
+    GRAPH_TASK_POLICY_VERSION = "ingestion-v3"
 
     @staticmethod
     def graph_task_contract(
@@ -1486,7 +1486,7 @@ Graph Patch (optional):
         )
 
     # Bumped when the paper-coach task contract's stable policy prose changes.
-    PAPER_COACH_POLICY_VERSION = "paper-coach-v2"
+    PAPER_COACH_POLICY_VERSION = "paper-coach-v3"
 
     @staticmethod
     def paper_coach_task_contract(
