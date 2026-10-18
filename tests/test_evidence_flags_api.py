@@ -159,6 +159,31 @@ def test_a_retried_address_turn_carries_the_flag(flagged):
     assert client.get(base).json()["evidence_flags"] == []
 
 
+def test_a_request_answered_by_a_running_turn_replays_it(flagged):
+    app, client, store, project, flag = flagged
+    release = threading.Event()
+    launches = []
+
+    async def stream(project_id, kind, request, execution):
+        launches.append(execution)
+        await asyncio.to_thread(release.wait, 10)
+        yield _event_frame(AgentEvent(event="error", text="provider failed"))
+
+    app.state.background_tasks.stream = stream
+    url = f"/api/projects/{project}/consolidation/evidence-flags/{flag['flag_id']}/address"
+    try:
+        first = client.post(url, json={"request_id": "first"}).json()
+        second = client.post(url, json={"request_id": "second"}).json()
+        assert second["operation_id"] == first["operation_id"]
+    finally:
+        release.set()
+    wait_for_task(store, first["operation_id"], expect="failed")
+    # The flag reopened, yet a retry of the second request still returns its turn.
+    replay = client.post(url, json={"request_id": "second"}).json()
+    assert replay["operation_id"] == first["operation_id"]
+    assert len(launches) == 1
+
+
 def test_a_restart_reopens_an_addressing_flag(flagged):
     app, client, store, project, flag = flagged
     release = threading.Event()

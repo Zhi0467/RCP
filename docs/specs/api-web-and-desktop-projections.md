@@ -1088,7 +1088,7 @@ identity:
   it adds no authority. The request id is recorded as the admitted turn's client
   request, so replaying it returns that turn's chat and operation even after a
   later attempt or the turn's own end settled the flag. Addressing an addressing
-  flag returns its current chat. Neither starts another turn, whatever main now
+  flag returns its current chat and records the request against that turn. Neither starts another turn, whatever main now
   holds. An open flag
   that keeps a `chat_id` was reopened by a failed turn, and a new request id
   starts another. Addressing an open flag whose Evidence is absent or retired on

@@ -342,7 +342,11 @@ def address_evidence_flag(
                                 },
                             ) from exc
                         raise
-                return store.evidence_flag_address_result(project_id, flag_id)
+                result = store.evidence_flag_address_result(project_id, flag_id)
+                if flag["state"] != "open":
+                    # Another request admitted this turn; a retry of this one must return it.
+                    store.bind_client_request(result["operation_id"])
+                return result
     except ClientRequestConflict as exc:
         raise _flag_error(EvidenceFlagError("flag_key_conflict")) from exc
     except EvidenceFlagError as exc:
