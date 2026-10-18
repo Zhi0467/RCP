@@ -149,13 +149,16 @@ container slots without mutating objects shared with earlier revisions.
 
 Targets are `main` or `branch:<branch_id>`. Heads include target, integer revision,
 and last transition id. Branch metadata binds project, chain-root episode/id,
-kind, authorizer, creation time, immutable main base, current head, and receipts.
+kind, authorizer, creation time, immutable parent head, current head, and receipts.
+An episode branch's parent head is a main head; a fork's is any exact main or
+branch head.
 Branch creation builds the complete layout in a unique temporary sibling and
 atomically renames it into place under the write lock. Abandoned temporary
 directories do not occupy the branch identity or block a retry.
 Continuations write under their own episode ids to the root's branch namespace.
-Replay uses the accepted main prefix through the base, then the branch log;
-main movement never rebases it. See
+Replay uses the parent's replayed prefix through the parent head, nesting through
+each ancestor branch down to main, then the branch log; movement of any ancestor
+never rebases it. See [Forks](auto-research-and-branch-merge.md#forks) and
 [persistent branches](auto-research-and-branch-merge.md#persistent-graph-branch).
 
 ## Patch provenance

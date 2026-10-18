@@ -60,14 +60,18 @@ under the writer lock. Display publication failure cannot undo a canonical write
 ## Project graph-ref inventory
 
 `GET /api/projects/{project_id}/graph-refs` returns main first, then one row per
-episode-owned branch, newest chain-member creation first. It reads all episodes,
-including archives, without the recent-50 limit, under project membership.
+published branch record, episode branches and forks alike, archives included,
+newest first (an owned branch by its newest chain member, a member fork by its
+own creation), under project membership. A fork reserved but not yet published
+has no row. `POST .../graph-refs` and `POST .../graph-refs/{branch_id}/merge`
+fork and merge member forks as described in
+[Forks](auto-research-and-branch-merge.md#forks).
 
 Rows carry `kind`, `branch_id`, `head`, `base_head`, `episode_id` (chain root),
 `current_episode_id` (newest member), graph-isolation `archived`, and merge fields
 `merge_state`, `merge_eligible`, `merge_blocked_reason`,
 `latest_successful_merge`, `active_merge_task_id`, and `merge_diagnostic`.
-Branches also carry the root's `mode`, `created_at`, resolved `name`, `running`,
+Rows also carry `parent_head`. Branches also carry the root's `mode` (null for a member fork), `created_at`, resolved `name`, `running`,
 and `needs_you`; there is no `title`. Running means an active task on that target;
 attention means an open Decision/Blocker or answerable question. Names use the
 shared SQLite owner with date fallbacks. `branch_id == episode_id` names the root.

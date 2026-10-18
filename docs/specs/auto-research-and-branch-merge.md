@@ -91,9 +91,6 @@ project-wide branch picker and tagged project-wide Runs/Artifacts follow the
 labels or showing different targets. Reserving old names keeps historical tags
 unambiguous.
 
-Automatic archive of an unchanged fork waits for unsettled tasks using it as
-either their graph target or their bound merge destination.
-
 ## Persistent graph branch
 
 An Auto-research root or main-target Experiment with graph isolation owns one
@@ -120,6 +117,57 @@ as the paper introduction retain project-owned paths. Child Experiment Patches
 keep the child's episode id; admission checks the task target, not equality with
 the branch owner. Branch writes advance only branch graph/control/guidance/events;
 ordinary human and agent work may keep advancing main.
+
+## Forks
+
+A fork is a graph branch with its own UUID4 id, unlike an episode branch whose id
+is its episode id, and an exact parent head (`main@R` or `branch:<id>@R`) fixed
+at creation. Its owner is an episode lineage (the chain root) or, for a member's
+fork, no episode. A lineage owns its persistent branch and every fork it created.
+[History and graph targets](graph-history-and-transitions.md#append-only-history-and-graph-targets)
+own metadata and replay.
+
+The orchestrator places children with `spawn` and `episode --kick-off-experiment`.
+`--at <ref@R>` forks any project ref, resolved once to an exact head; a bare `@R`
+names the root's branch. `--target <branch>` (id or name) uses an open
+lineage-owned branch; archived, foreign, and main targets refuse with
+`child_target_refused`. Omitting both keeps the root's branch. `spawn --project`
+and `--seat-node` choose the seat, never the target. `--seed-file <file>` requires
+`--at` and must hold at least one operation valid under the orchestrator profile.
+Fork reservation, seed snapshot, child admission, and budget spend commit in one
+command start. RCP then publishes the fork and commits the seed as its first
+Patch before the child launches; retry re-drives that recorded identity, never
+a new fork.
+
+A run whose target is a fork reads graph history only on the fork and its
+ancestors, each through the revision it was forked at; other runs read main and
+every branch. The prompt renders that same scope, and reading grants no writes.
+
+An orchestrator fork archives automatically when its head still equals its parent
+head and no writer can reach it: no unsettled task using it as graph target or
+bound merge destination, no publication of unknown outcome, no undelivered watcher
+or worker mail, no live child Experiment, and no accepted admission targeting it.
+The child poll rechecks this under the canonical write lock. `branch --archive <id>`
+archives an owned fork, never the root's own branch. Member forks never auto-archive.
+
+`merge --key K <fork>` delivers an owned fork into its parent when the lineage owns
+both and the parent is open. A fork of main or of a foreign branch has no owned
+destination (`merge_main_requires_human`, `merge_branch_not_owned`). The
+[semantic merge](#semantic-rebase-and-merge) runs against the parent: empty residue
+commits without a provider; residue spends one lineage invocation, reserved at
+admission or when the parent's advance first creates residue, and refuses with
+`merge_budget_exhausted`. Protected beliefs arrive as pending Proposals on the
+parent. The root must be running without ending or Stop; a delivered head, a live
+source writer, or another merge into that parent refuses. Merge does not archive.
+**Why:** invariant 3 lets the orchestrator merge only within its own lineage; main
+truth changes only by human dispatch.
+
+Any member may fork an explicit `main@R` or `branch:<id>@R` with
+`POST /api/projects/{project_id}/graph-refs` (`{request_id, at, name?}`; the
+UUID4 `request_id` becomes the branch id) and deliver a member fork into its
+parent with `POST .../graph-refs/{branch_id}/merge` (`{request_id}`), without an
+episode or budget. A member fork has no owner episode, so the first Experiment on
+it creates the isolation binding that later Experiments there share.
 
 ## Graph and code isolation
 
