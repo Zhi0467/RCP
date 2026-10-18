@@ -14,7 +14,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "../core/api";
-import { graphTargetUrl, sameGraphTarget } from "../core/graphTarget";
+import { graphTargetUrl, projectViewHash, sameGraphTarget } from "../core/graphTarget";
 import { resourceKeyId, type ResourceProfile } from "../core/resourceStore";
 import { useRefreshRuntime } from "../core/useResource";
 import type { GraphNode, GraphTargetRef } from "../core/types";
@@ -47,7 +47,7 @@ import "./bulletin.css";
 
 interface Props {
   projectId: string;
-  /** The workspace's graph target, which is the channel shown first. */
+  /** The workspace's graph target, which is the channel shown; picking another channel switches it. */
   target: GraphTargetRef;
   /** The signed-in member; null when no verified session exists. */
   actorId: string | null;
@@ -73,7 +73,9 @@ const NO_NODES: Record<string, Pick<GraphNode, "id" | "title">> = {};
 export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, onOpenNode }: Props) {
   const { store } = useRefreshRuntime();
   const isMember = actorId !== null;
-  const [channel, setChannel] = useState<GraphTargetRef>(target);
+  // The channel is the workspace's graph target, so node links and suggestions
+  // resolve in the graph the channel belongs to.
+  const channel = target;
   const [pickerOpen, setPickerOpen] = useState(false);
   const [cursor, setCursor] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -258,14 +260,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
   const selectChannel = (next: GraphTargetRef) => {
     setPickerOpen(false);
     if (sameGraphTarget(next, channel)) return;
-    setChannel(next);
-    setCursor(null);
-    setReply(null);
-    setEditing(null);
-    setConfirmDelete(null);
-    setFailure(null);
-    setOpenThreads(new Set());
-    setRosterOpen(false);
+    window.location.hash = projectViewHash(projectId, next, "chats");
   };
   const startReply = (item: BulletinPost) => {
     setReply(item);

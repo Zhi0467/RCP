@@ -40,9 +40,7 @@ def test_mentions_post_edit_recipient_only_and_restart_dedup(tmp_path):
     assert [(row["device_id"], row["kind"], row["item_id"]) for row in rows] == [
         (devices[first.user_id], "bulletin_mention", post["post_id"])
     ]
-    assert rows[0]["deep_link"] == (
-        f"#/projects/project?view=chats&channel=main&post={post['post_id']}"
-    )
+    assert rows[0]["deep_link"] == "#/projects/project?view=chats"
     assert sender.pending_desktop(devices[first.user_id])[0]["reason"] == "bulletin_mention"
     store.mutate_bulletin_post(
         "project",
@@ -72,6 +70,14 @@ def test_mentions_post_edit_recipient_only_and_restart_dedup(tmp_path):
         store.drop_notification(row["device_id"], row["notification_id"])
     restarted.run_pass()
     assert store.notification_outbox() == []
+    # A branch channel opens through the ordinary branch route.
+    store.add_bulletin_post(
+        "project", "branch:fork-1", f"<@member:{first.user_id}>", user_id=author.user_id, key="b"
+    )
+    restarted.run_pass()
+    assert [row["deep_link"] for row in store.notification_outbox()] == [
+        "#/projects/project?view=chats&branch_id=fork-1"
+    ]
 
 
 def test_deleted_post_mention_is_consumed_without_notification(tmp_path):

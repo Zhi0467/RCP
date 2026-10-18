@@ -145,33 +145,35 @@ def _list(
         raise BulletinError("bulletin_cursor_invalid") from exc
     if before < 0 or before > 9223372036854775807:
         raise BulletinError("bulletin_cursor_invalid")
+    # A page is whole threads: top-level posts, each with all of its visible replies.
     rows = connection.execute(
-        f"SELECT p.*, {_REPLY_COUNT} AS reply_count FROM bulletin_posts p WHERE project_id=? AND target_key=? AND sequence<? AND {_VISIBLE} ORDER BY sequence DESC LIMIT ?",
+        f"SELECT p.*, {_REPLY_COUNT} AS reply_count FROM bulletin_posts p WHERE project_id=? AND target_key=? AND p.reply_to IS NULL AND sequence<? AND {_VISIBLE} ORDER BY sequence DESC LIMIT ?",
         (project_id, target_key, before, BULLETIN_PAGE_SIZE + 1),
     ).fetchall()
+    roots = [row["post_id"] for row in rows[:BULLETIN_PAGE_SIZE]]
+    replies = (
+        connection.execute(
+            f"SELECT p.*, 0 AS reply_count FROM bulletin_posts p WHERE project_id=? AND target_key=? AND deleted_at IS NULL AND reply_to IN ({','.join('?' for _ in roots)})",
+            (project_id, target_key, *roots),
+        ).fetchall()
+        if roots
+        else []
+    )
     total = connection.execute(
         f"SELECT count(*) FROM bulletin_posts p WHERE project_id=? AND target_key=? AND {_VISIBLE}",
         (project_id, target_key),
     ).fetchone()[0]
-    posts = [_record(row) for row in rows[:BULLETIN_PAGE_SIZE]]
-    reply_ids = {post["reply_to"] for post in posts if post["reply_to"]}
-    parents = {}
-    if reply_ids:
-        placeholders = ",".join("?" for _ in reply_ids)
-        parents = {
-            row["post_id"]: _record(row)
-            for row in connection.execute(
-                "SELECT * FROM bulletin_posts WHERE project_id=? AND target_key=? "
-                f"AND post_id IN ({placeholders})",
-                (project_id, target_key, *reply_ids),
-            )
-        }
+    posts = [
+        _record(row)
+        for row in sorted(
+            [*rows[:BULLETIN_PAGE_SIZE], *replies], key=lambda row: row["sequence"], reverse=True
+        )
+    ]
+    parents = {post["post_id"]: post for post in posts if not post["reply_to"]}
     for post in posts:
         if post["reply_to"]:
-            parent = parents.get(post["reply_to"])
-            post["reply_parent"] = (
-                {key: parent[key] for key in ("post_id", "author", "text")} if parent else None
-            )
+            parent = parents[post["reply_to"]]
+            post["reply_parent"] = {key: parent[key] for key in ("post_id", "author", "text")}
     return {
         "posts": posts,
         "total": total,
@@ -325,6 +327,11 @@ def _post(
         connection.execute(
             "DELETE FROM bulletin_posts WHERE project_id=? AND target_key=? AND sequence NOT IN (SELECT sequence FROM bulletin_posts WHERE project_id=? AND target_key=? ORDER BY sequence DESC LIMIT ?)",
             (project_id, target_key, project_id, target_key, BULLETIN_POSTS_PER_TARGET_MAX),
+        )
+        # Retention keeps whole threads: a reply leaves with its parent.
+        connection.execute(
+            "DELETE FROM bulletin_posts WHERE project_id=? AND target_key=? AND reply_to IS NOT NULL AND reply_to NOT IN (SELECT post_id FROM bulletin_posts WHERE project_id=? AND target_key=?)",
+            (project_id, target_key, project_id, target_key),
         )
         connection.execute(
             "DELETE FROM bulletin_mention_observations WHERE project_id=? AND target_key=? "

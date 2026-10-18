@@ -370,10 +370,11 @@ class NotificationSender:
                 reason="bulletin_mention",
                 created_at=mention["created_at"],
             )
+            # The channel is its graph target, so the ordinary branch route opens it.
+            branch = mention["target_key"].removeprefix("branch:")
             notification["deep_link"] = (
                 f"#/projects/{quote(project.project_id, safe='')}?view=chats"
-                f"&channel={quote(mention['target_key'], safe=':')}"
-                f"&post={quote(mention['post_id'], safe='')}"
+                + (f"&branch_id={quote(branch, safe='')}" if branch != "main" else "")
             )
             self.store.observe_bulletin_mention(mention["user_id"], notification)
 

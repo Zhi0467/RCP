@@ -163,18 +163,25 @@ def test_old_episode_writer_defaults_enabled_and_lineage_off_refuses(store):
     post(store, "unrelated")
 
 
-def test_reply_projection_keeps_parent_context_across_pages(store, monkeypatch):
+def test_pages_hold_whole_threads_and_retention_drops_replies_with_parent(store, monkeypatch):
     monkeypatch.setattr("rcp.storage.bulletin.BULLETIN_PAGE_SIZE", 1)
     parent = post(store, "parent")
+    newer = post(store, "newer")
     reply = post(store, "reply", reply_to=parent["post_id"])
     page = store.list_bulletin("project", "main")
-    assert [item["post_id"] for item in page["posts"]] == [reply["post_id"]]
-    assert page["posts"][0]["reply_parent"] == {
+    assert [item["post_id"] for item in page["posts"]] == [newer["post_id"]]
+    older = store.list_bulletin("project", "main", cursor=page["next_cursor"])
+    assert [item["post_id"] for item in older["posts"]] == [reply["post_id"], parent["post_id"]]
+    assert older["posts"][1]["reply_count"] == 1
+    assert older["posts"][0]["reply_parent"] == {
         key: parent[key] for key in ("post_id", "author", "text")
     }
+    assert older["next_cursor"] is None
+    monkeypatch.setattr("rcp.storage.bulletin.BULLETIN_POSTS_PER_TARGET_MAX", 2)
+    post(store, "newest")
     with store.connection() as connection:
-        connection.execute("DELETE FROM bulletin_posts WHERE post_id=?", (parent["post_id"],))
-    assert store.list_bulletin("project", "main")["posts"][0]["reply_parent"] is None
+        kept = {row[0] for row in connection.execute("SELECT post_id FROM bulletin_posts")}
+    assert parent["post_id"] not in kept and reply["post_id"] not in kept
 
 
 def other_member(store):

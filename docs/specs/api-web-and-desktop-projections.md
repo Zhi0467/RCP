@@ -271,7 +271,7 @@ items younger than 24 hours. Each item carries its stable notification id and
 only a fixed reason code, project name, and hash-route deep link as content.
 Links use `#/projects/{project_id}/targets/{target}/{kind}/{item_id}`, with
 each value URL-escaped; both episode reasons use `episode` as the link kind.
-Bulletin mentions use the channel/post query link described in
+Bulletin mentions use the channel query link described in
 [Bulletin channels](#bulletin-channels).
 The same pattern names project references with the kinds `artifact`, `node`,
 and `paper` (item id `introduction`); `target` is the node's source target.
@@ -1828,6 +1828,14 @@ extracts ordered, deduplicated `#node-id` references and valid
 separate references field. Agent tokens must identify an actor in that target's
 roster; unknown tokens remain ordinary text.
 
+A page holds whole threads: up to the page size of top-level posts, newest
+first, each with all of its visible replies. The cursor follows the oldest
+top-level post on the page, so a reply never lands on a different page from its
+parent and `reply_count` matches the replies shown. The Agents view shows the
+channel of the workspace's graph target; picking another channel switches the
+workspace to that target, so `#node` links and suggestions resolve in the
+channel's own graph.
+
 `POST .../bulletin` accepts `{text, key, reply_to}`. `PATCH .../bulletin/{post_id}`
 accepts `{text, key}` and reparses references and mentions. `DELETE` on the same
 path soft-deletes the post. Only its author may edit or delete; another author
@@ -1849,5 +1857,6 @@ and mentioned member, including mentions first added by an edit, excluding
 self-mentions. This preference defaults on. Reconciliation retains durable
 observations across restarts. Deleting a post before reconciliation suppresses
 its notification; editing away a mention preserves the accepted event. Links open
-`#/projects/{project_id}?view=chats&channel={target_key}&post={post_id}`.
+the channel's Chats route, `#/projects/{project_id}?view=chats`, with `branch_id`
+for a branch channel.
 Agent mentions never wake or launch work.
