@@ -46,6 +46,16 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Graph Bulletin (v56): fresh, fixture and in-place upgrades.
+        "1214abad987240c394d85b5ba31720bd1f01513d32036d0dac7fd31bb9fbc08e",
+        "372f5fbf681e4f764e40c53d22c07bebbfc3398c106a163c8eb9336e4a322038",
+        "3fe5d5859e43f75d0eae46f90c2c819d8af3fbfa55e284ecd2b87a11f101f497",
+        "81233afeb28f46599b9b40e69288cbb3f0977aae85653169e0ff1befd5aa71e2",
+        "da7b899dc3f6188aeccb21bf051deb0c6f1e2a44393ec3d6339aee87483e8587",
+        "ef4734b3ba84ea263bcd05d7e6700ecfe71bf2f43cfb738f0a627bc928a7e63c",
+        "0ce264f72e5f113dd3cd9ab34a4569f8b5e4c04fd814fa19da3b8065b7d8f73c",
+        "14a8663d3493419a4054ef1952e90e5a14a9d8223979b19428ef11022e466a33",
+        "3f63df54951f198beaae99f988573e18afc3f9c9812bade8eda6d8a3ecfc8c89",
         # Independent graph branches (v55): fresh, fixture and in-place upgrades.
         "4176278fea141b3e334bf43733a20fbd884ace1dac87e78e4c873958bedda8d8",
         "7fcf2c73bf75ec773e1cb720e33efc74eae24953d4bf97345119d5a2c5e15ca9",
