@@ -208,7 +208,12 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
   const looseOf = (question: GraphNode): GraphNode[] => {
     const decisions = outgoing(question.id, "has_decision");
     const blockers = [question, ...decisions].flatMap((node) => outgoing(node.id, "blocked_by"));
-    const anchors = [...decisions, ...blockers];
+    // A Decision that clears one of these Blockers anchors the work it governs too.
+    const anchors = uniqueNodes([
+      ...decisions,
+      ...blockers,
+      ...blockers.flatMap((node) => outgoing(node.id, "requires_decision")),
+    ]);
     const experiments = anchors.flatMap((node) => freeExperimentsByAnchor.get(node.id) ?? []);
     const shown = uniqueNodes([
       ...anchors,

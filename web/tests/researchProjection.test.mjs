@@ -45,6 +45,10 @@ const nodes = [
   node("d/quota", "decision", { status: "open" }),
   node("e/quota-cost", "evidence"),
   node("d/gpu-vendor", "decision", { status: "open" }),
+  node("b/cluster", "blocker", { status: "open" }),
+  node("d/region", "decision", { status: "open" }),
+  node("x/region-bench", "experiment", { status: "completed" }),
+  node("e/region", "evidence"),
   node("orphan", "decision"),
 ];
 const edges = [
@@ -72,6 +76,10 @@ const edges = [
   edge("b/queue", "requires_decision", "d/quota"),
   edge("e/quota-cost", "informs", "d/quota"),
   edge("b/gpu", "requires_decision", "d/gpu-vendor"),
+  edge("q/sub", "blocked_by", "b/cluster"),
+  edge("b/cluster", "requires_decision", "d/region"),
+  edge("x/region-bench", "governed_by", "d/region"),
+  edge("x/region-bench", "produces", "e/region"),
 ];
 
 test("a Hypothesis page gathers its Experiments' inputs and weighs each result", () => {
@@ -108,10 +116,14 @@ test("question pages share Hypotheses and keep work that tests none", () => {
   ]);
   assert.deepEqual(ids(sub.loose), [
     "d/metric",
+    "b/cluster",
+    "d/region",
     "x/probe",
     "e/probe",
     "d/seed-count",
     "b/gpu",
+    "x/region-bench",
+    "e/region",
     "b/seed-budget",
     "d/gpu-vendor",
     "e/survey",
