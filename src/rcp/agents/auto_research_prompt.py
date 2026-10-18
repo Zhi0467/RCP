@@ -104,6 +104,8 @@ def _command_invocations(
             "spawn --key <key> --seat-node <node-id> --instruction-file <filename> "
             "[--provider <provider>] [--model <model>] [--effort <effort>]",
         ),
+        "merge": ("merge --key <key> <branch-id>",),
+        "branch": ("branch --archive <branch-id>",),
         "pause": ("pause --key <key> <worker-id>",),
         "resume": ("resume --key <key> <worker-id>",),
         "stop": ("stop --key <key> <worker-id>",),

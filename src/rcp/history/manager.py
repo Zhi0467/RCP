@@ -287,7 +287,7 @@ class RevisionConflict(ValueError):
 
 
 class BranchMergeAlreadyCommitted(RuntimeError):
-    """The same stable branch head already has an accepted main merge."""
+    """The same stable branch head already has an accepted destination merge."""
 
     def __init__(self, patch: Patch, materialization: MaterializationResult) -> None:
         self.patch = patch
@@ -306,7 +306,7 @@ class BranchMergeAlreadyResolved(RuntimeError):
         self.receipt = receipt
         super().__init__(
             "graph branch merge "
-            f"{receipt.provenance.merge_id} already resolved without a main Patch"
+            f"{receipt.provenance.merge_id} already resolved without a destination Patch"
         )
 
 
@@ -951,8 +951,10 @@ class HistoryManager:
         self,
         branch_id: str,
         merge_id: str,
+        *,
+        destination: GraphTargetRef | None = None,
     ) -> BranchMergeReceipt | None:
-        return self.branch(branch_id).reconcile_merge_receipt(merge_id)
+        return self.branch(branch_id).reconcile_merge_receipt(merge_id, destination=destination)
 
     def current_materialization(self) -> MaterializationResult:
         """Replay current canonical history once and return state plus reports."""
@@ -1022,6 +1024,37 @@ class HistoryManager:
                 # catches up on its next pass without changing that outcome.
                 logging.getLogger(__name__).exception("Accepted transition notification failed")
 
+    def _require_merge_not_delivered(
+        self, patch: Patch, current: MaterializationResult, target: GraphTargetRef
+    ) -> None:
+        provenance = patch.branch_merge
+        if provenance is None:
+            return
+        if provenance.rebased_main_head.target != target:
+            raise ValueError("branch merge Patch names a different destination target")
+        metadata = self.branch(provenance.branch_id, initialize=False).branch_metadata()
+        if provenance.branch_base_head != metadata.effective_parent_head:
+            raise ValueError("branch merge Patch names a different immutable source parent")
+        if provenance.episode_id != metadata.episode_id:
+            raise ValueError("branch merge Patch names a different source episode")
+        matching = [
+            existing
+            for existing in current.patches
+            if existing.admission == "accepted"
+            and existing.branch_merge is not None
+            and existing.branch_merge.merge_id == provenance.merge_id
+            and existing.branch_merge.rebased_main_head.target == target
+        ]
+        if len(matching) > 1:
+            raise ValueError("destination history contains duplicate branch merge provenance")
+        if matching:
+            raise BranchMergeAlreadyCommitted(matching[0], current)
+        from rcp.history.branches import existing_receipt_for_append
+
+        receipt = existing_receipt_for_append(self, current, provenance)
+        if receipt is not None:
+            raise BranchMergeAlreadyResolved(receipt)
+
     def _append_locked(
         self,
         patch: Patch,
@@ -1045,23 +1078,7 @@ class HistoryManager:
         if self.workspace.materialization_repair_required:
             self._repair_materializations_locked()
             current = self.materialize(write_outputs=False)
-        if patch.branch_merge is not None:
-            matching_merges = [
-                existing
-                for existing in current.patches
-                if existing.admission == "accepted"
-                and existing.branch_merge is not None
-                and existing.branch_merge.merge_id == patch.branch_merge.merge_id
-            ]
-            if len(matching_merges) > 1:
-                raise ValueError("main history contains duplicate branch merge provenance")
-            if matching_merges:
-                raise BranchMergeAlreadyCommitted(matching_merges[0], current)
-            from rcp.history.branches import existing_receipt_for_main_append
-
-            receipt = existing_receipt_for_main_append(self, current, patch.branch_merge)
-            if receipt is not None:
-                raise BranchMergeAlreadyResolved(receipt)
+        self._require_merge_not_delivered(patch, current, GraphTargetRef())
         if expected_revision is not None and current.state.revision != expected_revision:
             raise RevisionConflict(
                 f"the graph moved from revision {expected_revision} to "

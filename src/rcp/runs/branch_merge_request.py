@@ -1,16 +1,42 @@
 from __future__ import annotations
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.service import RunRequest
 
 
+class MergeBinding(BaseModel):
+    """The immutable source, destination and dispatcher of a merge admission."""
+
+    model_config = ConfigDict(extra="forbid")
+    source: GraphTargetRef
+    destination: GraphTargetRef
+    source_head: GraphHeadRef
+    dispatcher_episode_id: str | None = None
+    dispatcher_operation_id: str | None = None
+    command_key: str | None = None
+    requires_agent: bool = True
+
+    @model_validator(mode="after")
+    def require_bound_source(self) -> MergeBinding:
+        if self.source.kind != "branch" or self.source_head.target != self.source:
+            raise ValueError("merge_source_binding_invalid")
+        if self.source == self.destination:
+            raise ValueError("merge_destination_is_source")
+        dispatch = (self.dispatcher_episode_id, self.dispatcher_operation_id, self.command_key)
+        if any(dispatch) and not all(dispatch):
+            raise ValueError("merge_dispatcher_binding_incomplete")
+        return self
+
+
 class BranchMergeRunRequest(RunRequest):
-    """Pinned, graph-only request for one human-dispatched branch merge task."""
+    """Pinned, graph-only request for one authorized branch merge task."""
 
     model_config = ConfigDict(extra="forbid")
 
     episode_id: str = Field(min_length=1)
+    merge_binding: MergeBinding | None = None
 
     @model_validator(mode="after")
     def require_dedicated_merge_shape(self) -> BranchMergeRunRequest:

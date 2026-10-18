@@ -2180,7 +2180,7 @@ class AutoResearchStoreMixin(StoreMixinBase):
         rows = connection.execute(
             """
             SELECT run.operation_id, run.status,
-                   COALESCE(invocation.role, 'experiment') AS role,
+                   COALESCE(invocation.role, CASE WHEN run.kind='branch_merge' THEN 'merge' ELSE 'experiment' END) AS role,
                    experiment.ending AS experiment_ending,
                    EXISTS (
                      SELECT 1 FROM graph_runs AS child
@@ -2213,9 +2213,11 @@ class AutoResearchStoreMixin(StoreMixinBase):
             LEFT JOIN auto_research_child_experiments AS route
               ON route.child_episode_id = run.episode_id
             LEFT JOIN episodes AS experiment ON experiment.episode_id = route.child_episode_id
-            WHERE (invocation.episode_id = ? OR route.auto_research_episode_id = ?)
+            WHERE (invocation.episode_id = ? OR route.auto_research_episode_id = ?
+                   OR (run.episode_id = ? AND run.kind = 'branch_merge'
+                       AND json_extract(run.request_json, '$.merge_binding.dispatcher_episode_id') = ?))
             """,
-            (episode_id, episode_id),
+            (episode_id, episode_id, episode_id, episode_id),
         ).fetchall()
         for row in rows:
             if row["has_recovery_child"] or row["recovery_abandoned"] or row["terminal_failure"]:
@@ -2229,6 +2231,7 @@ class AutoResearchStoreMixin(StoreMixinBase):
                     and row["recovery_status"] not in {"blocked", "exhausted"}
                 )
                 or (row["role"] == "experiment" and row["experiment_ending"] is None)
+                or (row["role"] == "merge" and status == "interrupted")
             ):
                 return False
         return True

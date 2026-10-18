@@ -21,6 +21,8 @@ def auto_research_allowed_verbs(
         "apply",
         "status",
         "spawn",
+        "merge",
+        "branch",
         "pause",
         "resume",
         "stop",

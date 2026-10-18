@@ -260,6 +260,7 @@ class BranchHistoryManager:
         self.require_writable(current.state)
         self.ensure_layout()
         current = self._repair_materializations_locked(current)
+        self.parent._require_merge_not_delivered(patch, current, self.graph_target)
         if expected_revision is not None and current.state.revision != expected_revision:
             raise RevisionConflict(
                 f"the branch graph moved from revision {expected_revision} to "
@@ -363,6 +364,7 @@ class BranchHistoryManager:
                 return [], current
             for patch in patches:
                 self._require_branch_patch(patch)
+                self.parent._require_merge_not_delivered(patch, current, self.graph_target)
             revision = self._next_revision()
             prepared, report, _candidate = self.parent._prepare_transition_locked(
                 current,
@@ -605,14 +607,14 @@ class BranchHistoryManager:
             return receipts
 
     def validated_merge_receipts(self) -> list[BranchMergeReceipt]:
-        """Read every retained receipt and verify it against branch and main replay."""
+        """Read every retained receipt and verify it against branch and destination replay."""
 
         if self.workspace.remote:
             with self.read_view() as reader:
                 return reader.validated_merge_receipts()
         with self._process_lock:
             branch = self.history_engine.materialization(self.graph_target, refresh=False)
-            main = self.history_engine.materialization(GraphTargetRef(), refresh=False)
+            main = self._merge_destination().materialize(write_outputs=False)
             self.require_writable(branch.state)
             self.parent.require_writable(main.state)
             return [
@@ -625,8 +627,8 @@ class BranchHistoryManager:
         with self.workspace.transaction(), self.parent._append_lock():
             self._metadata = self._read_metadata()
             self.ensure_layout()
-            if receipt.provenance.branch_base_head != self._metadata.base_head:
-                raise ValueError("branch merge receipt names a different immutable main base")
+            if receipt.provenance.branch_base_head != self._metadata.effective_parent_head:
+                raise ValueError("branch merge receipt names a different immutable parent head")
             current = self.materialize(write_outputs=False)
             current = self._repair_materializations_locked(current)
             if receipt.provenance.branch_head != self._head_at_revision(
@@ -634,12 +636,14 @@ class BranchHistoryManager:
                 receipt.provenance.branch_head.revision,
             ):
                 raise ValueError("branch merge receipt does not name an exact branch head")
-            main = self.parent.materialize(write_outputs=False)
+            main = self._merge_destination().materialize(write_outputs=False)
             self.parent.require_writable(main.state)
             self._validate_merge_receipt_source(receipt, current, main)
             derived = [
                 item
-                for item in _main_merge_receipts(main).get(self.branch_id, ())
+                for item in _target_merge_receipts(
+                    main, self._metadata.effective_parent_head.target
+                ).get(self.branch_id, ())
                 if item.provenance.merge_id == receipt.provenance.merge_id
             ]
             if derived:
@@ -670,7 +674,7 @@ class BranchHistoryManager:
                     self.workspace.refresh()
                     self._metadata = self._read_metadata()
                     current = self.materialize(write_outputs=False)
-                    main = self.parent.materialize(write_outputs=False)
+                    main = self._merge_destination().materialize(write_outputs=False)
                     winner = self._read_validated_merge_receipt(target, current, main)
                     if winner == receipt or _same_no_change_source(winner, receipt):
                         return winner
@@ -706,14 +710,18 @@ class BranchHistoryManager:
         self._validate_merge_receipt_source(receipt, branch, main)
         derived = [
             item
-            for item in _main_merge_receipts(main).get(self.branch_id, ())
+            for item in _target_merge_receipts(
+                main, self._metadata.effective_parent_head.target
+            ).get(self.branch_id, ())
             if item.provenance.merge_id == receipt.provenance.merge_id
         ]
         if receipt.outcome == "committed":
             if derived != [receipt]:
-                raise ValueError("committed branch merge receipt disagrees with main provenance")
+                raise ValueError(
+                    "committed branch merge receipt disagrees with destination provenance"
+                )
         elif derived:
-            raise ValueError("no-change branch merge receipt conflicts with main provenance")
+            raise ValueError("no-change branch merge receipt conflicts with destination provenance")
         elif require_live_authority:
             self.parent._require_no_change_merge_authority(receipt)
 
@@ -725,12 +733,23 @@ class BranchHistoryManager:
     ) -> None:
         self.require_writable(branch.state)
         self.parent.require_writable(main.state)
-        self.parent.head_ref(main)
+        self._merge_destination().head_ref(main)
         exact_metadata = self._metadata.model_copy(update={"head": self.head_ref(branch)})
-        main_heads = _main_heads_by_revision(main)
+        main_heads = _target_heads_by_revision(main, self._metadata.effective_parent_head.target)
         _validate_summary_receipt(self, branch, exact_metadata, receipt, main_heads)
 
-    def reconcile_merge_receipt(self, merge_id: str) -> BranchMergeReceipt | None:
+    def _merge_destination(self) -> HistoryManager | BranchHistoryManager:
+        target = self._metadata.effective_parent_head.target
+        if target.kind == "main":
+            return self.parent
+        assert target.branch_id is not None
+        return self.parent.branch(target.branch_id, initialize=False)
+
+    def reconcile_merge_receipt(
+        self, merge_id: str, *, destination: GraphTargetRef | None = None
+    ) -> BranchMergeReceipt | None:
+        if destination is not None and destination != self._metadata.effective_parent_head.target:
+            raise ValueError("merge recovery names a different source parent target")
         if not re.fullmatch(r"[a-f0-9]{64}", merge_id):
             raise ValueError("branch merge id must be a lowercase SHA-256 digest")
         existing = self.merges_dir / f"{merge_id}.json"
@@ -738,28 +757,33 @@ class BranchHistoryManager:
             with self.workspace.transaction(), self.parent._append_lock():
                 self._metadata = self._read_metadata()
                 branch = self.materialize(write_outputs=False)
-                main = self.parent.materialize(write_outputs=False)
+                main = self._merge_destination().materialize(write_outputs=False)
                 return self._read_validated_merge_receipt(existing, branch, main)
-        main = self.parent.current_materialization()
+        main = self._merge_destination().current_materialization()
         matches = [
             patch
             for patch in main.patches
             if patch.admission == "accepted"
             and patch.branch_merge is not None
             and patch.branch_merge.merge_id == merge_id
+            and patch.branch_merge.rebased_main_head.target
+            == self._metadata.effective_parent_head.target
         ]
         if not matches:
             return None
         if len(matches) != 1:
-            raise ValueError("main history contains duplicate branch merge provenance")
+            raise ValueError("destination history contains duplicate branch merge provenance")
         patch = matches[0]
         assert patch.branch_merge is not None
         if patch.transition is None or patch.authorized_by is None:
-            raise ValueError("committed main branch merge lacks its transition or authorizer")
+            raise ValueError(
+                "committed destination branch merge lacks its transition or authorizer"
+            )
         receipt = BranchMergeReceipt(
             outcome="committed",
             provenance=patch.branch_merge,
             result_main_head=GraphHeadRef(
+                target=self._metadata.effective_parent_head.target,
                 revision=patch.revision,
                 transition_id=patch.transition.transition_id,
             ),
@@ -771,8 +795,11 @@ class BranchHistoryManager:
     def _require_branch_patch(self, patch: Patch) -> None:
         if patch.kind == "identity" or patch.project_identity is not None:
             raise ValueError("project identity patches target main only")
-        if patch.branch_merge is not None:
-            raise ValueError("a branch merge Patch targets main, never its source branch")
+        if (
+            patch.branch_merge is not None
+            and patch.branch_merge.rebased_main_head.target != self.graph_target
+        ):
+            raise ValueError("a branch merge Patch must name its exact destination")
         if patch.processed_cursors:
             raise ValueError("branch graph patches cannot advance provider-log cursors")
         if any(isinstance(operation, SetProjectTruthScopeOperation) for operation in patch.ops):
@@ -971,15 +998,16 @@ def _same_no_change_source(
         and left.episode_id == right.episode_id
         and left.branch_base_head == right.branch_base_head
         and left.branch_head == right.branch_head
+        and left.rebased_main_head.target == right.rebased_main_head.target
     )
 
 
-def existing_receipt_for_main_append(
+def existing_receipt_for_append(
     parent: HistoryManager,
     main: MaterializationResult,
     provenance: BranchMergeProvenance,
 ) -> BranchMergeReceipt | None:
-    """Read the no-change winner while the caller holds the main append transaction."""
+    """Read the no-change winner while the caller holds the destination append transaction."""
 
     root = _safe_branch_root(parent.root, provenance.branch_id, create=False)
     target = root / "merges" / f"{provenance.merge_id}.json"
@@ -994,13 +1022,13 @@ def existing_receipt_for_main_append(
         parent,
         metadata,
         allow_historical_home=True,
-        materialization=main,
+        materialization=main if provenance.rebased_main_head.target.kind == "main" else None,
     )
     branch = BranchHistoryManager(parent, metadata)
     branch_result = branch.materialize(write_outputs=False)
     receipt = branch._read_validated_merge_receipt(target, branch_result, main)
     if receipt.outcome != "no_change":
-        raise ValueError("committed branch merge receipt has no accepted main provenance")
+        raise ValueError("committed branch merge receipt has no accepted destination provenance")
     return receipt
 
 
@@ -1050,8 +1078,14 @@ def read_branch_snapshots(
         ]
     generations = parent.history_engine.snapshots(targets, refresh=False)
     main = generations["main"].result
-    main_heads = _main_heads_by_revision(main)
-    main_receipts = _main_merge_receipts(main)
+    destination_heads = {
+        key: _target_heads_by_revision(generation.result, generation.target)
+        for key, generation in generations.items()
+    }
+    destination_receipts = {
+        key: _target_merge_receipts(generation.result, generation.target)
+        for key, generation in generations.items()
+    }
     with parent._process_lock:
         for branch_id, content in metadata_contents.items():
             path = _safe_branch_root(parent.root, branch_id, create=False) / "branch.json"
@@ -1065,8 +1099,8 @@ def read_branch_snapshots(
                 expected_episode_id=episode_id,
                 expected_project_id=project_id,
                 main=main,
-                main_heads=main_heads,
-                main_receipts=main_receipts.get(branch_id, ()),
+                destination_heads=destination_heads,
+                destination_receipts=destination_receipts,
                 materialization=generations[
                     GraphTargetRef(kind="branch", branch_id=branch_id).key
                 ].result,
@@ -1084,8 +1118,8 @@ def _read_branch_snapshot(
     expected_episode_id: str | None,
     expected_project_id: str,
     main: MaterializationResult,
-    main_heads: dict[int, GraphHeadRef],
-    main_receipts: tuple[BranchMergeReceipt, ...],
+    destination_heads: dict[str, dict[int, GraphHeadRef]],
+    destination_receipts: dict[str, dict[str, tuple[BranchMergeReceipt, ...]]],
     materialization: MaterializationResult,
 ) -> BranchReadSnapshot | None:
     root = _safe_branch_root(parent.root, branch_id, create=False)
@@ -1110,7 +1144,7 @@ def _read_branch_snapshot(
         materialization=main,
     )
 
-    exact_base = main_heads.get(metadata.base_head.revision)
+    exact_base = destination_heads["main"].get(metadata.base_head.revision)
     if exact_base != metadata.base_head:
         raise ValueError("graph branch immutable main base is not an exact accepted main head")
 
@@ -1119,60 +1153,76 @@ def _read_branch_snapshot(
     replayed = materialization
     exact_metadata = metadata.model_copy(update={"head": branch.head_ref(replayed)})
 
+    destination = metadata.effective_parent_head.target
+    heads = destination_heads[destination.key]
+    delivered = destination_receipts[destination.key].get(branch_id, ())
     receipts_by_id: dict[str, BranchMergeReceipt] = {}
     for receipt in branch.merge_receipts():
-        _validate_summary_receipt(branch, replayed, exact_metadata, receipt, main_heads)
+        _validate_summary_receipt(branch, replayed, exact_metadata, receipt, heads)
         receipts_by_id[receipt.provenance.merge_id] = receipt
-    for receipt in main_receipts:
-        _validate_summary_receipt(branch, replayed, exact_metadata, receipt, main_heads)
+    for receipt in delivered:
+        _validate_summary_receipt(branch, replayed, exact_metadata, receipt, heads)
         merge_id = receipt.provenance.merge_id
         persisted = receipts_by_id.get(merge_id)
         if persisted is not None and persisted != receipt:
-            raise ValueError("branch merge receipt disagrees with accepted main provenance")
+            raise ValueError("branch merge receipt disagrees with accepted destination provenance")
         receipts_by_id[merge_id] = receipt
 
-    derived_ids = {receipt.provenance.merge_id for receipt in main_receipts}
+    derived_ids = {receipt.provenance.merge_id for receipt in delivered}
     if any(
         receipt.outcome == "committed" and merge_id not in derived_ids
         for merge_id, receipt in receipts_by_id.items()
     ):
-        raise ValueError("committed branch merge receipt has no accepted main provenance")
+        raise ValueError("committed branch merge receipt has no accepted destination provenance")
     receipts = tuple(sorted(receipts_by_id.values(), key=lambda item: item.created_at))
     return BranchReadSnapshot(metadata=exact_metadata, receipts=receipts, state=replayed.state)
 
 
-def _main_heads_by_revision(main: MaterializationResult) -> dict[int, GraphHeadRef]:
+def _target_heads_by_revision(
+    main: MaterializationResult, target: GraphTargetRef | None = None
+) -> dict[int, GraphHeadRef]:
+    target = target or GraphTargetRef()
     transition_id: str | None = None
-    heads = {0: GraphHeadRef(revision=0)}
+    heads = {0: GraphHeadRef(target=target, revision=0)}
     for patch in main.patches:
         if patch.admission == "accepted" and patch.transition is not None:
             transition_id = patch.transition.transition_id
         heads[patch.revision] = GraphHeadRef(
+            target=target,
             revision=patch.revision,
             transition_id=transition_id,
         )
     return heads
 
 
-def _main_merge_receipts(
+def _target_merge_receipts(
     main: MaterializationResult,
+    target: GraphTargetRef | None = None,
 ) -> dict[str, tuple[BranchMergeReceipt, ...]]:
+    target = target or GraphTargetRef()
     by_branch: dict[str, list[BranchMergeReceipt]] = {}
     seen_ids: set[str] = set()
     for patch in main.patches:
         provenance = patch.branch_merge
-        if patch.admission != "accepted" or provenance is None:
+        if (
+            patch.admission != "accepted"
+            or provenance is None
+            or provenance.rebased_main_head.target != target
+        ):
             continue
         if provenance.merge_id in seen_ids:
-            raise ValueError("main history contains duplicate branch merge provenance")
+            raise ValueError("destination history contains duplicate branch merge provenance")
         seen_ids.add(provenance.merge_id)
         if patch.transition is None or patch.authorized_by is None:
-            raise ValueError("committed main branch merge lacks its transition or authorizer")
+            raise ValueError(
+                "committed destination branch merge lacks its transition or authorizer"
+            )
         by_branch.setdefault(provenance.branch_id, []).append(
             BranchMergeReceipt(
                 outcome="committed",
                 provenance=provenance,
                 result_main_head=GraphHeadRef(
+                    target=target,
                     revision=patch.revision,
                     transition_id=patch.transition.transition_id,
                 ),
@@ -1195,8 +1245,10 @@ def _validate_summary_receipt(
 ) -> None:
     branch._require_receipt_identity(receipt)
     provenance = receipt.provenance
-    if provenance.branch_base_head != metadata.base_head:
-        raise ValueError("branch merge receipt names a different immutable main base")
+    if provenance.branch_base_head != metadata.effective_parent_head:
+        raise ValueError("branch merge receipt names a different immutable parent head")
+    if provenance.rebased_main_head.target != metadata.effective_parent_head.target:
+        raise ValueError("branch merge receipt names a different destination target")
     receipt_metadata = metadata.model_copy(update={"head": provenance.branch_head})
     if provenance.merge_id != _branch_merge_id(receipt_metadata):
         raise ValueError("branch merge receipt id does not match its exact branch lineage")
@@ -1205,8 +1257,10 @@ def _validate_summary_receipt(
         provenance.branch_head.revision,
     ):
         raise ValueError("branch merge receipt does not name an exact branch head")
+    if main_heads.get(provenance.rebased_main_head.revision) != provenance.rebased_main_head:
+        raise ValueError("branch merge receipt does not name an exact rebased destination head")
     if main_heads.get(receipt.result_main_head.revision) != receipt.result_main_head:
-        raise ValueError("branch merge receipt does not name an exact main head")
+        raise ValueError("branch merge receipt does not name an exact destination head")
 
 
 def _branch_merge_id(metadata: GraphBranchMetadata) -> str:
@@ -1217,7 +1271,7 @@ def _branch_merge_id(metadata: GraphBranchMetadata) -> str:
         "episode_id": metadata.episode_id,
         "project_id": metadata.project_id,
         "branch_kind": metadata.kind,
-        "branch_base_head": metadata.base_head.model_dump(mode="json"),
+        "branch_base_head": metadata.effective_parent_head.model_dump(mode="json"),
         "branch_head": metadata.head.model_dump(mode="json"),
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)

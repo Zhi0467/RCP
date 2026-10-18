@@ -924,6 +924,32 @@ def create_app(
                     return None, failure.message, failure.correctable
                 return result, None, False
 
+            command_loop = asyncio.get_running_loop()
+
+            def merge_owned_branch(context, arguments, command_key):
+                from rcp.runs.branch_merge_admission import start_owned_branch_merge
+
+                try:
+                    result = asyncio.run_coroutine_threadsafe(
+                        start_owned_branch_merge(
+                            background_tasks,
+                            service,
+                            episode=context.episode,
+                            dispatcher_operation_id=context.task.operation_id,
+                            branch_id=arguments.branch_id,
+                            command_key=command_key,
+                        ),
+                        command_loop,
+                    ).result()
+                except ValueError as exc:
+                    code = str(exc)
+                    if not code.isascii() or not code.isidentifier():
+                        raise
+                    return AutoResearchCommandEffectResult(
+                        status="invalid", message=code, result={"code": code}
+                    )
+                return AutoResearchCommandEffectResult(result=result)
+
             effects = auto_research_command_effects(
                 store=store,
                 background=background_tasks,
@@ -940,6 +966,7 @@ def create_app(
                 graph_state=service.history.state,
                 execution_host=execution_machine.host,
                 apply_patch=apply_auto_research_patch,
+                merge=merge_owned_branch,
                 on_graph_applied=lambda: evaluate_graph_wake_boundary(
                     project_id,
                     None,
@@ -1334,6 +1361,16 @@ def create_app(
             try:
                 if isinstance(request, AutoResearchRunRequest):
                     episode_reconciler.settle_auto_research_task(request, execution)
+                elif (
+                    isinstance(request, BranchMergeRunRequest) and request.merge_binding is not None
+                ):
+                    owner_id = request.merge_binding.dispatcher_episode_id
+                    if owner_id is not None:
+                        reconcile_auto_research_episode(
+                            owner_id,
+                            source="fork merge settlement",
+                            operation_id=execution.operation_id,
+                        )
             finally:
                 if member_removal_coordinator is not None:
                     member_removal_coordinator.reconcile_pending()
@@ -1814,10 +1851,37 @@ def create_app(
                 await terminals.start()
                 sync_coordinator.start()
                 background_tasks.recover_at_startup()
+                from rcp.runs.branch_merge_admission import start_owned_branch_merge
                 from rcp.runs.episodes.merge import reconcile_episode_merge
 
                 for project in store.projects():
                     for episode in store.episodes(project.project_id, limit=None):
+                        for task in store.episode_tasks(episode.episode_id):
+                            if task.kind != "branch_merge" or task.status not in {
+                                "queued",
+                                "interrupted",
+                                "failed",
+                            }:
+                                continue
+                            merge = BranchMergeRunRequest.model_validate(task.request).merge_binding
+                            if merge is None or merge.dispatcher_episode_id is None:
+                                continue
+                            try:
+                                service = await asyncio.to_thread(
+                                    catalog.open_execution, project.project_id
+                                )
+                                await start_owned_branch_merge(
+                                    background_tasks,
+                                    service,
+                                    episode=episode,
+                                    dispatcher_operation_id=merge.dispatcher_operation_id or "",
+                                    branch_id=merge.source.branch_id or "",
+                                    command_key=merge.command_key or "",
+                                )
+                            except Exception as exc:
+                                logger.warning(
+                                    "Could not recover fork merge %s: %s", task.operation_id, exc
+                                )
                         state = store.episode_isolation_state(
                             project.project_id, episode.episode_id
                         )

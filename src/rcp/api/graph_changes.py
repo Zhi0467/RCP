@@ -170,10 +170,7 @@ def active_merge(store: AppStore, project_id: str, target: GraphTargetRef) -> bo
         task.kind == "branch_merge"
         and task.graph_target == target
         and task.status in ACTIVE_AGENT_TASK_STATUSES
-        for task in store.episode_tasks(
-            store.branch_owner(project_id, target.branch_id or "") or ""
-        )
-        if task.project_id == project_id
+        for task in store.unsettled_graph_target_tasks(project_id, target)
     )
 
 

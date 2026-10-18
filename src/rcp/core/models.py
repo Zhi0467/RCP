@@ -1578,25 +1578,25 @@ class GraphBranchMetadata(BaseModel):
 
 
 class BranchMergeProvenance(BaseModel):
-    """Strict source/rebase identity stamped on one main-target merge Patch."""
+    """Strict source/rebase identity stamped on one destination merge Patch."""
 
     model_config = ConfigDict(extra="forbid")
 
     schema_generation: Literal[1] = 1
     merge_id: str = Field(pattern=r"^[a-f0-9]{64}$")
     branch_id: str
-    episode_id: str
+    episode_id: str | None
     branch_base_head: GraphHeadRef
     branch_head: GraphHeadRef
     rebased_main_head: GraphHeadRef
     merge_task_id: str = Field(min_length=1)
 
-    _validate_uuid4 = field_validator("branch_id", "episode_id")(_canonical_uuid4)
+    _validate_uuid4 = field_validator("branch_id")(_canonical_uuid4)
 
     @model_validator(mode="after")
     def source_and_rebase_heads_are_coherent(self) -> BranchMergeProvenance:
-        if self.branch_base_head.target.kind != "main":
-            raise ValueError("branch merge provenance requires a main branch base")
+        if self.episode_id is not None:
+            _canonical_uuid4(self.episode_id)
         if (
             self.branch_head.target.kind != "branch"
             or self.branch_head.target.branch_id != self.branch_id
@@ -1604,15 +1604,17 @@ class BranchMergeProvenance(BaseModel):
             raise ValueError("branch merge provenance names a different branch head")
         if self.branch_head.revision < self.branch_base_head.revision:
             raise ValueError("branch merge provenance has a head before its base")
-        if self.rebased_main_head.target.kind != "main":
-            raise ValueError("branch merge provenance must rebase onto main")
+        if self.rebased_main_head.target != self.branch_base_head.target:
+            raise ValueError("branch merge provenance must rebase onto its source parent")
+        if self.rebased_main_head.target == self.branch_head.target:
+            raise ValueError("a branch cannot merge into itself")
         if self.rebased_main_head.revision < self.branch_base_head.revision:
             raise ValueError("branch merge provenance cannot rebase before its branch base")
         return self
 
 
 class BranchMergeReceipt(BaseModel):
-    """Append-only acknowledgement that one branch head reached main exactly once."""
+    """Append-only acknowledgement that one branch head reached its destination exactly once."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -1625,15 +1627,19 @@ class BranchMergeReceipt(BaseModel):
 
     @model_validator(mode="after")
     def committed_head_is_coherent(self) -> BranchMergeReceipt:
-        if self.result_main_head.target.kind != "main":
-            raise ValueError("a branch merge receipt must name a resulting main head")
+        if self.result_main_head.target != self.provenance.rebased_main_head.target:
+            raise ValueError("a branch merge receipt must retain its destination target")
         if self.outcome == "committed":
             if self.result_main_head.transition_id is None:
                 raise ValueError("a committed branch merge requires its transition identity")
             if self.result_main_head.revision != self.provenance.rebased_main_head.revision + 1:
-                raise ValueError("a committed branch merge must advance main exactly once")
+                raise ValueError(
+                    "a committed branch merge must advance its destination exactly once"
+                )
         elif self.result_main_head != self.provenance.rebased_main_head:
-            raise ValueError("a no-change branch merge must retain the exact rebased main head")
+            raise ValueError(
+                "a no-change branch merge must retain the exact rebased destination head"
+            )
         return self
 
 
@@ -1782,8 +1788,6 @@ class Patch(BaseModel):
             raise ValueError("a branch merge must be an attributed orchestrator Work Patch")
         if self.task_id != provenance.merge_task_id:
             raise ValueError("branch merge provenance does not match its direct task")
-        if self.episode_id != provenance.episode_id:
-            raise ValueError("branch merge provenance does not match its episode")
         if self.transition is not None and self.transition.pre_head != provenance.rebased_main_head:
             raise ValueError("branch merge transition does not start from its rebased main head")
         return self

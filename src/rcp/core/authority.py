@@ -1112,8 +1112,8 @@ class WriteAuthority:
             raise ValueError(f"unknown agent task {operation_id!r}") from exc
         if resolved.operation_id != operation_id or resolved.project_id != project_id:
             raise ValueError("agent authority resolver returned another task or project")
-        if resolved.apply_target != GraphTargetRef():
-            raise ValueError("a branch merge receipt requires main-target Apply authority")
+        if resolved.apply_target != receipt.provenance.rebased_main_head.target:
+            raise ValueError("a branch merge receipt requires its recorded destination authority")
         dispatch = resolved.dispatch_authority
         if dispatch is None:
             raise ValueError("branch merge receipt task has no dispatch authority binding")
@@ -1127,7 +1127,7 @@ class WriteAuthority:
             repositories_read=[],
             profile="orchestrator",
             task_id=operation_id,
-            episode_id=receipt.provenance.episode_id,
+            episode_id=resolved.episode_id,
             authorized_by=receipt.authorized_by,
             ops=[],
         )
@@ -1138,8 +1138,6 @@ class WriteAuthority:
         )
         if bound.profile != "orchestrator":
             raise ValueError("a branch merge receipt requires orchestrator authority")
-        if resolved.episode_id != receipt.provenance.episode_id:
-            raise ValueError("branch merge receipt episode does not match its task authority")
         if resolved.authorized_by is None:
             raise ValueError("branch merge receipt task has no authorizer snapshot")
         if self._canonical_authorizer(resolved.authorized_by) != receipt.authorized_by:

@@ -28,6 +28,7 @@ from rcp.runs.branch_merge import (
     stream_code_merge_run,
 )
 from rcp.runs.branch_merge_context import load_branch_merge_context
+from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.episodes.merge import (
     complete_graph_merge,
     episode_code_merge,
@@ -68,16 +69,26 @@ async def stream_branch_merge_task(
     task: AgentTaskRecord,
     execution: AgentTaskExecution,
 ) -> AsyncGenerator[str, None]:
-    """Run one human-dispatched branch merge through its contained scratch stage."""
+    """Run one authorized branch merge through its contained scratch stage."""
 
+    binding = request.merge_binding if isinstance(request, BranchMergeRunRequest) else None
+    source = binding.source if binding else episode.graph_target
+    destination = binding.destination if binding else GraphTargetRef()
+    history = getattr(service.history, "parent", service.history)
+    destination_history = (
+        history.branch(destination.branch_id or "", expected_project_id=task.project_id)
+        if destination.kind == "branch"
+        else history
+    )
     if (
         task.kind != "branch_merge"
         or task.episode_id != episode.episode_id
         or task.project_id != episode.project_id
-        or task.graph_target != episode.graph_target
+        or task.graph_target != source
         # A code-only owner has no graph branch; its merge carries code alone.
         or (
-            episode.graph_target.kind == "branch"
+            binding is None
+            and episode.graph_target.kind == "branch"
             and execution.store.branch_owner(task.project_id, episode.graph_target.branch_id or "")
             != episode.episode_id
         )
@@ -102,9 +113,10 @@ async def stream_branch_merge_task(
     staged_validator = None
     completed = False
     try:
+        stage_id = f"{task.operation_id}-attempt-{task.attempt}" if binding else task.operation_id
         if machine.host:
             remote_stage = RemoteRunStage(machine.host).open(
-                task.operation_id,
+                stage_id,
                 protected_roots=_protected_run_stage_roots(execution.store, machine.host),
             )
             assert remote_stage.root is not None
@@ -113,7 +125,7 @@ async def stream_branch_merge_task(
             stage_root = str(remote_stage.root)
         else:
             parent = _swept_stage_root(data_dir, store=execution.store)
-            local_stage = parent / _safe_stage_name(task.operation_id)
+            local_stage = parent / _safe_stage_name(stage_id)
             local_stage.mkdir(mode=0o700, parents=True, exist_ok=False)
             workspace = local_stage / "workspace"
             workspace.mkdir(mode=0o700)
@@ -127,7 +139,7 @@ async def stream_branch_merge_task(
         )
         # With code to merge, the task gets chat Integrate's local-merge scope for the
         # episode's one worktree; otherwise it admits no repository.
-        code = episode_code_merge(service, execution.store, episode)
+        code = None if binding else episode_code_merge(service, execution.store, episode)
         write_scope = resolve_project_write_scope(
             manifest=service.manifest,
             project_id=task.project_id,
@@ -178,7 +190,7 @@ async def stream_branch_merge_task(
                     if _event(frame).event != "done":
                         yield frame
 
-        if episode.graph_target.kind == "main":
+        if source.kind == "main":
             # A code-only owner has no graph side: one code turn completes the merge.
             if code is None:
                 raise ValueError("The code merge task has no code to merge.")
@@ -189,22 +201,29 @@ async def stream_branch_merge_task(
             yield _sse(AgentEvent(event="done"))
             return
 
-        branch = service.history.branch(
-            episode.graph_target.branch_id or "",
-            expected_episode_id=episode.episode_id,
+        branch = history.branch(
+            source.branch_id or "",
+            expected_episode_id=execution.store.branch_owner(
+                task.project_id, source.branch_id or ""
+            ),
             expected_project_id=task.project_id,
         )
 
         def load_context() -> BranchMergeContext:
+            nonlocal binding
             context = load_branch_merge_context(
                 service,
                 execution.store,
                 episode,
                 operation_id=task.operation_id,
                 authorized_by=task.authorized_by,
+                merge_binding=binding,
             )
             if context.run_truth_scope != request.run_truth_scope:
                 raise ValueError("Project truth membership changed after merge dispatch.")
+            if binding and not binding.requires_agent and build_deterministic_merge_ops(context)[1]:
+                upgraded = execution.store.reserve_branch_merge_invocation(task.operation_id)
+                binding = BranchMergeRunRequest.model_validate(upgraded.request).merge_binding
             return context
 
         initial_context = load_context()
@@ -220,7 +239,8 @@ async def stream_branch_merge_task(
             # A restart after a crash between the receipt and the episode's own record.
             state = execution.store.episode_isolation_state(task.project_id, episode.episode_id)
             if (
-                state
+                binding is None
+                and state
                 and state.merge_attempt
                 and state.merge_attempt.graph_task_id == task.operation_id
             ):
@@ -230,7 +250,7 @@ async def stream_branch_merge_task(
                 AgentEvent(
                     event="answer",
                     text=(
-                        "This branch head was already merged into main revision "
+                        f"This branch head was already merged into {destination.key} revision "
                         f"{existing_receipt.result_main_head.revision}."
                     ),
                 )
@@ -250,7 +270,7 @@ async def stream_branch_merge_task(
             code_block = code.landed_section(write_scope)
             code_landed = True
 
-        graph_read_scope = GraphReadScope(project_id=task.project_id, target=GraphTargetRef())
+        graph_read_scope = GraphReadScope(project_id=task.project_id, target=destination)
         staged_validator = stage_patch_validation_mailbox(
             local_stage=workspace if remote_stage is None else None,
             remote_stage=remote_stage,
@@ -273,6 +293,13 @@ async def stream_branch_merge_task(
                 ),
             )
         )
+
+        def verify_delivery() -> None:
+            if binding:
+                execution.store.agent_task_authority(task.project_id, task.operation_id)
+            else:
+                verify_episode_merge_code(execution.store, episode)
+
         outcome = BranchMergeRunOutcome()
         held_done: str | None = None
         try:
@@ -281,8 +308,8 @@ async def stream_branch_merge_task(
                     request,
                     launcher,
                     load_context=load_context,
-                    before_commit=lambda: verify_episode_merge_code(execution.store, episode),
-                    main_history=service.history,
+                    before_commit=verify_delivery,
+                    main_history=destination_history,
                     stage=stage,
                     write_scope=write_scope,
                     validator_command=staged_validator.client_command(
@@ -323,7 +350,8 @@ async def stream_branch_merge_task(
             "branch_merge_outcome",
             receipt.model_dump(mode="json"),
         )
-        complete_graph_merge(service, execution.store, episode)
+        if binding is None:
+            complete_graph_merge(service, execution.store, episode)
         commit_prepared_graph_observation(
             execution,
             service,
@@ -375,7 +403,13 @@ def _validate_candidate(
                 candidate_revision=context.main_head.revision,
             )
         prepared = prepare_branch_merge_with_history(
-            service.history,
+            (
+                getattr(service.history, "parent", service.history).branch(
+                    context.main_head.target.branch_id or "", initialize=False
+                )
+                if context.main_head.target.kind == "branch"
+                else service.history
+            ),
             patch,
             expected_main_head=context.main_head,
             context=context,
@@ -404,7 +438,11 @@ def _apply_receipt_to_execution(
 ) -> None:
     if receipt.outcome != "committed":
         return
-    result = service.history.current_materialization()
+    history = getattr(service.history, "parent", service.history)
+    destination = receipt.result_main_head.target
+    if destination.kind == "branch":
+        history = history.branch(destination.branch_id or "", initialize=False)
+    result = history.current_materialization()
     if result.state.revision < receipt.result_main_head.revision:
         raise StateUnavailable("The committed branch merge main state is not yet coherent.")
     matching = [

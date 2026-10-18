@@ -42,6 +42,8 @@ CommandVerb = Literal[
     "apply",
     "status",
     "spawn",
+    "merge",
+    "branch",
     "pause",
     "resume",
     "stop",
@@ -60,6 +62,8 @@ CommandStatus = Literal["ok", "invalid", "unavailable"]
 MutatingCommandVerb = Literal[
     "apply",
     "spawn",
+    "merge",
+    "branch",
     "pause",
     "resume",
     "stop",
@@ -79,6 +83,8 @@ MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
     {
         "apply",
         "spawn",
+        "merge",
+        "branch",
         "pause",
         "resume",
         "stop",
@@ -120,6 +126,24 @@ class ApplyArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     patch_file: Literal["patch.json"]
+
+
+class BranchArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    branch_id: str = Field(min_length=1, max_length=200)
+
+    @field_validator("branch_id")
+    @classmethod
+    def nonblank_branch(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("branch id must not be blank")
+        return value
+
+
+class BranchArchiveArguments(BranchArguments):
+    action: Literal["archive"]
 
 
 class StatusArguments(BaseModel):
@@ -486,6 +510,16 @@ class GraphLogCommandRequest(_CommandRequest):
     arguments: GraphLogArguments
 
 
+class MergeCommandRequest(_CommandRequest):
+    verb: Literal["merge"]
+    arguments: BranchArguments
+
+
+class BranchCommandRequest(_CommandRequest):
+    verb: Literal["branch"]
+    arguments: BranchArchiveArguments
+
+
 class SpawnCommandRequest(_CommandRequest):
     verb: Literal["spawn"]
     arguments: SpawnArguments
@@ -588,6 +622,8 @@ CommandRequest: TypeAlias = Annotated[
     | StatusCommandRequest
     | GraphDiffCommandRequest
     | GraphLogCommandRequest
+    | MergeCommandRequest
+    | BranchCommandRequest
     | SpawnCommandRequest
     | PauseCommandRequest
     | ResumeCommandRequest
