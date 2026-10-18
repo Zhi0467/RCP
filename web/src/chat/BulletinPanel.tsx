@@ -223,11 +223,15 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
       reply_to: reply?.post_id ?? null,
     });
     const parent = reply?.post_id ?? null;
+    const submitted = draft;
     void run(async () => {
       await api(url, { method: "POST", body });
       if (parent) setOpenThreads((open) => new Set(open).add(parent));
-      setDraft("");
-      setReply(null);
+      // A retry after the member revised the draft keeps the newer text unsent.
+      if ((input.current?.value ?? submitted) === submitted) {
+        setDraft("");
+        setReply(null);
+      }
       setKey(crypto.randomUUID());
       // A reply stays on its thread's page; a new post lands on the newest page.
       if (!parent) setCursor(null);
