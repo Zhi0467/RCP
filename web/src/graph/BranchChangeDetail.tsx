@@ -81,7 +81,8 @@ export function ChangedFields({
     .filter(
       (key) =>
         !INTERNAL_FIELDS.has(key) ||
-        mainDiffers(key) ||
+        // Against a branch removal every internal field differs; only content explains it.
+        (after !== null && mainDiffers(key)) ||
         mergePaths.some((path) => path.field_path === key),
     )
     .filter(

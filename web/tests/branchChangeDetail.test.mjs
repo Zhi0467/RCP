@@ -98,6 +98,16 @@ test("a created node the merge must decide shows the competing main values", () 
   assert.match(html, /class="branch-change-value main-now"><span>[^<]*<\/span> main/);
 });
 
+test("a removal against destination edits shows content fields, not internals", () => {
+  const node = { id: "n", type: "t", created_rev: 1, title: "base" };
+  const html = render(ChangedFields, {
+    before: node,
+    after: null,
+    mergePaths: [{ field_path: "$", main: { ...node, title: "edited" }, conflict: true }],
+  });
+  assert.equal((html.match(/class="branch-change-field"/g) ?? []).length, 1);
+});
+
 test("created edges and removed entities retain field values", () => {
   for (const props of [
     { before: null, after: { relation: "supports" } },
