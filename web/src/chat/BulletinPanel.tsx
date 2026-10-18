@@ -240,9 +240,13 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
       text: bulletinEncodeMentions(editing.text, candidates).trimEnd(),
       key: editing.key,
     });
+    const submitted = editing;
     void run(async () => {
       await api(target, { method: "PATCH", body });
-      setEditing(null);
+      // A retry after the member revised the edit keeps the newer text open.
+      setEditing((current) =>
+        current?.postId === submitted.postId && current.text === submitted.text ? null : current,
+      );
       reload();
     });
   };
