@@ -2554,3 +2554,78 @@ async def test_fork_commands_round_trip_through_broker(tmp_path):
     assert seen[0] == ("merge", "merge-key", {"branch_id": "fork"})
     assert seen[1][0] == "branch" and seen[1][1]
     assert seen[1][2] == {"branch_id": "fork", "action": "archive"}
+
+
+@pytest.mark.asyncio
+async def test_merge_answers_transport_preserves_exact_bytes_and_authenticated_turn(tmp_path):
+    content = b'{"answers": {}, "cards": {}}\r\n'
+    path = tmp_path / "answers.json"
+    path.write_bytes(content)
+    staged = stage_command_mailbox(
+        local_stage=tmp_path,
+        remote_stage=None,
+        episode_id=None,
+        task_id="merge-task",
+        turn_id="merge-turn",
+        timeout_seconds=2,
+    )
+    received = []
+
+    def check(request, identity):
+        assert request.verb == "merge_answers"
+        assert request.arguments.action == "check"
+        assert identity.task_id == "merge-task"
+        assert identity.turn_id == "merge-turn"
+        received.append(request.arguments.answers.encode("utf-8"))
+        return CommandResponse(request_id=request.request_id, status="ok")
+
+    stop = asyncio.Event()
+    server = asyncio.create_task(
+        serve_command_mailbox(staged=staged, handler=check, stop=stop, poll_seconds=0.01)
+    )
+    try:
+        code, output = await _run_client(staged, "merge-answers", "check", str(path))
+        assert code == 0
+        assert json.loads(output)["status"] == "ok"
+        assert received == [content]
+    finally:
+        stop.set()
+        await server
+        staged.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_file", ["oversized", "serialized_oversized", "outside", "symlink"]
+)
+async def test_merge_answers_rejects_unbounded_or_nonstage_files(tmp_path, invalid_file):
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
+    path = workspace / "answers.json"
+    if invalid_file == "oversized":
+        with path.open("wb") as stream:
+            stream.truncate(COMMAND_MAILBOX_MAX_REQUEST_BYTES + 1)
+    elif invalid_file == "serialized_oversized":
+        path.write_text('"' * (COMMAND_MAILBOX_MAX_REQUEST_BYTES // 2))
+    else:
+        outside = tmp_path / "outside.json"
+        outside.write_text('{"answers": {}, "cards": {}}')
+        if invalid_file == "symlink":
+            path.symlink_to(outside)
+        else:
+            path = outside
+    staged = stage_command_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        episode_id=None,
+        task_id="merge-task",
+        turn_id="merge-turn",
+        timeout_seconds=2,
+    )
+    try:
+        code, output = await _run_client(staged, "merge-answers", "check", str(path))
+        assert code == 1
+        assert json.loads(output)["status"] == "invalid"
+        assert not list(workspace.glob("*.request.json"))
+    finally:
+        staged.cleanup()

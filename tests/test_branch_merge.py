@@ -5,51 +5,56 @@ import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Literal, get_args, get_origin
 
 import pytest
 
 from rcp.agents import AgentEvent
-from rcp.agents.continuation_prompt import SECTIONS
+from rcp.agents.command_mailbox import CommandTurnIdentity
+from rcp.agents.command_protocol import MergeAnswersCommandRequest
 from rcp.agents.graph_read_scope import GraphReadScope
-from rcp.agents.graph_rules import graph_rules
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
-from rcp.config import Manifest
-from rcp.core.materialize import prepare_patch_bookkeeping
+from rcp.core.authority import CapturedChangeAuthority
 from rcp.core.models import (
     AuthorizedHuman,
-    Blocker,
-    Edge,
-    Experiment,
+    BranchMergeReceipt,
     GraphBranchMetadata,
     GraphState,
-    Proposal,
+    Patch,
     ResearchQuestion,
 )
+from rcp.core.operations import UpdateNodesOperation
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
-from rcp.core.transitions import GraphTransitionManager
-from rcp.core.validation import ValidationContext, ValidationReport, validate_patch
 from rcp.history import RevisionConflict
+from rcp.runs import branch_merge as merge_module
+from rcp.runs import merge_contract
 from rcp.runs.branch_merge import (
-    BranchMergeCandidateProblem,
     BranchMergeContext,
     BranchMergeEligibility,
     BranchMergeRunOutcome,
-    BranchMergeSourceChanged,
     BranchMergeStage,
-    _changed_graph_rules,
-    branch_merge_can_resolve_without_patch,
-    branch_merge_id,
-    build_semantic_delta,
-    classify_refreshed_context,
-    detect_branch_merge_conflicts,
-    parse_branch_merge_candidate,
-    prepare_branch_merge_with_history,
+    branch_merge_provenance,
     require_graph_only_merge_scope,
-    semantic_delta_is_subsumed,
+    reusable_merge_answers,
     stream_branch_merge_run,
 )
+from rcp.runs.merge_contract import (
+    FieldConflict,
+    MergeAnswers,
+    MergeAnswersRejected,
+    MergeDiagnostic,
+    MergeHiddenClash,
+    MergePlan,
+    MergePreparationContract,
+    NodeGroupConflict,
+    NodeGroupPromotion,
+    PresentValue,
+    ReviewCard,
+    ReviewGroup,
+)
+from rcp.runs.patch_validator import MergeAnswersCheck
+from rcp.runs.shared import _sse
 from rcp.service import RunRequest
+from rcp.transport import StateUnavailable
 
 
 def _head(
@@ -154,27 +159,6 @@ def _context(
     )
 
 
-def _candidate_json(*, repositories_read: list[str] | None = None) -> str:
-    return json.dumps(
-        {
-            "summary": "Carry the branch motivation onto main.",
-            "ops": [
-                {
-                    "op": "update_nodes",
-                    "nodes": [
-                        {
-                            "id": "rq/merge",
-                            "changes": {"motivation": "Branch motivation"},
-                        }
-                    ],
-                }
-            ],
-            "repositories_read": repositories_read or [],
-            "change_summary": ["Merged the branch motivation."],
-        }
-    )
-
-
 def _local_scope(stage: BranchMergeStage, context: BranchMergeContext) -> ProjectWriteScope:
     assert stage.local_stage is not None
     return ProjectWriteScope.create(
@@ -199,383 +183,6 @@ def _branch_source_ref(*, repository: str = "repo", record: str = "record-merge"
         "timestamp": "2026-08-12T00:00:00Z",
         "excerpt": "The branch task recorded this source.",
     }
-
-
-def _sourced_blocker_context(*, refs: list[dict]) -> BranchMergeContext:
-    """A branch that added one sourced Blocker main has never seen."""
-
-    blocker = Blocker.model_validate(
-        {
-            "id": "blk/branch-only",
-            "type": "blocker",
-            "title": "Reflector arm is absent",
-            "description": "The textual arm has no reflector.",
-            "created_rev": 3,
-            "updated_rev": 3,
-            "source_refs": refs,
-        }
-    )
-    context = _context()
-    branch_graph = context.branch_graph.model_copy(
-        update={"nodes": {**context.branch_graph.nodes, blocker.id: blocker}}
-    )
-    return context.model_copy(update={"branch_graph": branch_graph})
-
-
-def _sourced_blocker_candidate(*, refs: list[dict]) -> str:
-    return json.dumps(
-        {
-            "summary": "Carry the branch Blocker onto main.",
-            "ops": [
-                {
-                    "op": "create_nodes",
-                    "nodes": [
-                        {
-                            "id": "blk/branch-only",
-                            "type": "blocker",
-                            "title": "Reflector arm is absent",
-                            "description": "The textual arm has no reflector.",
-                            "source_refs": refs,
-                        }
-                    ],
-                }
-            ],
-            "repositories_read": [],
-            "change_summary": ["Carried the branch Blocker."],
-        }
-    )
-
-
-def test_merge_carries_branch_provenance_without_declaring_a_repository_read() -> None:
-    """A graph-only merge reads no repository, so carrying provenance must still admit.
-
-    Source refs stay bound to the run truth scope; nothing requires the carrying
-    patch to have read the repository that the branch task already read.
-    """
-
-    recorded = _branch_source_ref()
-    context = _sourced_blocker_context(refs=[recorded])
-    candidate = parse_branch_merge_candidate(_sourced_blocker_candidate(refs=[recorded]), context)
-
-    report = validate_patch(
-        context.main_graph,
-        candidate.model_copy(update={"revision": context.main_graph.revision + 1}),
-        ValidationContext(["repo"]),
-    )
-
-    assert candidate.repositories_read == []
-    assert not report.rejected, [message.message for message in report.messages]
-
-
-def test_merge_still_rejects_a_carried_ref_outside_the_run_truth_scope() -> None:
-    """Removing the read record keeps the scope boundary RCP itself supplies."""
-
-    foreign = _branch_source_ref(repository="unscoped-repo")
-    context = _sourced_blocker_context(refs=[foreign])
-    candidate = parse_branch_merge_candidate(_sourced_blocker_candidate(refs=[foreign]), context)
-
-    report = validate_patch(
-        context.main_graph,
-        candidate.model_copy(update={"revision": context.main_graph.revision + 1}),
-        ValidationContext(["repo", "unscoped-repo"]),
-    )
-
-    assert any(message.code == "source-outside-run-scope" for message in report.messages), [
-        message.message for message in report.messages
-    ]
-
-
-def test_semantic_delta_is_typed_and_ignores_revision_bookkeeping() -> None:
-    branch_id = str(uuid.uuid4())
-    base_head = _head(2, marker="b")
-    branch_head = _head(3, branch_id=branch_id, marker="c")
-    bookkeeping_only = build_semantic_delta(
-        _state(2),
-        _state(3, question=_question(updated_rev=3)),
-        base_head=base_head,
-        branch_head=branch_head,
-    )
-    changed = build_semantic_delta(
-        _state(2),
-        _state(3, question=_question(motivation="Branch motivation", updated_rev=3)),
-        base_head=base_head,
-        branch_head=branch_head,
-    )
-
-    assert bookkeeping_only.is_empty
-    assert len(changed.nodes) == 1
-    assert changed.nodes[0].change == "updated"
-    assert changed.nodes[0].node_id == "rq/merge"
-    assert changed.nodes[0].before is not None
-    assert changed.nodes[0].after is not None
-    assert changed.nodes[0].after.motivation == "Branch motivation"
-
-
-def test_three_way_conflicts_are_field_specific_and_never_auto_resolve() -> None:
-    base = _state(2)
-    branch = _state(3, question=_question(motivation="Branch", updated_rev=3))
-    compatible_main = _state(4, question=_question(status="answered", updated_rev=4))
-    conflicting_main = _state(4, question=_question(motivation="Main", updated_rev=4))
-
-    assert detect_branch_merge_conflicts(base, branch, compatible_main) == []
-    conflicts = detect_branch_merge_conflicts(base, branch, conflicting_main)
-
-    assert len(conflicts) == 1
-    assert conflicts[0].code == "both_changed"
-    assert conflicts[0].collection == "nodes"
-    assert conflicts[0].entity_id == "rq/merge"
-    assert conflicts[0].field_path == "motivation"
-    assert conflicts[0].branch == "Branch"
-    assert conflicts[0].main == "Main"
-
-
-@pytest.mark.parametrize(
-    ("base_fields", "branch_fields", "main_fields"),
-    [
-        ({}, {"novelty": "branch"}, {"novelty": "main"}),
-        ({"novelty": "base"}, {}, {"novelty": "main"}),
-    ],
-)
-def test_dictionary_key_conflicts_can_resolve_to_main_or_a_third_value(
-    base_fields: dict[str, str],
-    branch_fields: dict[str, str],
-    main_fields: dict[str, str],
-) -> None:
-    template = _context()
-    base_question = _question(updated_rev=2).model_copy(update={"extension_fields": base_fields})
-    branch_question = _question(updated_rev=3).model_copy(
-        update={"extension_fields": branch_fields}
-    )
-    main_question = _question(updated_rev=4).model_copy(update={"extension_fields": main_fields})
-    context = BranchMergeContext.create(
-        merge_task_id=template.merge_task_id,
-        authorized_by=template.authorized_by,
-        metadata=template.metadata,
-        eligibility=template.eligibility,
-        base_graph=_state(2, question=base_question),
-        branch_graph=_state(3, question=branch_question),
-        main_head=template.main_head,
-        main_graph=_state(4, question=main_question),
-        run_truth_scope=template.run_truth_scope,
-    )
-
-    assert [item.field_path for item in context.deterministic_conflicts] == [
-        "extension_fields.novelty"
-    ]
-    assert branch_merge_can_resolve_without_patch(context)
-
-    candidate = parse_branch_merge_candidate(
-        json.dumps(
-            {
-                "summary": "Resolve the extension conflict to a third value.",
-                "ops": [
-                    {
-                        "op": "update_nodes",
-                        "nodes": [
-                            {
-                                "id": "rq/merge",
-                                "changes": {"extension_fields": {"novelty": "third"}},
-                            }
-                        ],
-                    }
-                ],
-                "repositories_read": [],
-            }
-        ),
-        context,
-    )
-    prepared = prepare_branch_merge_with_history(
-        _RejectingHistory(context, reject_count=0),
-        candidate,
-        expected_main_head=context.main_head,
-        context=context,
-    )
-
-    assert prepared.projection.graph.nodes["rq/merge"].extension_fields == {"novelty": "third"}
-
-
-def test_effective_delta_accepts_compatible_main_changes_and_ignores_proposal_producer_ids() -> (
-    None
-):
-    context = _context(
-        main_question=_question(
-            motivation="Branch motivation",
-            status="answered",
-            updated_rev=4,
-        )
-    )
-    assert semantic_delta_is_subsumed(context.semantic_delta, context.main_graph)
-
-    proposal = Proposal.model_validate(
-        {
-            "id": "prop/merge",
-            "title": "Merge proposal",
-            "card": {},
-            "ops": [
-                {
-                    "op": "update_nodes",
-                    "intent": "content_change",
-                    "nodes": [
-                        {
-                            "id": "rq/merge",
-                            "changes": {"motivation": "Branch motivation"},
-                        }
-                    ],
-                }
-            ],
-            "created_by_operation_id": "branch-producer",
-        }
-    )
-    main_proposal = proposal.model_copy(update={"created_by_operation_id": "main-producer"})
-    base = _state(2)
-    branch = _state(3).model_copy(update={"proposals": {proposal.id: proposal}})
-    main = _state(4).model_copy(update={"proposals": {main_proposal.id: main_proposal}})
-    delta = build_semantic_delta(
-        base,
-        branch,
-        base_head=_head(2, marker="b"),
-        branch_head=_head(3, branch_id=str(uuid.uuid4()), marker="c"),
-    )
-
-    assert len(delta.proposals) == 1
-    assert semantic_delta_is_subsumed(delta, main)
-    assert detect_branch_merge_conflicts(base, branch, main) == []
-
-
-def _filing_stamp_variants() -> list[tuple[str, object]]:
-    """Literal and integer values a stored pending Proposal may hold.
-
-    A merge files the Proposal again on main under current stamps
-    (`prepare_patch_bookkeeping`). This covers a versioned Literal stamp such as
-    `dependency_rule` without listing it; string, optional, and list fields are
-    not varied. Resolution fields and status are fixed for a pending Proposal.
-    """
-
-    variants: list[tuple[str, object]] = []
-    for name, field in Proposal.model_fields.items():
-        if name == "status" or name.startswith("resolved_"):
-            continue
-        if get_origin(field.annotation) is Literal:
-            variants.extend((name, value) for value in get_args(field.annotation))
-        elif field.annotation in (int, "int"):
-            variants.extend((name, value) for value in (2, 3))
-    return variants
-
-
-@pytest.mark.parametrize(("field", "value"), _filing_stamp_variants())
-def test_merge_carries_a_source_proposal_whatever_its_filing_stamps(
-    field: str, value: object
-) -> None:
-    proposal = Proposal.model_validate(
-        {
-            "id": "prop/merge",
-            "title": "Merge proposal",
-            "card": {},
-            "ops": [
-                {
-                    "op": "update_nodes",
-                    "intent": "content_change",
-                    "nodes": [{"id": "rq/merge", "changes": {"motivation": "Branch motivation"}}],
-                }
-            ],
-            "related_node_ids": ["rq/merge"],
-            "base_rev": 2,
-            field: value,
-        }
-    )
-    template = _context()
-    context = BranchMergeContext.create(
-        merge_task_id=template.merge_task_id,
-        authorized_by=template.authorized_by,
-        metadata=template.metadata,
-        eligibility=template.eligibility,
-        base_graph=_state(2),
-        branch_graph=_state(3, question=_question(updated_rev=2)).model_copy(
-            update={"proposals": {proposal.id: proposal}}
-        ),
-        main_head=template.main_head,
-        main_graph=template.main_graph,
-        run_truth_scope=template.run_truth_scope,
-    )
-    candidate = parse_branch_merge_candidate(
-        json.dumps(
-            {
-                "summary": "Carry the pending branch Proposal.",
-                "ops": [
-                    {
-                        "op": "create_proposals",
-                        "proposals": [
-                            proposal.model_dump(mode="json", include={"id", "title", "card", "ops"})
-                        ],
-                    }
-                ],
-                "repositories_read": [],
-            }
-        ),
-        context,
-    )
-
-    prepared = prepare_branch_merge_with_history(
-        _RejectingHistory(context, reject_count=0),
-        candidate,
-        expected_main_head=context.main_head,
-        context=context,
-    )
-
-    assert prepared.projection.graph.proposals[proposal.id].status == "pending"
-
-
-def test_merge_identity_is_branch_lineage_only_and_provenance_is_exact() -> None:
-    context = _context(main_revision=4)
-    moved = _context(
-        main_revision=5,
-        branch_id=context.metadata.branch_id,
-        task_id=context.merge_task_id,
-    )
-    # Rebuild with the exact original authorizer so the branch metadata itself is identical.
-    moved = BranchMergeContext.create(
-        merge_task_id=context.merge_task_id,
-        authorized_by=context.authorized_by,
-        metadata=context.metadata,
-        eligibility=context.eligibility,
-        base_graph=context.base_graph,
-        branch_graph=context.branch_graph,
-        main_head=moved.main_head,
-        main_graph=moved.main_graph,
-        run_truth_scope=context.run_truth_scope,
-    )
-
-    assert branch_merge_id(context.metadata) == branch_merge_id(moved.metadata)
-    assert classify_refreshed_context(context, moved) == "main_moved"
-
-    candidate = parse_branch_merge_candidate(_candidate_json(), moved)
-    assert candidate.kind == "work"
-    assert candidate.profile == "orchestrator"
-    assert candidate.authorized_by == context.authorized_by
-    assert candidate.authorized_by != context.metadata.authorized_by
-    assert candidate.task_id == context.merge_task_id
-    assert candidate.episode_id == context.metadata.episode_id
-    assert candidate.repositories_read == []
-    assert candidate.branch_merge is not None
-    assert candidate.branch_merge.merge_id == branch_merge_id(context.metadata)
-    assert candidate.branch_merge.branch_base_head == context.metadata.base_head
-    assert candidate.branch_merge.branch_head == context.metadata.head
-    assert candidate.branch_merge.rebased_main_head == moved.main_head
-
-
-def test_candidate_rejects_bookkeeping_repository_claims_and_stale_branch_context() -> None:
-    context = _context()
-    payload = json.loads(_candidate_json())
-    payload["branch_merge"] = {"merge_id": "f" * 64}
-
-    with pytest.raises(BranchMergeCandidateProblem):
-        parse_branch_merge_candidate(json.dumps(payload), context)
-    with pytest.raises(BranchMergeCandidateProblem, match="repositories_read"):
-        parse_branch_merge_candidate(_candidate_json(repositories_read=["repo"]), context)
-
-    changed_branch = _context(task_id=context.merge_task_id)
-    with pytest.raises(BranchMergeSourceChanged):
-        classify_refreshed_context(context, changed_branch)
 
 
 def test_graph_only_scope_has_no_repository_roots(tmp_path: Path) -> None:
@@ -638,79 +245,6 @@ class _FakeLauncher:
         yield AgentEvent(event="done")
 
 
-class _MovingMainHistory:
-    manifest: Manifest
-
-    def __init__(
-        self,
-        first: BranchMergeContext,
-        second: BranchMergeContext,
-    ) -> None:
-        self.first = first
-        self.second = second
-        self.current = first
-        self.move_once = True
-
-    def validate_candidate(self, patch, **_kwargs):
-        prepared = GraphTransitionManager().prepare_validated(
-            self.current.main_graph,
-            [patch],
-            pre_head=self.current.main_head,
-        )
-        return prepared.patch, ValidationReport(), self.current.main_graph
-
-    def append(self, patch, **_kwargs):
-        if self.move_once:
-            self.move_once = False
-            self.current = self.second
-            raise RevisionConflict("main moved during append")
-        prepared = GraphTransitionManager().prepare_validated(
-            self.current.main_graph,
-            [patch],
-            pre_head=self.current.main_head,
-        )
-        return prepared.patch, SimpleNamespace(state=prepared.projection.graph)
-
-
-class _RejectingHistory:
-    manifest: Manifest
-
-    def __init__(self, context: BranchMergeContext, *, reject_count: int) -> None:
-        self.context = context
-        self.reject_count = reject_count
-        self.validation_count = 0
-        self.append_count = 0
-
-    def validate_candidate(self, patch, **_kwargs):
-        self.validation_count += 1
-        if self.validation_count <= self.reject_count:
-            report = ValidationReport()
-            report.reject(
-                "transition-conflict",
-                f"Candidate conflict {self.validation_count}.",
-                self.context.main_head.revision + 1,
-                operation_index=0,
-                rule_id="merge.test",
-                failed_invariant="test semantic conflict",
-            )
-            return patch, report, self.context.main_graph
-        prepared = GraphTransitionManager().prepare_validated(
-            self.context.main_graph,
-            [prepare_patch_bookkeeping(self.context.main_graph, patch)],
-            pre_head=self.context.main_head,
-        )
-        return prepared.patch, ValidationReport(), self.context.main_graph
-
-    def append(self, patch, **_kwargs):
-        self.append_count += 1
-        prepared = GraphTransitionManager().prepare_validated(
-            self.context.main_graph,
-            [patch],
-            pre_head=self.context.main_head,
-        )
-        return prepared.patch, SimpleNamespace(state=prepared.projection.graph)
-
-
 class _SequenceLauncher(_FakeLauncher):
     def __init__(self, patch_texts: list[str]) -> None:
         super().__init__(patch_texts[0])
@@ -736,431 +270,465 @@ class _SequenceLauncher(_FakeLauncher):
         yield AgentEvent(event="done")
 
 
-@pytest.mark.parametrize("touch_then_revert", [False, True])
-def test_candidate_conformance_rejects_out_of_delta_writes_even_when_reverted(
-    touch_then_revert: bool,
-) -> None:
-    context = _context()
-    payload = json.loads(_candidate_json())
-    if touch_then_revert:
-        payload["ops"] = [
-            {
-                "op": "update_nodes",
-                "nodes": [{"id": "rq/merge", "changes": {"title": "Temporary title"}}],
-            },
-            {
-                "op": "update_nodes",
-                "nodes": [{"id": "rq/merge", "changes": {"title": "Question"}}],
-            },
-            *payload["ops"],
-        ]
-    else:
-        payload["ops"][0]["nodes"][0]["changes"]["title"] = "Unrelated rewrite"
-    candidate = parse_branch_merge_candidate(json.dumps(payload), context)
-    history = _RejectingHistory(context, reject_count=0)
+class _Run:
+    """Exercise the real run/check boundary with frozen planner/preparer fakes."""
 
-    with pytest.raises(BranchMergeCandidateProblem):
-        prepare_branch_merge_with_history(
-            history,
-            candidate,
-            expected_main_head=context.main_head,
-            context=context,
+    def __init__(self, tmp_path, monkeypatch, *, conflicts=(), nonempty=True):
+        self.context = _context()
+        self.initial = self.context
+        self.plan = _plan(self.context, conflicts=conflicts)
+        self.stage = BranchMergeStage(
+            local_stage=tmp_path / "merge-stage",
+            remote_stage=None,
+            workspace=tmp_path / "merge-stage" / "workspace",
+        )
+        self.stage.workspace.mkdir(parents=True)
+        self.history = SimpleNamespace()
+        self.checks = MergeAnswersCheck(
+            plan=self.plan,
+            history=self.history,
+            task_id=self.plan.merge_task_id,
+            turn_id="initial",
+        )
+        self.outcome = BranchMergeRunOutcome()
+        self.launches = []
+        self.preparations = []
+        self.commits = []
+        self.nonempty = nonempty
+        self.behavior = self.answer
+        self.prepare_behavior = None
+        self.commit_behavior = None
+        self.next_plan = None
+        self.before_commit = None
+        self.reconcile = None
+        monkeypatch.setattr(merge_contract, "prepare_merge_candidate", self.prepare)
+        monkeypatch.setattr(merge_contract, "plan_merge", lambda context: self.next_plan)
+        monkeypatch.setattr(merge_module, "merge_planning_context", lambda *args, **kwargs: args[0])
+        monkeypatch.setattr(merge_module, "commit_branch_merge_with_history", self.commit)
+        monkeypatch.setattr(merge_module, "branch_merge_receipt_from_committed_patch", self.receipt)
+        monkeypatch.setattr(merge_module, "_provider_turn", self.provider)
+
+    def receipt(self, patch):
+        return BranchMergeReceipt(
+            outcome="committed",
+            provenance=patch.branch_merge,
+            authorized_by=patch.authorized_by,
+            result_main_head=_head(patch.branch_merge.rebased_main_head.revision + 1, marker="f"),
         )
 
-
-def test_candidate_conformance_rejects_declared_same_value_write_outside_delta() -> None:
-    template = _context()
-    unrelated = _question(title="Unrelated", updated_rev=2).model_copy(
-        update={"id": "rq/unrelated"}
-    )
-    context = BranchMergeContext.create(
-        merge_task_id=template.merge_task_id,
-        authorized_by=template.authorized_by,
-        metadata=template.metadata,
-        eligibility=template.eligibility,
-        base_graph=_state(2, extra=unrelated),
-        branch_graph=_state(
-            3,
-            question=_question(motivation="Branch motivation", updated_rev=3),
-            extra=unrelated.model_copy(update={"updated_rev": 3}),
-        ),
-        main_head=template.main_head,
-        main_graph=_state(
-            4,
-            extra=unrelated.model_copy(update={"updated_rev": 4}),
-        ),
-        run_truth_scope=template.run_truth_scope,
-    )
-    payload = json.loads(_candidate_json())
-    payload["ops"][0]["nodes"].append({"id": "rq/unrelated", "changes": {"title": "Unrelated"}})
-    candidate = parse_branch_merge_candidate(json.dumps(payload), context)
-
-    with pytest.raises(BranchMergeCandidateProblem):
-        prepare_branch_merge_with_history(
-            _RejectingHistory(context, reject_count=0),
-            candidate,
-            expected_main_head=context.main_head,
-            context=context,
-        )
-
-
-def test_candidate_conformance_includes_generated_guidance_closure() -> None:
-    template = _context()
-    blocker = Blocker(
-        id="blk/capacity",
-        type="blocker",
-        title="Capacity",
-        description="Capacity is unavailable.",
-        status="open",
-        created_rev=2,
-        updated_rev=2,
-    )
-    experiment = Experiment(
-        id="exp/guidance",
-        type="experiment",
-        title="Guided experiment",
-        objective="Exercise transition closure.",
-        current_summary="Waiting for capacity.",
-        next_action="Resolve the blocker.",
-        created_rev=2,
-        updated_rev=2,
-    )
-    edge = Edge(
-        id="edge/blocked",
-        source=experiment.id,
-        target=blocker.id,
-        relation="blocked_by",
-        layer="action",
-        created_rev=2,
-    )
-    base = GraphState(
-        revision=2,
-        project_truth_scope=["repo"],
-        nodes={blocker.id: blocker, experiment.id: experiment},
-        edges={edge.id: edge},
-    )
-    branch = base.model_copy(
-        update={
-            "revision": 3,
-            "nodes": {
-                blocker.id: blocker.model_copy(update={"status": "resolved", "updated_rev": 3}),
-                experiment.id: experiment.model_copy(
-                    update={
-                        "current_summary_stale": True,
-                        "next_action_stale": True,
-                        "updated_rev": 3,
-                    }
-                ),
-            },
-        }
-    )
-    context = BranchMergeContext.create(
-        merge_task_id=template.merge_task_id,
-        authorized_by=template.authorized_by,
-        metadata=template.metadata,
-        eligibility=template.eligibility,
-        base_graph=base,
-        branch_graph=branch,
-        main_head=template.main_head,
-        main_graph=base.model_copy(update={"revision": template.main_head.revision}),
-        run_truth_scope=template.run_truth_scope,
-    )
-    candidate = parse_branch_merge_candidate(
-        json.dumps(
-            {
-                "summary": "Resolve the branch blocker on main.",
+    def prepare(self, plan, answers, history):
+        self.preparations.append((plan, answers, history))
+        if self.prepare_behavior is not None:
+            self.prepare_behavior(plan, answers)
+        patch = plan.captured_authority.patch_template.model_copy(
+            update={
                 "ops": [
-                    {
-                        "op": "update_nodes",
-                        "nodes": [{"id": blocker.id, "changes": {"status": "resolved"}}],
-                    }
-                ],
-                "repositories_read": [],
+                    UpdateNodesOperation(
+                        op="update_nodes",
+                        nodes=[
+                            {
+                                "id": "rq/merge",
+                                "changes": {"motivation": "resolved"},
+                            }
+                        ],
+                    )
+                ]
+                if self.nonempty
+                else [],
             }
+        )
+        return SimpleNamespace(patch=patch)
+
+    def commit(self, history, patch, **kwargs):
+        self.commits.append((patch, kwargs))
+        if self.commit_behavior is not None:
+            self.commit_behavior()
+        return SimpleNamespace(patch=patch)
+
+    def answer(self):
+        answers = merge_contract.MergeAnswers(
+            answers={
+                conflict.conflict_id: {"kind": "branch"} for conflict in self.checks.plan.conflicts
+            },
+            cards={},
+        )
+        content = answers.model_dump_json().encode()
+        (self.stage.workspace / "answers.json").write_bytes(content)
+        return self.check(content)
+
+    def check(self, content):
+        return self.checks(
+            MergeAnswersCommandRequest(
+                mailbox_id="a" * 32,
+                request_id=f"{len(self.launches):032x}",
+                credential="b" * 64,
+                verb="merge_answers",
+                arguments={"action": "check", "answers": content.decode()},
+            ),
+            CommandTurnIdentity(
+                episode_id=None,
+                task_id=self.plan.merge_task_id,
+                turn_id=self.checks.turn_id,
+                authority="broker",
+            ),
+        )
+
+    def provider(self, launcher, request, prompt, **kwargs):
+        self.launches.append((prompt, kwargs))
+        outcome = SimpleNamespace(
+            session_id="merge-session", completed=True, failed=False, paused=False
+        )
+
+        async def events():
+            self.behavior()
+            yield _sse(AgentEvent(event="session", session_id=outcome.session_id))
+
+        return outcome, events()
+
+    async def run(self, **kwargs):
+        return [
+            frame
+            async for frame in stream_branch_merge_run(
+                RunRequest(provider="codex", run_on="laptop"),
+                object(),
+                load_context=lambda: self.context,
+                main_history=self.history,
+                stage=self.stage,
+                write_scope=_local_scope(self.stage, self.initial),
+                validator_command="client merge-answers check answers.json",
+                checks=self.checks,
+                outcome=self.outcome,
+                graph_read_scope=GraphReadScope(project_id="project-one", target=GraphTargetRef()),
+                history_client="client",
+                before_commit=self.before_commit,
+                reconcile_receipt=self.reconcile,
+                **kwargs,
+            )
+        ]
+
+    def move(self, *, changed_conflict=False):
+        self.context = BranchMergeContext.create(
+            merge_task_id=self.initial.merge_task_id,
+            authorized_by=self.initial.authorized_by,
+            metadata=self.initial.metadata,
+            eligibility=self.initial.eligibility,
+            base_graph=self.initial.base_graph,
+            branch_graph=self.initial.branch_graph,
+            main_head=_head(5, marker="e"),
+            main_graph=_state(5),
+            run_truth_scope=["repo"],
+        )
+        conflicts = self.plan.conflicts
+        if changed_conflict:
+            conflicts = tuple(
+                item.model_copy(update={"destination": PresentValue(value="new")})
+                for item in conflicts
+            )
+        self.next_plan = _plan(
+            self.context,
+            conflicts=conflicts,
+            created_at=self.plan.captured_authority.patch_template.created_at,
+        )
+
+
+def _field():
+    return FieldConflict(
+        conflict_id="rq/merge:motivation",
+        collection="nodes",
+        entity_id="rq/merge",
+        field_name="motivation",
+        base=PresentValue(value="base"),
+        branch=PresentValue(value="branch"),
+        destination=PresentValue(value="destination"),
+        allowed_answer_kinds=("branch", "destination", "merged"),
+    )
+
+
+def _plan(context, *, conflicts=(), groups=(), created_at=None):
+    provenance = branch_merge_provenance(context)
+    patch = Patch(
+        kind="work",
+        author="agent",
+        summary="Merge",
+        ops=[],
+        profile="orchestrator",
+        task_id=context.merge_task_id,
+        source_operation_id=context.merge_task_id,
+        authorized_by=context.authorized_by,
+        branch_merge=provenance,
+        run_truth_scope=["repo"],
+        **({"created_at": created_at} if created_at else {}),
+    )
+    return MergePlan(
+        context_id=context.context_id,
+        captured_authority=CapturedChangeAuthority(
+            project_id=context.metadata.project_id,
+            apply_target=context.main_head.target,
+            patch_template=patch,
         ),
-        context,
-    )
-
-    prepared = prepare_branch_merge_with_history(
-        _RejectingHistory(context, reject_count=0),
-        candidate,
-        expected_main_head=context.main_head,
-        context=context,
-    )
-
-    merged_experiment = prepared.projection.graph.nodes[experiment.id]
-    assert isinstance(merged_experiment, Experiment)
-    assert merged_experiment.current_summary_stale is True
-    assert merged_experiment.next_action_stale is True
-
-
-@pytest.mark.asyncio
-async def test_conflict_only_empty_candidate_resolves_to_main_without_append(
-    tmp_path: Path,
-    manifest: Manifest,
-) -> None:
-    context = _context(main_question=_question(motivation="Main motivation", updated_rev=4))
-    assert context.deterministic_conflicts
-    assert branch_merge_can_resolve_without_patch(context)
-    empty = json.dumps(
-        {
-            "summary": "Keep current main for the conflicting field.",
-            "ops": [],
-            "repositories_read": [],
-        }
-    )
-    root = tmp_path / "stage"
-    workspace = root / "workspace"
-    workspace.mkdir(parents=True)
-    stage = BranchMergeStage(local_stage=root, remote_stage=None, workspace=workspace)
-    launcher = _FakeLauncher(empty)
-    outcome = BranchMergeRunOutcome()
-
-    [
-        frame
-        async for frame in stream_branch_merge_run(
-            RunRequest(provider="codex", run_on="laptop"),
-            launcher,  # type: ignore[arg-type]
-            load_context=lambda: context,
-            main_history=SimpleNamespace(manifest=manifest),
-            stage=stage,
-            write_scope=_local_scope(stage, context),
-            validator_command="python3 validator.py validate patch.json",
-            graph_read_scope=GraphReadScope(project_id="project", target=GraphTargetRef()),
-            history_client="python3 validator.py",
-            outcome=outcome,
-        )
-    ]
-
-    assert outcome.status == "noop"
-    assert outcome.receipt is not None
-    assert outcome.receipt.outcome == "no_change"
-    assert outcome.receipt.result_main_head == context.main_head
-    assert launcher.sessions == [None]
-
-
-@pytest.mark.asyncio
-async def test_moving_main_discards_candidate_and_rebases_same_session(
-    tmp_path: Path, manifest: Manifest
-) -> None:
-    first = _context(main_revision=4)
-    moved_template = _context(
-        main_revision=5,
-        branch_id=first.metadata.branch_id,
-        task_id=first.merge_task_id,
-    )
-    second = BranchMergeContext.create(
-        merge_task_id=first.merge_task_id,
-        authorized_by=first.authorized_by,
-        metadata=first.metadata,
-        eligibility=first.eligibility,
-        base_graph=first.base_graph,
-        branch_graph=first.branch_graph,
-        main_head=moved_template.main_head,
-        main_graph=moved_template.main_graph,
-        run_truth_scope=first.run_truth_scope,
-    )
-    history = _MovingMainHistory(first, second)
-    history.manifest = manifest
-    root = tmp_path / "stage"
-    workspace = root / "workspace"
-    workspace.mkdir(parents=True)
-    stage = BranchMergeStage(local_stage=root, remote_stage=None, workspace=workspace)
-    scope = _local_scope(stage, first)
-    launcher = _FakeLauncher(_candidate_json())
-    outcome = BranchMergeRunOutcome()
-
-    frames = [
-        frame
-        async for frame in stream_branch_merge_run(
-            RunRequest(provider="codex", run_on="laptop"),
-            launcher,  # type: ignore[arg-type]
-            load_context=lambda: history.current,
-            main_history=history,
-            stage=stage,
-            write_scope=scope,
-            validator_command="python3 validator.py validate patch.json",
-            graph_read_scope=GraphReadScope(project_id="project", target=GraphTargetRef()),
-            history_client="python3 validator.py",
-            outcome=outcome,
-        )
-    ]
-
-    assert outcome.status == "committed"
-    assert outcome.rebase_rounds == 1
-    assert outcome.correction_rounds == 0
-    assert outcome.rebased_main_head == second.main_head
-    assert outcome.result_main_head is not None
-    assert outcome.result_main_head.revision == 6
-    assert outcome.receipt is not None
-    assert outcome.receipt.outcome == "committed"
-    assert outcome.receipt.provenance.rebased_main_head == second.main_head
-    assert launcher.sessions == [None, "native-session"]
-    assert launcher.write_dirs == [[], []]
-    assert any('"event":"done"' in frame for frame in frames)
-    # The rebase replaces its context inline and points back to the start contract.
-    _assert_points_to_start_contract(launcher.prompts)
-    assert "current.graph_changed_since: `main@4`" in launcher.prompts[1]
-    assert "current.graph_head: `main@5`" in launcher.prompts[1]
-    assert first.context_id not in launcher.prompts[1]
-    assert f"- merge_context_id: `{second.context_id}`" in launcher.prompts[1]
-
-
-def _assert_points_to_start_contract(prompts: list[str]) -> None:
-    start_path = Path(prompts[0].splitlines()[1])
-    start = start_path.read_text(encoding="utf-8")
-    for prompt in prompts[1:]:
-        assert prompt.split("\n\n")[-1] == SECTIONS["master_pointer"].format(path=start_path)
-        assert start not in prompt
-        assert graph_rules(edits=True, ontology_extensions=False) not in prompt
-    assert start_path.read_text(encoding="utf-8") == start
-
-
-def test_a_merge_continuation_resends_rules_only_when_main_ontology_changed() -> None:
-    def context(extended: bool) -> Any:
-        ontology = SimpleNamespace(types=[object()] if extended else [], fields=[], relations=[])
-        return SimpleNamespace(main_graph=SimpleNamespace(ontology=ontology))
-
-    master = ("master.md", "start contract", False)
-    assert _changed_graph_rules(context(False), master) == ([], master)
-    rules, sent = _changed_graph_rules(context(True), master)
-    assert rules == [graph_rules(edits=True, ontology_extensions=True)]
-    # A later rebase back to the master's mode replaces the inline rules again.
-    assert _changed_graph_rules(context(False), sent)[0] == [
-        graph_rules(edits=True, ontology_extensions=False)
-    ]
-
-
-@pytest.mark.asyncio
-async def test_semantic_conflict_uses_two_bounded_same_session_corrections(
-    tmp_path: Path,
-    manifest: Manifest,
-) -> None:
-    context = _context()
-    history = _RejectingHistory(context, reject_count=3)
-    history.manifest = manifest
-    root = tmp_path / "stage"
-    workspace = root / "workspace"
-    workspace.mkdir(parents=True)
-    stage = BranchMergeStage(local_stage=root, remote_stage=None, workspace=workspace)
-    scope = _local_scope(stage, context)
-    payloads: list[str] = []
-    for index in range(3):
-        payload = json.loads(_candidate_json())
-        payload["summary"] = f"Merge candidate {index}."
-        payloads.append(json.dumps(payload))
-    launcher = _SequenceLauncher(payloads)
-    outcome = BranchMergeRunOutcome()
-
-    frames = [
-        frame
-        async for frame in stream_branch_merge_run(
-            RunRequest(provider="codex", run_on="laptop"),
-            launcher,  # type: ignore[arg-type]
-            load_context=lambda: context,
-            main_history=history,
-            stage=stage,
-            write_scope=scope,
-            validator_command="python3 validator.py validate patch.json",
-            graph_read_scope=GraphReadScope(project_id="project", target=GraphTargetRef()),
-            history_client="python3 validator.py",
-            outcome=outcome,
-        )
-    ]
-
-    assert outcome.status == "rejected"
-    assert outcome.correction_rounds == 2
-    assert outcome.diagnostic == "Candidate conflict 3."
-    assert launcher.sessions == [None, "native-session", "native-session"]
-    _assert_points_to_start_contract(launcher.prompts)
-    assert history.validation_count == 3
-    assert history.append_count == 0
-    assert any("Candidate conflict 3" in frame for frame in frames)
-
-
-@pytest.mark.asyncio
-async def test_empty_semantic_delta_returns_no_change_receipt_without_provider(
-    tmp_path: Path,
-) -> None:
-    context = _context()
-    context = BranchMergeContext.create(
         merge_task_id=context.merge_task_id,
         authorized_by=context.authorized_by,
-        metadata=context.metadata,
-        eligibility=context.eligibility,
+        provenance=provenance,
+        base_head=context.metadata.effective_parent_head,
+        source_head=context.metadata.head,
+        destination_head=context.main_head,
         base_graph=context.base_graph,
-        branch_graph=_state(3, question=_question(updated_rev=3)),
-        main_head=context.main_head,
-        main_graph=context.main_graph,
-        run_truth_scope=context.run_truth_scope,
+        source_graph=context.branch_graph,
+        destination_graph=context.main_graph,
+        run_truth_scope=("repo",),
+        conflicts=conflicts,
+        review_groups=groups,
+        preparation_contract=MergePreparationContract.model_validate(
+            context.transition_contract.model_dump()
+        ),
     )
-    root = tmp_path / "stage"
-    workspace = root / "workspace"
-    workspace.mkdir(parents=True)
-    stage = BranchMergeStage(local_stage=root, remote_stage=None, workspace=workspace)
-    scope = _local_scope(stage, context)
-    launcher = _FakeLauncher(_candidate_json())
-    outcome = BranchMergeRunOutcome()
-
-    [
-        frame
-        async for frame in stream_branch_merge_run(
-            RunRequest(provider="codex", run_on="laptop"),
-            launcher,  # type: ignore[arg-type]
-            load_context=lambda: context,
-            main_history=SimpleNamespace(),
-            stage=stage,
-            write_scope=scope,
-            validator_command="python3 validator.py validate patch.json",
-            graph_read_scope=GraphReadScope(project_id="project", target=GraphTargetRef()),
-            history_client="python3 validator.py",
-            outcome=outcome,
-        )
-    ]
-
-    assert outcome.status == "noop"
-    assert outcome.result_main_head is None
-    assert outcome.receipt is not None
-    assert outcome.receipt.outcome == "no_change"
-    assert outcome.receipt.result_main_head == context.main_head
-    assert launcher.sessions == []
 
 
 @pytest.mark.asyncio
-async def test_effective_main_no_change_returns_receipt_without_provider(
-    tmp_path: Path,
-) -> None:
-    context = _context(
-        main_question=_question(
-            motivation="Branch motivation",
-            status="answered",
-            updated_rev=4,
-        )
+@pytest.mark.parametrize("nonempty", [True, False])
+async def test_merge_without_questions_has_no_provider_turn(tmp_path, monkeypatch, nonempty):
+    run = _Run(tmp_path, monkeypatch, nonempty=nonempty)
+    await run.run()
+    assert run.outcome.status == ("committed" if nonempty else "noop")
+    assert not run.launches
+    assert len(run.commits) == int(nonempty)
+    assert len(run.preparations) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["checked", "missing", "changed", "wrong_file", "timeout"])
+async def test_turn_requires_exact_successful_answers_without_correction(
+    tmp_path, monkeypatch, mode
+):
+    run = _Run(tmp_path, monkeypatch, conflicts=(_field(),))
+
+    def behavior():
+        if mode == "missing":
+            (run.stage.workspace / "answers.json").write_text('{"answers":{},"cards":{}}')
+        elif mode == "wrong_file":
+            run.answer()
+            (run.stage.workspace / "answers.json").rename(run.stage.workspace / "patch.json")
+        else:
+            run.answer()
+            if mode == "changed":
+                with (run.stage.workspace / "answers.json").open("ab") as file:
+                    file.write(b"\n")
+
+    if mode == "timeout":
+
+        def timeout(*args):
+            raise TimeoutError("check unavailable")
+
+        run.prepare_behavior = timeout
+    run.behavior = behavior
+    await run.run()
+    assert len(run.launches) == 1
+    assert bool(run.commits) == (mode == "checked")
+    assert run.outcome.status == (
+        "committed" if mode == "checked" else "retryable" if mode == "timeout" else "rejected"
     )
-    root = tmp_path / "stage"
-    workspace = root / "workspace"
-    workspace.mkdir(parents=True)
-    stage = BranchMergeStage(local_stage=root, remote_stage=None, workspace=workspace)
-    launcher = _FakeLauncher(_candidate_json())
-    outcome = BranchMergeRunOutcome()
 
-    [
-        frame
-        async for frame in stream_branch_merge_run(
-            RunRequest(provider="codex", run_on="laptop"),
-            launcher,  # type: ignore[arg-type]
-            load_context=lambda: context,
-            main_history=SimpleNamespace(),
-            stage=stage,
-            write_scope=_local_scope(stage, context),
-            validator_command="python3 validator.py validate patch.json",
-            graph_read_scope=GraphReadScope(project_id="project", target=GraphTargetRef()),
-            history_client="python3 validator.py",
-            outcome=outcome,
-        )
-    ]
 
-    assert outcome.status == "noop"
-    assert outcome.receipt is not None
-    assert outcome.receipt.result_main_head == context.main_head
-    assert launcher.sessions == []
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", [False, True])
+async def test_destination_movement_reuses_only_unchanged_answers(tmp_path, monkeypatch, changed):
+    run = _Run(tmp_path, monkeypatch, conflicts=(_field(),))
+
+    def first_turn():
+        run.answer()
+        if len(run.launches) == 1:
+            run.move(changed_conflict=changed)
+
+    run.behavior = first_turn
+    await run.run()
+    assert run.outcome.status == "committed", run.outcome.diagnostic
+    assert len(run.launches) == (2 if changed else 1)
+    if changed:
+        assert run.launches[1][1]["required_session_id"] == "merge-session"
+    assert run.commits[0][1]["expected_main_head"] == run.context.main_head
+    assert run.preparations[-1][0] == run.next_plan
+
+
+@pytest.mark.asyncio
+async def test_movement_during_check_replans_instead_of_failing_answers(tmp_path, monkeypatch):
+    run = _Run(tmp_path, monkeypatch, conflicts=(_field(),))
+
+    def move(plan, answers):
+        if len(run.launches) == 1:
+            run.move(changed_conflict=True)
+            raise RevisionConflict("moved")
+
+    run.prepare_behavior = move
+    await run.run()
+    assert run.outcome.status == "committed", run.outcome.diagnostic
+    assert len(run.launches) == 2
+
+
+@pytest.mark.asyncio
+async def test_append_race_revalidates_and_obeys_rebase_bound(tmp_path, monkeypatch):
+    run = _Run(tmp_path, monkeypatch)
+
+    def move():
+        if len(run.commits) == 1:
+            run.move()
+            raise RevisionConflict("append moved")
+
+    run.commit_behavior = move
+    await run.run()
+    assert run.outcome.status == "committed", run.outcome.diagnostic
+    assert run.outcome.rebase_rounds == 1
+    assert len(run.preparations) == 2
+
+
+@pytest.mark.asyncio
+async def test_unknown_publication_uses_canonical_receipt(tmp_path, monkeypatch):
+    run = _Run(tmp_path, monkeypatch)
+
+    def uncertain():
+        raise StateUnavailable("publication acknowledgment lost")
+
+    run.commit_behavior = uncertain
+    run.reconcile = lambda: run.receipt(run.commits[0][0])
+    await run.run()
+    assert run.outcome.status == "committed", run.outcome.diagnostic
+    assert len(run.commits) == 1
+
+
+@pytest.mark.asyncio
+async def test_hidden_clash_promotes_once_and_repeated_answer_error_ends_turn(
+    tmp_path, monkeypatch
+):
+    run = _Run(tmp_path, monkeypatch)
+    diagnostic = MergeDiagnostic(
+        code="coupled", message="coupled fields", related_node_ids=("rq/merge",)
+    )
+    promoted = _plan(
+        run.context,
+        conflicts=(
+            NodeGroupConflict(
+                conflict_id="group",
+                node_ids=("rq/merge",),
+                fields=(_field(),),
+                base={"rq/merge": PresentValue(value={})},
+                branch={"rq/merge": PresentValue(value={})},
+                destination={"rq/merge": PresentValue(value={})},
+                diagnostic_codes=("coupled",),
+            ),
+        ),
+    )
+    promotions = []
+
+    def promote(plan, promotion):
+        promotions.append(promotion)
+        return promoted
+
+    def reject(plan, answers):
+        if not plan.conflicts:
+            raise MergeHiddenClash(
+                NodeGroupPromotion(node_ids=("rq/merge",), diagnostics=(diagnostic,))
+            )
+        raise MergeAnswersRejected((diagnostic,))
+
+    monkeypatch.setattr(merge_contract, "promote_node_group", promote)
+    run.prepare_behavior = reject
+    await run.run()
+    assert len(promotions) == 1
+    assert len(run.launches) == 1
+    assert not run.commits
+    assert run.outcome.status == "rejected"
+
+
+def test_rebase_card_reuse_binds_effect_digest():
+    context = _context()
+    group = ReviewGroup.model_construct(
+        subject_key="review", effect_digest="a" * 64, changes=(), footprint={}
+    )
+    # This is a planner-output fake; only review identity is this boundary's concern.
+    previous = _plan(context).model_copy(update={"review_groups": (group,)})
+    card = ReviewCard(situation_cold="s", why_human_now="w", consequences="c", decision_needed="d")
+    answers = MergeAnswers(answers={}, cards={"review": card})
+    assert reusable_merge_answers(previous, previous, answers).cards == answers.cards
+    changed = previous.model_copy(
+        update={"review_groups": (group.model_copy(update={"effect_digest": "b" * 64}),)}
+    )
+    assert reusable_merge_answers(previous, changed, answers).cards == {}
+
+
+def test_validation_diagnostic_retains_structured_rejections_separate_from_flags():
+    from rcp.core.validation import ValidationReport
+
+    report = ValidationReport()
+    report.reject("invalid-effect", "Rejected", related_node_ids=["rq/merge"], operation_index=2)
+    report.flag("duplicate", "Advisory", related_node_ids=["rq/merge"])
+    _message, _conflicts, diagnostics = merge_module._validation_diagnostic(report)
+    assert diagnostics == (report.messages[0],)
+    assert report.flags == [report.messages[1]]
+
+
+@pytest.mark.asyncio
+async def test_destination_movement_before_empty_settlement_replans(tmp_path, monkeypatch):
+    run = _Run(tmp_path, monkeypatch, nonempty=False)
+
+    def move_once():
+        if run.outcome.rebase_rounds == 0:
+            run.move()
+
+    run.before_commit = move_once
+    await run.run()
+    assert run.outcome.status == "noop"
+    assert run.outcome.receipt.result_main_head == run.context.main_head
+    assert run.outcome.rebase_rounds == 1
+
+
+@pytest.mark.asyncio
+async def test_repeated_movement_obeys_rebase_bound(tmp_path, monkeypatch):
+    run = _Run(tmp_path, monkeypatch)
+
+    def always_move():
+        if len(run.commits) == 1:
+            run.move()
+        else:
+            run.context = run.initial
+        raise RevisionConflict("moved again")
+
+    run.commit_behavior = always_move
+    await run.run(max_main_rebases=1)
+    assert run.outcome.status == "retryable"
+    assert run.outcome.receipt is None
+    assert len(run.commits) == 2
+
+
+@pytest.mark.asyncio
+async def test_staged_plan_and_schema_are_the_enforced_contract(tmp_path, monkeypatch):
+    run = _Run(tmp_path, monkeypatch, conflicts=(_field(),))
+    await run.run()
+    inputs = run.stage.local_stage / "inputs"
+    plan_file = next(inputs.glob("*-merge-plan-*.json"))
+    schema_file = next(inputs.glob("*-merge-answers-schema-*.json"))
+    assert MergePlan.model_validate_json(plan_file.read_bytes()) == run.plan
+    assert json.loads(schema_file.read_text()) == MergeAnswers.model_json_schema()
+
+
+@pytest.mark.asyncio
+async def test_rebase_receives_rotated_check_and_history_commands(tmp_path, monkeypatch):
+    run = _Run(tmp_path, monkeypatch, conflicts=(_field(),))
+    turns = []
+
+    async def activate(plan):
+        turn_id = f"turn-{len(turns)}"
+        turns.append(turn_id)
+        run.checks.set_plan(plan, turn_id=turn_id)
+        return f"{turn_id} check", f"{turn_id} history", None
+
+    def answer_and_move():
+        run.answer()
+        if len(run.launches) == 1:
+            run.move(changed_conflict=True)
+
+    run.behavior = answer_and_move
+    await run.run(start_check_turn=activate)
+    assert run.outcome.status == "committed", run.outcome.diagnostic
+    assert turns == ["turn-0", "turn-1"]
+    assert "turn-1 check" in run.launches[1][0]
+    assert "turn-1 history" in run.launches[1][0]
+    assert run.checks.receipts[0].turn_id == "turn-1"

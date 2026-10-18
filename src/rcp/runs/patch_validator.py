@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from rcp.agents.command_mailbox import (
     CommandHandler,
@@ -21,17 +22,31 @@ from rcp.agents.command_mailbox import (
 from rcp.agents.command_protocol import (
     CommandRequest,
     CommandResponse,
+    MergeAnswersCommandRequest,
     ValidateCommandRequest,
     staged_command_client_source,
 )
 from rcp.background import AgentTaskExecution
+from rcp.history import RevisionConflict
 from rcp.limits import (
     COMMAND_CLIENT_WAIT_SECONDS,
     COMPUTE_COMMAND_TIMEOUT_SECONDS,
     PATCH_SELF_CHECK_MAX_COUNT,
     PATCH_SELF_CHECK_POLL_SECONDS,
 )
+from rcp.runs import merge_contract
+from rcp.runs.merge_contract import (
+    MergeAnswers,
+    MergeAnswersRejected,
+    MergeCheckReceipt,
+    MergeHiddenClash,
+    MergePlan,
+    MergeRefused,
+)
 from rcp.transport import RemoteRunStage, RunStageMailbox, StateUnavailable
+
+if TYPE_CHECKING:
+    from rcp.history import BranchHistoryManager, HistoryManager
 
 # Compatibility export for callers that assert which tested source was staged.
 # The executable itself lives in one stdlib-only module; there is no handwritten copy.
@@ -57,6 +72,165 @@ class PatchValidationBudget:
             self.count += 1
             self.requests[request_id] = self.count
         return self.requests[request_id]
+
+
+@dataclass
+class MergeAnswersCheck:
+    """Turn-bound dry preparation; successful checks bind the exact file bytes.
+
+    Serve this handler with validate=None and budget=None. Merge answers have no
+    Patch-check budget, and cannot invoke the ordinary Patch validator.
+    """
+
+    plan: MergePlan
+    history: HistoryManager | BranchHistoryManager
+    task_id: str
+    turn_id: str
+    execution: AgentTaskExecution | None = None
+    receipts: list[MergeCheckReceipt] = field(default_factory=list, init=False)
+    hidden_clash: MergeHiddenClash | None = field(default=None, init=False)
+    refusal: MergeRefused | None = field(default=None, init=False)
+    unavailable: str | None = field(default=None, init=False)
+    destination_moved: bool = field(default=False, init=False)
+    diagnostic: str | None = field(default=None, init=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _generation: int = field(default=0, init=False, repr=False)
+    _pending_checks: int = field(default=0, init=False, repr=False)
+
+    def set_plan(self, plan: MergePlan, *, turn_id: str) -> None:
+        with self._lock:
+            self.plan = plan
+            self.turn_id = turn_id
+            self._generation += 1
+            self._pending_checks = 0
+            self.receipts.clear()
+            self.hidden_clash = None
+            self.refusal = None
+            self.unavailable = None
+            self.destination_moved = False
+            self.diagnostic = None
+
+    def _receipt(self, content: bytes) -> MergeCheckReceipt:
+        return MergeCheckReceipt(
+            task_id=self.task_id,
+            turn_id=self.turn_id,
+            plan_id=self.plan.plan_id,
+            answers_digest=hashlib.sha256(content).hexdigest(),
+            source_head=self.plan.source_head,
+            destination_head=self.plan.destination_head,
+            preparation_contract=self.plan.preparation_contract,
+        )
+
+    def require_receipt(self, content: bytes) -> MergeCheckReceipt:
+        with self._lock:
+            expected = self._receipt(content)
+            if expected in self.receipts:
+                return expected
+            if self.unavailable:
+                raise StateUnavailable(self.unavailable)
+            if self._pending_checks:
+                raise StateUnavailable(
+                    "The merge answers check is still running; its result is unavailable."
+                )
+            raise ValueError(
+                "Collected answers do not match a successful check for this task, turn, and plan."
+                + (f" {self.diagnostic}" if self.diagnostic else "")
+            )
+
+    def __call__(self, request: CommandRequest, identity: CommandTurnIdentity) -> CommandResponse:
+        with self._lock:
+            plan, turn_id, generation = self.plan, self.turn_id, self._generation
+            if (
+                not isinstance(request, MergeAnswersCommandRequest)
+                or identity.task_id != self.task_id
+                or identity.turn_id != turn_id
+                or plan.merge_task_id != self.task_id
+            ):
+                return CommandResponse(
+                    request_id=request.request_id,
+                    status="invalid",
+                    message="This command requires the current merge answers check turn.",
+                )
+            self._pending_checks += 1
+        failure = None
+        try:
+            answers = MergeAnswers.model_validate_json(request.arguments.answers)
+            merge_contract.prepare_merge_candidate(
+                plan, answers, cast("HistoryManager", self.history)
+            )
+        except (
+            ValidationError,
+            MergeAnswersRejected,
+            MergeHiddenClash,
+            MergeRefused,
+            RevisionConflict,
+            OSError,
+            StateUnavailable,
+        ) as exc:
+            failure = exc
+        with self._lock:
+            if self._generation != generation or self.plan is not plan or self.turn_id != turn_id:
+                return CommandResponse(
+                    request_id=request.request_id,
+                    status="unavailable",
+                    message="The merge plan or turn changed during this check; check again.",
+                )
+            self._pending_checks -= 1
+            self.unavailable = None
+            self.destination_moved = isinstance(failure, RevisionConflict)
+            self.diagnostic = None
+            if isinstance(failure, (OSError, StateUnavailable, RevisionConflict)):
+                self.unavailable = str(failure) or "Merge answers preparation is unavailable."
+                return CommandResponse(
+                    request_id=request.request_id,
+                    status="unavailable",
+                    message=self.unavailable[:2_000],
+                )
+            if failure is not None:
+                self.diagnostic = str(failure)
+                result: dict[str, object] = {}
+                if isinstance(failure, MergeHiddenClash):
+                    result["outcome"] = "promotion"
+                    self.hidden_clash = failure
+                    result["promotion"] = failure.promotion.model_dump(mode="json")
+                elif isinstance(failure, MergeRefused):
+                    result["outcome"] = "refused"
+                    self.refusal = failure
+                else:
+                    result["outcome"] = "answers_rejected"
+                if isinstance(failure, (MergeAnswersRejected, MergeRefused)):
+                    result["diagnostics"] = [
+                        item.model_dump(mode="json") for item in failure.diagnostics
+                    ]
+                return CommandResponse(
+                    request_id=request.request_id,
+                    status="invalid",
+                    message=self.diagnostic[:2_000] or "Merge answers were rejected.",
+                    result=result,
+                )
+            receipt = self._receipt(request.arguments.answers.encode("utf-8"))
+            if self.execution is not None:
+                try:
+                    self.execution.store.record_agent_task_receipt(
+                        self.execution.operation_id,
+                        "merge_answers_check",
+                        receipt.model_dump(mode="json"),
+                        tier="diagnostic",
+                    )
+                except (OSError, StateUnavailable) as exc:
+                    self.unavailable = str(exc) or "Merge check receipt could not be recorded."
+                    return CommandResponse(
+                        request_id=request.request_id,
+                        status="unavailable",
+                        message=self.unavailable[:2_000],
+                    )
+            self.receipts.append(receipt)
+            self.hidden_clash = None
+            return CommandResponse(
+                request_id=request.request_id,
+                status="ok",
+                result={"receipt": receipt.model_dump(mode="json")},
+            )
 
 
 def stage_patch_validation_mailbox(

@@ -3005,6 +3005,8 @@ class BackgroundAgentTasks:
         graph_update: GraphUpdateResult | None = None
         graph_updates: list[GraphUpdateResult] = []
         awaiting_remote_result: str | None = None
+        # Providers repeat session events; do not evict check receipts with duplicates.
+        checkpoint_session_id: str | None = None
         # `aclosing` so an error or a pause closes the run generator here rather
         # than leaving it suspended for the garbage collector: its `finally` is
         # what releases the canonical run lock and retains the scratch folder.
@@ -3093,7 +3095,7 @@ class BackgroundAgentTasks:
                         and receipt.payload.get("native_session_id") == event.session_id
                         for receipt in self.store.agent_task_receipts(execution.operation_id)
                     )
-                    if not checkpoint_exists:
+                    if event.session_id != checkpoint_session_id and not checkpoint_exists:
                         self.store.record_agent_task_receipt(
                             execution.operation_id,
                             "native_agent_checkpoint",
@@ -3107,6 +3109,7 @@ class BackgroundAgentTasks:
                             },
                             tier="diagnostic",
                         )
+                    checkpoint_session_id = event.session_id
                     self.store.update_agent_task_message(
                         execution.operation_id,
                         "Agent task is running.",

@@ -271,6 +271,11 @@ def _parser():
     validate = subparsers.add_parser("validate")
     validate.add_argument("patch_path")
 
+    merge_answers = subparsers.add_parser("merge-answers")
+    answer_commands = merge_answers.add_subparsers(dest="action", required=True)
+    check_answers = answer_commands.add_parser("check")
+    check_answers.add_argument("answers_path")
+
     apply = subparsers.add_parser("apply")
     apply.add_argument("--key", required=True)
     apply.add_argument("patch_path")
@@ -351,26 +356,34 @@ def _nonblank(value, label):
 
 def _request_arguments(namespace, workspace):
     verb = namespace.verb.replace("-", "_")
-    if verb == "validate":
-        patch_path = _regular_workspace_file(
-            workspace, namespace.patch_path, "patch.json", required_name="patch.json"
+    if verb in ("validate", "merge_answers"):
+        is_patch = verb == "validate"
+        label = "patch.json" if is_patch else "answers file"
+        path = _regular_workspace_file(
+            workspace,
+            namespace.patch_path if is_patch else namespace.answers_path,
+            label,
+            required_name="patch.json" if is_patch else None,
         )
         try:
-            with open(patch_path, "rb") as stream:
+            with open(path, "rb") as stream:
                 if os.fstat(stream.fileno()).st_size > COMMAND_MAILBOX_MAX_REQUEST_BYTES:
                     raise ClientInputError(
-                        "patch.json exceeds the "
+                        f"{label} exceeds the "
                         f"{COMMAND_MAILBOX_MAX_REQUEST_BYTES}-byte command request limit"
                     )
                 content = stream.read(COMMAND_MAILBOX_MAX_REQUEST_BYTES + 1)
             if len(content) > COMMAND_MAILBOX_MAX_REQUEST_BYTES:
                 raise ClientInputError(
-                    "patch.json exceeds the "
+                    f"{label} exceeds the "
                     f"{COMMAND_MAILBOX_MAX_REQUEST_BYTES}-byte command request limit"
                 )
-            return verb, None, {"patch": content.decode("utf-8")}
+            arguments = {"patch" if is_patch else "answers": content.decode("utf-8")}
+            if not is_patch:
+                arguments["action"] = namespace.action
+            return verb, None, arguments
         except (OSError, UnicodeError) as exc:
-            raise ClientInputError(f"patch.json could not be read: {exc}") from exc
+            raise ClientInputError(f"{label} could not be read: {exc}") from exc
     if verb == "status":
         worker_id = namespace.worker_id
         if worker_id is not None:
@@ -625,7 +638,7 @@ def _client_failure(verb, status, message, delivery=None):
 def _not_answered(verb, timeout):
     repeat = (
         "Run the check again."
-        if verb == "validate"
+        if verb in ("validate", "merge_answers", "merge-answers")
         else "Repeat the exact same command, with the same key, to get its result."
     )
     return _client_failure(
@@ -1049,6 +1062,7 @@ def _requested_verb(argv):
             "bulletin",
             "flag",
             "validate",
+            "merge-answers",
             "graph_diff",
             "graph_log",
             "graph-diff",

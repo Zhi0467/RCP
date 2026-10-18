@@ -36,6 +36,7 @@ COMMAND_UNAVAILABLE = 2
 
 CommandVerb = Literal[
     "validate",
+    "merge_answers",
     "graph_diff",
     "graph_log",
     "apply",
@@ -119,6 +120,13 @@ class ValidateArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     patch: str
+
+
+class MergeAnswersArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    action: Literal["check"]
+    answers: str
 
 
 class ApplyArguments(BaseModel):
@@ -551,6 +559,11 @@ class ValidateCommandRequest(_CommandRequest):
     arguments: ValidateArguments
 
 
+class MergeAnswersCommandRequest(_CommandRequest):
+    verb: Literal["merge_answers"]
+    arguments: MergeAnswersArguments
+
+
 class ApplyCommandRequest(_CommandRequest):
     verb: Literal["apply"]
     arguments: ApplyArguments
@@ -679,6 +692,7 @@ class LessonCommandRequest(_CommandRequest):
 
 CommandRequest: TypeAlias = Annotated[
     ValidateCommandRequest
+    | MergeAnswersCommandRequest
     | ApplyCommandRequest
     | StatusCommandRequest
     | GraphDiffCommandRequest

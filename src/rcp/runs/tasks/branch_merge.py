@@ -2,29 +2,27 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import aclosing, suppress
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rcp.agents import AgentEvent, AgentLauncher
+from rcp.agents.command_protocol import MergeAnswersCommandRequest
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.write_scope import resolve_project_write_scope
 from rcp.core.models import BranchMergeReceipt
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history.branches import BranchHistoryManager
 from rcp.limits import PATCH_SELF_CHECK_TIMEOUT_SECONDS
+from rcp.runs import merge_contract
 from rcp.runs.branch_merge import (
-    BranchMergeCandidateProblem,
     BranchMergeContext,
     BranchMergeRunOutcome,
-    BranchMergeSemanticConflict,
     BranchMergeStage,
-    branch_merge_can_resolve_without_patch,
     branch_merge_id,
-    build_deterministic_merge_ops,
-    parse_branch_merge_candidate,
-    prepare_branch_merge_with_history,
+    merge_planning_context,
     stream_branch_merge_run,
     stream_code_merge_run,
 )
@@ -37,8 +35,7 @@ from rcp.runs.episodes.merge import (
 )
 from rcp.runs.graph_history_queries import handle_graph_history_command
 from rcp.runs.patch_validator import (
-    PatchValidationBudget,
-    PatchValidationResult,
+    MergeAnswersCheck,
     cleanup_patch_validation_mailbox,
     serve_patch_validation_mailbox,
     stage_patch_validation_mailbox,
@@ -263,9 +260,16 @@ async def stream_branch_merge_task(
             yield _sse(AgentEvent(event="done"))
             return
 
+        plan = merge_contract.plan_merge(
+            merge_planning_context(
+                initial_context,
+                destination_history,
+                created_at=datetime.fromisoformat(execution.store.now()),
+            )
+        )
         code_block = code.prompt_section(write_scope) if code else ""
         code_landed = False
-        if code is not None and not build_deterministic_merge_ops(initial_context)[1]:
+        if code is not None and not plan.conflicts and not plan.review_groups:
             # Only the code needs judgment, so the graph then merges with no provider
             # turn, as an agentless merge does.
             async for frame in code_turn():
@@ -283,19 +287,61 @@ async def stream_branch_merge_task(
             authority="broker",
         )
         validator_stop = asyncio.Event()
-        validator_budget = PatchValidationBudget()
-        validator_task = asyncio.create_task(
-            serve_patch_validation_mailbox(
-                staged=staged_validator,
-                execution=execution,
-                validate=lambda text: _validate_candidate(service, load_context, text),
-                stop=validator_stop,
-                budget=validator_budget,
-                command_handler=lambda command, _identity: handle_graph_history_command(
-                    service, graph_read_scope, command
-                ),
-            )
+        checks = MergeAnswersCheck(
+            plan=plan,
+            history=destination_history,
+            task_id=task.operation_id,
+            turn_id=staged_validator.credential.identity.turn_id,
+            execution=execution,
         )
+
+        def handle_command(command, identity):
+            if isinstance(command, MergeAnswersCommandRequest):
+                return checks(command, identity)
+            return handle_graph_history_command(service, graph_read_scope, command)
+
+        validator_task: asyncio.Task[None] | None = None
+        turn_number = 0
+
+        async def start_check_turn(current_plan):
+            nonlocal staged_validator, validator_task, validator_stop, turn_number
+            assert staged_validator is not None
+            if validator_task is not None:
+                validator_stop.set()
+                await validator_task
+                await asyncio.to_thread(
+                    cleanup_patch_validation_mailbox,
+                    staged=staged_validator,
+                    execution=execution,
+                )
+                staged_validator = stage_patch_validation_mailbox(
+                    local_stage=workspace if remote_stage is None else None,
+                    remote_stage=remote_stage,
+                    task_id=task.operation_id,
+                    turn_id=f"{task.operation_id}:branch-merge:{turn_number}",
+                    timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
+                    authority="broker",
+                )
+            turn_number += 1
+            checks.set_plan(current_plan, turn_id=staged_validator.credential.identity.turn_id)
+            validator_stop = asyncio.Event()
+            validator_task = asyncio.create_task(
+                serve_patch_validation_mailbox(
+                    staged=staged_validator,
+                    execution=execution,
+                    validate=None,
+                    stop=validator_stop,
+                    budget=None,
+                    command_handler=handle_command,
+                )
+            )
+            return (
+                staged_validator.client_command(
+                    "merge-answers", "check", str(workspace / "answers.json")
+                ),
+                staged_validator.client_command(),
+                staged_validator.invocation_gate,
+            )
 
         def verify_delivery() -> None:
             if binding:
@@ -316,9 +362,13 @@ async def stream_branch_merge_task(
                     stage=stage,
                     write_scope=write_scope,
                     validator_command=staged_validator.client_command(
-                        "validate",
-                        str(workspace / "patch.json"),
+                        "merge-answers",
+                        "check",
+                        str(workspace / "answers.json"),
                     ),
+                    checks=checks,
+                    start_check_turn=start_check_turn,
+                    reconcile_receipt=lambda: branch.reconcile_merge_receipt(merge_id),
                     outcome=outcome,
                     graph_read_scope=graph_read_scope,
                     history_client=staged_validator.client_command(),
@@ -340,7 +390,8 @@ async def stream_branch_merge_task(
                         yield frame
         finally:
             validator_stop.set()
-            await validator_task
+            if validator_task is not None:
+                await validator_task
 
         if outcome.receipt is None:
             if outcome.status in {"rejected", "retryable"} and outcome.diagnostic:
@@ -381,51 +432,6 @@ async def stream_branch_merge_task(
             if remote_stage is not None:
                 remote_stage.close()
             execution.store.clear_agent_task_stage(task.operation_id)
-
-
-def _validate_candidate(
-    service: ProjectService,
-    load_context: Callable[[], BranchMergeContext],
-    text: str,
-) -> PatchValidationResult:
-    try:
-        context = load_context()
-        patch = parse_branch_merge_candidate(
-            text,
-            context,
-            deterministic_ops=build_deterministic_merge_ops(context)[0],
-        )
-        if not patch.ops:
-            if not branch_merge_can_resolve_without_patch(context):
-                raise BranchMergeCandidateProblem(
-                    "An empty merge candidate omits non-conflicting source branch changes."
-                )
-            return PatchValidationResult(
-                status="valid",
-                live_revision=context.main_head.revision,
-                candidate_revision=context.main_head.revision,
-            )
-        prepared = prepare_branch_merge_with_history(
-            merge_history(service, context.main_head.target),
-            patch,
-            expected_main_head=context.main_head,
-            context=context,
-        )
-    except (
-        BranchMergeCandidateProblem,
-        BranchMergeSemanticConflict,
-        StateUnavailable,
-        ValueError,
-    ) as exc:
-        return PatchValidationResult(
-            status="unavailable" if isinstance(exc, StateUnavailable) else "invalid",
-            messages=[str(exc)],
-        )
-    return PatchValidationResult(
-        status="valid",
-        live_revision=context.main_head.revision,
-        candidate_revision=prepared.patch.revision,
-    )
 
 
 def _apply_receipt_to_execution(
