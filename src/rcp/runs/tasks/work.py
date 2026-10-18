@@ -3081,7 +3081,7 @@ def _start_work_validator_mailbox(
             else None
         ),
     )
-    return start_work_validator_mailbox(
+    lifecycle = start_work_validator_mailbox(
         staged,
         execution=execution,
         budget=budget,
@@ -3100,6 +3100,8 @@ def _start_work_validator_mailbox(
             source_operation_id=_work_patch_source_operation_id(execution),
         ),
     )
+    lifecycle.allowed_verbs = command_handler.allowed_verbs
+    return lifecycle
 
 
 class _WorkMailboxContext(BaseModel):

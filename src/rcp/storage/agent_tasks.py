@@ -681,14 +681,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         writers = self._unsettled_graph_target_tasks_in_connection(
             connection, record.project_id, record.graph_target
         )
-        incoming = connection.execute(
-            "SELECT 1 FROM graph_runs WHERE project_id=? AND kind='branch_merge' "
-            "AND status IN ('queued','running','pausing') AND operation_id != ? "
-            "AND json_extract(request_json, '$.merge_binding.destination.kind')='branch' "
-            "AND json_extract(request_json, '$.merge_binding.destination.branch_id')=? LIMIT 1",
-            (record.project_id, record.operation_id, record.graph_target.branch_id),
-        ).fetchone()
-        if incoming is not None or any(
+        if any(
             task.operation_id != record.operation_id
             and task.status in {"queued", "running", "pausing"}
             and task_graph_capable(task.kind, task.request)

@@ -76,11 +76,11 @@ def test_branch_identity_ownership_names_and_archive_admission(tmp_path: Path) -
             name=child.name,
         )
     store.set_branch_archived("project", child.branch_id, archived=True)
-    assert not store.branch_admits_new_work("project", child.branch_id)
-    assert store.branch_admits_new_work("project", branch_id)
+    assert store.graph_branch("project", child.branch_id).archived
+    assert not store.graph_branch("project", branch_id).archived
     store.set_branch_archived("project", branch_id, archived=True)
     store.set_branch_archived("project", child.branch_id, archived=False)
-    assert store.branch_admits_new_work("project", child.branch_id)
+    assert not store.graph_branch("project", child.branch_id).archived
 
 
 @pytest.mark.parametrize("kind", ["artifact_edit", "project_chat"])
@@ -142,7 +142,6 @@ def test_pre55_legacy_branch_retains_replay_names_archive_and_merge(tmp_path: Pa
         record = store.graph_branch(project_id, branch_id)
         assert record is not None and record.owner_episode_id == branch_id and record.archived
         assert store.branch_names(project_id)[branch_id] == fixture["legacy_branch_name"]
-        assert not store.branch_admits_new_work(project_id, branch_id)
         with pytest.raises(BranchNameTaken):
             store.create_graph_branch(
                 project_id=project_id,

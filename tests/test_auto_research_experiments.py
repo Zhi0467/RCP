@@ -1509,7 +1509,15 @@ def test_fork_experiment_uses_target_readiness_and_replays_its_persisted_target(
     assert child.graph_target == task.graph_target == branch.graph_target
     route = store.auto_research_child_experiment(child_id)
     assert route is not None
-    assert route.request["resolved_graph_target"] == (branch.graph_target.model_dump(mode="json"))
+    with pytest.raises(ValueError):
+        kickoff(graph_target=parent.graph_target)
+    # Routes written before target deduplication still replay from the episode.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE auto_research_child_experiments SET request_json="
+            "json_set(request_json, '$.resolved_graph_target', json(?)) WHERE child_episode_id=?",
+            (branch.graph_target.model_dump_json(), child_id),
+        )
     store.set_branch_archived(PROJECT_ID, branch.branch_id, archived=True)
     replay = kickoff()
     assert replay.operation_id == action.operation_id

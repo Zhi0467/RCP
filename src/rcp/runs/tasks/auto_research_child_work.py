@@ -308,15 +308,10 @@ def _child_allowed_verbs(
 
 
 def _child_turn_verbs(turn: WorkTurn) -> frozenset[str]:
-    """The surface this turn's child mailbox enforces.
-
-    A graph repair serves only validation through the ordinary Work mailbox, so the
-    child master it may render describes the surface from the turn's launch objects.
-    """
-    resolved = turn.validator_lifecycle.allowed_verbs
-    if resolved is not None:
-        return resolved
-    return _child_allowed_verbs(turn.execution, turn.graph_read_scope, turn.compute_commands)
+    """The verbs this turn's mailbox enforces, a graph repair's Work mailbox included."""
+    verbs = turn.validator_lifecycle.allowed_verbs
+    assert verbs is not None
+    return verbs
 
 
 def _child_prompt_values(
