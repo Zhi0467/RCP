@@ -13,6 +13,7 @@ from rcp.core.models import (
     BranchMergeReceipt,
     GraphState,
     Patch,
+    ValidationMessage,
 )
 from rcp.core.operations import (
     CreateAmbiguitiesOperation,
@@ -21,6 +22,7 @@ from rcp.core.operations import (
     CreateProposalsOperation,
     GraphOperation,
     MergeNodesOperation,
+    ProposalOperation,
     RemoveEdgesOperation,
     RemoveNodesOperation,
     ResolveAmbiguitiesOperation,
@@ -41,6 +43,7 @@ from rcp.providers import AgentCapability
 
 if TYPE_CHECKING:
     from rcp.core.validation.report import ValidationReport
+    from rcp.core.validation.settings import ValidationContext
 
 
 AGENT_GRAPH_AUTHORITY_POLICY_VERSION = "s115-v2"
@@ -1170,3 +1173,342 @@ class WriteAuthority:
             raise ValueError("branch merge receipt task has no authorizer snapshot")
         if self._canonical_authorizer(resolved.authorized_by) != receipt.authorized_by:
             raise ValueError("branch merge receipt authorizer does not match its task authority")
+
+
+# These are the only Gate-1 refusals which can be represented as pending review.
+# Configuration, task, membership, and every other action remain hard refusals.
+_REVIEWABLE_GRAPH_ACTIONS: frozenset[GraphAction] = frozenset(
+    {
+        UPDATE_PROTECTED_EPISTEMIC,
+        REMOVE_PROTECTED_EPISTEMIC,
+        SUPERSEDE_PROTECTED_EPISTEMIC,
+        MERGE_PROTECTED_EPISTEMIC,
+        RESTRUCTURE_PROTECTED_EPISTEMIC,
+    }
+)
+
+
+@dataclass(frozen=True)
+class ChangeClassification:
+    """One atomic direct change and the exact result of the core gates.
+
+    ``review_operations`` is populated only after the supported pending Proposal
+    form passes validation. It never authorizes applying that effect directly.
+    Diagnostics retain their codes and related resources; flags are not refusals.
+    """
+
+    operation_indices: tuple[int, ...]
+    disposition: Literal["admitted", "reviewable", "refused"]
+    review_operations: tuple[ProposalOperation, ...] = ()
+    diagnostics: tuple[ValidationMessage, ...] = ()
+
+
+class CapturedChangeAuthority(BaseModel):
+    """Serializable preflight authority for pure planning, never publication.
+
+    ``capture_change_authority`` obtains this snapshot from live admission. The
+    admitted Patch template has no operations. Consumers may replace only ops;
+    its complete attribution, scope, target provenance, and action declaration
+    stay bound. Preparation and publication must check live authority again.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    project_id: str | None
+    apply_target: GraphTargetRef
+    patch_template: Patch
+
+    @model_validator(mode="after")
+    def require_empty_template(self) -> CapturedChangeAuthority:
+        if self.patch_template.ops:
+            raise ValueError("captured authority requires an empty-operation Patch template")
+        return self
+
+
+def capture_change_authority(
+    state: GraphState,
+    patch_template: Patch,
+    *,
+    authority: WriteAuthority,
+    project_id: str | None,
+    apply_target: GraphTargetRef,
+    authorized_by: AuthorizedHuman | None = None,
+) -> CapturedChangeAuthority:
+    """Run live admission once before passing an immutable envelope to a planner.
+
+    Refusals propagate; no failed task, membership, or authorship check produces
+    a capture. This checks authority only: the planner's later operations still
+    need both permission and legality classification, and final live preparation.
+    """
+    if patch_template.ops:
+        raise ValueError("authority capture requires an empty-operation Patch template")
+    admitted, _, report = authority.admit(
+        state,
+        patch_template,
+        project_id=project_id,
+        authorized_by=authorized_by,
+        apply_target=apply_target,
+    )
+    validate_authorship(admitted, report)
+    if report.rejected:
+        raise ValueError(
+            "; ".join(item.message for item in report.messages if item.level == "reject")
+        )
+    return CapturedChangeAuthority(
+        project_id=project_id,
+        apply_target=apply_target,
+        patch_template=admitted,
+    )
+
+
+def classify_graph_changes(
+    state: GraphState,
+    patch: Patch,
+    *,
+    authority: WriteAuthority | CapturedChangeAuthority,
+    project_id: str | None,
+    apply_target: GraphTargetRef,
+    context: ValidationContext,
+    authorized_by: AuthorizedHuman | None = None,
+    operation_groups: tuple[tuple[int, ...], ...] | None = None,
+) -> tuple[ChangeClassification, ...]:
+    """Classify coherent direct operation groups without applying any effect.
+
+    A live WriteAuthority resolves task/profile/authorizer authority first.
+    A CapturedChangeAuthority instead verifies the exact preflight envelope for
+    pure planning; it never substitutes for live preparation. Failure of either
+    binding refuses every group, before any Proposal conversion. By default
+    the entire Patch is one atomic change: creation plus connecting edges, or an
+    edge removal plus replacement, must not be judged as isolated operations.
+    Explicit groups must partition the operations in written order. Earlier
+    admitted groups provide staged context; pending review effects do not.
+
+    Both gates judge direct changes. Only protected action refusals and codes
+    explicitly owned as reviewable by operation rules are eligible for a
+    supported Proposal form, which must itself pass both gates. Malformed data,
+    missing dependencies, and invalid proposed effects remain exact structured
+    refusals. This function does not repair invalid encodings or invent causes;
+    the builder must supply the correct ordered operations and truthful cause.
+    A final assembled Patch still requires authoritative transition preparation.
+    """
+    from rcp.core.materialize import apply_valid_patch, prepare_patch_bookkeeping
+    from rcp.core.models import GatedCard, Proposal
+    from rcp.core.validation import validate_patch
+    from rcp.core.validation.ops import REVIEWABLE_OPERATION_REFUSALS
+
+    groups = operation_groups if operation_groups is not None else (tuple(range(len(patch.ops))),)
+    if operation_groups is not None and any(not group for group in groups):
+        raise ValueError("operation_groups cannot contain empty groups")
+    if tuple(index for group in groups for index in group) != tuple(range(len(patch.ops))):
+        raise ValueError("operation_groups must partition Patch operations in written order")
+    if context.mode != "admission":
+        raise ValueError("change classification requires admission validation")
+    try:
+        if isinstance(authority, CapturedChangeAuthority):
+            if (
+                project_id != authority.project_id
+                or apply_target != authority.apply_target
+                or patch.model_dump(exclude={"ops"})
+                != authority.patch_template.model_dump(exclude={"ops"})
+                or (authorized_by is not None and authorized_by != patch.authorized_by)
+            ):
+                raise ValueError("candidate Patch does not match captured planning authority")
+            permission_gate = WriteAuthority()
+            writer = Writer.from_patch(patch)
+            admission = permission_gate.validate_permissions(state, patch)
+        else:
+            permission_gate = authority
+            patch, writer, admission = authority.admit(
+                state,
+                patch,
+                project_id=project_id,
+                authorized_by=authorized_by,
+                apply_target=apply_target,
+            )
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        diagnostic = ValidationMessage(
+            level="reject",
+            code=exc.code
+            if isinstance(exc, AgentAuthorizerDeparted)
+            else "write-authority-refused",
+            message=str(exc),
+            patch_revision=patch.revision or None,
+        )
+        return tuple(
+            ChangeClassification(group, "refused", diagnostics=(diagnostic,)) for group in groups
+        )
+    # Operation refusals are classified below; any independent admission refusal
+    # (for example lost human membership) can never become a pending Proposal.
+    admission_refusals = tuple(
+        item
+        for item in admission.messages
+        if item.level == "reject" and item.code != "graph-action-refused"
+    )
+    if admission_refusals:
+        return tuple(
+            ChangeClassification(group, "refused", diagnostics=admission_refusals)
+            for group in groups
+        )
+
+    admitted_ops: list[GraphOperation] = []
+    admitted_indices: list[int] = []
+    staged = state
+    results: list[ChangeClassification] = []
+    for group in groups:
+        operations = [patch.ops[index] for index in group]
+        candidate_indices = (*admitted_indices, *group)
+        candidate = patch.model_copy(update={"ops": [*admitted_ops, *operations]})
+        permission = permission_gate.validate_permissions(state, candidate)
+        refused_actions = {
+            action
+            for operation in operations
+            for action in operation_actions(state, candidate, operation)
+            if not permits(candidate, action)
+        }
+        if permission.rejected:
+            diagnostics = _classification_diagnostics(permission.messages, candidate_indices)
+            reviewable = bool(refused_actions) and refused_actions <= _REVIEWABLE_GRAPH_ACTIONS
+        else:
+            report = validate_patch(state, candidate, context, writer=writer)
+            diagnostics = _classification_diagnostics(report.messages, candidate_indices)
+            if not report.rejected:
+                results.append(ChangeClassification(group, "admitted", diagnostics=diagnostics))
+                admitted_ops.extend(operations)
+                admitted_indices.extend(group)
+                staged = apply_valid_patch(state, candidate)
+                continue
+            reviewable = all(
+                item.code in REVIEWABLE_OPERATION_REFUSALS
+                for item in report.messages
+                if item.level == "reject"
+            )
+        if not reviewable:
+            results.append(ChangeClassification(group, "refused", diagnostics=diagnostics))
+            continue
+        try:
+            review_ops = _review_operations(staged, operations)
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            diagnostic = ValidationMessage(
+                level="reject",
+                code="malformed-operation",
+                message=f"Patch operations are malformed: {exc}.",
+                patch_revision=patch.revision or None,
+            )
+            results.append(ChangeClassification(group, "refused", diagnostics=(diagnostic,)))
+            continue
+        if review_ops is None:
+            results.append(ChangeClassification(group, "refused", diagnostics=diagnostics))
+            continue
+        # A stable private probe id avoids collisions with actual pending cards.
+        probe_id = "proposal/core-change-classification"
+        while probe_id in state.proposals:
+            probe_id += "-probe"
+        proposal = Proposal(
+            id=probe_id, title="Review change", card=GatedCard(), ops=list(review_ops)
+        )
+        review_candidate = prepare_patch_bookkeeping(
+            state,
+            patch.model_copy(
+                update={
+                    "ops": [
+                        *admitted_ops,
+                        CreateProposalsOperation(op="create_proposals", proposals=[proposal]),
+                    ]
+                }
+            ),
+        )
+        review_report = permission_gate.validate_permissions(state, review_candidate)
+        if not review_report.rejected:
+            review_report = validate_patch(state, review_candidate, context, writer=writer)
+        if review_report.rejected:
+            results.append(
+                ChangeClassification(
+                    group,
+                    "refused",
+                    diagnostics=_classification_diagnostics(
+                        review_report.messages, (*admitted_indices, group[0])
+                    ),
+                )
+            )
+        else:
+            results.append(ChangeClassification(group, "reviewable", review_ops, diagnostics))
+    return tuple(results)
+
+
+def _classification_diagnostics(
+    messages: Iterable[ValidationMessage], indices: tuple[int, ...]
+) -> tuple[ValidationMessage, ...]:
+    """Retain original Patch positions when earlier reviews are omitted."""
+    return tuple(
+        message.model_copy(update={"operation_index": indices[message.operation_index]})
+        if message.operation_index is not None and message.operation_index < len(indices)
+        else message
+        for message in messages
+    )
+
+
+def _review_operations(
+    state: GraphState, operations: list[GraphOperation]
+) -> tuple[ProposalOperation, ...] | None:
+    """Encode supported review intents; the Proposal validator owns their legality."""
+    from pydantic import TypeAdapter
+
+    adapter = TypeAdapter(ProposalOperation)
+    values: list[dict[str, object]] = []
+    for operation in operations:
+        raw = operation.model_dump(mode="python", exclude_unset=True)
+        if isinstance(operation, UpdateNodesOperation):
+            for update in operation.nodes:
+                node = state.nodes.get(update.id)
+                changes = dict(update.changes)
+                if (
+                    node is not None
+                    and project_type_of(state).is_belief(node.type)
+                    and "status" in changes
+                ):
+                    status = update.model_dump(mode="python", exclude_unset=True)
+                    status["changes"] = {"status": changes.pop("status")}
+                    values.append(
+                        {"op": "update_nodes", "intent": "status_change", "nodes": [status]}
+                    )
+                    if changes:
+                        values.append(
+                            {
+                                "op": "update_nodes",
+                                "intent": "content_change",
+                                "nodes": [{"id": update.id, "changes": changes}],
+                            }
+                        )
+                else:
+                    values.append(
+                        {
+                            "op": "update_nodes",
+                            "intent": "content_change",
+                            "nodes": [update.model_dump(mode="python", exclude_unset=True)],
+                        }
+                    )
+        elif isinstance(operation, RemoveNodesOperation):
+            values.extend(
+                {"op": "remove_nodes", "intent": "removal", "node_ids": [node_id]}
+                for node_id in operation.node_ids
+            )
+        elif isinstance(operation, SupersedeNodesOperation):
+            values.extend(
+                {"op": "supersede_nodes", "intent": "supersede", "nodes": [item]}
+                for item in raw["nodes"]
+            )
+        elif isinstance(operation, MergeNodesOperation):
+            values.extend(
+                {"op": "merge_nodes", "intent": "merge", "merges": [item]} for item in raw["merges"]
+            )
+        elif isinstance(operation, (CreateEdgesOperation, RemoveEdgesOperation)):
+            field = "edges" if isinstance(operation, CreateEdgesOperation) else "edge_ids"
+            values.extend(
+                {"op": operation.op, "intent": "protected_relation_change", field: [item]}
+                for item in raw[field]
+            )
+        elif isinstance(operation, SetStandingOperation):
+            values.append({**raw, "intent": "standing_change"})
+        else:
+            return None
+    return tuple(adapter.validate_python(value) for value in values)

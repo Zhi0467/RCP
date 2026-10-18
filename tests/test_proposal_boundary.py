@@ -1231,3 +1231,67 @@ def test_agent_proposal_rejects_a_third_shape(manifest) -> None:
     )
 
     assert report.rejected
+
+
+def test_proposal_validation_preserves_inner_diagnostic_identity(manifest) -> None:
+    state = _state_with_decision(manifest)
+    node_id = "hyp/replanning-restores-plasticity"
+    missing_edge = "edge/missing-cause"
+    patch = _agent_patch(
+        _proposal(
+            proposal_id="prop/missing-cause",
+            node_id=node_id,
+            changes={"status": "supported"},
+            cause={"kind": "evidence_edge", "ref_id": missing_edge},
+        )
+    )
+
+    report = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"]))
+
+    diagnostic = next(item for item in report.messages if item.code == "invalid-belief-cause")
+    assert diagnostic.related_node_ids == [node_id]
+    assert diagnostic.related_edge_ids == [missing_edge]
+
+
+def test_proposal_footprint_includes_cause_reads_and_generated_guidance_writes(manifest) -> None:
+    from rcp.core.models import CURRENT_PROPOSAL_DEPENDENCY_RULE, Proposal
+    from rcp.core.validation.proposals import ProposalResource, proposal_dependencies_and_effects
+
+    state = _state_with_decision(manifest)
+    patch = _agent_patch(_update_node("exp/evaluation", {"current_summary": "Ready to evaluate."}))
+    patch = patch.model_copy(update={"revision": state.revision + 1})
+    state = apply_valid_patch(state, patch)
+    proposal = Proposal.model_validate(
+        {
+            "id": "prop/guidance-effect",
+            "title": "Review the status",
+            "card": {"decision_needed": "Accept the result?"},
+            "dependency_rule": CURRENT_PROPOSAL_DEPENDENCY_RULE,
+            "ops": [
+                _update_node(
+                    "hyp/replanning-restores-plasticity",
+                    {"status": "supported"},
+                    intent="status_change",
+                    cause={"kind": "evidence_edge", "ref_id": "edge/evaluation-support"},
+                )
+            ],
+        }
+    )
+    footprint = proposal_dependencies_and_effects(state, proposal)
+    assert ProposalResource(kind="node", id="ev/evaluation-result") in footprint.dependencies
+    assert ProposalResource(kind="node", id="ev/evaluation-result") not in footprint.effects
+    removal = Proposal.model_validate(
+        {
+            **proposal.model_dump(mode="json"),
+            "ops": [
+                {
+                    "op": "remove_nodes",
+                    "intent": "removal",
+                    "node_ids": ["hyp/replanning-restores-plasticity"],
+                }
+            ],
+        }
+    )
+    removal_footprint = proposal_dependencies_and_effects(state, removal)
+    assert ProposalResource(kind="node", id="exp/evaluation") in removal_footprint.effects
+    assert state.nodes["exp/evaluation"].current_summary_stale is False

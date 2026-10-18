@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import PurePosixPath
 from types import UnionType
-from typing import Annotated, Any, Literal, Union, get_args, get_origin
+from typing import Annotated, Any, Literal, TypeAlias, Union, get_args, get_origin
 
 from pydantic import (
     AfterValidator,
@@ -36,6 +36,52 @@ from rcp.limits import (
     HIDDEN_READ_REASON_MAX_COUNT,
 )
 from rcp.providers import PROVIDER_IDS
+
+
+@dataclass(frozen=True)
+class GraphField:
+    """Semantic comparison role plus the concrete owner's independent write policy.
+
+    These annotation metadata never enter persisted documents or agent schemas.
+    Content includes judgments and retained historical values even when only a
+    dedicated operation or the engine can write them. Identity names an entity;
+    engine fields are recomputed bookkeeping, excluded from semantic comparison.
+    """
+
+    role: Literal["content", "engine", "identity"]
+    node_update: Literal["immutable", "replay_only"] | None = None
+    proposal_owner: Literal["filing", "resolution"] | None = None
+
+
+def graph_field(field: FieldInfo) -> GraphField:
+    """Read exactly one explicit role; unclassified or multiply classified fails."""
+
+    roles = [item for item in field.metadata if isinstance(item, GraphField)]
+    if len(roles) != 1:
+        raise ValueError("a graph field requires exactly one GraphField annotation")
+    return roles[0]
+
+
+def graph_fields(
+    model: type[BaseModel],
+    *,
+    role: Literal["content", "engine", "identity"] | None = None,
+    node_update: Literal["immutable", "replay_only"] | None = None,
+    proposal_owner: Literal["filing", "resolution"] | None = None,
+) -> frozenset[str]:
+    """Select declared field metadata, including fields inherited by this model."""
+
+    result: set[str] = set()
+    for name, field in model.model_fields.items():
+        metadata = graph_field(field)
+        if (
+            (role is None or metadata.role == role)
+            and (node_update is None or metadata.node_update == node_update)
+            and (proposal_owner is None or metadata.proposal_owner == proposal_owner)
+        ):
+            result.add(name)
+    return frozenset(result)
+
 
 DISPLAY_NAME_MAX_LENGTH = 120
 EVIDENCE_ASSESSMENT_SCOPE_MAX_LENGTH = 500
@@ -393,83 +439,98 @@ class Standing(StrEnum):
 #: A native session's origin: a registered provider, or RCP's own chat records.
 #: Built from the registry so adding a provider needs no edit here; the schema
 #: still renders a closed enum.
-SessionSourceId = Literal[(*PROVIDER_IDS, "app_chat")]  # type: ignore[valid-type]
+SessionSourceId: TypeAlias = Literal[(*PROVIDER_IDS, "app_chat")]  # type: ignore[valid-type]
 
 
 class SourceRef(BaseModel):
-    machine: str
-    truth_repository: str
-    source: SessionSourceId
-    session_id: str
-    record_uuid: str
-    timestamp: datetime
-    excerpt: str = Field(max_length=800)
+    machine: Annotated[str, GraphField("content")]
+    truth_repository: Annotated[str, GraphField("content")]
+    source: Annotated[SessionSourceId, GraphField("content")]
+    session_id: Annotated[str, GraphField("content")]
+    record_uuid: Annotated[str, GraphField("content")]
+    timestamp: Annotated[datetime, GraphField("content")]
+    excerpt: Annotated[str, GraphField("content")] = Field(max_length=800)
 
 
 class ExperimentDecisionPin(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    decision_id: str
-    decision_revision: int = Field(ge=0)
-    selected_option: str = Field(min_length=1)
+    decision_id: Annotated[str, GraphField("content")]
+    decision_revision: Annotated[int, GraphField("content")] = Field(ge=0)
+    selected_option: Annotated[str, GraphField("content")] = Field(min_length=1)
 
 
 class ExperimentAttemptDebug(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    mechanical_fault: str = Field(min_length=1)
-    change: str = Field(min_length=1)
-    predicted_effect: str = Field(min_length=1)
+    mechanical_fault: Annotated[str, GraphField("content")] = Field(min_length=1)
+    change: Annotated[str, GraphField("content")] = Field(min_length=1)
+    predicted_effect: Annotated[str, GraphField("content")] = Field(min_length=1)
 
 
 ACTIVE_EXPERIMENT_ATTEMPT_STATUSES = frozenset({"planned", "submitted", "running"})
 
 
 class ExperimentAttempt(BaseModel):
-    id: str
-    sequence: int = Field(ge=1)
-    purpose: str
-    attempt_kind: Literal["external_run", "proposal_only"] = "external_run"
-    decision_bundle: list[ExperimentDecisionPin] = Field(default_factory=list)
-    debug: ExperimentAttemptDebug | None = None
-    configuration: str = ""
-    status: Literal[
-        "planned", "submitted", "running", "failed", "completed", "cancelled", "superseded"
+    id: Annotated[str, GraphField("identity")]
+    sequence: Annotated[int, GraphField("content")] = Field(ge=1)
+    purpose: Annotated[str, GraphField("content")]
+    attempt_kind: Annotated[Literal["external_run", "proposal_only"], GraphField("content")] = (
+        "external_run"
+    )
+    decision_bundle: Annotated[list[ExperimentDecisionPin], GraphField("content")] = Field(
+        default_factory=list
+    )
+    debug: Annotated[ExperimentAttemptDebug | None, GraphField("content")] = None
+    configuration: Annotated[str, GraphField("content")] = ""
+    status: Annotated[
+        Literal[
+            "planned", "submitted", "running", "failed", "completed", "cancelled", "superseded"
+        ],
+        GraphField("content"),
     ] = "planned"
-    job_refs: list[str] = Field(default_factory=list)
-    source_refs: list[SourceRef] = Field(default_factory=list)
-    outcome: str | None = None
-    failure_reason: str | None = None
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
+    job_refs: Annotated[list[str], GraphField("content")] = Field(default_factory=list)
+    source_refs: Annotated[list[SourceRef], GraphField("content")] = Field(default_factory=list)
+    outcome: Annotated[str | None, GraphField("content")] = None
+    failure_reason: Annotated[str | None, GraphField("content")] = None
+    started_at: Annotated[datetime | None, GraphField("content")] = None
+    finished_at: Annotated[datetime | None, GraphField("content")] = None
 
 
 class BaseNode(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    id: str = Field(
+    id: Annotated[str, GraphField("identity", node_update="immutable")] = Field(
         description="Stable identity. Reuse an existing node's id rather than recreating it."
     )
-    title: str = Field(description="A short reader-facing name, in ordinary language.")
-    extension_type: str | None = Field(
+    title: Annotated[str, GraphField("content")] = Field(
+        description="A short reader-facing name, in ordinary language."
+    )
+    extension_type: Annotated[str | None, GraphField("identity", node_update="immutable")] = Field(
         default=None,
         pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$",
         description="The active custom type this node specializes, or null for a base node.",
     )
-    extension_fields: dict[str, str | float | bool | list[str]] = Field(
+    extension_fields: Annotated[
+        dict[str, str | float | bool | list[str]], GraphField("content")
+    ] = Field(
         default_factory=dict,
         description="Values for the custom type's own fields; base fields never go here.",
     )
-    standing: Standing = Field(
+    standing: Annotated[Standing, GraphField("content", node_update="immutable")] = Field(
         default=Standing.ASSERTED,
         description=(
             "Review standing: `asserted` (not yet reviewed), `accepted`, or `contested`. "
             "Editing accepted ordinary content returns it to `asserted`."
         ),
     )
-    created_rev: int = Field(default=0, description="Revision that created the node.")
-    updated_rev: int = Field(default=0, description="Revision that last changed the node.")
-    source_refs: list[SourceRef] = Field(
+    created_rev: Annotated[int, GraphField("engine", node_update="immutable")] = Field(
+        default=0, description="Revision that created the node."
+    )
+    updated_rev: Annotated[int, GraphField("engine", node_update="immutable")] = Field(
+        default=0, description="Revision that last changed the node."
+    )
+    source_refs: Annotated[list[SourceRef], GraphField("content")] = Field(
         default_factory=list,
         description=(
             "Exact provider records that support this node. Each `excerpt` must itself contain "
@@ -479,37 +540,41 @@ class BaseNode(BaseModel):
 
 
 class ResearchQuestion(BaseNode):
-    type: Literal["research_question"]
-    question: str = Field(description="The question the project is trying to answer.")
-    motivation: str = Field(default="", description="Why answering it matters to the project.")
-    scope: str = Field(
+    type: Annotated[Literal["research_question"], GraphField("identity", node_update="immutable")]
+    question: Annotated[str, GraphField("content")] = Field(
+        description="The question the project is trying to answer."
+    )
+    motivation: Annotated[str, GraphField("content")] = Field(
+        default="", description="Why answering it matters to the project."
+    )
+    scope: Annotated[str, GraphField("content")] = Field(
         default="",
         description=(
             "What the question covers and what it leaves out, such as the population, setting, "
             "or time range. Hypotheses and Experiments under it stay inside this boundary."
         ),
     )
-    status: Literal["open", "answered", "abandoned", "superseded"] = Field(
-        default="open", description="Whether the question is still being pursued."
-    )
+    status: Annotated[
+        Literal["open", "answered", "abandoned", "superseded"], GraphField("content")
+    ] = Field(default="open", description="Whether the question is still being pursued.")
 
 
 class Hypothesis(BaseNode):
-    type: Literal["hypothesis"]
-    statement: str = Field(
+    type: Annotated[Literal["hypothesis"], GraphField("identity", node_update="immutable")]
+    statement: Annotated[str, GraphField("content")] = Field(
         description=(
             "A claim that some observation could show to be false, stated specifically. Name the "
             "observation that would show it false."
         )
     )
-    rationale: str = Field(
+    rationale: Annotated[str, GraphField("content")] = Field(
         default="",
         description=(
             "Why the claim is worth testing, written before evidence bears on it. Reasoning, "
             "not evidence."
         ),
     )
-    predictions: list[str] = Field(
+    predictions: Annotated[list[str], GraphField("content")] = Field(
         default_factory=list,
         description=(
             "What should be true in the world if the claim holds, independent of how any one "
@@ -517,7 +582,7 @@ class Hypothesis(BaseNode):
             "claim if it failed. Written before results exist."
         ),
     )
-    scope: str = Field(
+    scope: Annotated[str, GraphField("content")] = Field(
         default="",
         description=(
             "The boundary within which the claim is meant to hold. Write it only when a cited "
@@ -526,21 +591,24 @@ class Hypothesis(BaseNode):
             "missing boundary."
         ),
     )
-    status: Literal["proposed", "active", "supported", "weakened", "rejected", "superseded"] = (
-        Field(
-            default="proposed",
-            description=(
-                "Where the claim stands against its evidence. A change names the "
-                "Evidence-to-Hypothesis edge that caused it."
-            ),
-        )
+    status: Annotated[
+        Literal["proposed", "active", "supported", "weakened", "rejected", "superseded"],
+        GraphField("content"),
+    ] = Field(
+        default="proposed",
+        description=(
+            "Where the claim stands against its evidence. A change names the "
+            "Evidence-to-Hypothesis edge that caused it."
+        ),
     )
 
 
 class Decision(BaseNode):
-    type: Literal["decision"]
-    question: str = Field(description="The choice that governs how research proceeds.")
-    options: list[str] = Field(
+    type: Annotated[Literal["decision"], GraphField("identity", node_update="immutable")]
+    question: Annotated[str, GraphField("content")] = Field(
+        description="The choice that governs how research proceeds."
+    )
+    options: Annotated[list[str], GraphField("content")] = Field(
         default_factory=list,
         description=(
             "The alternatives the chooser selects among. Investigate each with the same care and "
@@ -549,21 +617,23 @@ class Decision(BaseNode):
             "signal a preference through order, length, or wording."
         ),
     )
-    selected_option: str | None = Field(
+    selected_option: Annotated[str | None, GraphField("content")] = Field(
         default=None, description="The chosen option, exactly as written in `options`."
     )
-    rationale: str | None = Field(
+    rationale: Annotated[str | None, GraphField("content")] = Field(
         default=None,
         description=(
             "What the choice turns on and any leaning. If only one option survives "
             "investigation, say so here instead of inventing alternatives."
         ),
     )
-    consequences: list[str] = Field(
+    consequences: Annotated[list[str], GraphField("content")] = Field(
         default_factory=list,
         description="What changes in the research once the choice is made.",
     )
-    status: Literal["open", "ready", "decided", "revisit", "superseded"] = Field(
+    status: Annotated[
+        Literal["open", "ready", "decided", "revisit", "superseded"], GraphField("content")
+    ] = Field(
         default="open",
         description=(
             "`open` while facts are missing; `ready` once the choice is makeable from facts "
@@ -577,10 +647,10 @@ class Decision(BaseNode):
 class ExperimentProxy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    stands_for: str = Field(
+    stands_for: Annotated[str, GraphField("content")] = Field(
         min_length=1, description="The quantity the research cares about, such as caffeine intake."
     )
-    measure: str = Field(
+    measure: Annotated[str, GraphField("content")] = Field(
         min_length=1,
         description=(
             "What is actually measured in its place, such as self-reported cups of coffee per week."
@@ -599,14 +669,14 @@ class ExperimentProxy(BaseModel):
 
 
 class Experiment(BaseNode):
-    type: Literal["experiment"]
-    objective: str = Field(
+    type: Annotated[Literal["experiment"], GraphField("identity", node_update="immutable")]
+    objective: Annotated[str, GraphField("content")] = Field(
         description=(
             "What this bounded test is meant to establish and why, in plain sentences a reader "
             "who knows the field but not this project understands."
         )
     )
-    design: str = Field(
+    design: Annotated[str, GraphField("content")] = Field(
         default="",
         description=(
             "The operational plan, so a reader knows exactly what will be done: what is run (the "
@@ -616,7 +686,7 @@ class Experiment(BaseNode):
             "a script or config does rather than only naming it. Written before results exist."
         ),
     )
-    proxies: list[ExperimentProxy] = Field(
+    proxies: Annotated[list[ExperimentProxy], GraphField("content")] = Field(
         default_factory=list,
         description=(
             "Each measurable stand-in the design uses, as what it stands for and what is "
@@ -625,14 +695,14 @@ class Experiment(BaseNode):
             "Written with the design."
         ),
     )
-    limitations: list[str] = Field(
+    limitations: Annotated[list[str], GraphField("content")] = Field(
         default_factory=list,
         description=(
             "What the proxies and the protocol miss or exclude, such as a source not counted or "
             "a group left out. Written with the design."
         ),
     )
-    expected_outcomes: list[str] = Field(
+    expected_outcomes: Annotated[list[str], GraphField("content")] = Field(
         default_factory=list,
         description=(
             "What this measurement should show if the tested claim holds, in the proxies' terms. "
@@ -640,7 +710,7 @@ class Experiment(BaseNode):
             "results exist."
         ),
     )
-    interpretation_rules: list[str] = Field(
+    interpretation_rules: Annotated[list[str], GraphField("content")] = Field(
         default_factory=list,
         description=(
             "Pre-committed rules for reading results: if this is observed, it means that. "
@@ -648,11 +718,11 @@ class Experiment(BaseNode):
             "`Evidence.interpretation`."
         ),
     )
-    completion_criteria: list[str] = Field(
+    completion_criteria: Annotated[list[str], GraphField("content")] = Field(
         default_factory=list,
         description="What must be recorded for the Experiment to count as finished.",
     )
-    invocation_ceiling: int = Field(
+    invocation_ceiling: Annotated[int, GraphField("content")] = Field(
         default=5,
         ge=1,
         description=(
@@ -660,17 +730,20 @@ class Experiment(BaseNode):
             "A human Run may pin a different count for that episode."
         ),
     )
-    status: Literal[
-        "proposed",
-        "designing",
-        "implementing",
-        "debugging",
-        "running",
-        "analyzing",
-        "completed",
-        "unspecified",
-        "abandoned",
-        "superseded",
+    status: Annotated[
+        Literal[
+            "proposed",
+            "designing",
+            "implementing",
+            "debugging",
+            "running",
+            "analyzing",
+            "completed",
+            "unspecified",
+            "abandoned",
+            "superseded",
+        ],
+        GraphField("content"),
     ] = Field(
         default="proposed",
         description=(
@@ -680,25 +753,25 @@ class Experiment(BaseNode):
             "written."
         ),
     )
-    attempts: list[ExperimentAttempt] = Field(
+    attempts: Annotated[list[ExperimentAttempt], GraphField("content")] = Field(
         default_factory=list,
         description=(
             "Ordered ledger of this Experiment's attempts: purpose, configuration, job "
             "references, status, and outcome."
         ),
     )
-    current_summary: str = Field(
+    current_summary: Annotated[str, GraphField("content")] = Field(
         default="",
         description=(
             "Short orientation on where the Experiment stands now. Not a substitute for the "
             "attempt ledger or for Evidence."
         ),
     )
-    next_action: str | None = Field(
+    next_action: Annotated[str | None, GraphField("content")] = Field(
         default=None,
         description="The concrete next step, or null when nothing remains.",
     )
-    current_summary_stale: bool = Field(
+    current_summary_stale: Annotated[bool, GraphField("engine", node_update="replay_only")] = Field(
         default=False,
         description=(
             "Set by RCP, never in a Patch: true once something `current_summary` rests on "
@@ -707,7 +780,7 @@ class Experiment(BaseNode):
             "the same Patch as that change stays stale."
         ),
     )
-    next_action_stale: bool = Field(
+    next_action_stale: Annotated[bool, GraphField("engine", node_update="replay_only")] = Field(
         default=False,
         description=(
             "Set by RCP, never in a Patch: true once something `next_action` rests on changes. "
@@ -735,45 +808,49 @@ CLOSED_EXPERIMENT_STATUSES = frozenset({"completed", "abandoned", "superseded"})
 
 
 class Evidence(BaseNode):
-    type: Literal["evidence"]
-    observation: str = Field(
+    type: Annotated[Literal["evidence"], GraphField("identity", node_update="immutable")]
+    observation: Annotated[str, GraphField("content")] = Field(
         description=(
             "What the artifact or record directly states: run, step, value, absence, and time "
             "boundary. Written after the result exists."
         )
     )
-    interpretation: str = Field(
+    interpretation: Annotated[str, GraphField("content")] = Field(
         default="",
         description=(
             "What the observation licenses here and, when useful, what it does not. Written "
             "after the result exists."
         ),
     )
-    role: Literal["result", "diagnostic"] = Field(
+    role: Annotated[Literal["result", "diagnostic"], GraphField("content")] = Field(
         default="result",
         description=(
             "`result` for an ordinary observation; `diagnostic` when it mainly localizes, "
             "disambiguates, or debugs a phenomenon. Role is not evidential weight."
         ),
     )
-    legacy_strength: Literal["diagnostic", "preliminary", "supporting", "confirmatory"] | None = (
-        Field(
-            default=None,
-            description=(
-                "A retired node-wide strength label kept only for old history. Never write it, "
-                "and never read it as an edge weight."
-            ),
-        )
+    legacy_strength: Annotated[
+        Literal["diagnostic", "preliminary", "supporting", "confirmatory"] | None,
+        GraphField("content", node_update="replay_only"),
+    ] = Field(
+        default=None,
+        description=(
+            "A retired node-wide strength label kept only for old history. Never write it, "
+            "and never read it as an edge weight."
+        ),
     )
-    validity: Literal["valid", "qualified", "invalid", "superseded"] = Field(
+    validity: Annotated[
+        Literal["valid", "qualified", "invalid", "superseded"], GraphField("content")
+    ] = Field(
         default="valid",
         description=(
             "Methodological soundness within the observation's own limits. An incomplete run may "
             "justify only a `qualified` snapshot."
         ),
     )
-    origin: Literal[
-        "internal_run", "external_publication", "external_instance", "analytic", "unknown"
+    origin: Annotated[
+        Literal["internal_run", "external_publication", "external_instance", "analytic", "unknown"],
+        GraphField("content"),
     ] = Field(
         default="unknown",
         description=(
@@ -784,29 +861,32 @@ class Evidence(BaseNode):
             "external or analytic Evidence needs no invented Experiment or conversation source."
         ),
     )
-    artifact_refs: list[str] = Field(
+    artifact_refs: Annotated[list[str], GraphField("content")] = Field(
         default_factory=list,
         description="Paths to the primary artifacts the observation comes from.",
     )
 
 
 class Blocker(BaseNode):
-    type: Literal["blocker"]
-    description: str = Field(description="The concrete impediment and what it stops.")
-    blocker_type: Literal[
-        "scientific", "design", "data", "implementation", "infrastructure", "unknown"
+    type: Annotated[Literal["blocker"], GraphField("identity", node_update="immutable")]
+    description: Annotated[str, GraphField("content")] = Field(
+        description="The concrete impediment and what it stops."
+    )
+    blocker_type: Annotated[
+        Literal["scientific", "design", "data", "implementation", "infrastructure", "unknown"],
+        GraphField("content"),
     ] = Field(default="unknown", description="What kind of impediment it is.")
-    status: Literal["open", "resolved", "superseded"] = Field(
+    status: Annotated[Literal["open", "resolved", "superseded"], GraphField("content")] = Field(
         default="open", description="Only an `open` Blocker gates anything."
     )
-    resolution_condition: str = Field(
+    resolution_condition: Annotated[str, GraphField("content")] = Field(
         default="",
         description=(
             "The observable condition that clears it. It never amounts to running the "
             "Experiment the Blocker stops."
         ),
     )
-    recommended_action: str | None = Field(
+    recommended_action: Annotated[str | None, GraphField("content")] = Field(
         default=None, description="The step most likely to meet the resolution condition."
     )
 
@@ -878,42 +958,50 @@ ALL_NODE_TYPES: frozenset[str] = frozenset(
 class OntologyTypeDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
-    definition: str = Field(min_length=1)
-    base_type: NodeType
-    layer: Literal["epistemic", "action"]
-    deprecated: bool = False
+    name: Annotated[str, GraphField("identity")] = Field(pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
+    definition: Annotated[str, GraphField("content")] = Field(min_length=1)
+    base_type: Annotated[NodeType, GraphField("content")]
+    layer: Annotated[Literal["epistemic", "action"], GraphField("content")]
+    deprecated: Annotated[bool, GraphField("content")] = False
 
 
 class OntologyFieldDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    owner_type: str = Field(pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
-    name: str = Field(pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
-    definition: str = Field(min_length=1)
-    kind: Literal["text", "number", "boolean", "text_list"]
-    required: bool = False
-    agent_writable: bool = True
-    deprecated: bool = False
+    owner_type: Annotated[str, GraphField("identity")] = Field(
+        pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"
+    )
+    name: Annotated[str, GraphField("identity")] = Field(pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
+    definition: Annotated[str, GraphField("content")] = Field(min_length=1)
+    kind: Annotated[Literal["text", "number", "boolean", "text_list"], GraphField("content")]
+    required: Annotated[bool, GraphField("content")] = False
+    agent_writable: Annotated[bool, GraphField("content")] = True
+    deprecated: Annotated[bool, GraphField("content")] = False
 
 
 class OntologyRelationDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
-    definition: str = Field(min_length=1)
-    source_types: list[str] = Field(min_length=1)
-    target_types: list[str] = Field(min_length=1)
-    layer: Literal["epistemic", "action"]
-    deprecated: bool = False
+    name: Annotated[str, GraphField("identity")] = Field(pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
+    definition: Annotated[str, GraphField("content")] = Field(min_length=1)
+    source_types: Annotated[list[str], GraphField("content")] = Field(min_length=1)
+    target_types: Annotated[list[str], GraphField("content")] = Field(min_length=1)
+    layer: Annotated[Literal["epistemic", "action"], GraphField("content")]
+    deprecated: Annotated[bool, GraphField("content")] = False
 
 
 class OntologyState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    types: list[OntologyTypeDefinition] = Field(default_factory=list)
-    fields: list[OntologyFieldDefinition] = Field(default_factory=list)
-    relations: list[OntologyRelationDefinition] = Field(default_factory=list)
+    types: Annotated[list[OntologyTypeDefinition], GraphField("content")] = Field(
+        default_factory=list
+    )
+    fields: Annotated[list[OntologyFieldDefinition], GraphField("content")] = Field(
+        default_factory=list
+    )
+    relations: Annotated[list[OntologyRelationDefinition], GraphField("content")] = Field(
+        default_factory=list
+    )
 
     @model_validator(mode="after")
     def require_unique_names(self) -> OntologyState:
@@ -1047,22 +1135,25 @@ RELATION_SPEC: dict[BaseRelation, RelationSpec] = {
 class EvidenceAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    relevance: Literal["direct", "indirect", "contextual"] = Field(
-        description="How directly the observation bears on this claim."
+    relevance: Annotated[Literal["direct", "indirect", "contextual"], GraphField("content")] = (
+        Field(description="How directly the observation bears on this claim.")
     )
-    weight: Literal["limited", "moderate", "strong"] = Field(
+    weight: Annotated[Literal["limited", "moderate", "strong"], GraphField("content")] = Field(
         description="How much the observation should move belief in this claim."
     )
-    scope: str | None = Field(
+    scope: Annotated[str | None, GraphField("content")] = Field(
         default=None,
         max_length=EVIDENCE_ASSESSMENT_SCOPE_MAX_LENGTH,
         description="The bounded population, regime, condition, subclaim, or setting covered.",
     )
-    qualifications: list[
-        Annotated[
-            str,
-            Field(min_length=1, max_length=EVIDENCE_ASSESSMENT_QUALIFICATION_MAX_LENGTH),
-        ]
+    qualifications: Annotated[
+        list[
+            Annotated[
+                str,
+                Field(min_length=1, max_length=EVIDENCE_ASSESSMENT_QUALIFICATION_MAX_LENGTH),
+            ]
+        ],
+        GraphField("content"),
     ] = Field(
         default_factory=list,
         max_length=EVIDENCE_ASSESSMENT_MAX_QUALIFICATIONS,
@@ -1109,29 +1200,33 @@ class Edge(BaseModel):
     # and so cannot run inside this validator.
     model_config = ConfigDict(extra="forbid")
 
-    id: str = Field(
+    id: Annotated[str, GraphField("identity")] = Field(
         description="Stable edge identity, by default `<source>::<relation>::<target>`."
     )
-    source: str = Field(description="Id of the node the relation starts from.")
-    target: str = Field(description="Id of the node the relation points to.")
-    relation: str = Field(
+    source: Annotated[str, GraphField("content")] = Field(
+        description="Id of the node the relation starts from."
+    )
+    target: Annotated[str, GraphField("content")] = Field(
+        description="Id of the node the relation points to."
+    )
+    relation: Annotated[str, GraphField("content")] = Field(
         pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$",
         description="The relation name; its legal endpoints are listed with the relations.",
     )
-    layer: RelationLayer = Field(
+    layer: Annotated[RelationLayer, GraphField("content")] = Field(
         description="Derived by RCP from the relation and the endpoint types; never written."
     )
-    explanation: str = Field(
+    explanation: Annotated[str, GraphField("content")] = Field(
         default="", description="Why the relation holds, in a sentence a reader can check."
     )
-    assessment: EvidenceAssessment | None = Field(
+    assessment: Annotated[EvidenceAssessment | None, GraphField("content")] = Field(
         default=None,
         description=(
             "How this Evidence bears on this particular Hypothesis. The relation already states "
             "direction; the same Evidence may bear differently on another Hypothesis."
         ),
     )
-    expectation: EdgeExpectation | None = Field(
+    expectation: Annotated[EdgeExpectation | None, GraphField("content")] = Field(
         default=None,
         description=(
             "Whether the result `matched` or `diverged` from the producing Experiment's "
@@ -1139,7 +1234,9 @@ class Edge(BaseModel):
             "`explanation`. A diverged result is either a protocol defect or the finding."
         ),
     )
-    created_rev: int = Field(default=0, description="Revision that created the edge.")
+    created_rev: Annotated[int, GraphField("engine")] = Field(
+        default=0, description="Revision that created the edge."
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -1154,40 +1251,62 @@ class Edge(BaseModel):
 
 
 class GatedCard(BaseModel):
-    situation_cold: str = ""
-    why_human_now: str = ""
-    consequences: str = ""
-    decision_needed: str = ""
+    situation_cold: Annotated[str, GraphField("content")] = ""
+    why_human_now: Annotated[str, GraphField("content")] = ""
+    consequences: Annotated[str, GraphField("content")] = ""
+    decision_needed: Annotated[str, GraphField("content")] = ""
 
 
 # The dependency rule a newly filed Proposal is judged under; see Proposal.dependency_rule.
-CURRENT_PROPOSAL_DEPENDENCY_RULE: Literal[2] = 2
+CURRENT_PROPOSAL_DEPENDENCY_RULE: Literal[3] = 3
 
 
 class Proposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    id: str
-    title: str
-    card: GatedCard
-    ops: list[ProposalOperation]
-    related_node_ids: list[str] = Field(default_factory=list)
-    related_edge_ids: list[str] = Field(default_factory=list)
-    related_config_keys: list[str] = Field(default_factory=list)
+    id: Annotated[str, GraphField("identity")]
+    title: Annotated[str, GraphField("content")]
+    card: Annotated[GatedCard, GraphField("content")]
+    ops: Annotated[list[ProposalOperation], GraphField("content")]
+    related_node_ids: Annotated[list[str], GraphField("engine", proposal_owner="filing")] = Field(
+        default_factory=list
+    )
+    related_edge_ids: Annotated[list[str], GraphField("engine", proposal_owner="filing")] = Field(
+        default_factory=list
+    )
+    related_config_keys: Annotated[list[str], GraphField("engine", proposal_owner="filing")] = (
+        Field(default_factory=list)
+    )
     # Under rule 2 a Proposal is also stale once the Evidence its cause edge starts
-    # from changes (validation/proposals.py). Earlier Proposals keep rule 1, so
-    # replay judges them as they were filed.
-    dependency_rule: Literal[1, 2] = 1
-    base_rev: int = 0
-    status: Literal["pending", "approved", "rejected", "withdrawn"] = "pending"
-    created_by: Literal["agent", "human"] = "agent"
-    created_by_operation_id: str | None = None
-    raised_rev: int = 0
-    resolved_rev: int | None = None
-    resolved_by: Literal["agent", "human"] | None = None
-    resolved_by_operation_id: str | None = None
-    resolution_reason: str | None = None
-    rejection_reason: str | None = None
+    # from changes (validation/proposals.py). Rule 3 scopes incident snapshots
+    # within connected reviews and permits atomic edge replacement; approval
+    # accepts only written subjects. Older records retain their recorded rule.
+    dependency_rule: Annotated[Literal[1, 2, 3], GraphField("engine", proposal_owner="filing")] = 1
+    base_rev: Annotated[int, GraphField("engine", proposal_owner="filing")] = 0
+    status: Annotated[
+        Literal["pending", "approved", "rejected", "withdrawn"],
+        GraphField("content", proposal_owner="resolution"),
+    ] = "pending"
+    created_by: Annotated[
+        Literal["agent", "human"], GraphField("engine", proposal_owner="filing")
+    ] = "agent"
+    created_by_operation_id: Annotated[
+        str | None, GraphField("engine", proposal_owner="filing")
+    ] = None
+    raised_rev: Annotated[int, GraphField("engine", proposal_owner="filing")] = 0
+    resolved_rev: Annotated[int | None, GraphField("engine", proposal_owner="resolution")] = None
+    resolved_by: Annotated[
+        Literal["agent", "human"] | None, GraphField("content", proposal_owner="resolution")
+    ] = None
+    resolved_by_operation_id: Annotated[
+        str | None, GraphField("engine", proposal_owner="resolution")
+    ] = None
+    resolution_reason: Annotated[str | None, GraphField("content", proposal_owner="resolution")] = (
+        None
+    )
+    rejection_reason: Annotated[str | None, GraphField("content", proposal_owner="resolution")] = (
+        None
+    )
 
     @field_serializer("ops")
     def serialize_ops(
@@ -1208,96 +1327,75 @@ class Proposal(BaseModel):
         return serialized
 
 
-# RCP owns every Proposal field but id, title, card, and ops; an agent writes only
-# those four. Filing (`prepare_patch_bookkeeping`) stamps these from the graph and
-# the filer: they say where a Proposal was filed, not what it proposes. A merge that
-# files a branch Proposal again on main restamps them and carries the same Proposal.
-PROPOSAL_FILING_STAMPS = frozenset(
-    {
-        "related_node_ids",
-        "related_edge_ids",
-        "related_config_keys",
-        "dependency_rule",
-        "base_rev",
-        "created_by",
-        "created_by_operation_id",
-        "raised_rev",
-    }
-)
-# Resolution sets these; filing resets them to their defaults.
-PROPOSAL_RESOLUTION_FIELDS = frozenset(
-    {
-        "status",
-        "resolved_rev",
-        "resolved_by",
-        "resolved_by_operation_id",
-        "resolution_reason",
-        "rejection_reason",
-    }
-)
-
-
 class Ambiguity(BaseModel):
-    id: str
-    question: str
-    why_it_matters: str
-    candidates: list[str] = Field(default_factory=list)
-    related_node_ids: list[str] = Field(default_factory=list)
-    artifact_refs: list[str] = Field(default_factory=list)
-    status: Literal["open", "resolved", "dismissed"] = "open"
-    raised_rev: int = 0
+    id: Annotated[str, GraphField("identity")]
+    question: Annotated[str, GraphField("content")]
+    why_it_matters: Annotated[str, GraphField("content")]
+    candidates: Annotated[list[str], GraphField("content")] = Field(default_factory=list)
+    related_node_ids: Annotated[list[str], GraphField("content")] = Field(default_factory=list)
+    artifact_refs: Annotated[list[str], GraphField("content")] = Field(default_factory=list)
+    status: Annotated[Literal["open", "resolved", "dismissed"], GraphField("content")] = "open"
+    raised_rev: Annotated[int, GraphField("engine")] = 0
 
 
 class GlossaryTerm(BaseModel):
-    term: str
-    plain_definition: str
-    where_defined: str | None = None
-    updated_rev: int = 0
+    term: Annotated[str, GraphField("identity")]
+    plain_definition: Annotated[str, GraphField("content")]
+    where_defined: Annotated[str | None, GraphField("content")] = None
+    updated_rev: Annotated[int, GraphField("engine")] = 0
 
 
 class ValidationMessage(BaseModel):
-    level: Literal["flag", "reject"]
-    code: str
-    message: str
-    patch_revision: int | None = None
-    related_node_ids: list[str] = Field(default_factory=list)
-    related_edge_ids: list[str] = Field(default_factory=list)
-    operation_index: int | None = Field(default=None, ge=0)
-    rule_id: str | None = None
-    cause_chain: list[dict[str, Any]] = Field(default_factory=list)
-    failed_invariant: str | None = None
+    level: Annotated[Literal["flag", "reject"], GraphField("engine")]
+    code: Annotated[str, GraphField("engine")]
+    message: Annotated[str, GraphField("engine")]
+    patch_revision: Annotated[int | None, GraphField("engine")] = None
+    related_node_ids: Annotated[list[str], GraphField("engine")] = Field(default_factory=list)
+    related_edge_ids: Annotated[list[str], GraphField("engine")] = Field(default_factory=list)
+    operation_index: Annotated[int | None, GraphField("engine")] = Field(default=None, ge=0)
+    rule_id: Annotated[str | None, GraphField("engine")] = None
+    cause_chain: Annotated[list[dict[str, Any]], GraphField("engine")] = Field(default_factory=list)
+    failed_invariant: Annotated[str | None, GraphField("engine")] = None
 
 
 class BeliefTransition(BaseModel):
-    hypothesis_id: str
-    from_status: str
-    to_status: str
-    revision: int
-    cause: dict[str, Any]
+    hypothesis_id: Annotated[str, GraphField("engine")]
+    from_status: Annotated[str, GraphField("engine")]
+    to_status: Annotated[str, GraphField("engine")]
+    revision: Annotated[int, GraphField("engine")]
+    cause: Annotated[dict[str, Any], GraphField("engine")]
 
 
 class ReplayFailure(BaseModel):
-    revision: int
-    created_at: datetime
-    code: str
-    message: str
+    revision: Annotated[int, GraphField("engine")]
+    created_at: Annotated[datetime, GraphField("engine")]
+    code: Annotated[str, GraphField("engine")]
+    message: Annotated[str, GraphField("engine")]
 
 
 class GraphState(BaseModel):
-    revision: int = 0
-    project_truth_scope: list[str] = Field(default_factory=list)
-    config_revisions: dict[str, int] = Field(default_factory=dict)
-    nodes: dict[str, ProjectNode] = Field(default_factory=dict)
-    edges: dict[str, Edge] = Field(default_factory=dict)
-    proposals: dict[str, Proposal] = Field(default_factory=dict)
-    ambiguities: dict[str, Ambiguity] = Field(default_factory=dict)
-    glossary: dict[str, GlossaryTerm] = Field(default_factory=dict)
-    ontology: OntologyState = Field(default_factory=OntologyState)
-    validation_messages: list[ValidationMessage] = Field(default_factory=list)
-    belief_transitions: list[BeliefTransition] = Field(default_factory=list)
-    replay_status: Literal["complete", "degraded"] = "complete"
-    replay_failure: ReplayFailure | None = None
-    last_refresh_at: datetime | None = None
+    revision: Annotated[int, GraphField("engine")] = 0
+    project_truth_scope: Annotated[list[str], GraphField("content")] = Field(default_factory=list)
+    config_revisions: Annotated[dict[str, int], GraphField("engine")] = Field(default_factory=dict)
+    nodes: Annotated[dict[str, ProjectNode], GraphField("content")] = Field(default_factory=dict)
+    edges: Annotated[dict[str, Edge], GraphField("content")] = Field(default_factory=dict)
+    proposals: Annotated[dict[str, Proposal], GraphField("content")] = Field(default_factory=dict)
+    ambiguities: Annotated[dict[str, Ambiguity], GraphField("content")] = Field(
+        default_factory=dict
+    )
+    glossary: Annotated[dict[str, GlossaryTerm], GraphField("content")] = Field(
+        default_factory=dict
+    )
+    ontology: Annotated[OntologyState, GraphField("content")] = Field(default_factory=OntologyState)
+    validation_messages: Annotated[list[ValidationMessage], GraphField("engine")] = Field(
+        default_factory=list
+    )
+    belief_transitions: Annotated[list[BeliefTransition], GraphField("engine")] = Field(
+        default_factory=list
+    )
+    replay_status: Annotated[Literal["complete", "degraded"], GraphField("engine")] = "complete"
+    replay_failure: Annotated[ReplayFailure | None, GraphField("engine")] = None
+    last_refresh_at: Annotated[datetime | None, GraphField("engine")] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -1824,3 +1922,11 @@ GraphBranchSummary.model_rebuild(_types_namespace={"GraphHeadRef": GraphHeadRef}
 GraphState.model_rebuild(
     _types_namespace={"EvidenceAssessment": EvidenceAssessment, "Proposal": Proposal}
 )
+
+# RCP owns every Proposal field but id, title, card, and ops; an agent writes only
+# those four. Filing (`prepare_patch_bookkeeping`) stamps these from the graph and
+# the filer: they say where a Proposal was filed, not what it proposes. A merge that
+# files a branch Proposal again on main restamps them and carries the same Proposal.
+PROPOSAL_FILING_STAMPS = graph_fields(Proposal, proposal_owner="filing")
+# Resolution sets these; filing resets them to their defaults.
+PROPOSAL_RESOLUTION_FIELDS = graph_fields(Proposal, proposal_owner="resolution")

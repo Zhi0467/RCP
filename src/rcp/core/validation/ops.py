@@ -468,6 +468,13 @@ def depends_remove_edges(
     return candidates, []
 
 
+# These gate-2 refusal codes describe effects supported by Proposal review.
+# All other legality failures remain hard refusals; authority owns its own gate.
+REVIEWABLE_OPERATION_REFUSALS = frozenset(
+    {"accepted-node-removal", "gated-transition", "merge-belief-review-required"}
+)
+
+
 def validate_remove_nodes(op: RemoveNodesOperation, ctx: OpContext) -> Any:
     node_ids = op.node_ids
     if not node_ids or any(not node_id for node_id in node_ids):
@@ -865,9 +872,14 @@ def _validate_belief_cause(
         return
     if isinstance(cause, HumanEditCause):
         if ctx.writer.author != "human":
+            pending_merge_review = (
+                ctx.mode == "admission"
+                and ctx.writer.profile == "orchestrator"
+                and ctx.patch.branch_merge is not None
+            )
             ctx.report.reject(
-                "invalid-belief-cause",
-                f"human_edit cause for {hypothesis_id!r} is legal only on human approval.",
+                "merge-belief-review-required" if pending_merge_review else "invalid-belief-cause",
+                f"{cause.kind} cause for {hypothesis_id!r} is legal only on human approval.",
                 ctx.revision,
                 related_node_ids=related,
             )

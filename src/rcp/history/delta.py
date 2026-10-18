@@ -3,13 +3,12 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from rcp.core.materialize import MaterializationResult
 from rcp.core.models import (
-    PROPOSAL_FILING_STAMPS,
     Ambiguity,
     AuthorizedHuman,
     Edge,
@@ -19,6 +18,7 @@ from rcp.core.models import (
     ProjectNode,
     Proposal,
     Standing,
+    graph_fields,
 )
 from rcp.core.operations import (
     CreateAmbiguitiesOperation,
@@ -945,18 +945,15 @@ def _unique_sentences(sentences: Iterable[str]) -> list[str]:
 
 
 # Main's transition recomputes guidance validity from its merged dependencies.
-_SEMANTIC_NODE_BOOKKEEPING = frozenset(
-    {"created_rev", "updated_rev", "current_summary_stale", "next_action_stale"}
+_SEMANTIC_NODE_BOOKKEEPING = frozenset().union(
+    *(graph_fields(model, role="engine") for model in get_args(get_args(ProjectNode)[0]))
 )
-_SEMANTIC_EDGE_BOOKKEEPING = frozenset({"created_rev"})
+_SEMANTIC_EDGE_BOOKKEEPING = graph_fields(Edge, role="engine")
 # A resolution's revision and operation are bookkeeping; its status, author, and
 # reasons are what the Proposal now says.
-_SEMANTIC_PROPOSAL_BOOKKEEPING = PROPOSAL_FILING_STAMPS | {
-    "resolved_rev",
-    "resolved_by_operation_id",
-}
-_SEMANTIC_AMBIGUITY_BOOKKEEPING = frozenset({"raised_rev"})
-_SEMANTIC_GLOSSARY_BOOKKEEPING = frozenset({"updated_rev"})
+_SEMANTIC_PROPOSAL_BOOKKEEPING = graph_fields(Proposal, role="engine")
+_SEMANTIC_AMBIGUITY_BOOKKEEPING = graph_fields(Ambiguity, role="engine")
+_SEMANTIC_GLOSSARY_BOOKKEEPING = graph_fields(GlossaryTerm, role="engine")
 
 
 class _StrictSemanticModel(BaseModel):
