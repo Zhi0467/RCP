@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
@@ -155,6 +157,26 @@ def test_a_retried_address_turn_carries_the_flag(flagged):
     retried = client.post(f"/api/projects/{project}/tasks/{first['operation_id']}/retry", json={})
     wait_for_task(store, retried.json()["operation_id"], expect="succeeded")
     assert client.get(base).json()["evidence_flags"] == []
+
+
+def test_a_restart_reopens_an_addressing_flag(flagged):
+    app, client, store, project, flag = flagged
+    release = threading.Event()
+
+    async def stream(project_id, kind, request, execution):
+        await asyncio.to_thread(release.wait, 10)
+        yield _event_frame(AgentEvent(event="done"))
+
+    app.state.background_tasks.stream = stream
+    base = f"/api/projects/{project}/consolidation"
+    url = f"{base}/evidence-flags/{flag['flag_id']}/address"
+    try:
+        result = client.post(url, json={"request_id": "before-restart"}).json()
+        store.interrupt_active_agent_tasks()
+        [reopened] = client.get(base).json()["evidence_flags"]
+        assert (reopened["state"], reopened["chat_id"]) == ("open", result["chat_id"])
+    finally:
+        release.set()
 
 
 def test_address_refuses_a_consolidation_notice(flagged):

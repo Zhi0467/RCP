@@ -1977,6 +1977,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 (now, now, detail, detail, now, selected_json),
             )
             for operation_id in interrupted:
+                settle_evidence_flag_address(connection, operation_id, "interrupted")
                 self._insert_agent_task_event(
                     connection,
                     operation_id,
@@ -5556,6 +5557,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 ),
             )
             for operation_id in interrupted:
+                settle_evidence_flag_address(connection, operation_id, "interrupted")
                 self._insert_auto_research_task_lifecycle_notice(
                     connection,
                     operation_id=operation_id,
