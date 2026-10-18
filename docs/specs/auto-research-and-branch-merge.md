@@ -155,10 +155,10 @@ archives an owned fork, never the root's own branch. Member forks never auto-arc
 `merge --key K <fork>` delivers an owned fork into its parent when the lineage owns
 both and the parent is open. A fork of main or of a foreign branch has no owned
 destination (`merge_main_requires_human`, `merge_branch_not_owned`). The
-[semantic merge](#semantic-rebase-and-merge) runs against the parent: empty residue
-commits without a provider; residue spends one lineage invocation, reserved at
-admission or when the parent's advance first creates residue, and refuses with
-`merge_budget_exhausted`. Protected beliefs arrive as pending Proposals on the
+[semantic merge](#semantic-rebase-and-merge) runs against the parent: a plan with no
+conflicts or review cards commits without a provider; one that needs the agent spends
+one lineage invocation, reserved at admission or when the parent's advance first needs
+it, and refuses with `merge_budget_exhausted`. Protected beliefs arrive as pending Proposals on the
 parent. The root must be running without ending or Stop; a delivered head, a live
 source writer, or another merge into that parent refuses. Merge does not archive.
 **Why:** invariant 3 lets the orchestrator merge only within its own lineage; main
@@ -389,15 +389,15 @@ unmerged index, and dirty submodules refuse. RCP commits only ordinary episode
 leftovers with `git add -A`, excluding ignored files, under a fixed RCP identity.
 It never commits shared-checkout changes, resets, stashes, force-pushes, or pushes.
 
-The graph builder and `git merge-tree --write-tree` classify residue. With none,
+The merge plan and `git merge-tree --write-tree` decide whether judgment is needed. With none,
 RCP builds the landing commit from the tested tree: a clean checked-out target
 fast-forwards in one step; an unchecked-out target moves by compare-and-swap.
 Source/target commits and checkout identity are rechecked before landing. Code
 lands and is verified before the graph transition.
 
-Either code conflict or graph residue starts one merge task in chat Integrate's
+Either code conflict or a graph plan needing answers starts one merge task in chat Integrate's
 local-merge scope. RCP verifies its landing contains both recorded source and
-target commits before graph commit. With no graph residue, the code turn is
+target commits before graph commit. With no graph answers needed, the code turn is
 followed by agentless graph delivery. Code-only tasks target main with no graph
 side. Missing landing fails before graph commit; next Merge starts a fresh
 attempt. A later graph failure never undoes landed code.
@@ -418,56 +418,56 @@ not change delivery into failure.
 
 ## Semantic rebase and merge
 
-Merge context contains immutable base, exact branch/main heads and graphs, typed
-base-to-branch delta, bounded Patch summaries/provenance, canonical human actions,
-delivered heads, schema/validator, and deterministic conflicts. Dispatch pins main's
-current truth membership; `repositories_read` is empty. Changed membership requires
-new dispatch; out-of-membership provenance refuses.
+RCP builds every merge Patch; the merge agent never writes operations. The loader
+captures the exact base, source, and destination heads and graphs, canonical human
+source facts, scoped earlier merge reviews, and the dispatching human's live
+authority. Dispatch pins the destination's current truth membership;
+`repositories_read` is empty. Changed membership requires new dispatch.
 
-The deterministic builder emits authorable non-conflicting node creations/ordinary
-updates and legal edge creates/removes/replacements. Replacement overlays changed
-branch fields on main, preserving compatible main edits; validation checks net
-changes and both operations' authority. It cannot leave an edge missing or smuggle
-unrelated edits. Already-present values are omitted. Protected changes, conflicting
-nodes, Decision outcomes, removals, and source Proposals remain in agent residue,
-keeping coupled fields together.
+The planner (`runs/merge_plan.py`) is a pure three-way comparison over whole fields
+whose model role is `content`; `engine` and `identity` fields never diff, and every
+graph model field declares its role. A one-sided change wins, identical changes agree,
+and different changes to one field conflict. Removal on one side against an edit, a new
+reference, or a new or edited incident edge on the other is a presence conflict.
+Re-merge compares from the last delivered source snapshot; a field under a still-pending
+earlier merge review compares against the destination's current value, so the new
+review replaces it with the outstanding and new effects together, while a rejected
+earlier review is not resurrected and an approved one yields to later destination
+judgments.
+**Why:** a second, merge-only model of graph semantics drifted from core on every
+schema or rule change; whole-field comparison over declared roles has nothing to drift.
 
-Ordinary edits reset standing as on the branch. A mere main acceptance does not
-defer them; agreed stronger branch/main standing is restored. A human standing
-change on main since fork is deferred for explicit judgment. Each residue path's
-reason comes from the same mapping rendered in the contract. Built operations are
-staged as a file. Guidance text merges, but backend freshness flags do not: main's
-transition recomputes validity from merged dependencies.
+Core decides each change's route (`classify_graph_changes`): admitted changes are
+written directly, reviewable ones become pending Proposals, refused ones fail the merge
+with the exact diagnostic. Protected changes are grouped by their core-reported approval
+dependencies and effects into one Proposal per connected group, so approving one merge
+Proposal never makes another from the same merge stale. The builder
+(`runs/merge_patch.py`) encodes Decision outcomes, decided creation, supersede and merge,
+and edge replacement with the operation sequences core accepts; a carried status keeps the
+cause its source transition recorded, and only an exact canonical human source fact keeps
+`human_edit`. Live pending source Proposals keep identity and content and are refiled with
+destination stamps.
 
-Empty residue commits without a provider. Otherwise the agent writes residue only;
-RCP prepends built operations for validation and commit. Unsupported configuration,
-invalid fixed operations, and mandatory source Proposals with out-of-scope provenance
-fail before launch, outside an unrepairable correction loop.
-**Why:** deterministic paths already have a specified result; the agent is needed
-only for unresolved judgment. Agentless still requires human dispatch. Merges are
-pairwise against current main, never a batch of branches.
+The agent answers only real conflicts and writes card prose for review groups, in
+`answers.json`: `branch`, `destination`, or a `merged` value (node `status` and
+`standing` pick a side), keep-removal or keep-node for presence conflicts. It runs
+`merge-answers check`, which dry-runs the same preparation as commit and binds a
+receipt to the exact answers bytes, plan, and heads; a turn ends only with a passing
+receipt for the collected bytes, or the task fails with the reason. There is no
+self-check budget and no correction round. When core rejects a built Patch naming nodes
+that carry no open conflict (a cross-field clash), those nodes become one node-level
+question once; a repeated rejection goes back to the agent's check. A plan with no
+conflicts and no review cards commits without a provider.
+**Why:** deterministic paths already have a specified result; the agent is needed only
+for judgment, and a check that runs the commit path cannot disagree with commit.
+Agentless merge still requires human dispatch. Merges are pairwise against the current
+destination, never a batch of branches.
 
-The merge agent has the orchestrator graph profile under the dispatching human.
-It gets scratch and, only for code landing, the episode worktree/shared-checkout
-roots rendered from the resolved scope. It gains no membership, ontology,
-configuration, approval, server, or general branch authority. The combined Patch
-commits one main transition or nothing; conflicts use bounded same-session
-correction, not a manual node-conflict viewer.
-
-Legal direct changes may accompany protected main Proposals. Branch human judgment
-does not let the agent approve on main: its Inbox reviews again. Exact canonical
-human initiating operations prove special status/standing causes, never prose or
-inferred intent. The [Proposal rules](authority-and-proposals.md#protected-belief-proposals)
-allow coupled content/status/standing review and accepted ordinary-node removal.
-Every effect must match branch delta without unrelated changes.
-
-Live pending source Proposals retain identity/content. Resolved/stale ones remain
-branch history; their resulting graph changes are represented separately. Proposal
-identity is deterministic from branch, semantic operations, and last delivered
-head (base before first merge). Validated receipts and snapshots suppress unchanged
-re-proposals even after rejection on main; genuinely new source changes still
-require review. Unsupported ontology, human-only ordinary extension edits, and
-mutually invalidating review combinations fail explicitly without partial commit.
+The merge agent has the orchestrator graph profile under the dispatching human. It gets
+scratch and, only for code landing, the episode worktree/shared-checkout roots rendered
+from the resolved scope. It gains no membership, ontology, configuration, approval,
+server, or general branch authority. One merge commits one destination transition or
+nothing.
 
 Append compares prepared main head. If it advanced, RCP rebuilds/re-prepares;
 it never overwrites or concatenates history. Paused/failed attempts leave histories
