@@ -214,7 +214,16 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
       ...blockers,
       ...blockers.flatMap((node) => outgoing(node.id, "requires_decision")),
     ]);
-    const experiments = anchors.flatMap((node) => freeExperimentsByAnchor.get(node.id) ?? []);
+    // Work that tests no Hypothesis also joins through a Hypothesis's inputs,
+    // which its page already lists, so only that work is added here.
+    const hypothesisInputs = outgoing(question.id, "has_hypothesis").flatMap(
+      (node) => hypotheses.get(node.id)?.inputs.nodes ?? [],
+    );
+    const experiments = uniqueNodes(
+      [...anchors, ...hypothesisInputs].flatMap(
+        (node) => freeExperimentsByAnchor.get(node.id) ?? [],
+      ),
+    );
     const shown = uniqueNodes([
       ...anchors,
       ...sortNodes(experiments).flatMap((node) => [

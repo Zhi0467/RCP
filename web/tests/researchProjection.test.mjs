@@ -49,6 +49,8 @@ const nodes = [
   node("d/region", "decision", { status: "open" }),
   node("x/region-bench", "experiment", { status: "completed" }),
   node("e/region", "evidence"),
+  node("x/batch-sweep", "experiment", { status: "completed" }),
+  node("e/sweep", "evidence"),
   node("orphan", "decision"),
 ];
 const edges = [
@@ -80,6 +82,8 @@ const edges = [
   edge("b/cluster", "requires_decision", "d/region"),
   edge("x/region-bench", "governed_by", "d/region"),
   edge("x/region-bench", "produces", "e/region"),
+  edge("x/batch-sweep", "governed_by", "d/batch"),
+  edge("x/batch-sweep", "produces", "e/sweep"),
 ];
 
 test("a Hypothesis page gathers its Experiments' inputs and weighs each result", () => {
@@ -118,15 +122,20 @@ test("question pages share Hypotheses and keep work that tests none", () => {
     "d/metric",
     "b/cluster",
     "d/region",
+    "x/batch-sweep",
+    "e/sweep",
+    "d/batch",
     "x/probe",
     "e/probe",
     "d/seed-count",
     "b/gpu",
     "x/region-bench",
     "e/region",
+    "b/approval",
     "b/seed-budget",
     "d/gpu-vendor",
     "e/survey",
+    "e/budget",
     "e/variance",
   ]);
 
