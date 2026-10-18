@@ -3081,11 +3081,12 @@ def _start_work_validator_mailbox(
             else None
         ),
     )
-    lifecycle = start_work_validator_mailbox(
+    return start_work_validator_mailbox(
         staged,
         execution=execution,
         budget=budget,
         command_handler=command_handler,
+        allowed_verbs=command_handler.allowed_verbs,
         serve=serve_patch_validation_mailbox,
         resume_context=_work_mailbox_context(
             run_truth_scope,
@@ -3100,8 +3101,6 @@ def _start_work_validator_mailbox(
             source_operation_id=_work_patch_source_operation_id(execution),
         ),
     )
-    lifecycle.allowed_verbs = command_handler.allowed_verbs
-    return lifecycle
 
 
 class _WorkMailboxContext(BaseModel):
