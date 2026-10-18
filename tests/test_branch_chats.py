@@ -281,10 +281,19 @@ def _end_orchestrator(app, root, stage: Path, *, seed="resumed"):
                 "UPDATE graph_runs SET request_json = ? WHERE operation_id = ?",
                 (json.dumps({**root.request, "provider": "claude"}), root.operation_id),
             )
+        elif seed == "stale":
+            store._insert_agent_task_receipt(
+                connection,
+                root.operation_id,
+                "provider_terminal_error",
+                store._bounded_receipt_payload({"classification": "stale_session"}),
+                tier="summary",
+                created_at=store.now(),
+            )
     store.mark_episode_stop_skipped(root.episode_id)
 
 
-@pytest.mark.parametrize("seed", ["resumed", "history_only", "other_provider"])
+@pytest.mark.parametrize("seed", ["resumed", "history_only", "other_provider", "stale"])
 def test_orchestrator_chat_takes_human_turns_only_after_the_chain_ends(
     manifest, tmp_path, monkeypatch, seed
 ):
@@ -314,6 +323,9 @@ def test_orchestrator_chat_takes_human_turns_only_after_the_chain_ends(
 
     _end_orchestrator(app, root, tmp_path / "stage", seed=seed)
     assert store.child_human_turn_refusal(episode.project_id, episode.episode_id) is None
+    # The conversation lives on the chain's branch, never main.
+    off_branch = client.post(url.split("?")[0], json=payload)
+    assert off_branch.status_code == 422
     admitted = client.post(url, json=payload)
     assert admitted.status_code == 202, admitted.json()
     task = store.agent_task(admitted.json()["operation_id"])
@@ -332,8 +344,13 @@ def test_orchestrator_chat_takes_human_turns_only_after_the_chain_ends(
     else:
         assert task.native_session_id is None
         assert resolution["outcome"] == "fresh"
-        assert resolution["reason_code"] == (
-            "orchestrator_session_unavailable" if seed == "history_only" else "provider_mismatch"
+        assert (
+            resolution["reason_code"]
+            == {
+                "history_only": "orchestrator_session_unavailable",
+                "other_provider": "provider_mismatch",
+                "stale": "session_stale",
+            }[seed]
         )
 
 

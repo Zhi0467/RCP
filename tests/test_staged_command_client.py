@@ -2554,3 +2554,29 @@ async def test_fork_commands_round_trip_through_broker(tmp_path):
     assert seen[0] == ("merge", "merge-key", {"branch_id": "fork"})
     assert seen[1][0] == "branch" and seen[1][1]
     assert seen[1][2] == {"branch_id": "fork", "action": "archive"}
+
+
+def test_every_advertised_bulletin_usage_parses():
+    from rcp.agents import staged_command_client as client
+
+    samples = {"<cursor>": "c1", "<key>": "k1", "<post-id>": "p1", "<body-file>": "body.md"}
+    actions = []
+    for usage in client.bulletin_usages():
+        words = usage.replace("[", "").replace("]", "").split()
+        namespace = client._parser().parse_args(
+            ["--timeout", "1", "--workspace", "/w", "--credential", "c"]
+            + [samples.get(word, word) for word in words]
+        )
+        actions.append(
+            next(
+                dest
+                for dest, _, _ in (
+                    client.BULLETIN_READ,
+                    client.BULLETIN_POST,
+                    client.BULLETIN_EDIT,
+                    client.BULLETIN_DELETE,
+                )
+                if getattr(namespace, dest)
+            )
+        )
+    assert actions == ["read", "post", "edit", "delete"]

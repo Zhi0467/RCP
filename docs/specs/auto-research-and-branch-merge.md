@@ -222,7 +222,8 @@ The chain's orchestrator conversation (chat id = root episode id = its branch)
 follows the same lock with `auto_research_orchestrator_running`. After the chain
 ends it takes ordinary project-chat turns on that branch. The first resumes the
 newest member's orchestrator session and stage, or starts fresh with
-`orchestrator_session_unavailable`, `provider_mismatch`, or `machine_mismatch`.
+`orchestrator_session_unavailable`, `provider_mismatch`, `machine_mismatch`, or the
+ordinary dropped-session reason. The conversation's graph target is that branch.
 Add N turns refuses while such a turn is active, and viewer Send on an ended
 chain's orchestrator artifact continues this conversation with a Work turn.
 

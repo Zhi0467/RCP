@@ -1638,24 +1638,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
     ) -> sqlite3.Row | None:
         return connection.execute(
             """
-            SELECT run.*, EXISTS (
-                SELECT 1 FROM graph_run_receipts AS receipt
-                WHERE receipt.operation_id = run.operation_id
-                  AND receipt.category IN (
-                      'experiment_recovery_abandoned', 'auto_research_recovery_abandoned'
-                  )
-            ) AS recovery_abandoned, (
-                SELECT CASE
-                    WHEN SUM(receipt.category = 'provider_terminal_error'
-                             AND json_extract(receipt.payload_json, '$.classification')
-                                 = 'stale_session') THEN 'session_stale'
-                    WHEN SUM(receipt.category = 'continuation_context_unavailable'
-                             AND json_extract(receipt.payload_json, '$.retry_required') = 1)
-                        THEN 'session_context_unavailable'
-                END
-                FROM graph_run_receipts AS receipt
-                WHERE receipt.operation_id = run.operation_id
-            ) AS session_dropped
+            SELECT run.*, """
+            + _SESSION_DROP_COLUMNS
+            + """
             FROM graph_runs AS run
             WHERE project_id = ? AND kind = ?
               AND json_extract(request_json, '$.chat_id') = ?
@@ -1721,8 +1706,17 @@ class AgentTaskStoreMixin(StoreMixinBase):
             "LIMIT 1",
             (chat_id,),
         ).fetchone()
-        binding = cast("AppStore", self)._auto_research_actor_latest_row(
+        latest = cast("AppStore", self)._auto_research_actor_latest_row(
             connection, member["episode_id"], member["root_operation_id"] or ""
+        )
+        binding = (
+            None
+            if latest is None
+            else connection.execute(
+                "SELECT run.*, " + _SESSION_DROP_COLUMNS + " FROM graph_runs AS run "
+                "WHERE run.operation_id = ?",
+                (latest["operation_id"],),
+            ).fetchone()
         )
         if (
             binding is None
@@ -1731,6 +1725,11 @@ class AgentTaskStoreMixin(StoreMixinBase):
             or not binding["stage_root"]
         ):
             return "orchestrator_session_unavailable", None
+        # A session the provider already dropped cannot continue here either.
+        if binding["recovery_abandoned"]:
+            return "session_recovery_abandoned", None
+        if (dropped := self._dropped_chat_session_reason(binding)) is not None:
+            return dropped, None
         previous = json.loads(binding["request_json"])
         for field, code in (("provider", "provider_mismatch"), ("run_on", "machine_mismatch")):
             if previous.get(field) != record.request.get(field):
@@ -3132,11 +3131,15 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 """,
                 (project_id, chat_id, project_id, chat_id),
             ).fetchall()
+            # An Auto-research chain's orchestrator conversation lives on its branch.
+            orchestrator = self._orchestrator_chat_target(connection, project_id, chat_id)
         targets = {
             target.key: target
             for row in rows
             for target in [GraphTargetRef.model_validate_json(row["graph_target_json"])]
         }
+        if orchestrator is not None:
+            targets[orchestrator.key] = orchestrator
         if len(targets) > 1:
             raise ValueError("This conversation has conflicting graph target bindings.")
         return next(iter(targets.values()), None)
@@ -6202,3 +6205,25 @@ def _require_merge_destination_open(
         is not None
     ):
         raise ValueError("merge_destination_merging")
+
+
+# Why a run's native session can no longer continue, from its receipts.
+_SESSION_DROP_COLUMNS = """
+    EXISTS (
+        SELECT 1 FROM graph_run_receipts AS receipt
+        WHERE receipt.operation_id = run.operation_id
+          AND receipt.category IN (
+              'experiment_recovery_abandoned', 'auto_research_recovery_abandoned'
+          )
+    ) AS recovery_abandoned, (
+        SELECT CASE
+            WHEN SUM(receipt.category = 'provider_terminal_error'
+                     AND json_extract(receipt.payload_json, '$.classification')
+                         = 'stale_session') THEN 'session_stale'
+            WHEN SUM(receipt.category = 'continuation_context_unavailable'
+                     AND json_extract(receipt.payload_json, '$.retry_required') = 1)
+                THEN 'session_context_unavailable'
+        END
+        FROM graph_run_receipts AS receipt
+        WHERE receipt.operation_id = run.operation_id
+    ) AS session_dropped"""

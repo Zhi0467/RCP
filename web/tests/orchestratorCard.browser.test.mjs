@@ -24,8 +24,12 @@ async function withCard(chain, check) {
       if (url.endsWith("/chat-display"))
         return route.fulfill({ json: { archived: [], titles: {}, pinned: [] } });
       // Only project routes matter: turns start through onStartTask, never directly,
-      // and only an ended card's ordinary composer reads its chat's worktree and browser.
-      const composerRead = ended && /\/chats\/root-episode\/(worktree|browser)\b/.test(url);
+      // and only an ended card's ordinary composer reads its chat's worktree, on its own
+      // branch, and browser.
+      const composerRead =
+        ended &&
+        (/\/chats\/root-episode\/worktree\?.*branch_id=root-episode/.test(url) ||
+          /\/chats\/root-episode\/browser\b/.test(url));
       if (url.includes("/api/projects/") && !composerRead) unexpected.push(url);
       return route.fulfill({ status: 404, json: { detail: "unexpected" } });
     });

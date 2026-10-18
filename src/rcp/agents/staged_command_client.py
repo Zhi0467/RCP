@@ -67,6 +67,31 @@ _PROFILE_PICK_FLAGS = (("provider", "--provider"), ("model", "--model"), ("reaso
 SPAWN_SEAT_OPTIONS = (("seat_node", "--seat-node", "<node-id>"), ("project", "--project", None))
 CHILD_TARGET_OPTIONS = (("at", "--at", "<ref@R>"), ("target", "--target", "<branch>"))
 CHILD_SEED_OPTION = ("seed_file", "--seed-file", "<filename>")
+# Parser enforcement and every Bulletin usage renderer share these option records.
+BULLETIN_READ = ("read", "--read", None)
+BULLETIN_POST = ("post", "--post", None)
+BULLETIN_EDIT = ("edit", "--edit", "<post-id>")
+BULLETIN_DELETE = ("delete", "--delete", "<post-id>")
+BULLETIN_KEY = ("key", "--key", "<key>")
+BULLETIN_REPLY_TO = ("reply_to", "--reply-to", "<post-id>")
+BULLETIN_CURSOR = ("cursor", "--cursor", "<cursor>")
+BULLETIN_BODY = ("body_file", "<body-file>")
+
+
+def _option_usage(option):
+    _, flag, value = option
+    return f"{flag} {value}" if value else flag
+
+
+def bulletin_usages():
+    key, body = _option_usage(BULLETIN_KEY), BULLETIN_BODY[1]
+    return (
+        f"bulletin {_option_usage(BULLETIN_READ)} [{_option_usage(BULLETIN_CURSOR)}]",
+        f"bulletin {_option_usage(BULLETIN_POST)} {key} "
+        f"[{_option_usage(BULLETIN_REPLY_TO)}] {body}",
+        f"bulletin {_option_usage(BULLETIN_EDIT)} {key} {body}",
+        f"bulletin {_option_usage(BULLETIN_DELETE)} {key}",
+    )
 
 
 def child_target_usage():
@@ -240,14 +265,14 @@ def _parser():
 
     bulletin = subparsers.add_parser("bulletin")
     bulletin_actions = bulletin.add_mutually_exclusive_group(required=True)
-    bulletin_actions.add_argument("--post", action="store_true")
-    bulletin_actions.add_argument("--read", action="store_true")
-    bulletin_actions.add_argument("--edit")
-    bulletin_actions.add_argument("--delete")
-    bulletin.add_argument("--key")
-    bulletin.add_argument("--reply-to")
-    bulletin.add_argument("--cursor")
-    bulletin.add_argument("body_file", nargs="?")
+    for dest, option, value in (BULLETIN_POST, BULLETIN_READ, BULLETIN_EDIT, BULLETIN_DELETE):
+        if value is None:
+            bulletin_actions.add_argument(option, dest=dest, action="store_true")
+        else:
+            bulletin_actions.add_argument(option, dest=dest, metavar=value)
+    for dest, option, value in (BULLETIN_KEY, BULLETIN_REPLY_TO, BULLETIN_CURSOR):
+        bulletin.add_argument(option, dest=dest, metavar=value)
+    bulletin.add_argument(BULLETIN_BODY[0], nargs="?", metavar=BULLETIN_BODY[1])
 
     lesson = subparsers.add_parser("lesson")
     lesson_actions = lesson.add_subparsers(dest="lesson_action", required=True)

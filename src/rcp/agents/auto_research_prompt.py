@@ -19,7 +19,11 @@ from rcp.agents.prompts import (
     selected_skill_section,
     write_scope_section,
 )
-from rcp.agents.staged_command_client import child_target_usage, spawn_seat_usage
+from rcp.agents.staged_command_client import (
+    bulletin_usages,
+    child_target_usage,
+    spawn_seat_usage,
+)
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.core.project_types import ProjectType, project_type_of
@@ -139,12 +143,7 @@ def _command_invocations(
         "finish": ("finish --key <key>",),
         "ask": ("ask --key <key> --question <text> [--choice <text> ...] [--multiple]",),
         "lesson": ("lesson add --key <key> --text <text>",),
-        "bulletin": (
-            "bulletin --read [--cursor <cursor>]",
-            "bulletin --post --key <key> [--reply-to <post-id>] <body-file>",
-            "bulletin --edit <post-id> --key <key> <body-file>",
-            "bulletin --delete <post-id> --key <key>",
-        ),
+        "bulletin": bulletin_usages(),
     }
     commands = "\n".join(
         f"  - `{invocation}`"

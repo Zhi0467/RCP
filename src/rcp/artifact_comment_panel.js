@@ -131,22 +131,26 @@ function draftComment(selection) {
   const anchor = selection && selection.kind !== "whole" ? selection : null;
   return { text: text.slice(0, 2048), selection: anchor };
 }
-function addComment(selection) {
-  const comment = draftComment(selection);
-  if (!comment) return false;
-  // The server refuses a list past these limits, so the list never grows past them.
-  if (comments.length >= config.maxSelections) {
-    notice.textContent = `A prompt can include at most ${config.maxSelections} comments.`;
-    return false;
-  }
+// The server refuses a list past these limits, so the list never grows past them.
+function trayRefusal(comment) {
+  if (comments.length >= config.maxSelections)
+    return `A prompt can include at most ${config.maxSelections} comments.`;
   // Measured as the server does: whole-artifact comments join with a blank line.
   const next = [...comments, comment];
   const general = next.filter((item) => !item.selection).map((item) => item.text);
   const size =
     general.join("\n\n").length +
     next.filter((item) => item.selection).reduce((total, item) => total + item.text.length, 0);
-  if (size > config.maxChars) {
-    notice.textContent = "These comments are too long to send together. Send or remove some first.";
+  return size > config.maxChars
+    ? "These comments are too long to send together. Send or remove some first."
+    : null;
+}
+function addComment(selection) {
+  const comment = draftComment(selection);
+  if (!comment) return false;
+  const refusal = trayRefusal(comment);
+  if (refusal) {
+    notice.textContent = refusal;
     return false;
   }
   comments.push(comment);
@@ -350,11 +354,14 @@ async function postComments(now, only = null) {
   } catch (error) {
     sendError = error.message;
     notice.textContent = sendError;
-    // A refused Edit now keeps its comment, queued for another try.
-    if (only) {
+    // A refused Edit now keeps its comment, queued for another try, or back in the
+    // comment box when the tray is full.
+    if (only && !trayRefusal(only)) {
       comments.push(only);
       saveComments();
       render();
+    } else if (only) {
+      offerSelection(only.selection ?? { kind: "whole" }, only.text);
     }
   } finally {
     sending = false;
