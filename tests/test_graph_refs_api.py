@@ -525,7 +525,7 @@ def test_human_fork_experiments_record_and_share_branch_isolation(manifest, tmp_
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
-    for node_id in ("exp/fork", "exp/fork-2"):
+    for node_id in ("exp/fork", "exp/fork-2", "exp/fork-3"):
         _add_worker_seat(app, node_id=node_id, title=node_id, objective="Run on a human fork.")
     head = app.state.catalog.open(project_id).history.head_ref()
     with signed_in_client(app) as client:
@@ -544,13 +544,15 @@ def test_human_fork_experiments_record_and_share_branch_isolation(manifest, tmp_
     assert episode is not None and episode.graph_isolation is True
     assert first.request["graph_isolation"] is episode.graph_isolation
     assert first.request["isolation_owner_episode_id"] == episode.isolation_owner_episode_id
-    # The first launch binds the fork; a later Run shares that binding.
+    # A Run admitted before the first launch binds the fork already shares its owner.
+    second = admit("exp/fork-2")
+    assert second.request["isolation_owner_episode_id"] == first.episode_id
     store.create_episode_isolation(
         project_id,
         EpisodeIsolation(owner_episode_id=first.episode_id, graph_branch_id=target.branch_id),
     )
-    second = admit("exp/fork-2")
-    assert second.request["isolation_owner_episode_id"] == first.episode_id
+    third = admit("exp/fork-3")
+    assert third.request["isolation_owner_episode_id"] == first.episode_id
 
 
 def _admit_fork_experiment(app, store, project_id, target, node_id):

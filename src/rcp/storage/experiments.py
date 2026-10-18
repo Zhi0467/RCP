@@ -330,48 +330,44 @@ class ExperimentStoreMixin(StoreMixinBase):
             continuation_request_id=continuation_request_id,
         )
         source = self.episode(continues_episode_id) if continues_episode_id else None
-        # A human-owned fork has no owner episode; an earlier Experiment's
-        # launch binding on it is the isolation owner later Runs share.
-        branch_binding = (
-            cast("AppStore", self).episode_isolation_for_branch(
-                record.project_id, graph_branch.branch_id
-            )
-            if graph_branch is not None and graph_branch.owner_episode_id is None
-            else None
-        )
-        owner_episode_id = (
-            graph_branch.owner_episode_id
-            if graph_branch is not None and graph_branch.owner_episode_id is not None
-            else branch_binding.owner_episode_id
-            if branch_binding is not None
-            else None
-        )
         branch_owner = (
-            cast("AppStore", self).episode(owner_episode_id) if owner_episode_id else None
+            cast("AppStore", self).episode(graph_branch.owner_episode_id)
+            if graph_branch is not None and graph_branch.owner_episode_id is not None
+            else None
         )
         isolation_parent = source or parent_episode or branch_owner
-        if isolation_parent is not None:
-            episode = episode.model_copy(
-                update={
-                    "isolation_owner_episode_id": isolation_parent.isolation_owner_episode_id
-                    or isolation_parent.episode_id,
-                    "code_worktree": isolation_parent.code_worktree,
-                    "graph_isolation": isolation_parent.graph_isolation,
-                }
-            )
-        # A human-owned fork has no owner episode, so the episode's effective
-        # isolation comes from its branch target; record that, not the request's.
-        if isolation_parent is not None or graph_branch is not None:
-            record = record.model_copy(
-                update={
-                    "request": {
-                        **record.request,
-                        "isolation_owner_episode_id": episode.isolation_owner_episode_id,
-                        "code_worktree": episode.code_worktree,
-                        "graph_isolation": episode.graph_isolation,
+        # A human-owned fork has no owner episode. Its owner is reserved under the
+        # admission lock below, so two Runs admitted before either launch share it.
+        human_fork = graph_branch is not None and isolation_parent is None
+
+        def inherit_isolation(
+            episode: EpisodeRecord, record: AgentTaskRecord, owner: EpisodeRecord | None
+        ) -> tuple[EpisodeRecord, AgentTaskRecord]:
+            if owner is not None:
+                episode = episode.model_copy(
+                    update={
+                        "isolation_owner_episode_id": owner.isolation_owner_episode_id
+                        or owner.episode_id,
+                        "code_worktree": owner.code_worktree,
+                        "graph_isolation": owner.graph_isolation,
                     }
-                }
-            )
+                )
+            # A human-owned fork's effective isolation comes from its branch
+            # target; record that, not the request's.
+            if owner is not None or graph_branch is not None:
+                record = record.model_copy(
+                    update={
+                        "request": {
+                            **record.request,
+                            "isolation_owner_episode_id": episode.isolation_owner_episode_id,
+                            "code_worktree": episode.code_worktree,
+                            "graph_isolation": episode.graph_isolation,
+                        }
+                    }
+                )
+            return episode, record
+
+        episode, record = inherit_isolation(episode, record, isolation_parent)
         browser_parent = source or parent_episode
         if browser_parent is not None:
             episode = episode.model_copy(
@@ -401,6 +397,26 @@ class ExperimentStoreMixin(StoreMixinBase):
                     raise ValueError("This Experiment episode id is already in use.")
                 if self._live_episode_row(connection, episode) is not None:
                     raise ValueError("This Experiment already has a live episode.")
+                if human_fork:
+                    # The fork's launch binding, or else its first admitted Experiment.
+                    owner_row = connection.execute(
+                        "SELECT * FROM episodes WHERE episode_id = COALESCE("
+                        "(SELECT owner_episode_id FROM episode_isolations "
+                        "WHERE project_id = ? AND graph_branch_id = ?), "
+                        "(SELECT COALESCE(isolation_owner_episode_id, episode_id) FROM episodes "
+                        "WHERE project_id = ? AND graph_target_json = ? AND mode = 'experiment_loop' "
+                        "ORDER BY created_at, episode_id LIMIT 1))",
+                        (
+                            record.project_id,
+                            record.graph_target.branch_id,
+                            record.project_id,
+                            graph_target_json(record.graph_target),
+                        ),
+                    ).fetchone()
+                    if owner_row is not None:
+                        episode, record = inherit_isolation(
+                            episode, record, cast("AppStore", self)._episode_record(owner_row)
+                        )
                 if continues_episode_id is not None:
                     source_row = connection.execute(
                         "SELECT * FROM episodes WHERE episode_id = ?", (continues_episode_id,)
