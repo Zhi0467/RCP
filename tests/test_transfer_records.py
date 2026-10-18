@@ -16,6 +16,7 @@ from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.service import CoachRequest, RunRequest
 from rcp.storage import AgentTaskRecord, AppStore
+from rcp.storage.branch_names import backfill_graph_branches
 from rcp.transfer import (
     TransferArchiveActor,
     TransferArchiveAttribution,
@@ -293,9 +294,11 @@ def test_export_refuses_completed_watcher_with_pending_delivery(manifest, tmp_pa
     assert "cancel_command" not in type(bundle.watchers[0]).model_fields
 
 
+@pytest.mark.parametrize("seat", ["project", "nested_fork"])
 def test_finished_auto_research_corpus_exports_all_terminal_record_groups(
     manifest,
     tmp_path: Path,
+    seat: str,
 ) -> None:
     store, project_id, attributions = _store(manifest, tmp_path)
     actor = authorized_human(store)
@@ -312,6 +315,15 @@ def test_finished_auto_research_corpus_exports_all_terminal_record_groups(
             "transition_id": None,
         },
         separators=(",", ":"),
+    )
+    nested = seat == "nested_fork"
+    child_target = (
+        graph_target.replace(episode_id, child_episode_id) if nested else '{"kind":"main"}'
+    )
+    child_base = (
+        json.dumps({**json.loads(base_head), "target": json.loads(graph_target)})
+        if nested
+        else None
     )
     request = AutoResearchRunRequest(
         episode_id=episode_id,
@@ -395,14 +407,13 @@ def test_finished_auto_research_corpus_exports_all_terminal_record_groups(
         connection.execute(
             """
             INSERT INTO episodes (
-                episode_id, project_id, mode, control_node_id, graph_target_json,
+                episode_id, project_id, mode, control_node_id, graph_target_json, graph_base_head_json,
                 status, invocation_ceiling, invocations_used, ending, wrapup_state,
                 report_attempts_used, created_at, updated_at, ended_at
-            ) VALUES (?, ?, 'experiment_loop', 'node-1',
-                      '{"kind":"main","branch_id":null}', 'stopped', 1, 0,
+            ) VALUES (?, ?, 'experiment_loop', 'node-1', ?, ?, 'stopped', 1, 0,
                       'stopped', 'skipped', 0, ?, ?, ?)
             """,
-            (child_episode_id, project_id, now, now, now),
+            (child_episode_id, project_id, child_target, child_base, now, now, now),
         )
         connection.execute(
             """
@@ -478,12 +489,13 @@ def test_finished_auto_research_corpus_exports_all_terminal_record_groups(
                 worker_id, episode_id, project_id, control_node_id,
                 root_operation_id, current_operation_id, admitted_by_operation_id,
                 instruction, instruction_sha256, created_at, updated_at
-            ) VALUES (?, ?, ?, 'node-1', ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 worker_id,
                 episode_id,
                 project_id,
+                None if seat == "project" else "node-1",
                 operation_id,
                 operation_id,
                 operation_id,
@@ -609,6 +621,10 @@ def test_finished_auto_research_corpus_exports_all_terminal_record_groups(
             "VALUES (?, ?, ?, 'node-1', 'cancelled', ?, '{}', ?, 'Legacy intent cancelled', ?, ?)",
             (cancelled_id, episode_id, project_id, child_episode_id, operation_id, now, now),
         )
+    if seat == "nested_fork":
+        with store.connection() as connection:
+            backfill_graph_branches(connection)
+            connection.execute("UPDATE graph_branches SET owner_episode_id = ?", (episode_id,))
     bundle = store.export_project_transfer_records(project_id, attributions=attributions)
     auto = next(item for item in bundle.episodes if item.episode_id == episode_id)
     assert auto.auto_research is not None
@@ -653,6 +669,7 @@ def test_finished_auto_research_corpus_exports_all_terminal_record_groups(
     exported_again = target.export_project_transfer_records(project_id, attributions=attributions)
     imported_auto = next(item for item in exported_again.episodes if item.episode_id == episode_id)
     assert imported_auto.auto_research is not None
+    assert exported_again.episodes == bundle.episodes
     assert imported_auto.auto_research.child_experiments == history.child_experiments
     assert imported_auto.auto_research.lifecycle_notices == history.lifecycle_notices
     for row in bundle.episodes:

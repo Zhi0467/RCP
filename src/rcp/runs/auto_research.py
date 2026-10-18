@@ -981,8 +981,6 @@ class AutoResearchCommandDispatcher:
             from rcp.runs.bulletin import handle_bulletin
 
             try:
-                if request.arguments.action == "post":
-                    self._check_admission(context, request)
                 self._canonical_command_actor(context)
             except (AutoResearchCommandInvalid, AutoResearchCommandUnavailable) as exc:
                 return CommandResponse(

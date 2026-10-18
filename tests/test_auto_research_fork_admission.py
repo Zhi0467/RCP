@@ -288,10 +288,11 @@ def test_fork_admission_replays_one_target_and_seed(
     assert len(fork.load_patches()) == int(seed)
 
 
+@pytest.mark.parametrize("stopped", [False, True])
 @pytest.mark.parametrize("phase", ["publish", "seed", "launch"])
 @pytest.mark.parametrize("kind", ["work", "experiment"])
 def test_crashed_fork_admission_recovers_exact_fork_and_seed(
-    manifest, tmp_path, monkeypatch, phase, kind
+    manifest, tmp_path, monkeypatch, phase, kind, stopped
 ):
     import rcp.runs.auto_research_fork_admission as forks
     from rcp.runs.auto_research_child_reconcile import (
@@ -327,6 +328,8 @@ def test_crashed_fork_admission_recovers_exact_fork_and_seed(
     assert command is not None
     target = GraphTargetRef.model_validate(command.start_payload["resolved_graph_target"])
     files.clear()
+    if stopped:
+        store.request_episode_stop(episode.episode_id)
     result = reconcile_pending_auto_research_child_admissions(
         store,
         background,
@@ -335,8 +338,17 @@ def test_crashed_fork_admission_recovers_exact_fork_and_seed(
         seat_node_type=lambda *_: None,
         project_service=lambda _: service,
     )
-    assert (result.reflected, result.cancelled, result.deferred) == (1, 0, 0), result
     assert target.branch_id is not None
+    if stopped:
+        assert (result.reflected, result.cancelled, result.deferred) == (0, 1, 0), result
+        if phase == "publish":
+            assert not (service.history.root / "branches" / target.branch_id).exists()
+        else:
+            assert len(service.history.branch(target.branch_id).load_patches()) == int(
+                phase == "launch"
+            )
+        return
+    assert (result.reflected, result.cancelled, result.deferred) == (1, 0, 0), result
     fork = service.history.branch(target.branch_id)
     assert "blk/setup" in fork.state().nodes
     assert len(fork.load_patches()) == 1

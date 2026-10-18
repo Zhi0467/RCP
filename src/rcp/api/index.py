@@ -25,6 +25,7 @@ from rcp.api.dependencies import (
 from rcp.api.episode_branches import graph_branch_summary
 from rcp.api.episodes import (
     EpisodeResponse,
+    child_experiment_on_owned_branch,
     episode_on_branch,
     serialize_episode,
     space_auto_research_episode_projection,
@@ -483,12 +484,16 @@ def _experiment_episode_entries(
                 else:
                     try:
                         assert target.branch_id is not None
-                        binding_episode_id = (
-                            parent_episode_id
+                        bound = (
+                            child_experiment_on_owned_branch(store, episode)
                             if route is not None
-                            else episode.isolation_owner_episode_id or episode.episode_id
+                            else episode_on_branch(
+                                store,
+                                episode.isolation_owner_episode_id or episode.episode_id,
+                                target.branch_id,
+                            )
                         )
-                        if not episode_on_branch(store, binding_episode_id, target.branch_id):
+                        if not bound:
                             raise ValueError("Branch-target Experiment lost its graph binding.")
                         serialized_episode = serialize_episode(
                             store,

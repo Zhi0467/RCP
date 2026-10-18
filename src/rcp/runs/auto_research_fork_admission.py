@@ -122,6 +122,13 @@ def ensure_child_fork(
         if isinstance(service.history, BranchHistoryManager)
         else service.history
     )
+
+    def require_admission_open() -> None:
+        episode = store.episode(admission.episode_id)
+        if episode is None:
+            raise ValueError("The fork admission lost its parent episode.")
+        store._validate_auto_research_parent_admission(episode)
+
     create_graph_fork(
         main,
         store,
@@ -133,6 +140,7 @@ def ensure_child_fork(
         owner_episode_id=branch.owner_episode_id,
         name=branch.name,
         auto_archive=True,
+        before_publish=require_admission_open,
     )
     seed = command.start_payload.get("fork_seed")
     if seed is not None:
@@ -152,6 +160,7 @@ def ensure_child_fork(
             raise ValueError("The fork seed lost its immutable command snapshot.")
 
         def seed_authority(project_id: str, operation_id: str) -> AgentTaskAuthority:
+            require_admission_open()
             authority = store.agent_task_authority(project_id, operation_id)
             if (
                 project_id != branch.project_id

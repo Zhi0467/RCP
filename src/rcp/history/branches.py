@@ -1318,6 +1318,8 @@ def _create_branch(
     branch_id: str,
     parent_head: GraphHeadRef,
     metadata_for_base: Callable[[GraphHeadRef], GraphBranchMetadata],
+    *,
+    before_publish: Callable[[], None] | None = None,
 ) -> BranchHistoryManager:
     """Validate once under the write fence, then reserve identity and publish."""
     canonical_branch_id(branch_id)
@@ -1352,6 +1354,8 @@ def _create_branch(
                 raise ValueError("graph branch already exists with different canonical metadata")
             return BranchHistoryManager(parent, existing)
         assert initial is not None
+        if before_publish is not None:
+            before_publish()
         root.mkdir(mode=0o700)
         branch = BranchHistoryManager(parent, metadata)
         branch.ensure_layout()

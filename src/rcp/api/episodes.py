@@ -704,6 +704,25 @@ def episode_on_branch(store: AppStore, episode_id: str | None, branch_id: str) -
     )
 
 
+def child_experiment_on_owned_branch(store: AppStore, episode: EpisodeRecord) -> bool:
+    """Validate the durable child route against its exact target's lineage owner."""
+    route = store.auto_research_child_experiment(episode.episode_id)
+    if route is None:
+        return False
+    parent = store.episode(route.auto_research_episode_id)
+    return (
+        parent is not None
+        and parent.mode == "auto_research"
+        and parent.project_id == route.project_id == episode.project_id
+        and route.control_node_id == episode.control_node_id
+        and episode.graph_target.kind == "branch"
+        and any(
+            branch.branch_id == episode.graph_target.branch_id
+            for branch in store.branches_owned_by(episode.project_id, parent.episode_id)
+        )
+    )
+
+
 def auto_research_message_refusal(store: AppStore, episode: EpisodeRecord) -> dict[str, str] | None:
     """Project the newest orchestrator's durable mail or continuation admission."""
 

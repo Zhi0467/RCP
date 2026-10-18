@@ -273,7 +273,7 @@ async def stream_branch_merge_task(
             code_block = code.landed_section(write_scope)
             code_landed = True
 
-        graph_read_scope = GraphReadScope(project_id=task.project_id, target=destination)
+        graph_read_scope = GraphReadScope.resolve(task.project_id, destination_history)
         staged_validator = stage_patch_validation_mailbox(
             local_stage=workspace if remote_stage is None else None,
             remote_stage=remote_stage,

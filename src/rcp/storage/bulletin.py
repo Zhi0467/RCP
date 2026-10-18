@@ -150,6 +150,31 @@ def _post(
         if receipt["args_digest"] != digest:
             raise BulletinError("bulletin_key_conflict")
         return json.loads(receipt["result_json"])
+    # Replay survives Stop; fresh posts share the same transaction as its fence.
+    if author["kind"] == "agent":
+        blocked = connection.execute(
+            """
+            SELECT 1 FROM graph_runs AS task
+            LEFT JOIN auto_research_child_work_attempts AS attempt
+                ON attempt.operation_id = task.operation_id
+            LEFT JOIN auto_research_child_work AS work ON work.worker_id = attempt.worker_id
+            LEFT JOIN auto_research_child_experiments AS child
+                ON child.child_episode_id = task.episode_id
+            LEFT JOIN episodes AS episode ON episode.episode_id IN (
+                task.episode_id, work.episode_id, child.auto_research_episode_id
+            )
+            WHERE task.operation_id = ? AND (
+                episode.stop_requested_at IS NOT NULL OR episode.ending IS NOT NULL
+                OR (episode.mode = 'auto_research' AND episode.status != 'running')
+                OR work.stop_requested_at IS NOT NULL
+                OR (work.worker_id IS NOT NULL AND work.current_operation_id != task.operation_id)
+                OR (child.child_episode_id IS NOT NULL AND child.state != 'running')
+            ) LIMIT 1
+            """,
+            (author["operation_id"],),
+        ).fetchone()
+        if blocked:
+            raise BulletinError("bulletin_post_forbidden")
     error = None
     if not isinstance(text, str) or not text.strip() or len(text) > BULLETIN_TEXT_MAX_CHARS:
         error = "bulletin_text_invalid"
