@@ -113,10 +113,11 @@ number here.
   operational state.
 - **Humans retain the protected authority boundary.** Only humans set ordinary
   belief standing, resolve Proposals, change project truth membership, authorize
-  a bounded episode, or dispatch a branch merge into main. A member's own authenticated
-  page authorizes episodes, including through an agent the member runs there;
-  every other protected action stays a visible control. Agents may assert new work and
-  must propose changes to an existing ResearchQuestion or Hypothesis. The one
+  a bounded episode, or dispatch a branch merge into main. A member's own
+  authenticated page authorizes episodes, including through an agent the member
+  runs there; every other protected action stays a visible control. Agents may
+  assert new work and must propose changes to an existing ResearchQuestion or
+  Hypothesis. The one
   deliberate Decision exception is the human-authorized Auto-research
   orchestrator: on its branch and its lineage's forks, and during its
   human-dispatched merge, it may choose Decisions directly, and it may merge a
@@ -165,8 +166,8 @@ number here.
   another branch for a fork. An episode lineage or a human owns it. It is not a
   Git or filesystem branch.
 - The **Bulletin** is one operational board of hearsay posts per graph target.
-  Agents on that target and members read and post; it never wakes, steers, or
-  grants authority.
+  Members, and agents whose run holds the Bulletin, read and post there; it never
+  wakes, steers, or grants authority.
 - A **Patch** is an attributable ordered list of typed semantic graph operations.
 - A **transition** is the manager-prepared atomic result of one initiating
   mutation, including generated actions and lifecycle events.
@@ -251,9 +252,9 @@ winner by timestamp or silently implement around it.
 
 ## Current exclusions
 
-RCP has no free-form graph-branching product (branches are episode branches
-or forks of an exact head), conflict viewer,
-repository rollback, orchestrator self-merge, frontend transition-rule engine,
+RCP has no free-form graph branching (every branch is an episode branch or a
+fork of an exact head), conflict viewer, repository rollback, orchestrator merge
+into main, frontend transition-rule engine,
 user-authored rule language, provider-neutral hostile-process sandbox,
 live output watcher, hard provider interruption,
 persistent provider daemon, or peer-to-peer agent mail. Human steering of an
