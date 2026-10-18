@@ -3312,25 +3312,9 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 34,
-                    "endColumn": 77,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 38,
                     "endColumn": 33,
                     "lineCount": 7
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 36,
-                    "endColumn": 68,
-                    "lineCount": 1
                 }
             }
         ],

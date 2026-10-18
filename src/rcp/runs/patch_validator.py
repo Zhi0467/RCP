@@ -34,7 +34,7 @@ from rcp.limits import (
     PATCH_SELF_CHECK_MAX_COUNT,
     PATCH_SELF_CHECK_POLL_SECONDS,
 )
-from rcp.runs import merge_contract
+from rcp.runs import merge_patch
 from rcp.runs.merge_contract import (
     MergeAnswers,
     MergeAnswersRejected,
@@ -198,7 +198,7 @@ class MergeAnswersCheck:
         answers = None
         try:
             answers = MergeAnswers.model_validate_json(request.arguments.answers)
-            merge_contract.prepare_merge_candidate(plan, answers, self.history)
+            merge_patch.prepare_merge_candidate(plan, answers, self.history)
         except (
             ValidationError,
             MergeAnswersRejected,

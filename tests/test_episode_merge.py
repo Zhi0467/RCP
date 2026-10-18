@@ -668,7 +668,8 @@ def test_code_only_conflict_runs_one_code_merge_turn(manifest, tmp_path, monkeyp
 
 
 def _plan_for_preview(base, source, destination):
-    from rcp.runs.merge_contract import MergePlanningContext, plan_merge
+    from rcp.runs.merge_contract import MergePlanningContext
+    from rcp.runs.merge_plan import plan_merge
     from tests.test_merge_patch import make_plan
 
     fixture = make_plan(base=base, source=source, destination=destination)

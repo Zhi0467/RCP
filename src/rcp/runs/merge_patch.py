@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from rcp.agents.schema import agent_output_schema
 from rcp.core.authority import (
     AuthorityRefusal,
     ChangeClassification,
@@ -40,13 +39,10 @@ from rcp.core.operations import (
     strict_project_node,
 )
 from rcp.core.project_types import project_type_of
-from rcp.core.transition_models import TransitionTrace
 from rcp.core.transitions import (
-    TRANSITION_RULESET_TAG,
     PreparedTransition,
     current_project_projection,
     project_transition_projection,
-    transition_trigger_manifest,
 )
 from rcp.core.validation import ValidationContext, is_coherence_clash
 from rcp.core.validation.proposals import (
@@ -860,17 +856,6 @@ def build_merge_patch(plan: MergePlan, answers: MergeAnswers) -> Patch:
     return candidate.model_copy(update={"admission_messages": flags})
 
 
-def _preparation_contract() -> MergePreparationContract:
-    return MergePreparationContract.model_validate(
-        {
-            "ruleset_tag": TRANSITION_RULESET_TAG,
-            "trigger_manifest": transition_trigger_manifest().model_dump(mode="json"),
-            "transition_trace_schema": TransitionTrace.model_json_schema(),
-            "orchestrator_patch_schema": agent_output_schema(profile="orchestrator"),
-        }
-    )
-
-
 def _reject_preparation(plan: MergePlan, messages: Iterable[ValidationMessage]) -> NoReturn:
     messages = tuple(messages)
     diagnostics = _diagnostics(messages)
@@ -895,7 +880,7 @@ def prepare_merge_candidate(
 ) -> PreparedTransition:
     """The single dry preparation for check and commit; never appends history."""
     _check_plan(plan)
-    if plan.preparation_contract != _preparation_contract():
+    if plan.preparation_contract != MergePreparationContract.current():
         _refuse(
             "merge-preparation-contract-changed", "Merge preparation rules changed; reload the plan"
         )

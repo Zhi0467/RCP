@@ -47,10 +47,9 @@ from rcp.runs.merge_contract import (
     MergeAnswers,
     MergeChange,
     MergePlan,
-    build_merge_patch,
-    plan_merge,
-    prepare_merge_candidate,
 )
+from rcp.runs.merge_patch import build_merge_patch, prepare_merge_candidate
+from rcp.runs.merge_plan import plan_merge
 from rcp.service import ProjectService
 from rcp.storage import AppStore, EpisodeRecord
 

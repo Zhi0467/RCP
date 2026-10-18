@@ -19,13 +19,9 @@ from rcp.runs.branch_merge_context import (
     preview_merge_planning_context,
 )
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
-from rcp.runs.merge_contract import (
-    MergeAnswers,
-    ReviewCard,
-    build_merge_patch,
-    plan_merge,
-    prepare_merge_candidate,
-)
+from rcp.runs.merge_contract import MergeAnswers, ReviewCard
+from rcp.runs.merge_patch import build_merge_patch, prepare_merge_candidate
+from rcp.runs.merge_plan import plan_merge
 from rcp.service import ProposalDecisionRequest
 
 from . import test_branch_merge_api as merge_api

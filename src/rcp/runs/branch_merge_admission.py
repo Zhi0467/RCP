@@ -25,12 +25,9 @@ from rcp.runs.branch_merge import (
 )
 from rcp.runs.branch_merge_context import load_branch_merge_context, merge_history
 from rcp.runs.branch_merge_request import BranchMergeRunRequest, MergeBinding
-from rcp.runs.merge_contract import (
-    MergeAnswers,
-    build_merge_patch,
-    plan_merge,
-    prepare_merge_candidate,
-)
+from rcp.runs.merge_contract import MergeAnswers
+from rcp.runs.merge_patch import build_merge_patch, prepare_merge_candidate
+from rcp.runs.merge_plan import plan_merge
 from rcp.runs.task_policy import resolved_dispatch_authority, task_graph_capable
 from rcp.service import ProjectService
 from rcp.storage import AgentTaskRecord, EpisodeRecord

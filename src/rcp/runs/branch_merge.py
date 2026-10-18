@@ -9,10 +9,9 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
-from contextlib import aclosing, suppress
+from contextlib import aclosing
 from dataclasses import dataclass
 from datetime import datetime
-from functools import cache
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
@@ -24,7 +23,7 @@ from pydantic import (
     model_validator,
 )
 
-from rcp.agents import AgentEvent, AgentLauncher, agent_output_schema
+from rcp.agents import AgentEvent, AgentLauncher
 from rcp.agents.branch_merge_prompt import (
     BRANCH_MERGE_POLICY_VERSION,
     branch_merge_rebase_parts,
@@ -58,12 +57,10 @@ from rcp.core.models import (
     GraphState,
     HiddenReadScope,
     Patch,
-    Proposal,
     ValidationMessage,
 )
 from rcp.core.operations import (
     HumanEditCause,
-    ProposalOperation,
     ProposalStandingChangeOperation,
     ProposalStatusChangeOperation,
     SetStandingOperation,
@@ -73,14 +70,11 @@ from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import (
     GraphHeadRef,
     TransitionConflictDetail,
-    TransitionTrace,
 )
 from rcp.core.transitions import (
-    TRANSITION_RULESET_TAG,
     CommittedTransition,
     PreparedTransition,
     project_transition_projection,
-    transition_trigger_manifest,
 )
 from rcp.history import (
     BranchMergeAlreadyCommitted,
@@ -92,7 +86,7 @@ from rcp.history import (
 from rcp.history.branches import BranchHistoryManager
 from rcp.history.queries import StepRecord
 from rcp.limits import MAX_BRANCH_MERGE_REBASE_ROUNDS, PATCH_SELF_CHECK_MAX_REQUEST_BYTES
-from rcp.runs import merge_contract
+from rcp.runs import merge_contract, merge_patch, merge_plan
 from rcp.runs.merge_contract import (
     MergePlanningContext,
     MergePreparationContract,
@@ -132,12 +126,6 @@ class BranchPatchSummary(_StrictMergeModel):
     profile: Literal["ordinary", "orchestrator"] | None = None
 
 
-class BranchHumanReviewChange(_StrictMergeModel):
-    revision: int = Field(ge=1)
-    operation_index: int = Field(ge=0)
-    operation: ProposalStandingChangeOperation | ProposalStatusChangeOperation
-
-
 class BranchMergeEligibility(_StrictMergeModel):
     """Caller-supplied durable proof that no branch writer may race the merge."""
 
@@ -151,29 +139,6 @@ class BranchMergeEligibility(_StrictMergeModel):
         if self.active_branch_writer_task_ids:
             raise ValueError("a graph branch with an active writer is not merge eligible")
         return self
-
-
-class BranchMergeTransitionContract(_StrictMergeModel):
-    ruleset_tag: str
-    trigger_manifest: dict[str, JsonValue]
-    transition_trace_schema: dict[str, JsonValue]
-    orchestrator_patch_schema: dict[str, JsonValue]
-
-    @classmethod
-    def current(cls) -> BranchMergeTransitionContract:
-        # Building the two JSON schemas costs about 25 ms and depends only on the
-        # code, while every merge context build and check asks for the contract.
-        return _current_transition_contract().model_copy(deep=True)
-
-
-@cache
-def _current_transition_contract() -> BranchMergeTransitionContract:
-    return BranchMergeTransitionContract(
-        ruleset_tag=TRANSITION_RULESET_TAG,
-        trigger_manifest=transition_trigger_manifest().model_dump(mode="json"),
-        transition_trace_schema=TransitionTrace.model_json_schema(),
-        orchestrator_patch_schema=agent_output_schema(profile="orchestrator"),
-    )
 
 
 class BranchMergeContext(_StrictMergeModel):
@@ -191,8 +156,8 @@ class BranchMergeContext(_StrictMergeModel):
     main_graph: GraphState
     run_truth_scope: list[str] = Field(min_length=1)
     branch_patch_summaries: list[BranchPatchSummary] = Field(default_factory=list)
-    transition_contract: BranchMergeTransitionContract
-    human_review_changes: list[BranchHumanReviewChange] = Field(default_factory=list)
+    transition_contract: MergePreparationContract
+    human_review_changes: list[SourceHumanFact] = Field(default_factory=list)
     prior_reviews: tuple[PriorReview, ...] = ()
     previous_merge_receipt: BranchMergeReceipt | None = None
     previous_branch_graph: GraphState | None = None
@@ -251,7 +216,7 @@ class BranchMergeContext(_StrictMergeModel):
             for revision in revisions
         ):
             raise ValueError("branch Patch summary lies outside the exact branch lineage")
-        if self.transition_contract != BranchMergeTransitionContract.current():
+        if self.transition_contract != MergePreparationContract.current():
             raise ValueError("branch merge context uses a stale transition-manager contract")
         for change in self.human_review_changes:
             if (
@@ -285,7 +250,7 @@ class BranchMergeContext(_StrictMergeModel):
         main_graph: GraphState,
         run_truth_scope: list[str],
         branch_patch_summaries: list[BranchPatchSummary] | None = None,
-        human_review_changes: list[BranchHumanReviewChange] | None = None,
+        human_review_changes: list[SourceHumanFact] | None = None,
         prior_reviews: tuple[PriorReview, ...] = (),
         previous_merge_receipt: BranchMergeReceipt | None = None,
         previous_branch_graph: GraphState | None = None,
@@ -306,7 +271,7 @@ class BranchMergeContext(_StrictMergeModel):
             "main_graph": main_graph,
             "run_truth_scope": list(run_truth_scope),
             "branch_patch_summaries": list(branch_patch_summaries or ()),
-            "transition_contract": BranchMergeTransitionContract.current(),
+            "transition_contract": MergePreparationContract.current(),
             "human_review_changes": list(human_review_changes or ()),
             "prior_reviews": prior_reviews,
             "previous_merge_receipt": previous_merge_receipt,
@@ -390,10 +355,10 @@ class BranchMergeStage:
 
 def branch_human_review_changes(
     patches: Sequence[StepRecord], base: GraphState, branch: GraphState
-) -> list[BranchHumanReviewChange]:
+) -> list[SourceHumanFact]:
     """Retain exact human initiating writes, never generated actions or summary claims."""
 
-    latest: dict[tuple[str, str], BranchHumanReviewChange] = {}
+    latest: dict[tuple[str, str], SourceHumanFact] = {}
     for step in patches:
         patch = step.patch
         if patch.admission != "accepted":
@@ -454,7 +419,7 @@ def branch_human_review_changes(
                         )
             for review_op in review_ops:
                 node_id, field, _value = _human_review_value(review_op)
-                latest[(node_id, field)] = BranchHumanReviewChange(
+                latest[(node_id, field)] = SourceHumanFact(
                     revision=patch.revision, operation_index=index, operation=review_op
                 )
     result = []
@@ -492,37 +457,6 @@ def _require_source_human_change(
         raise ValueError("human review fact does not match the final source branch value")
     if before is not None and getattr(before, field, None) == value:
         raise ValueError("human review fact is not a change from the branch base")
-
-
-def branch_merge_review_proposal_id(
-    branch_id: str, proposal: Proposal, *, source_base_head: GraphHeadRef
-) -> str:
-    """Stable for one source baseline; a later delivered cycle gets a fresh review."""
-
-    occurrence = _canonical_sha256(source_base_head.model_dump(mode="json"))[:32]
-    return f"{_branch_review_semantic_id(branch_id, proposal)}-{occurrence}"
-
-
-def _branch_review_semantic_id(branch_id: str, proposal: Proposal) -> str:
-    return (
-        "prop/branch-review-"
-        + _canonical_sha256(
-            {
-                "branch_id": branch_id,
-                "ops": [
-                    operation.model_dump(mode="json", exclude_none=True)
-                    for operation in _ordered_review_ops(proposal)
-                ],
-            }
-        )[:32]
-    )
-
-
-def _ordered_review_ops(proposal: Proposal) -> list[ProposalOperation]:
-    order = {"content_change": 0, "status_change": 1, "standing_change": 2}
-    if all(operation.intent in order for operation in proposal.ops):
-        return sorted(proposal.ops, key=lambda operation: order[operation.intent])
-    return list(proposal.ops)
 
 
 def branch_merge_id(metadata: GraphBranchMetadata) -> str:
@@ -607,16 +541,11 @@ def merge_planning_context(
         source_graph=context.branch_graph,
         destination_graph=context.main_graph,
         run_truth_scope=tuple(context.run_truth_scope),
-        source_human_facts=tuple(
-            SourceHumanFact.model_validate(change.model_dump(mode="python"))
-            for change in context.human_review_changes
-        ),
+        source_human_facts=tuple(context.human_review_changes),
         previous_merge_receipt=context.previous_merge_receipt,
         previous_source_graph=context.previous_branch_graph,
         prior_reviews=context.prior_reviews,
-        preparation_contract=MergePreparationContract.model_validate(
-            context.transition_contract.model_dump(mode="python")
-        ),
+        preparation_contract=context.transition_contract,
     )
 
 
@@ -804,7 +733,7 @@ async def stream_branch_merge_run(
             or plan.destination_head == context.main_head
         ):
             raise BranchMergeSourceChanged("The staged merge plan lost its exact source context.")
-        plan = merge_contract.plan_merge(
+        plan = merge_plan.plan_merge(
             merge_planning_context(context, main_history, created_at=created_at)
         )
         checks.set_plan(plan, turn_id=checks.turn_id)
@@ -979,12 +908,12 @@ async def stream_branch_merge_run(
             if classify_refreshed_context(context, fresh) == "main_moved":
                 if outcome.rebase_rounds >= max_main_rebases:
                     raise StateUnavailable("The destination kept moving; retry the merge task.")
-                new_plan = merge_contract.plan_merge(
+                new_plan = merge_plan.plan_merge(
                     merge_planning_context(fresh, main_history, created_at=created_at)
                 )
                 for promotion, promoted_plan in promotions:
                     if _promotion_still_applies(promoted_plan, new_plan, promotion):
-                        new_plan = merge_contract.promote_node_group(new_plan, promotion)
+                        new_plan = merge_plan.promote_node_group(new_plan, promotion)
                 answers = reusable_merge_answers(plan, new_plan, answers)
                 continuation_cause = "destination_moved"
                 previous_plan_id = plan.plan_id
@@ -994,7 +923,7 @@ async def stream_branch_merge_run(
                 outcome.rebased_main_head = plan.destination_head
                 continue
 
-            outcome.prepared = merge_contract.prepare_merge_candidate(plan, answers, main_history)
+            outcome.prepared = merge_patch.prepare_merge_candidate(plan, answers, main_history)
             if before_commit is not None:
                 before_commit()
             if not outcome.prepared.patch.ops:
@@ -1011,7 +940,7 @@ async def stream_branch_merge_run(
                 try:
                     outcome.committed = commit_branch_merge_with_history(
                         main_history,
-                        merge_contract.build_merge_patch(plan, answers),
+                        merge_patch.build_merge_patch(plan, answers),
                         expected_main_head=plan.destination_head,
                     )
                     outcome.receipt = branch_merge_receipt_from_committed_patch(
@@ -1040,7 +969,7 @@ async def stream_branch_merge_run(
             return
         except merge_contract.MergeHiddenClash as exc:
             try:
-                new_plan = merge_contract.promote_node_group(plan, exc.promotion)
+                new_plan = merge_plan.promote_node_group(plan, exc.promotion)
             except merge_contract.MergeRefused as refused:
                 outcome.status = "rejected"
                 outcome.diagnostic = str(refused)
@@ -1228,41 +1157,6 @@ def _canonical_sha256(value: object) -> str:
         ensure_ascii=False,
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _validation_diagnostic(
-    report: object,
-) -> tuple[str, list[TransitionConflictDetail], tuple[ValidationMessage, ...]]:
-    messages = tuple(item for item in getattr(report, "messages", ()) if item.level == "reject")
-    rendered: list[str] = []
-    conflicts: list[TransitionConflictDetail] = []
-    for item in messages:
-        message = getattr(item, "message", None)
-        if isinstance(message, str) and message.strip():
-            rendered.append(" ".join(message.split()))
-        if getattr(item, "code", None) == "transition-conflict":
-            with suppress(ValueError):
-                conflicts.append(
-                    TransitionConflictDetail(
-                        operation_index=getattr(item, "operation_index", None),
-                        rule_id=getattr(item, "rule_id", None),
-                        cause_chain=getattr(item, "cause_chain", ()),
-                        affected_ids=[
-                            *getattr(item, "related_node_ids", ()),
-                            *getattr(item, "related_edge_ids", ()),
-                        ],
-                        invariant=getattr(item, "failed_invariant", None)
-                        or "graph transition preparation",
-                        message=message or "Graph transition preparation failed.",
-                    )
-                )
-    if not rendered:
-        return (
-            "Branch merge candidate was rejected by canonical graph validation.",
-            conflicts,
-            messages,
-        )
-    return " ".join(dict.fromkeys(rendered))[:4_000], conflicts, messages
 
 
 def _require_prepared_provenance(
