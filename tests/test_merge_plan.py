@@ -40,6 +40,7 @@ from rcp.runs.merge_plan import (
     ReviewCandidate,
     compare_graphs,
     group_reviews,
+    outstanding_review_changes,
     plan_merge,
     promote_node_group,
     retain_pending_effects,
@@ -348,25 +349,31 @@ def test_promotion_keeps_review_slots_and_binds_outstanding_effects():
         }
     )
     context = _context(base, source, base)
+    proposal = Proposal.model_validate(
+        {
+            "id": "prop/earlier",
+            "title": "Earlier",
+            "card": {},
+            "ops": [
+                {
+                    "op": "update_nodes",
+                    "intent": "content_change",
+                    "nodes": [{"id": "rq/question", "changes": {"motivation": "Pending"}}],
+                }
+            ],
+        }
+    )
     prior = PriorReview(
-        filing_graph=context.destination_graph,
+        outstanding=outstanding_review_changes(
+            context.destination_graph,
+            context.destination_graph,
+            proposal,
+            created_at=context.captured_authority.patch_template.created_at,
+        ),
         subject_key=selected.subject_key,
         effect_digest="1" * 64,
         provenance=context.provenance,
-        proposal=Proposal.model_validate(
-            {
-                "id": "prop/earlier",
-                "title": "Earlier",
-                "card": {},
-                "ops": [
-                    {
-                        "op": "update_nodes",
-                        "intent": "content_change",
-                        "nodes": [{"id": "rq/question", "changes": {"motivation": "Pending"}}],
-                    }
-                ],
-            }
-        ),
+        proposal=proposal,
     )
     context = context.model_copy(update={"prior_reviews": (prior,)})
     selected = selected.model_copy(update={"replaces_proposal_ids": (prior.proposal.id,)})
@@ -417,7 +424,12 @@ def test_remerge_keeps_pending_effects_and_never_resurrects_settled_work(status)
         }
     )
     review = PriorReview(
-        filing_graph=context.destination_graph,
+        outstanding=outstanding_review_changes(
+            context.destination_graph,
+            context.destination_graph,
+            proposal,
+            created_at=context.captured_authority.patch_template.created_at,
+        ),
         subject_key="subject",
         proposal=proposal,
         provenance=context.provenance,
@@ -610,7 +622,12 @@ def test_pending_effect_cancelled_by_new_source_agreement_is_explicit(monkeypatc
         }
     )
     review = PriorReview(
-        filing_graph=context.destination_graph,
+        outstanding=outstanding_review_changes(
+            context.destination_graph,
+            context.destination_graph,
+            proposal,
+            created_at=context.captured_authority.patch_template.created_at,
+        ),
         subject_key="subject",
         proposal=proposal,
         provenance=context.provenance,
@@ -662,7 +679,12 @@ def test_connected_pending_predecessor_retains_its_other_subject(monkeypatch):
         }
     )
     review = PriorReview(
-        filing_graph=context.destination_graph,
+        outstanding=outstanding_review_changes(
+            context.destination_graph,
+            context.destination_graph,
+            proposal,
+            created_at=context.captured_authority.patch_template.created_at,
+        ),
         subject_key="earlier-subject",
         proposal=proposal,
         provenance=context.provenance,
@@ -700,10 +722,16 @@ def test_context_rejects_prior_review_from_another_source():
             ),
         }
     )
+    proposal = Proposal(id="prop/foreign", title="Foreign", card=GatedCard(), ops=[])
     review = PriorReview(
-        filing_graph=context.destination_graph,
+        outstanding=outstanding_review_changes(
+            context.destination_graph,
+            context.destination_graph,
+            proposal,
+            created_at=context.captured_authority.patch_template.created_at,
+        ),
         subject_key="subject",
-        proposal=Proposal(id="prop/foreign", title="Foreign", card=GatedCard(), ops=[]),
+        proposal=proposal,
         provenance=provenance,
         effect_digest="2" * 64,
     )
@@ -761,7 +789,12 @@ def _with_prior(context, operations, *, status="pending"):
         }
     )
     review = PriorReview(
-        filing_graph=context.destination_graph,
+        outstanding=outstanding_review_changes(
+            context.destination_graph,
+            context.destination_graph,
+            proposal,
+            created_at=context.captured_authority.patch_template.created_at,
+        ),
         subject_key="earlier-subject",
         proposal=proposal,
         provenance=context.provenance,
@@ -971,7 +1004,7 @@ def test_stale_prior_review_subject_plans_as_an_ordinary_three_way_change(manife
         },
     )
     plan = _plan(history, branch)
-    assert plan.prior_reviews[0].filing_graph.nodes["rq/review"].question == "Original?"
+    assert plan.prior_reviews[0].outstanding == ()
     assert plan.prior_reviews[0].proposal.id == predecessor.id
     assert not plan.review_groups
     assert len(plan.conflicts) == 1

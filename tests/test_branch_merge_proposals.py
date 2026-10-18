@@ -37,6 +37,7 @@ from rcp.runs.merge_contract import (
     merge_contract_digest,
 )
 from rcp.runs.merge_patch import build_merge_patch
+from rcp.runs.merge_plan import outstanding_review_changes
 from rcp.service import ProposalDecisionRequest
 
 from . import test_branch_merge_api as merge_api
@@ -681,7 +682,12 @@ def test_remerge_withdraws_pending_predecessor_and_keeps_outstanding_effect(revi
         }
     )
     prior = PriorReview(
-        filing_graph=plan.destination_graph,
+        outstanding=outstanding_review_changes(
+            plan.destination_graph,
+            destination,
+            predecessor,
+            created_at=plan.captured_authority.patch_template.created_at,
+        ),
         subject_key=group.subject_key,
         proposal=predecessor,
         provenance=plan.provenance,
@@ -1047,7 +1053,12 @@ def test_later_branch_head_does_not_resurrect_resolved_prior_review(review_branc
             update={"question": "A later destination judgment?"}
         )
     review = PriorReview(
-        filing_graph=plan.destination_graph,
+        outstanding=outstanding_review_changes(
+            plan.destination_graph,
+            destination,
+            prior,
+            created_at=plan.captured_authority.patch_template.created_at,
+        ),
         subject_key="question",
         proposal=prior,
         provenance=plan.provenance,
@@ -1229,7 +1240,12 @@ def test_remerge_does_not_restore_prior_field_declined_by_answer(review_branch):
         }
     )
     review = PriorReview(
-        filing_graph=plan.destination_graph,
+        outstanding=outstanding_review_changes(
+            plan.destination_graph,
+            destination,
+            prior,
+            created_at=plan.captured_authority.patch_template.created_at,
+        ),
         subject_key=group.subject_key,
         proposal=prior,
         provenance=plan.provenance,

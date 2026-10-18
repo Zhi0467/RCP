@@ -439,21 +439,31 @@ def pending_reviews(context: MergePlanningContext) -> tuple[PriorReview, ...]:
     )
 
 
-def _pending_changes(context: MergePlanningContext, review: PriorReview) -> tuple[MergeChange, ...]:
-    # Derive recorded effects from the canonical filing snapshot. Approval's
-    # implicit effects belong to core's review footprint, not new source edits.
-    # Historical operations are never replayed against the live destination.
+def outstanding_review_changes(
+    filing_graph: GraphState,
+    destination: GraphState,
+    proposal: Proposal,
+    *,
+    created_at: datetime,
+) -> tuple[MergeChange, ...]:
+    """Derive outstanding effects from the filing snapshot, or none if stale.
+
+    Historical operations never run against the live destination. Approval's
+    implicit effects belong to core's review footprint, not new source edits.
+    """
+    if proposal_is_stale(destination, proposal):
+        return ()
     patch = Patch(
         kind="approval",
         author="human",
         producer="human",
         summary="Inspect outstanding merge work",
-        revision=review.filing_graph.revision + 1,
-        created_at=context.captured_authority.patch_template.created_at,
-        ops=graph_operations_from_proposal(review.proposal.ops),
+        revision=filing_graph.revision + 1,
+        created_at=created_at,
+        ops=graph_operations_from_proposal(proposal.ops),
     )
-    proposed = apply_valid_patch(review.filing_graph, patch)
-    changes, _ = compare_graphs(review.filing_graph, proposed, context.destination_graph)
+    proposed = apply_valid_patch(filing_graph, patch)
+    changes, _ = compare_graphs(filing_graph, proposed, destination)
     return changes
 
 
@@ -473,7 +483,7 @@ def retain_pending_effects(
     changed_coordinates = {c.change_id for c in source_changes}
     rebased: dict[str, MergeChange] = {}
     for review in pending_reviews(context):
-        outstanding = _pending_changes(context, review)
+        outstanding = review.outstanding
         if subjects.intersection((c.collection, c.entity_id) for c in outstanding):
             retained.update(
                 (c.change_id, c) for c in outstanding if c.change_id not in changed_coordinates
@@ -724,7 +734,7 @@ def classify_candidates(
     reviews: list[ReviewCandidate] = []
     admitted: list[GraphOperation] = []
     carried: list[ReviewCandidate] = []
-    pending = [(review, _pending_changes(context, review)) for review in pending_reviews(context)]
+    pending = [(review, review.outstanding) for review in pending_reviews(context)]
     for candidate in candidates:
         subjects = {(c.collection, c.entity_id) for c in candidate.changes}
         predecessors = tuple(
@@ -870,7 +880,7 @@ def _connected_pending_reviews(
                 _interferes(footprint, group.footprint) for group in groups
             ):
                 continue
-            changes = _pending_changes(context, previous)
+            changes = previous.outstanding
             if changes:
                 reviews.append(
                     ReviewCandidate(changes, tuple(previous.proposal.ops), (previous.proposal.id,))

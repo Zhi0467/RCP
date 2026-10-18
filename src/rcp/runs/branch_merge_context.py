@@ -24,7 +24,7 @@ from rcp.runs.branch_merge import (
 )
 from rcp.runs.branch_merge_request import BranchMergeRunRequest, MergeBinding
 from rcp.runs.merge_contract import MergePlanningContext, PriorReview, merge_contract_digest
-from rcp.runs.merge_plan import compare_graphs
+from rcp.runs.merge_plan import compare_graphs, outstanding_review_changes
 from rcp.runs.task_policy import resolved_dispatch_authority, task_graph_capable
 from rcp.service import ProjectService, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord
@@ -221,7 +221,12 @@ def _prior_merge_reviews(
                     PriorReview(
                         subject_key=merge_contract_digest(subjects),
                         proposal=live,
-                        filing_graph=step.after_state,
+                        outstanding=outstanding_review_changes(
+                            step.after_state,
+                            destination,
+                            live,
+                            created_at=step.patch.created_at,
+                        ),
                         provenance=provenance,
                         effect_digest=merge_contract_digest(
                             [op.model_dump(mode="json", exclude_unset=True) for op in filed.ops]

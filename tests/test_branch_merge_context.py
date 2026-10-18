@@ -224,6 +224,14 @@ def test_loader_scopes_reviews_by_canonical_source_destination_and_filing(
     )
     assert len(reviews) == 1
     assert reviews[0].proposal.id not in {"proposal/carried", "proposal/unrelated"}
+    (change,) = reviews[0].outstanding
+    assert (change.collection, change.entity_id, change.field_name) == (
+        "nodes",
+        "rq/context",
+        "question",
+    )
+    assert change.branch.value == "Source question?"
+    assert "filing_graph" not in reviews[0].model_dump(mode="json")
     other = GraphTargetRef(kind="branch", branch_id=str(uuid.uuid4()))
     assert not _prior_merge_reviews(
         engine, engine.steps(head), graph, source=other, target=head.target

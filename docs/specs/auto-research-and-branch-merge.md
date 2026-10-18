@@ -432,8 +432,9 @@ reference, or a new or edited incident edge on the other is a presence conflict.
 Re-merge compares from the last delivered source snapshot; a field under a still-pending
 earlier merge review compares against the destination's current value, so the new
 review replaces it with the resolved outstanding and new effects together. Outstanding
-effects come from the canonical filing snapshot; historical operations never run against
-the live destination. A stale review contributes no outstanding effect, so its subjects
+effects are computed by the loader from the canonical filing snapshot and stored as
+changes, without carrying that snapshot in the plan; historical operations never run
+against the live destination. A stale review contributes no outstanding effect, so its subjects
 use ordinary three-way comparison. Reverting source work can cancel a pending effect:
 the predecessor is withdrawn without re-filing its operations. Rejected work is not
 resurrected, and approved work yields to later destination judgments.

@@ -213,9 +213,9 @@ class SourceHumanFact(_MergeModel):
 class PriorReview(_MergeModel):
     """Canonical earlier merge filing, scoped by source/destination/subject.
 
-    proposal retains its current resolution and outstanding ops. filing_graph is
-    the canonical snapshot immediately after filing: derive outstanding effects
-    there, never by replaying historical operations against the live destination.
+    proposal retains its current resolution and ops. outstanding holds changes
+    computed by the loader from the canonical snapshot immediately after filing
+    against the destination, never by replaying historical ops against it.
     A review stale on the destination has no outstanding effect. Only reviews
     filed by provenance for this source/destination may be replaced; carried
     source Proposals and another branch's reviews are never replacement inputs.
@@ -225,7 +225,7 @@ class PriorReview(_MergeModel):
 
     subject_key: str = Field(min_length=1)
     proposal: Proposal
-    filing_graph: GraphState
+    outstanding: tuple[MergeChange, ...]
     provenance: BranchMergeProvenance
     effect_digest: Digest
 
