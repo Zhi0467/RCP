@@ -31,6 +31,10 @@ from rcp.api.episodes import (
 )
 from rcp.api.experiment_controls import ExperimentControlResponse, _experiment_control_response
 from rcp.api.identity import IdentityAccess
+from rcp.api.project_groups import (
+    ProjectGroupAssignmentRequest,
+    project_group_http_error,
+)
 from rcp.api.team_shell_protocol import (
     acknowledge_team_shell_protocol,
     team_shell_protocol_mismatch,
@@ -80,6 +84,7 @@ from rcp.storage import (
     ProjectActiveTaskConflict,
 )
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
+from rcp.storage.project_groups import ProjectGroupError
 from rcp.transport import StateUnavailable
 
 logger = logging.getLogger(__name__)
@@ -957,6 +962,27 @@ def register_project(
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return catalog.card(record.project_id)
+
+
+@membership_router.put("/api/projects/{project_id}/group", status_code=204)
+def set_project_group(
+    project_id: str,
+    body: ProjectGroupAssignmentRequest,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> Response:
+    try:
+        store.set_project_group(
+            catalog.resolve_project_id(project_id),
+            body.group_id,
+            user_id=identity_access.acting_user(request).user_id,
+        )
+    except ProjectGroupError as exc:
+        raise project_group_http_error(exc) from exc
+    return Response(status_code=204)
 
 
 @membership_router.get("/api/projects/{project_id}/deletion-preview")

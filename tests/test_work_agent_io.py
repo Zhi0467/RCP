@@ -1842,3 +1842,48 @@ def test_graph_command_arguments_round_trip_long_canonical_ids(entity):
     log = GraphLogArguments(id=entity_id)
     assert GraphDiffArguments.model_validate_json(diff.model_dump_json()).ids == [entity_id]
     assert GraphLogArguments.model_validate_json(log.model_dump_json()).id == entity_id
+
+
+@pytest.mark.asyncio
+async def test_group_sibling_roots_are_readable_but_never_writable(manifest, tmp_path, monkeypatch):
+    from rcp.agents.group_context import GroupContext, GroupProjectContext
+    from rcp.transport import RepositoryAccess
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    request = _request()
+    execution = _chat_task_execution(app, request, "work-group-read-only")
+    sibling_root = tmp_path / "sibling"
+    sibling_root.mkdir()
+    machine = service.manifest.repository_map[service.manifest.state.repository].machine
+    sibling = GroupProjectContext(
+        project_id="sibling",
+        name="Sibling",
+        graph=RepositoryAccess(
+            alias="state", machine=machine, path=str(sibling_root / ".research/graph.json")
+        ),
+        research_md=RepositoryAccess(
+            alias="state", machine=machine, path=str(sibling_root / ".research/research.md")
+        ),
+        repositories=(
+            RepositoryAccess(alias="sibling-repo", machine=machine, path=str(sibling_root)),
+        ),
+    )
+    group = GroupContext(
+        group_name="Group", project_id=service._project_id, project_name="Own", siblings=(sibling,)
+    )
+    monkeypatch.setattr(staging_module, "build_group_context", lambda *_args: group)
+    launcher = ScriptedLauncher([{}], message="Done")
+    frames = [
+        frame
+        async for frame in stream_work_run(
+            service, launcher, request, tmp_path / "data", execution=execution
+        )
+    ]
+    assert not any('"event":"error"' in frame for frame in frames)
+    launch = launcher.launch_kwargs[0]
+    assert sibling_root in launch["read_dirs"]
+    assert sibling_root not in launch["write_dirs"]
+    assert str(sibling_root) not in launch["write_scope"].repository_roots
+    assert "sibling-repo" not in {item.alias for item in launch["write_scope"].repositories}

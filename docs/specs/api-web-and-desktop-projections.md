@@ -635,6 +635,17 @@ health/section, project identity, and exact routes. Needs Action/In progress mix
 modes newest first; Completed folds by mode and keeps seven days without deleting
 records. Exact Auto-research parents outside bounded lists are fetched separately.
 
+Project cards carry `group_id`, and `GET /api/project-groups` lists the
+[groups](projects-spaces-and-operations.md#project-groups) the caller sees, so
+empty groups appear too. The index shows each group as one box-set tile, the
+size of a cover, with a strip of its projects' cover colours. Opening a tile
+shows that group's shelf, whose breadcrumb leads back to the space; the open
+group lives in the URL hash. Dragging a cover onto a tile moves the project into
+that group, and dropping it on the breadcrumb takes it out. The cover menu's
+**Move to group** does the same without dragging, for phones. `POST`/`PATCH`/
+`DELETE /api/project-groups[/{id}]` create, rename, and delete (409 while not
+empty); `PUT /api/projects/{id}/group` moves one project.
+
 The header identity panel edits display name and shows a copyable user id.
 An unnamed personal owner's Sign in names their durable identity; authentication
 is separate. Team members manage their credential through the team boundary.

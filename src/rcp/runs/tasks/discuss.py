@@ -21,6 +21,7 @@ from rcp.agents.continuation_prompt import (
     master_key,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
+from rcp.agents.group_context import build_group_context
 from rcp.agents.prompts import (
     DISCUSS_POLICY_VERSION,
     _command_client_rule,
@@ -648,6 +649,10 @@ async def stream_discuss_run(
                 )
                 required_session_id = question.origin.native_session_id
             context = service.assemble_chat(request)
+            if execution is not None and request.artifact_edit is None:
+                context.group_context = build_group_context(
+                    service, execution.store, execution_machine.alias
+                )
             if execution is not None:
                 task = execution.store.agent_task(execution.operation_id)
                 if task is None:
@@ -819,6 +824,8 @@ async def stream_discuss_run(
                 service,
                 execution_machine.alias,
             )
+            if context.group_context is not None:
+                read_dirs.extend(context.group_context.read_dirs())
             read_dirs.extend(
                 path
                 for path in dict.fromkeys(
@@ -840,9 +847,10 @@ async def stream_discuss_run(
             if project_id is None:
                 raise ValueError("Graph history reads require a canonical project identity.")
             graph_read_scope = (
-                GraphReadScope(
+                GraphReadScope.for_launch(
                     project_id=project_id,
                     target=service.history.graph_target,
+                    group_context=context.group_context,
                 )
                 if request.artifact_edit is None or not request.artifact_edit.origin_bound
                 else None

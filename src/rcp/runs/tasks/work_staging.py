@@ -18,6 +18,7 @@ from typing import TypeVar
 
 from rcp.agents.context import ChatContext
 from rcp.agents.graph_read_scope import GraphReadScope
+from rcp.agents.group_context import build_group_context
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
@@ -34,6 +35,7 @@ from rcp.runs.chat import (
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
 )
+from rcp.runs.consolidation import is_consolidation
 from rcp.runs.experiment_loop import StagedExperimentWatcherResource
 from rcp.runs.patch_validator import PatchValidationBudget
 from rcp.runs.shared import (
@@ -126,6 +128,14 @@ async def stage_work_turn(
     outcome = _ProviderOutcome(session_id=request.session_id)
     try:
         context = service.assemble_chat(request)
+        if (
+            execution is not None
+            and request.artifact_edit is None
+            and not is_consolidation(execution)
+        ):
+            context.group_context = build_group_context(
+                service, execution.store, resolved.execution_machine_alias
+            )
         if bind_context is not None:
             context = bind_context(context)
         surface: AgentSurface = "project_chat" if request.chat_scope == "project" else "node_chat"
@@ -262,6 +272,8 @@ async def stage_work_turn(
         )
         if not read_dirs_before_write_scope:
             read_dirs = read_dirs_now()
+        if context.group_context is not None:
+            read_dirs.extend(context.group_context.read_dirs())
         compute_commands = (
             WorkComputeCommands(
                 execution, service.manifest, write_scope, remote_stage, compute_episode_id
@@ -269,8 +281,10 @@ async def stage_work_turn(
             if execution is not None
             else None
         )
-        graph_read_scope = GraphReadScope(
-            project_id=write_scope.project_id, target=service.history.graph_target
+        graph_read_scope = GraphReadScope.for_launch(
+            project_id=write_scope.project_id,
+            target=service.history.graph_target,
+            group_context=context.group_context,
         )
         validator_lifecycle = start_validator_mailbox(
             service,

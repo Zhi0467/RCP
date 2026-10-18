@@ -46,6 +46,17 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Project groups (v55), fresh, immutable fixture upgrades, and
+        # in-place upgrades.
+        "140c45bb100d25a6d15680221832c87cc0160748fbcb1d45a72b516de9be8dd7",
+        "3552237364430df622671288eee42a1f2acaaf37542b058c7e7d8bb09ec7387e",
+        "3c10f527714880a571a8920cf49eac05da034a215d838a7fc83b4cd6a6173cf2",
+        "52c70c4b2f2ef9c9f36b026bba6d3c50a0387d295e2b1e60118021e60477017f",
+        "6bff26f0875df88302ceb9cf53e7c4d5d8e8b10642e750aad2b14193b396014e",
+        "7cc09f0da05878642a2fb7d50494f7eab64254eb3f211af239cfab0eb75172f0",
+        "82aba6f3a0c7f85df958f187c1e2426c3d4f52aa40f4fb60b92e0ae46facc8f2",
+        "a74e8225bb86d4ad840689e4cc54c6be2dd688eb43438ee4f845fe54ce507354",
+        "ecaa7a5fa0e717bce9291e492ff3709f87eb5baaec3ef2cf003f1a77540c5ac7",
         # Agent live status (v54), fresh, immutable fixture upgrades, and
         # in-place upgrades.
         "0b8af07db48acdbc51e7bc49dc545c54f146e3b0498473fd33e617cf175854b9",

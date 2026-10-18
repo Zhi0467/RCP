@@ -1328,3 +1328,156 @@
   justify-self: start;
   padding: 0;
 }
+
+/* Project groups share the shelf's cover footprint. */
+.group-create,
+.group-breadcrumb {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+.group-create {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  flex-shrink: 0;
+  padding: 8px;
+}
+.group-breadcrumb {
+  flex-wrap: wrap;
+  min-width: 0;
+  margin-bottom: 20px;
+}
+.group-breadcrumb a {
+  color: var(--muted);
+  padding: 8px 0;
+}
+.group-breadcrumb .space-group-title {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.group-header-actions {
+  display: flex;
+  flex-shrink: 0;
+}
+.box-set-shell {
+  isolation: isolate;
+}
+.box-set-peek {
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  inset: 0;
+  position: absolute;
+  z-index: -1;
+}
+.box-set-peek.peek-0 {
+  transform: translate(4px, -4px);
+}
+.box-set-peek.peek-1 {
+  transform: translate(8px, -8px);
+}
+:root .project-cover.box-set {
+  background: var(--paper-deep);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  color: var(--ink);
+  padding-left: 20px;
+}
+.project-cover.box-set::before,
+.project-cover.box-set::after {
+  display: none;
+}
+.box-set-spines {
+  display: flex;
+  gap: 3px;
+  height: 50px;
+  margin-bottom: 18px;
+  overflow: hidden;
+}
+.box-set-spines > span {
+  /* A cover colour can be as pale as the slipcase; the edge keeps each spine visible. */
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  flex: 0 0 9px;
+  height: 100%;
+}
+.group-drop-target,
+.project-cover.box-set.group-drop-target {
+  background: var(--rose-paper);
+  outline: 2px dashed var(--oxblood);
+  outline-offset: 3px;
+}
+.group-failed {
+  outline: 2px solid var(--red);
+  outline-offset: 2px;
+}
+.group-retry {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 3;
+}
+.group-header-actions .group-retry {
+  position: static;
+}
+.group-name-dialog {
+  inset: 0;
+  margin: auto;
+  position: fixed;
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  padding: 24px;
+  width: min(360px, calc(100vw - 32px));
+}
+.group-name-dialog::backdrop {
+  background: rgb(0 0 0 / 35%);
+}
+.group-name-dialog header,
+.group-name-dialog footer {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+.group-name-dialog h2 {
+  font-family: var(--editorial);
+  margin: 0;
+}
+.group-name-dialog label {
+  display: block;
+  margin: 20px 0 8px;
+}
+.group-name-dialog input {
+  width: 100%;
+  min-width: 0;
+}
+.group-name-dialog footer {
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+.project-cover-options + .project-cover-menu-label {
+  margin-top: 14px;
+}
+.project-cover-menu {
+  max-height: min(540px, 75dvh);
+  max-width: min(300px, calc(100vw - 32px));
+  overflow: auto;
+}
+.setup-header-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+.group-header-actions .project-cover-menu {
+  min-width: 130px;
+  right: 0;
+}
+
+.project-cover-menu-action {
+  overflow-wrap: anywhere;
+}

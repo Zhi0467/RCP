@@ -8,6 +8,7 @@ import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -2686,10 +2687,11 @@ def test_history_commands_bypass_effects_and_command_ledger(tmp_path, monkeypatc
 
     store, episode, root = _setup_auto_research(tmp_path)
     scope = GraphReadScope(project_id="project", target=episode.graph_target)
-    service = cast(ProjectService, object())
+    service = cast(ProjectService, SimpleNamespace(resolve_project_service=object()))
     calls = []
 
-    def history(actual_service, actual_scope, request):
+    def history(actual_service, actual_scope, request, *, resolve_project):
+        assert resolve_project is service.resolve_project_service
         calls.append((actual_service, actual_scope, request.verb))
         return CommandResponse(request_id=request.request_id, status="ok", result={"entries": []})
 

@@ -1,3 +1,4 @@
+import { projectGroupHash } from "./projects/projectGroups";
 import { EvidenceFlagProvider } from "./graph/EvidenceFlagContext";
 import { EvidenceFlagInbox } from "./projects/EvidenceFlagInbox";
 import { evidenceFlagRows } from "./projects/evidenceFlags";
@@ -289,7 +290,6 @@ import type {
   GraphTargetRef,
   GraphUpdateRecovery,
   Health,
-  ProjectCard,
   ProjectDeletionResult,
   ProjectInvitation,
   ProjectSnapshot,
@@ -644,6 +644,9 @@ function MemberApp({
     setupOpen: isSetupHash(window.location.hash),
   }));
   const [graphTarget, setGraphTarget] = useState<GraphTargetRef>(initialRoute.graphTarget);
+  const [groupFiling, setGroupFiling] = useState<{ projectId: string; groupId: string } | null>(
+    null,
+  );
   const [requestedChat, setRequestedChat] = useState(() => ({
     hash: window.location.hash,
     projectId: initialRoute.project.projectId,
@@ -801,6 +804,7 @@ function MemberApp({
     projectId,
     setupOpen,
     projects,
+    projectGroups,
     openProjectTabs,
     experimentLoops,
     experimentLoopsLoaded,
@@ -810,7 +814,6 @@ function MemberApp({
     projectHeaderCollapsed,
     isActiveProject,
     getActiveProjectId,
-    replaceProjects,
     loadProjectIndex,
     refreshExperimentLoops,
     refreshProjectExperimentLoops,
@@ -1567,8 +1570,7 @@ function MemberApp({
           },
         );
       } else {
-        const nextProjects = await api<ProjectCard[]>("/api/projects");
-        if (!stopped) replaceProjects(nextProjects);
+        await loadProjectIndex();
       }
     };
     const prepareShow = async () => {
@@ -1643,8 +1645,8 @@ function MemberApp({
     getActiveProjectId,
     isActiveProject,
     recordDesktopUpdateReady,
+    loadProjectIndex,
     refreshDesktopUpdate,
-    replaceProjects,
     reportIdentityIssue,
     reverifyIdentity,
     scheduler,
@@ -4103,8 +4105,24 @@ function MemberApp({
           key={projectSetupRouteKey(setupRoute)}
           projectCreation={authenticatedHealth!.project_creation}
           spaceKind={verifiedHealth!.space_kind}
-          onCancel={returnToProjects}
-          onCreated={openProject}
+          group={
+            setupRoute.kind === "create"
+              ? projectGroups.find((group) => group.id === setupRoute.groupId)
+              : null
+          }
+          onCancel={() => {
+            if (setupRoute.kind === "create" && setupRoute.groupId)
+              window.location.hash = projectGroupHash(setupRoute.groupId);
+            else returnToProjects();
+          }}
+          onCreated={(id) => {
+            const groupId = setupRoute.kind === "create" ? setupRoute.groupId : undefined;
+            if (!groupId) return openProject(id);
+            // Creation is the same in every space; the group's shelf files the project
+            // with one move, where a failed move keeps its retry.
+            setGroupFiling({ projectId: id, groupId });
+            window.location.hash = projectGroupHash(groupId);
+          }}
           setupRoute={setupRoute}
         />
         {updateSurface}
@@ -4151,6 +4169,10 @@ function MemberApp({
           onColorModeChoiceChange={appearance.setMode}
           palette={appearance.palette}
           projects={projects}
+          groups={projectGroups}
+          onGroupsChanged={loadProjectIndex}
+          groupFiling={groupFiling}
+          onGroupFilingTaken={() => setGroupFiling(null)}
           invitations={projectInvitations}
           onAnswerInvitation={answerProjectInvitation}
           spaceRuns={spaceRuns}
@@ -5615,6 +5637,7 @@ function projectSetupRouteKey(route: ProjectSetupRoute): string {
       route.targetRequestId ?? "",
     ].join(":");
   }
-  if (route.kind === "create") return `${route.kind}:${route.requestId ?? ""}`;
+  if (route.kind === "create")
+    return `${route.kind}:${route.requestId ?? ""}:${route.groupId ?? ""}`;
   return route.kind;
 }

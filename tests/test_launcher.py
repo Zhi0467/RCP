@@ -1240,9 +1240,14 @@ def test_claude_scratch_patch_preauthorizes_only_native_web_retrieval() -> None:
     allowed_index = command.index("--allowedTools")
     assert command[allowed_index + 1 : allowed_index + 3] == ["WebSearch", "WebFetch"]
     assert "--json-schema" not in command
-    # One --add-dir per distinct directory: duplicates used to blow the argv limit.
-    add_dirs = [command[index + 1] for index, item in enumerate(command) if item == "--add-dir"]
-    assert add_dirs == ["/project/repo-a", "/sessions"]
+    # Read context is read-only rules, one set per distinct directory, never --add-dir.
+    assert "--add-dir" not in command
+    rules = command[allowed_index + 3 : command.index("--strict-mcp-config")]
+    assert rules == [
+        f"{tool}(//{directory}/**)"
+        for directory in ("project/repo-a", "sessions")
+        for tool in ("Read", "Glob", "Grep")
+    ]
 
 
 def test_claude_read_only_command_keeps_plan_permission_mode() -> None:

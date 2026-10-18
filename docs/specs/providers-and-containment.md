@@ -382,7 +382,10 @@ client directory is escaped for gitignore matching; intentional hidden-read glob
 keep their glob semantics. These denies merge with the launch's hidden-read
 settings. A browser grant separately adds
 `Bash(playwright-cli:*)`. Public WebSearch and WebFetch remain available under
-the provider contract.
+the provider contract. Every other launch (Discuss, Seed and Refresh, the paper
+coach) receives its read context as `Read`, `Glob`, and `Grep` allow rules per
+directory, never `--add-dir`: under `acceptEdits` an added directory is also
+editable, which would hand Discuss write access to project files.
 
 **Why:** Claude's OS sandbox is off because its Linux backend always unshares the network
 namespace and remounts a minimal `/dev`, and no setting relaxes either, so a
@@ -559,7 +562,8 @@ can ask RCP how the graph changed, through two read-only command verbs:
 That covers Discuss, Work, Experiment loops, the Auto-research orchestrator and
 its children, branch merge and its corrections, Seed and Refresh, the paper
 coach, and nightly consolidation. A run may read main and every branch of its
-project; its writes stay pinned to its one target.
+project, and the runs that [group read scope](#group-read-scope) names also read
+every project in their group; writes stay pinned to the run's one target.
 
 Each change in an answer gives the entity id, type, title, change kind, and
 every changed field's before and after value, never unchanged fields. Each step
@@ -591,6 +595,28 @@ head lists nothing and is not "unchanged". The master states once how to query
 that range. Seed and Refresh get their refresh range the same way, and a
 consolidation run gets its covered head, which stays separate from any seen
 head.
+
+### Group read scope
+
+When a run's project belongs to a [project group](projects-spaces-and-operations.md#project-groups),
+every project in the group shares one read scope. Discuss, Work, Experiment
+loops, and the Auto-research orchestrator and its children receive it. Seed and
+Refresh, the paper coach, branch merge, reports, consolidation, and artifact
+edits keep their own project only. The scope names the run's own project, which
+unqualified heads still resolve to, and the readable group projects; `graph_diff`
+and `graph_log` take an optional project id and read any target of a project in
+that set.
+
+The prompt renders the same object as a group section: the group, which project
+is the run's own, and for each other project its canonical `graph.json` and
+`research.md` paths and its repository pointers, with an SSH host when they sit
+on another machine. These are pointers to live files, never staged copies.
+Each of these runs renders the section every turn, and its master values keep
+the group name and readable project ids, so a continued chat or episode learns
+when its project leaves the group. A Patch correction reuses its launch's group.
+Sibling repositories never become write roots, admitted repositories, run truth
+scope, or Patch repository declarations, and a Patch still validates against
+the run's own graph only (invariant 4b).
 
 ## Graph rules in task contracts
 

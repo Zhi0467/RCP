@@ -50,6 +50,7 @@ import {
   projectProvisioningHash,
   projectProvisioningRequestId,
   routeProvedBy,
+  routeGroupId,
 } from "./projectSetupModel";
 import { OperatorActionPanel } from "./OperatorActionPanel";
 import type {
@@ -408,7 +409,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
       window.history.replaceState(
         null,
         "",
-        `${window.location.pathname}${window.location.search}${projectProvisioningHash(next.request_id)}`,
+        `${window.location.pathname}${window.location.search}${projectProvisioningHash(next.request_id, routeGroupId(window.location.hash))}`,
       );
     }
   };

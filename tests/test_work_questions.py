@@ -492,10 +492,10 @@ def test_history_reads_keep_apply_revoked(tmp_path, monkeypatch, mode, resume):
 
     execution, _ = work_execution(tmp_path, mode=mode)
     scope = GraphReadScope(project_id="project", target=GraphTargetRef())
-    service = cast(ProjectService, object())
+    service = cast(ProjectService, SimpleNamespace(resolve_project_service=lambda _: None))
     calls = []
 
-    def history(actual_service, actual_scope, request):
+    def history(actual_service, actual_scope, request, *, resolve_project):
         calls.append((actual_service, actual_scope, request.verb))
         return CommandResponse(request_id=request.request_id, status="ok", result={"changes": []})
 

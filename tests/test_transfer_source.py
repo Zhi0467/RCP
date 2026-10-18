@@ -478,6 +478,9 @@ def test_source_cleanup_recovers_after_retirement_and_archive_unlink(
     source_data, source_app, source, target, request, target_request, _source_head = (
         _released_source(tmp_path)
     )
+    owner = source.local_owner
+    group = source.create_project_group("Benchmarks", user_id=owner.user_id)
+    source.set_project_group(request.project_id, group.group_id, user_id=owner.user_id)
     completed_export = advance_source_project_transfer(
         source,
         source_app.state.catalog,
@@ -504,6 +507,7 @@ def test_source_cleanup_recovers_after_retirement_and_archive_unlink(
             target_activation_proof=proof,
         )
     assert source.project(request.project_id) is None
+    assert source.retired_project(request.project_id).group_id is None
     assert archive_path.exists()
 
     monkeypatch.setattr(

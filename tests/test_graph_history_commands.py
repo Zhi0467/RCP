@@ -4,6 +4,7 @@ import pytest
 
 from rcp.agents.command_protocol import validate_command_request
 from rcp.agents.graph_read_scope import GraphReadScope
+from rcp.agents.group_context import GroupContext, GroupProjectContext
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history import HistoryManager
 from rcp.history.queries import GraphDiffPage
@@ -12,6 +13,7 @@ from rcp.paper import PaperService
 from rcp.runs.graph_history_queries import handle_graph_history_command
 from rcp.service import ProjectService
 from rcp.storage import AppStore
+from rcp.transport import RepositoryAccess
 
 from .helpers import seed_patch, unchecked_write_authority
 from .test_branch_history import _branch_metadata, _branch_patch
@@ -145,3 +147,83 @@ def test_branch_changes_uses_branch_base_and_oversized_engine_page_is_refused(
     response = handle_graph_history_command(service, scope, request(branch_changes=branch_id))
     assert response.status == "invalid"
     assert response.result["code"] == "graph_history_response_too_large"
+
+
+def group_context(sibling_id):
+    return GroupContext(
+        project_id="own",
+        project_name="Own",
+        group_name="Group",
+        siblings=(
+            GroupProjectContext(
+                project_id=sibling_id,
+                name="Sibling",
+                graph=RepositoryAccess(
+                    alias="graph", machine="local", path="/sibling/.research/graph.json"
+                ),
+                research_md=RepositoryAccess(
+                    alias="research", machine="local", path="/sibling/.research/research.md"
+                ),
+                repositories=(),
+            ),
+        ),
+    )
+
+
+def test_group_scope_allows_all_sibling_targets_only():
+    scope = GraphReadScope.for_launch("own", GraphTargetRef(), group_context("sibling"))
+    assert "readable_project_ids" not in scope.model_dump()
+    assert GraphReadScope.model_validate_json(scope.model_dump_json()) == scope
+    unavailable = group_context("sibling").model_copy(
+        update={
+            "siblings": (
+                GroupProjectContext(
+                    project_id="sibling", name="Sibling", unavailable_reason="manifest unavailable"
+                ),
+            )
+        }
+    )
+    assert not GraphReadScope.for_launch("own", GraphTargetRef(), unavailable).readable(
+        "sibling", GraphTargetRef()
+    )
+    for target in (GraphTargetRef(), GraphTargetRef(kind="branch", branch_id="branch")):
+        assert scope.readable("own", target)
+        assert scope.readable("sibling", target)
+        assert not scope.readable("outside", target)
+
+
+@pytest.mark.parametrize("verb", ["graph_log", "graph_diff"])
+def test_group_history_resolves_sibling_and_binds_cursor(history_query, verb):
+    service, scope, branch = history_query
+    own = ProjectService(service.manifest, service.history, service.paper, project_id="own")
+    scope = GraphReadScope.for_launch("own", scope.target, group_context("project"))
+    args = (
+        {"id": "ev/long", "at": f"{branch.graph_target.key}@head"}
+        if verb == "graph_log"
+        else {"branch_changes": branch.branch_id}
+    )
+    resolved = []
+
+    def resolve(project_id):
+        resolved.append(project_id)
+        return service
+
+    response = handle_graph_history_command(
+        own, scope, request(verb, project="project", **args), resolve_project=resolve
+    )
+    assert response.status == "ok"
+    assert resolved == ["project"]
+    cursor = response.result["cursor"]
+    assert cursor is not None
+    for project, code in [
+        ("own", "graph_history_cursor_invalid"),
+        ("outside", "graph_history_scope_refused"),
+    ]:
+        response = handle_graph_history_command(
+            own,
+            scope,
+            request(verb, project=project, cursor=cursor, **args),
+            resolve_project=resolve,
+        )
+        assert response.result["code"] == code
+    assert resolved == ["project"]
