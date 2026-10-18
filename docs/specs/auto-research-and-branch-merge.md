@@ -250,7 +250,8 @@ control, which excludes Experiment graph conditions.
 
 The exact RCP-authored prefix exposes validation/keyed Apply, status, keyed worker
 spawn and pause/resume/stop, star mail, graph-condition registration, child
-Experiment kickoff/stop/exact-resume, inbox harvest/clear, ask, and guarded finish.
+Experiment kickoff/stop/exact-resume, keyed fork merge and fork archive (see
+[Forks](#forks)), inbox harvest/clear, ask, and guarded finish.
 Spawn/kickoff may select provider/model/effort. Root commands expose no compute
 helper verbs; child Work uses `launch` on the generic route or direct scheduler
 submission. Validation/reply policy remains surface-specific.
