@@ -433,6 +433,7 @@ async def test_fresh_discuss_stages_one_master_and_turn_inputs(manifest, tmp_pat
         "skills",
         "patch",
         "workspace",
+        "group",
         "browser",
         "discuss",
     }

@@ -247,6 +247,16 @@ def chat_prompt_values(
             for item in skill_pointers
         ],
         "workspace": {"path": workspace},
+        # The per-turn group section is not retained; a continuation must still learn
+        # that the project left its group, so the readable set is a master value.
+        "group": (
+            None
+            if context.group_context is None
+            else {
+                "name": context.group_context.group_name,
+                "readable_project_ids": sorted(context.group_context.readable_project_ids),
+            }
+        ),
     }
     if patch is not None:
         values["patch"] = dict(patch)

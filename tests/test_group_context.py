@@ -6,9 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from rcp.agents.continuation_prompt import context_delta
 from rcp.agents.group_context import build_group_context
 from rcp.agents.prompts import render_chat_read_context
 from rcp.agents.write_scope import registered_repository_roots, resolve_project_write_scope
+from rcp.runs.chat import chat_prompt_values
 from rcp.service import RunRequest
 
 from .test_branch_context import branch_services as branch_services
@@ -72,6 +74,22 @@ def test_group_payload_and_read_roots_leave_writes_unchanged(
     assert Path("/other/repository") not in group.read_dirs()
     assert Path(tmp_path / "sibling") in group.read_dirs()
     assert str(tmp_path / "sibling") not in before.writable_roots
+
+    # A continued chat whose project leaves the group is told so by its delta.
+    def values():
+        return chat_prompt_values(
+            context,
+            RunRequest(),
+            repositories=[],
+            compute_profiles=[],
+            skill_pointers=[],
+            experiment_watcher_resources=[],
+            workspace="workspace",
+        )
+
+    grouped_values = values()
+    context.group_context = None
+    assert context_delta(grouped_values, values()) == {"group": None}
 
 
 @pytest.mark.parametrize("broken", ["manifest", "machine"])
