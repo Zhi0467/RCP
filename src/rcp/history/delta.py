@@ -1072,35 +1072,30 @@ def semantic_delta(base: GraphState, branch: GraphState) -> SemanticDelta:
             branch.nodes,
             model=NodeSemanticDelta,
             id_field="node_id",
-            bookkeeping=_SEMANTIC_NODE_BOOKKEEPING,
         ),
         edges=_typed_collection_delta(
             base.edges,
             branch.edges,
             model=EdgeSemanticDelta,
             id_field="edge_id",
-            bookkeeping=_SEMANTIC_EDGE_BOOKKEEPING,
         ),
         proposals=_typed_collection_delta(
             base.proposals,
             branch.proposals,
             model=ProposalSemanticDelta,
             id_field="proposal_id",
-            bookkeeping=_SEMANTIC_PROPOSAL_BOOKKEEPING,
         ),
         ambiguities=_typed_collection_delta(
             base.ambiguities,
             branch.ambiguities,
             model=AmbiguitySemanticDelta,
             id_field="ambiguity_id",
-            bookkeeping=_SEMANTIC_AMBIGUITY_BOOKKEEPING,
         ),
         glossary=_typed_collection_delta(
             base.glossary,
             branch.glossary,
             model=GlossarySemanticDelta,
             id_field="term",
-            bookkeeping=_SEMANTIC_GLOSSARY_BOOKKEEPING,
         ),
         globals=globals_,
     )
@@ -1131,7 +1126,6 @@ def _typed_collection_delta(
     *,
     model: type[BaseModel],
     id_field: str,
-    bookkeeping: frozenset[str],
 ) -> list[Any]:
     result: list[Any] = []
     for identity in sorted(set(before) | set(after)):
@@ -1147,12 +1141,33 @@ def _typed_collection_delta(
             result.append(
                 model.model_validate({"change": "removed", id_field: identity, "before": old})
             )
-        elif old.model_dump(mode="json", exclude=bookkeeping) != new.model_dump(
-            mode="json", exclude=bookkeeping
-        ):
+        elif semantic_document(old) != semantic_document(new):
             result.append(
                 model.model_validate(
                     {"change": "updated", id_field: identity, "before": old, "after": new}
                 )
             )
     return result
+
+
+def semantic_document(value: BaseModel) -> dict[str, JsonValue]:
+    """Project declared content/identity, including nested field-role metadata.
+
+    Identity stays in whole values (list elements and references need it). Callers
+    comparing an entity's individual fields select its content-role fields.
+    Persisted records and their serializers remain untouched.
+    """
+    document = value.model_dump(mode="json", exclude=set(graph_fields(type(value), role="engine")))
+    for name in document:
+        document[name] = _semantic_nested(getattr(value, name), document[name])
+    return document
+
+
+def _semantic_nested(value: object, serialized: JsonValue) -> JsonValue:
+    if isinstance(value, BaseModel):
+        return semantic_document(value)
+    if isinstance(value, (list, tuple)) and isinstance(serialized, list):
+        return [_semantic_nested(item, raw) for item, raw in zip(value, serialized, strict=True)]
+    if isinstance(value, dict) and isinstance(serialized, dict):
+        return {key: _semantic_nested(value[key], raw) for key, raw in serialized.items()}
+    return serialized
