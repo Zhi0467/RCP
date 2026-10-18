@@ -146,10 +146,12 @@ in your graph rules.
   Experiments: editing an accepted node returns it to `asserted`, so list other
   accepted nodes that need it under Suggestions instead. ResearchQuestions and Hypotheses are protected
   beliefs: carry their rewrites in a Proposal, never a direct edit.
-- Read every Experiment, accepted or not, as someone deciding whether to run
-  it, and check it against the Experiment rules in your graph rules. An
-  accepted Experiment you rewrite returns to `asserted` for the human to
-  review again, which the human wants. Rewrite its objective and
+- Read every Experiment as someone deciding whether to run it, and check it
+  against the Experiment rules in your graph rules. Check every `asserted`
+  Experiment's prose closely. Rewrite an accepted one only when a reader could
+  not tell what it runs: the rewrite returns it to `asserted` and costs the
+  human another review, so leave small flaws in accepted Experiments alone.
+  Rewrite its objective and
   design as the operational plan when they are compressed, narrate the record's
   own history, or use internal names they never define: what runs, under which
   conditions, the run matrix and run count, and what is logged. Recover those
