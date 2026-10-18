@@ -142,12 +142,14 @@ Read the graph as a newcomer would, against the "Writing for a reader" rules
 in your graph rules.
 
 - Rewrite the title and prose of nodes that fall short, keeping every claim,
-  scope, qualification, and relation. Rewrite only `asserted` nodes: editing an
-  accepted node returns it to `asserted`, so list accepted nodes that need it
-  under Suggestions instead. ResearchQuestions and Hypotheses are protected
+  scope, qualification, and relation. Rewrite only `asserted` nodes, except
+  Experiments: editing an accepted node returns it to `asserted`, so list other
+  accepted nodes that need it under Suggestions instead. ResearchQuestions and Hypotheses are protected
   beliefs: carry their rewrites in a Proposal, never a direct edit.
-- Read every Experiment as someone deciding whether to run it, and check it
-  against the Experiment rules in your graph rules. Rewrite its objective and
+- Read every Experiment, accepted or not, as someone deciding whether to run
+  it, and check it against the Experiment rules in your graph rules. An
+  accepted Experiment you rewrite returns to `asserted` for the human to
+  review again, which the human wants. Rewrite its objective and
   design as the operational plan when they are compressed, narrate the record's
   own history, or use internal names they never define: what runs, under which
   conditions, the run matrix and run count, and what is logged. Recover those

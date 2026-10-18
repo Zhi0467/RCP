@@ -53,8 +53,9 @@ writing rules, and defines shared terms in the glossary. Experiments get their
 own check: one study per node, an objective and design that state the operation
 (what runs, conditions, run matrix and count, what is logged) rather than the
 record's history, defined internal names, and fields that agree. What it cannot
-fix from sources, such as a node mixing two studies, becomes a Suggestion. It only suggests accepted
-node rewrites, since editing resets standing. Existing protected beliefs still
+fix from sources, such as a node mixing two studies, becomes a Suggestion. It
+rewrites accepted Experiments too, which returns them to asserted for review; for
+other accepted nodes it only suggests rewrites, since editing resets standing. Existing protected beliefs still
 require [Proposals](authority-and-proposals.md#protected-belief-proposals).
 
 Its charter is "Tidy and check sources; do not run experiments." After the
