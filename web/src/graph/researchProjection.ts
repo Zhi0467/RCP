@@ -216,7 +216,7 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
 
   const questionNodes = sortNodes(nodes.filter((node) => node.type === "research_question"));
   // An Experiment that tests no Hypothesis belongs to a question when it, or its
-  // Evidence, touches one of the question's Decisions or Blockers.
+  // Evidence, touches a Decision or Blocker on that question's page.
   const freeExperimentsByAnchor = new Map<string, GraphNode[]>();
   sortNodes(nodes)
     .filter((node) => node.type === "experiment" && outgoing(node.id, "tests").length === 0)
@@ -231,32 +231,39 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
   const looseOf = (question: GraphNode): GraphNode[] => {
     const decisions = outgoing(question.id, "has_decision");
     const blockers = [question, ...decisions].flatMap((node) => outgoing(node.id, "blocked_by"));
-    // A Decision that clears one of these Blockers anchors the work it governs too.
-    const anchors = withPrerequisites([...decisions, ...blockers]);
-    // Work that tests no Hypothesis also joins through a Hypothesis's inputs,
-    // which its page already lists, so only that work is added here.
-    const hypothesisInputs = outgoing(question.id, "has_hypothesis").flatMap(
-      (node) => hypotheses.get(node.id)?.inputs.nodes ?? [],
-    );
-    const experiments = uniqueNodes(
-      [...anchors, ...hypothesisInputs].flatMap(
-        (node) => freeExperimentsByAnchor.get(node.id) ?? [],
-      ),
-    );
-    const shown = uniqueNodes([
-      ...anchors,
-      ...sortNodes(experiments).flatMap((node) => [
-        node,
-        ...outgoing(node.id, "produces"),
-        ...outgoing(node.id, "governed_by"),
-        ...outgoing(node.id, "blocked_by"),
-      ]),
-    ]);
-    // Then what must clear before anything shown, and Evidence bearing on any of it.
-    const inputs = withPrerequisites(shown);
+    const freeWork = (node: GraphNode) => sortNodes(freeExperimentsByAnchor.get(node.id) ?? []);
+    // Walk depth-first from the question's own Decisions and Blockers until nothing
+    // new joins, so each Experiment is followed by its results and inputs: a Decision
+    // or Blocker brings what must clear before it and the Hypothesis-free work
+    // touching it; an Experiment brings its results and its own inputs.
+    const loose: GraphNode[] = [];
+    const seen = new Set<string>();
+    const visit = (node: GraphNode) => {
+      if (seen.has(node.id)) return;
+      seen.add(node.id);
+      loose.push(node);
+      const next =
+        node.type === "experiment"
+          ? ["produces", "governed_by", "blocked_by"].flatMap((relation) =>
+              outgoing(node.id, relation),
+            )
+          : node.type === "decision"
+            ? [...outgoing(node.id, "blocked_by"), ...freeWork(node)]
+            : node.type === "blocker"
+              ? [...outgoing(node.id, "requires_decision"), ...freeWork(node)]
+              : [];
+      next.forEach(visit);
+    };
+    [...decisions, ...blockers].forEach(visit);
+    // Work also joins through a Hypothesis's inputs, which its page already lists.
+    outgoing(question.id, "has_hypothesis")
+      .flatMap((node) => hypotheses.get(node.id)?.inputs.nodes ?? [])
+      .flatMap(freeWork)
+      .forEach(visit);
+    // Then Evidence bearing on any of it.
     return uniqueNodes([
-      ...inputs,
-      ...inputs.flatMap((node) => [
+      ...loose,
+      ...loose.flatMap((node) => [
         ...incoming(node.id, "informs"),
         ...incoming(node.id, "addresses"),
       ]),

@@ -53,6 +53,10 @@ const nodes = [
   node("e/sweep", "evidence"),
   node("d/budget-cap", "decision", { status: "open" }),
   node("b/finance", "blocker", { status: "open" }),
+  node("x/warmup", "experiment", { status: "completed" }),
+  node("d/warmup-length", "decision", { status: "open" }),
+  node("x/warmup-sweep", "experiment", { status: "running" }),
+  node("e/warmup", "evidence"),
   node("orphan", "decision"),
 ];
 const edges = [
@@ -88,6 +92,10 @@ const edges = [
   edge("b/approval", "requires_decision", "d/budget-cap"),
   edge("d/budget-cap", "blocked_by", "b/finance"),
   edge("e/paper", "supports", "h/shared"),
+  edge("x/warmup", "governed_by", "d/metric"),
+  edge("x/warmup", "governed_by", "d/warmup-length"),
+  edge("x/warmup-sweep", "governed_by", "d/warmup-length"),
+  edge("x/warmup-sweep", "produces", "e/warmup"),
   edge("x/batch-sweep", "produces", "e/sweep"),
 ];
 
@@ -131,27 +139,32 @@ test("question pages share Hypotheses and keep work that tests none", () => {
   assert.deepEqual(ids(drilldown.questions.get("q/other").hypotheses.map((item) => item.node)), [
     "h/shared",
   ]);
+  // Depth-first: each Experiment is followed by its results and inputs.
   assert.deepEqual(ids(sub.loose), [
     "d/metric",
-    "b/cluster",
-    "d/region",
-    "x/batch-sweep",
-    "e/sweep",
-    "d/batch",
     "x/probe",
     "e/probe",
     "d/seed-count",
+    "b/seed-budget",
     "b/gpu",
+    "d/gpu-vendor",
+    "x/warmup",
+    "d/warmup-length",
+    "x/warmup-sweep",
+    "e/warmup",
+    "b/cluster",
+    "d/region",
     "x/region-bench",
     "e/region",
+    "x/batch-sweep",
+    "e/sweep",
+    "d/batch",
     "b/approval",
-    "b/seed-budget",
-    "d/gpu-vendor",
     "d/budget-cap",
     "b/finance",
     "e/survey",
-    "e/budget",
     "e/variance",
+    "e/budget",
   ]);
 
   // Card counts stay one relation away: the root does not count its subquestion's work.
