@@ -20,7 +20,7 @@ from rcp.api.dependencies import (
     require_registered_project,
 )
 from rcp.api.episode_timeline import worker_label
-from rcp.api.episodes import episode_on_branch
+from rcp.api.episodes import child_experiment_on_owned_branch
 from rcp.api.identity import IdentityAccess
 from rcp.api.tasks import _agent_artifact_response
 from rcp.artifact_comments import (
@@ -211,15 +211,7 @@ def _artifact_source_hrefs(
                 else:
                     child = store.auto_research_child_experiment(episode.episode_id)
                     if not episode.control_node_id or (
-                        child is not None
-                        and (
-                            child.project_id != project_id
-                            or child.control_node_id != episode.control_node_id
-                            or target.branch_id is None
-                            or not episode_on_branch(
-                                store, child.auto_research_episode_id, target.branch_id
-                            )
-                        )
+                        child is not None and not child_experiment_on_owned_branch(store, episode)
                     ):
                         continue
             if task.kind not in {"node_chat", "project_chat"} or not isinstance(chat_id, str):

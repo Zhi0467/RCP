@@ -143,7 +143,9 @@ def _keep_task_artifact(app, task):
     return {"artifacts": [artifact.model_dump(mode="json")]}
 
 
-def _create_chat_report(app, tmp_path, *, parent=None, parent_root=None, with_artifact=False):
+def _create_chat_report(
+    app, tmp_path, *, parent=None, parent_root=None, with_artifact=False, target=None
+):
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
     now = store.now()
@@ -170,7 +172,7 @@ def _create_chat_report(app, tmp_path, *, parent=None, parent_root=None, with_ar
         operation_id=str(uuid.uuid4()),
         project_id=project_id,
         episode_id=episode_id,
-        graph_target=parent.graph_target if parent else GraphTargetRef(),
+        graph_target=target or (parent.graph_target if parent else GraphTargetRef()),
         kind="node_chat",
         status="queued",
         request=request.model_dump(mode="json"),
@@ -563,6 +565,35 @@ def test_worker_artifact_on_an_owned_fork_keeps_its_fork_provenance(manifest, tm
     assert entry["graph_branch_name"] == store.branch_names(project_id)[fork_id]
     route = urlsplit(entry["source_chat_href"].removeprefix("#"))
     assert parse_qs(route.query)["branch_id"] == [fork_id]
+
+
+def test_child_experiment_report_on_an_owned_fork_links_its_fork_chat(manifest, tmp_path):
+    from rcp.runs.graph_forks import create_graph_fork
+
+    app, _, parent, parent_root = _app_branch(manifest, tmp_path, include_experiment=True)
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    service = app.state.catalog.open(project_id)
+    fork_id = str(uuid.uuid4())
+    create_graph_fork(
+        service.history,
+        store,
+        branch_id=fork_id,
+        owner_episode_id=parent.episode_id,
+        project_id=project_id,
+        parent_head=service.history.branch(parent.graph_target.branch_id).head_ref(),
+        created_by=f"orchestrator:{parent_root.operation_id}",
+        authorized_by=parent.authorized_by,
+    )
+    fork = GraphTargetRef(kind="branch", branch_id=fork_id)
+    task, report = _create_chat_report(
+        app, tmp_path, parent=parent, parent_root=parent_root, target=fork
+    )
+    entries = signed_in_client(app).get(f"/api/projects/{project_id}/artifacts").json()
+    entry = next(entry for entry in entries if entry["id"] == f"report:{report.report_id}")
+    query = parse_qs(urlsplit(entry["source_chat_href"].removeprefix("#")).query)
+    assert query["chat"] == [task.request["chat_id"]]
+    assert query["branch_id"] == [fork_id]
 
 
 def test_saved_preview_survives_missing_or_unavailable_source_chat(
