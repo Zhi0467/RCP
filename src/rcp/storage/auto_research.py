@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from datetime import timedelta
 from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import TypeAdapter
 
+from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import (
     AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES,
     AUTO_RESEARCH_MAIL_MAX_MESSAGES,
     WATCHER_ERROR_BACKOFF_SECONDS,
 )
+from rcp.storage.branch_names import _chain_root, _insert_graph_branch
 from rcp.storage.digest import append_episode_ended
 from rcp.storage.episodes import compact_episode_receipt
 from rcp.storage.mixin_base import StoreMixinBase
@@ -40,6 +43,7 @@ from rcp.storage.models import (
     EpisodeRecord,
     EpisodeReportConflict,
     EpisodeWrapupRecord,
+    GraphBranchRecord,
     _required_timestamp,
 )
 
@@ -900,7 +904,13 @@ class AutoResearchStoreMixin(StoreMixinBase):
             raise EpisodeNotRunning("the Auto-research episode is not accepting new work")
         if episode.stop_requested_at is not None:
             raise EpisodeNotRunning("the Auto-research episode is stopping")
-        if episode.invocations_used >= episode.invocation_ceiling:
+        if (
+            episode.invocations_used
+            + cast("AppStore", self)._pending_child_budget_reservations(
+                connection, episode.episode_id, "work"
+            )
+            >= episode.invocation_ceiling
+        ):
             raise EpisodeInvocationCeilingReached(
                 "the Auto-research operational invocation ceiling is exhausted"
             )
@@ -2564,6 +2574,8 @@ class AutoResearchStoreMixin(StoreMixinBase):
         file_snapshot: AutoResearchCommandFileRecord | None = None,
         child_admission: AutoResearchChildAdmissionRecord | None = None,
         apply_admission_limit: int | None = None,
+        fork_reservation: GraphBranchRecord | None = None,
+        seed_snapshot: AutoResearchCommandFileRecord | None = None,
     ) -> AgentCommandInvocationRecord:
         if not command_id or not verb:
             raise ValueError("command identity and verb must not be blank")
@@ -2584,6 +2596,22 @@ class AutoResearchStoreMixin(StoreMixinBase):
             or apply_admission_limit < 1
         ):
             raise ValueError("an Apply admission limit requires one keyed Apply command")
+        if fork_reservation is not None and (child_admission is None or idempotency_key is None):
+            raise ValueError("a fork reservation requires a keyed child admission")
+        if seed_snapshot is not None and (
+            fork_reservation is None
+            or seed_snapshot.operation_id != operation_id
+            or seed_snapshot.episode_id != episode_id
+            or seed_snapshot.kind != "apply"
+            or seed_snapshot.command_id == command_id
+            or payload.get("fork_seed")
+            != {
+                "snapshot_id": seed_snapshot.command_id,
+                "filename": seed_snapshot.filename,
+                "sha256": seed_snapshot.sha256,
+            }
+        ):
+            raise ValueError("the fork seed snapshot does not match its command binding")
         now = self.now()
         try:
             with self.connection() as connection:
@@ -2639,6 +2667,52 @@ class AutoResearchStoreMixin(StoreMixinBase):
                         or parent.stop_requested_at is not None
                     ):
                         admit_child = None
+                    else:
+                        target = GraphTargetRef.model_validate(
+                            payload.get("resolved_graph_target", parent.graph_target.model_dump())
+                        )
+                        owner = _chain_root(connection, parent.project_id, parent.episode_id)
+                        if fork_reservation is not None:
+                            branch_id = uuid.UUID(fork_reservation.branch_id)
+                            if (
+                                branch_id.version != 4
+                                or str(branch_id) != fork_reservation.branch_id
+                                or fork_reservation.project_id != parent.project_id
+                                or fork_reservation.owner_episode_id != owner
+                                or fork_reservation.created_by != operation_id
+                                or fork_reservation.archived
+                                or not fork_reservation.auto_archive
+                                or target != GraphTargetRef(kind="branch", branch_id=str(branch_id))
+                            ):
+                                raise ValueError(
+                                    "the fork reservation does not match its child binding"
+                                )
+                            cast("AppStore", self)._require_project_accepts_new_work(
+                                connection, parent.project_id
+                            )
+                            _insert_graph_branch(
+                                connection,
+                                project_id=fork_reservation.project_id,
+                                branch_id=fork_reservation.branch_id,
+                                owner_episode_id=fork_reservation.owner_episode_id,
+                                parent_head=fork_reservation.parent_head,
+                                created_by=fork_reservation.created_by,
+                                created_at=fork_reservation.created_at,
+                                name=fork_reservation.name,
+                                auto_archive=fork_reservation.auto_archive,
+                            )
+                        if target.kind == "branch":
+                            branch = connection.execute(
+                                "SELECT owner_episode_id, archived FROM graph_branches "
+                                "WHERE project_id=? AND branch_id=?",
+                                (parent.project_id, target.branch_id),
+                            ).fetchone()
+                            if branch is None or branch["owner_episode_id"] != owner:
+                                raise ValueError("child_target_not_owned")
+                            if branch["archived"]:
+                                raise ValueError("graph_branch_archived")
+                        elif target != parent.graph_target:
+                            raise ValueError("child_target_not_owned")
                 self._insert_agent_command_event(
                     connection,
                     operation_id=operation_id,
@@ -2659,6 +2733,10 @@ class AutoResearchStoreMixin(StoreMixinBase):
                     )
                 if admit_child is not None:
                     self._insert_auto_research_child_admission(connection, admit_child)
+                    if seed_snapshot is not None:
+                        cast("AppStore", self)._insert_auto_research_command_file(
+                            connection, seed_snapshot
+                        )
         except sqlite3.IntegrityError:
             if episode_id is None or idempotency_key is None:
                 raise

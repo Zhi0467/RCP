@@ -341,6 +341,29 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
         assert stored is not None
         return stored
 
+    @staticmethod
+    def _pending_child_budget_reservations(
+        connection: sqlite3.Connection,
+        episode_id: str,
+        child_kind: str,
+        *,
+        exclude_child_id: str | None = None,
+    ) -> int:
+        """Accepted intents reserve one first allocation until reflected or cancelled."""
+        row = connection.execute(
+            "SELECT COUNT(*) FROM auto_research_child_admissions AS admission "
+            "WHERE episode_id=? AND child_kind=? AND state='accepted' "
+            "AND (? IS NULL OR child_id != ?) "
+            "AND NOT EXISTS (SELECT 1 FROM auto_research_child_work AS worker "
+            "WHERE worker.worker_id=admission.child_id AND admission.child_kind='work') "
+            "AND NOT EXISTS (SELECT 1 FROM auto_research_experiment_invocations AS spend "
+            "WHERE spend.child_episode_id=admission.child_id "
+            "AND admission.child_kind='experiment')",
+            (episode_id, child_kind, exclude_child_id, exclude_child_id),
+        ).fetchone()
+        assert row is not None
+        return int(row[0])
+
     def _insert_auto_research_child_admission(
         self,
         connection: sqlite3.Connection,
@@ -361,6 +384,18 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 raise ValueError("the child admission identity already names another intent")
             return stored
         self._validate_auto_research_parent_admission(episode)
+        pending = self._pending_child_budget_reservations(
+            connection, episode.episode_id, record.child_kind
+        )
+        if record.child_kind == "work":
+            if episode.invocations_used + pending >= episode.invocation_ceiling:
+                raise EpisodeInvocationCeilingReached(
+                    "the Auto-research operational invocation ceiling is exhausted"
+                )
+        else:
+            allowance = self._auto_research_experiment_allowance(connection, episode.episode_id)
+            if allowance.remaining <= pending:
+                raise AutoResearchExperimentAllowanceReached(allowance)
         connection.execute(
             """
             INSERT INTO auto_research_child_admissions (
@@ -563,7 +598,13 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 ).fetchone()
                 if actor is None or actor["role"] != "orchestrator":
                     raise ValueError("only the canonical orchestrator may admit ordinary Work")
-                if episode.invocations_used >= episode.invocation_ceiling:
+                if (
+                    episode.invocations_used
+                    + self._pending_child_budget_reservations(
+                        connection, episode.episode_id, "work", exclude_child_id=record.worker_id
+                    )
+                    >= episode.invocation_ceiling
+                ):
                     raise EpisodeInvocationCeilingReached(
                         "the Auto-research operational invocation ceiling is exhausted"
                     )
@@ -917,7 +958,13 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                     )
                 if self._has_active_chat_overlap(connection, record):
                     return None
-                if episode.invocations_used >= episode.invocation_ceiling:
+                if (
+                    episode.invocations_used
+                    + self._pending_child_budget_reservations(
+                        connection, episode.episode_id, "work"
+                    )
+                    >= episode.invocation_ceiling
+                ):
                     raise EpisodeInvocationCeilingReached(
                         "the Auto-research operational invocation ceiling is exhausted"
                     )
@@ -1282,7 +1329,10 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
         if route is None or route["state"] != "running":
             raise ValueError("the child Experiment invocation has no live parent route")
         allowance = self._auto_research_experiment_allowance(connection, auto_research_episode_id)
-        if allowance.remaining == 0:
+        pending = self._pending_child_budget_reservations(
+            connection, auto_research_episode_id, "experiment", exclude_child_id=child_episode_id
+        )
+        if allowance.remaining <= pending:
             raise AutoResearchExperimentAllowanceReached(allowance)
         connection.execute(
             """

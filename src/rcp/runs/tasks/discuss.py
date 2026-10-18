@@ -763,6 +763,7 @@ async def stream_discuss_run(
                         remote_stage,
                         state=service.history.state(),
                         graph_target=service.history.graph_target,
+                        history=service.history,
                     )
                 }
             )

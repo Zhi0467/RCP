@@ -1919,6 +1919,7 @@ def _require_auto_research_retry_target_ready(
 
 ChildProfileRefusal = Literal["provider_unready", "model_unknown", "effort_unknown"]
 ChildProfileChoices = dict[str, dict[str, list[str]]]
+ChildSeatProfileChoices = dict[str, ChildProfileChoices]
 
 
 class AutoResearchChildProfileInvalid(ValueError):
@@ -1944,7 +1945,7 @@ def auto_research_child_profile_choices(
 ) -> ChildProfileChoices:
     """The provider profiles an orchestrator may name for a child, by provider.
 
-    A child runs on the node Work profile's machine. A provider is listed when its
+    A child runs on its seat's Work profile machine. A provider is listed when its
     readiness there is installed, authenticated, and Work-launchable, with each
     catalog model id and that model's effort choices. Readiness not yet cached is
     probed once, so a provider never checked on this machine is still offered.
@@ -1966,6 +1967,14 @@ def auto_research_child_profile_choices(
             continue
         choices[provider] = {model.id: list(model.reasoning) for model in readiness.models}
     return choices
+
+
+def auto_research_child_seat_profile_choices(service: ProjectService) -> ChildSeatProfileChoices:
+    """Resolve each seat's catalog through the same path that checks child picks."""
+    return {
+        "node": auto_research_child_profile_choices(service, kind="node_chat"),
+        "project": auto_research_child_profile_choices(service, kind="project_chat"),
+    }
 
 
 def require_auto_research_child_profile_pick(

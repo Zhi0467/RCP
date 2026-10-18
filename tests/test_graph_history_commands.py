@@ -147,13 +147,13 @@ def test_branch_changes_uses_branch_base_and_oversized_engine_page_is_refused(
     assert response.result["code"] == "graph_history_response_too_large"
 
 
-def test_fork_scope_enforces_ancestry_revisions_and_cursor_binding(history_query):
+def test_fork_scope_enforces_ancestry_revisions_and_cursor_binding(history_query, monkeypatch):
     from .test_history_forks import fork_metadata
 
     service, unrestricted, branch = history_query
     parent_head = branch.head_ref()
-    fork = service.history.create_episode_branch(fork_metadata(service.history, parent_head))
-    nested = service.history.create_episode_branch(fork_metadata(service.history, fork.head_ref()))
+    fork = service.history.create_branch(fork_metadata(service.history, parent_head))
+    nested = service.history.create_branch(fork_metadata(service.history, fork.head_ref()))
     scope = GraphReadScope.resolve("project", nested)
     assert scope.ancestry_ceilings == (
         fork.head_ref(),
@@ -161,7 +161,7 @@ def test_fork_scope_enforces_ancestry_revisions_and_cursor_binding(history_query
         branch.branch_metadata().base_head,
     )
     assert GraphReadScope.resolve("project", branch).ancestry_ceilings is None
-    episode_root = service.history.create_episode_branch(
+    episode_root = service.history.create_branch(
         fork_metadata(service.history, service.history.head_ref()).model_copy(
             update={"kind": "auto_research"}
         )
@@ -171,6 +171,19 @@ def test_fork_scope_enforces_ancestry_revisions_and_cursor_binding(history_query
     assert GraphReadScope.model_validate({"project_id": "project", "target": {}}) == (
         GraphReadScope.resolve("project", service.history)
     )
+    with monkeypatch.context() as guard:
+        guard.setattr(
+            ProjectService,
+            "history_engine",
+            property(lambda _: pytest.fail("scope refused before engine read")),
+        )
+        for revision in (parent_head.revision + 1, 999):
+            denied = handle_graph_history_command(
+                service,
+                scope,
+                request("graph_log", id="ev/long", at=f"{parent_head.target.key}@{revision}"),
+            )
+            assert denied.result["code"] == "graph_history_scope_refused"
     roundtrip = GraphReadScope.model_validate_json(scope.model_dump_json())
     assert roundtrip == scope
     args = {"from": f"{parent_head.target.key}@1", "to": str(parent_head.target.key) + "@2"}
@@ -192,7 +205,7 @@ def test_fork_scope_enforces_ancestry_revisions_and_cursor_binding(history_query
         service, unrestricted, request(**args, cursor=first.result["cursor"])
     )
     assert denied.result["code"] == "graph_history_cursor_invalid"
-    sibling = service.history.create_episode_branch(fork_metadata(service.history, parent_head))
+    sibling = service.history.create_branch(fork_metadata(service.history, parent_head))
     denied = handle_graph_history_command(
         service, scope, request("graph_log", id="ev/long", at=f"{sibling.graph_target.key}@head")
     )

@@ -1041,23 +1041,31 @@ class AgentTaskStoreMixin(StoreMixinBase):
     def _require_no_active_human_child_turn(
         self, connection: sqlite3.Connection, episode: EpisodeRecord
     ) -> None:
+        root = _chain_root(connection, episode.project_id, episode.episode_id)
         rows = connection.execute(
-            "SELECT request_json FROM graph_runs WHERE project_id = ? "
-            "AND episode_id IS NULL "
-            "AND kind IN ('node_chat', 'project_chat') "
-            "AND status IN ('queued', 'running', 'pausing')",
-            (episode.project_id,),
+            "WITH RECURSIVE chain(episode_id) AS (SELECT ? UNION "
+            "SELECT next.episode_id FROM episodes AS next "
+            "JOIN chain ON next.continues_episode_id = chain.episode_id), "
+            "chats(chat_id) AS ("
+            "SELECT worker.worker_id FROM auto_research_child_work AS worker "
+            "JOIN chain ON chain.episode_id = worker.episode_id UNION "
+            "SELECT json_extract(root.request_json, '$.chat_id') "
+            "FROM auto_research_child_work AS worker "
+            "JOIN chain ON chain.episode_id = worker.episode_id "
+            "JOIN graph_runs AS root ON root.operation_id = worker.root_operation_id UNION "
+            "SELECT child.child_episode_id FROM auto_research_child_experiments AS child "
+            "JOIN chain ON chain.episode_id = child.auto_research_episode_id) "
+            "SELECT run.request_json FROM graph_runs AS run "
+            "JOIN chats ON chats.chat_id = json_extract(run.request_json, '$.chat_id') "
+            "WHERE run.project_id = ? AND run.episode_id IS NULL "
+            "AND run.kind IN ('node_chat', 'project_chat') "
+            "AND run.status IN ('queued', 'running', 'pausing')",
+            (root, episode.project_id),
         ).fetchall()
         for row in rows:
             request = json.loads(row["request_json"])
-            chat_id = request.get("chat_id")
-            if _origin_bound_edit(request) or not isinstance(chat_id, str):
-                continue
-            owner = self._child_chat_owner(connection, episode.project_id, chat_id)
-            if owner is not None and _chain_root(
-                connection, episode.project_id, owner["episode_id"]
-            ) == _chain_root(connection, episode.project_id, episode.episode_id):
-                raise ValueError(f"auto_research_child_turn_active:{chat_id}")
+            if not _origin_bound_edit(request):
+                raise ValueError(f"auto_research_child_turn_active:{request['chat_id']}")
 
     def _insert_agent_task(
         self,

@@ -148,7 +148,11 @@ def _start_auto_research(
         operation_id="root",
     )
     assert auto_research.graph_target.kind == "branch"
-    assert auto_research.graph_target.branch_id == auto_research.episode_id
+    assert auto_research.graph_target.branch_id is not None
+    assert (
+        tasks.store.branch_owner(auto_research.project_id, auto_research.graph_target.branch_id)
+        == auto_research.episode_id
+    )
     assert auto_research.graph_base_head == GraphHeadRef(revision=0)
     assert root.graph_target == auto_research.graph_target
     return auto_research, wait_for_task(tasks.store, root.operation_id, expect="succeeded")

@@ -762,6 +762,7 @@ async def _stage_work_turn(
             layout.remote_stage,
             state=service.history.state(),
             graph_target=service.history.graph_target,
+            history=service.history,
         )
         return await stage_chat_experiment_watcher_resources(
             request,
@@ -2822,6 +2823,7 @@ async def _stream_work_graph_repair(
                     remote_stage,
                     state=service.history.state(),
                     graph_target=service.history.graph_target,
+                    history=service.history,
                 )
             }
         )

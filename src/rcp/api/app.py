@@ -1215,6 +1215,7 @@ def create_app(
             auto_research_experiment_coordinator,
             worker_request_factory=restart_child_worker_request,
             seat_node_type=restart_child_seat_node_type,
+            project_service=catalog.open_execution,
             episode_id=episode_id,
         )
         current_deferrals = {

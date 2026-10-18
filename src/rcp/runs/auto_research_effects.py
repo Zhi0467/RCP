@@ -79,6 +79,7 @@ from rcp.storage.auto_research_children import (
     AutoResearchInboxNoticeUnacknowledgeable,
     auto_research_inbox_projection,
 )
+from rcp.transport import StateUnavailable
 
 if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
@@ -229,9 +230,11 @@ def auto_research_command_effects(
         ]
         names = store.branch_names(episode.project_id)
         fork_rows = []
+        unavailable_heads = []
         for branch in forks[:AUTO_RESEARCH_FORK_STATUS_MAX_ROWS]:
             if branch_head is None:
-                raise AutoResearchCommandUnavailable("Branch heads are unavailable.")
+                unavailable_heads.append(branch.branch_id)
+                continue
             parent = branch.parent_head
             parent_ref = (
                 "main"
@@ -239,15 +242,30 @@ def auto_research_command_effects(
                 else f"branch:{names[parent.target.branch_id or '']}"
             )
             target = GraphTargetRef(kind="branch", branch_id=branch.branch_id)
+            try:
+                head = branch_head(target)
+            except (
+                AutoResearchCommandUnavailable,
+                StateUnavailable,
+                OSError,
+                ValueError,
+                KeyError,
+            ):
+                unavailable_heads.append(branch.branch_id)
+                continue
             fork_rows.append(
                 {
                     "branch_id": branch.branch_id,
                     "name": branch.name,
                     "parent": f"{parent_ref}@{parent.revision}",
-                    "head": branch_head(target).model_dump(mode="json"),
+                    "head": head.model_dump(mode="json"),
                     **store.graph_branch_live_child_counts(episode.project_id, branch.branch_id),
                     "archived": branch.archived,
                 }
+            )
+        if unavailable_heads:
+            raise AutoResearchCommandUnavailable(
+                "Branch heads are unavailable: " + ", ".join(unavailable_heads)
             )
         result["forks"] = {"rows": fork_rows, "omitted": max(0, len(forks) - len(fork_rows))}
         if arguments.worker_id is not None:
@@ -677,6 +695,14 @@ def auto_research_command_effects(
             }:
                 return stop(context, request.arguments.worker_id)
             return None
+        if (
+            isinstance(request, EpisodeCommandRequest)
+            and isinstance(request.arguments, ExperimentKickoffArguments)
+            and planned_effect_id is not None
+        ):
+            if store.auto_research_child_experiment(planned_effect_id) is None:
+                return None
+            return episode(context, request.arguments, planned_effect_id)
         if (
             isinstance(request, EpisodeCommandRequest)
             and isinstance(request.arguments, EpisodeControlArguments)

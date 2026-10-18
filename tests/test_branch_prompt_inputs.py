@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+from rcp.agents.context import ContextAssembler
 from rcp.agents.write_scope import registered_repository_roots, resolve_project_write_scope
 from rcp.core.models import EpisodeWorktreeBinding
 from rcp.runs.chat import _chat_read_dirs
@@ -23,13 +24,18 @@ from .test_branch_context import branch_services as branch_services
 
 @pytest.mark.parametrize("target", ["main", "branch"])
 @pytest.mark.parametrize("remote", [False, True])
-def test_main_graph_is_an_immutable_execution_host_input(
-    branch_services, tmp_path, monkeypatch, target, remote
+@pytest.mark.parametrize("kind", ["chat", "run"])
+def test_parent_graph_is_an_immutable_execution_host_input(
+    branch_services, tmp_path, monkeypatch, target, remote, kind
 ):
     main, branch = branch_services
     service = main if target == "main" else branch
     request = RunRequest(chat_scope="project", run_truth_scope=["repo-a"])
-    context = service.assemble_chat(request)
+    context = (
+        service.assemble_chat(request)
+        if kind == "chat"
+        else ContextAssembler(service.manifest).assemble(service.history.state())
+    )
     stage = tmp_path / "stage"
     stage.mkdir()
     remote_stage = None
@@ -55,13 +61,17 @@ def test_main_graph_is_an_immutable_execution_host_input(
     updated = context.model_copy(
         update=stage_branch_read_context(context, service, None if remote else stage, remote_stage)
     )
+    legacy = updated.model_dump()
+    legacy["main_graph_path"] = legacy.pop("parent_graph_path")
+    assert type(updated).model_validate(legacy) == updated
+    assert "main_graph_path" not in updated.model_dump()
     assert updated.graph_path == graph_path
     assert updated.repositories == context.repositories
     if target == "main":
-        assert updated.main_graph_path is None and updated.shared_repositories == []
+        assert updated.parent_graph_path is None and updated.shared_repositories == []
         assert uploaded == {} and list(stage.iterdir()) == []
         return
-    path = updated.main_graph_path
+    path = updated.parent_graph_path
     assert path is not None
     if remote:
         assert path.startswith("/remote/task/inputs/")
@@ -77,7 +87,7 @@ def test_main_graph_is_an_immutable_execution_host_input(
     assert "ev/branch-only" not in json.loads(content)["nodes"]
     assert (
         stage_branch_read_context(context, service, None if remote else stage, remote_stage)[
-            "main_graph_path"
+            "parent_graph_path"
         ]
         == path
     )
@@ -235,8 +245,8 @@ def test_branch_chat_turns_expose_staged_main_graph(manifest, tmp_path, monkeypa
             json.loads(value)
             for value in re.findall(r"```json\n(.*?)\n```", launcher.prompts[-1], re.S)
         ]
-        pointers = next(block for block in blocks if "main_graph_path" in block)
-        path = Path(pointers["main_graph_path"])
+        pointers = next(block for block in blocks if "parent_graph_path" in block)
+        path = Path(pointers["parent_graph_path"])
         assert path.is_file() and path.stat().st_mode & 0o222 == 0
         assert json.loads(path.read_text()) == json.loads(
             (service.history.root / "graph.json").read_text()
@@ -319,8 +329,8 @@ def test_branch_graph_repair_refreshes_inline_read_context(manifest, tmp_path, m
         json.loads(value)
         for value in re.findall(r"```json\n(.*?)\n```", launcher.prompts[-1], re.S)
     ]
-    pointers = next(block for block in blocks if "main_graph_path" in block)
-    path = Path(pointers["main_graph_path"])
+    pointers = next(block for block in blocks if "parent_graph_path" in block)
+    path = Path(pointers["parent_graph_path"])
     assert path.is_file() and path.stat().st_mode & 0o222 == 0
     assert json.loads(path.read_text()) == json.loads(
         (service.history.root / "graph.json").read_text()
@@ -377,7 +387,7 @@ def test_parent_snapshot_and_location_exclude_post_parent_graph(
 
     main, parent = branch_services
     head = parent.history.head_ref()
-    fork = main.history.create_episode_branch(fork_metadata(main.history, head))
+    fork = main.history.create_branch(fork_metadata(main.history, head))
     parent.history.append(_branch_patch("ev/after-parent"))
     service = main.for_graph_target(fork.graph_target)
     stage = tmp_path / "fork-stage"
@@ -395,7 +405,7 @@ def test_parent_snapshot_and_location_exclude_post_parent_graph(
         monkeypatch.setattr(remote_stage, "put_file", upload)
     context = service.assemble_chat(RunRequest(chat_scope="project"))
     fields = stage_branch_read_context(context, service, None if remote else stage, remote_stage)
-    path = fields["main_graph_path"]
+    path = fields["parent_graph_path"]
     assert isinstance(path, str)
     content = uploaded[PurePosixPath(path).name] if remote else Path(path).read_text()
     assert json.loads(content) == main.history_engine.state_at(head).model_dump(mode="json")
