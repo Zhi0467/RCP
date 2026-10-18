@@ -83,7 +83,6 @@ from rcp.core.transitions import (
     project_transition_projection,
     transition_trigger_manifest,
 )
-from rcp.core.validation.proposals import proposal_is_stale
 from rcp.history import (
     BranchMergeAlreadyCommitted,
     BranchMergeAlreadyResolved,
@@ -322,19 +321,20 @@ class BranchMergeContext(_StrictMergeModel):
         return cls.model_validate({**payload, "context_id": _context_id(encoded)})
 
 
-class BranchMergeCandidateProblem(ValueError):
-    def __init__(self, message: str, *, conflicts: list[TransitionConflictDetail] | None = None):
-        self.message = " ".join(message.split())
-        self.conflicts = list(conflicts or ())
-        super().__init__(self.message)
-
-
-class BranchMergeSemanticConflict(BranchMergeCandidateProblem):
+class BranchMergeSemanticConflict(ValueError):
     """Canonical preparation rejection, retaining its structured core details."""
 
-    def __init__(self, message: str, *, conflicts=None, diagnostics=()):
-        super().__init__(message, conflicts=conflicts)
+    def __init__(
+        self,
+        message: str,
+        *,
+        conflicts: list[TransitionConflictDetail] | None = None,
+        diagnostics=(),
+    ):
+        self.message = " ".join(message.split())
+        self.conflicts = list(conflicts or ())
         self.diagnostics: tuple[ValidationMessage, ...] = tuple(diagnostics)
+        super().__init__(self.message)
 
 
 class BranchMergeSourceChanged(ValueError):
@@ -497,20 +497,6 @@ def _require_source_human_change(
         raise ValueError("human review fact does not match the final source branch value")
     if before is not None and getattr(before, field, None) == value:
         raise ValueError("human review fact is not a change from the branch base")
-
-
-def _merge_branch_graph(base: GraphState, branch: GraphState) -> GraphState:
-    """Branch review decisions stay local; their actual graph effects merge separately."""
-
-    proposals = dict(branch.proposals)
-    for identity, proposal in branch.proposals.items():
-        if proposal.status == "pending" and not proposal_is_stale(branch, proposal):
-            continue
-        if identity in base.proposals:
-            proposals[identity] = base.proposals[identity]
-        else:
-            proposals.pop(identity)
-    return branch.model_copy(update={"proposals": proposals})
 
 
 def branch_merge_review_proposal_id(
@@ -812,21 +798,19 @@ async def stream_branch_merge_run(
     main_history: HistoryManager | BranchHistoryManager,
     stage: BranchMergeStage,
     write_scope: ProjectWriteScope,
-    validator_command: str,
     checks: MergeAnswersCheck,
     outcome: BranchMergeRunOutcome,
     graph_read_scope: GraphReadScope,
     history_client: str,
+    start_check_turn: Callable[
+        [merge_contract.MergePlan], Awaitable[tuple[str, str, ProviderInvocationGate | None]]
+    ],
     invocation_gate: ProviderInvocationGate | None = None,
     service: ProjectService | None = None,
     execution: Any | None = None,
     binary: str | None = None,
     max_main_rebases: int = MAX_BRANCH_MERGE_REBASE_ROUNDS,
     before_commit: Callable[[], None] | None = None,
-    start_check_turn: Callable[
-        [merge_contract.MergePlan], Awaitable[tuple[str, str, ProviderInvocationGate | None]]
-    ]
-    | None = None,
     reconcile_receipt: Callable[[], BranchMergeReceipt | None] | None = None,
     code_block: str = "",
     code_roots: list[str] | None = None,
@@ -841,8 +825,8 @@ async def stream_branch_merge_run(
     """
     if request.provider is None or request.run_on is None:
         raise ValueError("branch merge requires a pinned provider and execution machine")
-    if not validator_command.strip() or max_main_rebases < 1:
-        raise ValueError("branch merge requires its check command and a positive rebase bound")
+    if max_main_rebases < 1:
+        raise ValueError("branch merge requires a positive rebase bound")
     if execution is not None and service is None:
         raise ValueError("A tracked branch merge requires its project history service.")
 
@@ -877,18 +861,15 @@ async def stream_branch_merge_run(
     delivered_head: GraphHeadRef | None = None
     previous_plan_id = plan.plan_id
     launch_number = 0
+    continuation_cause: Literal["promotion", "destination_moved"] = "destination_moved"
+    promotions: list[tuple[merge_contract.NodeGroupPromotion, merge_contract.MergePlan]] = []
     needs_code = bool(code_block) and not code_landed
 
     while True:
         try:
             if not merge_answers_complete(plan, answers) or needs_code:
                 # A fresh receipt is required for every launched continuation.
-                if start_check_turn is not None:
-                    validator_command, history_client, invocation_gate = await start_check_turn(
-                        plan
-                    )
-                else:
-                    checks.set_plan(plan, turn_id=f"{plan.merge_task_id}:merge:{launch_number}")
+                validator_command, history_client, invocation_gate = await start_check_turn(plan)
                 _answers_mailbox(stage).remove("answers.json")
                 plan_path, schema_path = _stage_answers_plan(stage, token, plan)
                 values = _merge_master_values(
@@ -954,6 +935,7 @@ async def stream_branch_merge_run(
                     prompt = compose(
                         classify(LaunchPhase(session_id=session_id, phase="turn")),
                         parts=branch_merge_rebase_parts(
+                            cause=continuation_cause,
                             previous_plan_id=previous_plan_id,
                             plan_id=plan.plan_id,
                             code=bool(code_block),
@@ -1013,6 +995,8 @@ async def stream_branch_merge_run(
                     raise ValueError("The branch merge provider did not complete its turn.")
                 delivered_head = staged_head
                 needs_code = False
+                if checks.internal_error is not None:
+                    raise ValueError(checks.internal_error)
                 if checks.refusal is not None:
                     raise checks.refusal
                 if checks.hidden_clash is not None:
@@ -1022,16 +1006,18 @@ async def stream_branch_merge_run(
                         raise StateUnavailable(
                             "Destination movement is not yet readable; retry the merge task."
                         )
-                    answers = merge_contract.MergeAnswers(answers={}, cards={})
-                else:
-                    raw = (
-                        _answers_mailbox(stage)
-                        .read_text(
-                            "answers.json",
-                            max_bytes=PATCH_SELF_CHECK_MAX_REQUEST_BYTES,
-                        )
-                        .encode("utf-8")
+                    answers = checks.latest_answers or merge_contract.MergeAnswers(
+                        answers={}, cards={}
                     )
+                else:
+                    try:
+                        raw = (
+                            _answers_mailbox(stage)
+                            .read_text("answers.json", max_bytes=PATCH_SELF_CHECK_MAX_REQUEST_BYTES)
+                            .encode("utf-8")
+                        )
+                    except FileNotFoundError as exc:
+                        raise ValueError("The merge turn did not produce answers.json.") from exc
                     checks.require_receipt(raw)
                     answers = merge_contract.MergeAnswers.model_validate_json(raw)
 
@@ -1042,7 +1028,11 @@ async def stream_branch_merge_run(
                 new_plan = merge_contract.plan_merge(
                     merge_planning_context(fresh, main_history, created_at=created_at)
                 )
+                for promotion, promoted_plan in promotions:
+                    if _promotion_still_applies(promoted_plan, new_plan, promotion):
+                        new_plan = merge_contract.promote_node_group(new_plan, promotion)
                 answers = reusable_merge_answers(plan, new_plan, answers)
+                continuation_cause = "destination_moved"
                 previous_plan_id = plan.plan_id
                 plan, context = new_plan, fresh
                 checks.set_plan(plan, turn_id=checks.turn_id)
@@ -1096,6 +1086,8 @@ async def stream_branch_merge_run(
                 outcome.diagnostic = str(refused)
                 yield _sse(AgentEvent(event="error", text=outcome.diagnostic))
                 return
+            promotions.append((exc.promotion, new_plan))
+            continuation_cause = "promotion"
             answers = reusable_merge_answers(plan, new_plan, answers)
             previous_plan_id, plan = plan.plan_id, new_plan
             checks.set_plan(plan, turn_id=checks.turn_id)
@@ -1110,12 +1102,45 @@ async def stream_branch_merge_run(
                 return
             # The next iteration rebuilds the plan before preparing or appending.
         except (OSError, StateUnavailable, TimeoutError, ValueError) as exc:
-            outcome.status = (
-                "retryable" if isinstance(exc, (StateUnavailable, TimeoutError)) else "rejected"
-            )
+            outcome.status = "rejected" if isinstance(exc, ValueError) else "retryable"
             outcome.diagnostic = str(exc)
             yield _sse(AgentEvent(event="error", text=outcome.diagnostic))
             return
+
+
+def _promotion_still_applies(
+    previous: merge_contract.MergePlan,
+    current: merge_contract.MergePlan,
+    promotion: merge_contract.NodeGroupPromotion,
+) -> bool:
+    """Keep a promoted question while its nodes and their changed fields survive.
+
+    Use the planner's field descriptors, including destination-only fields that
+    are absent from direct changes. The planner reconstructs the actual group.
+    """
+    fields = [
+        field
+        for conflict in previous.conflicts
+        if isinstance(conflict, merge_contract.NodeGroupConflict)
+        and set(conflict.node_ids) == set(promotion.node_ids)
+        for field in conflict.fields
+    ]
+    missing = object()
+    for node_id in promotion.node_ids:
+        source = current.source_graph.nodes.get(node_id)
+        destination = current.destination_graph.nodes.get(node_id)
+        if source is None or destination is None:
+            return False
+        base = current.base_graph.nodes.get(node_id)
+        if not any(
+            getattr(base, field.field_name, missing) != getattr(source, field.field_name, missing)
+            or getattr(base, field.field_name, missing)
+            != getattr(destination, field.field_name, missing)
+            for field in fields
+            if field.entity_id == node_id
+        ):
+            return False
+    return True
 
 
 def reusable_merge_answers(

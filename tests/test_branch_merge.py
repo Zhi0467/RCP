@@ -385,7 +385,12 @@ class _Run:
 
         return outcome, events()
 
+    async def activate(self, plan):
+        self.checks.set_plan(plan, turn_id=f"turn-{len(self.launches)}")
+        return "client merge-answers check answers.json", "client", None
+
     async def run(self, **kwargs):
+        kwargs.setdefault("start_check_turn", self.activate)
         return [
             frame
             async for frame in stream_branch_merge_run(
@@ -395,7 +400,6 @@ class _Run:
                 main_history=self.history,
                 stage=self.stage,
                 write_scope=_local_scope(self.stage, self.initial),
-                validator_command="client merge-answers check answers.json",
                 checks=self.checks,
                 outcome=self.outcome,
                 graph_read_scope=GraphReadScope(project_id="project-one", target=GraphTargetRef()),
@@ -732,3 +736,151 @@ async def test_rebase_receives_rotated_check_and_history_commands(tmp_path, monk
     assert "turn-1 check" in run.launches[1][0]
     assert "turn-1 history" in run.launches[1][0]
     assert run.checks.receipts[0].turn_id == "turn-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("publication_error", [OSError, TimeoutError])
+@pytest.mark.parametrize("reconciliation", ["absent", "io", "receipt"])
+async def test_publication_io_reconciles_or_retries(
+    tmp_path, monkeypatch, publication_error, reconciliation
+):
+    run = _Run(tmp_path, monkeypatch)
+
+    def publish():
+        raise publication_error("publication interrupted")
+
+    def reconcile():
+        if reconciliation == "io":
+            raise OSError("receipt unavailable")
+        return run.receipt(run.commits[0][0]) if reconciliation == "receipt" else None
+
+    run.commit_behavior = publish
+    run.reconcile = reconcile
+    await run.run()
+    assert run.outcome.status == ("committed" if reconciliation == "receipt" else "retryable")
+    assert len(run.commits) == 1
+
+
+@pytest.mark.asyncio
+async def test_moved_check_reuses_latest_successful_answers_not_current_file(tmp_path, monkeypatch):
+    run = _Run(tmp_path, monkeypatch, conflicts=(_field(),))
+    checked = MergeAnswers(answers={_field().conflict_id: {"kind": "destination"}}, cards={})
+
+    def moved(plan, answers):
+        raise RevisionConflict("destination moved")
+
+    def answer_then_move():
+        assert run.answer().status == "ok"
+        assert run.check(checked.model_dump_json().encode()).status == "ok"
+        run.move()
+        run.prepare_behavior = moved
+        assert run.answer().status == "unavailable"
+        run.prepare_behavior = None
+
+    run.behavior = answer_then_move
+    await run.run()
+    assert run.outcome.status == "committed", run.outcome.diagnostic
+    assert len(run.launches) == 1
+    assert run.preparations[-1][1] == checked
+
+
+@pytest.mark.asyncio
+async def test_internal_check_failure_ends_turn_without_retry_or_commit(tmp_path, monkeypatch):
+    run = _Run(tmp_path, monkeypatch, conflicts=(_field(),))
+
+    def broken(plan, answers):
+        raise RuntimeError("builder bug")
+
+    def check_twice():
+        assert run.answer().status == "ok"
+        run.prepare_behavior = broken
+        assert run.answer().status == "invalid"
+
+    run.behavior = check_twice
+    await run.run()
+    assert run.outcome.status == "rejected"
+    assert "builder bug" in run.outcome.diagnostic
+    assert not run.commits
+    assert len(run.launches) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", [False, True])
+async def test_promotion_survives_rebase_and_reasks_only_changed_group(
+    tmp_path, monkeypatch, changed
+):
+    run = _Run(tmp_path, monkeypatch, conflicts=(_field(),))
+    diagnostic = MergeDiagnostic(code="coupled", message="coupled", related_node_ids=("rq/merge",))
+    promotion = NodeGroupPromotion(node_ids=("rq/merge",), diagnostics=(diagnostic,))
+    group = NodeGroupConflict(
+        conflict_id="group",
+        node_ids=promotion.node_ids,
+        fields=(_field(),),
+        base={"rq/merge": PresentValue(value={})},
+        branch={"rq/merge": PresentValue(value={})},
+        destination={"rq/merge": PresentValue(value={})},
+        diagnostic_codes=("coupled",),
+    )
+    promotions = []
+    causes = []
+    original_parts = merge_module.branch_merge_rebase_parts
+
+    def parts(**kwargs):
+        causes.append(kwargs["cause"])
+        return original_parts(**kwargs)
+
+    def promote(plan, request):
+        promotions.append((plan, request))
+        current_group = group
+        if changed and run.context.main_head != run.initial.main_head:
+            current_group = group.model_copy(
+                update={"destination": {"rq/merge": PresentValue(value={"motivation": "new"})}}
+            )
+        return _plan(
+            run.context,
+            conflicts=(current_group,),
+            created_at=plan.captured_authority.patch_template.created_at,
+        )
+
+    def prepare(plan, answers):
+        if plan.conflicts[0].kind != "node_group":
+            raise MergeHiddenClash(promotion)
+
+    def answer_and_move():
+        run.answer()
+        if len(run.launches) == 2:
+            run.move()
+
+    monkeypatch.setattr(merge_contract, "promote_node_group", promote)
+    monkeypatch.setattr(merge_module, "branch_merge_rebase_parts", parts)
+    run.prepare_behavior = prepare
+    run.behavior = answer_and_move
+    await run.run()
+    assert run.outcome.status == "committed", run.outcome.diagnostic
+    assert len(run.launches) == (3 if changed else 2)
+    assert len(promotions) == 2
+    assert promotions[1][0].destination_head == run.context.main_head
+    assert causes == (["promotion", "destination_moved"] if changed else ["promotion"])
+    assert run.preparations[-1][1].answers["group"].kind == "branch"
+
+
+def test_obsolete_promotion_is_not_reapplied_when_nodes_or_changes_disappear():
+    context = _context()
+    diagnostic = MergeDiagnostic(code="coupled", message="coupled")
+    promotion = NodeGroupPromotion(node_ids=("rq/merge",), diagnostics=(diagnostic,))
+    group = NodeGroupConflict(
+        conflict_id="group",
+        node_ids=promotion.node_ids,
+        fields=(_field(),),
+        base={},
+        branch={},
+        destination={},
+        diagnostic_codes=("coupled",),
+    )
+    previous = _plan(context, conflicts=(group,))
+    current = _plan(context)
+    assert merge_module._promotion_still_applies(previous, current, promotion)
+    removed = current.model_copy(update={"destination_graph": GraphState()})
+    assert not merge_module._promotion_still_applies(previous, removed, promotion)
+    unchanged = current.model_copy(update={"source_graph": current.base_graph})
+    assert not merge_module._promotion_still_applies(previous, unchanged, promotion)

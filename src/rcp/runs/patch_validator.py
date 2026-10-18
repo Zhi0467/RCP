@@ -93,6 +93,8 @@ class MergeAnswersCheck:
     unavailable: str | None = field(default=None, init=False)
     destination_moved: bool = field(default=False, init=False)
     diagnostic: str | None = field(default=None, init=False)
+    internal_error: str | None = field(default=None, init=False)
+    latest_answers: MergeAnswers | None = field(default=None, init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _generation: int = field(default=0, init=False, repr=False)
     _pending_checks: int = field(default=0, init=False, repr=False)
@@ -109,6 +111,8 @@ class MergeAnswersCheck:
             self.unavailable = None
             self.destination_moved = False
             self.diagnostic = None
+            self.internal_error = None
+            self.latest_answers = None
 
     def _receipt(self, content: bytes) -> MergeCheckReceipt:
         return MergeCheckReceipt(
@@ -123,15 +127,17 @@ class MergeAnswersCheck:
 
     def require_receipt(self, content: bytes) -> MergeCheckReceipt:
         with self._lock:
+            if self.internal_error:
+                raise ValueError(self.internal_error)
+            if self._pending_checks:
+                raise StateUnavailable(
+                    "The merge answers check is still running; its result is unavailable."
+                )
             expected = self._receipt(content)
             if expected in self.receipts:
                 return expected
             if self.unavailable:
                 raise StateUnavailable(self.unavailable)
-            if self._pending_checks:
-                raise StateUnavailable(
-                    "The merge answers check is still running; its result is unavailable."
-                )
             raise ValueError(
                 "Collected answers do not match a successful check for this task, turn, and plan."
                 + (f" {self.diagnostic}" if self.diagnostic else "")
@@ -152,7 +158,40 @@ class MergeAnswersCheck:
                     message="This command requires the current merge answers check turn.",
                 )
             self._pending_checks += 1
+        try:
+            return self._check(request, plan, turn_id, generation)
+        except Exception as exc:
+            with self._lock:
+                if self._generation != generation:
+                    return CommandResponse(
+                        request_id=request.request_id,
+                        status="unavailable",
+                        message="The merge plan or turn changed during this check; check again.",
+                    )
+                self.internal_error = (
+                    f"Merge answers check failed internally ({type(exc).__name__}): {exc}"
+                )
+                self.diagnostic = self.internal_error
+                return CommandResponse(
+                    request_id=request.request_id,
+                    status="invalid",
+                    message=self.internal_error[:2_000],
+                    result={"outcome": "internal_error"},
+                )
+        finally:
+            with self._lock:
+                if self._generation == generation:
+                    self._pending_checks -= 1
+
+    def _check(
+        self,
+        request: MergeAnswersCommandRequest,
+        plan: MergePlan,
+        turn_id: str,
+        generation: int,
+    ) -> CommandResponse:
         failure = None
+        answers = None
         try:
             answers = MergeAnswers.model_validate_json(request.arguments.answers)
             merge_contract.prepare_merge_candidate(
@@ -175,7 +214,6 @@ class MergeAnswersCheck:
                     status="unavailable",
                     message="The merge plan or turn changed during this check; check again.",
                 )
-            self._pending_checks -= 1
             self.unavailable = None
             self.destination_moved = isinstance(failure, RevisionConflict)
             self.diagnostic = None
@@ -226,6 +264,9 @@ class MergeAnswersCheck:
                     )
             self.receipts.append(receipt)
             self.hidden_clash = None
+            self.refusal = None
+            assert answers is not None
+            self.latest_answers = answers.model_copy(deep=True)
             return CommandResponse(
                 request_id=request.request_id,
                 status="ok",

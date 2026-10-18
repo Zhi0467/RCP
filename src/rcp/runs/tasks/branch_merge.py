@@ -361,11 +361,6 @@ async def stream_branch_merge_task(
                     main_history=destination_history,
                     stage=stage,
                     write_scope=write_scope,
-                    validator_command=staged_validator.client_command(
-                        "merge-answers",
-                        "check",
-                        str(workspace / "answers.json"),
-                    ),
                     checks=checks,
                     start_check_turn=start_check_turn,
                     reconcile_receipt=lambda: branch.reconcile_merge_receipt(merge_id),

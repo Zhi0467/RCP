@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+from typing import Literal
 
 from rcp.agents.continuation_prompt import MASTER_OVERLAY_RULE
 from rcp.agents.prompts import PROVIDER_NATIVE_SUBAGENT_LIFETIME
 from rcp.runs.merge_contract import MergeAnswers, MergePlan, merge_contract_digest
 
 # Bumped when the branch-merge task contract's stable policy prose changes.
-BRANCH_MERGE_POLICY_VERSION = "branch-merge-v4"
+BRANCH_MERGE_POLICY_VERSION = "branch-merge-v5"
 
 
 def branch_merge_task_contract(
@@ -138,20 +139,30 @@ def branch_merge_rebase_parts(
     *,
     previous_plan_id: str,
     plan_id: str,
+    cause: Literal["promotion", "destination_moved"],
     code: bool = False,
 ) -> list[str]:
     """Continue the native session with replacement questions and reusable answers."""
 
     if not previous_plan_id or not plan_id or previous_plan_id == plan_id:
         raise ValueError("branch merge rebase requires a new plan identity")
+    reason = {
+        "promotion": (
+            "Dry preparation found a hidden clash. RCP promoted the related nodes into a "
+            "coupled conflict in the replacement plan. Answer that group together."
+        ),
+        "destination_moved": (
+            "The destination advanced. RCP rebuilt the plan against its new head; answer "
+            "the remaining questions using the replacement destination values."
+        ),
+    }[cause]
     parts = [
-        "# RCP graph-branch merge rebase\n\nThe merge plan changed; the previous candidate "
-        "was not committed. RCP rebuilt the plan. Preserve the supplied retained answers and "
+        "# RCP graph-branch merge rebase\n\n"
+        + reason
+        + " The previous candidate was not committed. Preserve the supplied retained answers and "
         "cards, answer only the remaining questions, and write the complete answers file. "
         "Run the check again: the previous plan's successful receipt cannot check this plan."
     ]
     if code:
-        parts.append(
-            "Only the graph moved. Keep the code merge you already landed; do not redo it."
-        )
+        parts.append("Keep the code merge you already landed; do not redo it.")
     return parts
