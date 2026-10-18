@@ -505,7 +505,7 @@ def test_acceptance_exhausted_episode_continues_in_its_own_session_on_its_branch
         assert continuation_root_id != old_root_operation_id
         assert continuation["continues_episode_id"] == old_episode_id
         assert continuation["graph_target"] == old_episode["graph_target"]
-        assert continuation["graph_branch"]["branch_id"] == old_episode["graph_target"]["branch_id"]
+        assert continuation["graph_branch"]["branch_id"] == old_episode_id
         assert continuation["graph_branch"]["current_episode_id"] == continuation_id
         assert continuation["budget"]["invocation_ceiling"] == 1
         assert continuation["budget"]["invocations_used"] == 1

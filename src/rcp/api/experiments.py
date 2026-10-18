@@ -171,7 +171,9 @@ def run_experiment(
                     state,
                     node_id,
                     graph_target=(
-                        GraphTargetRef(kind="branch", branch_id=str(uuid.uuid4()))
+                        # An episode's own branch is named by the episode, as before
+                        # forks; chat and Runs readers key on that identity.
+                        GraphTargetRef(kind="branch", branch_id=episode_id)
                         if creates_branch
                         else target
                     ),

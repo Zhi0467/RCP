@@ -320,7 +320,9 @@ def reserve_auto_research(
     episode_id = episode_id or str(uuid.uuid4())
     if graph_base_head.target.kind != "main":
         raise ValueError("Auto-research must branch from an exact main graph head.")
-    graph_target = GraphTargetRef(kind="branch", branch_id=str(uuid.uuid4()))
+    # The chain's branch is named by its root episode; the orchestrator's
+    # conversation and Runs card key on that identity. Forks get their own ids.
+    graph_target = GraphTargetRef(kind="branch", branch_id=episode_id)
     operation_id = operation_id or str(uuid.uuid4())
     run_request = auto_research_root_request(request, episode_id=episode_id).model_copy(
         update={"actor_operation_id": operation_id}
