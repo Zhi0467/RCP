@@ -276,7 +276,8 @@ Other viewable types accept whole-artifact comments; PDF/download-only refuse.
 Each comment is text plus optional selection. Starting on text highlights it;
 figure/blank-space drags select area. The floating window offers Add comment or
 Edit now, which sends only the comment being written and leaves the tray as it is.
-Cancel/Escape discards it; a plain click elsewhere in the artifact closes it. A corner
+Cancel/Escape discards it; a plain click elsewhere in the artifact only closes it,
+and its text returns with the next selection. A corner
 count icon opens the tray with Remove, whole-artifact comment, and Send to original
 chat, which sends every filed comment. These are prompt inputs, never graph annotations.
 
