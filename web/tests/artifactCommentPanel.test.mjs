@@ -226,6 +226,25 @@ test("Edit now posts only the comment being written and keeps the queued list", 
   );
 });
 
+test("a refused Edit now returns to the comment box when the tray is full", async () => {
+  const app = shell();
+  await settle();
+  const { general, message, editNow } = app.elements;
+  for (let index = 0; index < 10; index += 1) {
+    message.value = `Queued ${index}`;
+    app.addComment({ kind: "whole" });
+  }
+  app.setSendStatus(503);
+  general.listeners.click();
+  message.value = "Edit this now";
+  message.listeners.input();
+  editNow.listeners.click();
+  await settle();
+  const saved = JSON.parse([...app.saved.values()].at(-1));
+  assert.equal(saved.comments.length, 10);
+  assert.equal(saved.draft.text, "Edit this now");
+});
+
 test("shell stops permanent state failures until Retry and keeps polling transient failures", async () => {
   for (const status of [403, 404, 410, 0, 409, 503]) {
     const app = shell();

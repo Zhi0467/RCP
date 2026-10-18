@@ -36,7 +36,12 @@ from rcp.agents.command_mailbox import (
     serve_command_mailbox,
     stage_command_mailbox,
 )
-from rcp.agents.command_protocol import CommandRequest, CommandResponse, ValidateCommandRequest
+from rcp.agents.command_protocol import (
+    CommandRequest,
+    CommandResponse,
+    CommandVerb,
+    ValidateCommandRequest,
+)
 from rcp.agents.continuation_prompt import (
     LaunchPhase,
     MasterRef,
@@ -263,9 +268,16 @@ async def stream_auto_research_orchestrator_run(
         graph_read_scope = GraphReadScope.resolve(
             turn.task.project_id, service.history, context.group_context
         )
+        # The one command surface this turn's prompt renders and its dispatcher enforces.
+        allowed_verbs = auto_research_allowed_verbs(
+            "orchestrator",
+            graph_read_scope=graph_read_scope,
+            bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
+        )
         command_dispatcher = command_dispatcher.with_command_files(
             service=service,
             graph_read_scope=graph_read_scope,
+            allowed_verbs=allowed_verbs,
             reader=lambda name, max_bytes: command_files.read_text(name, max_bytes=max_bytes),
             consumer=command_files.remove_if_sha256,
             refresher=lambda: _refreshed_orchestrator_state_paths(
@@ -358,6 +370,7 @@ async def stream_auto_research_orchestrator_run(
                 patch_path=patch_path,
                 schema_path=schema_path,
                 command_client=staged_commands.client_command(),
+                allowed_verbs=allowed_verbs,
                 graph_read_scope=graph_read_scope,
                 staged_head=staged_head,
                 messages_path=messages_path,
@@ -609,6 +622,13 @@ async def stream_auto_research_worker_run(
         graph_read_scope = GraphReadScope.resolve(
             turn.task.project_id, service.history, context.group_context
         )
+        # The one command surface this turn's prompt renders and its dispatcher enforces.
+        allowed_verbs = auto_research_allowed_verbs(
+            "worker",
+            graph_read_scope=graph_read_scope,
+            bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
+        )
+        command_dispatcher = command_dispatcher.with_allowed_verbs(allowed_verbs)
         staged_head = prepare_graph_observation(
             execution,
             service,
@@ -662,6 +682,7 @@ async def stream_auto_research_worker_run(
                 patch_path=patch_path,
                 schema_path=schema_path,
                 command_client=staged_commands.client_command(),
+                allowed_verbs=allowed_verbs,
                 graph_read_scope=graph_read_scope,
                 staged_head=staged_head,
                 reply_key=_worker_reply_key(turn),
@@ -1622,6 +1643,7 @@ def _orchestrator_prompt(
     patch_path: str,
     schema_path: str,
     command_client: str,
+    allowed_verbs: tuple[CommandVerb, ...],
     graph_read_scope: GraphReadScope | None = None,
     staged_head: GraphHeadRef | None = None,
     messages_path: str | None,
@@ -1631,11 +1653,6 @@ def _orchestrator_prompt(
     browser_grant: BrowserGrant,
     child_profiles: ChildSeatProfileChoices,
 ) -> tuple[str, str, MasterRef, dict[str, object]]:
-    allowed_verbs = auto_research_allowed_verbs(
-        "orchestrator",
-        graph_read_scope=graph_read_scope,
-        bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
-    )
     repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path} for item in context.repositories
     ]
@@ -1782,9 +1799,7 @@ def _orchestrator_prompt(
                 branch_name=context.branch_name,
                 branch_parent=context.branch_parent,
             ),
-            render_loop_overlap(
-                loops, ask_allowed="ask" in auto_research_allowed_verbs("orchestrator")
-            ),
+            render_loop_overlap(loops, ask_allowed="ask" in allowed_verbs),
             render_auto_research_overlap(other_runs),
         ),
         report_pending=lambda session_id: execution.store.episode_report_rebootstrap_pending(
@@ -1809,6 +1824,7 @@ def _worker_prompt(
     patch_path: str,
     schema_path: str,
     command_client: str,
+    allowed_verbs: tuple[CommandVerb, ...],
     graph_read_scope: GraphReadScope | None = None,
     staged_head: GraphHeadRef | None = None,
     reply_key: str,
@@ -1832,11 +1848,6 @@ def _worker_prompt(
     node = service.history.state().nodes.get(turn.binding.control_node_id or "")
     if node is None:
         raise ValueError("AutoResearch worker seat is no longer in the graph.")
-    allowed_verbs = auto_research_allowed_verbs(
-        "worker",
-        graph_read_scope=graph_read_scope,
-        bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
-    )
     repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path} for item in context.repositories
     ]

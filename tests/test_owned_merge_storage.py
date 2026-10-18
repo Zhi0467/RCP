@@ -515,9 +515,21 @@ def test_human_fork_merge_admits_and_recovers_without_episode_budget(
     store.reserve_branch_merge_invocation(task.operation_id)
     store.fail_agent_task(task.operation_id, "Process restarted", status="interrupted")
     assert store.requeue_owned_merge_task(task.operation_id).episode_id is None
-    # A sibling fork cannot merge into the same parent while this merge enters it.
+    # A sibling fork cannot merge into the same parent while this merge enters it,
+    # nor can an unbound episode merge enter main.
     with pytest.raises(ValueError, match="^merge_destination_merging$"):
         store.create_branch_merge_task(member_merge()[2])
+    if not parent_branch:
+        store.complete_agent_task(harness.root.operation_id, applied_revision=None, result={})
+        episode_merge = template.model_copy(
+            update={
+                "operation_id": str(uuid.uuid4()),
+                "graph_target": harness.branch.graph_target,
+                "request": {**template.request, "merge_binding": None},
+            }
+        )
+        with pytest.raises(ValueError, match="^merge_destination_merging$"):
+            store.create_branch_merge_task(episode_merge)
     assert store.episode_budget_meter(harness.episode.episode_id).invocations_used == 1
     resolved = store.agent_task_authority(task.project_id, task.operation_id)
     assert resolved.merge_source == source.graph_target and resolved.merge_dispatcher == "member"

@@ -285,7 +285,8 @@ never graph annotations.
 
 The shell saves filed comments/unsent text per artifact in the browser profile.
 Both send paths post a comment list, with `edit_now` for immediate editing. A refusal
-keeps the comments with the reason (a refused Edit now files its comment in the tray);
+keeps the comments with the reason (a refused Edit now files its comment in the tray,
+or returns it to the comment box when the tray is full);
 success removes only the comments it sent and reports the operation to the parent.
 Explicit fresh-session admission is labelled on both actions. Unavailable origins
 only disable editing. A later edit failure comes from `edit_failure` until replaced.
@@ -308,8 +309,8 @@ Admission captures artifact/version. A composer comment must belong to that chat
 and follows its ordinary mode, profile, session, graph admission, compute, and
 worktree. A viewer Send is that same composer turn in Work, on the chat's latest
 profile, whenever the artifact's chat takes human turns (ordinary and Experiment
-chats). Edit now, and a Send whose origin is an orchestrator thread or a read-only
-child, resume the recorded master: chat/child masters get Discuss with the origin
+chats, and an ended chain's orchestrator conversation). Edit now, and a Send whose
+origin is a running orchestrator or a read-only child, resume the recorded master: chat/child masters get Discuss with the origin
 profile; Experiment/orchestrator masters get a revoking scratch-only edit, without
 graph, watcher, master, or repository authority. Admission freezes this choice.
 

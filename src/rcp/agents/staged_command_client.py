@@ -67,6 +67,41 @@ _PROFILE_PICK_FLAGS = (("provider", "--provider"), ("model", "--model"), ("reaso
 SPAWN_SEAT_OPTIONS = (("seat_node", "--seat-node", "<node-id>"), ("project", "--project", None))
 CHILD_TARGET_OPTIONS = (("at", "--at", "<ref@R>"), ("target", "--target", "<branch>"))
 CHILD_SEED_OPTION = ("seed_file", "--seed-file", "<filename>")
+# Parser enforcement and every usage renderer share these option records.
+KEY_OPTION = ("key", "--key", "<key>")
+MERGE_SOURCE = ("branch_id", "<branch-id>")
+BRANCH_ARCHIVE = ("archive", "--archive", "<branch-id>")
+BULLETIN_READ = ("read", "--read", None)
+BULLETIN_POST = ("post", "--post", None)
+BULLETIN_EDIT = ("edit", "--edit", "<post-id>")
+BULLETIN_DELETE = ("delete", "--delete", "<post-id>")
+BULLETIN_REPLY_TO = ("reply_to", "--reply-to", "<post-id>")
+BULLETIN_CURSOR = ("cursor", "--cursor", "<cursor>")
+BULLETIN_BODY = ("body_file", "<body-file>")
+
+
+def _option_usage(option):
+    _, flag, value = option
+    return f"{flag} {value}" if value else flag
+
+
+def merge_usage():
+    return f"merge {_option_usage(KEY_OPTION)} {MERGE_SOURCE[1]}"
+
+
+def branch_usage():
+    return f"branch {_option_usage(BRANCH_ARCHIVE)}"
+
+
+def bulletin_usages():
+    key, body = _option_usage(KEY_OPTION), BULLETIN_BODY[1]
+    return (
+        f"bulletin {_option_usage(BULLETIN_READ)} [{_option_usage(BULLETIN_CURSOR)}]",
+        f"bulletin {_option_usage(BULLETIN_POST)} {key} "
+        f"[{_option_usage(BULLETIN_REPLY_TO)}] {body}",
+        f"bulletin {_option_usage(BULLETIN_EDIT)} {key} {body}",
+        f"bulletin {_option_usage(BULLETIN_DELETE)} {key}",
+    )
 
 
 def child_target_usage():
@@ -240,14 +275,14 @@ def _parser():
 
     bulletin = subparsers.add_parser("bulletin")
     bulletin_actions = bulletin.add_mutually_exclusive_group(required=True)
-    bulletin_actions.add_argument("--post", action="store_true")
-    bulletin_actions.add_argument("--read", action="store_true")
-    bulletin_actions.add_argument("--edit")
-    bulletin_actions.add_argument("--delete")
-    bulletin.add_argument("--key")
-    bulletin.add_argument("--reply-to")
-    bulletin.add_argument("--cursor")
-    bulletin.add_argument("body_file", nargs="?")
+    for dest, option, value in (BULLETIN_POST, BULLETIN_READ, BULLETIN_EDIT, BULLETIN_DELETE):
+        if value is None:
+            bulletin_actions.add_argument(option, dest=dest, action="store_true")
+        else:
+            bulletin_actions.add_argument(option, dest=dest, metavar=value)
+    for dest, option, value in (KEY_OPTION, BULLETIN_REPLY_TO, BULLETIN_CURSOR):
+        bulletin.add_argument(option, dest=dest, metavar=value)
+    bulletin.add_argument(BULLETIN_BODY[0], nargs="?", metavar=BULLETIN_BODY[1])
 
     lesson = subparsers.add_parser("lesson")
     lesson_actions = lesson.add_subparsers(dest="lesson_action", required=True)
@@ -286,11 +321,13 @@ def _parser():
     status_target.add_argument("--episode-id")
 
     merge = subparsers.add_parser("merge")
-    merge.add_argument("--key", required=True)
-    merge.add_argument("branch_id")
+    merge.add_argument(KEY_OPTION[1], dest=KEY_OPTION[0], required=True, metavar=KEY_OPTION[2])
+    merge.add_argument(MERGE_SOURCE[0], metavar=MERGE_SOURCE[1])
     branch = subparsers.add_parser("branch")
-    branch.add_argument("--key")
-    branch.add_argument("--archive", required=True, metavar="BRANCH_ID")
+    # Archive is idempotent; an omitted key gets a fresh one.
+    branch.add_argument(KEY_OPTION[1], dest=KEY_OPTION[0], metavar=KEY_OPTION[2])
+    dest, option, value = BRANCH_ARCHIVE
+    branch.add_argument(option, dest=dest, required=True, metavar=value)
 
     spawn = subparsers.add_parser("spawn")
     spawn.add_argument("--key", required=True)

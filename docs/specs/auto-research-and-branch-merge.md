@@ -147,8 +147,10 @@ loops on other branches; human views stay unfiltered.
 
 An orchestrator fork archives automatically when its head still equals its parent
 head and no writer can reach it: no unsettled task using it as graph target or
-bound merge destination, no publication of unknown outcome, no undelivered watcher
-or worker mail, no live child Experiment, and no accepted admission targeting it.
+bound merge destination, no unstopped worker that can still resume there from its
+session and stage, no nested fork with such work, no publication of unknown outcome,
+no undelivered watcher or worker mail, no live child Experiment, and no accepted
+admission targeting it.
 The child poll rechecks this under the canonical write lock. `branch --archive <id>`
 archives an owned fork, never the root's own branch. Member forks never auto-archive.
 
@@ -218,6 +220,15 @@ or merge refusal. Add N turns refuses while a human turn is active in a lineage
 child, naming the chat; admission locks composers again. Session/stage exclusion
 still prevents overlap.
 
+The chain's orchestrator conversation (chat id = root episode id = its branch)
+follows the same lock with `auto_research_orchestrator_running`. After the chain
+ends it takes ordinary project-chat turns on that branch. The first resumes the
+newest member's orchestrator session and stage, or starts fresh with
+`orchestrator_session_unavailable`, `provider_mismatch`, `machine_mismatch`, or the
+ordinary dropped-session reason. The conversation's graph target is that branch.
+Add N turns refuses while such a turn is active, and viewer Send on an ended
+chain's orchestrator artifact continues this conversation with a Work turn.
+
 Lifecycle notices are RCP facts: child settlement/recovery, child Experiment
 attention/ending, and graph readiness. Source transition and deduplicated notice
 commit together. Busy actors receive input after their turn. Sleeping delivery
@@ -253,7 +264,8 @@ control, which excludes Experiment graph conditions.
 The exact RCP-authored prefix exposes validation/keyed Apply, status, keyed worker
 spawn and pause/resume/stop, star mail, graph-condition registration, child
 Experiment kickoff/stop/exact-resume, keyed fork merge and fork archive (see
-[Forks](#forks)), inbox harvest/clear, ask, and guarded finish.
+[Forks](#forks)), inbox harvest/clear, the Bulletin while it is on, ask, and
+guarded finish.
 Spawn/kickoff may select provider/model/effort. Root commands expose no compute
 helper verbs; child Work uses `launch` on the generic route or direct scheduler
 submission. Validation/reply policy remains surface-specific.

@@ -1324,6 +1324,20 @@ class ProjectService:
                         "orchestrator_episode_id": task.orchestrator_episode_id,
                         "human_turn_refusal": task.human_turn_refusal,
                         "graph_title": task.graph_title,
+                        # Human turns after an Auto-research chain ends join its one card.
+                        **(
+                            {
+                                "title": task.title,
+                                "message_count": canonical.message_count + task.message_count,
+                                "updated_at": max(
+                                    canonical.updated_at,
+                                    task.updated_at,
+                                    key=datetime.fromisoformat,
+                                ),
+                            }
+                            if task.conversation_kind == "auto_research"
+                            else {}
+                        ),
                     }
                 )
         chats = sorted(

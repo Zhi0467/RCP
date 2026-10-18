@@ -844,7 +844,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
 
         raw = record.request.get("merge_binding")
         if raw is None:
-            return None  # Old human-dispatched episode merges always target main.
+            # Old human-dispatched episode merges always target main.
+            _require_merge_destination_open(connection, record, GraphTargetRef())
+            return None
         binding = MergeBinding.model_validate(raw)
         if record.request.get("episode_id") != record.episode_id:
             raise ValueError("merge_dispatcher_mismatch")
@@ -870,29 +872,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 raise ValueError("merge_destination_missing")
             if destination["archived"]:
                 raise ValueError("merge_destination_archived")
-        # The destination is busy while a merge leaves it or another merge enters it;
-        # an unbound episode merge always enters main.
-        if (
-            connection.execute(
-                "SELECT 1 FROM graph_runs WHERE project_id=? AND kind='branch_merge' "
-                "AND status IN ('queued','running','pausing') AND operation_id != ? "
-                "AND (graph_target_json=? "
-                "OR (json_extract(request_json, '$.merge_binding.destination.kind')=? "
-                "AND json_extract(request_json, '$.merge_binding.destination.branch_id') IS ?) "
-                "OR (?='main' AND json_extract(request_json, '$.merge_binding') IS NULL)) "
-                "LIMIT 1",
-                (
-                    record.project_id,
-                    record.operation_id,
-                    graph_target_json(binding.destination),
-                    binding.destination.kind,
-                    binding.destination.branch_id,
-                    binding.destination.kind,
-                ),
-            ).fetchone()
-            is not None
-        ):
-            raise ValueError("merge_destination_merging")
+        _require_merge_destination_open(connection, record, binding.destination)
         if binding.dispatcher_episode_id is None:
             from rcp.storage.membership import live_project_member
 
@@ -974,27 +954,59 @@ class AgentTaskStoreMixin(StoreMixinBase):
         ).fetchall()
         return {row["episode_id"] for row in rows}
 
+    @staticmethod
+    def _orchestrator_chat_target(
+        connection: sqlite3.Connection, project_id: str, chat_id: str
+    ) -> GraphTargetRef | None:
+        """The branch of the Auto-research chain whose root episode is this chat."""
+
+        row = connection.execute(
+            "SELECT root.graph_target_json FROM episodes AS root "
+            "JOIN graph_branches AS branch ON branch.project_id = root.project_id "
+            "AND branch.owner_episode_id = root.episode_id "
+            "AND branch.branch_id = json_extract(root.graph_target_json, '$.branch_id') "
+            "WHERE root.project_id = ? AND root.episode_id = ? AND root.mode = 'auto_research'",
+            (project_id, chat_id),
+        ).fetchone()
+        return GraphTargetRef.model_validate_json(row[0]) if row is not None else None
+
+    @staticmethod
+    def _auto_research_lineage_running(connection: sqlite3.Connection, episode_id: str) -> bool:
+        """Whether any Auto-research episode on this episode's graph target is still live."""
+
+        return (
+            connection.execute(
+                "SELECT 1 FROM episodes AS member JOIN episodes AS owner "
+                "ON member.project_id = owner.project_id "
+                "AND member.graph_target_json = owner.graph_target_json "
+                "WHERE owner.episode_id = ? AND member.mode = 'auto_research' "
+                "AND member.status NOT IN ('completed', 'failed', 'needs_action', 'stopped') "
+                "LIMIT 1",
+                (episode_id,),
+            ).fetchone()
+            is not None
+        )
+
     def child_human_turn_refusal(self, project_id: str, chat_id: str) -> dict[str, str] | None:
-        """Why a read-only Auto-research child chat refuses an ordinary human turn."""
+        """Why a read-only Auto-research child or orchestrator chat refuses a human turn."""
         with self.connection() as connection:
             return self._child_human_turn_refusal(connection, project_id, chat_id)
 
     def _child_human_turn_refusal(
         self, connection: sqlite3.Connection, project_id: str, chat_id: str
     ) -> dict[str, str] | None:
+        if self._orchestrator_chat_target(connection, project_id, chat_id) is not None:
+            # An ended chain's orchestrator conversation takes ordinary human turns.
+            if self._auto_research_lineage_running(connection, chat_id):
+                return {
+                    "code": "auto_research_orchestrator_running",
+                    "detail": "This orchestrator is still running. Message orchestrator.",
+                }
+            return None
         owner = self._child_chat_owner(connection, project_id, chat_id)
         if owner is None:
             return None
-        running = connection.execute(
-            "SELECT 1 FROM episodes AS member JOIN episodes AS owner "
-            "ON member.project_id = owner.project_id "
-            "AND member.graph_target_json = owner.graph_target_json "
-            "WHERE owner.episode_id = ? AND member.mode = 'auto_research' "
-            "AND member.status NOT IN ('completed', 'failed', 'needs_action', 'stopped') "
-            "LIMIT 1",
-            (owner["episode_id"],),
-        ).fetchone()
-        if running is not None:
+        if self._auto_research_lineage_running(connection, owner["episode_id"]):
             return {
                 "code": "auto_research_child_read_only",
                 "detail": "This child belongs to a running orchestrator lineage. Message orchestrator.",
@@ -1042,6 +1054,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
             return
         owner = self._child_chat_owner(connection, record.project_id, chat_id)
         if owner is None:
+            refusal = self._child_human_turn_refusal(connection, record.project_id, chat_id)
+            if refusal is not None:
+                raise ValueError(refusal["code"])
             return
         parent = connection.execute(
             "SELECT episode_id FROM graph_runs WHERE operation_id = ?",
@@ -1174,13 +1189,15 @@ class AgentTaskStoreMixin(StoreMixinBase):
             "JOIN chain ON chain.episode_id = worker.episode_id "
             "JOIN graph_runs AS root ON root.operation_id = worker.root_operation_id UNION "
             "SELECT child.child_episode_id FROM auto_research_child_experiments AS child "
-            "JOIN chain ON chain.episode_id = child.auto_research_episode_id) "
+            "JOIN chain ON chain.episode_id = child.auto_research_episode_id "
+            # The chain's own orchestrator conversation.
+            "UNION SELECT ?) "
             "SELECT run.request_json FROM graph_runs AS run "
             "JOIN chats ON chats.chat_id = json_extract(run.request_json, '$.chat_id') "
             "WHERE run.project_id = ? AND run.episode_id IS NULL "
             "AND run.kind IN ('node_chat', 'project_chat') "
             "AND run.status IN ('queued', 'running', 'pausing')",
-            (root, episode.project_id),
+            (root, root, episode.project_id),
         ).fetchall()
         for row in rows:
             request = json.loads(row["request_json"])
@@ -1621,24 +1638,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
     ) -> sqlite3.Row | None:
         return connection.execute(
             """
-            SELECT run.*, EXISTS (
-                SELECT 1 FROM graph_run_receipts AS receipt
-                WHERE receipt.operation_id = run.operation_id
-                  AND receipt.category IN (
-                      'experiment_recovery_abandoned', 'auto_research_recovery_abandoned'
-                  )
-            ) AS recovery_abandoned, (
-                SELECT CASE
-                    WHEN SUM(receipt.category = 'provider_terminal_error'
-                             AND json_extract(receipt.payload_json, '$.classification')
-                                 = 'stale_session') THEN 'session_stale'
-                    WHEN SUM(receipt.category = 'continuation_context_unavailable'
-                             AND json_extract(receipt.payload_json, '$.retry_required') = 1)
-                        THEN 'session_context_unavailable'
-                END
-                FROM graph_run_receipts AS receipt
-                WHERE receipt.operation_id = run.operation_id
-            ) AS session_dropped
+            SELECT run.*, """
+            + _SESSION_DROP_COLUMNS
+            + """
             FROM graph_runs AS run
             WHERE project_id = ? AND kind = ?
               AND json_extract(request_json, '$.chat_id') = ?
@@ -1680,6 +1682,59 @@ class AgentTaskStoreMixin(StoreMixinBase):
         if row["recovery_abandoned"] or dropped is not None:
             return current.model_copy(update={"native_session_id": None})
         return current
+
+    def _orchestrator_session_seed(
+        self, connection: sqlite3.Connection, record: AgentTaskRecord, chat_id: str
+    ) -> tuple[str, sqlite3.Row | None] | None:
+        """The orchestrator session an ended chain's first human turn resumes.
+
+        None when the chat is no Auto-research chain root on this target. Otherwise
+        the reason code and the newest chain member's orchestrator binding, or no
+        binding when that session cannot continue on this turn's provider and machine.
+        """
+
+        if self._orchestrator_chat_target(connection, record.project_id, chat_id) != (
+            record.graph_target
+        ):
+            return None
+        member = connection.execute(
+            "WITH RECURSIVE chain(episode_id) AS (SELECT ? UNION "
+            "SELECT next.episode_id FROM episodes AS next "
+            "JOIN chain ON next.continues_episode_id = chain.episode_id) "
+            "SELECT episode.episode_id, episode.root_operation_id FROM episodes AS episode "
+            "JOIN chain USING (episode_id) ORDER BY episode.created_at DESC, episode.rowid DESC "
+            "LIMIT 1",
+            (chat_id,),
+        ).fetchone()
+        latest = cast("AppStore", self)._auto_research_actor_latest_row(
+            connection, member["episode_id"], member["root_operation_id"] or ""
+        )
+        binding = (
+            None
+            if latest is None
+            else connection.execute(
+                "SELECT run.*, " + _SESSION_DROP_COLUMNS + " FROM graph_runs AS run "
+                "WHERE run.operation_id = ?",
+                (latest["operation_id"],),
+            ).fetchone()
+        )
+        if (
+            binding is None
+            or binding["history_only"]
+            or not binding["native_session_id"]
+            or not binding["stage_root"]
+        ):
+            return "orchestrator_session_unavailable", None
+        # A session the provider already dropped cannot continue here either.
+        if binding["recovery_abandoned"]:
+            return "session_recovery_abandoned", None
+        if (dropped := self._dropped_chat_session_reason(binding)) is not None:
+            return dropped, None
+        previous = json.loads(binding["request_json"])
+        for field, code in (("provider", "provider_mismatch"), ("run_on", "machine_mismatch")):
+            if previous.get(field) != record.request.get(field):
+                return code, None
+        return "orchestrator_session", binding
 
     def _bind_chat_stage(
         self,
@@ -1780,6 +1835,20 @@ class AgentTaskStoreMixin(StoreMixinBase):
             )
             reason = "no_session_yet"
             session_id = None
+            source_operation_id = current["operation_id"] if current is not None else None
+            if current is None and (
+                seed := self._orchestrator_session_seed(connection, record, chat_id)
+            ):
+                reason, binding = seed
+                if binding is not None:
+                    session_id = binding["native_session_id"]
+                    source_operation_id = binding["operation_id"]
+                    record = record.model_copy(
+                        update={
+                            "stage_host": binding["stage_host"],
+                            "stage_root": binding["stage_root"],
+                        }
+                    )
             if current is not None:
                 previous = json.loads(current["request_json"])
                 unresolved = current["status"] in {
@@ -1874,7 +1943,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 "outcome": "continued" if session_id else "fresh",
                 "reason_code": reason,
                 "session_id": session_id,
-                "source_operation_id": current["operation_id"] if current else None,
+                "source_operation_id": source_operation_id,
             }
             if session_id is None:
                 record = record.model_copy(
@@ -3062,11 +3131,15 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 """,
                 (project_id, chat_id, project_id, chat_id),
             ).fetchall()
+            # An Auto-research chain's orchestrator conversation lives on its branch.
+            orchestrator = self._orchestrator_chat_target(connection, project_id, chat_id)
         targets = {
             target.key: target
             for row in rows
             for target in [GraphTargetRef.model_validate_json(row["graph_target_json"])]
         }
+        if orchestrator is not None:
+            targets[orchestrator.key] = orchestrator
         if len(targets) > 1:
             raise ValueError("This conversation has conflicting graph target bindings.")
         return next(iter(targets.values()), None)
@@ -6102,3 +6175,58 @@ class AgentTaskStoreMixin(StoreMixinBase):
             raise ValueError(
                 "Chat session context immutable binding conflict: " + ", ".join(conflicts)
             )
+
+
+def _require_merge_destination_open(
+    connection: sqlite3.Connection, record: AgentTaskRecord, destination: GraphTargetRef
+) -> None:
+    """A destination is busy while a merge leaves it or another merge enters it.
+
+    An unbound episode merge always enters main.
+    """
+    if (
+        connection.execute(
+            "SELECT 1 FROM graph_runs WHERE project_id=? AND kind='branch_merge' "
+            "AND status IN ('queued','running','pausing') AND operation_id != ? "
+            # A second merge of the same source is the source's own refusal.
+            "AND graph_target_json != ? "
+            "AND (graph_target_json=? "
+            "OR (json_extract(request_json, '$.merge_binding.destination.kind')=? "
+            "AND json_extract(request_json, '$.merge_binding.destination.branch_id') IS ?) "
+            "OR (?='main' AND json_extract(request_json, '$.merge_binding') IS NULL)) "
+            "LIMIT 1",
+            (
+                record.project_id,
+                record.operation_id,
+                graph_target_json(record.graph_target),
+                graph_target_json(destination),
+                destination.kind,
+                destination.branch_id,
+                destination.kind,
+            ),
+        ).fetchone()
+        is not None
+    ):
+        raise ValueError("merge_destination_merging")
+
+
+# Why a run's native session can no longer continue, from its receipts.
+_SESSION_DROP_COLUMNS = """
+    EXISTS (
+        SELECT 1 FROM graph_run_receipts AS receipt
+        WHERE receipt.operation_id = run.operation_id
+          AND receipt.category IN (
+              'experiment_recovery_abandoned', 'auto_research_recovery_abandoned'
+          )
+    ) AS recovery_abandoned, (
+        SELECT CASE
+            WHEN SUM(receipt.category = 'provider_terminal_error'
+                     AND json_extract(receipt.payload_json, '$.classification')
+                         = 'stale_session') THEN 'session_stale'
+            WHEN SUM(receipt.category = 'continuation_context_unavailable'
+                     AND json_extract(receipt.payload_json, '$.retry_required') = 1)
+                THEN 'session_context_unavailable'
+        END
+        FROM graph_run_receipts AS receipt
+        WHERE receipt.operation_id = run.operation_id
+    ) AS session_dropped"""

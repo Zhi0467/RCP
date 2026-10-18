@@ -126,6 +126,8 @@ class WorkValidatorMailboxLifecycle:
     suspension: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
     command_handler: CommandHandler | None = None
+    # The verbs a mailbox enforces when its owner serves them without a CommandHandler.
+    allowed_verbs: frozenset[str] | None = None
     _ownership_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def detach(self) -> None:

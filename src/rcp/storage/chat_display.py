@@ -76,8 +76,18 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                 """,
                 (project_id, chat_id, chat_id, project_id, project_id, chat_id, chat_id),
             ).fetchall()
+            orchestrators = {
+                summary["chat_id"]: summary
+                for summary in self._orchestrator_chat_summaries(connection, project_id, chat_id)
+            }
             summaries = []
             for row in rows:
+                if (orchestrator_card := orchestrators.get(row["chat_id"])) is not None:
+                    # A human turn after the chain ends continues the orchestrator's one card.
+                    orchestrator_card["updated_at"] = max(
+                        orchestrator_card["updated_at"], row["updated_at"]
+                    )
+                    continue
                 request = json.loads(row["request_json"])
                 target = json.loads(row["graph_target_json"])
                 orchestrator = row["orchestrator_episode_id"]
@@ -109,7 +119,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                         ),
                     }
                 )
-            summaries.extend(self._orchestrator_chat_summaries(connection, project_id, chat_id))
+            summaries.extend(orchestrators.values())
         return summaries
 
     def _orchestrator_chat_summaries(
@@ -146,7 +156,9 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                     "last_message_preview": "",
                     "conversation_kind": "auto_research",
                     "orchestrator_episode_id": root["episode_id"],
-                    "human_turn_refusal": None,
+                    "human_turn_refusal": cast("AppStore", self)._child_human_turn_refusal(
+                        connection, project_id, root["episode_id"]
+                    ),
                 }
             )
         return summaries

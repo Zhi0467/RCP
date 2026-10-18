@@ -112,8 +112,8 @@ Operational-record readers accept versions 1 to 6; writers use the lowest that
 fits: version 1 with none of these, version 2 when episode archive metadata is
 present, version 3 when a graph branch is archived, version 4 when the
 project holds [branch-name](auto-research-and-branch-merge.md#branch-names)
-reservations, version 5 when a member deleted an episode report, and version 6 when the
-project holds graph branch records. Older records and source
+reservations, version 5 when a member deleted an episode report, and version 6
+when the project holds graph branch records. Older records and source
 configurations keep their original serialized shape. The optional
 `record_schema_version` source-configuration field makes older strict clients
 and targets refuse preparation before the source is released. Release rechecks the required version under the storage write lock,

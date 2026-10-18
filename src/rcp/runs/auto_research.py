@@ -5,6 +5,7 @@ import json
 import threading
 import uuid
 from collections.abc import Callable
+from copy import copy
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal
 
@@ -21,6 +22,7 @@ from rcp.agents.command_protocol import (
     BulletinCommandRequest,
     CommandRequest,
     CommandResponse,
+    CommandVerb,
     EpisodeArguments,
     EpisodeCommandRequest,
     EpisodeControlArguments,
@@ -888,11 +890,13 @@ class AutoResearchCommandDispatcher:
         _apply_admission_locks: _AutoResearchApplyAdmissionLocks | None = None,
         service: ProjectService | None = None,
         graph_read_scope: GraphReadScope | None = None,
+        allowed_verbs: tuple[CommandVerb, ...] | None = None,
     ) -> None:
         self.store = store
         self.effects = effects
         self.service = service
         self.graph_read_scope = graph_read_scope
+        self.allowed_verbs = allowed_verbs
         self.command_file_reader = command_file_reader
         self.command_file_consumer = command_file_consumer
         self.command_state_refresher = command_state_refresher
@@ -906,6 +910,7 @@ class AutoResearchCommandDispatcher:
         refresher: AutoResearchCommandStateRefresher,
         service: ProjectService | None = None,
         graph_read_scope: GraphReadScope | None = None,
+        allowed_verbs: tuple[CommandVerb, ...] | None = None,
     ) -> AutoResearchCommandDispatcher:
         """Bind this turn's exact reusable stage to file-backed commands."""
 
@@ -920,7 +925,17 @@ class AutoResearchCommandDispatcher:
             graph_read_scope=graph_read_scope
             if graph_read_scope is not None
             else self.graph_read_scope,
+            allowed_verbs=allowed_verbs if allowed_verbs is not None else self.allowed_verbs,
         )
+
+    def with_allowed_verbs(
+        self, allowed_verbs: tuple[CommandVerb, ...]
+    ) -> AutoResearchCommandDispatcher:
+        """Bind the command surface one launch resolved and its prompt renders."""
+
+        bound = copy(self)
+        bound.allowed_verbs = allowed_verbs
+        return bound
 
     def dispatch(self, operation_id: str, request: CommandRequest) -> CommandResponse:
         context = self._context(operation_id)
@@ -2124,11 +2139,18 @@ class AutoResearchCommandDispatcher:
     def _check_admission(
         self, context: AutoResearchCommandContext, request: CommandRequest
     ) -> None:
-        if request.verb not in auto_research_allowed_verbs(
-            context.request.role,
-            graph_read_scope=self.graph_read_scope,
-            bulletin=self.store.bulletin_enabled_for_task(context.task.operation_id),
-        ):
+        # A launch binds the surface its prompt rendered; recovery of a recorded call
+        # outside any launch resolves the role's surface.
+        allowed = (
+            self.allowed_verbs
+            if self.allowed_verbs is not None
+            else auto_research_allowed_verbs(
+                context.request.role,
+                graph_read_scope=self.graph_read_scope,
+                bulletin=self.store.bulletin_enabled_for_task(context.task.operation_id),
+            )
+        )
+        if request.verb not in allowed:
             raise AutoResearchCommandInvalid(
                 "Only the Auto-research orchestrator may issue mutating staged commands."
                 if context.request.role == "worker" and request.verb in MUTATING_COMMAND_VERBS

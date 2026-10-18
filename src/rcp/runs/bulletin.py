@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from rcp.agents.command_protocol import BulletinCommandRequest, CommandResponse
 from rcp.agents.prompts import BULLETIN_BODY_RULE
+from rcp.agents.staged_command_client import bulletin_usages
 from rcp.bulletin import bulletin_actor_id, bulletin_roster
 from rcp.limits import BULLETIN_RENDER_MAX_BYTES, BULLETIN_ROSTER_MAX_COUNT
 from rcp.storage import AppStore
@@ -180,10 +181,7 @@ def stage_bulletin_pointer(
 
 
 def bulletin_command_usage(client: str) -> str:
-    usages = (
-        "bulletin --read [--cursor <cursor>]",
-        "bulletin --post --key <key> [--reply-to <post-id>] <body-file>",
-        "bulletin --edit <post-id> --key <key> <body-file>",
-        "bulletin --delete <post-id> --key <key>",
+    return (
+        "\n".join(f"- `{client} {usage}`" for usage in bulletin_usages())
+        + f"\n- {BULLETIN_BODY_RULE}"
     )
-    return "\n".join(f"- `{client} {usage}`" for usage in usages) + f"\n- {BULLETIN_BODY_RULE}"

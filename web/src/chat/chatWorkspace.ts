@@ -225,11 +225,13 @@ export function conversationTurnRequest(submission: ConversationTurnSubmission):
 }
 
 /** Starts a task; `requestId` is the start's Idempotency-Key, so sending the
- *  same start again after an unanswered request admits at most one turn. */
+ *  same start again after an unanswered request admits at most one turn. A chat
+ *  turn posts to the viewed graph unless `graphTarget` names the conversation's own. */
 export type StartConversationTask = (
   kind: AgentTaskKind,
   request: AgentTaskRequest,
   requestId?: string,
+  graphTarget?: GraphTargetRef,
 ) => Promise<AgentTask>;
 
 /** One ordinary Discuss/Work dispatch boundary shared by the visible composer
@@ -357,7 +359,8 @@ export function groupChatConversations(
 /**
  * The orchestrator conversation as NodeChat reads a chat: each loaded orchestrator
  * turn or artifact edit becomes a project-chat turn carrying the human input its
- * transcript line recorded (or the starting instruction), so status and progress
+ * transcript line recorded (or the starting instruction; an ordinary chat turn
+ * keeps its own kind and message), so status and progress
  * come from the live task; the transcript keeps only turns the bounded task list
  * no longer holds.
  */
@@ -375,10 +378,11 @@ export function orchestratorChatTurns(
   );
   return {
     tasks: conversation.tasks.map((task) => {
-      const instruction = task.request.instruction;
+      // An ordinary turn posted after the chain ended carries its own message.
+      const input = task.kind === "project_chat" ? task.request.message : task.request.instruction;
       const message =
         humanText.get(task.operation_id) ??
-        (typeof instruction === "string" && instruction.trim() ? instruction : null);
+        (typeof input === "string" && input.trim() ? input : null);
       return {
         ...task,
         // An artifact edit stays an edit, so it never takes a turn's Retry.

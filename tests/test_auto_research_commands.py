@@ -2682,6 +2682,18 @@ def test_auto_research_root_refuses_compute_launch(tmp_path):
     assert store.compute_jobs(root.project_id) == []
 
 
+def test_a_launch_bound_surface_is_the_one_enforced(tmp_path):
+    store, episode, root = _setup_auto_research(tmp_path)
+    effects = _Effects(store, episode, root)
+    dispatcher = _dispatcher(store, effects.bundle()).with_allowed_verbs(("validate",))
+    request = _request(
+        FinishCommandRequest, request_id="f" * 32, verb="finish", idempotency_key="bound-finish"
+    )
+    response = dispatcher.dispatch(root.operation_id, request)
+    assert response.status == "invalid"
+    assert store.episode(episode.episode_id).status == "running"
+
+
 def test_history_commands_bypass_effects_and_command_ledger(tmp_path, monkeypatch):
     from rcp.agents.auto_research_commands import auto_research_allowed_verbs
     from rcp.agents.command_protocol import GraphLogCommandRequest

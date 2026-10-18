@@ -2629,3 +2629,41 @@ async def test_merge_answers_rejects_unbounded_or_nonstage_files(tmp_path, inval
         assert not list(workspace.glob("*.request.json"))
     finally:
         staged.cleanup()
+
+
+def test_every_advertised_shared_record_usage_parses():
+    from rcp.agents import staged_command_client as client
+
+    samples = {
+        "<cursor>": "c1",
+        "<key>": "k1",
+        "<post-id>": "p1",
+        "<body-file>": "body.md",
+        "<branch-id>": "b1",
+    }
+
+    def parse(usage):
+        words = usage.replace("[", "").replace("]", "").split()
+        return client._parser().parse_args(
+            ["--timeout", "1", "--workspace", "/w", "--credential", "c"]
+            + [samples.get(word, word) for word in words]
+        )
+
+    actions = [
+        next(
+            dest
+            for dest, _, _ in (
+                client.BULLETIN_READ,
+                client.BULLETIN_POST,
+                client.BULLETIN_EDIT,
+                client.BULLETIN_DELETE,
+            )
+            if getattr(parse(usage), dest)
+        )
+        for usage in client.bulletin_usages()
+    ]
+    assert actions == ["read", "post", "edit", "delete"]
+    merge = parse(client.merge_usage())
+    assert (merge.verb, merge.key, merge.branch_id) == ("merge", "k1", "b1")
+    branch = parse(client.branch_usage())
+    assert (branch.verb, branch.archive) == ("branch", "b1")

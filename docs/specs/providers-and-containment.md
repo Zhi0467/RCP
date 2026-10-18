@@ -1289,22 +1289,25 @@ an unknown lease is a no-op. Readiness does not run queued cleanup.
 ## Bulletin commands and context
 
 The target-local Bulletin is untrusted operational hearsay, never graph or
-launch authority. Work-capable staged commands support
+launch authority. Work-capable runs (Work, Experiment, child Work, and the
+Auto-research orchestrator and worker) hold the `bulletin` verb while the owning
+episode's Bulletin is on; only Auto-research start can turn it off, and a run
+with no episode always holds it. Holding it means `bulletin --read [--cursor C]`,
 `bulletin --post --key K [--reply-to P] <body-file>`,
-`bulletin --edit P --key K <body-file>`, and
-`bulletin --delete P --key K`; references come from inline `#node-id` text.
+`bulletin --edit P --key K <body-file>`, and `bulletin --delete P --key K`;
+references come from inline `#node-id` text. That one resolved verb set drives
+both the contract's usage lines and command admission. Discuss holds no verb and
+sees only the launch snapshot. The per-launch prompt line names only the snapshot
+file, beside the lessons pointer.
+
 Editing and deleting require the stored roster actor identity, allowing later
 turns of the same actor to manage their own posts. Receipts make all three
 mutations replay-safe within each turn; fresh mutations share the existing
-transactional Stop fence. Discuss retains read-only access.
-
-A run holds the `bulletin` verb only while its owning episode's Bulletin is on;
-holding it means read and post, and that one resolved verb set drives both the
-contract's usage lines and command admission. The per-launch prompt line names
-only the snapshot file, beside the lessons pointer.
+transactional Stop fence.
 
 Launch snapshots and `bulletin --read` include a mentions section first, newest
 first within the render budget, followed by member ids and names, agents/roster,
 and posts. Budget is allocated to mentions, posts, members, then agents. Agents
 write `<@member:USER_ID>` or `<@agent:ACTOR_ID>` tokens using these identities.
-Context is captured or explicitly read, never pushed into a running turn. Mentioning an agent grants no capability and launches nothing.
+Context is captured or explicitly read, never pushed into a running turn.
+Mentioning an agent grants no capability and launches nothing.
