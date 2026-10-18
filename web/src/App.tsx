@@ -2213,13 +2213,19 @@ function MemberApp({
       return;
     const requestedProjectId = projectId;
     const request = toHumanSyncRequest(normalizedPreviewDraft, graph);
-    let cancelled = false;
-    void api<TransitionPreviewResponse>(graphPath(`${apiBase}/sync/preview`), {
-      method: "POST",
-      body: JSON.stringify(request),
-    })
+    // A superseded preview is aborted, so refetches never stack replays on the server.
+    const controller = new AbortController();
+    void api<TransitionPreviewResponse>(
+      graphPath(`${apiBase}/sync/preview`),
+      { method: "POST", body: JSON.stringify(request), signal: controller.signal },
+      { readOnly: true },
+    )
       .then((response) => {
-        if (cancelled || !isActiveGraph(requestedProjectId)) return;
+        if (controller.signal.aborted || !isActiveGraph(requestedProjectId)) return;
+        const manifest = trustedProjectTransitionManifest(
+          getProjectSessionState(),
+          requestedProjectId,
+        );
         const projection = decodeProjectTransitionResponse(response.projection);
         const previewBaseHead = projection.base_head;
         if (!previewBaseHead) {
@@ -2272,21 +2278,19 @@ function MemberApp({
         }
         if (
           (transitionRulesetTag && transitionRulesetTag !== projection.ruleset_tag) ||
-          (transitionManifest && transitionManifest.ruleset_tag !== projection.ruleset_tag)
+          (manifest && manifest.ruleset_tag !== projection.ruleset_tag)
         ) {
           dispatchProjectSession({
             kind: "preview_ruleset_invalidated",
             project_id: requestedProjectId,
             head: previewBaseHead,
             ruleset_tag: projection.ruleset_tag,
-            manifest: transitionManifest,
+            manifest,
           });
           return;
         }
         const matchingManifestTag =
-          transitionManifest?.ruleset_tag === transitionRulesetTag
-            ? transitionManifest.ruleset_tag
-            : null;
+          manifest?.ruleset_tag === transitionRulesetTag ? manifest.ruleset_tag : null;
         const refusal = transitionSnapshotRefusal(currentProjection, {
           kind: "preview",
           snapshot: projection,
@@ -2316,7 +2320,7 @@ function MemberApp({
         });
       })
       .catch((error) => {
-        if (cancelled || !isActiveGraph(requestedProjectId)) return;
+        if (controller.signal.aborted || !isActiveGraph(requestedProjectId)) return;
         dispatchProjectSession({
           kind: "draft_preview_changed",
           projection: getProjectSessionState().draftTransitionProjection,
@@ -2324,9 +2328,8 @@ function MemberApp({
           pending: false,
         });
       });
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the project changes with any field and a refetched manifest is a new object; only the fields the preview reads rerun it
   }, [
     apiBase,
     graphPath,
@@ -2340,11 +2343,14 @@ function MemberApp({
     mutationsDisabled,
     normalizedPreviewDraft,
     ontologyDraftIsStale,
-    project,
+    project?.attention,
+    project?.experiment_control,
+    project?.primary_question,
+    project?.counts,
     projectId,
     projectReconciliation,
     transitionHead,
-    transitionManifest,
+    transitionManifest?.ruleset_tag,
     transitionRulesetTag,
   ]);
   // Only a listed conversation can be opened and so marked read; counting any
