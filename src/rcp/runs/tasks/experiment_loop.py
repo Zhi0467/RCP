@@ -863,7 +863,9 @@ def _loop_read_context(turn: WorkTurn) -> str:
             graph_target=task.graph_target,
             node_id=turn.request.control_node_id,
         )
-        if execution is not None and task is not None
+        if execution is not None
+        and task is not None
+        and GraphReadScope.resolve(task.project_id, turn.service.history).ancestry_ceilings is None
         else LoopOverlap()
     )
     return experiment_loop_read_context(

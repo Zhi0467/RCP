@@ -147,7 +147,7 @@ def test_branch_changes_uses_branch_base_and_oversized_engine_page_is_refused(
     assert response.result["code"] == "graph_history_response_too_large"
 
 
-def test_fork_scope_enforces_ancestry_revisions_and_cursor_binding(history_query):
+def test_fork_scope_enforces_ancestry_revisions_and_cursor_binding(history_query, monkeypatch):
     from .test_history_forks import fork_metadata
 
     service, unrestricted, branch = history_query
@@ -171,6 +171,19 @@ def test_fork_scope_enforces_ancestry_revisions_and_cursor_binding(history_query
     assert GraphReadScope.model_validate({"project_id": "project", "target": {}}) == (
         GraphReadScope.resolve("project", service.history)
     )
+    with monkeypatch.context() as guard:
+        guard.setattr(
+            ProjectService,
+            "history_engine",
+            property(lambda _: pytest.fail("scope refused before engine read")),
+        )
+        for revision in (parent_head.revision + 1, 999):
+            denied = handle_graph_history_command(
+                service,
+                scope,
+                request("graph_log", id="ev/long", at=f"{parent_head.target.key}@{revision}"),
+            )
+            assert denied.result["code"] == "graph_history_scope_refused"
     roundtrip = GraphReadScope.model_validate_json(scope.model_dump_json())
     assert roundtrip == scope
     args = {"from": f"{parent_head.target.key}@1", "to": str(parent_head.target.key) + "@2"}

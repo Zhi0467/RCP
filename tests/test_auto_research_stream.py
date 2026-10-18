@@ -3268,16 +3268,16 @@ def test_orchestrator_context_consumes_staged_main_graph_pointer(
     )
     request = AutoResearchRunRequest.model_validate(root.request)
     context = auto_research_stream_module._auto_research_context(service, request, stage)
-    assert context.main_graph_path is None
+    assert context.parent_graph_path is None
     assert list(stage_path.glob("inputs/main-graph-*")) == []
     context = auto_research_stream_module._orchestrator_launch_context(service, request, stage)
-    assert context.main_graph_path is not None
-    snapshot = Path(context.main_graph_path)
+    assert context.parent_graph_path is not None
+    snapshot = Path(context.parent_graph_path)
     assert snapshot.is_relative_to(stage_path / "inputs")
     assert json.loads(snapshot.read_text()) == main_service.history.state().model_dump(mode="json")
     if not remote:
         assert snapshot.stat().st_mode & 0o222 == 0
-    assert context.graph_path != context.main_graph_path
+    assert context.graph_path != context.parent_graph_path
     assert [(item.alias, item.path) for item in context.shared_repositories] == [
         (item.alias, manifest.repository_map[item.alias].path) for item in context.repositories
     ]
@@ -3304,7 +3304,7 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
     )
     context = auto_research_stream_module._auto_research_context(service, request, stage)
     read_path = str(stage_path / "inputs" / "main-graph-snapshot.json")
-    context = context.model_copy(update={"main_graph_path": read_path})
+    context = context.model_copy(update={"parent_graph_path": read_path})
     overlap = LoopOverlap(
         rows=[
             LoopStatusRow(
@@ -3369,7 +3369,9 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
         master_text = Path(master.path).read_text()
         assert read_path not in master_text
         assert "main-loop" not in master_text
-        assert not {"main_graph_path", "shared_repositories", "other_branch_loops"} & values.keys()
+        assert (
+            not {"parent_graph_path", "shared_repositories", "other_branch_loops"} & values.keys()
+        )
 
 
 def test_child_profile_choices_list_at_most_the_capped_models_per_provider():

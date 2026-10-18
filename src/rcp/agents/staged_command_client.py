@@ -65,16 +65,14 @@ class ClientInputError(Exception):
 _PROFILE_PICK_FLAGS = (("provider", "--provider"), ("model", "--model"), ("reasoning", "--effort"))
 # Parser enforcement and root prompt invocations share these option records.
 SPAWN_SEAT_OPTIONS = (("seat_node", "--seat-node", "<node-id>"), ("project", "--project", None))
-AVAILABLE_CHILD_TARGET_OPTIONS = (("target", "--target", "<branch>"),)
-CHILD_TARGET_OPTIONS = (("at", "--at", "<ref@R>"), *AVAILABLE_CHILD_TARGET_OPTIONS)
+CHILD_TARGET_OPTIONS = (("at", "--at", "<ref@R>"), ("target", "--target", "<branch>"))
 CHILD_SEED_OPTION = ("seed_file", "--seed-file", "<filename>")
 
 
 def child_target_usage():
-    alternatives = " | ".join(
-        f"{flag} {value}" for _, flag, value in AVAILABLE_CHILD_TARGET_OPTIONS
-    )
-    return f"[{alternatives}]"
+    alternatives = " | ".join(f"{flag} {value}" for _, flag, value in CHILD_TARGET_OPTIONS)
+    _, seed_flag, seed_value = CHILD_SEED_OPTION
+    return f"[{alternatives}] [{seed_flag} {seed_value} (requires --at)]"
 
 
 def spawn_seat_usage():

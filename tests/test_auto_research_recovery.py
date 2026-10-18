@@ -60,7 +60,11 @@ def _start(tasks: BackgroundAgentTasks, *, operation_id: str = "root", provider:
         operation_id=operation_id,
     )
     assert episode.graph_target.kind == "branch"
-    assert episode.graph_target.branch_id == episode.episode_id
+    assert episode.graph_target.branch_id is not None
+    assert (
+        tasks.store.branch_owner(episode.project_id, episode.graph_target.branch_id)
+        == episode.episode_id
+    )
     assert episode.graph_base_head == GraphHeadRef(revision=0)
     assert root.graph_target == episode.graph_target
     return episode, root

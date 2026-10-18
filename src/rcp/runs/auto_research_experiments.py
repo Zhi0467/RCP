@@ -62,6 +62,13 @@ class AutoResearchExperimentLimitInvalid(ValueError):
         )
 
 
+def require_auto_research_experiment_limit(
+    allowance: AutoResearchExperimentAllowance, invocation_limit: int | None
+) -> None:
+    if invocation_limit is not None and invocation_limit > allowance.total:
+        raise AutoResearchExperimentLimitInvalid(allowance)
+
+
 class AutoResearchExperimentCoordinator:
     """Graceful Auto-research child Experiment admission above existing paths."""
 
@@ -96,8 +103,7 @@ class AutoResearchExperimentCoordinator:
     ) -> AutoResearchExperimentAction:
         parent = self._parent(auto_research_episode_id, parent_operation_id)
         allowance = self.store.auto_research_experiment_allowance(auto_research_episode_id)
-        if invocation_limit is not None and invocation_limit > allowance.total:
-            raise AutoResearchExperimentLimitInvalid(allowance)
+        require_auto_research_experiment_limit(allowance, invocation_limit)
         if goal is not None:
             actual = hashlib.sha256(goal.encode("utf-8")).hexdigest()
             if goal_sha256 != actual or not goal.strip():

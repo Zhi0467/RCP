@@ -927,7 +927,12 @@ class AppStoreBase:
             row for row in self._storage_schema(connection) if row[2] == "auto_research_child_work"
         ]
         create_sql = next(row[3] for row in schema if row[0] == "table")
-        create_sql = create_sql.replace("control_node_id TEXT NOT NULL", "control_node_id TEXT", 1)
+        nullable_sql = create_sql.replace(
+            "control_node_id TEXT NOT NULL", "control_node_id TEXT", 1
+        )
+        if nullable_sql == create_sql:
+            raise ValueError("project worker seat migration did not find its non-null column")
+        create_sql = nullable_sql
         self._rebuild_storage_table(connection, "auto_research_child_work", create_sql)
         for kind, _name, _table, sql in schema:
             if kind in {"index", "trigger"}:

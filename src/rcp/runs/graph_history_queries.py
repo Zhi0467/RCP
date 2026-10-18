@@ -103,7 +103,14 @@ def handle_graph_history_command(
         )
     else:
         specs = [parse_head(request.arguments.at)]
-    if any(not scope.readable(project_id, spec.target or scope.target) for spec in specs):
+    if any(
+        not scope.readable(
+            project_id,
+            spec.target or scope.target,
+            spec.revision if isinstance(spec.revision, int) else None,
+        )
+        for spec in specs
+    ):
         return refuse("graph_history_scope_refused")
     binding = _binding(scope, request)
     try:

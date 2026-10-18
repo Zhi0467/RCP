@@ -1208,13 +1208,13 @@ def stage_branch_read_context(
     """Read pointers only; callers keep the task's graph target and write scope.
 
     Call after mapping repositories to the execution host. Worktree replacement
-    may happen before or after this call. ``main_graph_path`` is an immutable task input,
+    may happen before or after this call. ``parent_graph_path`` is an immutable task input,
     also available to the Auto-research prompt through RunContext.
     """
 
     if service.history.graph_target.kind != "branch":
         return {
-            "main_graph_path": None,
+            "parent_graph_path": None,
             "branch_name": None,
             "branch_parent": None,
             "shared_repositories": [],
@@ -1240,7 +1240,7 @@ def stage_branch_read_context(
         local_stage, remote_stage, f"main-graph-{digest}.json", content
     )
     return {
-        "main_graph_path": path,
+        "parent_graph_path": path,
         "branch_name": names.get(metadata.branch_id, metadata.branch_id),
         "branch_parent": f"{parent_ref}@{parent.revision}",
         "shared_repositories": [

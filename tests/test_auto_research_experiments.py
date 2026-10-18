@@ -564,38 +564,26 @@ def test_exhausted_allowance_does_not_reserve_or_stop_an_active_predecessor(
     assert predecessor_started.wait(timeout=2)
     child_id = "00000000-0000-4000-8000-000000000429"
     admission_id = "admission-exhausted-with-predecessor"
-    _admit(
-        store,
-        parent_episode_id=parent_id,
-        child_episode_id=child_id,
-        admission_id=admission_id,
-    )
-
-    with pytest.raises(AutoResearchExperimentAllowanceReached) as caught:
-        coordinator.kick_off(
-            auto_research_episode_id=parent_id,
-            parent_operation_id=root_id,
-            child_episode_id=child_id,
-            node_id=EXPERIMENT_ID,
-            goal=None,
-            goal_sha256=None,
-            invocation_limit=None,
-            admission_id=admission_id,
-        )
-
-    assert caught.value.allowance == exhausted
-    assert store.auto_research_child_experiment(child_id) is None
-    predecessor_episode = store.episode(HUMAN_PREDECESSOR)
-    assert predecessor_episode is not None
-    assert predecessor_episode.stop_requested_at is None
-    admission = store.auto_research_child_admission(admission_id)
-    assert admission is not None and admission.state == "accepted"
-
-    release_predecessor.set()
-    wait_for_task(store, predecessor.operation_id, expect="succeeded")
+    try:
+        with pytest.raises(AutoResearchExperimentAllowanceReached) as caught:
+            _admit(
+                store,
+                parent_episode_id=parent_id,
+                child_episode_id=child_id,
+                admission_id=admission_id,
+            )
+        assert caught.value.allowance == exhausted
+        assert store.auto_research_child_experiment(child_id) is None
+        assert store.auto_research_child_admission(admission_id) is None
+        predecessor_episode = store.episode(HUMAN_PREDECESSOR)
+        assert predecessor_episode is not None
+        assert predecessor_episode.stop_requested_at is None
+    finally:
+        release_predecessor.set()
+        wait_for_task(store, predecessor.operation_id, expect="succeeded")
 
 
-def test_allowance_is_rechecked_after_waiting_for_experiment_operation_lock(
+def test_pending_admission_keeps_allowance_while_waiting_for_experiment_operation_lock(
     manifest: Manifest,
     tmp_path: Path,
 ) -> None:
@@ -675,25 +663,24 @@ def test_allowance_is_rechecked_after_waiting_for_experiment_operation_lock(
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(coordinator.kick_off, **arguments)
-            assert waiting_for_lock.wait(timeout=2)
-            _spend_child_experiment_allowance(
-                store,
-                background,
-                parent_episode_id=parent_id,
-                parent_operation_id=root_id,
-                child_episode_id="00000000-0000-4000-8000-000000000434",
-                node_id="exp/race-allowance-final",
-            )
-            operation_gate.release()
-            with pytest.raises(AutoResearchExperimentAllowanceReached) as caught:
-                future.result(timeout=2)
+            try:
+                assert waiting_for_lock.wait(timeout=2)
+                with pytest.raises(AutoResearchExperimentAllowanceReached):
+                    _spend_child_experiment_allowance(
+                        store,
+                        background,
+                        parent_episode_id=parent_id,
+                        parent_operation_id=root_id,
+                        child_episode_id="00000000-0000-4000-8000-000000000434",
+                        node_id="exp/race-allowance-final",
+                    )
+            finally:
+                operation_gate.release()
+            result = future.result(timeout=2)
 
-        assert caught.value.allowance.model_dump() == {
-            "total": 5,
-            "used": 5,
-            "remaining": 0,
-        }
-        assert store.auto_research_child_experiment(replacement_id) is None
+        assert result.disposition == "created"
+        assert result.allowance.model_dump() == {"total": 5, "used": 5, "remaining": 0}
+        assert store.auto_research_child_experiment(replacement_id) is not None
         predecessor_episode = store.episode(HUMAN_PREDECESSOR)
         assert predecessor_episode is not None
         assert predecessor_episode.stop_requested_at is None
@@ -1529,3 +1516,65 @@ def test_fork_experiment_uses_target_readiness_and_replays_its_persisted_target(
     assert replay.allowance.used == 1
     wait_for_task(store, task.operation_id, expect="succeeded")
     background.shutdown()
+
+
+@pytest.mark.parametrize("different", [False, True])
+def test_child_seat_catalog_matches_pick_enforcement_and_prompt_data(
+    manifest, tmp_path, monkeypatch, different
+):
+    from rcp.agents.auto_research_prompt import _child_seat_profile_choices
+    from rcp.config import AgentExecutionProfile, AgentSurfaceConfig
+    from rcp.runs.auto_research_admission import (
+        auto_research_child_seat_profile_choices,
+        require_auto_research_child_profile_pick,
+    )
+
+    profiles: dict[AgentExecutionProfile, AgentSurfaceConfig] = {
+        "node_chat": manifest.agent_profile("node_chat"),
+        "project_chat": manifest.agent_profile("project_chat"),
+    }
+    for kind in profiles:
+        provider = "claude" if kind == "project_chat" and different else "codex"
+        profiles[kind] = profiles[kind].model_copy(
+            update={
+                "provider": provider,
+                "runtime": "exec" if provider == "codex" else "stream-json",
+                "model": f"{provider}-model",
+                "reasoning": "",
+            }
+        )
+    manifest = write_agent_settings(
+        manifest, list(manifest.agent.default_run_truth_scope), profiles
+    )
+    service = _service(manifest, tmp_path)
+
+    def ready(provider, **_):
+        model = f"{provider}-model"
+        return ProviderReadiness(
+            provider=provider,
+            installed=provider in {"codex", "claude"},
+            authenticated=True,
+            models=[ModelChoice(id=model, label=model, reasoning=[])],
+        )
+
+    monkeypatch.setattr(service.launcher, "readiness", ready)
+    monkeypatch.setattr(service.launcher, "cached_readiness", ready)
+    choices = auto_research_child_seat_profile_choices(service)
+    catalog = {provider: {f"{provider}-model": []} for provider in ("codex", "claude")}
+    assert choices == {"node": catalog, "project": catalog}
+    rendered = _child_seat_profile_choices(choices)
+    assert rendered.count("codex-model") == rendered.count("claude-model") == 1
+    for kind in ("node_chat", "project_chat"):
+        model = manifest.agent_profile(kind).model
+        assert (
+            require_auto_research_child_profile_pick(
+                service, provider=None, model=model, reasoning=None, kind=kind
+            )
+            == ""
+        )
+    if different:
+        with pytest.raises(AutoResearchChildProfileInvalid) as refused:
+            require_auto_research_child_profile_pick(
+                service, provider=None, model="codex-model", reasoning=None, kind="project_chat"
+            )
+        assert refused.value.reason == "model_unknown"

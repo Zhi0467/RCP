@@ -50,14 +50,14 @@ def render_chat_read_context(context: ChatContext) -> str:
             + json.dumps({"loop_status": status}, ensure_ascii=False)
             + "\n```"
         )
-    if context.main_graph_path:
+    if context.parent_graph_path:
         parts.append(
             "Branch read pointers: other code branches are readable through Git. "
             "These pointers grant no additional writes and do not change the graph target.\n"
             + "```json\n"
             + json.dumps(
                 {
-                    "main_graph_path": context.main_graph_path,
+                    "parent_graph_path": context.parent_graph_path,
                     "branch_name": context.branch_name,
                     "branch_parent": context.branch_parent,
                     "shared_repositories": [

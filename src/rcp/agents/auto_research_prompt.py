@@ -58,7 +58,7 @@ def _repositories(repositories: list[dict[str, str]]) -> str:
 
 
 def auto_research_branch_read_pointers(
-    main_graph_path: str | None,
+    parent_graph_path: str | None,
     shared_repositories: list[dict[str, str]],
     repositories: list[dict[str, str]],
     *,
@@ -70,8 +70,8 @@ def auto_research_branch_read_pointers(
     rows = [f"- Branch: `{branch_name}`"] if branch_name else []
     if branch_parent:
         rows.append(f"- Parent: `{branch_parent}`")
-    if main_graph_path:
-        rows.append(f"- Graph snapshot: `{main_graph_path}`")
+    if parent_graph_path:
+        rows.append(f"- Graph snapshot: `{parent_graph_path}`")
     working = {(item["alias"], item["host"], item["path"]) for item in repositories}
     rows.extend(
         f"- Shared checkout {item['alias']}: host=`{item['host']}` path=`{item['path']}`"
@@ -228,14 +228,27 @@ def render_child_profile_choices(choices: dict[str, dict[str, list[str]]]) -> st
     return "\n".join(f"  - {provider}: {listed(models)}" for provider, models in choices.items())
 
 
+def _child_seat_profile_choices(choices: dict[str, dict[str, dict[str, list[str]]]]) -> str:
+    node = choices.get("node", {})
+    project = choices.get("project", {})
+    if node == project:
+        return render_child_profile_choices(node)
+    return (
+        "  Node workers and child Experiments:\n"
+        + render_child_profile_choices(node)
+        + "\n  Project workers:\n"
+        + render_child_profile_choices(project)
+    )
+
+
 def _auto_research_commands(
-    command_client: str, child_profiles: dict[str, dict[str, list[str]]]
+    command_client: str, child_profiles: dict[str, dict[str, dict[str, list[str]]]]
 ) -> str:
     """Explain operational semantics once when the native session starts."""
 
     return f"""{_command_invocations(command_client)}
-- `patch.json`, worker instructions, and optional Experiment goals must be direct regular UTF-8
-  files in this run workspace, never a nested path or symlink. Write one concise executable worker
+- `patch.json`, setup seeds, worker instructions, and optional Experiment goals must be direct
+  regular UTF-8 files in this run workspace, never a nested path or symlink. Write one concise executable worker
   assignment or Experiment goal, then pass its filename. A supplied goal becomes the child
   episode's initial human message; omitting it uses RCP's canonical bounded-Experiment fallback.
 - Prefer `apply` over leaving the Patch for turn settlement. Applying here returns the new revision
@@ -253,7 +266,7 @@ def _auto_research_commands(
   key is refused before its file is read, so finish the turn before applying again.
 - Seat a worker on a node when its job belongs to that node; use a project seat when it does not,
   for example independently auditing candidates from a search.
-  These tools let you double-check in place or put agents on an owned branch;
+  These tools let you branch from any revision, double-check in place, or put agents on a fork;
   see the official `counterfactual-research` skill package.
 - `spawn` starts ordinary Work, not another Auto-research actor. Workers use the human-configured
   Work profile for their seat; child Experiments use node Work. You may name `--provider`,
@@ -262,7 +275,7 @@ def _auto_research_commands(
   profile unchanged. Pick a different provider when it helps, such as an independent
   reviewer. The child stays on the profile's machine, where these `child_profiles` are ready
   (provider: model (efforts)); RCP refuses any other pick:
-{render_child_profile_choices(child_profiles)}
+{_child_seat_profile_choices(child_profiles)}
   There is no execution-host, profile, or nested Auto-research option. Omitting
   `--invocation-limit` uses the Experiment's current setting. Every actual child Experiment
   invocation shares the allowance shown by RCP; a refused limit must be lowered to that displayed
@@ -429,7 +442,7 @@ def auto_research_prompt_values(
     skill_pointers: list[dict[str, object]] | None = None,
     reply_key: str | None = None,
     allowed_verbs: tuple[CommandVerb, ...] | None = None,
-    child_profiles: dict[str, dict[str, list[str]]] | None = None,
+    child_profiles: dict[str, dict[str, dict[str, list[str]]]] | None = None,
 ) -> dict[str, object]:
     """The values an actor's master states that can differ on a later launch.
 
@@ -495,7 +508,7 @@ def auto_research_orchestrator_task_contract(
     instruction_path: str | None = None,
     messages_path: str | None = None,
     lifecycle_path: str | None = None,
-    child_profiles: dict[str, dict[str, list[str]]] | None = None,
+    child_profiles: dict[str, dict[str, dict[str, list[str]]]] | None = None,
 ) -> str:
     """Build the immutable contract for the sole elevated Auto-research profile."""
     child_profiles = child_profiles or {}

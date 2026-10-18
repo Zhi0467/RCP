@@ -53,7 +53,6 @@ from rcp.agents.continuation_prompt import (
 )
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.loop_overlap import render_auto_research_overlap, render_loop_overlap
-from rcp.agents.prompts import render_chat_read_context
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
 from rcp.core.research_md import render_research_md
@@ -70,8 +69,8 @@ from rcp.runs.auto_research import (
     AutoResearchRunRequest,
 )
 from rcp.runs.auto_research_admission import (
-    ChildProfileChoices,
-    auto_research_child_profile_choices,
+    ChildSeatProfileChoices,
+    auto_research_child_seat_profile_choices,
 )
 from rcp.runs.auto_research_lifecycle import (
     AUTO_RESEARCH_LIFECYCLE_HANDOFF_FILE,
@@ -364,7 +363,7 @@ async def stream_auto_research_orchestrator_run(
                 skill_pointers=orchestrator_skill_pointers,
                 write_scope=write_scope,
                 browser_grant=browser_grant,
-                child_profiles=auto_research_child_profile_choices(service),
+                child_profiles=auto_research_child_seat_profile_choices(service),
             )
             read_dirs = _chat_read_dirs(
                 context,
@@ -585,9 +584,6 @@ async def stream_auto_research_worker_run(
             )
         )
         context = _auto_research_context(service, turn.request, stage)
-        context = context.model_copy(
-            update=stage_branch_read_context(context, service, stage.local, stage.remote)
-        )
         _prepare_turn_handoffs(execution, turn, stage)
 
         messages_path = _stage_claimed_mail(execution, turn, stage)
@@ -1624,7 +1620,7 @@ def _orchestrator_prompt(
     skill_pointers: list[dict[str, object]],
     write_scope: ProjectWriteScope,
     browser_grant: BrowserGrant,
-    child_profiles: ChildProfileChoices,
+    child_profiles: ChildSeatProfileChoices,
 ) -> tuple[str, str, MasterRef, dict[str, object]]:
     repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path} for item in context.repositories
@@ -1768,7 +1764,7 @@ def _orchestrator_prompt(
         fresh_parts=(
             question_part,
             auto_research_branch_read_pointers(
-                context.main_graph_path,
+                context.parent_graph_path,
                 shared_repositories,
                 repositories,
                 branch_name=context.branch_name,
@@ -1890,7 +1886,6 @@ def _worker_prompt(
         render_master=render_master,
         start_contract=render_master,
         continuation_parts=continuation_parts,
-        fresh_parts=(render_chat_read_context(context),),
     )
     return contract_path, prompt, master, values
 
@@ -2248,9 +2243,6 @@ async def _settle_worker_patch(
         )
         graph_read_scope = GraphReadScope.resolve(turn.task.project_id, service.history)
         context = _auto_research_context(service, turn.request, stage)
-        context = context.model_copy(
-            update=stage_branch_read_context(context, service, stage.local, stage.remote)
-        )
         correction_head = prepare_graph_observation(
             execution,
             service,
@@ -2313,7 +2305,6 @@ async def _settle_worker_patch(
                         graph_read_scope=graph_read_scope,
                         command_client=correction_mailbox.client_command(),
                     ),
-                    render_chat_read_context(context),
                     stage_operational_context_pointer(
                         execution,
                         stage.local,
