@@ -335,6 +335,11 @@ def _created_edges(operation: GraphOperation) -> dict[str, tuple[str, str]]:
     return created
 
 
+# The ballot rule checks the combination of queue status and option contents.
+# Its diagnostics retain the node id so callers can reconsider those fields.
+CLASH_PATCH_REFUSALS = frozenset({"incomplete-decision-ballot"})
+
+
 def _validate_queued_decision_options(ctx: OpContext) -> None:
     """Check queued ballots after the Patch's written-order staging has finished."""
 

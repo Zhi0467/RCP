@@ -16,7 +16,7 @@ from rcp.core.validation.constants import (
 from rcp.core.validation.context import OpContext, OpRule
 from rcp.core.validation.patch import validate_patch
 from rcp.core.validation.registry import OP_RULES, proposal_dependencies
-from rcp.core.validation.report import ValidationReport
+from rcp.core.validation.report import ValidationReport, is_coherence_clash
 from rcp.core.validation.settings import ValidationContext, build_validation_context
 
 __all__ = [
@@ -31,6 +31,7 @@ __all__ = [
     "ValidationContext",
     "ValidationReport",
     "build_validation_context",
+    "is_coherence_clash",
     "proposal_dependencies",
     "validate_patch",
 ]

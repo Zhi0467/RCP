@@ -283,8 +283,9 @@ def test_field_type_rejection_names_the_conflict_without_coercion(bad):
     conflict_id = plan.conflicts[0].conflict_id
     with pytest.raises(MergeAnswersRejected) as rejected:
         build_merge_patch(plan, answers(plan, {conflict_id: {"kind": "merged", "value": bad}}))
-    assert conflict_id in str(rejected.value)
-    assert rejected.value.diagnostics
+    assert [(item.code, item.related_node_ids) for item in rejected.value.diagnostics] == [
+        ("invalid-merge-answer", (conflict_id,))
+    ]
 
 
 def test_judgment_conflict_disallows_merged_answer():
@@ -298,7 +299,9 @@ def test_judgment_conflict_disallows_merged_answer():
         build_merge_patch(
             plan, answers(plan, {conflict.conflict_id: {"kind": "merged", "value": "accepted"}})
         )
-    assert conflict.conflict_id in str(rejected.value)
+    assert [(item.code, item.related_node_ids) for item in rejected.value.diagnostics] == [
+        ("invalid-merge-answer", (conflict.conflict_id,))
+    ]
 
 
 @pytest.mark.parametrize("mutation", ["missing", "unknown", "extra-card"])
@@ -318,8 +321,11 @@ def test_answers_bind_exact_conflict_and_review_subject_keys(mutation):
             "consequences": "Effect",
             "decision_needed": "Choice",
         }
-    with pytest.raises(MergeAnswersRejected):
+    with pytest.raises(MergeAnswersRejected) as rejected:
         build_merge_patch(plan, MergeAnswers.model_validate(payload))
+    assert {item.code for item in rejected.value.diagnostics} == {"invalid-merge-answer"}
+    if mutation == "extra-card":
+        assert rejected.value.diagnostics[0].related_node_ids == ("unknown-subject",)
 
 
 def test_node_group_merged_answer_applies_nested_fields_and_rejects_unknown_fields():
@@ -389,6 +395,9 @@ def test_flag_only_preparation_passes_without_publishing():
     assert len(history.calls) == 1
     assert prepared.projection.graph.nodes["blk/one"].title == "Branch"
     assert prepared.patch.transition is not None
+    assert [
+        (item.level, item.code, item.related_node_ids) for item in prepared.patch.admission_messages
+    ] == [("flag", "advisory", ["blk/one"])]
     assert plan.destination_graph.nodes["blk/one"].title == "Destination"
 
 
@@ -405,7 +414,7 @@ def test_preparation_keeps_structured_rejections_and_promotes_each_group_once(op
             base={"blk/one": value(initial.base_graph.nodes["blk/one"])},
             branch={"blk/one": value(initial.source_graph.nodes["blk/one"])},
             destination={"blk/one": value(initial.destination_graph.nodes["blk/one"])},
-            diagnostic_codes=("coupled-fields",),
+            diagnostic_codes=("incoherent-decision-transition",),
         )
         plan = make_plan(
             source=initial.source_graph,
@@ -420,15 +429,15 @@ def test_preparation_keeps_structured_rejections_and_promotes_each_group_once(op
         )
     report = ValidationReport()
     report.flag("advisory", "Do not promote advisories", related_node_ids=["blk/other"])
-    report.reject("coupled-fields", "Fields conflict", related_node_ids=["blk/one"])
+    report.reject("incoherent-decision-transition", "Fields conflict", related_node_ids=["blk/one"])
     expected = MergeAnswersRejected if open_conflict else MergeHiddenClash
     with pytest.raises(expected) as rejected:
         prepare_merge_candidate(plan, answers(plan), DiagnosticHistory(plan, report))
     diagnostics = (
         rejected.value.diagnostics if open_conflict else rejected.value.promotion.diagnostics
     )
-    assert [(item.code, item.message, item.related_node_ids) for item in diagnostics] == [
-        ("coupled-fields", "Fields conflict", ("blk/one",))
+    assert [(item.code, item.related_node_ids) for item in diagnostics] == [
+        ("incoherent-decision-transition", ("blk/one",))
     ]
     if not open_conflict:
         assert rejected.value.promotion.node_ids == ("blk/one",)
@@ -553,7 +562,9 @@ def test_merged_nested_field_uses_the_models_nested_type():
                 plan, {conflict.conflict_id: {"kind": "merged", "value": [{"repository": 42}]}}
             ),
         )
-    assert conflict.conflict_id in str(rejected.value)
+    assert [(item.code, item.related_node_ids) for item in rejected.value.diagnostics] == [
+        ("invalid-merge-answer", (conflict.conflict_id,))
+    ]
 
 
 @pytest.mark.parametrize("operation_kind", ["supersede_nodes", "merge_nodes"])
@@ -679,16 +690,149 @@ def test_new_retired_node_is_created_before_its_semantic_retirement():
     assert apply_valid_patch(base, patch).nodes[retired.id].status == "superseded"
 
 
-def test_preparation_keeps_live_membership_refusal_typed():
-    from rcp.core.authority import AgentAuthorizerDeparted
+@pytest.mark.parametrize("refusal_kind", ["membership", "task"])
+def test_preparation_keeps_live_authority_refusal_typed(refusal_kind):
+    from rcp.core.authority import AgentAuthorizerDeparted, AgentTaskAuthorityRefused
+
+    refusal = AgentAuthorizerDeparted if refusal_kind == "membership" else AgentTaskAuthorityRefused
     from rcp.runs.merge_patch import prepare_merge_candidate
 
     plan = title_plan()
 
     class DepartedHistory(DiagnosticHistory):
         def validate_candidate(self, patch):
-            raise AgentAuthorizerDeparted("The dispatching member left the project")
+            raise refusal("Live task authority was revoked")
 
     with pytest.raises(MergeRefused) as rejected:
         prepare_merge_candidate(plan, answers(plan), DepartedHistory(plan, ValidationReport()))
-    assert rejected.value.diagnostics[0].code == AgentAuthorizerDeparted.code
+    assert rejected.value.diagnostics[0].code == refusal.code
+
+
+@pytest.mark.parametrize("open_conflict", [False, "field", "group"])
+def test_real_cross_side_decision_clash_returns_typed_promotion_or_answer_error(open_conflict):
+    from rcp.core.models import Decision
+    from rcp.runs.merge_patch import build_merge_patch, prepare_merge_candidate
+
+    decision = Decision(
+        id="dec/choice", type="decision", title="Design", question="Which?", options=["A", "B"]
+    )
+    base = GraphState(revision=1, project_truth_scope=["repo-a"], nodes={decision.id: decision})
+    source = base.model_copy(deep=True, update={"revision": 2})
+    source.nodes[decision.id] = decision.model_copy(update={"options": ["A"]})
+    destination = base.model_copy(deep=True, update={"revision": 2})
+    destination.nodes[decision.id] = decision.model_copy(
+        update={"status": "decided", "selected_option": "B"}
+    )
+    changed = change("nodes", decision.id, "options", ["A", "B"], ["A"], ["A", "B"])
+    field = FieldConflict(
+        conflict_id="decision-options",
+        collection="nodes",
+        entity_id=decision.id,
+        field_name="options",
+        base=changed.base,
+        branch=changed.branch,
+        destination=changed.destination,
+        allowed_answer_kinds=("branch", "destination", "merged"),
+    )
+    conflicts = ()
+    if open_conflict == "field":
+        conflicts = (field,)
+    elif open_conflict == "group":
+        conflicts = (
+            NodeGroupConflict(
+                conflict_id="decision-group",
+                node_ids=(decision.id,),
+                fields=(
+                    field,
+                    FieldConflict(
+                        conflict_id="decision-status",
+                        collection="nodes",
+                        entity_id=decision.id,
+                        field_name="status",
+                        base=value("open"),
+                        branch=value("open"),
+                        destination=value("decided"),
+                        allowed_answer_kinds=("branch", "destination"),
+                    ),
+                    FieldConflict(
+                        conflict_id="decision-selected",
+                        collection="nodes",
+                        entity_id=decision.id,
+                        field_name="selected_option",
+                        base=value(None),
+                        branch=value(None),
+                        destination=value("B"),
+                        allowed_answer_kinds=("branch", "destination", "merged"),
+                    ),
+                ),
+                base={decision.id: value(decision)},
+                branch={decision.id: value(source.nodes[decision.id])},
+                destination={decision.id: value(destination.nodes[decision.id])},
+                diagnostic_codes=("incoherent-decision-transition",),
+            ),
+        )
+    plan = make_plan(
+        base=base,
+        source=source,
+        destination=destination,
+        direct_changes=() if conflicts else (changed,),
+        conflicts=conflicts,
+    )
+    selected = answers(plan)
+    if open_conflict == "group":
+        selected = answers(
+            plan,
+            {
+                "decision-group": {
+                    "kind": "merged",
+                    "value": {
+                        decision.id: {
+                            "options": {"kind": "branch"},
+                            "status": {"kind": "destination"},
+                            "selected_option": {"kind": "destination"},
+                        }
+                    },
+                }
+            },
+        )
+    expected = MergeAnswersRejected if open_conflict else MergeHiddenClash
+    for action in (
+        lambda: build_merge_patch(plan, selected),
+        lambda: prepare_merge_candidate(
+            plan, selected, DiagnosticHistory(plan, ValidationReport())
+        ),
+    ):
+        with pytest.raises(expected) as rejected:
+            action()
+        diagnostics = (
+            rejected.value.diagnostics if open_conflict else rejected.value.promotion.diagnostics
+        )
+        assert {(item.code, item.related_node_ids) for item in diagnostics} == {
+            ("incoherent-decision-transition", (decision.id,))
+        }
+        if not open_conflict:
+            assert rejected.value.promotion.node_ids == (decision.id,)
+
+
+@pytest.mark.parametrize(
+    "code", ["invalid-proposal-ops", "missing-dependency", "write-authority-refused"]
+)
+@pytest.mark.parametrize("open_conflict", [False, True])
+def test_late_hard_rejection_naming_a_node_never_becomes_a_conflict(code, open_conflict):
+    from rcp.runs.merge_patch import prepare_merge_candidate
+
+    plan = (
+        title_plan()
+        if open_conflict
+        else make_plan(
+            direct_changes=(change("nodes", "blk/one", "title", "Base", "Branch", "Base"),)
+        )
+    )
+    report = ValidationReport()
+    report.flag("incoherent-decision-transition", "Advisory only", related_node_ids=["blk/other"])
+    report.reject(code, "A hard rejection names an affected node", related_node_ids=["blk/one"])
+    with pytest.raises(MergeRefused) as refused:
+        prepare_merge_candidate(plan, answers(plan), DiagnosticHistory(plan, report))
+    assert [(item.code, item.related_node_ids) for item in refused.value.diagnostics] == [
+        (code, ("blk/one",))
+    ]

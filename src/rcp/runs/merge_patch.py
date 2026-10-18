@@ -12,7 +12,12 @@ from typing import TYPE_CHECKING, Any, NoReturn
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from rcp.agents.schema import agent_output_schema
-from rcp.core.authority import AgentAuthorizerDeparted, classify_graph_changes, derived_agent_action
+from rcp.core.authority import (
+    AuthorityRefusal,
+    ChangeClassification,
+    classify_graph_changes,
+    derived_agent_action,
+)
 from rcp.core.materialize import apply_valid_patch, prepare_patch_bookkeeping
 from rcp.core.models import (
     CURRENT_PROPOSAL_DEPENDENCY_RULE,
@@ -29,6 +34,7 @@ from rcp.core.operations import (
     NewEdge,
     ProposalOperation,
     ProposalStatusChangeOperation,
+    strict_project_node,
 )
 from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import TransitionTrace
@@ -38,8 +44,12 @@ from rcp.core.transitions import (
     project_transition_projection,
     transition_trigger_manifest,
 )
-from rcp.core.validation import ValidationContext
-from rcp.core.validation.proposals import proposal_dependencies_and_effects, proposal_is_stale
+from rcp.core.validation import ValidationContext, is_coherence_clash
+from rcp.core.validation.proposals import (
+    ProposalEffectRejected,
+    proposal_dependencies_and_effects,
+    proposal_is_stale,
+)
 from rcp.history import PatchRejected, RevisionConflict
 from rcp.runs.merge_contract import (
     ConflictAnswer,
@@ -75,6 +85,7 @@ _OPERATION = TypeAdapter(GraphOperation)
 class _Effect:
     operations: list[GraphOperation]
     coordinates: set[Coordinate]
+    restore_standing: GraphOperation | None = None
 
 
 def _diagnostic(code: str, message: str, *nodes: str) -> MergeDiagnostic:
@@ -86,7 +97,9 @@ def _refuse(code: str, message: str, *nodes: str) -> NoReturn:
 
 
 def _answer_error(conflict_id: str, message: str) -> NoReturn:
-    raise MergeAnswersRejected((_diagnostic("invalid-merge-answer", f"{conflict_id}: {message}"),))
+    raise MergeAnswersRejected(
+        (_diagnostic("invalid-merge-answer", f"{conflict_id}: {message}", conflict_id),)
+    )
 
 
 def _coordinate(change: MergeChange | FieldConflict) -> Coordinate:
@@ -150,14 +163,18 @@ def _resolved_changes(plan: MergePlan, answers: MergeAnswers) -> dict[Coordinate
         _answer_error("answers", f"expected keys {sorted(expected)}, got {sorted(answers.answers)}")
     unknown = set(answers.cards) - {group.subject_key for group in plan.review_groups}
     if unknown:
-        _answer_error("cards", f"unknown review subjects {sorted(unknown)}")
+        _answer_error(sorted(unknown)[0], f"unknown review subjects {sorted(unknown)}")
+    # The planner emits only branch-side changes the destination must receive.
     selected = {
         _coordinate(change): change.branch
         for change in (*plan.direct_changes, *(c for g in plan.review_groups for c in g.changes))
     }
     for conflict in plan.conflicts:
         answer = answers.answers[conflict.conflict_id]
-        if answer.kind not in conflict.allowed_answer_kinds:
+        if (
+            not isinstance(conflict, FieldConflict)
+            and answer.kind not in conflict.allowed_answer_kinds
+        ):
             _answer_error(conflict.conflict_id, f"answer kind {answer.kind!r} is not allowed")
         if isinstance(conflict, FieldConflict):
             selected[_coordinate(conflict)] = _field_value(plan, conflict, answer)
@@ -240,25 +257,35 @@ def _documents(
 
 def _status_cause(plan: MergePlan, identity: str, status: Any) -> dict[str, Any]:
     source = plan.source_graph.nodes.get(identity)
-    if source is not None and getattr(source, "status", None) == status:
-        for fact in reversed(plan.source_human_facts):
-            operation = fact.operation
-            if isinstance(operation, ProposalStatusChangeOperation):
-                for update in operation.nodes:
-                    if update.id == identity and update.changes == {"status": status}:
-                        return {"kind": "human_edit"}
-        graph = plan.source_graph
-    else:
-        graph = plan.destination_graph
-    for transition in reversed(graph.belief_transitions):
-        if transition.hypothesis_id == identity and transition.to_status == status:
-            if transition.cause.get("kind") == "human_edit":
+    graph = (
+        plan.source_graph
+        if source is not None and getattr(source, "status", None) == status
+        else plan.destination_graph
+    )
+    transitions = [
+        transition
+        for transition in graph.belief_transitions
+        if transition.hypothesis_id == identity and transition.to_status == status
+    ]
+    if transitions:
+        transition = max(enumerate(transitions), key=lambda item: (item[1].revision, item[0]))[1]
+        if transition.cause.get("kind") == "human_edit":
+            proven = graph is plan.source_graph and any(
+                fact.revision == transition.revision
+                and isinstance(fact.operation, ProposalStatusChangeOperation)
+                and any(
+                    update.id == identity and update.changes == {"status": status}
+                    for update in fact.operation.nodes
+                )
+                for fact in plan.source_human_facts
+            )
+            if not proven:
                 _refuse(
                     "unproven-human-judgment",
                     "No exact source human fact proves this status",
                     identity,
                 )
-            return deepcopy(transition.cause)
+        return deepcopy(transition.cause)
     _refuse(
         "missing-status-cause", "No recorded transition proves the carried status cause", identity
     )
@@ -295,7 +322,9 @@ def _retirement_operation(identity: str, edge: dict[str, Any]) -> dict[str, Any]
     }
 
 
-def _construct_effects(plan: MergePlan, selected: dict[Coordinate, MergeValue]) -> list[_Effect]:
+def construct_effects(
+    plan: MergePlan, selected: dict[Coordinate, MergeValue], flags: list[ValidationMessage]
+) -> list[_Effect]:
     documents = _documents(plan, selected)
     creates: list[_Effect] = []
     edges: list[_Effect] = []
@@ -334,8 +363,6 @@ def _construct_effects(plan: MergePlan, selected: dict[Coordinate, MergeValue]) 
                 )
                 continue
             if current is None:
-                from rcp.core.operations import strict_project_node
-
                 try:
                     node = strict_project_node(raw)
                 except ValidationError as exc:
@@ -430,15 +457,17 @@ def _construct_effects(plan: MergePlan, selected: dict[Coordinate, MergeValue]) 
                     update["cause"] = _status_cause(plan, identity, changes["status"])
                 operations.append({"op": "update_nodes", "nodes": [update]})
             standing = raw["standing"]
-            # Content writes implicitly reset standing; the selected destination value survives.
-            if standing != before["standing"] or (
-                operations
-                and standing != "asserted"
-                and not project_type.is_protected_belief(current.type)
-            ):
+            restoration = None
+            if standing != before["standing"]:
                 operations.append({"op": "set_standing", "node_id": identity, "standing": standing})
+            elif operations and standing != "asserted":
+                # Only an admitted write resets standing. Pending review must not
+                # acquire an unrelated standing request merely because of node type.
+                restoration = _ops(
+                    [{"op": "set_standing", "node_id": identity, "standing": standing}]
+                )[0]
             if operations:
-                updates.append(_Effect(_ops(operations), coordinates))
+                updates.append(_Effect(_ops(operations), coordinates, restoration))
         elif collection == "edges":
             assert identity is not None
             if identity in semantic_edges:
@@ -454,12 +483,17 @@ def _construct_effects(plan: MergePlan, selected: dict[Coordinate, MergeValue]) 
             assert identity is not None
             # Source resolution is source history, never authority on the destination.
             source = plan.source_graph.proposals.get(identity)
-            if (
-                source is not None
-                and source.status == "pending"
-                and not proposal_is_stale(plan.source_graph, source)
-                and current is None
-            ):
+            if source is not None and source.status == "pending" and current is None:
+                if proposal_is_stale(plan.source_graph, source):
+                    flags.append(
+                        ValidationMessage(
+                            level="flag",
+                            code="stale-source-proposal",
+                            message=f"Stale source Proposal {identity} was not carried",
+                            related_node_ids=[identity],
+                        )
+                    )
+                    continue
                 operations = [
                     {
                         "op": "create_proposals",
@@ -513,35 +547,42 @@ def _construct_effects(plan: MergePlan, selected: dict[Coordinate, MergeValue]) 
 
 
 def _classify(
-    plan: MergePlan,
-    operations: list[GraphOperation],
-    prefix: list[GraphOperation] | None = None,
-):
+    plan: MergePlan, groups: list[list[GraphOperation]]
+) -> tuple[ChangeClassification, ...]:
+    """Classify an ordered partition once, keeping every effect's boundary."""
     state = plan.destination_graph
-    prefix = prefix or []
-    candidate = prepare_patch_bookkeeping(state, _patch(plan, [*prefix, *operations]))
-    groups = None
-    if prefix and candidate.agent_action == derived_agent_action(state, _patch(plan, prefix)):
-        groups = (tuple(range(len(prefix))), tuple(range(len(prefix), len(candidate.ops))))
-    # A newly introduced Decision declaration must be validated with its outcome;
-    # the prefix has already been admitted, so that entire sequence is coherent.
-    results = classify_graph_changes(
+    operations = [operation for group in groups for operation in group]
+    candidate = prepare_patch_bookkeeping(state, _patch(plan, operations))
+    indices = []
+    offset = 0
+    for group in groups:
+        indices.append(tuple(range(offset, offset + len(group))))
+        offset += len(group)
+    return classify_graph_changes(
         state,
         candidate,
         authority=plan.captured_authority,
         project_id=plan.captured_authority.project_id,
         apply_target=plan.destination_head.target,
         context=ValidationContext(project_truth_scope=state.project_truth_scope),
-        operation_groups=groups,
+        operation_groups=tuple(indices),
     )
-    return next((result for result in results if result.disposition == "refused"), results[-1])
+
+
+def _require_admitted(plan: MergePlan, result: ChangeClassification) -> None:
+    if result.disposition == "clash":
+        _reject_preparation(plan, result.diagnostics)
+    if result.disposition != "admitted":
+        raise MergeRefused(_diagnostics(result.diagnostics))
 
 
 def _staged_graph(plan: MergePlan, operations: list[GraphOperation]) -> GraphState:
     patch = _patch(plan, operations).model_copy(
         update={"revision": plan.destination_head.revision + 1}
     )
-    return apply_valid_patch(plan.destination_graph, patch)
+    return apply_valid_patch(
+        plan.destination_graph, prepare_patch_bookkeeping(plan.destination_graph, patch)
+    )
 
 
 def _diagnostics(messages: Iterable[ValidationMessage]) -> tuple[MergeDiagnostic, ...]:
@@ -637,61 +678,79 @@ def _review_proposal(
             "ops": [op.model_dump(mode="json", exclude_unset=True) for op in operations],
         }
     )
-    return Proposal(
+    proposal = Proposal(
         id=f"proposal/merge-{identity}",
         title="Review branch changes",
         card=GatedCard.model_validate(answers.cards[group.subject_key].model_dump()),
         ops=operations,
         dependency_rule=CURRENT_PROPOSAL_DEPENDENCY_RULE,
     )
+    filing = prepare_patch_bookkeeping(
+        plan.destination_graph,
+        _patch(plan, _ops([{"op": "create_proposals", "proposals": [proposal]}])),
+    ).ops[0]
+    assert filing.op == "create_proposals"
+    return filing.proposals[0]
 
 
 def build_merge_patch(plan: MergePlan, answers: MergeAnswers) -> Patch:
     """Resolve typed answers, encode effects, and route every effect through core."""
     _check_plan(plan)
     selected = _resolved_changes(plan, answers)
-    effects = _construct_effects(plan, selected)
+    flags: list[ValidationMessage] = []
+    effects = construct_effects(plan, selected, flags)
     group_coordinates = {
         group.subject_key: {_coordinate(change) for change in group.changes}
         for group in plan.review_groups
     }
-    staged = plan.destination_graph
     direct: list[GraphOperation] = []
     reviews: dict[str, list[ProposalOperation]] = defaultdict(list)
-    # Review groups are classified together, after all direct prerequisites exist.
-    pending: dict[str, list[GraphOperation]] = defaultdict(list)
+    # Keep coherent groups explicit. Core stages admitted prerequisites once;
+    # pending review effects never become part of the next group's prefix.
+    pending: dict[str, list[_Effect]] = defaultdict(list)
+    groups: list[tuple[list[GraphOperation], str | None, list[GraphOperation]]] = []
     for effect in effects:
         keys = [key for key, coords in group_coordinates.items() if coords & effect.coordinates]
         if len(keys) > 1:
             _refuse("merge-review-groups-changed", "A coherent effect spans multiple review groups")
-        # Creation is admitted separately so a new belief's judgment can be reviewed.
         if keys and not any(op.op == "create_nodes" for op in effect.operations):
-            pending[keys[0]].extend(effect.operations)
+            pending[keys[0]].append(effect)
             continue
-        result = _classify(plan, effect.operations, direct)
-        if result.disposition == "refused":
-            raise MergeRefused(_diagnostics(result.diagnostics))
+        groups.append(
+            (
+                effect.operations,
+                keys[0] if keys else None,
+                [effect.restore_standing] if effect.restore_standing is not None else [],
+            )
+        )
+    for key in sorted(pending):
+        groups.append(
+            (
+                [op for effect in pending[key] for op in effect.operations],
+                key,
+                [effect.restore_standing for effect in pending[key] if effect.restore_standing],
+            )
+        )
+    restorations: list[GraphOperation] = []
+    for (operations, key, restore), result in zip(
+        groups, _classify(plan, [group[0] for group in groups]), strict=True
+    ):
         if result.disposition == "reviewable":
-            if not keys:
+            if key is None:
                 _refuse(
                     "merge-review-group-missing", "Reviewable effect has no planned review subject"
                 )
-            reviews[keys[0]].extend(result.review_operations)
-        else:
-            direct.extend(effect.operations)
-            staged = _staged_graph(plan, direct)
-    for key in sorted(pending):
-        result = _classify(plan, pending[key], direct)
-        if result.disposition == "refused":
-            raise MergeRefused(_diagnostics(result.diagnostics))
-        if result.disposition == "reviewable":
             reviews[key].extend(result.review_operations)
         else:
-            direct.extend(pending[key])
-            staged = _staged_graph(plan, direct)
+            _require_admitted(plan, result)
+            direct.extend(operations)
+            restorations.extend(restore)
+    if restorations:
+        for result in _classify(plan, [direct, restorations]):
+            _require_admitted(plan, result)
+        direct.extend(restorations)
     proposals: list[Proposal] = []
     withdrawals: list[dict[str, str]] = []
-    footprints = []
     for group in sorted(plan.review_groups, key=lambda item: item.subject_key):
         operations = reviews.get(group.subject_key, [])
         old_ops: list[ProposalOperation] = []
@@ -718,10 +777,29 @@ def build_merge_patch(plan: MergePlan, answers: MergeAnswers) -> Patch:
         if not combined:
             continue
         proposal = _review_proposal(plan, group, combined, answers)
-        probe = _classify(plan, _ops([{"op": "create_proposals", "proposals": [proposal]}]), direct)
-        if probe.disposition != "admitted":
-            raise MergeRefused(_diagnostics(probe.diagnostics))
-        footprint = proposal_dependencies_and_effects(staged, proposal)
+        proposals.append(proposal)
+    # Validate all filings with one explicit prefix, then calculate footprints
+    # against one staged graph. Carried source cards participate in the same
+    # no-mutual-invalidation guarantee as newly constructed merge reviews.
+    filing_groups = [
+        _ops([{"op": "create_proposals", "proposals": [proposal]}]) for proposal in proposals
+    ]
+    if filing_groups:
+        for result in _classify(plan, ([direct] if direct else []) + filing_groups):
+            _require_admitted(plan, result)
+    staged = _staged_graph(plan, direct)
+    carried = [
+        staged.proposals[proposal.id]
+        for operation in direct
+        if operation.op == "create_proposals"
+        for proposal in operation.proposals
+    ]
+    footprints = []
+    for proposal in [*carried, *proposals]:
+        try:
+            footprint = proposal_dependencies_and_effects(staged, proposal)
+        except ProposalEffectRejected as exc:
+            raise MergeRefused(_diagnostics(exc.diagnostics)) from exc
         for previous in footprints:
             if (
                 footprint.effects & previous.dependencies
@@ -732,7 +810,6 @@ def build_merge_patch(plan: MergePlan, answers: MergeAnswers) -> Patch:
                     "Answered review groups now affect one another; replan them together",
                 )
         footprints.append(footprint)
-        proposals.append(proposal)
     final = list(direct)
     if withdrawals:
         final.extend(_ops([{"op": "withdraw_proposals", "proposals": withdrawals}]))
@@ -740,10 +817,9 @@ def build_merge_patch(plan: MergePlan, answers: MergeAnswers) -> Patch:
         final.extend(_ops([{"op": "create_proposals", "proposals": proposals}]))
     candidate = prepare_patch_bookkeeping(plan.destination_graph, _patch(plan, final))
     if candidate.ops:
-        result = _classify(plan, candidate.ops)
-        if result.disposition != "admitted":
-            raise MergeRefused(_diagnostics(result.diagnostics))
-    return candidate
+        for result in _classify(plan, [candidate.ops]):
+            _require_admitted(plan, result)
+    return candidate.model_copy(update={"admission_messages": flags})
 
 
 def _preparation_contract() -> MergePreparationContract:
@@ -758,7 +834,10 @@ def _preparation_contract() -> MergePreparationContract:
 
 
 def _reject_preparation(plan: MergePlan, messages: Iterable[ValidationMessage]) -> NoReturn:
+    messages = tuple(messages)
     diagnostics = _diagnostics(messages)
+    if not is_coherence_clash(messages):
+        raise MergeRefused(diagnostics)
     nodes = {node for item in diagnostics for node in item.related_node_ids}
     if not nodes:
         raise MergeRefused(diagnostics)
@@ -793,23 +872,29 @@ def prepare_merge_candidate(
         prepared, report, current = history.validate_candidate(candidate)
     except PatchRejected as exc:
         _reject_preparation(plan, exc.report.messages)
-    except AgentAuthorizerDeparted as exc:
-        _refuse(exc.code, str(exc))
+    except AuthorityRefusal as exc:
+        raise MergeRefused(_diagnostics(exc.diagnostics)) from exc
     if current.revision != plan.destination_head.revision:
         raise RevisionConflict("Merge destination moved during preparation; rebuild the plan")
     if report.rejected:
         _reject_preparation(plan, report.messages)
     if prepared.transition is None:
         _refuse("missing-merge-transition", "History did not prepare a transition")
-    if prepared.transition.pre_head != plan.destination_head:
+    trace = prepared.transition
+    if trace.pre_head != plan.destination_head:
         raise RevisionConflict("Merge destination head differs from the prepared transition")
     if prepared.branch_merge != plan.provenance or prepared.authorized_by != plan.authorized_by:
         _refuse(
             "merge-preparation-binding-changed",
             "History changed the merge's provenance or authorizer",
         )
+    messages = list(prepared.admission_messages)
+    for diagnostic in [*report.messages, *candidate.admission_messages]:
+        if diagnostic not in messages:
+            messages.append(diagnostic)
+    prepared = prepared.model_copy(update={"admission_messages": messages})
     graph = apply_valid_patch(current, prepared)
     return PreparedTransition(
         patch=prepared,
-        projection=project_transition_projection(graph, prepared.transition, canonical=False),
+        projection=project_transition_projection(graph, trace, canonical=False),
     )

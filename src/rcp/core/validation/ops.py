@@ -109,6 +109,12 @@ def author_create_nodes(op: CreateNodesOperation, ctx: OpContext) -> Any:
     return None
 
 
+# Each field may be valid by itself while the resulting node is incoherent.
+# These refusals can be resolved by reconsidering that node's combined fields;
+# malformed payloads and missing dependencies are deliberately not included.
+CLASH_OPERATION_REFUSALS = frozenset({"incoherent-decision-transition"})
+
+
 def validate_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> None:
     for update in op.nodes:
         node_id = update.id

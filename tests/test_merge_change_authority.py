@@ -383,7 +383,8 @@ def test_gated_transition_names_the_node_for_hidden_clash_promotion():
     assert refusal.related_node_ids == [HYPOTHESIS]
 
 
-def test_nested_proposal_refusal_is_hard_even_when_its_code_is_reviewable(monkeypatch):
+@pytest.mark.parametrize("code", ["accepted-node-removal", "incoherent-decision-transition"])
+def test_nested_proposal_refusal_stays_hard_for_review_and_coherence_codes(monkeypatch, code):
     from rcp.core.models import Blocker
     from rcp.core.validation.proposals import PROPOSAL_REPLAY_RULE_ID
 
@@ -397,7 +398,7 @@ def test_nested_proposal_refusal_is_hard_even_when_its_code_is_reviewable(monkey
     )
     diagnostic = ValidationMessage(
         level="reject",
-        code="accepted-node-removal",
+        code=code,
         message="Nested effect refused",
         related_node_ids=["blocker/review"],
         rule_id=PROPOSAL_REPLAY_RULE_ID,
@@ -422,3 +423,197 @@ def test_nested_proposal_refusal_is_hard_even_when_its_code_is_reviewable(monkey
     assert not result.review_operations
     assert result.diagnostics[0] == diagnostic
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "order", [("ordinary", "review", "choice"), ("choice", "ordinary", "review")]
+)
+def test_explicit_groups_derive_their_own_action_and_review_probe_action(order):
+    from rcp.core.models import Blocker, Decision
+
+    state = _state()
+    state.nodes["blk/one"] = Blocker(
+        id="blk/one", type="blocker", title="Base", description="A blocker"
+    )
+    state.nodes["dec/one"] = Decision(
+        id="dec/one", type="decision", title="Choose", question="Which?", options=["A", "B"]
+    )
+    operations = {
+        "ordinary": {
+            "op": "update_nodes",
+            "nodes": [{"id": "blk/one", "changes": {"title": "New"}}],
+        },
+        "review": _update(title="Reconsider this claim"),
+        "choice": {
+            "op": "update_nodes",
+            "nodes": [{"id": "dec/one", "changes": {"status": "decided", "selected_option": "A"}}],
+        },
+    }
+    template = Patch(
+        kind="work",
+        author="agent",
+        profile="orchestrator",
+        authorized_by=AuthorizedHuman(
+            space_id=str(uuid4()), user_id=str(uuid4()), display_name="Member"
+        ),
+        task_id="task",
+        source_operation_id="task",
+        summary="Classify groups",
+        run_truth_scope=["repo-a"],
+        ops=[],
+    )
+    captured = capture_change_authority(
+        state,
+        template,
+        authority=unchecked_write_authority(),
+        project_id="project",
+        apply_target=GraphTargetRef(),
+    )
+    patch = Patch.model_validate(
+        {
+            **template.model_dump(),
+            "agent_action": "decision_choice",
+            "ops": [operations[name] for name in order],
+        }
+    )
+    results = classify_graph_changes(
+        state,
+        patch,
+        authority=captured,
+        project_id="project",
+        apply_target=GraphTargetRef(),
+        context=ValidationContext(project_truth_scope=["repo-a"]),
+        operation_groups=((0,), (1,), (2,)),
+    )
+    assert [result.disposition for result in results] == [
+        "reviewable" if name == "review" else "admitted" for name in order
+    ]
+    assert state.nodes["dec/one"].status == "open"
+    assert state.nodes["blk/one"].title == "Base"
+    review = results[order.index("review")]
+    assert review.review_operations[0].nodes[0].changes == {"title": "Reconsider this claim"}
+
+
+def test_grouped_creation_preserves_same_patch_relation_authority_before_a_decision():
+    from rcp.core.models import Decision
+
+    state = GraphState(project_truth_scope=["repo-a"])
+    state.nodes["dec/one"] = Decision(
+        id="dec/one", type="decision", title="Choose", question="Which?", options=["A", "B"]
+    )
+    operations = seed_patch().model_dump(mode="json")["ops"]
+    operations.append(
+        {
+            "op": "update_nodes",
+            "nodes": [{"id": "dec/one", "changes": {"status": "decided", "selected_option": "B"}}],
+        }
+    )
+    patch = Patch(
+        kind="work",
+        author="agent",
+        profile="orchestrator",
+        authorized_by=AuthorizedHuman(
+            space_id=str(uuid4()), user_id=str(uuid4()), display_name="Member"
+        ),
+        task_id="task",
+        source_operation_id="task",
+        summary="Create and choose",
+        run_truth_scope=["repo-a"],
+        agent_action="decision_choice",
+        ops=operations,
+    )
+    results = classify_graph_changes(
+        state,
+        patch,
+        authority=unchecked_write_authority(),
+        project_id="project",
+        apply_target=GraphTargetRef(),
+        context=ValidationContext(project_truth_scope=["repo-a"]),
+        operation_groups=tuple((index,) for index in range(len(patch.ops))),
+    )
+    assert all(result.disposition == "admitted" for result in results)
+
+
+@pytest.mark.parametrize(
+    ("status", "selected", "options", "expected_code"),
+    [
+        ("decided", "A", ["B", "C"], "incoherent-decision-transition"),
+        ("ready", None, ["A"], "incomplete-decision-ballot"),
+    ],
+)
+def test_field_coherence_refusals_are_distinct_node_named_clashes(
+    status, selected, options, expected_code
+):
+    from rcp.core.models import Decision
+
+    state = _state()
+    state.nodes["dec/one"] = Decision(
+        id="dec/one",
+        type="decision",
+        title="Choose",
+        question="Which?",
+        options=["A", "B", "C"],
+        status=status,
+        selected_option=selected,
+    )
+    result = _classify(
+        state,
+        {"op": "update_nodes", "nodes": [{"id": "dec/one", "changes": {"options": options}}]},
+        profile="orchestrator",
+        branch_merge=_merge_provenance(),
+    )
+    assert result.disposition == "clash"
+    assert [
+        (item.code, item.related_node_ids) for item in result.diagnostics if item.level == "reject"
+    ] == [(expected_code, ["dec/one"])]
+    assert not result.review_operations
+
+
+def test_a_hard_refusal_keeps_a_mixed_coherence_failure_hard():
+    from rcp.core.models import Decision
+
+    state = _state()
+    state.nodes["dec/one"] = Decision(
+        id="dec/one",
+        type="decision",
+        title="Choose",
+        question="Which?",
+        options=["A", "B"],
+        status="decided",
+        selected_option="A",
+    )
+    result = _classify(
+        state,
+        {
+            "op": "update_nodes",
+            "nodes": [
+                {"id": "dec/one", "changes": {"options": ["B"]}},
+                {"id": "blk/missing", "changes": {"title": "Missing"}},
+            ],
+        },
+        profile="orchestrator",
+        branch_merge=_merge_provenance(),
+    )
+    assert result.disposition == "refused"
+    assert {item.code for item in result.diagnostics if item.level == "reject"} == {
+        "incoherent-decision-transition",
+        "unknown-node",
+    }
+
+
+@pytest.mark.parametrize("inside_proposal", [False, True])
+def test_coherence_classification_excludes_proposed_effect_replay(inside_proposal):
+    from rcp.core.validation import is_coherence_clash
+    from rcp.core.validation.proposals import PROPOSAL_REPLAY_RULE_ID
+
+    message = ValidationMessage(
+        level="reject",
+        code="incoherent-decision-transition",
+        message="Field combination failed",
+        related_node_ids=["dec/one"],
+        rule_id=PROPOSAL_REPLAY_RULE_ID if inside_proposal else None,
+    )
+    advisory = ValidationMessage(level="flag", code="unrelated-advisory", message="Advisory")
+    assert is_coherence_clash([advisory, message]) is not inside_proposal
+    assert not is_coherence_clash([advisory])
+    assert not is_coherence_clash([message.model_copy(update={"related_node_ids": []})])

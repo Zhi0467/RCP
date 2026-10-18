@@ -29,6 +29,7 @@ from rcp.runs.merge_contract import (
     MergeAnswers,
     MergeAnswersRejected,
     MergePlan,
+    MergeRefused,
     PriorReview,
     ReviewCard,
     ReviewGroup,
@@ -238,7 +239,7 @@ def _plan(harness, *, direct=(), reviews=(), facts=(), prior_reviews=(), footpri
             {
                 **_proposal(operations[0]),
                 "ops": operations,
-                "dependency_rule": CURRENT_PROPOSAL_DEPENDENCY_RULE,
+                "dependency_rule": 3 if len(operations) > 1 else CURRENT_PROPOSAL_DEPENDENCY_RULE,
             }
         )
         groups.append(
@@ -391,9 +392,10 @@ def test_same_node_content_and_standing_review_approves_atomically(review_branch
     assert approved.nodes["rq/review"].standing == "contested"
 
 
+@pytest.mark.parametrize("recorded_cause", ["human_edit", "evidence_edge"])
 @pytest.mark.parametrize("include_other_edits", [False, True])
-def test_branch_approval_with_retired_evidence_becomes_a_fresh_main_review(
-    review_branch, include_other_edits
+def test_retired_evidence_requires_the_exact_recorded_status_cause(
+    review_branch, include_other_edits, recorded_cause
 ):
     harness = review_branch
     operation = {
@@ -431,6 +433,27 @@ def test_branch_approval_with_retired_evidence_becomes_a_fresh_main_review(
         direct=[("edges", "edge/review", None)],
         reviews=[("hypothesis", coordinates, operations)],
         facts=(fact,),
+    )
+    if recorded_cause == "evidence_edge":
+        with pytest.raises(MergeRefused) as rejected:
+            build_merge_patch(plan, _answers(plan))
+        assert {(item.code, item.related_node_ids) for item in rejected.value.diagnostics} == {
+            ("invalid-belief-cause", ("hyp/review",))
+        }
+        return
+    source = plan.source_graph.model_copy(
+        update={
+            "belief_transitions": [
+                transition.model_copy(update={"cause": {"kind": "human_edit"}})
+                if transition.revision == human.revision
+                and transition.hypothesis_id == "hyp/review"
+                else transition
+                for transition in plan.source_graph.belief_transitions
+            ]
+        }
+    )
+    plan = MergePlan.model_validate(
+        {**plan.model_dump(mode="json", exclude={"plan_id"}), "source_graph": source}
     )
     main = _apply(plan, build_merge_patch(plan, _answers(plan)))
     assert "edge/review" not in main.edges
@@ -766,24 +789,40 @@ def test_review_of_a_hypothesis_the_merge_creates_is_not_stale(review_branch):
         "op": "update_nodes",
         "intent": "status_change",
         "nodes": [
-            {"id": "hyp/new", "changes": {"status": "active"}, "cause": {"kind": "human_edit"}}
+            {
+                "id": "hyp/new",
+                "changes": {"status": "active"},
+                "cause": {"kind": "evidence_edge", "ref_id": "edge/new-evidence"},
+            }
         ],
     }
     source_node = harness.branch.state().nodes["hyp/new"]
     destination = harness.service.history.state()
     footprint_state = destination.model_copy(
         update={
+            "revision": destination.revision + 1,
+            "edges": {
+                **destination.edges,
+                "edge/new-evidence": harness.branch.state()
+                .edges["edge/new-evidence"]
+                .model_copy(update={"created_rev": destination.revision + 1}),
+            },
             "nodes": {
                 **destination.nodes,
                 "hyp/new": source_node.model_copy(
-                    update={"status": "proposed", "standing": Standing.ASSERTED}
+                    update={
+                        "status": "proposed",
+                        "standing": Standing.ASSERTED,
+                        "created_rev": destination.revision + 1,
+                        "updated_rev": destination.revision + 1,
+                    }
                 ),
-            }
+            },
         }
     )
     plan = _plan(
         harness,
-        direct=[("edges", edge["id"], None)],
+        direct=[("edges", edge["id"], None), ("edges", "edge/new-evidence", None)],
         reviews=[
             (
                 "new-hypothesis",
@@ -806,9 +845,9 @@ def test_review_of_a_hypothesis_the_merge_creates_is_not_stale(review_branch):
     assert approved.nodes["hyp/new"].standing == "accepted"
 
 
-def test_nonhuman_last_status_cause_does_not_inherit_an_older_human_fact(review_branch):
+def test_nonhuman_latest_same_status_occurrence_does_not_inherit_an_older_human_fact(review_branch):
     harness = review_branch
-    human = _approve_branch_status(harness, "hyp/review")
+    _approve_branch_status(harness, "hyp/review")
     cause = {"kind": "evidence_edge", "ref_id": "edge/review"}
     status = {
         "op": "update_nodes",
@@ -816,14 +855,14 @@ def test_nonhuman_last_status_cause_does_not_inherit_an_older_human_fact(review_
         "nodes": [{"id": "hyp/review", "changes": {"status": "active"}, "cause": cause}],
     }
     stale_fact = SourceHumanFact(
-        revision=human.revision,
+        revision=5,
         operation_index=0,
         operation={
             **status,
             "nodes": [
                 {
                     "id": "hyp/review",
-                    "changes": {"status": "proposed"},
+                    "changes": {"status": "active"},
                     "cause": {"kind": "human_edit"},
                 }
             ],
@@ -836,19 +875,38 @@ def test_nonhuman_last_status_cause_does_not_inherit_an_older_human_fact(review_
     )
     source = plan.source_graph.model_copy(
         update={
+            "revision": 7,
             "belief_transitions": [
                 BeliefTransition(
                     hypothesis_id="hyp/review",
                     from_status="proposed",
                     to_status="active",
-                    revision=plan.source_graph.revision,
+                    revision=5,
+                    cause={"kind": "human_edit"},
+                ),
+                BeliefTransition(
+                    hypothesis_id="hyp/review",
+                    from_status="active",
+                    to_status="refuted",
+                    revision=6,
                     cause=cause,
-                )
-            ]
+                ),
+                BeliefTransition(
+                    hypothesis_id="hyp/review",
+                    from_status="refuted",
+                    to_status="active",
+                    revision=7,
+                    cause=cause,
+                ),
+            ],
         }
     )
-    plan = MergePlan.model_validate(
-        {**plan.model_dump(mode="json", exclude={"plan_id"}), "source_graph": source}
+    plan = make_plan(
+        base=plan.base_graph,
+        source=source,
+        destination=plan.destination_graph,
+        review_groups=plan.review_groups,
+        source_human_facts=(stale_fact,),
     )
     patch = build_merge_patch(plan, _answers(plan))
     update = next(
@@ -868,8 +926,9 @@ def test_review_requires_its_subject_keyed_card(review_branch):
     )
     with pytest.raises(MergeAnswersRejected) as caught:
         build_merge_patch(plan, MergeAnswers(answers={}, cards={}))
-    assert caught.value.diagnostics
-    assert "question" in str(caught.value)
+    assert [(item.code, item.related_node_ids) for item in caught.value.diagnostics] == [
+        ("invalid-merge-answer", ("question",))
+    ]
 
 
 @pytest.mark.parametrize(
@@ -880,6 +939,20 @@ def test_later_merge_reviews_judgment_reverted_to_the_original_base(field, origi
     node = Hypothesis(id="hyp/review", type="hypothesis", title="Hypothesis", statement="Claim.")
     base = GraphState(revision=1, project_truth_scope=["repo-a"], nodes={node.id: node})
     source = base.model_copy(update={"revision": 3})
+    if field == "status":
+        source = source.model_copy(
+            update={
+                "belief_transitions": [
+                    BeliefTransition(
+                        hypothesis_id=node.id,
+                        from_status=reviewed,
+                        to_status=original,
+                        revision=3,
+                        cause={"kind": "human_edit"},
+                    )
+                ]
+            }
+        )
     destination = base.model_copy(
         update={
             "revision": 2,
@@ -1171,3 +1244,86 @@ def test_remerge_does_not_restore_prior_field_declined_by_answer(review_branch):
     approved = _approve(main, pending[0])
     assert approved.nodes["rq/review"].title == "Destination title"
     assert approved.nodes["rq/review"].question == "Revised?"
+
+
+@pytest.mark.parametrize("node_id,reviewed", [("blk/merge-ready", False), ("hyp/review", True)])
+def test_standing_uses_core_admission_instead_of_its_planned_review_slot(
+    review_branch, node_id, reviewed
+):
+    harness = review_branch
+    _human_patch(harness, {"op": "set_standing", "node_id": node_id, "standing": "accepted"})
+    plan = _plan(
+        harness,
+        reviews=[("judgment", [("nodes", node_id, "standing")], [_standing(node_id, "accepted")])],
+    )
+    patch = build_merge_patch(plan, _answers(plan))
+    main = _apply(plan, patch)
+    assert bool(main.proposals) is reviewed
+    assert main.nodes[node_id].standing == ("asserted" if reviewed else "accepted")
+    if reviewed:
+        assert (
+            _approve(main, next(iter(main.proposals.values()))).nodes[node_id].standing
+            == "accepted"
+        )
+
+
+def test_carried_source_proposal_cannot_overlap_a_new_merge_review(review_branch):
+    harness = review_branch
+    _edit(harness, "rq/review", {"question": "Revised?"})
+    source_proposal = _proposal(
+        _content(question="A further source proposal?"), identity="prop/live-source"
+    )
+    _agent_patch(harness, {"op": "create_proposals", "proposals": [source_proposal]})
+    assert not proposal_is_stale(
+        harness.branch.state(), harness.branch.state().proposals["prop/live-source"]
+    )
+    plan = _plan(
+        harness,
+        direct=[("proposals", "prop/live-source", None)],
+        reviews=[("question", [("nodes", "rq/review", "question")], [_content()])],
+    )
+    with pytest.raises(MergeRefused) as caught:
+        build_merge_patch(plan, _answers(plan))
+    assert [item.code for item in caught.value.diagnostics] == ["merge-review-groups-changed"]
+    assert (
+        plan.source_graph.proposals["prop/live-source"].model_dump(mode="json")["ops"]
+        == source_proposal["ops"]
+    )
+
+
+def test_stale_source_proposal_omission_remains_an_advisory(review_branch):
+    harness = review_branch
+    _agent_patch(
+        harness,
+        {
+            "op": "create_proposals",
+            "proposals": [_proposal(_content(), identity="prop/stale-source")],
+        },
+    )
+    _edit(harness, "rq/review", {"question": "Revised?"})
+    _edit(harness, "blk/merge-ready", {"description": "Ordinary source work."})
+    plan = _plan(
+        harness,
+        direct=[
+            ("proposals", "prop/stale-source", None),
+            ("nodes", "blk/merge-ready", "description"),
+        ],
+    )
+    patch = build_merge_patch(plan, _answers(plan))
+    assert not _filed(patch)
+    assert [
+        (item.level, item.code, item.related_node_ids) for item in patch.admission_messages
+    ] == [("flag", "stale-source-proposal", ["prop/stale-source"])]
+    from rcp.core.validation import ValidationReport
+    from rcp.runs.merge_patch import prepare_merge_candidate
+
+    from .test_merge_patch import DiagnosticHistory
+
+    prepared = prepare_merge_candidate(
+        plan, _answers(plan), DiagnosticHistory(plan, ValidationReport())
+    )
+    assert [
+        (item.level, item.code, item.related_node_ids) for item in prepared.patch.admission_messages
+    ] == [("flag", "stale-source-proposal", ["prop/stale-source"])]
+    main = _apply(plan, patch)
+    assert main.nodes["blk/merge-ready"].description == "Ordinary source work."

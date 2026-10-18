@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from typing import TYPE_CHECKING, Literal, get_args
 
@@ -1237,11 +1237,13 @@ class ChangeClassification:
 
     ``review_operations`` is populated only after the supported pending Proposal
     form passes validation. It never authorizes applying that effect directly.
+    ``clash`` identifies only core-owned node field-coherence failures. It never
+    admits effects or converts malformed/forbidden changes into pending review.
     Diagnostics retain their codes and related resources; flags are not refusals.
     """
 
     operation_indices: tuple[int, ...]
-    disposition: Literal["admitted", "reviewable", "refused"]
+    disposition: Literal["admitted", "reviewable", "clash", "refused"]
     review_operations: tuple[ProposalOperation, ...] = ()
     diagnostics: tuple[ValidationMessage, ...] = ()
 
@@ -1250,9 +1252,9 @@ class CapturedChangeAuthority(BaseModel):
     """Serializable preflight authority for pure planning, never publication.
 
     ``capture_change_authority`` obtains this snapshot from live admission. The
-    admitted Patch template has no operations. Consumers may replace only ops;
-    its complete attribution, scope, target provenance, and action declaration
-    stay bound. Preparation and publication must check live authority again.
+    admitted Patch template has no operations. Consumers replace ops and derive
+    the candidate's action from those ops. Its complete attribution, scope and
+    target provenance stay bound. Preparation and publication check live authority again.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -1321,12 +1323,14 @@ def classify_graph_changes(
     binding refuses every group, before any Proposal conversion. By default
     the entire Patch is one atomic change: creation plus connecting edges, or an
     edge removal plus replacement, must not be judged as isolated operations.
-    Explicit groups must partition the operations in written order. Earlier
-    admitted groups provide staged context; pending review effects do not.
+    Explicit groups must partition the operations in written order. Each
+    candidate prefix declares only the action derived from its own operations.
+    Earlier admitted groups provide staged context; pending review effects do not.
 
     Both gates judge direct changes. Only protected action refusals and codes
     explicitly owned as reviewable by operation rules are eligible for a
-    supported Proposal form, which must itself pass both gates. Malformed data,
+    supported Proposal form, which must itself pass both gates. Node-named
+    field-coherence failures have the distinct clash disposition. Malformed data,
     missing dependencies, and invalid proposed effects remain exact structured
     refusals. This function does not repair invalid encodings or invent causes;
     the builder must supply the correct ordered operations and truthful cause.
@@ -1334,7 +1338,7 @@ def classify_graph_changes(
     """
     from rcp.core.materialize import apply_valid_patch, prepare_patch_bookkeeping
     from rcp.core.models import GatedCard, Proposal
-    from rcp.core.validation import validate_patch
+    from rcp.core.validation import is_coherence_clash, validate_patch
     from rcp.core.validation.ops import REVIEWABLE_OPERATION_REFUSALS
     from rcp.core.validation.proposals import PROPOSAL_REPLAY_RULE_ID
 
@@ -1405,6 +1409,13 @@ def classify_graph_changes(
         operations = [patch.ops[index] for index in group]
         candidate_indices = (*admitted_indices, *group)
         candidate = patch.model_copy(update={"ops": [*admitted_ops, *operations]})
+        if operation_groups is not None and patch.author == "agent":
+            # Later groups may supply the full Patch's Decision outcome. A
+            # prefix must declare only the outcome actually present in it.
+            candidate = candidate.model_copy(
+                update={"agent_action": derived_agent_action(state, candidate)}
+            )
+        candidate_writer = replace(writer, agent_action=candidate.agent_action)
         permission = permission_gate.validate_permissions(state, candidate)
         refused_actions = {
             action
@@ -1416,13 +1427,14 @@ def classify_graph_changes(
             diagnostics = _classification_diagnostics(permission.messages, candidate_indices)
             reviewable = bool(refused_actions) and refused_actions <= _REVIEWABLE_GRAPH_ACTIONS
         else:
-            report = validate_patch(state, candidate, context, writer=writer)
+            report = validate_patch(state, candidate, context, writer=candidate_writer)
             diagnostics = _classification_diagnostics(report.messages, candidate_indices)
             if not report.rejected:
                 results.append(ChangeClassification(group, "admitted", diagnostics=diagnostics))
                 admitted_ops.extend(operations)
                 admitted_indices.extend(group)
-                staged = apply_valid_patch(state, candidate)
+                # The prefix is already staged; apply only this admitted group.
+                staged = apply_valid_patch(staged, candidate.model_copy(update={"ops": operations}))
                 continue
             reviewable = all(
                 item.code in REVIEWABLE_OPERATION_REFUSALS
@@ -1431,7 +1443,13 @@ def classify_graph_changes(
                 if item.level == "reject"
             )
         if not reviewable:
-            results.append(ChangeClassification(group, "refused", diagnostics=diagnostics))
+            results.append(
+                ChangeClassification(
+                    group,
+                    "clash" if is_coherence_clash(diagnostics) else "refused",
+                    diagnostics=diagnostics,
+                )
+            )
             continue
         try:
             review_ops = _review_operations(staged, operations)
@@ -1465,9 +1483,18 @@ def classify_graph_changes(
                 }
             ),
         )
+        if patch.author == "agent":
+            review_candidate = review_candidate.model_copy(
+                update={"agent_action": derived_agent_action(state, review_candidate)}
+            )
         review_report = permission_gate.validate_permissions(state, review_candidate)
         if not review_report.rejected:
-            review_report = validate_patch(state, review_candidate, context, writer=writer)
+            review_report = validate_patch(
+                state,
+                review_candidate,
+                context,
+                writer=replace(writer, agent_action=review_candidate.agent_action),
+            )
         if review_report.rejected:
             results.append(
                 ChangeClassification(

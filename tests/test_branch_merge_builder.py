@@ -940,3 +940,96 @@ def test_extension_fields_conflict_uses_the_whole_answer(merge_history):
     )
 
     assert prepared.projection.graph.nodes["blk/existing"].extension_fields == merged_fields
+
+
+def test_direct_prefix_decision_and_review_are_classified_without_duplication(merge_history):
+    from tests.test_merge_patch import answers, plan_from_context
+
+    history, branch, load_context = merge_history
+    _append(branch, _new_blocker())
+    context = load_context()
+    branch.append(
+        Patch(
+            kind="work",
+            author="agent",
+            profile="orchestrator",
+            summary="Choose the branch design.",
+            run_truth_scope=["repo-a"],
+            source_operation_id="branch-work",
+            task_id="branch-work",
+            episode_id=context.metadata.episode_id,
+            authorized_by=context.authorized_by,
+            agent_action="decision_choice",
+            ops=[_update("dec/choice", status="decided", selected_option="Original design")],
+        )
+    )
+    _append(branch, _update("rq/merge", question="A revised question?"), human=True)
+    context = load_context()
+    review_changes = _changes(context, ("nodes", "rq/merge", "question"))
+    group = _review_group(
+        context.main_graph,
+        review_changes,
+        {**_update("rq/merge", question="A revised question?"), "intent": "content_change"},
+    )
+    plan = plan_from_context(
+        context,
+        direct_changes=_changes(
+            context,
+            ("nodes", "blk/branch-only", None),
+            ("nodes", "dec/choice", "status"),
+            ("nodes", "dec/choice", "selected_option"),
+        ),
+        review_groups=(group,),
+    )
+    candidate = build_merge_patch(plan, answers(plan))
+    prepared = prepare_merge_candidate(plan, answers(plan), history)
+    creates = [node.id for op in candidate.ops if op.op == "create_nodes" for node in op.nodes]
+    assert creates == ["blk/branch-only"]
+    decision_updates = [
+        node
+        for op in candidate.ops
+        if op.op == "update_nodes"
+        for node in op.nodes
+        if node.id == "dec/choice"
+    ]
+    assert len(decision_updates) == 1
+    pending = list(prepared.projection.graph.proposals.values())
+    assert len(pending) == 1
+    assert [(op.op, [node.id for node in op.nodes]) for op in pending[0].ops] == [
+        ("update_nodes", ["rq/merge"])
+    ]
+    assert prepared.projection.graph.nodes["dec/choice"].status == "decided"
+    assert (
+        prepared.projection.graph.nodes["blk/branch-only"].description
+        == "A sourced branch finding."
+    )
+
+
+def test_empty_answers_prepare_and_commit_preserve_postfork_destination_standing(merge_history):
+    from rcp.runs.branch_merge import commit_branch_merge_with_history
+    from rcp.runs.merge_contract import MergeAnswers
+    from tests.test_merge_patch import plan_from_context
+
+    history, branch, load_context = merge_history
+    _append(branch, _update("blk/existing", description="Source content."))
+    _append(
+        history,
+        {"op": "set_standing", "node_id": "blk/existing", "standing": "accepted"},
+        human=True,
+    )
+    context = load_context()
+    plan = plan_from_context(
+        context, direct_changes=_changes(context, ("nodes", "blk/existing", "description"))
+    )
+    selected = MergeAnswers(answers={}, cards={})
+    before = history.head_ref()
+    prepared = prepare_merge_candidate(plan, selected, history)
+    assert history.head_ref() == before
+    committed = commit_branch_merge_with_history(
+        history, build_merge_patch(plan, selected), expected_main_head=before
+    )
+    assert prepared.projection.graph == committed.projection.graph
+    assert history.state().nodes["blk/existing"].description == "Source content."
+    assert history.state().nodes["blk/existing"].standing == "accepted"
+    assert not history.state().proposals
+    assert history.materialize(write_outputs=False).state == history.state()

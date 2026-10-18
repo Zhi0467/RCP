@@ -172,9 +172,11 @@ class ReviewGroup(_MergeModel):
     Join groups when either core-reported effects intersect the other's
     dependencies. subject_key identifies the sorted subjects, independent of
     Proposal ids, heads, and card prose. effect_digest binds the exact proposed
-    effect, including outstanding pending effects on re-merge. Reuse card prose
-    only when this digest is unchanged. Recompute footprints after answers change
-    effects; never infer dependencies in the merge layer. Unfiled footprint drafts
+    effect, including outstanding pending effects on re-merge. The planner computes
+    it as merge_contract_digest([c.model_dump(mode="json") for c in changes] +
+    [outstanding prior-review effects]). The run loop reuses card prose on rebase
+    only when the new group's digest equals the old one. Recompute footprints after
+    answers change effects; never infer dependencies in the merge layer. Unfiled footprint drafts
     explicitly use CURRENT_PROPOSAL_DEPENDENCY_RULE; Proposal's default retains
     historical rule 1 and must not be used for a new review.
     """
@@ -312,6 +314,8 @@ class MergePlan(MergePlanningContext):
     facts, prior reviews, and preparation contract. On rebase, reuse an answer
     only if its id AND complete base/branch/destination descriptors are unchanged.
     Snapshots are private values: consumers must not mutate nested graph models.
+    direct_changes and review-group changes contain only branch-side changes the
+    destination must receive.
     """
 
     plan_id: Digest = ""
