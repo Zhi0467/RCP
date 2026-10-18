@@ -755,6 +755,28 @@ def _with_prior(context, operations, *, status="pending"):
     return context.model_copy(update={"prior_reviews": (review,), "destination_graph": destination})
 
 
+@pytest.mark.parametrize("destination_title", ["Original", "Later destination"])
+def test_already_delivered_source_keeps_its_live_review_without_refiling(destination_title):
+    base = _state()
+    source = _edit(base, title="Pending source").model_copy(update={"revision": 2})
+    destination = _edit(base, title=destination_title).model_copy(update={"revision": 4})
+    context = _with_prior(
+        _context(base, source, destination, previous=source),
+        [
+            {
+                "op": "update_nodes",
+                "intent": "content_change",
+                "nodes": [{"id": "rq/question", "changes": {"title": "Pending source"}}],
+            }
+        ],
+    )
+    plan = plan_merge(context)
+    assert not plan.direct_changes
+    assert not plan.conflicts
+    assert not plan.review_groups
+    assert plan.prior_reviews == context.prior_reviews
+
+
 @pytest.mark.parametrize("status", ["pending", "rejected", "approved"])
 @pytest.mark.parametrize(("title", "destination_title"), [("Y", "Original"), ("Original", "Z")])
 def test_pending_comparison_uses_destination_and_reversion_cancels(

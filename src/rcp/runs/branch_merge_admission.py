@@ -7,8 +7,8 @@ kind.  It takes the engine because launching needs the engine's launch gate.
 
 from __future__ import annotations
 
-import json
 import uuid
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from rcp.core.models import AuthorizedHuman, BranchMergeReceipt
@@ -17,17 +17,20 @@ from rcp.history import BranchMergeAlreadyCommitted, RevisionConflict
 from rcp.history.branches import BranchHistoryManager
 from rcp.runs.branch_merge import (
     MAX_BRANCH_MERGE_REBASE_ROUNDS,
-    branch_merge_can_resolve_without_patch,
     branch_merge_id,
     branch_merge_provenance,
     branch_merge_receipt_from_committed_patch,
-    build_deterministic_merge_ops,
     commit_branch_merge_with_history,
-    parse_branch_merge_candidate,
-    prepare_branch_merge_with_history,
+    merge_planning_context,
 )
 from rcp.runs.branch_merge_context import load_branch_merge_context, merge_history
 from rcp.runs.branch_merge_request import BranchMergeRunRequest, MergeBinding
+from rcp.runs.merge_contract import (
+    MergeAnswers,
+    build_merge_patch,
+    plan_merge,
+    prepare_merge_candidate,
+)
 from rcp.runs.task_policy import resolved_dispatch_authority, task_graph_capable
 from rcp.service import ProjectService
 from rcp.storage import AgentTaskRecord, EpisodeRecord
@@ -228,6 +231,7 @@ def _start_bound_branch_merge(
             dispatcher_episode_id=episode.episode_id if episode else None,
             dispatcher_operation_id=dispatcher_operation_id,
             command_key=command_key,
+            requires_agent=False,
         )
         context = load_branch_merge_context(
             service,
@@ -242,9 +246,6 @@ def _start_bound_branch_merge(
             and context.previous_merge_receipt.provenance.branch_head == binding.source_head
         ):
             raise ValueError("no_undelivered_work")
-        binding = binding.model_copy(
-            update={"requires_agent": bool(build_deterministic_merge_ops(context)[1])}
-        )
         profile = service.resolve_agent_profile("orchestrator")
         request = BranchMergeRunRequest(
             episode_id=episode.episode_id if episode else None,
@@ -350,11 +351,18 @@ def _commit_agentless_merge(tasks, service, episode, task, binding):
             authorized_by=task.authorized_by,
             merge_binding=binding,
         )
-        ops, residue = build_deterministic_merge_ops(context)
-        if residue:
+        plan = plan_merge(
+            merge_planning_context(
+                context, destination, created_at=datetime.fromisoformat(task.created_at)
+            )
+        )
+        if plan.conflicts or plan.review_groups:
             raise ValueError("merge_destination_advanced_requires_agent")
         try:
-            if branch_merge_can_resolve_without_patch(context):
+            prepared = prepare_merge_candidate(
+                plan, MergeAnswers(answers={}, cards={}), destination
+            )
+            if not prepared.patch.ops:
                 receipt = BranchMergeReceipt(
                     outcome="no_change",
                     provenance=branch_merge_provenance(context),
@@ -362,20 +370,9 @@ def _commit_agentless_merge(tasks, service, episode, task, binding):
                     authorized_by=task.authorized_by,
                 )
             else:
-                candidate = parse_branch_merge_candidate(
-                    json.dumps({"summary": "Merge fork changes.", "ops": []}),
-                    context,
-                    deterministic_ops=ops,
-                )
-                prepare_branch_merge_with_history(
-                    destination,
-                    candidate,
-                    expected_main_head=context.main_head,
-                    context=context,
-                )
                 committed = commit_branch_merge_with_history(
                     destination,
-                    candidate,
+                    build_merge_patch(plan, MergeAnswers(answers={}, cards={})),
                     expected_main_head=context.main_head,
                 )
                 receipt = branch_merge_receipt_from_committed_patch(committed.patch)

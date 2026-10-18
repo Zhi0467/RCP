@@ -9,9 +9,12 @@ from datetime import UTC, datetime
 from pydantic import BaseModel, JsonValue
 
 from rcp.core.authority import classify_graph_changes, derived_agent_action
-from rcp.core.materialize import apply_valid_patch, prepare_patch_bookkeeping
+from rcp.core.materialize import (
+    apply_valid_patch,
+    prepare_patch_bookkeeping,
+    proposal_filing_dependency_rule,
+)
 from rcp.core.models import (
-    CURRENT_PROPOSAL_DEPENDENCY_RULE,
     GatedCard,
     GraphState,
     Patch,
@@ -254,7 +257,7 @@ def _draft(operations: Sequence[ProposalOperation]) -> Proposal:
         title="Merge review",
         card=GatedCard(),
         ops=list(operations),
-        dependency_rule=CURRENT_PROPOSAL_DEPENDENCY_RULE,
+        dependency_rule=proposal_filing_dependency_rule(len(operations), branch_merge=True),
     )
 
 
@@ -714,6 +717,7 @@ def classify_candidates(
             context.destination_graph, prefix
         ):
             groups = (tuple(range(len(admitted))), tuple(range(len(admitted), len(patch.ops))))
+        patch = prepare_patch_bookkeeping(context.destination_graph, patch)
         results = classify_graph_changes(
             context.destination_graph,
             patch,
@@ -753,7 +757,11 @@ def classify_candidates(
             update={"ops": admitted, "revision": context.destination_head.revision + 1}
         )
         patch = patch.model_copy(update={"agent_action": derived_agent_action(staged, patch)})
-        staged = GraphTransitionManager().prepare_validated(staged, [patch]).projection.graph
+        staged = (
+            GraphTransitionManager()
+            .prepare_validated(staged, [patch], pre_head=context.destination_head)
+            .projection.graph
+        )
     return tuple(direct), _connected_pending_reviews(context, staged, reviews)
 
 

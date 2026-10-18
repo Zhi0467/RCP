@@ -364,6 +364,7 @@ async def stream_branch_merge_task(
                     checks=checks,
                     start_check_turn=start_check_turn,
                     reconcile_receipt=lambda: branch.reconcile_merge_receipt(merge_id),
+                    publish_receipt=branch.write_merge_receipt,
                     outcome=outcome,
                     graph_read_scope=graph_read_scope,
                     history_client=staged_validator.client_command(),
@@ -392,7 +393,7 @@ async def stream_branch_merge_task(
             if outcome.status in {"rejected", "retryable"} and outcome.diagnostic:
                 yield _sse(AgentEvent(event="error", text=outcome.diagnostic))
             return
-        receipt = branch.write_merge_receipt(outcome.receipt)
+        receipt = outcome.receipt
         _apply_receipt_to_execution(service, execution, receipt)
         execution.store.record_agent_task_receipt(
             task.operation_id,

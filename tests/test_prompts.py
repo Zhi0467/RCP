@@ -852,6 +852,7 @@ def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
     from rcp.agents import experiment_loop_prompt as experiment
     from rcp.agents.episode_report_prompt import episode_report_task_contract
     from rcp.agents.prompts import PROVIDER_NATIVE_SUBAGENT_LIFETIME
+    from tests.test_merge_patch import make_plan
 
     builders = [
         PromptFactory.graph_task_contract,
@@ -888,9 +889,7 @@ def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
         seat_node_type="hypothesis",
         seat_node_id="hyp/example",
         seat_difficulty="standard",
-        context_id="a" * 64,
-        review_contract_json="{}",
-        residue_block="No residue.",
+        plan=make_plan(),
         ending="completed",
         partial=False,
         receipt_sha256="c" * 64,

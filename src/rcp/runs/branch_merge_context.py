@@ -3,24 +3,31 @@
 from __future__ import annotations
 
 from contextlib import suppress
+from datetime import datetime
 from typing import overload
 
-from rcp.core.models import AuthorizedHuman
+from rcp.core.authority import AgentTaskAuthority, WriteAuthority
+from rcp.core.materialize import apply_valid_patch
+from rcp.core.models import AuthorizedHuman, GraphState, Patch
+from rcp.core.operations import graph_operations_from_proposal
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history import HistoryManager
 from rcp.history.branches import BranchHistoryManager
-from rcp.history.queries import HeadSpec, HistoryEngine
+from rcp.history.queries import HeadSpec, HistoryEngine, StepRecord
 from rcp.runs.branch_merge import (
     BranchMergeContext,
     BranchMergeEligibility,
     BranchPatchSummary,
     branch_human_review_changes,
     branch_merge_receipt_from_committed_patch,
+    merge_planning_context,
 )
-from rcp.runs.branch_merge_request import MergeBinding
-from rcp.runs.task_policy import task_graph_capable
-from rcp.service import ProjectService
-from rcp.storage import AppStore, EpisodeRecord
+from rcp.runs.branch_merge_request import BranchMergeRunRequest, MergeBinding
+from rcp.runs.merge_contract import MergePlanningContext, PriorReview, merge_contract_digest
+from rcp.runs.merge_plan import compare_graphs
+from rcp.runs.task_policy import resolved_dispatch_authority, task_graph_capable
+from rcp.service import ProjectService, resolve_dispatch_authority
+from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord
 from rcp.transport import StateUnavailable
 
 
@@ -58,6 +65,169 @@ def _active_branch_writer_task_ids(
         and item.status in {"queued", "running", "pausing"}
         and task_graph_capable(item.kind, item.request)
     ]
+
+
+def preview_merge_planning_context(
+    service: ProjectService,
+    store: AppStore,
+    context: BranchMergeContext,
+    *,
+    created_at: datetime,
+) -> MergePlanningContext:
+    """Capture prospective dispatch for a read-only preview with live membership.
+
+    Preview does not persist a task or authorize publication. Its proposed task
+    uses the same dispatch policy and binding checks as admission; preparation
+    and commit still require the actual stored task's authority.
+    """
+    history = merge_history(service, context.main_head.target)
+    if store.agent_task(context.merge_task_id) is not None:
+        return merge_planning_context(context, history, created_at=created_at)
+    episode_id = (
+        None
+        if context.member_merge
+        else context.dispatcher_episode_id or context.metadata.episode_id
+    )
+    episode = store.episode(episode_id) if episode_id else None
+    if episode_id is not None and (
+        episode is None or episode.project_id != context.metadata.project_id
+    ):
+        raise ValueError("merge_dispatcher_episode_missing")
+    binding = None
+    if context.member_merge or context.dispatcher_episode_id is not None:
+        binding = MergeBinding(
+            source=context.metadata.head.target,
+            source_head=context.metadata.head,
+            destination=context.main_head.target,
+            dispatcher_episode_id=context.dispatcher_episode_id,
+            dispatcher_operation_id=episode.root_operation_id if episode else None,
+            command_key="preview" if context.dispatcher_episode_id else None,
+        )
+    profile = service.resolve_agent_profile("orchestrator")
+    request = BranchMergeRunRequest(
+        episode_id=episode_id,
+        merge_binding=binding,
+        provider=profile.provider,
+        model=profile.model,
+        reasoning=profile.reasoning,
+        run_on=profile.run_on,
+        run_truth_scope=context.run_truth_scope,
+        chat_scope="project",
+        mode="work",
+    )
+    dispatch = resolved_dispatch_authority(
+        store,
+        resolve_dispatch_authority,
+        "branch_merge",
+        request,
+        project_id=context.metadata.project_id,
+        operation_id=context.merge_task_id,
+    )
+    if binding is not None:
+        record = AgentTaskRecord(
+            operation_id=context.merge_task_id,
+            project_id=context.metadata.project_id,
+            episode_id=episode_id,
+            graph_target=context.metadata.head.target,
+            kind="branch_merge",
+            status="queued",
+            status_message="Merge preview",
+            request=request.model_dump(mode="json"),
+            created_at=created_at.isoformat(),
+            updated_at=created_at.isoformat(),
+            authorized_by=context.authorized_by,
+            dispatch_authority=dispatch,
+        )
+        with store.connection() as connection:
+            store._require_merge_binding(connection, record)
+    prospective = AgentTaskAuthority(
+        operation_id=context.merge_task_id,
+        project_id=context.metadata.project_id,
+        apply_target=context.main_head.target,
+        authorized_by=context.authorized_by,
+        episode_id=episode_id,
+        dispatch_authority=dispatch,
+        merge_source=binding.source if binding else None,
+        merge_dispatcher=("member" if context.member_merge else "orchestrator")
+        if binding
+        else None,
+    )
+
+    def resolve(project_id: str, operation_id: str) -> AgentTaskAuthority:
+        if project_id != prospective.project_id or operation_id != prospective.operation_id:
+            raise KeyError(operation_id)
+        return prospective
+
+    owner = history.parent if isinstance(history, BranchHistoryManager) else history
+    authority = WriteAuthority(
+        agent_authority_resolver=resolve,
+        project_membership_check=owner.write_authority.project_membership_check,
+    )
+    return merge_planning_context(context, history, created_at=created_at, authority=authority)
+
+
+def _prior_merge_reviews(
+    engine: HistoryEngine,
+    steps: list[StepRecord],
+    destination: GraphState,
+    *,
+    source: GraphTargetRef,
+    target: GraphTargetRef,
+) -> tuple[PriorReview, ...]:
+    """Recover review ownership from accepted canonical filings, never id prefixes.
+
+    A merge also carries source Proposals unchanged. Their exact source snapshot
+    distinguishes them from reviews that the merge itself filed. Subjects describe
+    the filed effect, omitting any cancelled/no-op members of the original plan;
+    neither task artifacts nor historical planning authority are needed to read it.
+    """
+    reviews = []
+    for step in steps:
+        provenance = step.patch.branch_merge
+        if (
+            not step.accepted
+            or provenance is None
+            or provenance.branch_head.target != source
+            or provenance.rebased_main_head.target != target
+            or step.after_head.target != target
+        ):
+            continue
+        source_proposals = engine.state_at(provenance.branch_head).proposals
+        for operation in step.patch.ops:
+            if operation.op != "create_proposals":
+                continue
+            for filed in operation.proposals:
+                live = destination.proposals.get(filed.id)
+                if live is None or filed.id in source_proposals:
+                    continue
+                proposed = apply_valid_patch(
+                    step.after_state,
+                    Patch(
+                        kind="approval",
+                        author="human",
+                        producer="human",
+                        summary="Inspect canonical merge review",
+                        revision=step.after_state.revision + 1,
+                        created_at=step.patch.created_at,
+                        ops=graph_operations_from_proposal(filed.ops),
+                    ),
+                )
+                changes, _ = compare_graphs(step.after_state, proposed, step.after_state)
+                subjects = sorted(
+                    {(change.collection, change.entity_id) for change in changes},
+                    key=lambda item: (item[0], item[1] or ""),
+                )
+                reviews.append(
+                    PriorReview(
+                        subject_key=merge_contract_digest(subjects),
+                        proposal=live,
+                        provenance=provenance,
+                        effect_digest=merge_contract_digest(
+                            [op.model_dump(mode="json", exclude_unset=True) for op in filed.ops]
+                        ),
+                    )
+                )
+    return tuple(reviews)
 
 
 def load_branch_merge_context(
@@ -115,6 +285,7 @@ def load_branch_merge_context(
     merge_truth_scope = sorted(set(main_graph.project_truth_scope))
     steps = engine.steps(branch_head)
     base_graph = engine.state_at(metadata.effective_parent_head)
+    destination_steps = engine.steps(main_head)
     receipts = [
         *(
             receipt
@@ -123,7 +294,7 @@ def load_branch_merge_context(
         ),
         *(
             branch_merge_receipt_from_committed_patch(step.patch)
-            for step in engine.steps(main_head)
+            for step in destination_steps
             if step.accepted
             and step.patch.branch_merge is not None
             and step.patch.branch_merge.branch_id == metadata.branch_id
@@ -164,6 +335,9 @@ def load_branch_merge_context(
         ),
         previous_merge_receipt=previous_receipt,
         previous_branch_graph=previous_graph,
+        prior_reviews=_prior_merge_reviews(
+            engine, destination_steps, main_graph, source=source, target=destination
+        ),
         branch_patch_summaries=[
             BranchPatchSummary(
                 revision=step.patch.revision,

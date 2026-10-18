@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import cache
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, Protocol, cast
+from typing import Any, Literal, Protocol
 
 from pydantic import (
     BaseModel,
@@ -46,11 +46,10 @@ from rcp.agents.graph_rules import graph_rules
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.prompts import graph_read_contract
 from rcp.agents.write_scope import ProjectWriteScope
-from rcp.config import Manifest
 from rcp.core.authority import (
+    WriteAuthority,
     capture_change_authority,
 )
-from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import (
     AuthorizedHuman,
     BranchMergeProvenance,
@@ -342,10 +341,6 @@ class BranchMergeSourceChanged(ValueError):
 
 
 class _BranchMergeHistory(Protocol):
-    manifest: Manifest
-
-    def validate_candidate(self, patch: Patch) -> tuple[Patch, Any, GraphState]: ...
-
     def append(
         self, patch: Patch, *, discard_on_reject: bool, expected_revision: int
     ) -> tuple[Patch, Any]: ...
@@ -564,6 +559,7 @@ def merge_planning_context(
     history: HistoryManager | BranchHistoryManager,
     *,
     created_at: datetime,
+    authority: WriteAuthority | None = None,
 ) -> MergePlanningContext:
     """Capture live dispatch authority for exact loaded snapshots and a fixed timestamp.
 
@@ -594,10 +590,9 @@ def merge_planning_context(
     captured = capture_change_authority(
         context.main_graph,
         template,
-        authority=authority_owner.write_authority,
+        authority=authority or authority_owner.write_authority,
         project_id=authority_owner.project_id,
         apply_target=context.main_head.target,
-        authorized_by=context.authorized_by,
     )
     return MergePlanningContext(
         context_id=context.context_id,
@@ -621,44 +616,6 @@ def merge_planning_context(
         prior_reviews=context.prior_reviews,
         preparation_contract=MergePreparationContract.model_validate(
             context.transition_contract.model_dump(mode="python")
-        ),
-    )
-
-
-def prepare_branch_merge_with_history(
-    history: _BranchMergeHistory,
-    candidate: Patch,
-    *,
-    expected_main_head: GraphHeadRef,
-    context: BranchMergeContext,
-) -> PreparedTransition:
-    """Run HistoryManager's authoritative validation/transition preparation without writing."""
-
-    try:
-        prepared, report, current = history.validate_candidate(candidate)
-    except PatchRejected as exc:
-        raise BranchMergeSemanticConflict(str(exc)) from exc
-    if current.revision != expected_main_head.revision:
-        raise RevisionConflict(
-            f"main moved from revision {expected_main_head.revision} to {current.revision}"
-        )
-    if getattr(report, "rejected", False):
-        diagnostic, conflicts, details = _validation_diagnostic(report)
-        raise BranchMergeSemanticConflict(diagnostic, conflicts=conflicts, diagnostics=details)
-    _require_prepared_provenance(prepared, candidate, expected_main_head)
-    assert prepared.transition is not None
-    try:
-        graph = apply_valid_patch(current, prepared)
-    except (AttributeError, KeyError, TypeError, ValueError) as exc:
-        raise BranchMergeSemanticConflict(
-            f"Prepared branch merge operations could not be applied atomically: {exc}"
-        ) from exc
-    return PreparedTransition(
-        patch=prepared,
-        projection=project_transition_projection(
-            graph,
-            prepared.transition,
-            canonical=False,
         ),
     )
 
@@ -812,6 +769,7 @@ async def stream_branch_merge_run(
     max_main_rebases: int = MAX_BRANCH_MERGE_REBASE_ROUNDS,
     before_commit: Callable[[], None] | None = None,
     reconcile_receipt: Callable[[], BranchMergeReceipt | None] | None = None,
+    publish_receipt: Callable[[BranchMergeReceipt], BranchMergeReceipt] | None = None,
     code_block: str = "",
     code_roots: list[str] | None = None,
     code_landed: bool = False,
@@ -1040,9 +998,7 @@ async def stream_branch_merge_run(
                 outcome.rebased_main_head = plan.destination_head
                 continue
 
-            outcome.prepared = merge_contract.prepare_merge_candidate(
-                plan, answers, cast(HistoryManager, main_history)
-            )
+            outcome.prepared = merge_contract.prepare_merge_candidate(plan, answers, main_history)
             if before_commit is not None:
                 before_commit()
             if not outcome.prepared.patch.ops:
@@ -1059,7 +1015,7 @@ async def stream_branch_merge_run(
                 try:
                     outcome.committed = commit_branch_merge_with_history(
                         main_history,
-                        outcome.prepared.patch,
+                        merge_contract.build_merge_patch(plan, answers),
                         expected_main_head=plan.destination_head,
                     )
                     outcome.receipt = branch_merge_receipt_from_committed_patch(
@@ -1075,6 +1031,14 @@ async def stream_branch_merge_run(
                     if outcome.receipt is None:
                         raise
                 outcome.status = "committed" if outcome.receipt.outcome == "committed" else "noop"
+            if publish_receipt is not None:
+                try:
+                    outcome.receipt = publish_receipt(outcome.receipt)
+                except (OSError, StateUnavailable):
+                    outcome.receipt = reconcile_receipt() if reconcile_receipt is not None else None
+                    if outcome.receipt is None:
+                        raise
+            outcome.status = "committed" if outcome.receipt.outcome == "committed" else "noop"
             outcome.result_main_head = outcome.receipt.result_main_head
             yield _sse(AgentEvent(event="done"))
             return
@@ -1093,6 +1057,8 @@ async def stream_branch_merge_run(
             checks.set_plan(plan, turn_id=checks.turn_id)
         except RevisionConflict:
             outcome.prepared = None
+            outcome.receipt = None
+            outcome.status = "pending"
             if classify_refreshed_context(context, load_context()) == "unchanged":
                 outcome.status = "retryable"
                 outcome.diagnostic = (
@@ -1102,6 +1068,7 @@ async def stream_branch_merge_run(
                 return
             # The next iteration rebuilds the plan before preparing or appending.
         except (OSError, StateUnavailable, TimeoutError, ValueError) as exc:
+            outcome.receipt = None
             outcome.status = "rejected" if isinstance(exc, ValueError) else "retryable"
             outcome.diagnostic = str(exc)
             yield _sse(AgentEvent(event="error", text=outcome.diagnostic))
@@ -1186,7 +1153,7 @@ async def stream_code_merge_run(
     binary: str | None = None,
     hidden_read_scope: HiddenReadScope | None = None,
 ) -> AsyncGenerator[str, None]:
-    """Run one code merge turn with no graph residue, then RCP verifies the landing."""
+    """Run one code merge turn with no graph questions, then RCP verifies the landing."""
 
     if request.provider is None or request.run_on is None:
         raise ValueError("branch merge request must have a pinned provider and execution machine")

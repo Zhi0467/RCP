@@ -730,7 +730,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         )
 
     def reserve_branch_merge_invocation(self, operation_id: str) -> AgentTaskRecord:
-        """Reserve judgment once if destination advancement gives a clean merge residue."""
+        """Reserve judgment once if the plan needs conflict answers or review cards."""
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
