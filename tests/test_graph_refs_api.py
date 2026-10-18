@@ -598,19 +598,17 @@ def _admit_fork_experiment(app, store, project_id, target, node_id):
 
 
 @pytest.mark.parametrize("destination_kind", ["main", "branch"])
-@pytest.mark.parametrize("residue", [False, True])
+@pytest.mark.parametrize("conflict", [False, True])
 def test_human_fork_merge_uses_parent_without_episode_or_budget(
-    manifest, tmp_path, monkeypatch, destination_kind, residue
+    manifest, tmp_path, monkeypatch, destination_kind, conflict
 ):
-    import json
-
     from rcp.agents.hidden_read import host_facts
     from rcp.core.models import Patch
     from rcp.history import HistoryManager
     from rcp.runs.branch_merge_admission import recover_branch_merge_task
 
     from .helpers import unchecked_write_authority, wait_for_task
-    from .test_branch_merge_api import _PatchWritingLauncher
+    from .test_branch_merge_api import _AnswersWritingLauncher
 
     harness = _create_branch_harness(manifest, tmp_path, change="none")
     monkeypatch.setattr(
@@ -665,7 +663,7 @@ def test_human_fork_merge_uses_parent_without_episode_or_budget(
         ops=operations,
     )
     source.append(Patch.model_validate(payload))
-    if residue:
+    if conflict:
         destination.append(
             Patch.model_validate(
                 {
@@ -686,14 +684,41 @@ def test_human_fork_merge_uses_parent_without_episode_or_budget(
         return next(row for row in harness.client.get(refs).json() if row["branch_id"] == fork_id)
 
     assert fork_row()["merge_eligible"] is True
-    launcher = _PatchWritingLauncher(json.dumps({"summary": "Resolve fork", "ops": operations}))
+    launcher = _AnswersWritingLauncher()
     monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
     before = harness.store.episode_budget_meter(harness.episode.episode_id)
     request = {"request_id": str(uuid.uuid4())}
     route = f"{refs}/{fork_id}/merge"
-    if destination_kind == "branch" and not residue:
+    before_preview_tasks = harness.store.agent_tasks(harness.project_id)
+    before_preview_head = destination.head_ref()
+    preview_response = harness.client.get(route + "-preview")
+    assert preview_response.status_code == 200, preview_response.text
+    preview = preview_response.json()
+    assert preview["needs_agent"] is conflict
+    assert set(preview["graph"]) == {"direct", "conflicts", "reviews", "paths"}
+    assert preview["graph"]["conflicts"] == int(conflict)
+    [title_path] = [path for path in preview["graph"]["paths"] if path["field_path"] == "title"]
+    assert set(title_path) == {
+        "entity",
+        "id",
+        "field_path",
+        "base",
+        "branch",
+        "main",
+        "delivered",
+        "conflict",
+        "needs_agent",
+        "needs_proposal",
+    }
+    assert title_path["branch"] == "Fork choice"
+    assert title_path["main"] == ("Parent choice" if conflict else "Merge gate")
+    assert title_path["conflict"] is conflict
+    assert harness.store.agent_tasks(harness.project_id) == before_preview_tasks
+    assert destination.head_ref() == before_preview_head
+    assert not source.merge_receipts()
+    if destination_kind == "branch" and not conflict:
 
-        def crash_before_receipt(*_args):
+        def crash_before_receipt(*_args, **_kwargs):
             raise OSError("Injected crash after destination commit")
 
         with monkeypatch.context() as crash:
@@ -715,7 +740,7 @@ def test_human_fork_merge_uses_parent_without_episode_or_budget(
     binding = task.request["merge_binding"]
     assert isinstance(binding, dict)
     assert binding["destination"] == parent.target.model_dump(mode="json")
-    assert launcher.calls == int(residue)
+    assert launcher.calls == int(conflict)
     assert harness.store.episode_budget_meter(harness.episode.episode_id) == before
     assert destination.state().nodes["blk/merge-ready"].title == "Fork choice"
     head = destination.head_ref()

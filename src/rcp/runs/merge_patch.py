@@ -41,6 +41,7 @@ from rcp.core.transition_models import TransitionTrace
 from rcp.core.transitions import (
     TRANSITION_RULESET_TAG,
     PreparedTransition,
+    current_project_projection,
     project_transition_projection,
     transition_trigger_manifest,
 )
@@ -75,7 +76,7 @@ from rcp.runs.merge_contract import (
 )
 
 if TYPE_CHECKING:
-    from rcp.history import HistoryManager
+    from rcp.runs.merge_contract import MergeHistory
 
 Coordinate = tuple[str, str | None, str | None]
 _OPERATION = TypeAdapter(GraphOperation)
@@ -323,8 +324,11 @@ def _retirement_operation(identity: str, edge: dict[str, Any]) -> dict[str, Any]
 
 
 def construct_effects(
-    plan: MergePlan, selected: dict[Coordinate, MergeValue], flags: list[ValidationMessage]
+    plan: MergePlan,
+    selected: dict[Coordinate, MergeValue],
+    flags: list[ValidationMessage] | None = None,
 ) -> list[_Effect]:
+    flags = flags if flags is not None else []
     documents = _documents(plan, selected)
     creates: list[_Effect] = []
     edges: list[_Effect] = []
@@ -756,11 +760,7 @@ def build_merge_patch(plan: MergePlan, answers: MergeAnswers) -> Patch:
         old_ops: list[ProposalOperation] = []
         for identity in sorted(group.replaces_proposal_ids):
             prior = next(
-                (
-                    review
-                    for review in plan.prior_reviews
-                    if review.proposal.id == identity and review.subject_key == group.subject_key
-                ),
+                (review for review in plan.prior_reviews if review.proposal.id == identity),
                 None,
             )
             live = plan.destination_graph.proposals.get(identity)
@@ -857,7 +857,7 @@ def _reject_preparation(plan: MergePlan, messages: Iterable[ValidationMessage]) 
 
 
 def prepare_merge_candidate(
-    plan: MergePlan, answers: MergeAnswers, history: HistoryManager
+    plan: MergePlan, answers: MergeAnswers, history: MergeHistory
 ) -> PreparedTransition:
     """The single dry preparation for check and commit; never appends history."""
     _check_plan(plan)
@@ -878,11 +878,6 @@ def prepare_merge_candidate(
         raise RevisionConflict("Merge destination moved during preparation; rebuild the plan")
     if report.rejected:
         _reject_preparation(plan, report.messages)
-    if prepared.transition is None:
-        _refuse("missing-merge-transition", "History did not prepare a transition")
-    trace = prepared.transition
-    if trace.pre_head != plan.destination_head:
-        raise RevisionConflict("Merge destination head differs from the prepared transition")
     if prepared.branch_merge != plan.provenance or prepared.authorized_by != plan.authorized_by:
         _refuse(
             "merge-preparation-binding-changed",
@@ -893,6 +888,22 @@ def prepare_merge_candidate(
         if diagnostic not in messages:
             messages.append(diagnostic)
     prepared = prepared.model_copy(update={"admission_messages": messages})
+    if not prepared.ops:
+        if history.head_ref() != plan.destination_head:
+            raise RevisionConflict("Merge destination moved during no-change preparation")
+        return PreparedTransition(
+            patch=prepared,
+            projection=current_project_projection(
+                current,
+                target=plan.destination_head.target,
+                transition_id=plan.destination_head.transition_id,
+            ).model_copy(update={"canonical": False, "base_head": plan.destination_head}),
+        )
+    if prepared.transition is None:
+        _refuse("missing-merge-transition", "History did not prepare a transition")
+    trace = prepared.transition
+    if trace.pre_head != plan.destination_head:
+        raise RevisionConflict("Merge destination head differs from the prepared transition")
     graph = apply_valid_patch(current, prepared)
     return PreparedTransition(
         patch=prepared,

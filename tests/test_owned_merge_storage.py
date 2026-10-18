@@ -161,12 +161,11 @@ def test_owned_merge_admission_refuses_invalid_destination_or_dispatcher(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("residue", [False, True])
+@pytest.mark.parametrize("conflict", [False, True])
 async def test_owned_merge_delivers_to_parent_and_reuses_key(
-    manifest, tmp_path, monkeypatch, residue
+    manifest, tmp_path, monkeypatch, conflict
 ):
     import asyncio
-    import json
     from unittest.mock import Mock
 
     import rcp.runs.tasks.branch_merge as merge_task
@@ -176,7 +175,7 @@ async def test_owned_merge_delivers_to_parent_and_reuses_key(
     from rcp.runs.branch_merge_admission import start_owned_branch_merge
 
     from .helpers import unchecked_write_authority, wait_for_task
-    from .test_branch_merge_api import _PatchWritingLauncher
+    from .test_branch_merge_api import _AnswersWritingLauncher
 
     monkeypatch.setattr("rcp.rcp_home.rcp_home", lambda: tmp_path / "rcp-home")
     monkeypatch.setattr(
@@ -220,7 +219,7 @@ async def test_owned_merge_delivers_to_parent_and_reuses_key(
             )
         )
     )
-    if residue:
+    if conflict:
         destination.append(
             Patch.model_validate(
                 dict(
@@ -240,7 +239,7 @@ async def test_owned_merge_delivers_to_parent_and_reuses_key(
                 )
             )
         )
-    launcher = _PatchWritingLauncher(json.dumps({"summary": "Resolve fork", "ops": ops}))
+    launcher = _AnswersWritingLauncher()
     monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
     # This test exercises merge dispatch and Apply; delivery wakes have independent coverage.
     monkeypatch.setattr(harness.app.state.background_tasks, "on_task_settled", None)
@@ -265,15 +264,15 @@ async def test_owned_merge_delivers_to_parent_and_reuses_key(
         command_key="deliver",
     )
     assert replay["operation_id"] == task.operation_id
-    if residue:
+    if conflict:
         scope = stream.call_args.kwargs["graph_read_scope"]
         assert not scope.readable(
             harness.project_id, harness.branch.graph_target, harness.branch.head_ref().revision + 1
         )
-    assert launcher.calls == int(residue)
+    assert launcher.calls == int(conflict)
     assert harness.store.episode_budget_meter(
         harness.episode.episode_id
-    ).invocations_used == before + int(residue)
+    ).invocations_used == before + int(conflict)
     assert destination.state().nodes["blk/merge-ready"].title == "Fork choice"
     assert harness.service.history.state().nodes["blk/merge-ready"].title == "Merge gate"
     receipt = source.reconcile_merge_receipt(source.merge_receipts()[0].provenance.merge_id)

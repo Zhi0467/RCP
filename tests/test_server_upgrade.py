@@ -11,6 +11,7 @@ import shutil
 import sqlite3
 import subprocess
 from contextlib import chdir
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -402,11 +403,11 @@ def test_release_update_from_every_published_release_validates(
 def _assert_old_branch_merge_validates(live, branch_id: str) -> None:
     """The candidate's merge self-check accepts a branch the old release populated."""
     from rcp.core.transition_models import GraphTargetRef
-    from rcp.runs.branch_merge import build_deterministic_merge_ops
+    from rcp.runs.branch_merge import merge_planning_context
     from rcp.runs.branch_merge_admission import start_branch_merge
     from rcp.runs.branch_merge_context import load_branch_merge_context
     from rcp.runs.branch_merge_request import BranchMergeRunRequest
-    from rcp.runs.tasks.branch_merge import _validate_candidate
+    from rcp.runs.merge_contract import MergeAnswers, plan_merge, prepare_merge_candidate
     from rcp.storage import EpisodeRecord
 
     (card,) = live.state.catalog.cards()
@@ -458,23 +459,19 @@ def _assert_old_branch_merge_validates(live, branch_id: str) -> None:
         )
 
     context = load_context()
-    _ops, residue = build_deterministic_merge_ops(context)
-    # The node change merges deterministically; the agent carries the Proposal.
-    assert {path[0] for path in residue} == {"proposals"}
-    agent_ops = [
-        {
-            "op": "create_proposals",
-            "proposals": [
-                proposal.model_dump(mode="json", include={"id", "title", "card", "ops"})
-                for proposal in context.branch_graph.proposals.values()
-                if proposal.id not in context.base_graph.proposals
-            ],
-        }
-    ]
-    text = json.dumps({"summary": "Carry the branch.", "ops": agent_ops, "repositories_read": []})
-
-    result = _validate_candidate(service, load_context, text)
-    assert result.status == "valid", result.messages
+    plan = plan_merge(
+        merge_planning_context(
+            context, service.history, created_at=datetime.fromisoformat(store.now())
+        )
+    )
+    assert not plan.conflicts
+    assert not plan.review_groups
+    assert any(change.collection == "proposals" for change in plan.direct_changes)
+    prepared = prepare_merge_candidate(plan, MergeAnswers(answers={}, cards={}), service.history)
+    assert prepared.patch.transition is not None
+    source_ids = set(context.branch_graph.proposals) - set(context.base_graph.proposals)
+    assert source_ids
+    assert source_ids <= set(prepared.projection.graph.proposals)
 
 
 def _exercise_candidate_upgrade(

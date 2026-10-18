@@ -6,7 +6,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -194,9 +194,7 @@ class MergeAnswersCheck:
         answers = None
         try:
             answers = MergeAnswers.model_validate_json(request.arguments.answers)
-            merge_contract.prepare_merge_candidate(
-                plan, answers, cast("HistoryManager", self.history)
-            )
+            merge_contract.prepare_merge_candidate(plan, answers, self.history)
         except (
             ValidationError,
             MergeAnswersRejected,

@@ -71,6 +71,7 @@ from rcp.runs.episodes.merge import (
     CleanupEpisodeBody,
     MergeEpisodeBody,
     MergePreview,
+    branch_merge_preview,
     cleanup_episode,
     merge_episode,
     merge_owner,
@@ -248,6 +249,35 @@ def fork_graph_branch(
         raise HTTPException(
             status_code=422, detail={"code": "branch_fork_invalid", "message": str(exc)}
         ) from exc
+
+
+@router.get(
+    "/api/projects/{project_id}/graph-refs/{branch_id}/merge-preview",
+    response_model=MergePreview,
+)
+def graph_branch_merge_preview(
+    project_id: str,
+    branch_id: str,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> MergePreview:
+    actor = identity_access.require_patch_capable_identity(request)
+    try:
+        return branch_merge_preview(
+            get_project_service(catalog, project_id),
+            store,
+            branch_id,
+            authorized_by=actor,
+        )
+    except StateUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail={"code": "branch_source_not_found"}) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=_merge_refusal(exc)) from exc
 
 
 class MergeBranchBody(BaseModel):

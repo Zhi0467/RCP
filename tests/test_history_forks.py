@@ -363,6 +363,173 @@ def test_no_change_fork_receipt_suppresses_later_destination_append(history):
     assert "ev/duplicate" not in destination.state().nodes
 
 
+@pytest.mark.parametrize("parent_branch", [False, True])
+def test_first_no_change_receipt_checks_destination_after_acquiring_append_lock(
+    history, monkeypatch, parent_branch
+):
+    from contextlib import contextmanager
+
+    from rcp.core.models import BranchMergeProvenance, BranchMergeReceipt
+    from rcp.history import RevisionConflict
+    from rcp.runs.branch_merge import branch_merge_id
+
+    destination = (
+        history.create_branch(fork_metadata(history, history.head_ref()))
+        if parent_branch
+        else history
+    )
+    source = history.create_branch(fork_metadata(history, destination.head_ref()))
+    metadata = source.branch_metadata()
+    expected = destination.head_ref()
+    receipt = BranchMergeReceipt(
+        outcome="no_change",
+        provenance=BranchMergeProvenance(
+            merge_id=branch_merge_id(metadata),
+            branch_id=metadata.branch_id,
+            episode_id=metadata.episode_id,
+            branch_base_head=metadata.effective_parent_head,
+            branch_head=metadata.head,
+            rebased_main_head=expected,
+            merge_task_id="no-change-race",
+        ),
+        result_main_head=expected,
+        authorized_by=metadata.authorized_by,
+    )
+    original_lock = history._append_lock
+
+    @contextmanager
+    def moved_before_lock():
+        monkeypatch.setattr(history, "_append_lock", original_lock)
+        destination.append(_branch_patch("ev/concurrent"))
+        with original_lock():
+            yield
+
+    monkeypatch.setattr(history, "_append_lock", moved_before_lock)
+    # Main's public writer delegates to the same guarded source-branch writer.
+    writer = source.write_merge_receipt if parent_branch else history.write_merge_receipt
+    with pytest.raises(RevisionConflict):
+        writer(receipt)
+    assert source.merge_receipts() == []
+
+    current = destination.head_ref()
+    fresh = receipt.model_copy(
+        update={
+            "provenance": receipt.provenance.model_copy(update={"rebased_main_head": current}),
+            "result_main_head": current,
+        }
+    )
+    assert writer(fresh) == fresh
+    retained_bytes = (source.merges_dir / f"{fresh.provenance.merge_id}.json").read_bytes()
+    destination.append(_branch_patch("ev/later"))
+    assert writer(fresh) == fresh
+    assert source.validated_merge_receipts() == [fresh]
+    assert (source.merges_dir / f"{fresh.provenance.merge_id}.json").read_bytes() == retained_bytes
+
+
+@pytest.mark.parametrize("parent_branch", [False, True])
+@pytest.mark.parametrize("revoked", ["membership", "task"])
+def test_no_change_dry_preparation_preserves_head_and_checks_live_authority(
+    history, parent_branch, revoked
+):
+    from datetime import UTC, datetime
+
+    from rcp.core.authority import (
+        AgentAuthorizerDeparted,
+        AgentDispatchAuthority,
+        AgentDispatchScope,
+        AgentTaskAuthority,
+        AgentTaskAuthorityRefused,
+        WriteAuthority,
+    )
+    from rcp.runs.branch_merge import (
+        BranchMergeContext,
+        BranchMergeEligibility,
+        merge_planning_context,
+    )
+    from rcp.runs.merge_contract import (
+        MergeAnswers,
+        MergeRefused,
+        build_merge_patch,
+        plan_merge,
+        prepare_merge_candidate,
+    )
+
+    destination = (
+        history.create_branch(fork_metadata(history, history.head_ref()))
+        if parent_branch
+        else history
+    )
+    source = history.create_branch(fork_metadata(history, destination.head_ref()))
+    metadata = source.branch_metadata()
+    state = destination.state()
+    head = destination.head_ref()
+    task = AgentTaskAuthority(
+        operation_id="empty-merge",
+        project_id=metadata.project_id,
+        apply_target=destination.graph_target,
+        authorized_by=metadata.authorized_by,
+        dispatch_authority=AgentDispatchAuthority(
+            profile="orchestrator",
+            task_contract="orchestrate",
+            scope=AgentDispatchScope(run_truth_scope=state.project_truth_scope, patch_kind="work"),
+        ),
+        merge_source=source.graph_target,
+        merge_dispatcher="member",
+    )
+    live = {"membership": True, "task": True}
+
+    def resolve_task(_project_id, operation_id):
+        if not live["task"]:
+            raise KeyError(operation_id)
+        return task
+
+    history.project_id = metadata.project_id
+    history.write_authority = WriteAuthority(
+        agent_authority_resolver=resolve_task,
+        project_membership_check=lambda _project_id, _user_id: live["membership"],
+    )
+    context = BranchMergeContext.create(
+        merge_task_id=task.operation_id,
+        authorized_by=metadata.authorized_by,
+        metadata=metadata,
+        eligibility=BranchMergeEligibility(branch_head=metadata.head),
+        base_graph=source.base_state(),
+        branch_graph=source.state(),
+        main_head=head,
+        main_graph=state,
+        run_truth_scope=state.project_truth_scope,
+        member_merge=True,
+    )
+    plan = plan_merge(merge_planning_context(context, destination, created_at=datetime.now(UTC)))
+    answers = MergeAnswers(answers={}, cards={})
+    candidate = build_merge_patch(plan, answers)
+    retained = {path: path.read_bytes() for path in history.root.rglob("*.json") if path.is_file()}
+
+    validated, report, current = destination.validate_candidate(candidate)
+    assert not report.rejected
+    assert validated.ops == [] and validated.transition is None
+    assert current == state
+    prepared = prepare_merge_candidate(plan, answers, destination)
+    assert prepared.patch.ops == [] and prepared.patch.transition is None
+    assert prepared.projection.graph == state
+    assert prepared.projection.head == head
+    assert prepared.projection.base_head == head
+    assert prepared.projection.canonical is False
+
+    live[revoked] = False
+    refusal = AgentAuthorizerDeparted if revoked == "membership" else AgentTaskAuthorityRefused
+    with pytest.raises(refusal):
+        destination.validate_candidate(candidate)
+    with pytest.raises(MergeRefused) as rejected:
+        prepare_merge_candidate(plan, answers, destination)
+    assert rejected.value.diagnostics[0].code == refusal.code
+    assert destination.head_ref() == head
+    assert source.merge_receipts() == []
+    assert {
+        path: path.read_bytes() for path in history.root.rglob("*.json") if path.is_file()
+    } == retained
+
+
 def test_interrupted_fork_initialization_retries_with_leftover_directory(history, monkeypatch):
     from rcp.history.branches import BranchHistoryManager
 

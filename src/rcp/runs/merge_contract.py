@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import TYPE_CHECKING, Annotated, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Literal, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
@@ -28,7 +28,16 @@ from rcp.core.validation.proposals import ProposalDependenciesAndEffects
 
 if TYPE_CHECKING:
     from rcp.core.transitions import PreparedTransition
-    from rcp.history import HistoryManager
+    from rcp.core.validation import ValidationReport
+
+
+class MergeHistory(Protocol):
+    """The dry preparation operations shared by main and branch history owners."""
+
+    def head_ref(self) -> GraphHeadRef: ...
+
+    def validate_candidate(self, patch: Patch) -> tuple[Patch, ValidationReport, GraphState]: ...
+
 
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 Collection = Literal[
@@ -180,7 +189,7 @@ class ReviewGroup(_MergeModel):
     The run loop reuses card prose on rebase only when the new group's digest
     equals the old one. Recompute footprints after answers change effects; never
     infer dependencies in the merge layer. Unfiled footprint drafts
-    explicitly use CURRENT_PROPOSAL_DEPENDENCY_RULE; Proposal's default retains
+    use core's filing-rule selector; Proposal's default retains
     historical rule 1 and must not be used for a new review.
     """
 
@@ -225,7 +234,7 @@ class MergePreparationContract(_MergeModel):
 
 
 class MergePlanningContext(_MergeModel):
-    """Loader's closed input to pure planning, replacing old derived delta/residue data.
+    """Loader's closed input to pure planning, bound to canonical source and destination snapshots.
 
     The loader captures live authority with capture_change_authority using an empty
     Patch template, exact source/destination heads and immutable snapshots. Both
@@ -500,7 +509,7 @@ def build_merge_patch(plan: MergePlan, answers: MergeAnswers) -> Patch:
 
 
 def prepare_merge_candidate(
-    plan: MergePlan, answers: MergeAnswers, history: HistoryManager
+    plan: MergePlan, answers: MergeAnswers, history: MergeHistory
 ) -> PreparedTransition:
     """Slice 3 adapter, used identically by slice 4 check and locked commit.
 

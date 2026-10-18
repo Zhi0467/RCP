@@ -302,6 +302,7 @@ class _Run:
         self.before_commit = None
         self.reconcile = None
         monkeypatch.setattr(merge_contract, "prepare_merge_candidate", self.prepare)
+        monkeypatch.setattr(merge_contract, "build_merge_patch", self.build)
         monkeypatch.setattr(merge_contract, "plan_merge", lambda context: self.next_plan)
         monkeypatch.setattr(merge_module, "merge_planning_context", lambda *args, **kwargs: args[0])
         monkeypatch.setattr(merge_module, "commit_branch_merge_with_history", self.commit)
@@ -320,7 +321,10 @@ class _Run:
         self.preparations.append((plan, answers, history))
         if self.prepare_behavior is not None:
             self.prepare_behavior(plan, answers)
-        patch = plan.captured_authority.patch_template.model_copy(
+        return SimpleNamespace(patch=self.build(plan, answers))
+
+    def build(self, plan, answers):
+        return plan.captured_authority.patch_template.model_copy(
             update={
                 "ops": [
                     UpdateNodesOperation(
@@ -337,7 +341,6 @@ class _Run:
                 else [],
             }
         )
-        return SimpleNamespace(patch=patch)
 
     def commit(self, history, patch, **kwargs):
         self.commits.append((patch, kwargs))
@@ -682,6 +685,79 @@ async def test_destination_movement_before_empty_settlement_replans(tmp_path, mo
     assert run.outcome.status == "noop"
     assert run.outcome.receipt.result_main_head == run.context.main_head
     assert run.outcome.rebase_rounds == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("keeps_moving", [False, True])
+async def test_no_change_publication_race_rebases_without_retaining_stale_receipt(
+    tmp_path, monkeypatch, keeps_moving
+):
+    run = _Run(tmp_path, monkeypatch, nonempty=False)
+    attempts = []
+    published = []
+
+    def publish(receipt):
+        attempts.append(receipt)
+        if len(attempts) == 1:
+            run.move()
+            raise RevisionConflict("destination moved under publication lock")
+        if keeps_moving:
+            run.context = run.initial
+            raise RevisionConflict("destination moved again under publication lock")
+        published.append(receipt)
+        return receipt
+
+    await run.run(publish_receipt=publish, max_main_rebases=1)
+
+    assert len(attempts) == 2
+    assert attempts[0].result_main_head != attempts[1].result_main_head
+    assert run.outcome.rebase_rounds == 1
+    assert run.commits == []
+    assert run.launches == []
+    if keeps_moving:
+        assert run.outcome.status == "retryable"
+        assert run.outcome.receipt is None
+        assert run.outcome.result_main_head is None
+        assert published == []
+    else:
+        assert run.outcome.status == "noop"
+        assert run.outcome.receipt == published[0]
+        assert run.outcome.result_main_head == run.context.main_head
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("canonical_outcome", [None, "no_change", "committed"])
+async def test_receipt_publication_failure_requires_canonical_confirmation(
+    tmp_path, monkeypatch, canonical_outcome
+):
+    run = _Run(tmp_path, monkeypatch, nonempty=False)
+    attempted = []
+    committed = run.receipt(run.plan.captured_authority.patch_template)
+
+    def publish(receipt):
+        attempted.append(receipt)
+        raise OSError("Receipt publication acknowledgment lost")
+
+    def reconcile():
+        if canonical_outcome is None:
+            return None
+        if canonical_outcome == "committed":
+            return committed
+        return attempted[0]
+
+    run.reconcile = reconcile
+    await run.run(publish_receipt=publish)
+
+    assert len(attempted) == 1
+    assert run.commits == []
+    if canonical_outcome is None:
+        assert run.outcome.status == "retryable"
+        assert run.outcome.receipt is None
+        assert run.outcome.result_main_head is None
+    else:
+        assert run.outcome.status == ("noop" if canonical_outcome == "no_change" else "committed")
+        assert run.outcome.receipt == reconcile()
+        assert run.outcome.result_main_head == run.outcome.receipt.result_main_head
 
 
 @pytest.mark.asyncio

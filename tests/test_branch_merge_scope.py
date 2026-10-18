@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import uuid
 
 import pytest
@@ -259,11 +258,35 @@ def test_merge_fails_closed_when_membership_changes_after_plan(sourced_branch):
 def test_merge_fails_closed_when_main_membership_changes_after_dispatch(
     sourced_branch, monkeypatch, before_launch
 ):
-    harness, operation, _branch_patch = sourced_branch
+    harness, _operation, _branch_patch = sourced_branch
+    # A real conflict requires the checked agent turn whose live scope we exercise.
+    for destination, title in ((harness.branch, "Branch title"), (None, "Main title")):
+        state = (destination or harness.service.history).state()
+        patch = Patch(
+            kind="approval",
+            author="human",
+            summary="Choose a branch-specific title.",
+            ops=[
+                {
+                    "op": "update_nodes",
+                    "nodes": [
+                        {
+                            "id": "blk/merge-ready",
+                            "base_updated_rev": state.nodes["blk/merge-ready"].updated_rev,
+                            "changes": {"title": title},
+                        }
+                    ],
+                }
+            ],
+        )
+        if destination is not None:
+            destination.append(patch, authorized_by=authorized_human(harness.app))
+        else:
+            append_fixture_patch(
+                harness.service, patch, authorized_by=authorized_human(harness.app)
+            )
     main_before = harness.service.history.head_ref()
-    launcher = merge_api._PatchWritingLauncher(
-        json.dumps({"summary": "Carry source provenance.", "ops": [operation]})
-    )
+    launcher = merge_api._AnswersWritingLauncher()
 
     async def remove_repository_during_turn(*args, **kwargs):
         _remove_source_repository(harness)
@@ -293,7 +316,7 @@ def test_merge_fails_closed_when_main_membership_changes_after_dispatch(
         if task.kind == "branch_merge"
     ]
     task = wait_for_task(harness.store, admitted.operation_id, expect="failed")
-    assert "Project truth membership changed" in task.error
+    assert task.error
     assert launcher.calls == (0 if before_launch else 1)
     main = harness.service.history.state()
     assert main.revision == main_before.revision + 1

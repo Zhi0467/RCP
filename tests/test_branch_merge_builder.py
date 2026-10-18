@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from rcp.agents import AgentEvent
+from rcp.agents.command_mailbox import CommandTurnIdentity
+from rcp.agents.command_protocol import MergeAnswersCommandRequest
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.core.models import GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
@@ -15,12 +19,15 @@ from rcp.runs.branch_merge import (
     BranchMergeEligibility,
     BranchMergeRunOutcome,
     BranchMergeStage,
+    merge_planning_context,
     stream_branch_merge_run,
 )
+from rcp.runs.merge_contract import MergeAnswers, plan_merge
 from rcp.runs.merge_patch import build_merge_patch, prepare_merge_candidate
+from rcp.runs.patch_validator import MergeAnswersCheck
 from rcp.service import RunRequest
 from tests.helpers import unchecked_write_authority
-from tests.test_branch_merge import _branch_source_ref, _context, _local_scope, _SequenceLauncher
+from tests.test_branch_merge import _branch_source_ref, _context, _local_scope
 
 
 def _append(history, *ops: dict, human: bool = False) -> None:
@@ -174,6 +181,17 @@ async def _run(tmp_path: Path, history, load_context: Callable, launcher=None):
     workspace.mkdir(parents=True)
     stage = BranchMergeStage(local_stage=root, remote_stage=None, workspace=workspace)
     outcome = BranchMergeRunOutcome()
+    plan = plan_merge(merge_planning_context(load_context(), history, created_at=datetime.now(UTC)))
+    checks = MergeAnswersCheck(
+        plan=plan, history=history, task_id=plan.merge_task_id, turn_id="initial"
+    )
+
+    async def start_check_turn(current_plan):
+        checks.set_plan(current_plan, turn_id=current_plan.plan_id)
+        if launcher is not None:
+            launcher.checks = checks
+        return "client merge-answers check answers.json", "client", None
+
     frames = [
         frame
         async for frame in stream_branch_merge_run(
@@ -183,7 +201,8 @@ async def _run(tmp_path: Path, history, load_context: Callable, launcher=None):
             main_history=history,
             stage=stage,
             write_scope=_local_scope(stage, load_context()),
-            validator_command="python3 validator.py validate patch.json",
+            checks=checks,
+            start_check_turn=start_check_turn,
             graph_read_scope=GraphReadScope(project_id="project", target=GraphTargetRef()),
             history_client="python3 validator.py",
             outcome=outcome,
@@ -215,7 +234,6 @@ async def test_deterministic_merge_rebuilds_after_main_moves_without_provider(
 
     assert outcome.status == "committed", outcome.diagnostic
     assert outcome.rebase_rounds == 1
-    assert outcome.correction_rounds == 0
     assert outcome.native_session_id is None
     assert history.state().revision == initial.main_head.revision + 2
     assert history.state().nodes["blk/existing"].title == "Concurrent main title"
@@ -232,22 +250,43 @@ async def test_provider_merge_without_session_cannot_restart_after_main_moves(
     _append(branch, _update("blk/existing", description="Branch description."))
     _append(history, _update("blk/existing", description="Main description."))
     initial = load_context()
-    launcher = _SequenceLauncher(
-        [
-            json.dumps(
-                {
-                    "summary": "Resolve the conflicting description.",
-                    "ops": [_update("blk/existing", description="Resolution.")],
-                }
-            )
-        ]
-    )
-    stream = launcher.stream
 
-    async def omit_session_event(*args, **kwargs):
-        async for event in stream(*args, **kwargs):
-            if event.event != "session":
-                yield event
+    class AnswersWithoutSession:
+        checks: MergeAnswersCheck
+
+        def __init__(self):
+            self.sessions = []
+
+        async def stream(self, _provider, _prompt, *, cwd, session_id, **_kwargs):
+            self.sessions.append(session_id)
+            answers = MergeAnswers(
+                answers={
+                    conflict.conflict_id: {"kind": "merged", "value": "Resolution."}
+                    for conflict in self.checks.plan.conflicts
+                },
+                cards={},
+            ).model_dump_json()
+            (cwd / "answers.json").write_text(answers)
+            result = self.checks(
+                MergeAnswersCommandRequest(
+                    mailbox_id="a" * 32,
+                    request_id="b" * 32,
+                    credential="c" * 64,
+                    verb="merge_answers",
+                    arguments={"action": "check", "answers": answers},
+                ),
+                CommandTurnIdentity(
+                    episode_id=None,
+                    task_id=self.checks.task_id,
+                    turn_id=self.checks.turn_id,
+                    authority="broker",
+                ),
+            )
+            assert result.status == "ok"
+            yield AgentEvent(event="provider_exit", text='{"return_code":0}')
+            yield AgentEvent(event="done")
+
+    launcher = AnswersWithoutSession()
 
     append = history.append
     merge_append_attempts = 0
@@ -256,24 +295,22 @@ async def test_provider_merge_without_session_cannot_restart_after_main_moves(
         nonlocal merge_append_attempts
         if patch.branch_merge is not None:
             merge_append_attempts += 1
-            _append(history, _update("blk/existing", title="Concurrent main title"))
+            _append(history, _update("blk/existing", description="Concurrent main description"))
         return append(patch, **kwargs)
 
-    monkeypatch.setattr(launcher, "stream", omit_session_event)
     monkeypatch.setattr(history, "append", advance_main_at_merge)
 
     outcome, _frames, _workspace = await _run(tmp_path, history, load_context, launcher)
 
-    assert outcome.status == "retryable", outcome.diagnostic
+    assert outcome.status == "rejected", outcome.diagnostic
     assert outcome.native_session_id is None
-    assert outcome.rebase_rounds == outcome.correction_rounds == 0
+    assert outcome.rebase_rounds == 1
     assert launcher.sessions == [None]
     assert merge_append_attempts == 1
     assert outcome.committed is None
     assert outcome.receipt is None
     assert history.state().revision == initial.main_head.revision + 1
-    assert history.state().nodes["blk/existing"].description == "Main description."
-    assert history.state().nodes["blk/existing"].title == "Concurrent main title"
+    assert history.state().nodes["blk/existing"].description == "Concurrent main description"
     assert all(patch.branch_merge is None for patch in history.load_patches())
 
 

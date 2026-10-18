@@ -421,6 +421,15 @@ class BranchHistoryManager:
             current = self.materialize(write_outputs=False)
             self.require_writable(current.state)
             self._require_branch_patch(patch)
+            if patch.branch_merge is not None and not patch.ops:
+                prepared, report = self.parent._admit_patch_locked(
+                    current.state,
+                    patch,
+                    self._next_revision(),
+                    authorized_by=authorized_by,
+                    apply_target=self.graph_target,
+                )
+                return prepared, report, current.state
             prepared, report, _candidate = self.parent._prepare_transition_locked(
                 current,
                 [patch],
@@ -623,6 +632,8 @@ class BranchHistoryManager:
             ]
 
     def write_merge_receipt(self, receipt: BranchMergeReceipt) -> BranchMergeReceipt:
+        from rcp.history.manager import RevisionConflict
+
         self._require_receipt_identity(receipt)
         with self.workspace.transaction(), self.parent._append_lock():
             self._metadata = self._read_metadata()
@@ -656,6 +667,16 @@ class BranchHistoryManager:
                 if winner == receipt or _same_no_change_source(winner, receipt):
                     return winner
                 raise ValueError("branch merge receipt already exists with inconsistent lineage")
+            # Existing receipts remain historical facts; a new no-change result
+            # must still describe the destination protected by this append lock.
+            if receipt.outcome == "no_change":
+                destination_head = self._merge_destination().head_ref(main)
+                if destination_head != receipt.provenance.rebased_main_head:
+                    raise RevisionConflict(
+                        "the merge destination moved from revision "
+                        f"{receipt.provenance.rebased_main_head.revision} to "
+                        f"{destination_head.revision} before no-change receipt publication"
+                    )
             self._validate_merge_receipt(
                 receipt,
                 current,

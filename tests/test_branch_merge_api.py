@@ -17,8 +17,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, AgentProcessControl
-from rcp.agents.command_protocol import GraphDiffCommandRequest
+from rcp.agents.command_protocol import GraphDiffCommandRequest, MergeAnswersCommandRequest
 from rcp.agents.graph_read_scope import GraphReadScope
+from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.prompts import render_graph_history
 from rcp.api.app import create_app
 from rcp.api.episode_routes import _resolved_branch_merge_request
@@ -427,47 +428,28 @@ def test_episode_projection_distinguishes_merge_failures_from_tasks_needing_acti
     assert summary["merge_eligible"] is True
 
 
-def _candidate_for(change: Literal["evidence", "status"]) -> str:
-    if change == "evidence":
-        operations: list[dict[str, object]] = [
-            {
-                "op": "create_nodes",
-                "nodes": [
-                    {
-                        "id": "ev/branch-result",
-                        "type": "evidence",
-                        "title": "Branch result",
-                        "observation": "The isolated branch recorded a result.",
-                        "origin": "internal_run",
-                    }
-                ],
+def _answers_for_plan(plan):
+    return {
+        "answers": {
+            conflict["conflict_id"]: {
+                "kind": "branch" if "branch" in conflict["allowed_answer_kinds"] else "keep-node"
             }
-        ]
-    else:
-        operations = [
-            {
-                "op": "update_nodes",
-                "nodes": [
-                    {
-                        "id": "blk/merge-ready",
-                        "changes": {"status": "resolved"},
-                    }
-                ],
+            for conflict in plan["conflicts"]
+        },
+        "cards": {
+            group["subject_key"]: {
+                "situation_cold": "The branch changed this protected subject.",
+                "why_human_now": "The merge requires a human review.",
+                "consequences": "Approval applies the branch changes.",
+                "decision_needed": "Approve the proposed changes.",
             }
-        ]
-    return json.dumps(
-        {
-            "summary": "Carry the isolated branch result onto main.",
-            "ops": operations,
-            "repositories_read": [],
-            "change_summary": ["Merged the branch's semantic result."],
-        }
-    )
+            for group in plan["review_groups"]
+        },
+    }
 
 
-class _PatchWritingLauncher:
-    def __init__(self, candidate: str) -> None:
-        self.candidate = candidate
+class _AnswersWritingLauncher:
+    def __init__(self) -> None:
         self.calls = 0
         self.session_id = f"merge-native-{uuid.uuid4()}"
 
@@ -478,11 +460,31 @@ class _PatchWritingLauncher:
         *,
         cwd: Path,
         session_id: str | None,
+        invocation_gate: ProviderInvocationGate,
         **_kwargs: object,
     ) -> AsyncIterator[AgentEvent]:
         self.calls += 1
-        assert _kwargs["invocation_gate"] is not None
-        (cwd / "patch.json").write_text(self.candidate, encoding="utf-8")
+        assert invocation_gate is not None
+        plan_path = max(
+            (cwd.parent / "inputs").glob("*-merge-plan-*.json"), key=lambda p: p.stat().st_mtime_ns
+        )
+        plan = json.loads(plan_path.read_text())
+        (cwd / "answers.json").write_text(json.dumps(_answers_for_plan(plan)), encoding="utf-8")
+        async with invocation_gate.serve_current_session():
+            process = await asyncio.create_subprocess_exec(
+                *invocation_gate.client_executable_argv(),
+                *invocation_gate.client_arguments(),
+                "--workspace",
+                str(cwd),
+                "merge-answers",
+                "check",
+                str(cwd / "answers.json"),
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await process.communicate()
+        assert process.returncode == 0, (stdout.decode(), stderr.decode())
         yield AgentEvent(event="session", session_id=session_id or self.session_id)
         yield AgentEvent(event="provider_exit", text='{"return_code":0}')
         yield AgentEvent(event="done")
@@ -904,7 +906,7 @@ def test_ended_branch_merges_after_a_paused_attempt_is_retired(
     assert store.agent_task(root.operation_id).status == "paused"
     assert store.auto_research_is_quiescent(harness.episode.episode_id)
     assert _episode_payload(harness)["graph_branch"]["merge_eligible"] is True
-    launcher = _PatchWritingLauncher(_candidate_for("evidence"))
+    launcher = _AnswersWritingLauncher()
     monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
 
     response = harness.client.post(
@@ -935,7 +937,7 @@ def test_ended_branch_merges_over_an_unresolved_paused_writer(
         store.mark_episode_stop_skipped(harness.episode.episode_id)
     else:
         store.end_episode_without_report(harness.episode.episode_id, ending="human_pause")
-    launcher = _PatchWritingLauncher(_candidate_for("evidence"))
+    launcher = _AnswersWritingLauncher()
     monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
 
     assert _episode_payload(harness)["graph_branch"]["merge_eligible"] is True
@@ -1157,7 +1159,7 @@ def test_committed_merge_persists_its_receipt_before_success_and_evaluates_main_
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     harness = _create_branch_harness(manifest, tmp_path, change="status")
-    launcher = _PatchWritingLauncher(_candidate_for("status"))
+    launcher = _AnswersWritingLauncher()
     monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
     # Keep delivery pending after the condition is completed; this test is about
     # which graph the merge boundary evaluates, not the subsequent chat turn.
@@ -1476,9 +1478,34 @@ def test_merge_history_client_and_main_observation(manifest, tmp_path, monkeypat
         assert response.status == "ok"
         assert response.result["changes"]
         calls.append(response)
-        patch = json.loads(_candidate_for("status"))
-        patch["ops"][0]["nodes"][0]["changes"]["title"] = "Merged title"
-        (cwd / "patch.json").write_text("invalid" if len(calls) == 1 else json.dumps(patch))
+        plan = json.loads(next((cwd.parent / "inputs").glob("*-merge-plan-*.json")).read_text())
+        answers = _answers_for_plan(plan)
+        for conflict in plan["conflicts"]:
+            if conflict.get("field_name") == "title":
+                answers["answers"][conflict["conflict_id"]] = {
+                    "kind": "merged",
+                    "value": "Merged title",
+                }
+        staged = handlers[0]["staged"]
+        for payload, expected_status in (
+            ({"answers": {}, "cards": {}}, "invalid"),
+            (answers, "ok"),
+        ):
+            text = json.dumps(payload)
+            (cwd / "answers.json").write_text(text)
+            check = handlers[0]["command_handler"](
+                MergeAnswersCommandRequest.model_validate(
+                    {
+                        "mailbox_id": invocation_gate.mailbox_id,
+                        "request_id": uuid.uuid4().hex,
+                        "credential": staged.credential.token,
+                        "verb": "merge_answers",
+                        "arguments": {"action": "check", "answers": text},
+                    }
+                ),
+                staged.credential.identity,
+            )
+            assert check.status == expected_status, check
         yield AgentEvent(event="session", session_id="merge-reader-session")
         yield AgentEvent(event="done")
 
@@ -1493,7 +1520,8 @@ def test_merge_history_client_and_main_observation(manifest, tmp_path, monkeypat
         if task.kind == "branch_merge"
     )
     task = wait_for_task(harness.store, task.operation_id, expect="succeeded")
-    assert len(calls) == 2
+    assert len(calls) == 1
+    assert harness.service.history.state().nodes["blk/merge-ready"].title == "Merged title"
     seen = harness.store.graph_seen_head(
         harness.project_id, harness.episode.episode_id, "merge-reader-session", GraphTargetRef()
     )

@@ -1152,6 +1152,15 @@ class HistoryManager:
             if self.workspace.materialization_repair_required:
                 self._repair_materializations_locked()
                 current = self.materialize(write_outputs=False)
+            if patch.branch_merge is not None and not patch.ops:
+                prepared, report = self._admit_patch_locked(
+                    current.state,
+                    patch,
+                    self._next_revision(),
+                    authorized_by=authorized_by,
+                    apply_target=self.graph_target,
+                )
+                return prepared, report, current.state
             prepared, report, _candidate = self._validate_candidate_locked(
                 current,
                 patch,
@@ -1273,6 +1282,35 @@ class HistoryManager:
         )
         return prepared, report, state
 
+    def _admit_patch_locked(
+        self,
+        state: GraphState,
+        patch: Patch,
+        revision: int,
+        *,
+        authorized_by: AuthorizedHuman | None,
+        apply_target: GraphTargetRef,
+    ) -> tuple[Patch, ValidationReport]:
+        """Apply both live gates, also for an empty merge's dry preparation."""
+        patch, writer, report = self.write_authority.admit(
+            state,
+            patch.model_copy(update={"revision": revision}),
+            project_id=self.project_id,
+            authorized_by=authorized_by,
+            apply_target=apply_target,
+        )
+        patch = prepare_patch_bookkeeping(state, patch)
+        # Gate 2 still reports malformed data after a permission refusal.
+        report.messages.extend(
+            validate_patch(
+                state,
+                patch,
+                build_validation_context(self.manifest, state),
+                writer=writer,
+            ).messages
+        )
+        return patch, report
+
     def _prepare_transition_locked(
         self,
         current: MaterializationResult,
@@ -1293,25 +1331,15 @@ class HistoryManager:
         prepared_sources: list[Patch] = []
         for raw_patch in raw_patches:
             validation_state = staged.model_copy(update={"revision": current.state.revision})
-            patch, writer, report = self.write_authority.admit(
+            patch, report = self._admit_patch_locked(
                 validation_state,
-                raw_patch.model_copy(update={"revision": revision}),
-                project_id=self.project_id,
+                raw_patch,
+                revision,
                 authorized_by=authorized_by,
                 apply_target=target,
             )
             aggregate.messages.extend(report.messages)
-            # Gate 2 runs even after a permission refusal, so a writer sees every
-            # broken rule at once. Nothing is applied unless both gates pass.
-            patch = prepare_patch_bookkeeping(validation_state, patch)
-            rules = validate_patch(
-                validation_state,
-                patch,
-                build_validation_context(self.manifest, validation_state),
-                writer=writer,
-            )
-            aggregate.messages.extend(rules.messages)
-            if report.rejected or rules.rejected:
+            if report.rejected:
                 return patch, aggregate, None
             try:
                 candidate = apply_valid_patch(validation_state, patch)

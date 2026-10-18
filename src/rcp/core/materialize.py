@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import TypeAdapter
 
@@ -222,6 +222,11 @@ _PROPOSAL_UNRESOLVED = {
 }
 
 
+def proposal_filing_dependency_rule(operation_count: int, *, branch_merge: bool) -> Literal[2, 3]:
+    """Select new filing semantics without changing any recorded replay rule."""
+    return 3 if branch_merge and operation_count > 1 else CURRENT_PROPOSAL_DEPENDENCY_RULE
+
+
 def prepare_patch_bookkeeping(state: GraphState, patch: Patch) -> Patch:
     """Resolve admission metadata and glossary spelling before recording operations.
 
@@ -257,9 +262,9 @@ def prepare_patch_bookkeeping(state: GraphState, patch: Patch) -> Patch:
                 proposal.model_copy(
                     update={
                         **_PROPOSAL_UNRESOLVED,
-                        "dependency_rule": 3
-                        if patch.branch_merge is not None and len(proposal.ops) > 1
-                        else CURRENT_PROPOSAL_DEPENDENCY_RULE,
+                        "dependency_rule": proposal_filing_dependency_rule(
+                            len(proposal.ops), branch_merge=patch.branch_merge is not None
+                        ),
                         "related_node_ids": related_node_ids,
                         "related_edge_ids": related_edge_ids,
                         "related_config_keys": related_config_keys,
