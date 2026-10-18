@@ -271,6 +271,8 @@ items younger than 24 hours. Each item carries its stable notification id and
 only a fixed reason code, project name, and hash-route deep link as content.
 Links use `#/projects/{project_id}/targets/{target}/{kind}/{item_id}`, with
 each value URL-escaped; both episode reasons use `episode` as the link kind.
+Bulletin mentions use the channel/post query link described in
+[Bulletin channels](#bulletin-channels).
 The same pattern names project references with the kinds `artifact`, `node`,
 and `paper` (item id `introduction`); `target` is the node's source target.
 Graph item age starts at its accepted Patch, and terminal episode age starts
@@ -298,8 +300,8 @@ post as one summary that opens the app; a summary macOS accepts acknowledges
 every item it covers, and a rejected one leaves them for retry.
 
 `GET` and `PATCH /api/projects/{project_id}/notifications` read and update the
-calling member's five toggles: `proposal`, `decision`, `blocker`,
-`episode_needs_action`, and `episode_finished`. All default on except
+calling member's toggles: `proposal`, `decision`, `blocker`,
+`episode_needs_action`, `episode_finished`, `consolidation`, and `bulletin_mention`. All default on except
 `episode_finished`. These routes require project membership. Project Settings
 shows them as a **Notifications** card after Machines, which also says the
 project name appears on the lock screen.
@@ -1815,3 +1817,37 @@ child Experiment episodes. It includes unexpired or kept artifacts and undeleted
 reports, with the queried episode's report first, then creation order. Worker
 labels use the child Work route's instruction heading, or Worker. Both routes enforce project
 membership, and the inventory rejects an episode from another project.
+
+## Bulletin channels
+
+Each graph target has one Bulletin channel. Member-authenticated reads use
+`GET /api/projects/{project_id}/bulletin?branch_id=&cursor=` and include the
+roster and live project members. Text is limited to 8000 characters; the server
+extracts ordered, deduplicated `#node-id` references and valid
+`<@member:USER_ID>` / `<@agent:ACTOR_ID>` mentions. Requests carry text, never a
+separate references field. Agent tokens must identify an actor in that target's
+roster; unknown tokens remain ordinary text.
+
+`POST .../bulletin` accepts `{text, key, reply_to}`. `PATCH .../bulletin/{post_id}`
+accepts `{text, key}` and reparses references and mentions. `DELETE` on the same
+path soft-deletes the post. Only its author may edit or delete; another author
+gets `403 bulletin_not_author`, and editing a deleted post gets
+`409 bulletin_post_deleted`. Deleted replies and deleted top-level posts without
+replies are omitted; parents with replies remain empty placeholders. Posts
+include `edited_at`, `deleted_at`, `mentions`, and `reply_count`. Replying to a
+deleted post is refused with `bulletin_reply_invalid`.
+
+`GET .../bulletin/channels` lists main first, then non-archived branches ordered
+by last post descending and name. Each row includes target, branch id, name,
+last post time, and unread count capped at 99. Unread excludes the member's own
+posts. `POST .../bulletin/read` with `{sequence_post_id}` advances that member's
+target-local cursor without moving it backwards or bumping the shared Bulletin
+resource version; the read client refetches channels itself.
+
+A member mention produces at most one `bulletin_mention` notification per post
+and mentioned member, including mentions first added by an edit, excluding
+self-mentions. This preference defaults on. Reconciliation retains durable
+observations across restarts. Deleting a post before reconciliation suppresses
+its notification; editing away a mention preserves the accepted event. Links open
+`#/projects/{project_id}?view=chats&channel={target_key}&post={post_id}`.
+Agent mentions never wake or launch work.

@@ -17,7 +17,6 @@ from rcp.limits import (
     ASK_QUESTION_MAX_LENGTH,
     BULLETIN_CURSOR_MAX_CHARS,
     BULLETIN_KEY_MAX_CHARS,
-    BULLETIN_REFS_MAX_COUNT,
     BULLETIN_REPLY_MAX_CHARS,
     BULLETIN_TEXT_MAX_CHARS,
     COMMAND_ASK_POLL_SECONDS,
@@ -450,21 +449,32 @@ class FlagArguments(BaseModel):
 class BulletinArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    action: Literal["post", "read"]
+    action: Literal["post", "read", "edit", "delete"]
     text: str | None = Field(default=None, min_length=1, max_length=BULLETIN_TEXT_MAX_CHARS)
-    refs: list[str] = Field(default_factory=list, max_length=BULLETIN_REFS_MAX_COUNT)
+    post_id: str | None = Field(default=None, min_length=1, max_length=BULLETIN_REPLY_MAX_CHARS)
     reply_to: str | None = Field(default=None, min_length=1, max_length=BULLETIN_REPLY_MAX_CHARS)
     cursor: str | None = Field(default=None, min_length=1, max_length=BULLETIN_CURSOR_MAX_CHARS)
 
     @model_validator(mode="after")
     def valid_action(self) -> BulletinArguments:
         if self.action == "read":
-            if self.text is not None or self.refs or self.reply_to is not None:
+            if any(value is not None for value in (self.text, self.post_id, self.reply_to)):
                 raise ValueError("Bulletin reads accept only a cursor")
-        elif self.text is None or not self.text.strip() or self.cursor is not None:
-            raise ValueError("Bulletin posts require nonblank text and accept no cursor")
-        if any(not ref.strip() for ref in self.refs):
-            raise ValueError("Bulletin references must not be blank")
+        else:
+            if self.cursor is not None:
+                raise ValueError("Bulletin mutations accept no cursor")
+            if self.action == "delete":
+                if self.text is not None:
+                    raise ValueError("Bulletin deletes accept no text")
+            elif self.text is None or not self.text.strip():
+                raise ValueError("Bulletin posts and edits require nonblank text")
+            if self.action in {"edit", "delete"}:
+                if self.post_id is None or self.reply_to is not None:
+                    raise ValueError(
+                        "Bulletin edits and deletes require a post id and no reply target"
+                    )
+            elif self.post_id is not None:
+                raise ValueError("Bulletin posts accept no post id")
         return self
 
 
@@ -649,8 +659,8 @@ class BulletinCommandRequest(_CommandRequest):
 
     @model_validator(mode="after")
     def mutation_is_keyed(self) -> BulletinCommandRequest:
-        if self.arguments.action == "post" and self.idempotency_key is None:
-            raise ValueError("Bulletin posts require an idempotency key")
+        if self.arguments.action != "read" and self.idempotency_key is None:
+            raise ValueError("Bulletin mutations require an idempotency key")
         return self
 
 

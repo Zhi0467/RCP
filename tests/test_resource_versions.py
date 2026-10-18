@@ -214,6 +214,8 @@ _EXEMPT_TABLES = {
     "evidence_flag_command_receipts": "receipt",
     # The Bulletin post idempotency ledger; no view reads it.
     "bulletin_command_receipts": "receipt",
+    "bulletin_mention_observations": "delivery",
+    "bulletin_reads": "member-local read cursor",
     "project_provisioning_requests": "setup",
     "project_provisioning_step_receipts": "setup",
     "project_transfer_activations": "transfer",

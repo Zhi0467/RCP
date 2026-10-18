@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from rcp.agents.command_protocol import BulletinCommandRequest, CommandResponse
-from rcp.bulletin import bulletin_roster
+from rcp.bulletin import bulletin_actor_id, bulletin_roster
 from rcp.limits import BULLETIN_RENDER_MAX_BYTES, BULLETIN_ROSTER_MAX_COUNT
 from rcp.storage import AppStore
 
@@ -29,11 +29,23 @@ def render_bulletin(snapshot: dict[str, Any]) -> str:
     ]
     posts = snapshot.get("posts", [])
     total = int(snapshot.get("total", len(posts)))
-    entries: dict[str, list[str]] = {"Agent": [], "Untrusted post": []}
-    reserve = f"Omitted agents: {len(roster)}. Omitted posts: {total}.\n"
+    mentions = snapshot.get("mentions", [])
+    members = snapshot.get("members", [])
+    entries: dict[str, list[str]] = {
+        kind: [] for kind in ("Mention", "Member", "Agent", "Untrusted post")
+    }
+    reserve = (
+        f"Omitted mentions: {len(mentions)}. Omitted members: {len(members)}. "
+        f"Omitted agents: {len(roster)}. Omitted posts: {total}.\n"
+    )
     remaining = BULLETIN_RENDER_MAX_BYTES - len((header + reserve).encode())
-    # Reserve space for posts before adding the live roster, displayed first.
-    for kind, records in (("Untrusted post", posts), ("Agent", roster[:BULLETIN_ROSTER_MAX_COUNT])):
+    # Mentions take priority; posts retain priority over the live roster.
+    for kind, records in (
+        ("Mention", mentions),
+        ("Untrusted post", posts),
+        ("Member", members),
+        ("Agent", roster[:BULLETIN_ROSTER_MAX_COUNT]),
+    ):
         for record in records:
             encoded = json.dumps(record, ensure_ascii=True).replace("`", "\\u0060")
             entry = f"## {kind}\n\n```json\n{encoded}\n```\n\n"
@@ -44,10 +56,38 @@ def render_bulletin(snapshot: dict[str, Any]) -> str:
             remaining -= size
     return (
         header
-        + "".join(entries["Agent"] + entries["Untrusted post"])
+        + "".join(
+            entries["Mention"] + entries["Member"] + entries["Agent"] + entries["Untrusted post"]
+        )
+        + f"Omitted mentions: {len(mentions) - len(entries['Mention'])}. "
+        + f"Omitted members: {len(members) - len(entries['Member'])}. "
         + f"Omitted agents: {len(roster) - len(entries['Agent'])}. "
         + f"Omitted posts: {total - len(entries['Untrusted post'])}.\n"
     )
+
+
+def _add_context(store: AppStore, operation_id: str, snapshot: dict[str, Any]) -> None:
+    task = store.agent_task(operation_id)
+    assert task is not None
+    with store.connection() as connection:
+        row = connection.execute(
+            "SELECT * FROM graph_runs WHERE operation_id=?", (operation_id,)
+        ).fetchone()
+        actor_id = bulletin_actor_id(connection, row)
+    mentions = (
+        store.list_bulletin_mentions(task.project_id, task.graph_target.key, actor_id)
+        if actor_id
+        else []
+    )
+    snapshot["mentions"] = []
+    remaining = BULLETIN_RENDER_MAX_BYTES
+    for post in mentions:
+        size = len(json.dumps(post, ensure_ascii=True).encode())
+        if size <= remaining:
+            snapshot["mentions"].append(post)
+            remaining -= size
+    snapshot["members"] = store.bulletin_members(task.project_id)
+    snapshot["roster"] = bulletin_roster(store, task.project_id, task.graph_target)
 
 
 def handle_bulletin(
@@ -65,7 +105,7 @@ def handle_bulletin(
         code = "bulletin_task_unavailable"
     elif not store.bulletin_enabled_for_task(operation_id):
         code = "bulletin_disabled"
-    elif request.arguments.action == "post" and not post_allowed:
+    elif request.arguments.action != "read" and not post_allowed:
         code = "bulletin_post_forbidden"
     if code:
         return CommandResponse(
@@ -79,14 +119,15 @@ def handle_bulletin(
             request.arguments.action,
             key=request.idempotency_key,
             text=request.arguments.text,
-            refs=request.arguments.refs,
+            post_id=request.arguments.post_id,
             reply_to=request.arguments.reply_to,
             cursor=request.arguments.cursor,
         )
         if request.arguments.action == "read":
-            result["roster"] = bulletin_roster(store, task.project_id, task.graph_target)
+            _add_context(store, operation_id, result)
             result["roster_omitted"] = max(0, len(result["roster"]) - BULLETIN_ROSTER_MAX_COUNT)
             result["roster"] = result["roster"][-BULLETIN_ROSTER_MAX_COUNT:]
+            result = {"mentions": result["mentions"], **result}
     except BulletinError as exc:
         return CommandResponse(
             request_id=request.request_id,
@@ -118,7 +159,7 @@ def stage_bulletin_pointer(
             (local_stage / "workspace" / "bulletin.md").unlink(missing_ok=True)
         return ""
     snapshot = store.list_bulletin(task.project_id, task.graph_target.key)
-    snapshot["roster"] = bulletin_roster(store, task.project_id, task.graph_target)
+    _add_context(store, task.operation_id, snapshot)
     content = render_bulletin(snapshot)
     if remote_stage is not None:
         remote_stage.write_workspace_text("bulletin.md", content)
@@ -144,6 +185,9 @@ def stage_bulletin_pointer(
     if "lesson" in allowed_verbs:
         pointer += (
             f" Posting, when authorized: `{command_client} bulletin --post --key K "
-            "[--reply-to ID] [--ref NODE] <body-file>`."
+            "[--reply-to ID] <body-file>`. "
+            f"Edit your posts with `{command_client} bulletin --edit ID --key K <body-file>`; "
+            f"delete with `{command_client} bulletin --delete ID --key K`. "
+            "Write #node-id links and <@member:USER_ID> or <@agent:ACTOR_ID> mention tokens in the body."
         )
     return pointer

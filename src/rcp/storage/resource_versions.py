@@ -426,7 +426,19 @@ def migrate_episode_report_deletion(connection: sqlite3.Connection) -> None:
 def install_bulletin_resource_versions(connection: sqlite3.Connection) -> None:
     """Posts and their live roster refresh through the existing project polling loop."""
     roster_columns = {
-        "bulletin_posts": ("project_id", "target_key", "operation_id", "created_at"),
+        "bulletin_posts": (
+            "project_id",
+            "target_key",
+            "operation_id",
+            "created_at",
+            "text",
+            "mentions_json",
+            "refs_json",
+            "edited_at",
+            "deleted_at",
+        ),
+        "graph_branches": ("project_id", "branch_id", "name", "archived"),
+        "project_members": ("project_id", "user_id"),
         "questions": ("project_id", "origin_json", "state", "withdrawn_readonly"),
         "graph_runs": (
             "project_id",
@@ -474,3 +486,13 @@ def install_bulletin_resource_versions(connection: sqlite3.Connection) -> None:
             # Posts own their table's triggers; the roster inputs share other owners' tables.
             suffix="" if table == "bulletin_posts" else "_bulletin",
         )
+
+    _install(
+        connection,
+        "space_users",
+        [
+            "INSERT INTO resource_versions(scope,resource,entity,generation) SELECT project_id,'bulletin','',1 FROM project_members WHERE user_id=ROW.user_id ON CONFLICT(scope,resource,entity) DO UPDATE SET generation=generation+1;"
+        ],
+        columns=("user_id", "display_name", "removal_started_at"),
+        suffix="_bulletin",
+    )

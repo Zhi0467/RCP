@@ -50,13 +50,13 @@ def test_bulletin_client_file_backed_keyed_post(tmp_path, monkeypatch):
     prefix = ["--broker", "broker", "--timeout", "1", "--workspace", str(tmp_path)]
     parser = staged_command_client._parser()
     parsed = parser.parse_args(
-        [*prefix, "bulletin", "--post", "--key", "k", "--ref", "n", "--reply-to", "p", "body.txt"]
+        [*prefix, "bulletin", "--post", "--key", "k", "--reply-to", "p", "body.txt"]
     )
     verb, key, arguments = staged_command_client._request_arguments(parsed, str(tmp_path))
     assert (verb, key, arguments) == (
         "bulletin",
         "k",
-        {"action": "post", "text": "note\n```", "refs": ["n"], "reply_to": "p"},
+        {"action": "post", "text": "note\n```", "reply_to": "p"},
     )
     parsed = parser.parse_args([*prefix, "bulletin", "--read", "--cursor", "10"])
     assert staged_command_client._request_arguments(parsed, str(tmp_path)) == (
@@ -64,6 +64,18 @@ def test_bulletin_client_file_backed_keyed_post(tmp_path, monkeypatch):
         None,
         {"action": "read", "cursor": "10"},
     )
+    for action in ("edit", "delete"):
+        command = [*prefix, "bulletin", f"--{action}", "p", "--key", "k"]
+        if action == "edit":
+            command.append("body.txt")
+        parsed = parser.parse_args(command)
+        verb, key, arguments = staged_command_client._request_arguments(parsed, str(tmp_path))
+        assert arguments["action"] == action and arguments["post_id"] == "p"
+        assert request(action, key=key, **{k: v for k, v in arguments.items() if k != "action"})
+        with pytest.raises(ValueError):
+            request(action, post_id="p", **({"text": "edit"} if action == "edit" else {}))
+    with pytest.raises(staged_command_client.ClientInputError):
+        parser.parse_args([*prefix, "bulletin", "--post", "--key", "k", "--ref", "n", "body.txt"])
     with pytest.raises(ValueError):
         request("post", text="unkeyed")
 
@@ -136,6 +148,16 @@ def test_auto_research_stop_fences_posts_but_keeps_bulletin_readable(tmp_path, m
         dispatcher.dispatch(root.operation_id, request("post", key="late", text="note")).status
         == "invalid"
     )
+    for action in ("edit", "delete"):
+        late = request(
+            action,
+            key=action,
+            post_id=receipt.result["post"]["post_id"],
+            **({"text": "late edit"} if action == "edit" else {}),
+        )
+        assert (
+            dispatcher.dispatch(root.operation_id, late).result["code"] == "bulletin_post_forbidden"
+        )
     assert dispatcher.dispatch(root.operation_id, post).result == receipt.result
     assert dispatcher.dispatch(root.operation_id, request("read")).result["posts"] == [
         receipt.result["post"]
@@ -158,6 +180,90 @@ def test_staged_roster_cannot_starve_posts():
     assert {row["post_id"] for row in records if "post_id" in row} == {"post"}
     agents = [row for row in records if "state" in row]
     assert len(agents) == BULLETIN_ROSTER_MAX_COUNT
-    assert list(map(int, re.findall(r"\d+", rendered.splitlines()[-1]))) == [100 - len(agents), 1]
+    assert list(map(int, re.findall(r"\d+", rendered.splitlines()[-1]))) == [
+        0,
+        0,
+        100 - len(agents),
+        1,
+    ]
     assert all(row["state"] == "waiting" for row in agents)
     assert len(rendered.encode()) <= BULLETIN_RENDER_MAX_BYTES
+
+
+def test_agent_mentions_are_first_in_snapshot_and_read(store, tmp_path):  # noqa: F811
+    from rcp.bulletin import bulletin_actor_id
+
+    with store.connection() as connection:
+        task = connection.execute("SELECT * FROM graph_runs WHERE operation_id='turn'").fetchone()
+        actor_id = bulletin_actor_id(connection, task)
+    post = store.add_bulletin_post(
+        "project",
+        "main",
+        f"For <@agent:{actor_id}>",
+        key="mention",
+        user_id=store.local_owner.user_id,
+    )
+    store.add_bulletin_post(
+        "project",
+        "main",
+        "More recent ordinary post",
+        key="ordinary",
+        user_id=store.local_owner.user_id,
+    )
+    execution = AgentTaskExecution(operation_id="turn", store=store, control=AgentProcessControl())
+    stage_bulletin_pointer(execution, tmp_path, None)
+    rendered = (tmp_path / "workspace" / "bulletin.md").read_text()
+    first_record = json.loads(rendered.split("```json\n")[1].split("\n```", 1)[0])
+    assert first_record["post_id"] == post["post_id"]
+    read = work_command_handler(execution, None)(request("read"), identity()).result
+    assert next(iter(read)) == "mentions"
+    assert read["mentions"] == [post]
+    assert store.local_owner.user_id in {member["user_id"] for member in read["members"]}
+
+
+def test_agent_edits_and_deletes_across_turns_of_same_actor(store):  # noqa: F811
+    first = store.agent_task("turn")
+    assert first is not None
+    posted = store.execute_bulletin_command("project", "turn", "post", key="post", text="original")
+    post_id = posted["post"]["post_id"]
+    with store.connection() as connection:
+        connection.execute("UPDATE graph_runs SET status='succeeded' WHERE operation_id='turn'")
+    for operation_id, chat_id in (("next", "chat"), ("other", "other-chat")):
+        store.create_agent_task(
+            first.model_copy(
+                update={
+                    "operation_id": operation_id,
+                    "native_session_id": operation_id,
+                    "stage_root": f"/stage/{operation_id}",
+                    "request": {**first.request, "chat_id": chat_id},
+                }
+            )
+        )
+    execution = AgentTaskExecution(operation_id="next", store=store, control=AgentProcessControl())
+    handler = work_command_handler(execution, None)
+    edit = request("edit", key="edit", post_id=post_id, text="updated #exp/result")
+    edited = handler(edit, identity(task_id="next"))
+    assert edited.status == "ok"
+    assert edited.result["post"]["refs"] == ["exp/result"]
+    assert edited.result["post"]["author"]["actor_id"] == "chat:chat"
+    assert handler(edit, identity(task_id="next")).result == edited.result
+    other = work_command_handler(
+        AgentTaskExecution(operation_id="other", store=store, control=AgentProcessControl()),
+        None,
+    )
+    for action in ("edit", "delete"):
+        response = other(
+            request(
+                action,
+                key=action,
+                post_id=post_id,
+                **({"text": "forged"} if action == "edit" else {}),
+            ),
+            identity(task_id="other"),
+        )
+        assert response.result["code"] == "bulletin_not_author"
+    delete = request("delete", key="delete", post_id=post_id)
+    deleted = handler(delete, identity(task_id="next"))
+    assert deleted.status == "ok"
+    assert handler(delete, identity(task_id="next")).result == deleted.result
+    assert store.list_bulletin("project", "main")["posts"] == []

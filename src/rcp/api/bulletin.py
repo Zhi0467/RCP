@@ -18,7 +18,6 @@ from rcp.bulletin import bulletin_roster
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import (
     BULLETIN_KEY_MAX_CHARS,
-    BULLETIN_REFS_MAX_COUNT,
     BULLETIN_REPLY_MAX_CHARS,
     BULLETIN_ROSTER_MAX_COUNT,
     BULLETIN_TEXT_MAX_CHARS,
@@ -33,12 +32,14 @@ ProjectDependency = Annotated[str, Depends(require_project_membership)]
 WriteProjectDependency = Annotated[str, Depends(require_project_write_admission)]
 
 
-class BulletinPost(BaseModel):
+class BulletinEdit(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: str = Field(min_length=1, max_length=BULLETIN_TEXT_MAX_CHARS)
     key: str = Field(min_length=1, max_length=BULLETIN_KEY_MAX_CHARS)
-    refs: list[str] = Field(default_factory=list, max_length=BULLETIN_REFS_MAX_COUNT)
+
+
+class BulletinPost(BulletinEdit):
     reply_to: str | None = Field(default=None, min_length=1, max_length=BULLETIN_REPLY_MAX_CHARS)
 
 
@@ -51,7 +52,15 @@ def _target(store: AppStore, project: str, branch_id: str | None) -> GraphTarget
 
 
 def _error(exc: BulletinError) -> HTTPException:
-    status = 422 if exc.code.endswith("invalid") else 409
+    status = (
+        403
+        if exc.code in {"bulletin_not_author", "bulletin_forbidden"}
+        else 404
+        if exc.code == "bulletin_post_not_found"
+        else 422
+        if exc.code.endswith("invalid")
+        else 409
+    )
     return HTTPException(status_code=status, detail={"code": exc.code, "message": str(exc)})
 
 
@@ -73,6 +82,7 @@ def list_bulletin(
     try:
         return {
             "can_post": can_post,
+            "members": store.bulletin_members(project),
             "roster": roster[-BULLETIN_ROSTER_MAX_COUNT:],
             "roster_omitted": max(0, len(roster) - BULLETIN_ROSTER_MAX_COUNT),
             **store.list_bulletin(project, target.key, cursor=cursor),
@@ -100,9 +110,101 @@ def post_bulletin(
             body.text,
             user_id=human.user_id,
             key=body.key,
-            refs=body.refs,
             reply_to=body.reply_to,
         )
         return {"post": post}
+    except BulletinError as exc:
+        raise _error(exc) from exc
+
+
+class BulletinRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sequence_post_id: str = Field(min_length=1, max_length=BULLETIN_REPLY_MAX_CHARS)
+
+
+@router.get("/api/projects/{project_id}/bulletin/channels")
+def bulletin_channels(
+    request: Request,
+    *,
+    project: ProjectDependency,
+    store: StoreDependency,
+    identity: IdentityDependency,
+) -> list[dict[str, object]]:
+    human = identity.acting_user(request)
+    return store.bulletin_channels(project, human.user_id)
+
+
+@router.post("/api/projects/{project_id}/bulletin/read")
+def read_bulletin(
+    body: BulletinRead,
+    request: Request,
+    *,
+    project: ProjectDependency,
+    store: StoreDependency,
+    identity: IdentityDependency,
+    branch_id: str | None = None,
+) -> dict[str, object]:
+    human = identity.acting_user(request)
+    target = _target(store, project, branch_id)
+    try:
+        store.mark_bulletin_read(project, target.key, human.user_id, body.sequence_post_id)
+        return {"ok": True}
+    except BulletinError as exc:
+        raise _error(exc) from exc
+
+
+@router.patch("/api/projects/{project_id}/bulletin/{post_id}")
+def edit_bulletin(
+    post_id: str,
+    body: BulletinEdit,
+    request: Request,
+    *,
+    project: WriteProjectDependency,
+    store: StoreDependency,
+    identity: IdentityDependency,
+    branch_id: str | None = None,
+) -> dict[str, object]:
+    human = identity.require_patch_capable_identity(request)
+    target = _target(store, project, branch_id)
+    try:
+        return {
+            "post": store.mutate_bulletin_post(
+                project,
+                target.key,
+                post_id,
+                user_id=human.user_id,
+                key=body.key,
+                text=body.text,
+                action="edit",
+            )
+        }
+    except BulletinError as exc:
+        raise _error(exc) from exc
+
+
+@router.delete("/api/projects/{project_id}/bulletin/{post_id}")
+def delete_bulletin(
+    post_id: str,
+    request: Request,
+    *,
+    project: WriteProjectDependency,
+    store: StoreDependency,
+    identity: IdentityDependency,
+    branch_id: str | None = None,
+) -> dict[str, object]:
+    human = identity.require_patch_capable_identity(request)
+    target = _target(store, project, branch_id)
+    try:
+        return {
+            "post": store.mutate_bulletin_post(
+                project,
+                target.key,
+                post_id,
+                user_id=human.user_id,
+                key=f"delete:{post_id}",
+                action="delete",
+            )
+        }
     except BulletinError as exc:
         raise _error(exc) from exc

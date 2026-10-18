@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import uuid
 from typing import Any
@@ -17,6 +18,7 @@ from rcp.limits import (
     BULLETIN_REFS_MAX_COUNT,
     BULLETIN_REPLY_MAX_CHARS,
     BULLETIN_TEXT_MAX_CHARS,
+    BULLETIN_UNREAD_MAX_COUNT,
 )
 from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
@@ -42,7 +44,8 @@ def migrate_graph_bulletin(connection: sqlite3.Connection) -> None:
         "post_id TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, target_key TEXT NOT NULL, "
         "author_kind TEXT NOT NULL CHECK(author_kind IN ('agent','member')), "
         "operation_id TEXT, actor_label TEXT, user_id TEXT, display_name TEXT, "
-        "text TEXT NOT NULL, refs_json TEXT NOT NULL, reply_to TEXT, created_at TEXT NOT NULL)"
+        "text TEXT NOT NULL, refs_json TEXT NOT NULL, reply_to TEXT, created_at TEXT NOT NULL, "
+        "author_actor_id TEXT, mentions_json TEXT NOT NULL DEFAULT '[]', edited_at TEXT, deleted_at TEXT)"
     )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS bulletin_target ON bulletin_posts(project_id,target_key,sequence DESC)"
@@ -54,6 +57,12 @@ def migrate_graph_bulletin(connection: sqlite3.Connection) -> None:
         "PRIMARY KEY(project_id,target_key,author_key,key))"
     )
 
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS bulletin_reads (project_id TEXT NOT NULL, target_key TEXT NOT NULL, user_id TEXT NOT NULL, last_sequence INTEGER NOT NULL, PRIMARY KEY(project_id,target_key,user_id))"
+    )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS bulletin_mention_observations (project_id TEXT NOT NULL, target_key TEXT NOT NULL, post_id TEXT NOT NULL, user_id TEXT NOT NULL, created_at TEXT NOT NULL, observed_at TEXT, PRIMARY KEY(post_id,user_id))"
+    )
     install_bulletin_resource_versions(connection)
 
 
@@ -62,6 +71,8 @@ def _record(row: sqlite3.Row) -> dict[str, Any]:
     for key in ("operation_id", "actor_label", "user_id", "display_name"):
         if row[key] is not None:
             author[key] = row[key]
+    if row["author_actor_id"] is not None:
+        author["actor_id"] = row["author_actor_id"]
     return {
         "post_id": row["post_id"],
         "author": author,
@@ -69,7 +80,60 @@ def _record(row: sqlite3.Row) -> dict[str, Any]:
         "refs": json.loads(row["refs_json"]),
         "reply_to": row["reply_to"],
         "created_at": row["created_at"],
+        "mentions": json.loads(row["mentions_json"]),
+        "edited_at": row["edited_at"],
+        "deleted_at": row["deleted_at"],
+        "reply_count": row["reply_count"] if "reply_count" in row.keys() else 0,  # noqa: SIM118 - sqlite rows iterate values
     }
+
+
+_REPLY_COUNT = "(SELECT count(*) FROM bulletin_posts r WHERE r.project_id=p.project_id AND r.target_key=p.target_key AND r.reply_to=p.post_id AND r.deleted_at IS NULL)"
+_VISIBLE = f"(p.deleted_at IS NULL OR (p.reply_to IS NULL AND {_REPLY_COUNT}>0))"
+
+
+def _members(connection: sqlite3.Connection, project_id: str) -> list[dict[str, str]]:
+    return [
+        dict(row)
+        for row in connection.execute(
+            "SELECT u.user_id, COALESCE(u.display_name,u.user_id) AS display_name FROM project_members m "
+            "JOIN space_users u ON u.user_id=m.user_id JOIN projects p ON p.project_id=m.project_id "
+            "WHERE m.project_id=? AND u.removal_started_at IS NULL AND p.retired_at IS NULL ORDER BY display_name,u.user_id",
+            (project_id,),
+        )
+    ]
+
+
+def _parse(
+    connection: sqlite3.Connection, project_id: str, target_key: str, text: str
+) -> tuple[list[str], list[dict[str, str]]]:
+    from rcp.bulletin import bulletin_actor_id
+
+    refs = list(
+        dict.fromkeys(
+            token.rstrip(".,;:)") for token in re.findall(r"#([A-Za-z0-9][A-Za-z0-9_./-]*)", text)
+        )
+    )[:BULLETIN_REFS_MAX_COUNT]
+    members = {member["user_id"] for member in _members(connection, project_id)}
+    mentions = [
+        {"kind": kind, "id": identity}
+        for kind, identity in dict.fromkeys(re.findall(r"<@(member|agent):([^<>\s]+)>", text))
+        if kind == "agent" or identity in members
+    ]
+    if "<@agent:" not in text:
+        return refs, mentions
+    target = (
+        GraphTargetRef(kind="main")
+        if target_key == "main"
+        else GraphTargetRef(kind="branch", branch_id=target_key.removeprefix("branch:"))
+    )
+    agents = {
+        bulletin_actor_id(connection, row)
+        for row in connection.execute(
+            "SELECT * FROM graph_runs WHERE project_id=? AND graph_target_json=? AND visible=1",
+            (project_id, graph_target_json(target)),
+        )
+    }
+    return refs, [m for m in mentions if m["kind"] == "member" or m["id"] in agents]
 
 
 def _list(
@@ -82,11 +146,11 @@ def _list(
     if before < 0 or before > 9223372036854775807:
         raise BulletinError("bulletin_cursor_invalid")
     rows = connection.execute(
-        "SELECT * FROM bulletin_posts WHERE project_id=? AND target_key=? AND sequence<? ORDER BY sequence DESC LIMIT ?",
+        f"SELECT p.*, {_REPLY_COUNT} AS reply_count FROM bulletin_posts p WHERE project_id=? AND target_key=? AND sequence<? AND {_VISIBLE} ORDER BY sequence DESC LIMIT ?",
         (project_id, target_key, before, BULLETIN_PAGE_SIZE + 1),
     ).fetchall()
     total = connection.execute(
-        "SELECT count(*) FROM bulletin_posts WHERE project_id=? AND target_key=?",
+        f"SELECT count(*) FROM bulletin_posts p WHERE project_id=? AND target_key=? AND {_VISIBLE}",
         (project_id, target_key),
     ).fetchone()[0]
     posts = [_record(row) for row in rows[:BULLETIN_PAGE_SIZE]]
@@ -126,8 +190,9 @@ def _post(
     author: dict[str, str],
     key: str | None,
     text: str | None,
-    refs: list[str] | None,
     reply_to: str | None,
+    action: str = "post",
+    post_id: str | None = None,
 ) -> dict[str, Any]:
     if not isinstance(key, str) or not key.strip() or len(key) > BULLETIN_KEY_MAX_CHARS:
         raise BulletinError("bulletin_key_invalid")
@@ -137,11 +202,13 @@ def _post(
         or len(reply_to) > BULLETIN_REPLY_MAX_CHARS
     ):
         raise BulletinError("bulletin_reply_invalid")
-    refs = refs or []
     digest = hashlib.sha256(
-        json.dumps({"text": text, "refs": refs, "reply_to": reply_to}, sort_keys=True).encode()
+        json.dumps(
+            {"action": action, "post_id": post_id, "text": text, "reply_to": reply_to},
+            sort_keys=True,
+        ).encode()
     ).hexdigest()
-    author_key = author["kind"] + ":" + author.get("operation_id", author.get("user_id", ""))
+    author_key = author["kind"] + ":" + (author.get("operation_id") or author.get("user_id", ""))
     receipt = connection.execute(
         "SELECT args_digest,result_json FROM bulletin_command_receipts WHERE project_id=? AND target_key=? AND author_key=? AND key=?",
         (project_id, target_key, author_key, key),
@@ -176,51 +243,94 @@ def _post(
         if blocked:
             raise BulletinError("bulletin_post_forbidden")
     error = None
-    if not isinstance(text, str) or not text.strip() or len(text) > BULLETIN_TEXT_MAX_CHARS:
-        error = "bulletin_text_invalid"
-    elif len(refs) > BULLETIN_REFS_MAX_COUNT or any(
-        not isinstance(ref, str) or not ref.strip() or len(ref) > BULLETIN_TEXT_MAX_CHARS
-        for ref in refs
+    if action != "delete" and (
+        not isinstance(text, str) or not text.strip() or len(text) > BULLETIN_TEXT_MAX_CHARS
     ):
-        error = "bulletin_refs_invalid"
+        error = "bulletin_text_invalid"
     elif reply_to is not None:
         parent = connection.execute(
-            "SELECT reply_to FROM bulletin_posts WHERE project_id=? AND target_key=? AND post_id=?",
+            "SELECT reply_to,deleted_at FROM bulletin_posts WHERE project_id=? AND target_key=? AND post_id=?",
             (project_id, target_key, reply_to),
         ).fetchone()
-        if parent is None or parent["reply_to"] is not None:
+        if parent is None or parent["reply_to"] is not None or parent["deleted_at"] is not None:
             error = "bulletin_reply_invalid"
+    if action != "post":
+        existing = connection.execute(
+            "SELECT * FROM bulletin_posts WHERE project_id=? AND target_key=? AND post_id=?",
+            (project_id, target_key, post_id),
+        ).fetchone()
+        if existing is None:
+            error = "bulletin_post_not_found"
+        elif existing["author_kind"] != author["kind"] or (
+            existing["user_id"] != author["user_id"]
+            if author["kind"] == "member"
+            else not author.get("actor_id") or existing["author_actor_id"] != author["actor_id"]
+        ):
+            error = "bulletin_not_author"
+        elif existing["deleted_at"] is not None:
+            error = "bulletin_post_deleted"
     if error:
         outcome = {"error": error}
     else:
-        post_id = uuid.uuid4().hex
-        connection.execute(
-            "INSERT INTO bulletin_posts(post_id,project_id,target_key,author_kind,operation_id,actor_label,user_id,display_name,text,refs_json,reply_to,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                post_id,
-                project_id,
-                target_key,
-                author["kind"],
-                author.get("operation_id"),
-                author.get("actor_label"),
-                author.get("user_id"),
-                author.get("display_name"),
-                text,
-                json.dumps(refs),
-                reply_to,
-                now,
-            ),
+        refs, mentions = (
+            ([], [])
+            if action == "delete"
+            else _parse(connection, project_id, target_key, text or "")
         )
+        if action == "edit":
+            connection.execute(
+                "UPDATE bulletin_posts SET text=?,refs_json=?,mentions_json=?,edited_at=? WHERE post_id=?",
+                (text, json.dumps(refs), json.dumps(mentions), now, post_id),
+            )
+        elif action == "delete":
+            connection.execute(
+                "UPDATE bulletin_posts SET text='',refs_json='[]',mentions_json='[]',deleted_at=? WHERE post_id=?",
+                (now, post_id),
+            )
+        else:
+            post_id = uuid.uuid4().hex
+            connection.execute(
+                "INSERT INTO bulletin_posts(post_id,project_id,target_key,author_kind,operation_id,actor_label,user_id,display_name,text,refs_json,reply_to,created_at,author_actor_id,mentions_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    post_id,
+                    project_id,
+                    target_key,
+                    author["kind"],
+                    author.get("operation_id"),
+                    author.get("actor_label"),
+                    author.get("user_id"),
+                    author.get("display_name"),
+                    text,
+                    json.dumps(refs),
+                    reply_to,
+                    now,
+                    author.get("actor_id"),
+                    json.dumps(mentions),
+                ),
+            )
+        for mention in mentions:
+            if mention["kind"] == "member" and mention["id"] != author.get("user_id"):
+                connection.execute(
+                    "INSERT OR IGNORE INTO bulletin_mention_observations(project_id,target_key,post_id,user_id,created_at) VALUES(?,?,?,?,?)",
+                    (project_id, target_key, post_id, mention["id"], now),
+                )
         outcome = {
             "post": _record(
                 connection.execute(
-                    "SELECT * FROM bulletin_posts WHERE post_id=?", (post_id,)
+                    f"SELECT p.*, {_REPLY_COUNT} AS reply_count FROM bulletin_posts p WHERE post_id=?",
+                    (post_id,),
                 ).fetchone()
             )
         }
         connection.execute(
             "DELETE FROM bulletin_posts WHERE project_id=? AND target_key=? AND sequence NOT IN (SELECT sequence FROM bulletin_posts WHERE project_id=? AND target_key=? ORDER BY sequence DESC LIMIT ?)",
             (project_id, target_key, project_id, target_key, BULLETIN_POSTS_PER_TARGET_MAX),
+        )
+        connection.execute(
+            "DELETE FROM bulletin_mention_observations WHERE project_id=? AND target_key=? "
+            "AND observed_at IS NOT NULL "
+            "AND NOT EXISTS (SELECT 1 FROM bulletin_posts p WHERE p.post_id=bulletin_mention_observations.post_id)",
+            (project_id, target_key),
         )
     connection.execute(
         "INSERT INTO bulletin_command_receipts VALUES (?,?,?,?,?,?)",
@@ -248,6 +358,104 @@ def bulletin_enabled_for_task(connection: sqlite3.Connection, operation_id: str)
 
 
 class BulletinStoreMixin(StoreMixinBase):
+    def bulletin_members(self, project_id: str) -> list[dict[str, str]]:
+        with self.connection() as connection:
+            return _members(connection, project_id)
+
+    def list_bulletin_mentions(
+        self, project_id: str, target_key: str, actor_id: str
+    ) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            return [
+                _record(row)
+                for row in connection.execute(
+                    f"SELECT p.*, {_REPLY_COUNT} AS reply_count FROM bulletin_posts p WHERE project_id=? AND target_key=? AND deleted_at IS NULL AND EXISTS(SELECT 1 FROM json_each(p.mentions_json) m WHERE json_extract(m.value,'$.kind')='agent' AND json_extract(m.value,'$.id')=?) ORDER BY sequence DESC",
+                    (project_id, target_key, actor_id),
+                )
+            ]
+
+    def mutate_bulletin_post(
+        self,
+        project_id: str,
+        target_key: str,
+        post_id: str,
+        *,
+        user_id: str,
+        key: str,
+        text: str | None = None,
+        action: str = "edit",
+    ) -> dict[str, Any]:
+        if action not in {"edit", "delete"}:
+            raise BulletinError("bulletin_command_invalid")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if not live_project_member(connection, project_id, user_id):
+                raise BulletinError("bulletin_forbidden")
+            ProjectProvisioningStoreMixin._require_project_accepts_new_work(connection, project_id)
+            outcome = _post(
+                connection,
+                project_id,
+                target_key,
+                now=self.now(),
+                author={"kind": "member", "user_id": user_id},
+                key=key,
+                text=text,
+                reply_to=None,
+                action=action,
+                post_id=post_id,
+            )
+        return _result(outcome)["post"]
+
+    def mark_bulletin_read(
+        self, project_id: str, target_key: str, user_id: str, sequence_post_id: str
+    ) -> None:
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if not live_project_member(connection, project_id, user_id):
+                raise BulletinError("bulletin_forbidden")
+            row = connection.execute(
+                "SELECT sequence FROM bulletin_posts WHERE project_id=? AND target_key=? AND post_id=?",
+                (project_id, target_key, sequence_post_id),
+            ).fetchone()
+            if row is None:
+                raise BulletinError("bulletin_post_not_found")
+            connection.execute(
+                "INSERT INTO bulletin_reads VALUES(?,?,?,?) ON CONFLICT(project_id,target_key,user_id) DO UPDATE SET last_sequence=MAX(last_sequence,excluded.last_sequence)",
+                (project_id, target_key, user_id, row["sequence"]),
+            )
+
+    def bulletin_channels(self, project_id: str, user_id: str) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            branches = connection.execute(
+                "SELECT branch_id,name FROM graph_branches WHERE project_id=? AND archived=0",
+                (project_id,),
+            ).fetchall()
+            channels = [{"target_key": "main", "branch_id": None, "name": "main"}] + [
+                {
+                    "target_key": "branch:" + row["branch_id"],
+                    "branch_id": row["branch_id"],
+                    "name": row["name"] or row["branch_id"][:8],
+                }
+                for row in branches
+            ]
+            for channel in channels:
+                row = connection.execute(
+                    "SELECT MAX(created_at) AS last_post_at, MIN(?,SUM(CASE WHEN sequence>COALESCE((SELECT last_sequence FROM bulletin_reads WHERE project_id=? AND target_key=? AND user_id=?),0) AND NOT(author_kind='member' AND user_id=?) THEN 1 ELSE 0 END)) AS unread FROM bulletin_posts WHERE project_id=? AND target_key=? AND deleted_at IS NULL",
+                    (
+                        BULLETIN_UNREAD_MAX_COUNT,
+                        project_id,
+                        channel["target_key"],
+                        user_id,
+                        user_id,
+                        project_id,
+                        channel["target_key"],
+                    ),
+                ).fetchone()
+                channel.update(last_post_at=row["last_post_at"], unread=row["unread"] or 0)
+            branches = sorted(channels[1:], key=lambda channel: channel["name"])
+            branches.sort(key=lambda channel: channel["last_post_at"] or "", reverse=True)
+            return channels[:1] + branches
+
     def bulletin_waiting_chat_ids(self, project_id: str, target: GraphTargetRef) -> set[str]:
         """Human Work chats remain alive while their target has an undelivered observer."""
         with self.connection() as connection:
@@ -288,7 +496,6 @@ class BulletinStoreMixin(StoreMixinBase):
         *,
         user_id: str,
         key: str,
-        refs: list[str] | None = None,
         reply_to: str | None = None,
     ) -> dict[str, Any]:
         with self.connection() as connection:
@@ -311,7 +518,6 @@ class BulletinStoreMixin(StoreMixinBase):
                 },
                 key=key,
                 text=text,
-                refs=refs,
                 reply_to=reply_to,
             )
         return _result(outcome)["post"]
@@ -324,11 +530,11 @@ class BulletinStoreMixin(StoreMixinBase):
         *,
         key: str | None = None,
         text: str | None = None,
-        refs: list[str] | None = None,
         reply_to: str | None = None,
         cursor: str | None = None,
+        post_id: str | None = None,
     ) -> dict[str, Any]:
-        if subcommand not in {"read", "post"}:
+        if subcommand not in {"read", "post", "edit", "delete"}:
             raise BulletinError("bulletin_command_invalid")
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -350,20 +556,27 @@ class BulletinStoreMixin(StoreMixinBase):
             } or not live_project_member(connection, project_id, task["authorized_user_id"]):
                 raise BulletinError("bulletin_forbidden")
             ProjectProvisioningStoreMixin._require_project_accepts_new_work(connection, project_id)
+            from rcp.bulletin import bulletin_actor_id
+
+            actor_id = bulletin_actor_id(connection, task)
+            if actor_id is None:
+                raise BulletinError("bulletin_forbidden")
             outcome = _post(
                 connection,
                 project_id,
                 target_key,
                 now=self.now(),
                 author={
+                    "actor_id": actor_id,
                     "kind": "agent",
                     "operation_id": operation_id,
                     "actor_label": _agent_label(task),
                 },
                 key=key,
                 text=text,
-                refs=refs,
                 reply_to=reply_to,
+                action=subcommand,
+                post_id=post_id,
             )
         return _result(outcome)
 

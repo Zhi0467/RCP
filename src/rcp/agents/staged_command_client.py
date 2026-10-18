@@ -240,9 +240,10 @@ def _parser():
     bulletin_actions = bulletin.add_mutually_exclusive_group(required=True)
     bulletin_actions.add_argument("--post", action="store_true")
     bulletin_actions.add_argument("--read", action="store_true")
+    bulletin_actions.add_argument("--edit")
+    bulletin_actions.add_argument("--delete")
     bulletin.add_argument("--key")
     bulletin.add_argument("--reply-to")
-    bulletin.add_argument("--ref", action="append", default=[])
     bulletin.add_argument("--cursor")
     bulletin.add_argument("body_file", nargs="?")
 
@@ -399,9 +400,22 @@ def _request_arguments(namespace, workspace):
         return verb, None, arguments
     if verb == "bulletin":
         if namespace.read:
-            if namespace.key or namespace.reply_to or namespace.ref or namespace.body_file:
+            if namespace.key or namespace.reply_to or namespace.body_file:
                 raise ClientInputError("Bulletin reads accept only a cursor")
             return verb, None, {"action": "read", "cursor": namespace.cursor}
+        if namespace.delete:
+            if namespace.cursor or namespace.body_file or namespace.reply_to:
+                raise ClientInputError("Bulletin deletes accept only a post id and key")
+            return (
+                verb,
+                _nonblank(namespace.key, "idempotency key"),
+                {
+                    "action": "delete",
+                    "post_id": namespace.delete,
+                },
+            )
+        if namespace.edit and namespace.reply_to:
+            raise ClientInputError("Bulletin edits accept no reply target")
         if namespace.cursor or not namespace.body_file:
             raise ClientInputError("Bulletin posts require a body file and accept no cursor")
         path = _regular_workspace_file(workspace, namespace.body_file, "Bulletin body")
@@ -414,10 +428,13 @@ def _request_arguments(namespace, workspace):
             verb,
             _nonblank(namespace.key, "idempotency key"),
             {
-                "action": "post",
+                "action": "edit" if namespace.edit else "post",
                 "text": _nonblank(text, "Bulletin body"),
-                "refs": namespace.ref,
-                "reply_to": namespace.reply_to,
+                **(
+                    {"post_id": namespace.edit}
+                    if namespace.edit
+                    else {"reply_to": namespace.reply_to}
+                ),
             },
         )
     if verb == "lesson":
