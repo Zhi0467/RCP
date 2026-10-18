@@ -33,6 +33,7 @@ from rcp.agents.prompts import (
     _invoked_package_section,
     invoked_package_pointers,
     invoked_provider_skill_section,
+    render_chat_read_context,
 )
 from rcp.background import AgentTaskContinuation, AgentTaskExecution
 from rcp.history import ReplayHalted
@@ -523,6 +524,8 @@ def _compose_child_fresh_prompt(
             contract_path,
             PromptFactory.launch_prompt(contract_path)
             + "\n\n"
+            + render_chat_read_context(turn.context)
+            + "\n\n"
             + stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage),
             contract_path,
             render,
@@ -545,6 +548,7 @@ def _compose_child_fresh_prompt(
         skill_pointers=staged.skill_pointers,
         attachment_pointers=staged.attachment_pointers,
         ontology_extensions=turn.context.ontology_extensions,
+        read_context=render_chat_read_context(turn.context),
     )
     return _ComposedWorkPrompt(contract_path, prompt, contract_path, render, values)
 
@@ -615,6 +619,7 @@ def _compose_child_retry_prompt(
         execution=turn.execution,
         role="work_retry",
     )
+    prompt += "\n\n" + render_chat_read_context(turn.context)
     prompt += "\n\n" + stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage)
     return _ComposedWorkPrompt(
         contract_path=contract_path,

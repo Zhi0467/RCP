@@ -13,6 +13,7 @@ import rcp.api.app as api_app_module
 import rcp.runs.tasks.auto_research_child_work as child_work_module
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.continuation_prompt import SECTIONS
+from rcp.agents.group_context import GroupContext, GroupProjectContext
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman
@@ -54,6 +55,7 @@ from rcp.storage import (
     WatcherContinuation,
     WatcherRecord,
 )
+from rcp.transport import RepositoryAccess
 from rcp.transport.workspace_mailbox import RunStageMailbox, clear_turn_handoff_files
 
 from .helpers import (
@@ -655,6 +657,22 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
         return result
 
     monkeypatch.setattr(child_work_module, "_stage_auto_research_child_work_turn", capture_turn)
+    pointer = RepositoryAccess(alias="state", machine="laptop", path=str(tmp_path / "sibling"))
+    group = GroupContext(
+        group_name="Benchmarks",
+        project_id=app.state.default_project_id,
+        project_name="Own",
+        siblings=(
+            GroupProjectContext(
+                project_id="sibling",
+                name="Sibling",
+                graph=pointer,
+                research_md=pointer,
+                repositories=(pointer,),
+            ),
+        ),
+    )
+    monkeypatch.setattr("rcp.runs.tasks.work_staging.build_group_context", lambda *_: group)
     launcher = _SessionSequenceLauncher(
         [
             {},
@@ -750,6 +768,11 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     assert any(name.startswith("chat-master-v") for name in input_names)
     assert any(name.startswith("rcp-agent-client-") for name in input_names)
     assert stage / "inputs" in launcher.launch_kwargs[0]["read_dirs"]
+    # A fresh child receives the group pointers its read scope grants.
+    assert (
+        json.dumps({"group_context": group.model_dump(mode="json")}, ensure_ascii=False)
+        in launcher.prompts[0]
+    )
     launch = next(
         receipt
         for receipt in store.agent_task_receipts(child.operation_id)
