@@ -42,14 +42,6 @@ from rcp.runs.merge_plan import plan_merge
 from rcp.runs.patch_validator import MergeAnswersCheck
 from rcp.transport import StateUnavailable
 
-# All workflows cross the real planner/builder boundary; remove this mark when
-# that interface is integrated. A different exception must remain a test failure.
-pytestmark = pytest.mark.xfail(
-    strict=True,
-    raises=TypeError,
-    reason="merge_plan._encode_candidates calls construct_effects without required flags argument",
-)
-
 _BRANCH_ID = "12b3d806-f989-4db0-8a04-413b3abde287"
 _HUMAN = AuthorizedHuman(
     space_id="42ff4a99-7e19-4444-aaad-1b841f30f969",

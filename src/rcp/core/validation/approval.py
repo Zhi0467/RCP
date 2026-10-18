@@ -27,6 +27,7 @@ from rcp.core.operations import (
 from rcp.core.validation.proposals import (
     decision_transition_error,
     normalized_decision_proposal_ops,
+    proposal_approval_operations,
     proposal_is_stale,
     proposal_updates_node,
 )
@@ -211,13 +212,23 @@ def validate_approval_shape(
     if status == "approved":
         normalized_ops = normalized_decision_proposal_ops(state, proposal)
         proposal_semantic_ops = graph_operations_from_proposal(proposal.ops)
+        if proposed_standing:
+            # Connected reviews can explicitly judge one subject while approval
+            # implicitly accepts other written subjects. Keep both in the exact
+            # comparison; never discard an arbitrary standing operation.
+            implicit_standing = proposal_approval_operations(state, proposal)[
+                len(normalized_ops) + 1 :
+            ]
+            normalized_ops = [*normalized_ops, *implicit_standing]
+            proposal_semantic_ops = [*proposal_semantic_ops, *implicit_standing]
         is_verbatim = semantic_ops == proposal_semantic_ops
         requires_normalization = normalized_ops != proposal_semantic_ops
         if not is_verbatim and semantic_ops != normalized_ops:
             report.reject(
                 "proposal-replay-mismatch",
-                "Approval must replay the proposal's stored operations, allowing only the "
-                "implied decided status for a legacy Decision selection.",
+                "Approval must replay the proposal's stored operations with its implicit "
+                "standing effects, allowing only the implied decided status for a legacy "
+                "Decision selection.",
                 revision,
             )
         elif is_verbatim and requires_normalization and mode == "admission":

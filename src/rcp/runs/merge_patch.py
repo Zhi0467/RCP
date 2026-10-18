@@ -18,9 +18,12 @@ from rcp.core.authority import (
     classify_graph_changes,
     derived_agent_action,
 )
-from rcp.core.materialize import apply_valid_patch, prepare_patch_bookkeeping
+from rcp.core.materialize import (
+    apply_valid_patch,
+    prepare_patch_bookkeeping,
+    proposal_filing_dependency_rule,
+)
 from rcp.core.models import (
-    CURRENT_PROPOSAL_DEPENDENCY_RULE,
     GatedCard,
     GraphState,
     Patch,
@@ -48,6 +51,7 @@ from rcp.core.transitions import (
 from rcp.core.validation import ValidationContext, is_coherence_clash
 from rcp.core.validation.proposals import (
     ProposalEffectRejected,
+    connected_proposal_operation_groups,
     proposal_dependencies_and_effects,
     proposal_is_stale,
 )
@@ -687,7 +691,7 @@ def _review_proposal(
         title="Review branch changes",
         card=GatedCard.model_validate(answers.cards[group.subject_key].model_dump()),
         ops=operations,
-        dependency_rule=CURRENT_PROPOSAL_DEPENDENCY_RULE,
+        dependency_rule=proposal_filing_dependency_rule(len(operations), branch_merge=True),
     )
     filing = prepare_patch_bookkeeping(
         plan.destination_graph,
@@ -711,28 +715,16 @@ def build_merge_patch(plan: MergePlan, answers: MergeAnswers) -> Patch:
     reviews: dict[str, list[ProposalOperation]] = defaultdict(list)
     # Keep coherent groups explicit. Core stages admitted prerequisites once;
     # pending review effects never become part of the next group's prefix.
-    pending: dict[str, list[_Effect]] = defaultdict(list)
     groups: list[tuple[list[GraphOperation], str | None, list[GraphOperation]]] = []
     for effect in effects:
         keys = [key for key, coords in group_coordinates.items() if coords & effect.coordinates]
         if len(keys) > 1:
             _refuse("merge-review-groups-changed", "A coherent effect spans multiple review groups")
-        if keys and not any(op.op == "create_nodes" for op in effect.operations):
-            pending[keys[0]].append(effect)
-            continue
         groups.append(
             (
                 effect.operations,
                 keys[0] if keys else None,
                 [effect.restore_standing] if effect.restore_standing is not None else [],
-            )
-        )
-    for key in sorted(pending):
-        groups.append(
-            (
-                [op for effect in pending[key] for op in effect.operations],
-                key,
-                [effect.restore_standing for effect in pending[key] if effect.restore_standing],
             )
         )
     restorations: list[GraphOperation] = []
@@ -753,6 +745,7 @@ def build_merge_patch(plan: MergePlan, answers: MergeAnswers) -> Patch:
         for result in _classify(plan, [direct, restorations]):
             _require_admitted(plan, result)
         direct.extend(restorations)
+    staged = _staged_graph(plan, direct)
     proposals: list[Proposal] = []
     withdrawals: list[dict[str, str]] = []
     for group in sorted(plan.review_groups, key=lambda item: item.subject_key):
@@ -777,7 +770,13 @@ def build_merge_patch(plan: MergePlan, answers: MergeAnswers) -> Patch:
         if not combined:
             continue
         proposal = _review_proposal(plan, group, combined, answers)
-        proposals.append(proposal)
+        # Answers can retain a destination value that connected two planned
+        # effects. File the remaining connected components with the same card;
+        # each component still passes the ordinary filing and approval gates.
+        components = connected_proposal_operation_groups(staged, proposal)
+        proposals.extend(
+            _review_proposal(plan, group, list(component), answers) for component in components
+        )
     # Validate all filings with one explicit prefix, then calculate footprints
     # against one staged graph. Carried source cards participate in the same
     # no-mutual-invalidation guarantee as newly constructed merge reviews.
@@ -787,7 +786,6 @@ def build_merge_patch(plan: MergePlan, answers: MergeAnswers) -> Patch:
     if filing_groups:
         for result in _classify(plan, ([direct] if direct else []) + filing_groups):
             _require_admitted(plan, result)
-    staged = _staged_graph(plan, direct)
     carried = [
         staged.proposals[proposal.id]
         for operation in direct

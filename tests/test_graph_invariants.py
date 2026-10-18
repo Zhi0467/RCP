@@ -28,7 +28,7 @@ from rcp.runs.merge_contract import (
 )
 from rcp.runs.merge_patch import prepare_merge_candidate
 from tests.helpers import seed_patch
-from tests.test_merge_regressions import _answers, _append, _commit, _fork_history, _plan
+from tests.test_merge_regressions import _answers, _append, _approve, _commit, _fork_history, _plan
 
 SCOPE = ["repo-a"]
 STEPS = 1500
@@ -377,11 +377,6 @@ def _assert_content(state, expected):
 
 
 @pytest.mark.parametrize("seed", range(4))
-@pytest.mark.xfail(
-    strict=True,
-    raises=TypeError,
-    reason="merge_plan._encode_candidates omits construct_effects' required flags argument",
-)
 def test_generated_three_way_merge_preserves_content_through_approval(manifest, seed):
     rng = random.Random(seed)
     generator = _Generator(rng)
@@ -472,18 +467,13 @@ def test_generated_three_way_merge_preserves_content_through_approval(manifest, 
         for operation in approval:
             if operation.op == "set_standing":
                 expected[("nodes", operation.node_id, "standing")] = operation.standing
-        _append(history, *(operation_dict(operation) for operation in approval))
+        _approve(history, proposal.id)
     _assert_content(history.state(), expected)
     _assert_content(history.materialize(write_outputs=False).state, expected)
     assert _violations(history.state()) == {}
 
 
 @pytest.mark.parametrize("seed", range(4))
-@pytest.mark.xfail(
-    strict=True,
-    raises=TypeError,
-    reason="merge_plan._encode_candidates omits construct_effects' required flags argument",
-)
 def test_generated_incompatible_decision_choices_refuse_without_partial_write(manifest, seed):
     rng = random.Random(seed)
     options = [f"Option {value}" for value in rng.sample(range(100), 3)]

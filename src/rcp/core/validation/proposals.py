@@ -754,7 +754,6 @@ def _validate_agent_proposal_boundary(
         REMOVAL_INTENT: _validate_removal_intent,
         SUPERSEDE_INTENT: _validate_supersede_intent,
         MERGE_INTENT: _validate_merge_intent,
-        PROTECTED_RELATION_CHANGE_INTENT: _validate_protected_relation_change_intent,
         STATUS_CHANGE_INTENT: _validate_status_change_intent,
         STANDING_CHANGE_INTENT: _validate_standing_change_intent,
     }
@@ -766,7 +765,12 @@ def _validate_agent_proposal_boundary(
                 f"{', '.join(sorted(PROPOSAL_INTENTS))}."
             )
             continue
-        error = validators[intent](state, context_patch, operation, writer)
+        if intent == PROTECTED_RELATION_CHANGE_INTENT:
+            error = _validate_protected_relation_change_intent(
+                state, context_patch, operation, writer, proposal=proposal
+            )
+        else:
+            error = validators[intent](state, context_patch, operation, writer)
         if error is not None:
             refuse(f"Proposal {proposal.id} declares {intent!r}, but {error}")
 
@@ -783,21 +787,37 @@ def _is_connected_merge_bundle(
 
     if not _is_branch_merge(patch, writer) or proposal.dependency_rule < 3:
         return False
-    footprints = []
     try:
-        for operation in proposal.ops:
-            member = proposal.model_copy(update={"ops": [operation], "raised_rev": 0})
-            footprints.append(_proposal_effect_footprint(state, member, validate=False))
+        return len(connected_proposal_operation_groups(state, proposal)) == 1
     except (AttributeError, IndexError, KeyError, TypeError, ValueError):
         # The ordinary intent and operation validators report the invalid
         # effect. It cannot gain the exceptional multi-intent admission form.
         return False
-    if not footprints:
-        return False
-    connected = {0}
-    pending = set(range(1, len(footprints)))
+
+
+def connected_proposal_operation_groups(
+    state: GraphState, proposal: Proposal
+) -> tuple[tuple[ProposalOperation, ...], ...]:
+    """Partition speculative approval effects using core's dependency contract.
+
+    Partial edge replacements cannot validate alone. This only computes their
+    intersections; every resulting complete group still requires classification
+    and validation before filing. Preserve the original operation order.
+    """
+    footprints = [
+        _proposal_effect_footprint(
+            state,
+            proposal.model_copy(update={"ops": [operation], "raised_rev": 0}),
+            validate=False,
+        )
+        for operation in proposal.ops
+    ]
+    pending = set(range(len(footprints)))
+    groups: list[tuple[ProposalOperation, ...]] = []
     while pending:
-        found = {
+        connected = {min(pending)}
+        pending.difference_update(connected)
+        while found := {
             index
             for index in pending
             if any(
@@ -805,12 +825,11 @@ def _is_connected_merge_bundle(
                 or footprints[other].effects & footprints[index].dependencies
                 for other in connected
             )
-        }
-        if not found:
-            return False
-        connected.update(found)
-        pending.difference_update(found)
-    return True
+        }:
+            connected.update(found)
+            pending.difference_update(found)
+        groups.append(tuple(proposal.ops[index] for index in sorted(connected)))
+    return tuple(groups)
 
 
 def _is_same_node_merge_bundle(
@@ -1008,6 +1027,8 @@ def _validate_protected_relation_change_intent(
     context_patch: Patch | None,
     operation: ProposalOperation,
     writer: Writer,
+    *,
+    proposal: Proposal,
 ) -> str | None:
     if not isinstance(operation, ProposalProtectedRelationOperation):
         return "a protected relation change requires one create_edges or remove_edges operation."
@@ -1021,7 +1042,26 @@ def _validate_protected_relation_change_intent(
         if edge.relation not in PROTECTED_EPISTEMIC_RELATIONS:
             return "a protected relation change must use a protected relation."
         if edge.relation in {"supersedes", "duplicate_of"}:
-            return "supersedes and duplicate_of must use their dedicated supersede or merge intent."
+            previous = state.edges.get(edge.id) if edge.id is not None else None
+            preceding = proposal.ops[: proposal.ops.index(operation)]
+            replaces_existing = (
+                _is_branch_merge(context_patch, writer)
+                and proposal.dependency_rule >= 3
+                and previous is not None
+                and (previous.source, previous.target, previous.relation)
+                == (edge.source, edge.target, edge.relation)
+                and any(
+                    isinstance(item, ProposalProtectedRelationOperation)
+                    and item.op == "remove_edges"
+                    and edge.id in (item.edge_ids or [])
+                    for item in preceding
+                )
+            )
+            # Editing an existing relation's prose does not retire its node
+            # again. New or retargeted retirement relations still require the
+            # semantic operation that owns their lifecycle effects.
+            if not replaces_existing:
+                return "supersedes and duplicate_of must use their dedicated supersede or merge intent."
         if context_patch is not None and any(
             node_id in created_node_ids(context_patch) for node_id in endpoints
         ):

@@ -209,9 +209,14 @@ with canonically proven human cause. Dependency rule 3 permits a connected group
 of intents whose approval effects overlap another member's effects or dependencies,
 validated and approved atomically. Shared read-only dependencies alone do not
 connect a group. This includes removing and recreating one protected edge.
+An existing retirement edge may be replaced to edit its content while keeping
+its id, endpoints, and relation; new retirement relations still require the
+dedicated supersede or merge operation. If merge answers remove a connecting
+effect, the surviving components become separate Proposals using the supplied card.
 Explicit proposed standing overrides implicit accepted standing; rule 3 implicitly
 accepts only written subjects, leaving read-only dependencies unchanged. Earlier
 rules retain their same-node bundle admission and approval-standing behavior.
+Approval replays the stored effects plus their exact implicit standing operations.
 Merge may also propose exact removal of an accepted ordinary node.
 Merge conformance proves every effect against the source delta; none of
 these forms grants direct approval or accepted-node removal.

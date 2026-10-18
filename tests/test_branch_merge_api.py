@@ -474,6 +474,8 @@ class _AnswersWritingLauncher:
             process = await asyncio.create_subprocess_exec(
                 *invocation_gate.client_executable_argv(),
                 *invocation_gate.client_arguments(),
+                "--timeout",
+                "30",
                 "--workspace",
                 str(cwd),
                 "merge-answers",
