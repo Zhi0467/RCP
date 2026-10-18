@@ -471,5 +471,6 @@ def install_bulletin_resource_versions(connection: sqlite3.Connection) -> None:
             table,
             [_bump("ROW.project_id", "bulletin")],
             columns=columns,
-            suffix="_bulletin",
+            # Posts own their table's triggers; the roster inputs share other owners' tables.
+            suffix="" if table == "bulletin_posts" else "_bulletin",
         )

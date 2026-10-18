@@ -377,7 +377,7 @@ def test_parent_snapshot_and_location_exclude_post_parent_graph(
 
     main, parent = branch_services
     head = parent.history.head_ref()
-    fork = main.history.create_episode_branch(fork_metadata(main.history, head))
+    fork = main.history.create_branch(fork_metadata(main.history, head))
     parent.history.append(_branch_patch("ev/after-parent"))
     service = main.for_graph_target(fork.graph_target)
     stage = tmp_path / "fork-stage"

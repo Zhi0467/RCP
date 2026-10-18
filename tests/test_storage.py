@@ -2246,6 +2246,8 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "lesson_command_receipts": 0,
         "evidence_flags": 0,
         "evidence_flag_command_receipts": 0,
+        "bulletin_posts": 0,
+        "bulletin_command_receipts": 0,
         "operational_lessons": 0,
         "chat_pins": 0,
         "conversation_worktrees": 0,

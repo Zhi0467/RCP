@@ -135,6 +135,7 @@ class AppStoreBase:
             "_legacy_campaign_recoveries_archive",
             "_legacy_campaign_reports_archive",
             "_legacy_campaigns_archive",
+            "auto_research_child_work",
             "episodes",
             "episode_reports",
             "episode_wrapups",

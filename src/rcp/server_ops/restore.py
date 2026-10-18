@@ -46,30 +46,20 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
-        # Project worker seats (v57): fresh, fixture and in-place upgrades.
-        "a266cf9318730688e35f7fb91b0d3a9e90b6db4eedec96b8a4e0a3ce0fa516d8",
-        "275a9623a7675cb4ebaaaea9168f99f2dbbd4ec5025fa9811709f169f663c092",
-        "16a7823f27f69219307ba484ef1e3c94d995a6307c199102f3fd57fa12485197",
-        "0b8de8324121f734fc28280238db93dc5458f5c81ff883261e52af9ab6dd566a",
-        "114352daddfd611324a85832f4ec58fea65a6066d3403c7e0eb449fd9ab5abfe",
-        "48aac4ecf5b5bec9dc6f32367a8fda172c489a423e60d96cf09bee6a98a23dbe",
-        "131bc2f0ce641981e06cfa92fbf8fc2741387646fad1ad48d6459269237ee23c",
-        "4687242d1f0f2f70b79a5c5ad40251c153e080aeefe99860a128acf10f792c68",
-        "0478a1d3756f895d8576c56f067199210225d432b9517d0efdfe6fefd4edcff4",
-        "3c1ff5e1877ef289e57a3c4934957c89fb3030f5f88a1fb272c7845f5c6b760e",
+        # Graph Bulletin (v56) and project worker seats (v57): fresh, fixture and in-place upgrades.
+        "d6a075929c1a1d46d94c08084862fda8220821f67374fcd06105cbcad3f5e16a",
+        "a90c0144f8c2f77b2d4df649c8c81900d1050159f5e874c18cef4ec19dce1db8",
+        "87cc6c290ba8878eb24b373077b142dfcb0b31fad035438ab0fbc84fb58d58b9",
+        "f0a8e2c39c8f53791daf0cf39fdc8433b6e58846f3420264905a418d8bd90475",
+        "1c064e761012734138479dee483f203a20fe30e2e7aca2fcd24e70c6c5e033d6",
+        "872daff6eae71008366bbdbf89da02296e6dfa854768e22da1bc534eea1e8063",
+        "5f3d30d00f68cac1125dd116619b996fb811c55ba790b0a57408300f895172f8",
+        "dfd2a8bb1375712f13e1ae826f5e75cbbc0095f9ee7e63d59297b41a5660daf2",
+        "4397407066eb1ce38bd5c439d4f26a1997d1552c00eb3fc19b951baa3e2d10fa",
         "649ffc2e8bd49ec8c72b8ca8ec4195b3fecdc5d146843bb06bbb966cc35b5b4a",
+        "987e6e05588000679a347567bbe87b4510f833067edd081905b8de5536b6c5bf",
         "e3c0c93521842a75020255c443120bb3a776735762de5d0803e662b507bf2415",
-        "fc8d9bd7e0203e3d3355b871c9cc9aeacaa86b54b20cf2fda9a41ddae2756e7a",
-        # Graph Bulletin (v56): fresh, fixture and in-place upgrades.
-        "1214abad987240c394d85b5ba31720bd1f01513d32036d0dac7fd31bb9fbc08e",
-        "372f5fbf681e4f764e40c53d22c07bebbfc3398c106a163c8eb9336e4a322038",
-        "3fe5d5859e43f75d0eae46f90c2c819d8af3fbfa55e284ecd2b87a11f101f497",
-        "81233afeb28f46599b9b40e69288cbb3f0977aae85653169e0ff1befd5aa71e2",
-        "da7b899dc3f6188aeccb21bf051deb0c6f1e2a44393ec3d6339aee87483e8587",
-        "ef4734b3ba84ea263bcd05d7e6700ecfe71bf2f43cfb738f0a627bc928a7e63c",
-        "0ce264f72e5f113dd3cd9ab34a4569f8b5e4c04fd814fa19da3b8065b7d8f73c",
-        "14a8663d3493419a4054ef1952e90e5a14a9d8223979b19428ef11022e466a33",
-        "3f63df54951f198beaae99f988573e18afc3f9c9812bade8eda6d8a3ecfc8c89",
+        "fb9cb6dba94cddae7ee82465eeea5437d9703f098dae695abbfa23217cd53e57",
         # Independent graph branches (v55): fresh, fixture and in-place upgrades.
         "4176278fea141b3e334bf43733a20fbd884ace1dac87e78e4c873958bedda8d8",
         "7fcf2c73bf75ec773e1cb720e33efc74eae24953d4bf97345119d5a2c5e15ca9",

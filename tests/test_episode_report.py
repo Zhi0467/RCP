@@ -94,6 +94,7 @@ def test_auto_research_reconciliation_keeps_terminal_wrapup_immutable(
         episode=lambda _episode_id: episode,
         unsettled_graph_target_tasks=lambda *_args: [],
         auto_research_child_experiments=lambda _episode_id: [],
+        branches_owned_by=lambda *_args: [],
     )
     background = SimpleNamespace()
     monkeypatch.setattr(
@@ -127,6 +128,7 @@ def test_auto_research_reconciliation_restarts_persisted_wrapup_without_rebuildi
         episode=lambda _episode_id: episode,
         unsettled_graph_target_tasks=lambda *_args: [],
         auto_research_child_experiments=lambda _episode_id: [],
+        branches_owned_by=lambda *_args: [],
     )
     started: list[str] = []
     background = SimpleNamespace()
@@ -162,6 +164,7 @@ def test_auto_research_reconciliation_degrades_persisted_wrapup_restart_failure(
         episode=lambda _episode_id: episode,
         unsettled_graph_target_tasks=lambda *_args: [],
         auto_research_child_experiments=lambda _episode_id: [],
+        branches_owned_by=lambda *_args: [],
         record_agent_task_receipt=lambda *args, **kwargs: receipts.append((*args, kwargs)),
         agent_task_receipts=lambda operation_id: [
             SimpleNamespace(category=category, payload=payload)

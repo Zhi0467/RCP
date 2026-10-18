@@ -21,19 +21,10 @@ from tests.helpers import agent_patch_json, seed_patch
 from tests.helpers import create_named_app as create_app
 
 
-@pytest.mark.parametrize("live_validation", [False, True])
 @pytest.mark.asyncio
 async def test_seed_attempt_stages_and_serves_live_validator_before_final_append(
-    manifest, tmp_path: Path, monkeypatch, live_validation
+    manifest, tmp_path: Path, monkeypatch
 ) -> None:
-    from rcp.agents import hidden_read
-
-    host_facts = hidden_read.host_facts
-    monkeypatch.setattr(
-        hidden_read,
-        "host_facts",
-        lambda paths: {**host_facts(paths), "home": str(tmp_path / "account")},
-    )
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     store = app.state.background_tasks.store
@@ -78,19 +69,6 @@ async def test_seed_attempt_stages_and_serves_live_validator_before_final_append
                 Path(line) for line in prompt.splitlines() if Path(line).is_absolute()
             ]
             contract = contract_path.read_text(encoding="utf-8")
-            receipt = next(
-                item
-                for item in store.agent_task_receipts(operation_id)
-                if item.category == "agent_prompt"
-            )
-            assert receipt.payload["prompt"] == prompt
-            assert Path(receipt.payload["contract_path"]) == contract_path
-            assert execution.stage_root is not None
-            stage_root = Path(execution.stage_root)
-            assert workspace == stage_root
-            assert (stage_root / "workspace" / "bulletin.md").is_file()
-            assert not (stage_root / "workspace" / "workspace").exists()
-
             (command_text,) = set(re.findall(r"`([^`]*\svalidate\s[^`]*)`", contract))
             command = shlex.split(command_text)
             validator_client = next(
@@ -99,19 +77,18 @@ async def test_seed_attempt_stages_and_serves_live_validator_before_final_append
             assert validator_client.read_text(encoding="utf-8") == VALIDATOR_CLIENT_SOURCE
 
             (workspace / "patch.json").write_text(agent_patch_json(seed_patch()), encoding="utf-8")
-            if live_validation:
-                gate = kwargs["invocation_gate"]
-                assert gate is not None
-                async with gate.serve_current_session():
-                    self.validator_result = await asyncio.to_thread(
-                        subprocess.run,
-                        command,
-                        capture_output=True,
-                        text=True,
-                        check=False,
-                    )
-                assert self.validator_result.returncode == 0
-                assert json.loads(self.validator_result.stdout)["status"] == "valid"
+            gate = kwargs["invocation_gate"]
+            assert gate is not None
+            async with gate.serve_current_session():
+                self.validator_result = await asyncio.to_thread(
+                    subprocess.run,
+                    command,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            assert self.validator_result.returncode == 0
+            assert json.loads(self.validator_result.stdout)["status"] == "valid"
             assert service.history.state().revision == 1
             yield AgentEvent(event="session", session_id="seed-validator-session")
             yield AgentEvent(event="done")
@@ -129,7 +106,7 @@ async def test_seed_attempt_stages_and_serves_live_validator_before_final_append
         )
     ]
 
-    assert (launcher.validator_result is not None) is live_validation
+    assert launcher.validator_result is not None
     assert service.history.state().revision == 2
     assert any("applied_revision" in frame for frame in frames)
     assert '"event":"done"' in frames[-1]

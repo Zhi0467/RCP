@@ -152,8 +152,8 @@ def test_fork_scope_enforces_ancestry_revisions_and_cursor_binding(history_query
 
     service, unrestricted, branch = history_query
     parent_head = branch.head_ref()
-    fork = service.history.create_episode_branch(fork_metadata(service.history, parent_head))
-    nested = service.history.create_episode_branch(fork_metadata(service.history, fork.head_ref()))
+    fork = service.history.create_branch(fork_metadata(service.history, parent_head))
+    nested = service.history.create_branch(fork_metadata(service.history, fork.head_ref()))
     scope = GraphReadScope.resolve("project", nested)
     assert scope.ancestry_ceilings == (
         fork.head_ref(),
@@ -161,7 +161,7 @@ def test_fork_scope_enforces_ancestry_revisions_and_cursor_binding(history_query
         branch.branch_metadata().base_head,
     )
     assert GraphReadScope.resolve("project", branch).ancestry_ceilings is None
-    episode_root = service.history.create_episode_branch(
+    episode_root = service.history.create_branch(
         fork_metadata(service.history, service.history.head_ref()).model_copy(
             update={"kind": "auto_research"}
         )
@@ -192,7 +192,7 @@ def test_fork_scope_enforces_ancestry_revisions_and_cursor_binding(history_query
         service, unrestricted, request(**args, cursor=first.result["cursor"])
     )
     assert denied.result["code"] == "graph_history_cursor_invalid"
-    sibling = service.history.create_episode_branch(fork_metadata(service.history, parent_head))
+    sibling = service.history.create_branch(fork_metadata(service.history, parent_head))
     denied = handle_graph_history_command(
         service, scope, request("graph_log", id="ev/long", at=f"{sibling.graph_target.key}@head")
     )
