@@ -58,13 +58,17 @@ audit, a fact-check reads Evidence created or changed since the covered head
 against the sources themselves: cited artifacts, producing Experiment job logs,
 and repository files on the execution host, and papers or web pages through the
 provider's web and network tools, never conversation transcripts.
-Provider-native subagents may check batches in parallel inside the turn. Prose
-problems and missing or wrong citations are fixed directly in the Patch when
-the right source is found. Scientific or semantic problems raise `overclaim`,
-`underclaim`, `no_source`, or `unverified` flags: `no_source` means the sources
-read do not contain the claim, `unverified` that a named source could not be
-read. The workflow never changes the flagged claim, validity, or standing to
-resolve such a finding.
+The workflow invites provider-native subagents for independent pieces (audit by
+question, fact-check by Evidence batch, literature search by question) and keeps
+combining, the Patch, apply, and the report in the root turn. A fix the agent is
+sure of, having read the full source and any relevant code or results, goes
+directly in the Patch: prose, citations, a wrong number, or an omitted or
+overstated result. Only what it cannot settle, such as a claim checked only
+against an abstract, raises `overclaim`, `underclaim`, `no_source`, or
+`unverified` flags, at most five a night: `no_source` means the sources read do
+not contain the claim, `unverified` that a named source could not be read. The
+cap is prompt guidance, not enforced. The workflow never changes the flagged
+claim, validity, or standing to resolve such a finding.
 
 The same pass then uses the turn's web search for recent work bearing on open
 ResearchQuestions and Hypotheses, recording each query, date, source, and
