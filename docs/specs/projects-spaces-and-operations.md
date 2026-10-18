@@ -436,3 +436,14 @@ team-shell protocol-1 request, the project-card list preserves the older
 contract: `can_delete=false`, `delete_unavailable_reason` explains operator
 deprovisioning, and `delete_confirmation` is absent. Protocol 2 and callers with
 no protocol header receive the deletable card with `delete_confirmation`.
+
+## Bulletin operational storage
+
+Migration 56 owns target-local Bulletin posts, command receipts, member read
+cursors, and durable mention-notification observations. Posts retain their
+original agent roster actor id across turns, parsed mentions, edit timestamps,
+and soft-delete timestamps. Membership, author identity, receipt lookup, Stop
+admission, and mutation are checked within the storage transaction. These rows
+are operational records and do not mutate canonical graph history. Restore
+schema fingerprints, backup integrity, and resource-version registries include
+the migration's tables and triggers.

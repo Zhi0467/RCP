@@ -22,6 +22,7 @@ NOTIFICATION_DEFAULTS = {
     "episode_needs_action": True,
     "episode_finished": False,
     "consolidation": True,
+    "bulletin_mention": True,
 }
 
 
@@ -77,6 +78,37 @@ def migrate_question_notifications(connection: sqlite3.Connection) -> None:
 
 
 class NotificationStoreMixin(StoreMixinBase):
+    def unobserved_bulletin_mentions(self, project_id: str) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            return [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT * FROM bulletin_mention_observations "
+                    "WHERE project_id=? AND observed_at IS NULL ORDER BY created_at,post_id,user_id",
+                    (project_id,),
+                )
+            ]
+
+    def observe_bulletin_mention(self, user_id: str, notification: dict[str, Any]) -> bool:
+        """Consume a mention and enqueue its recipient's devices in one transaction."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            observed = connection.execute(
+                "UPDATE bulletin_mention_observations SET observed_at=? "
+                "WHERE project_id=? AND target_key=? AND post_id=? AND user_id=? "
+                "AND observed_at IS NULL",
+                (
+                    self.now(),
+                    notification["project_id"],
+                    notification["target"],
+                    notification["item_id"],
+                    user_id,
+                ),
+            ).rowcount
+            if observed and live_project_member(connection, notification["project_id"], user_id):
+                self.enqueue_notification(connection, recipient_user_id=user_id, **notification)
+            return bool(observed)
+
     def unobserved_consolidation_notifications(
         self, project_id: str, expiry_cutoff: str
     ) -> list[tuple[str, str]]:
@@ -588,6 +620,7 @@ class NotificationStoreMixin(StoreMixinBase):
         created_at: str | None = None,
         observed_health: str | None = None,
         observed_blocked_reason: str | None = None,
+        recipient_user_id: str | None = None,
     ) -> None:
         if kind not in NOTIFICATION_DEFAULTS:
             raise ValueError("invalid notification kind")
@@ -595,6 +628,8 @@ class NotificationStoreMixin(StoreMixinBase):
             return
         now = created_at or self.now()
         for device in connection.execute("SELECT * FROM notification_devices").fetchall():
+            if recipient_user_id is not None and device["user_id"] != recipient_user_id:
+                continue
             if self._notification_device_active(connection, device) and self._notification_allowed(
                 connection, device, project_id, kind
             ):
@@ -897,8 +932,8 @@ class NotificationStoreMixin(StoreMixinBase):
         old_project_id: str,
         project_id: str,
     ) -> None:
-        old_prefix = f"#/projects/{quote(old_project_id, safe='')}/"
-        prefix = f"#/projects/{quote(project_id, safe='')}/"
+        old_prefix = f"#/projects/{quote(old_project_id, safe='')}"
+        prefix = f"#/projects/{quote(project_id, safe='')}"
         connection.execute(
             """
             UPDATE notification_outbox SET deep_link = ? || substr(deep_link, length(?) + 1)

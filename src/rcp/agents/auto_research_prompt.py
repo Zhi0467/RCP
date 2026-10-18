@@ -138,7 +138,9 @@ def _command_invocations(
         "lesson": ("lesson add --key <key> --text <text>",),
         "bulletin": (
             "bulletin --read [--cursor <cursor>]",
-            "bulletin --post --key <key> [--reply-to <post-id>] [--ref <node-id>] <body-file>",
+            "bulletin --post --key <key> [--reply-to <post-id>] <body-file>",
+            "bulletin --edit <post-id> --key <key> <body-file>",
+            "bulletin --delete <post-id> --key <key>",
         ),
     }
     commands = "\n".join(

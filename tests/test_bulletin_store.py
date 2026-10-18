@@ -90,7 +90,6 @@ def test_limits_and_cursor_pagination(store, monkeypatch):
     assert store.list_bulletin("project", "main", cursor=page["next_cursor"])["posts"] == [first]
     for key, kwargs, code in [
         ("blank", {"text": " "}, "bulletin_text_invalid"),
-        ("refs", {"refs": [""]}, "bulletin_refs_invalid"),
         ("x" * (BULLETIN_KEY_MAX_CHARS + 1), {}, "bulletin_key_invalid"),
         ("reply", {"reply_to": "x" * (BULLETIN_REPLY_MAX_CHARS + 1)}, "bulletin_reply_invalid"),
     ]:
@@ -142,6 +141,8 @@ def test_old_episode_writer_defaults_enabled_and_lineage_off_refuses(store):
             connection.execute(f'DROP TRIGGER "{row[0]}"')
         connection.execute("DROP TABLE bulletin_posts")
         connection.execute("DROP TABLE bulletin_command_receipts")
+        connection.execute("DROP TABLE bulletin_reads")
+        connection.execute("DROP TABLE bulletin_mention_observations")
         connection.execute("ALTER TABLE episodes DROP COLUMN bulletin_enabled")
         migrate_graph_bulletin(connection)
         assert (
@@ -174,3 +175,118 @@ def test_reply_projection_keeps_parent_context_across_pages(store, monkeypatch):
     with store.connection() as connection:
         connection.execute("DELETE FROM bulletin_posts WHERE post_id=?", (parent["post_id"],))
     assert store.list_bulletin("project", "main")["posts"][0]["reply_parent"] is None
+
+
+def other_member(store):
+    from uuid import uuid4
+
+    user_id = str(uuid4())
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO space_users(user_id,identity_kind,display_name,created_at,updated_at) VALUES(?,'team_member','Other',?,?)",
+            (user_id, store.now(), store.now()),
+        )
+    return store.space_user(user_id)
+
+
+def test_inline_refs_and_mentions_validate_live_target_roster(store):
+    owner = store.local_owner.user_id
+    member = other_member(store)
+    store.seat_project_member("project", member.user_id)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=json_set(request_json,'$.chat_id','channel-chat') WHERE operation_id='turn'"
+        )
+    result = post(
+        store,
+        "tokens",
+        text=f"#exp/fork-b, #hyp/x. #exp/fork-b <@member:{owner}> <@member:{member.user_id}> <@member:missing> <@agent:chat:channel-chat> <@agent:chat:missing>",
+    )
+    assert result["refs"] == ["exp/fork-b", "hyp/x"]
+    assert result["mentions"] == [
+        {"kind": "member", "id": owner},
+        {"kind": "member", "id": member.user_id},
+        {"kind": "agent", "id": "chat:channel-chat"},
+    ]
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE space_users SET removal_started_at=? WHERE user_id=?",
+            (store.now(), member.user_id),
+        )
+    assert post(store, "removed", text=f"<@member:{member.user_id}>")["mentions"] == []
+
+
+def test_member_edit_delete_author_receipts_and_reply_placeholders(store):
+    owner = store.local_owner.user_id
+    parent = store.add_bulletin_post(
+        "project", "main", "#hyp/original", user_id=owner, key="parent"
+    )
+    reply = post(store, "reply", reply_to=parent["post_id"])
+    other = other_member(store)
+    store.seat_project_member("project", other.user_id)
+    for action in ("edit", "delete"):
+        with pytest.raises(BulletinError, check=lambda exc: exc.code == "bulletin_not_author"):
+            store.mutate_bulletin_post(
+                "project",
+                "main",
+                parent["post_id"],
+                user_id=other.user_id,
+                key=action,
+                text="changed",
+                action=action,
+            )
+    edited = store.mutate_bulletin_post(
+        "project", "main", parent["post_id"], user_id=owner, key="edit", text="#hyp/updated"
+    )
+    assert edited["edited_at"] and edited["refs"] == ["hyp/updated"] and edited["reply_count"] == 1
+    deleted = store.mutate_bulletin_post(
+        "project", "main", parent["post_id"], user_id=owner, key="delete", action="delete"
+    )
+    assert (
+        deleted["deleted_at"]
+        and deleted["text"] == ""
+        and deleted["refs"] == deleted["mentions"] == []
+    )
+    assert (
+        store.mutate_bulletin_post(
+            "project", "main", parent["post_id"], user_id=owner, key="delete", action="delete"
+        )
+        == deleted
+    )
+    assert len(store.list_bulletin("project", "main")["posts"]) == 2
+    with pytest.raises(BulletinError, check=lambda exc: exc.code == "bulletin_post_deleted"):
+        store.mutate_bulletin_post(
+            "project", "main", parent["post_id"], user_id=owner, key="later", text="later"
+        )
+    store.execute_bulletin_command(
+        "project", "turn", "delete", post_id=reply["post_id"], key="delete-reply"
+    )
+    assert store.list_bulletin("project", "main")["posts"] == []
+
+
+def test_channels_unread_and_monotone_read_cursor(store, monkeypatch):
+    owner = store.local_owner.user_id
+    with store.connection() as connection:
+        for branch_id, name, archived in [
+            ("b", "Branch", 0),
+            ("recent", "Recent", 0),
+            ("hidden", "Hidden", 1),
+        ]:
+            connection.execute(
+                "INSERT INTO graph_branches(project_id,branch_id,parent_target_json,parent_revision,created_by,created_at,name,archived) VALUES('project',?,'{}',0,'member',?,?,?)",
+                (branch_id, store.now(), name, archived),
+            )
+    first = post(store, "first")
+    second = post(store, "second")
+    store.add_bulletin_post("project", "main", "own", user_id=owner, key="own")
+    store.add_bulletin_post("project", "branch:recent", "recent", user_id=owner, key="recent")
+    channels = store.bulletin_channels("project", owner)
+    assert [item["target_key"] for item in channels] == ["main", "branch:recent", "branch:b"]
+    assert channels[0]["unread"] == 2 and channels[2]["last_post_at"] is None
+    monkeypatch.setattr("rcp.storage.bulletin.BULLETIN_UNREAD_MAX_COUNT", 1)
+    assert store.bulletin_channels("project", owner)[0]["unread"] == 1
+    store.mark_bulletin_read("project", "main", owner, second["post_id"])
+    store.mark_bulletin_read("project", "main", owner, first["post_id"])
+    assert store.bulletin_channels("project", owner)[0]["unread"] == 0
+    with pytest.raises(BulletinError, check=lambda exc: exc.code == "bulletin_post_not_found"):
+        store.mark_bulletin_read("project", "branch:b", owner, second["post_id"])

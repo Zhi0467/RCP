@@ -214,6 +214,7 @@ _EXEMPT_TABLES = {
     "evidence_flag_command_receipts": "receipt",
     # The Bulletin post idempotency ledger; no view reads it.
     "bulletin_command_receipts": "receipt",
+    "bulletin_mention_observations": "delivery",
     "project_provisioning_requests": "setup",
     "project_provisioning_step_receipts": "setup",
     "project_transfer_activations": "transfer",
@@ -252,6 +253,7 @@ def test_current_schema_classifies_every_table_and_installs_all_owner_triggers(t
             "graph_runs",
             "graph_branches",
             "bulletin_posts",
+            "bulletin_reads",
             "projects",
             "chat_reads",
             "chat_pins",

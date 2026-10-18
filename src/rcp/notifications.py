@@ -183,6 +183,7 @@ class NotificationSender:
     def _observe_episodes(self, projects: list[ProjectRecord]) -> None:
         for project in projects:
             try:
+                self._recheck_bulletin_mentions(project)
                 self._recheck_questions(project)
                 self._recheck_episodes(project)
                 self._recheck_consolidation(project)
@@ -357,6 +358,24 @@ class NotificationSender:
         )
         self._first_baselines[project_id] = state.revision
         return {"revision": state.revision, "attention_json": json.dumps(attention)}
+
+    def _recheck_bulletin_mentions(self, project: ProjectRecord) -> None:
+        for mention in self.store.unobserved_bulletin_mentions(project.project_id):
+            notification = _notification(
+                project,
+                target=mention["target_key"],
+                kind="bulletin_mention",
+                item_id=mention["post_id"],
+                occurrence=mention["user_id"],
+                reason="bulletin_mention",
+                created_at=mention["created_at"],
+            )
+            notification["deep_link"] = (
+                f"#/projects/{quote(project.project_id, safe='')}?view=chats"
+                f"&channel={quote(mention['target_key'], safe=':')}"
+                f"&post={quote(mention['post_id'], safe='')}"
+            )
+            self.store.observe_bulletin_mention(mention["user_id"], notification)
 
     def _recheck_consolidation(self, project: ProjectRecord) -> None:
         cutoff = (
@@ -619,6 +638,8 @@ class NotificationSender:
                     continue
                 attention = json.loads(marker["attention_json"])
                 unresolved = row["item_id"] in attention.get(row["kind"], [])
+            elif row["kind"] == "bulletin_mention":
+                unresolved = True
             elif row["kind"] == "consolidation":
                 unresolved = self.store.consolidation_notification_pending(
                     row["project_id"], row["item_id"], row["observed_blocked_reason"]

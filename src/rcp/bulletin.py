@@ -2,18 +2,63 @@
 
 from __future__ import annotations
 
+import json
 import re
+import sqlite3
 from typing import Any
 
+from rcp.core.graph_targets import graph_target_json
 from rcp.core.transition_models import GraphTargetRef
 from rcp.storage import AppStore
 from rcp.storage.models import ACTIVE_AGENT_TASK_STATUSES
+
+
+def bulletin_actor_id(connection: sqlite3.Connection, task: sqlite3.Row) -> str | None:
+    """Resolve the roster identity within the caller's storage transaction."""
+    request = json.loads(task["request_json"] or "{}")
+    work = connection.execute(
+        "SELECT work.worker_id FROM auto_research_child_work AS work "
+        "JOIN auto_research_child_work_attempts AS attempt ON attempt.worker_id=work.worker_id "
+        "WHERE attempt.operation_id=?",
+        (task["operation_id"],),
+    ).fetchone()
+    if work:
+        return f"worker:{work['worker_id']}"
+    if request.get("role") == "worker":
+        return f"worker:{request.get('actor_operation_id') or task['operation_id']}"
+    episode = connection.execute(
+        "SELECT episode_id,continues_episode_id FROM episodes WHERE episode_id=? AND project_id=?",
+        (task["episode_id"], task["project_id"]),
+    ).fetchone()
+    if episode:
+        seen = {episode["episode_id"]}
+        while episode["continues_episode_id"]:
+            parent = connection.execute(
+                "SELECT episode_id,continues_episode_id FROM episodes WHERE episode_id=? AND project_id=?",
+                (episode["continues_episode_id"], task["project_id"]),
+            ).fetchone()
+            if parent is None or parent["episode_id"] in seen:
+                break
+            episode = parent
+            seen.add(episode["episode_id"])
+        return f"episode:{episode['episode_id']}"
+    if task["kind"] in {"node_chat", "project_chat"}:
+        return f"chat:{request.get('chat_id') or task['operation_id']}"
+    return None
 
 
 def bulletin_roster(
     store: AppStore, project_id: str, target: GraphTargetRef
 ) -> list[dict[str, Any]]:
     tasks = store.graph_target_tasks(project_id, target)
+    with store.connection() as connection:
+        actor_ids = {
+            row["operation_id"]: bulletin_actor_id(connection, row)
+            for row in connection.execute(
+                "SELECT * FROM graph_runs WHERE project_id=? AND graph_target_json=? AND visible=1",
+                (project_id, graph_target_json(target)),
+            ).fetchall()
+        }
     episodes = {episode.episode_id: episode for episode in store.episodes(project_id, limit=None)}
     waiting = {
         worker_id
@@ -28,18 +73,19 @@ def bulletin_roster(
     last_posts = store.bulletin_last_post_times(project_id, target.key)
     rows: dict[str, dict[str, Any]] = {}
     for task in tasks:
+        actor_id = actor_ids.get(task.operation_id)
+        if actor_id is None:
+            continue
         work = store.auto_research_child_work_for_operation(task.operation_id)
         episode = episodes.get(task.episode_id or "")
         instruction = str(task.request.get("message") or task.request.get("prompt") or "")
         if work:
-            actor_id = f"worker:{work.worker_id}"
             kind = (
                 "worker_project" if task.request.get("chat_scope") == "project" else "worker_node"
             )
             seat = work.control_node_id or None
             instruction = work.instruction
         elif task.request.get("role") == "worker":
-            actor_id = f"worker:{task.request.get('actor_operation_id') or task.operation_id}"
             kind = (
                 "worker_project" if task.request.get("chat_scope") == "project" else "worker_node"
             )
@@ -48,14 +94,12 @@ def bulletin_roster(
             root = episode
             while root.continues_episode_id in episodes:
                 root = episodes[root.continues_episode_id]
-            actor_id = f"episode:{root.episode_id}"
             kind = "auto_research_root" if episode.mode == "auto_research" else "experiment_loop"
             seat = episode.control_node_id
             auto = store.auto_research_state(root.episode_id)
             if auto:
                 instruction = auto.starting_instruction or ""
         elif task.kind in {"node_chat", "project_chat"}:
-            actor_id = f"chat:{task.request.get('chat_id') or task.operation_id}"
             kind = "human_chat_work" if task.request.get("mode") == "work" else "human_chat_discuss"
             seat = task.request.get("node_id")
         else:
