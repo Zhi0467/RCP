@@ -1356,11 +1356,22 @@ def _create_branch(
         assert initial is not None
         if before_publish is not None:
             before_publish()
-        root.mkdir(mode=0o700)
+        # Only a complete layout may occupy the canonical identity. Unique
+        # siblings left by a process crash cannot obstruct a later retry.
+        staging = branches_root / f".initializing-{branch_id}-{uuid.uuid4().hex}"
+        staging.mkdir(mode=0o700)
         branch = BranchHistoryManager(parent, metadata)
-        branch.ensure_layout()
-        branch._write_metadata(metadata)
-        branch._write_materialized_outputs(initial)
+        try:
+            branch.root = staging
+            (staging / "patches").mkdir(mode=0o700)
+            (staging / "merges").mkdir(mode=0o700)
+            branch._write_metadata(metadata)
+            branch._write_materialized_outputs(initial)
+            os.replace(staging, root)
+        except Exception:
+            shutil.rmtree(staging)
+            raise
+        branch.root = root
         relative_metadata = (root / "branch.json").relative_to(parent.root)
         paths = [relative_metadata, *branch._published_paths(include_metadata=False)]
         try:

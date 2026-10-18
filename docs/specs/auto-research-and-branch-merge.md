@@ -91,6 +91,9 @@ project-wide branch picker and tagged project-wide Runs/Artifacts follow the
 labels or showing different targets. Reserving old names keeps historical tags
 unambiguous.
 
+Automatic archive of an unchanged fork waits for unsettled tasks using it as
+either their graph target or their bound merge destination.
+
 ## Persistent graph branch
 
 An Auto-research root or main-target Experiment with graph isolation owns one

@@ -40,3 +40,59 @@ def test_autoarchive_uses_exact_canonical_head_and_all_writer_settlement(manifes
     )
     assert not store.branch_admits_new_work(parent.project_id, history.branch_id)
     assert history.head_ref().revision == source.revision
+
+
+def test_autoarchive_waits_for_incoming_merge(manifest, tmp_path):
+    from rcp.runs.branch_merge_request import BranchMergeRunRequest
+    from tests.test_owned_merge_storage import _owned_merge
+
+    harness, task = _owned_merge(manifest, tmp_path)
+    store, history = harness.store, harness.service.history
+    destination = history.branch(task.graph_target.branch_id, initialize=False)
+    assert harness.episode.authorized_by is not None
+    source = create_graph_fork(
+        history,
+        store,
+        project_id=task.project_id,
+        branch_id=str(uuid.uuid4()),
+        owner_episode_id=task.episode_id,
+        parent_head=destination.head_ref(),
+        authorized_by=harness.episode.authorized_by,
+        created_by="orchestrator:test",
+    )
+    # The first fork is unchanged and eligible once its incoming merge settles.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_branches SET auto_archive=1 WHERE branch_id=?",
+            (destination.branch_id,),
+        )
+    request = BranchMergeRunRequest.model_validate(task.request)
+    assert request.merge_binding is not None
+    binding = request.merge_binding.model_copy(
+        update={
+            "source": source.graph_target,
+            "source_head": source.head_ref(),
+            "destination": destination.graph_target,
+        }
+    )
+    task = task.model_copy(
+        update={
+            "graph_target": source.graph_target,
+            "request": request.model_copy(update={"merge_binding": binding}).model_dump(
+                mode="json"
+            ),
+        }
+    )
+    store.create_branch_merge_task(task)
+    archive_settled_auto_research_forks(
+        store, lambda _: harness.service, logger=logging.getLogger(__name__)
+    )
+    assert store.branch_admits_new_work(task.project_id, destination.branch_id)
+    assert store.agent_task_authority(task.project_id, task.operation_id).apply_target == (
+        destination.graph_target
+    )
+    store.complete_agent_task(task.operation_id, applied_revision=None, result={})
+    archive_settled_auto_research_forks(
+        store, lambda _: harness.service, logger=logging.getLogger(__name__)
+    )
+    assert not store.branch_admits_new_work(task.project_id, destination.branch_id)

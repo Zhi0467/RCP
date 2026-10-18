@@ -361,3 +361,30 @@ def test_no_change_fork_receipt_suppresses_later_destination_append(history):
         destination.append(patch)
     assert rejected.value.receipt == receipt
     assert "ev/duplicate" not in destination.state().nodes
+
+
+def test_interrupted_fork_initialization_retries_with_leftover_directory(history, monkeypatch):
+    from rcp.history.branches import BranchHistoryManager
+
+    metadata = fork_metadata(history, history.head_ref())
+    interrupted_roots = []
+
+    def interrupt(branch, _metadata):
+        interrupted_roots.append(branch.root)
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patch:
+        patch.setattr(BranchHistoryManager, "_write_metadata", interrupt)
+        with pytest.raises(KeyboardInterrupt):
+            history.create_branch(metadata)
+    leftover = interrupted_roots[0]
+    assert leftover.is_dir()
+    assert not (leftover / "branch.json").exists()
+
+    branch = history.create_branch(metadata)
+    assert branch.root != leftover
+    assert branch.branch_metadata() == metadata
+    assert branch.state() == history.state()
+    assert branch.patches_dir.is_dir() and branch.merges_dir.is_dir()
+    assert branch._outputs_coherent(branch.materialize(write_outputs=False))
+    assert history.create_branch(metadata).head_ref() == branch.head_ref()
