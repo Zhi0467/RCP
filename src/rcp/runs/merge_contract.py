@@ -459,7 +459,9 @@ def plan_merge(context: MergePlanningContext) -> MergePlan:
     promote each diagnostic-named node group once after dry preparation. This
     function performs no history writes, provider calls, or agent op parsing.
     """
-    raise NotImplementedError
+    from rcp.runs.merge_plan import plan_merge as implementation
+
+    return implementation(context)
 
 
 def promote_node_group(plan: MergePlan, promotion: NodeGroupPromotion) -> MergePlan:
@@ -471,7 +473,9 @@ def promote_node_group(plan: MergePlan, promotion: NodeGroupPromotion) -> MergeP
     A node already in a NodeGroupConflict raises MergeRefused; preparation instead
     routes repeat rejection on such nodes to MergeAnswersRejected.
     """
-    raise NotImplementedError
+    from rcp.runs.merge_plan import promote_node_group as implementation
+
+    return implementation(plan, promotion)
 
 
 def build_merge_patch(plan: MergePlan, answers: MergeAnswers) -> Patch:
@@ -490,7 +494,9 @@ def build_merge_patch(plan: MergePlan, answers: MergeAnswers) -> Patch:
     same Patch. No timestamps/random ids may make identical inputs differ. Return
     operations only through Patch; no runtime graph-equivalence proof or IO.
     """
-    raise NotImplementedError
+    from rcp.runs.merge_patch import build_merge_patch as implementation
+
+    return implementation(plan, answers)
 
 
 def prepare_merge_candidate(
@@ -511,4 +517,6 @@ def prepare_merge_candidate(
     classification, raises MergeRefused. build_merge_patch raises the same types. Caller compares the exact task/turn/file digest check receipt before
     commit and retains canonical receipt reconciliation for uncertain publication.
     """
-    raise NotImplementedError
+    from rcp.runs.merge_patch import prepare_merge_candidate as implementation
+
+    return implementation(plan, answers, history)
