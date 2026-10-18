@@ -8,14 +8,16 @@ from rcp.core.authority import (
     AgentDispatchAuthority,
     AgentDispatchScope,
     AgentTaskAuthority,
+    AuthorityRefusal,
     WriteAuthority,
+    Writer,
     capture_change_authority,
     classify_graph_changes,
 )
 from rcp.core.materialize import apply_valid_patch
-from rcp.core.models import AuthorizedHuman, GraphState, Patch
+from rcp.core.models import AuthorizedHuman, GraphState, Patch, ValidationMessage
 from rcp.core.transition_models import GraphTargetRef
-from rcp.core.validation import ValidationContext
+from rcp.core.validation import ValidationContext, ValidationReport, validate_patch
 from tests.helpers import seed_patch, unchecked_write_authority
 
 HYPOTHESIS = "hyp/replanning-restores-plasticity"
@@ -141,19 +143,32 @@ def test_lost_live_authority_never_becomes_a_review(failure):
             raise KeyError(operation_id)
         return task
 
+    authority = WriteAuthority(
+        agent_authority_resolver=resolve, project_membership_check=lambda project, member: False
+    )
     result = _classify(
         _state(),
         _update(title="Protected edit"),
         source_operation_id="task",
-        authority=WriteAuthority(
-            agent_authority_resolver=resolve, project_membership_check=lambda project, member: False
-        ),
+        authority=authority,
     )
     assert result.disposition == "refused"
     assert result.diagnostics[0].code == (
-        "agent_authorizer_departed" if failure == "membership" else "write-authority-refused"
+        "agent_authorizer_departed" if failure == "membership" else "agent-task-authority-refused"
     )
     assert not result.review_operations
+    template = seed_patch().model_copy(
+        update={"kind": "work", "ops": [], "source_operation_id": "task"}
+    )
+    with pytest.raises(AuthorityRefusal) as caught:
+        capture_change_authority(
+            _state(),
+            template,
+            authority=authority,
+            project_id="project",
+            apply_target=GraphTargetRef(),
+        )
+    assert caught.value.diagnostics[0].code == result.diagnostics[0].code
 
 
 def _merge_provenance():
@@ -307,3 +322,103 @@ def test_captured_authority_is_pure_but_cannot_widen_or_replace_live_authority()
             project_id="project",
             apply_target=GraphTargetRef(),
         )
+
+
+def test_capture_and_classification_retain_original_authority_diagnostics(monkeypatch):
+    diagnostics = (
+        ValidationMessage(
+            level="reject",
+            code="human-authorizer-not-member",
+            message="Membership changed",
+            related_node_ids=[HYPOTHESIS],
+            operation_index=2,
+            rule_id="membership",
+        ),
+        ValidationMessage(
+            level="reject",
+            code="agent-task-authority-refused",
+            message="Task binding changed",
+            related_edge_ids=["edge/cause"],
+            cause_chain=[{"task": "old-task"}],
+        ),
+    )
+    report = ValidationReport()
+    report.messages.extend(diagnostics)
+    authority = WriteAuthority()
+    template = seed_patch().model_copy(update={"ops": []})
+    monkeypatch.setattr(
+        authority, "admit", lambda state, patch, **kwargs: (patch, Writer.from_patch(patch), report)
+    )
+    with pytest.raises(AuthorityRefusal) as caught:
+        capture_change_authority(
+            _state(),
+            template,
+            authority=authority,
+            project_id="project",
+            apply_target=GraphTargetRef(),
+        )
+    assert caught.value.diagnostics == diagnostics
+    assert all(
+        actual is expected
+        for actual, expected in zip(caught.value.diagnostics, diagnostics, strict=True)
+    )
+
+    def refuse(*args, **kwargs):
+        raise caught.value
+
+    monkeypatch.setattr(authority, "admit", refuse)
+    result = _classify(_state(), _update(title="Protected edit"), authority=authority)
+    assert result.disposition == "refused"
+    assert result.diagnostics == diagnostics
+    assert all(
+        actual is expected for actual, expected in zip(result.diagnostics, diagnostics, strict=True)
+    )
+
+
+def test_gated_transition_names_the_node_for_hidden_clash_promotion():
+    patch = seed_patch().model_copy(update={"ops": []})
+    patch = Patch.model_validate({**patch.model_dump(), "ops": [_update(status="supported")]})
+    report = validate_patch(_state(), patch, ValidationContext(project_truth_scope=["repo-a"]))
+    refusal = next(item for item in report.messages if item.code == "gated-transition")
+    assert refusal.related_node_ids == [HYPOTHESIS]
+
+
+def test_nested_proposal_refusal_is_hard_even_when_its_code_is_reviewable(monkeypatch):
+    from rcp.core.models import Blocker
+    from rcp.core.validation.proposals import PROPOSAL_REPLAY_RULE_ID
+
+    state = _state()
+    state.nodes["blocker/review"] = Blocker(
+        id="blocker/review",
+        type="blocker",
+        title="Review",
+        description="Blocked",
+        standing="accepted",
+    )
+    diagnostic = ValidationMessage(
+        level="reject",
+        code="accepted-node-removal",
+        message="Nested effect refused",
+        related_node_ids=["blocker/review"],
+        rule_id=PROPOSAL_REPLAY_RULE_ID,
+        operation_index=0,
+    )
+    report = ValidationReport()
+    report.messages.append(diagnostic)
+    calls = []
+
+    def validate(*args, **kwargs):
+        calls.append(args[1])
+        return report
+
+    monkeypatch.setattr("rcp.core.validation.validate_patch", validate)
+    result = _classify(
+        state,
+        {"op": "remove_nodes", "node_ids": ["blocker/review"]},
+        profile="orchestrator",
+        branch_merge=_merge_provenance(),
+    )
+    assert result.disposition == "refused"
+    assert not result.review_operations
+    assert result.diagnostics[0] == diagnostic
+    assert len(calls) == 1

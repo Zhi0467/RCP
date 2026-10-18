@@ -977,7 +977,9 @@ def test_proposal_with_unknown_repository_machine_is_rejected_at_creation(manife
     with pytest.raises(PatchRejected) as caught:
         history.append(patch)
 
-    assert any(message.code == "invalid-proposal-ops" for message in caught.value.report.messages)
+    assert any(
+        message.code == "unknown-repository-machine" for message in caught.value.report.messages
+    )
     assert manifest.path.read_text(encoding="utf-8") == before
     assert load_manifest(manifest.path).project.truth_scope == ["repo-a", "repo-b"]
     assert len(list((manifest.research_dir / "patches").glob("*.json"))) == 2
@@ -1028,7 +1030,15 @@ def test_proposal_replay_is_dry_run_materialized_at_creation(manifest) -> None:
     with pytest.raises(PatchRejected) as caught:
         history.append(patch)
 
-    assert any(message.code == "invalid-proposal-ops" for message in caught.value.report.messages)
+    diagnostic = next(
+        message for message in caught.value.report.messages if message.code == "invalid-edge"
+    )
+    assert diagnostic.related_node_ids == [
+        "rq/learning-after-shift",
+        "hyp/replanning-restores-plasticity",
+    ]
+    assert diagnostic.operation_index == 0
+    assert diagnostic.rule_id == "proposal-replay"
     assert len(list((manifest.research_dir / "patches").glob("*.json"))) == 2
 
 

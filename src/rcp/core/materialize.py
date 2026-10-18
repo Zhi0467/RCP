@@ -223,7 +223,12 @@ _PROPOSAL_UNRESOLVED = {
 
 
 def prepare_patch_bookkeeping(state: GraphState, patch: Patch) -> Patch:
-    """Resolve admission metadata and glossary spelling before recording operations."""
+    """Resolve admission metadata and glossary spelling before recording operations.
+
+    Every Proposal, including a carried source Proposal, is a new destination
+    filing. Ordinary reviews use rule 2; multi-intent canonical merge reviews
+    require rule 3 and must pass connected-group validation before admission.
+    """
 
     operations: list[GraphOperation] = []
     # Match the inline lookup's case-insensitive identity, preserving its first
@@ -252,7 +257,9 @@ def prepare_patch_bookkeeping(state: GraphState, patch: Patch) -> Patch:
                 proposal.model_copy(
                     update={
                         **_PROPOSAL_UNRESOLVED,
-                        "dependency_rule": CURRENT_PROPOSAL_DEPENDENCY_RULE,
+                        "dependency_rule": 3
+                        if patch.branch_merge is not None and len(proposal.ops) > 1
+                        else CURRENT_PROPOSAL_DEPENDENCY_RULE,
                         "related_node_ids": related_node_ids,
                         "related_edge_ids": related_edge_ids,
                         "related_config_keys": related_config_keys,

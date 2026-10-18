@@ -27,9 +27,11 @@ from rcp.core.models import (
     Patch,
     Proposal,
     ResearchQuestion,
+    ValidationMessage,
 )
 from rcp.core.operations import (
     CreateNodesOperation,
+    CreateProposalsOperation,
     DecisionCause,
     EvidenceEdgeCause,
     GraphOperation,
@@ -57,6 +59,16 @@ from rcp.core.project_types import project_type_of
 from rcp.core.validation.constants import IDENTIFIER_RE
 from rcp.core.validation.nodes import validate_source_refs
 from rcp.core.validation.report import ValidationReport
+
+PROPOSAL_REPLAY_RULE_ID = "proposal-replay"
+
+
+class ProposalEffectRejected(ValueError):
+    """A proposed approval has structured graph-legality failures."""
+
+    def __init__(self, diagnostics: Iterable[ValidationMessage]) -> None:
+        self.diagnostics = tuple(diagnostics)
+        super().__init__("; ".join(item.message for item in self.diagnostics))
 
 
 def _protected_names(state: GraphState) -> str:
@@ -282,6 +294,8 @@ def _proposal_dependency_contract(
     if targets:
         expected = set(edges)
         if proposal.dependency_rule >= 3:
+            # Missing/recreated snapshotted IDs are rejected by the edge check
+            # below, so current endpoint filtering cannot hide an incident move.
             expected = {
                 edge_id
                 for edge_id in expected
@@ -310,15 +324,45 @@ def proposal_dependencies_and_effects(
     """Describe a valid Proposal's reads and complete dry approval writes.
 
     Pass the pre-approval state and either a filed Proposal or an unfiled draft.
-    The draft's dependency_rule must be the current filing rule. Approval is
-    staged through the existing transition engine, including implicit standing,
-    generated lifecycle edges, incident-edge deletion and guidance invalidation.
-    Invalid effects raise their normal preparation error; this is not admission.
+    The draft's dependency_rule must match the filing rule selected for its form.
+    Approval operations pass graph validation before the existing transition
+    engine derives implicit standing, lifecycle edges, incident-edge deletion
+    and guidance invalidation. Invalid effects raise ProposalEffectRejected
+    with structured diagnostics. This does not perform live authority admission.
     Neither input nor canonical history is changed. An effect/dependency
     intersection in either direction couples two reviews; shared reads do not.
     """
 
+    try:
+        return _proposal_effect_footprint(state, proposal, validate=True)
+    except ProposalEffectRejected:
+        raise
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+        raise ProposalEffectRejected(
+            (
+                ValidationMessage(
+                    level="reject",
+                    code="malformed-operation",
+                    message=str(exc),
+                    patch_revision=state.revision + 1,
+                ),
+            )
+        ) from exc
+
+
+def _proposal_effect_footprint(
+    state: GraphState, proposal: Proposal, *, validate: bool
+) -> ProposalDependenciesAndEffects:
+    """Project effects; member projections are speculative until the whole group validates.
+
+    Edge replacement's create member is not legal alone. The group boundary may
+    inspect it without validation to find its dependency intersection, then must
+    validate the complete ordered group before admission.
+    """
     from rcp.core.transitions import GraphTransitionManager
+    from rcp.core.validation.approval import is_decision_choice
+    from rcp.core.validation.patch import validate_patch
+    from rcp.core.validation.settings import ValidationContext
 
     contract = _proposal_dependency_contract(state, proposal, derive_unfiled=True)
     nodes = (
@@ -339,15 +383,41 @@ def proposal_dependencies_and_effects(
             for value in snapshot.node_ids
         ),
     }
+    if not proposal.raised_rev:
+        proposal = proposal.model_copy(
+            update={
+                "base_rev": state.revision,
+                "raised_rev": state.revision,
+                "related_node_ids": list(contract.node_ids),
+                "related_edge_ids": sorted(contract.edge_ids),
+                "related_config_keys": list(contract.config_keys),
+            }
+        )
     before = state.model_copy(update={"proposals": {**state.proposals, proposal.id: proposal}})
+    approval_ops = proposal_approval_operations(state, proposal)
+    chooses_decision = any(
+        isinstance(state.nodes.get(update.id), Decision) and is_decision_choice(update.changes)
+        for operation in approval_ops
+        if isinstance(operation, UpdateNodesOperation)
+        for update in operation.nodes
+    )
     patch = Patch(
         revision=state.revision + 1,
         kind="approval",
         author="human",
         producer="human",
         summary=f"Inspect approval effects of {proposal.id}.",
-        ops=proposal_approval_operations(state, proposal),
+        ops=approval_ops,
+        human_action="decision_choice" if chooses_decision else None,
     )
+    if validate:
+        report = validate_patch(
+            before,
+            patch,
+            ValidationContext(project_truth_scope=state.project_truth_scope),
+        )
+        if report.rejected:
+            raise ProposalEffectRejected(item for item in report.messages if item.level == "reject")
     after = GraphTransitionManager().prepare_validated(before, [patch]).projection.graph
     effects: set[ProposalResource] = set()
     for node_id in before.nodes.keys() | after.nodes.keys():
@@ -673,8 +743,9 @@ def _validate_agent_proposal_boundary(
         report.reject("invalid-agent-proposal-shape", message, revision)
 
     if len(proposal.ops) != 1 and not (
-        _is_same_node_merge_bundle(state, context_patch, proposal, writer)
-        or _is_connected_merge_bundle(state, context_patch, proposal, writer)
+        _is_connected_merge_bundle(state, context_patch, proposal, writer)
+        if proposal.dependency_rule >= 3
+        else _is_same_node_merge_bundle(state, context_patch, proposal, writer)
     ):
         refuse(f"Proposal {proposal.id} must declare exactly one protected-change intent.")
         return
@@ -716,8 +787,8 @@ def _is_connected_merge_bundle(
     try:
         for operation in proposal.ops:
             member = proposal.model_copy(update={"ops": [operation], "raised_rev": 0})
-            footprints.append(proposal_dependencies_and_effects(state, member))
-    except (KeyError, ValueError):
+            footprints.append(_proposal_effect_footprint(state, member, validate=False))
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
         # The ordinary intent and operation validators report the invalid
         # effect. It cannot gain the exceptional multi-intent admission form.
         return False
@@ -1101,6 +1172,18 @@ def _validate_proposal_ops(
                 diagnostic.model_copy(
                     update={
                         "message": f"Proposal {proposal.id}: {diagnostic.message}",
+                        "rule_id": PROPOSAL_REPLAY_RULE_ID,
+                        "operation_index": next(
+                            (
+                                index
+                                for index, operation in enumerate(context_patch.ops)
+                                if isinstance(operation, CreateProposalsOperation)
+                                and any(item.id == proposal.id for item in operation.proposals)
+                            ),
+                            None,
+                        )
+                        if context_patch is not None
+                        else None,
                     }
                 )
             )

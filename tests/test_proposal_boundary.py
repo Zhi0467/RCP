@@ -1238,12 +1238,13 @@ def test_proposal_validation_preserves_inner_diagnostic_identity(manifest) -> No
     node_id = "hyp/replanning-restores-plasticity"
     missing_edge = "edge/missing-cause"
     patch = _agent_patch(
+        _update_node("exp/evaluation", {"title": "Revised evaluation"}),
         _proposal(
             proposal_id="prop/missing-cause",
             node_id=node_id,
             changes={"status": "supported"},
             cause={"kind": "evidence_edge", "ref_id": missing_edge},
-        )
+        ),
     )
 
     report = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"]))
@@ -1251,6 +1252,8 @@ def test_proposal_validation_preserves_inner_diagnostic_identity(manifest) -> No
     diagnostic = next(item for item in report.messages if item.code == "invalid-belief-cause")
     assert diagnostic.related_node_ids == [node_id]
     assert diagnostic.related_edge_ids == [missing_edge]
+    assert diagnostic.operation_index == 1
+    assert diagnostic.rule_id == "proposal-replay"
 
 
 def test_proposal_footprint_includes_cause_reads_and_generated_guidance_writes(manifest) -> None:
