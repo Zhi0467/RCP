@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
@@ -8,9 +10,19 @@ import pytest
 from rcp.agents import AgentEvent
 from rcp.api.consolidation import evidence_flag_message
 from rcp.core.models import Patch
+from rcp.turn_outcomes import TurnOutcome
 from tests.helpers import append_fixture_patch, create_named_app, signed_in_client, wait_for_task
 from tests.test_api_tasks import _event_frame
 from tests.test_consolidation_work import _admit
+
+
+def _turn(execution, event, outcome="done"):
+    """Finish a fake Address turn; a successful one reports its Work outcome."""
+    if event == "done":
+        execution.turn_outcome = TurnOutcome(
+            status=outcome, reason=None if outcome == "done" else "x"
+        )
+    return _event_frame(AgentEvent(event=event, text="provider failed"))
 
 
 @pytest.fixture
@@ -74,7 +86,7 @@ def test_address_admits_one_ordinary_work_turn_and_replays(flagged):
 
     async def stream(project_id, kind, request, execution):
         launches.append((project_id, kind, request, execution))
-        yield _event_frame(AgentEvent(event="done"))
+        yield _turn(execution, "done")
 
     app.state.background_tasks.stream = stream
     base = f"/api/projects/{project}/consolidation"
@@ -97,8 +109,9 @@ def test_address_admits_one_ordinary_work_turn_and_replays(flagged):
     assert task.dispatch_authority.task_contract == "work_auto"
     assert task.graph_target.branch_id is None
     assert len(launches) == 1
-    assert client.post(url, json={"request_id": "another-click"}).json() == result
-    assert client.get(base).json()["evidence_flags"] == [result["flag"]]
+    # The finished turn closed the flag; only the original request still replays.
+    assert client.get(base).json()["evidence_flags"] == []
+    assert client.post(url, json={"request_id": "another-click"}).status_code == 409
     # A lost response replays to the bound chat even after the Evidence leaves main.
     with store.connection() as connection:
         connection.execute(
@@ -109,6 +122,192 @@ def test_address_admits_one_ordinary_work_turn_and_replays(flagged):
     assert replay.status_code == 200
     assert replay.json()["chat_id"] == result["chat_id"]
     assert len(launches) == 1
+
+
+def test_a_failed_address_turn_reopens_the_flag_for_another(flagged):
+    app, client, store, project, flag = flagged
+    outcomes = iter(["error", "error", "done"])
+
+    async def stream(project_id, kind, request, execution):
+        yield _turn(execution, next(outcomes))
+
+    app.state.background_tasks.stream = stream
+    base = f"/api/projects/{project}/consolidation"
+    url = f"{base}/evidence-flags/{flag['flag_id']}/address"
+
+    def address(request_id, expect):
+        result = client.post(url, json={"request_id": request_id}).json()
+        wait_for_task(store, result["operation_id"], expect=expect)
+        return result
+
+    first = address("first", "failed")
+    [reopened] = client.get(base).json()["evidence_flags"]
+    assert (reopened["state"], reopened["chat_id"]) == ("open", first["chat_id"])
+    # Each request keeps its own turn across later attempts and their outcomes.
+    second = address("second", "failed")
+    assert address("first", "failed")["operation_id"] == first["operation_id"]
+    third = address("third", "succeeded")
+    assert client.get(base).json()["evidence_flags"] == []
+    assert address("first", "failed")["chat_id"] == first["chat_id"]
+    assert len({first["operation_id"], second["operation_id"], third["operation_id"]}) == 3
+
+
+@pytest.mark.parametrize("outcome", ["could_not", "partial"])
+def test_an_address_turn_that_did_not_finish_the_work_reopens_the_flag(flagged, outcome):
+    app, client, store, project, flag = flagged
+
+    async def stream(project_id, kind, request, execution):
+        yield _turn(execution, "done", outcome)
+
+    app.state.background_tasks.stream = stream
+    base = f"/api/projects/{project}/consolidation"
+    url = f"{base}/evidence-flags/{flag['flag_id']}/address"
+    result = client.post(url, json={"request_id": "unfinished"}).json()
+    wait_for_task(store, result["operation_id"], expect="succeeded")
+    [reopened] = client.get(base).json()["evidence_flags"]
+    assert (reopened["state"], reopened["chat_id"]) == ("open", result["chat_id"])
+
+
+def test_a_retried_address_turn_carries_the_flag(flagged):
+    app, client, store, project, flag = flagged
+    outcomes = iter(["error", "done"])
+
+    async def stream(project_id, kind, request, execution):
+        yield _turn(execution, next(outcomes))
+
+    app.state.background_tasks.stream = stream
+    base = f"/api/projects/{project}/consolidation"
+    url = f"{base}/evidence-flags/{flag['flag_id']}/address"
+    first = client.post(url, json={"request_id": "first"}).json()
+    wait_for_task(store, first["operation_id"], expect="failed")
+    retried = client.post(f"/api/projects/{project}/tasks/{first['operation_id']}/retry", json={})
+    wait_for_task(store, retried.json()["operation_id"], expect="succeeded")
+    assert client.get(base).json()["evidence_flags"] == []
+    # An older release left the flag addressing on the failed first turn.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE evidence_flags SET state='addressing', operation_id=? WHERE flag_id=?",
+            (first["operation_id"], flag["flag_id"]),
+        )
+    store.interrupt_active_agent_tasks()
+    assert client.get(base).json()["evidence_flags"] == []
+
+
+def test_a_request_answered_by_a_running_turn_replays_it(flagged):
+    app, client, store, project, flag = flagged
+    release = threading.Event()
+    launches = []
+
+    async def stream(project_id, kind, request, execution):
+        launches.append(execution)
+        await asyncio.to_thread(release.wait, 10)
+        yield _turn(execution, "error")
+
+    app.state.background_tasks.stream = stream
+    url = f"/api/projects/{project}/consolidation/evidence-flags/{flag['flag_id']}/address"
+    try:
+        first = client.post(url, json={"request_id": "first"}).json()
+        second = client.post(url, json={"request_id": "second"}).json()
+        assert second["operation_id"] == first["operation_id"]
+    finally:
+        release.set()
+    wait_for_task(store, first["operation_id"], expect="failed")
+    # The flag reopened, yet a retry of the second request still returns its turn.
+    replay = client.post(url, json={"request_id": "second"}).json()
+    assert replay["operation_id"] == first["operation_id"]
+    assert len(launches) == 1
+
+
+def test_a_restart_reopens_an_addressing_flag(flagged):
+    app, client, store, project, flag = flagged
+    release = threading.Event()
+
+    async def stream(project_id, kind, request, execution):
+        await asyncio.to_thread(release.wait, 10)
+        yield _turn(execution, "done")
+
+    app.state.background_tasks.stream = stream
+    base = f"/api/projects/{project}/consolidation"
+    url = f"{base}/evidence-flags/{flag['flag_id']}/address"
+    try:
+        result = client.post(url, json={"request_id": "before-restart"}).json()
+        store.interrupt_active_agent_tasks()
+        [reopened] = client.get(base).json()["evidence_flags"]
+        assert (reopened["state"], reopened["chat_id"]) == ("open", result["chat_id"])
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize(("outcome", "state"), [("done", None), ("error", "open")])
+def test_startup_settles_a_flag_an_older_release_left_addressing(flagged, outcome, state):
+    app, client, store, project, flag = flagged
+
+    async def stream(project_id, kind, request, execution):
+        yield _turn(execution, outcome)
+
+    app.state.background_tasks.stream = stream
+    base = f"/api/projects/{project}/consolidation"
+    url = f"{base}/evidence-flags/{flag['flag_id']}/address"
+    result = client.post(url, json={"request_id": "old-release"}).json()
+    wait_for_task(store, result["operation_id"])
+    # An older release never settled the flag when its turn ended.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE evidence_flags SET state='addressing' WHERE flag_id=?", (flag["flag_id"],)
+        )
+    store.interrupt_active_agent_tasks()
+    assert [item["state"] for item in client.get(base).json()["evidence_flags"]] == (
+        [state] if state else []
+    )
+
+
+def test_startup_adopts_an_address_request_an_older_release_kept_on_the_flag(flagged):
+    app, client, store, project, flag = flagged
+    launches = []
+
+    async def stream(project_id, kind, request, execution):
+        launches.append(execution)
+        yield _turn(execution, "done")
+
+    app.state.background_tasks.stream = stream
+    url = f"/api/projects/{project}/consolidation/evidence-flags/{flag['flag_id']}/address"
+    result = client.post(url, json={"request_id": "legacy"}).json()
+    wait_for_task(store, result["operation_id"], expect="succeeded")
+    # An older release kept the request only on the flag and left it addressing.
+    with store.connection() as connection:
+        connection.execute("DELETE FROM client_requests WHERE key='legacy'")
+        connection.execute(
+            "UPDATE evidence_flags SET state='addressing', address_request_id='legacy' "
+            "WHERE flag_id=?",
+            (flag["flag_id"],),
+        )
+    store.interrupt_active_agent_tasks()
+    replay = client.post(url, json={"request_id": "legacy"})
+    assert replay.status_code == 200
+    assert replay.json()["operation_id"] == result["operation_id"]
+    assert len(launches) == 1
+
+
+def test_address_refuses_a_consolidation_notice(flagged):
+    app, client, store, project, flag = flagged
+    launches = []
+
+    async def stream(project_id, kind, request, execution):
+        launches.append(kind)
+        yield _turn(execution, "done")
+
+    app.state.background_tasks.stream = stream
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE evidence_flags SET kind='consolidation_added' WHERE flag_id=?",
+            (flag["flag_id"],),
+        )
+    url = f"/api/projects/{project}/consolidation/evidence-flags/{flag['flag_id']}/address"
+    response = client.post(url, json={"request_id": str(uuid.uuid4())})
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "flag_not_addressable"
+    assert launches == []
+    assert store.list_evidence_flags(project)[0]["state"] == "open"
 
 
 @pytest.mark.parametrize("evidence", ["missing", "retired"])

@@ -13,6 +13,9 @@ import {
  *  and the one panel any of them opens. Renders nothing the provider did not report. */
 export function AgentStatusStrip({ tasks }: { tasks: StatusTask[] }) {
   const [open, setOpen] = useState(false);
+  // The strip sits at the right of the Agents header but the left of a node chat
+  // window, so the panel opens toward whichever side has room for it.
+  const [opensLeft, setOpensLeft] = useState(true);
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -35,7 +38,10 @@ export function AgentStatusStrip({ tasks }: { tasks: StatusTask[] }) {
   const fraction = contextFraction(view);
   const showRing = view.contextTokens != null;
   if (!showRing && !view.runningSubagents && !view.compactions.length) return null;
-  const toggle = () => setOpen((value) => !value);
+  const toggle = () => {
+    if (!open && root.current) setOpensLeft(roomToTheLeft(root.current) >= PANEL_WIDTH_PX + 8);
+    setOpen(!open);
+  };
   const percent = fraction == null ? null : Math.round(fraction * 100);
 
   return (
@@ -86,7 +92,7 @@ export function AgentStatusStrip({ tasks }: { tasks: StatusTask[] }) {
       {open && (
         <>
           <div className="agent-status-scrim" onClick={() => setOpen(false)} />
-          <AgentStatusPanel view={view} fraction={fraction} />
+          <AgentStatusPanel view={view} fraction={fraction} opensLeft={opensLeft} />
         </>
       )}
     </div>
@@ -110,10 +116,33 @@ function ContextRing({ fraction }: { fraction: number }) {
   );
 }
 
-function AgentStatusPanel({ view, fraction }: { view: AgentStatusView; fraction: number | null }) {
+/** Width the panel needs, matching `.agent-status-panel` in 08-chat.css. */
+const PANEL_WIDTH_PX = 300;
+
+/** Pixels between the strip's right edge and the left edge of whatever clips it. */
+function roomToTheLeft(element: HTMLElement): number {
+  let clip = element.parentElement;
+  while (clip && getComputedStyle(clip).overflowX === "visible") clip = clip.parentElement;
+  return element.getBoundingClientRect().right - (clip?.getBoundingClientRect().left ?? 0);
+}
+
+function AgentStatusPanel({
+  view,
+  fraction,
+  opensLeft,
+}: {
+  view: AgentStatusView;
+  fraction: number | null;
+  opensLeft: boolean;
+}) {
   const runtime = view.task.runtime_label;
   return (
-    <div className="agent-status-panel" role="dialog" aria-label="Agent status">
+    <div
+      className="agent-status-panel"
+      data-opens={opensLeft ? "left" : "right"}
+      role="dialog"
+      aria-label="Agent status"
+    >
       {view.contextTokens != null && (
         <section>
           <h3>Context</h3>

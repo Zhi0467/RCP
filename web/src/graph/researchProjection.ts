@@ -1,91 +1,372 @@
 import type { Edge, GraphNode } from "../core/types";
 
-const researchTypes = new Set<GraphNode["type"]>([
-  "research_question",
-  "hypothesis",
-  "decision",
-  "experiment",
-  "evidence",
+/** How one Evidence node bears on one Hypothesis. */
+export type Verdict = "for" | "against" | "unclear";
+export type VerdictTally = Record<Verdict, number>;
+
+const VERDICT_BY_RELATION: Record<string, Verdict> = {
+  supports: "for",
+  weakens: "against",
+  refutes: "against",
+  contradicts: "against",
+  inconclusive: "unclear",
+};
+const ACTIVE_EXPERIMENT_STATUSES = new Set([
+  "designing",
+  "implementing",
+  "debugging",
+  "running",
+  "analyzing",
 ]);
+const OPEN_DECISION_STATUSES = new Set(["open", "ready", "revisit"]);
 
-export interface ResearchPath {
-  question: GraphNode;
-  ideas: GraphNode[];
-  experiments: GraphNode[];
+/** A question card's counts, all one relation away from the question. */
+export interface QuestionSummary {
+  node: GraphNode;
+  subquestionCount: number;
+  hypothesisCount: number;
+  openDecisions: number;
+  openBlockers: number;
+}
+
+/** A Hypothesis card's three rows: inputs, Experiments, and Evidence. */
+export interface HypothesisSummary {
+  node: GraphNode;
+  openDecisions: number;
+  openBlockers: number;
+  activeExperiments: number;
+  tally: VerdictTally;
+  /** Every question this Hypothesis answers; it appears under each. */
+  questionIds: string[];
+}
+
+export interface QuestionPage {
+  node: GraphNode;
+  subquestions: QuestionSummary[];
+  hypotheses: HypothesisSummary[];
+  /**
+   * Decisions, Blockers, and Experiments that belong to the question but test no
+   * Hypothesis, each such Experiment followed by its Evidence, Decisions, and Blockers,
+   * then other Evidence informing those Decisions or addressing those Blockers.
+   */
+  loose: GraphNode[];
+}
+
+export interface WeighedEvidence {
+  node: GraphNode;
+  /** Null when the Evidence does not bear on the Hypothesis on screen. */
+  verdict: Verdict | null;
+}
+
+export interface ExperimentLane {
+  node: GraphNode;
+  active: boolean;
+  blocked: boolean;
+  evidence: WeighedEvidence[];
+  tally: VerdictTally;
+}
+
+export interface HypothesisInputs {
+  /** Decisions governing, and Blockers stopping, the Hypothesis's Experiments. */
+  nodes: GraphNode[];
+  /** Evidence informing those Decisions or addressing those Blockers. */
   evidence: GraphNode[];
+  openDecisions: number;
+  openBlockers: number;
 }
 
-export interface ResearchPathProjection {
-  paths: ResearchPath[];
-  unconnected: GraphNode[];
+export interface HypothesisPage {
+  node: GraphNode;
+  questions: GraphNode[];
+  inputs: HypothesisInputs;
+  experiments: ExperimentLane[];
+  /** All Evidence bearing on the Hypothesis, including Evidence from no listed Experiment. */
+  evidence: WeighedEvidence[];
+  tally: VerdictTally;
 }
 
-export function buildResearchPaths(nodes: GraphNode[], edges: Edge[]): ResearchPathProjection {
-  const eligible = [...nodes].filter((node) => researchTypes.has(node.type));
-  const byId = new Map(eligible.map((node) => [node.id, node]));
-  const adjacency = new Map(eligible.map((node) => [node.id, new Set<string>()]));
+export interface ResearchDrilldown {
+  roots: QuestionSummary[];
+  questions: Map<string, QuestionPage>;
+  hypotheses: Map<string, HypothesisPage>;
+  /** Records no question reaches. */
+  unplaced: GraphNode[];
+}
+
+/**
+ * Decompose the research graph into question cards, question pages, and
+ * Hypothesis pages. The graph is not a tree: a Hypothesis, Experiment, or
+ * Evidence node appears on every page whose relations reach it.
+ */
+export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): ResearchDrilldown {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  // Index every relation once; the pages below read these maps instead of scanning edges.
+  const outgoingIndex = new Map<string, GraphNode[]>();
+  const incomingIndex = new Map<string, GraphNode[]>();
+  const verdicts = new Map<string, Verdict>();
+  const neighbourIds = new Map<string, string[]>();
+  const append = <T>(index: Map<string, T[]>, key: string, value: T) => {
+    const list = index.get(key);
+    if (list) list.push(value);
+    else index.set(key, [value]);
+  };
   edges.forEach((edge) => {
-    if (!byId.has(edge.source) || !byId.has(edge.target)) return;
-    adjacency.get(edge.source)?.add(edge.target);
-    adjacency.get(edge.target)?.add(edge.source);
+    const source = byId.get(edge.source);
+    const target = byId.get(edge.target);
+    if (!source || !target) return;
+    append(outgoingIndex, `${source.id}\0${edge.relation}`, target);
+    append(incomingIndex, `${target.id}\0${edge.relation}`, source);
+    append(neighbourIds, source.id, target.id);
+    append(neighbourIds, target.id, source.id);
+    // Evidence assessed both ways on one Hypothesis reads as unclear, whatever the edge order.
+    const verdict = VERDICT_BY_RELATION[edge.relation];
+    const pair = `${source.id}\0${target.id}`;
+    const previous = verdicts.get(pair);
+    if (verdict) verdicts.set(pair, previous && previous !== verdict ? "unclear" : verdict);
   });
+  outgoingIndex.forEach((list, key) => outgoingIndex.set(key, sortNodes(list)));
+  incomingIndex.forEach((list, key) => incomingIndex.set(key, sortNodes(list)));
+  const outgoing = (id: string, relation: string) => outgoingIndex.get(`${id}\0${relation}`) ?? [];
+  const incoming = (id: string, relation: string) => incomingIndex.get(`${id}\0${relation}`) ?? [];
+  const verdictOn = (evidenceId: string, hypothesisId: string): Verdict | null =>
+    verdicts.get(`${evidenceId}\0${hypothesisId}`) ?? null;
+  // What must clear first, to the end of the chain: each Decision's Blockers and
+  // each Blocker's required Decisions.
+  const withPrerequisites = (start: GraphNode[]): GraphNode[] => {
+    const result = uniqueNodes(start);
+    const seen = new Set(result.map((node) => node.id));
+    for (let index = 0; index < result.length; index += 1) {
+      const node = result[index];
+      const next =
+        node.type === "decision"
+          ? outgoing(node.id, "blocked_by")
+          : node.type === "blocker"
+            ? outgoing(node.id, "requires_decision")
+            : [];
+      next.forEach((item) => {
+        if (seen.has(item.id)) return;
+        seen.add(item.id);
+        result.push(item);
+      });
+    }
+    return result;
+  };
+  const isOpenBlocker = (node: GraphNode) => node.type === "blocker" && node.status === "open";
+  const isOpenDecision = (node: GraphNode) =>
+    node.type === "decision" && OPEN_DECISION_STATUSES.has(node.status ?? "");
 
-  const questions = eligible.filter((node) => node.type === "research_question").sort(compareNodes);
-  const distances = new Map(
-    questions.map((question) => [question.id, distancesFrom(question.id, adjacency)]),
-  );
-  const assignments = new Map<string, string>();
-
-  eligible.forEach((node) => {
-    if (node.type === "research_question") return;
-    let closestQuestion: string | null = null;
-    let closestDistance = Number.POSITIVE_INFINITY;
-    questions.forEach((question) => {
-      const distance = distances.get(question.id)?.get(node.id);
-      if (distance === undefined) return;
-      if (
-        distance < closestDistance ||
-        (distance === closestDistance && question.id < String(closestQuestion))
-      ) {
-        closestQuestion = question.id;
-        closestDistance = distance;
-      }
+  const hypotheses = new Map<string, HypothesisPage>();
+  nodes
+    .filter((node) => node.type === "hypothesis")
+    .forEach((hypothesis) => {
+      const experiments = incoming(hypothesis.id, "tests")
+        .filter((node) => node.type === "experiment")
+        .map((experiment): ExperimentLane => {
+          const evidence = outgoing(experiment.id, "produces").map((node) => ({
+            node,
+            verdict: verdictOn(node.id, hypothesis.id),
+          }));
+          return {
+            node: experiment,
+            active: ACTIVE_EXPERIMENT_STATUSES.has(experiment.status ?? ""),
+            blocked: outgoing(experiment.id, "blocked_by").some(isOpenBlocker),
+            evidence,
+            tally: tallyOf(evidence),
+          };
+        });
+      const inputNodes = withPrerequisites(
+        experiments.flatMap((lane) => [
+          ...outgoing(lane.node.id, "governed_by"),
+          ...outgoing(lane.node.id, "blocked_by"),
+        ]),
+      );
+      const evidence = Object.keys(VERDICT_BY_RELATION)
+        .flatMap((relation) => incoming(hypothesis.id, relation))
+        .filter((node) => node.type === "evidence")
+        .map((node) => ({ node, verdict: verdictOn(node.id, hypothesis.id) }));
+      const uniqueEvidence = uniqueBy(evidence, (item) => item.node.id);
+      hypotheses.set(hypothesis.id, {
+        node: hypothesis,
+        questions: incoming(hypothesis.id, "has_hypothesis").filter(
+          (node) => node.type === "research_question",
+        ),
+        inputs: {
+          nodes: inputNodes,
+          evidence: uniqueNodes(
+            inputNodes.flatMap((node) =>
+              incoming(node.id, node.type === "decision" ? "informs" : "addresses"),
+            ),
+          ),
+          openDecisions: inputNodes.filter(isOpenDecision).length,
+          openBlockers: inputNodes.filter(isOpenBlocker).length,
+        },
+        experiments,
+        evidence: uniqueEvidence,
+        tally: tallyOf(uniqueEvidence),
+      });
     });
-    if (closestQuestion) assignments.set(node.id, closestQuestion);
-  });
 
-  const paths = questions.map((question) => {
-    const assigned = eligible.filter((node) => assignments.get(node.id) === question.id);
-    return {
-      question,
-      ideas: assigned
-        .filter((node) => node.type === "hypothesis" || node.type === "decision")
-        .sort(compareNodes),
-      experiments: assigned.filter((node) => node.type === "experiment").sort(compareNodes),
-      evidence: assigned.filter((node) => node.type === "evidence").sort(compareNodes),
+  const hypothesisMembers = (page: HypothesisPage) => [
+    page.node,
+    ...page.inputs.nodes,
+    ...page.inputs.evidence,
+    ...page.experiments.flatMap((lane) => [lane.node, ...lane.evidence.map((item) => item.node)]),
+    ...page.evidence.map((item) => item.node),
+  ];
+
+  const questionNodes = sortNodes(nodes.filter((node) => node.type === "research_question"));
+  // An Experiment that tests no Hypothesis belongs to a question when it, or its
+  // Evidence, touches a Decision or Blocker on that question's page.
+  const freeExperimentsByAnchor = new Map<string, GraphNode[]>();
+  sortNodes(nodes)
+    .filter((node) => node.type === "experiment" && outgoing(node.id, "tests").length === 0)
+    .forEach((experiment) => {
+      const touched = new Set(
+        [experiment.id, ...outgoing(experiment.id, "produces").map((item) => item.id)].flatMap(
+          (id) => neighbourIds.get(id) ?? [],
+        ),
+      );
+      touched.forEach((id) => append(freeExperimentsByAnchor, id, experiment));
+    });
+  const looseOf = (question: GraphNode): GraphNode[] => {
+    const decisions = outgoing(question.id, "has_decision");
+    const blockers = [question, ...decisions].flatMap((node) => outgoing(node.id, "blocked_by"));
+    const freeWork = (node: GraphNode) => sortNodes(freeExperimentsByAnchor.get(node.id) ?? []);
+    // Walk depth-first from the question's own Decisions and Blockers until nothing
+    // new joins, so each Experiment is followed by its results and inputs: a Decision
+    // or Blocker brings what must clear before it and the Hypothesis-free work
+    // touching it; an Experiment brings its results and its own inputs.
+    const loose: GraphNode[] = [];
+    const seen = new Set<string>();
+    const visit = (node: GraphNode) => {
+      if (seen.has(node.id)) return;
+      seen.add(node.id);
+      loose.push(node);
+      const next =
+        node.type === "experiment"
+          ? ["produces", "governed_by", "blocked_by"].flatMap((relation) =>
+              outgoing(node.id, relation),
+            )
+          : node.type === "decision"
+            ? [...outgoing(node.id, "blocked_by"), ...freeWork(node)]
+            : node.type === "blocker"
+              ? [...outgoing(node.id, "requires_decision"), ...freeWork(node)]
+              : [];
+      next.forEach(visit);
     };
+    [...decisions, ...blockers].forEach(visit);
+    // Work also joins through a Hypothesis's inputs, which its page already lists.
+    outgoing(question.id, "has_hypothesis")
+      .flatMap((node) => hypotheses.get(node.id)?.inputs.nodes ?? [])
+      .flatMap(freeWork)
+      .forEach(visit);
+    // Then Evidence bearing on any of it.
+    return uniqueNodes([
+      ...loose,
+      ...loose.flatMap((node) => [
+        ...incoming(node.id, "informs"),
+        ...incoming(node.id, "addresses"),
+      ]),
+    ]);
+  };
+
+  const pages = new Map<string, QuestionPage>();
+  const membersOf = (question: GraphNode, seen: Set<string>): GraphNode[] => {
+    if (seen.has(question.id)) return [];
+    seen.add(question.id);
+    const page = pages.get(question.id)!;
+    return [
+      question,
+      ...page.loose,
+      ...page.hypotheses.flatMap((item) => hypothesisMembers(hypotheses.get(item.node.id)!)),
+      ...page.subquestions.flatMap((item) => membersOf(item.node, seen)),
+    ];
+  };
+  const summarize = (question: GraphNode): QuestionSummary => ({
+    node: question,
+    subquestionCount: outgoing(question.id, "has_subquestion").filter(
+      (node) => node.type === "research_question",
+    ).length,
+    hypothesisCount: outgoing(question.id, "has_hypothesis").filter((node) =>
+      hypotheses.has(node.id),
+    ).length,
+    openDecisions: outgoing(question.id, "has_decision").filter(isOpenDecision).length,
+    openBlockers: outgoing(question.id, "blocked_by").filter(isOpenBlocker).length,
   });
-  const unconnected = eligible
-    .filter((node) => node.type !== "research_question" && !assignments.has(node.id))
-    .sort(compareNodes);
-  return { paths, unconnected };
-}
-
-function distancesFrom(start: string, adjacency: Map<string, Set<string>>): Map<string, number> {
-  const distances = new Map([[start, 0]]);
-  const queue = [start];
-  for (let index = 0; index < queue.length; index += 1) {
-    const current = queue[index];
-    const nextDistance = (distances.get(current) ?? 0) + 1;
-    [...(adjacency.get(current) ?? [])].sort().forEach((neighbor) => {
-      if (distances.has(neighbor)) return;
-      distances.set(neighbor, nextDistance);
-      queue.push(neighbor);
+  questionNodes.forEach((question) => {
+    pages.set(question.id, {
+      node: question,
+      subquestions: outgoing(question.id, "has_subquestion")
+        .filter((node) => node.type === "research_question")
+        .map(summarize),
+      hypotheses: outgoing(question.id, "has_hypothesis")
+        .filter((node) => hypotheses.has(node.id))
+        .map((node) => {
+          const page = hypotheses.get(node.id)!;
+          return {
+            node,
+            openDecisions: page.inputs.openDecisions,
+            openBlockers: page.inputs.openBlockers,
+            activeExperiments: page.experiments.filter((lane) => lane.active).length,
+            tally: page.tally,
+            questionIds: page.questions.map((item) => item.id),
+          };
+        }),
+      loose: looseOf(question),
     });
-  }
-  return distances;
+  });
+  const hasParent = new Set(
+    questionNodes.flatMap((question) =>
+      pages.get(question.id)!.subquestions.map((item) => item.node.id),
+    ),
+  );
+  const rootIds: string[] = questionNodes
+    .filter((question) => !hasParent.has(question.id))
+    .map((question) => question.id);
+  const seenQuestions = new Set<string>();
+  const reached = new Set(
+    rootIds.flatMap((id) => membersOf(byId.get(id)!, seenQuestions).map((node) => node.id)),
+  );
+  // A question reachable only through a subquestion cycle still gets a card.
+  questionNodes.forEach((question) => {
+    if (reached.has(question.id)) return;
+    rootIds.push(question.id);
+    membersOf(question, seenQuestions).forEach((node) => reached.add(node.id));
+  });
+
+  return {
+    roots: rootIds.map((id) => summarize(byId.get(id)!)),
+    questions: pages,
+    hypotheses,
+    unplaced: sortNodes(nodes.filter((node) => !reached.has(node.id))),
+  };
 }
 
-function compareNodes(left: GraphNode, right: GraphNode): number {
-  return left.id.localeCompare(right.id);
+function tallyOf(evidence: WeighedEvidence[]): VerdictTally {
+  const tally: VerdictTally = { for: 0, against: 0, unclear: 0 };
+  evidence.forEach((item) => {
+    if (item.verdict) tally[item.verdict] += 1;
+  });
+  return tally;
+}
+
+function uniqueBy<T>(items: T[], key: (item: T) => string): T[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const id = key(item);
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
+function uniqueNodes(nodes: GraphNode[]): GraphNode[] {
+  return uniqueBy(nodes, (node) => node.id);
+}
+
+function sortNodes(nodes: GraphNode[]): GraphNode[] {
+  return [...nodes].sort(
+    (left, right) =>
+      (left.created_rev ?? 0) - (right.created_rev ?? 0) || left.id.localeCompare(right.id),
+  );
 }

@@ -26,6 +26,9 @@ if TYPE_CHECKING:
 EVIDENCE_FLAG_KINDS = frozenset(
     {"overclaim", "underclaim", "no_source", "unverified", "consolidation_added"}
 )
+# Kinds that bring Evidence to a human's attention without reporting a problem, so
+# there is nothing for an Address Work turn to correct.
+NOTICE_FLAG_KINDS = frozenset({"consolidation_added"})
 
 # An absolute execution-host path or `<alias>/<relative path>` with an optional `:LINE`,
 # or an external http(s) URL.
@@ -54,7 +57,7 @@ _FIELDS = (
     "created_at",
 )
 _LOCKS = KeyedLocks()
-_ADMISSION: ContextVar[tuple[object, str, str, str, str] | None] = ContextVar(
+_ADMISSION: ContextVar[tuple[object, str, str, str] | None] = ContextVar(
     "evidence_flag_admission", default=None
 )
 
@@ -105,11 +108,21 @@ def _flag(connection: sqlite3.Connection, project_id: str, flag_id: str) -> sqli
 def record_evidence_flag_address(
     store: object, connection: sqlite3.Connection, task: AgentTaskRecord
 ) -> None:
-    """Bind the flag in the same transaction that admits its ordinary node turn."""
+    """Bind the flag in the same transaction that admits its ordinary node turn.
+
+    A Resume or Retry of the flag's failed turn takes over the binding, unless the
+    flag was since dismissed or bound to another attempt.
+    """
+    if task.parent_operation_id is not None and task.attempt > 1:
+        connection.execute(
+            "UPDATE evidence_flags SET state='addressing',operation_id=? "
+            "WHERE operation_id=? AND state='open'",
+            (task.operation_id, task.parent_operation_id),
+        )
     admission = _ADMISSION.get()
     if admission is None or admission[0] is not store:
         return
-    _, project_id, flag_id, user_id, request_id = admission
+    _, project_id, flag_id, user_id = admission
     flag = _flag(connection, project_id, flag_id)
     chat_id = task.request.get("chat_id")
     if (
@@ -125,16 +138,115 @@ def record_evidence_flag_address(
     ):
         raise EvidenceFlagError("flag_address_conflict")
     _member(connection, project_id, user_id)
-    try:
-        changed = connection.execute(
-            "UPDATE evidence_flags SET state='addressing',chat_id=?,operation_id=?,address_request_id=? "
-            "WHERE project_id=? AND flag_id=? AND state='open'",
-            (chat_id, task.operation_id, request_id, project_id, flag_id),
-        ).rowcount
-    except sqlite3.IntegrityError as exc:
-        raise EvidenceFlagError("flag_key_conflict") from exc
+    # The request receipt is the admitted task's client request row.
+    changed = connection.execute(
+        "UPDATE evidence_flags SET state='addressing',chat_id=?,operation_id=? "
+        "WHERE project_id=? AND flag_id=? AND state='open'",
+        (chat_id, task.operation_id, project_id, flag_id),
+    ).rowcount
     if changed != 1:
         raise EvidenceFlagError("flag_address_conflict")
+
+
+_ENDED_TASK_STATUSES = frozenset({"succeeded", "failed", "interrupted", "paused"})
+
+
+def _address_resolved(connection: sqlite3.Connection, operation_id: str) -> bool:
+    """A finished turn resolves its flag only when it reports `done` and its graph update landed."""
+    row = connection.execute(
+        "SELECT result_json FROM graph_runs WHERE operation_id=?", (operation_id,)
+    ).fetchone()
+    result = json.loads(row["result_json"]) if row is not None and row["result_json"] else {}
+    outcome = (result.get("turn_outcome") or {}).get("status")
+    graph = (result.get("graph_update") or {}).get("status")
+    return outcome == "done" and graph not in {"rejected", "unavailable"}
+
+
+def settle_evidence_flag_address(
+    connection: sqlite3.Connection, operation_id: str, status: str
+) -> None:
+    """Close a flag when its Address turn resolved it; any other end reopens it.
+
+    A reopened flag keeps its chat, which is how readers tell a failed attempt.
+    """
+    bound = connection.execute(
+        "SELECT 1 FROM evidence_flags WHERE operation_id=? AND state='addressing'",
+        (operation_id,),
+    ).fetchone()
+    if bound is None:
+        return
+    resolved = status == "succeeded" and _address_resolved(connection, operation_id)
+    connection.execute(
+        "UPDATE evidence_flags SET state=? WHERE operation_id=? AND state='addressing'",
+        ("dismissed" if resolved else "open", operation_id),
+    )
+
+
+def address_request_route(flag_id: str) -> str:
+    """The client request route an Address request is recorded under."""
+    return f"evidence_flags/{flag_id}/address"
+
+
+def adopt_legacy_evidence_flag_requests(connection: sqlite3.Connection) -> None:
+    """Move Address request ids older releases kept on the flag into client requests.
+
+    Replays read only `client_requests`; startup moves each old id there once,
+    under its turn's authorizer, and clears the column.
+    """
+    rows = connection.execute(
+        "SELECT f.flag_id,f.project_id,f.address_request_id,f.operation_id,"
+        "r.authorized_user_id,r.created_at FROM evidence_flags f "
+        "JOIN graph_runs r ON r.operation_id=f.operation_id "
+        "WHERE f.address_request_id IS NOT NULL AND r.authorized_user_id IS NOT NULL"
+    ).fetchall()
+    connection.executemany(
+        "INSERT OR IGNORE INTO client_requests "
+        "(project_id,user_id,key,route,operation_id,created_at) VALUES (?,?,?,?,?,?)",
+        [
+            (
+                row["project_id"],
+                row["authorized_user_id"],
+                row["address_request_id"],
+                address_request_route(row["flag_id"]),
+                row["operation_id"],
+                row["created_at"],
+            )
+            for row in rows
+        ],
+    )
+    connection.execute("UPDATE evidence_flags SET address_request_id=NULL")
+
+
+def settle_ended_evidence_flag_addresses(connection: sqlite3.Connection) -> None:
+    """Bring addressing flags in line with their turns at startup.
+
+    Older releases neither moved a flag to a Resume or Retry of its turn nor
+    settled it when the turn ended, so the binding first follows recovery turns
+    to the latest one, then settles if that turn ended. Later starts find
+    nothing to change.
+    """
+    flags = connection.execute(
+        "SELECT flag_id,operation_id FROM evidence_flags WHERE state='addressing'"
+    ).fetchall()
+    for flag in flags:
+        operation_id = flag["operation_id"]
+        while (
+            child := connection.execute(
+                "SELECT operation_id FROM graph_runs WHERE parent_operation_id=? AND attempt>1 "
+                "ORDER BY created_at DESC,operation_id DESC LIMIT 1",
+                (operation_id,),
+            ).fetchone()
+        ) is not None:
+            operation_id = child["operation_id"]
+        connection.execute(
+            "UPDATE evidence_flags SET operation_id=? WHERE flag_id=?",
+            (operation_id, flag["flag_id"]),
+        )
+        row = connection.execute(
+            "SELECT status FROM graph_runs WHERE operation_id=?", (operation_id,)
+        ).fetchone()
+        if row is not None and row["status"] in _ENDED_TASK_STATUSES:
+            settle_evidence_flag_address(connection, operation_id, row["status"])
 
 
 class EvidenceFlagStoreMixin(StoreMixinBase):
@@ -153,14 +265,18 @@ class EvidenceFlagStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             return _record(_flag(connection, project_id, flag_id))
 
-    def evidence_flag_address_result(self, project_id: str, flag_id: str) -> dict[str, Any]:
+    def evidence_flag_address_result(
+        self, project_id: str, flag_id: str, operation_id: str | None = None
+    ) -> dict[str, Any]:
+        """The flag with its latest turn, or with `operation_id`'s turn on a replay."""
         with self.connection() as connection:
             row = _flag(connection, project_id, flag_id)
-            return {
-                "flag": _record(row),
-                "chat_id": row["chat_id"],
-                "operation_id": row["operation_id"],
-            }
+        task = cast("AppStore", self).agent_task(operation_id) if operation_id else None
+        return {
+            "flag": _record(row),
+            "chat_id": task.request["chat_id"] if task else row["chat_id"],
+            "operation_id": task.operation_id if task else row["operation_id"],
+        }
 
     def dismiss_evidence_flag(
         self, project_id: str, flag_id: str, *, user_id: str
@@ -182,10 +298,8 @@ class EvidenceFlagStoreMixin(StoreMixinBase):
 
     @contextmanager
     def evidence_flag_admission(
-        self, project_id: str, flag_id: str, *, user_id: str, request_id: str
+        self, project_id: str, flag_id: str, *, user_id: str
     ) -> Iterator[dict[str, Any]]:
-        if not request_id.strip():
-            raise EvidenceFlagError("flag_key_invalid")
         with _LOCKS(f"{self.path.resolve()}:{project_id}:{flag_id}"):
             with self.connection() as connection:
                 _member(connection, project_id, user_id)
@@ -193,13 +307,9 @@ class EvidenceFlagStoreMixin(StoreMixinBase):
                 row = _flag(connection, project_id, flag_id)
                 if row["state"] == "dismissed":
                     raise EvidenceFlagError("flag_dismissed")
-                previous = connection.execute(
-                    "SELECT flag_id FROM evidence_flags WHERE project_id=? AND address_request_id=?",
-                    (project_id, request_id),
-                ).fetchone()
-                if previous is not None and previous["flag_id"] != flag_id:
-                    raise EvidenceFlagError("flag_key_conflict")
-            token = _ADMISSION.set((self, project_id, flag_id, user_id, request_id))
+                if row["kind"] in NOTICE_FLAG_KINDS:
+                    raise EvidenceFlagError("flag_not_addressable")
+            token = _ADMISSION.set((self, project_id, flag_id, user_id))
             try:
                 yield _record(row)
             finally:

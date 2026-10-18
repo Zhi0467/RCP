@@ -7,6 +7,7 @@ import {
   PhoneTabBar,
 } from "../../src/projects/PhoneProjectChrome";
 import { ProjectDock } from "../../src/projects/ProjectDock";
+import { ViewPicker } from "../../src/graph/ViewPicker";
 import "../../src/styles.css";
 
 declare global {
@@ -55,13 +56,13 @@ function Fixture() {
         }
         menu={
           <>
-            <label className="trust-filter">
-              <span>Show</span>
-              <select defaultValue="working">
-                <option value="working">Working graph</option>
-                <option value="review">Everything</option>
-              </select>
-            </label>
+            <ViewPicker
+              inline
+              layout="scientific"
+              trustView="working"
+              onLayout={(layout) => window.chosen.push(layout)}
+              onTrustView={(trustView) => window.chosen.push(trustView)}
+            />
             <button
               className="icon-button"
               aria-label="Project history"

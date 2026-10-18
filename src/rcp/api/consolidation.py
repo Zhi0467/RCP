@@ -32,8 +32,9 @@ from rcp.projects import ProjectCatalog
 from rcp.runs.consolidation import CONSOLIDATION_PRELAUNCH_ERRORS
 from rcp.runs.evidence_flag_commands import is_current_evidence
 from rcp.storage import AppStore
+from rcp.storage.client_requests import ClientRequestConflict
 from rcp.storage.consolidation import ConsolidationRun, ConsolidationSchedule
-from rcp.storage.evidence_flags import EvidenceFlagError
+from rcp.storage.evidence_flags import EvidenceFlagError, address_request_route
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
 Store = Annotated[AppStore, Depends(get_store)]
@@ -301,41 +302,52 @@ def address_evidence_flag(
     human = identity_access.require_patch_capable_identity(request)
     project_id = catalog.resolve_project_id(project_id)
     try:
-        with store.evidence_flag_admission(
-            project_id, flag_id, user_id=human.user_id, request_id=body.request_id
-        ) as flag:
-            # Replaying an addressing flag returns its bound chat whatever main now holds.
-            if flag["state"] == "open":
-                service = get_graph_service(catalog, project_id, initialize=False, write=True)
-                if not is_current_evidence(service.history.state(), flag["evidence_id"]):
-                    raise EvidenceFlagError("flag_evidence_unavailable")
-                try:
-                    start_agent_task(
-                        project_id,
-                        "node_chat",
-                        {
-                            "node_id": flag["evidence_id"],
-                            "chat_id": str(uuid.uuid4()),
-                            "mode": "work",
-                            "message": evidence_flag_message(flag),
-                        },
-                        request,
-                        catalog=catalog,
-                        store=store,
-                        identity_access=identity_access,
-                        attachment_store=attachment_store,
-                        background_tasks=background_tasks,
-                    )
-                except HTTPException as exc:
-                    if exc.status_code == 404:
-                        raise HTTPException(
-                            status_code=409,
-                            detail={
-                                "code": "flag_evidence_unavailable",
-                                "message": "The Evidence is absent or retired on main.",
+        with store.client_request_admission(
+            project_id, human.user_id, body.request_id, address_request_route(flag_id)
+        ) as receipt:
+            # A replay returns its own turn, even after that turn settled the flag.
+            if receipt is not None:
+                return store.evidence_flag_address_result(project_id, flag_id, receipt.operation_id)
+            with store.evidence_flag_admission(project_id, flag_id, user_id=human.user_id) as flag:
+                # A flag already addressing returns its bound chat whatever main now
+                # holds; a flag reopened by a failed turn starts another.
+                if flag["state"] == "open":
+                    service = get_graph_service(catalog, project_id, initialize=False, write=True)
+                    if not is_current_evidence(service.history.state(), flag["evidence_id"]):
+                        raise EvidenceFlagError("flag_evidence_unavailable")
+                    try:
+                        start_agent_task(
+                            project_id,
+                            "node_chat",
+                            {
+                                "node_id": flag["evidence_id"],
+                                "chat_id": str(uuid.uuid4()),
+                                "mode": "work",
+                                "message": evidence_flag_message(flag),
                             },
-                        ) from exc
-                    raise
-            return store.evidence_flag_address_result(project_id, flag_id)
+                            request,
+                            catalog=catalog,
+                            store=store,
+                            identity_access=identity_access,
+                            attachment_store=attachment_store,
+                            background_tasks=background_tasks,
+                        )
+                    except HTTPException as exc:
+                        if exc.status_code == 404:
+                            raise HTTPException(
+                                status_code=409,
+                                detail={
+                                    "code": "flag_evidence_unavailable",
+                                    "message": "The Evidence is absent or retired on main.",
+                                },
+                            ) from exc
+                        raise
+                result = store.evidence_flag_address_result(project_id, flag_id)
+                if flag["state"] != "open":
+                    # Another request admitted this turn; a retry of this one must return it.
+                    store.bind_client_request(result["operation_id"])
+                return result
+    except ClientRequestConflict as exc:
+        raise _flag_error(EvidenceFlagError("flag_key_conflict")) from exc
     except EvidenceFlagError as exc:
         raise _flag_error(exc) from exc

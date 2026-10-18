@@ -1085,10 +1085,14 @@ identity:
   "operation_id": string}`. It admits an ordinary node Work chat on main using
   the human node-chat path and default node-chat provider profile. The first human
   message is composed on the backend from flag context and fixed instructions;
-  it adds no authority. Replaying the same request id or addressing an addressing
-  flag returns the existing chat and operation without starting another turn,
-  whatever main now holds. Addressing an open flag whose Evidence is absent or
-  retired on main, or a dismissed flag, returns 409; unknown flags return 404.
+  it adds no authority. The request id is recorded as the admitted turn's client
+  request, so replaying it returns that turn's chat and operation even after a
+  later attempt or the turn's own end settled the flag. Addressing an addressing
+  flag returns its current chat and records the request against that turn. Neither starts another turn, whatever main now
+  holds. An open flag
+  that keeps a `chat_id` was reopened by a failed turn, and a new request id
+  starts another. Addressing an open flag whose Evidence is absent or retired on
+  main, or a dismissed flag, returns 409; unknown flags return 404.
 
 The [consolidation spec](graph-consolidation-and-lessons.md#evidence-to-check)
 owns fact-check behavior, flag lifecycle, and the Evidence to check Inbox rows.
@@ -1132,8 +1136,19 @@ Historical Ambiguities never render or count.
 
 ### Research
 
-Research presents question-centered paths and a bounded DAG. Research flow uses
-one column per node type, ordered ResearchQuestion, Hypothesis, Decision, Blocker,
+Research presents a question drill-down and a bounded DAG. The drill-down
+follows relations, not nearest-question assignment, so a shared Hypothesis,
+Experiment, or Evidence appears under every question that reaches it, and a
+Hypothesis page links its other questions. Inputs are the Decisions governing
+and the Blockers stopping its Experiments (and those Decisions); Decisions and
+Blockers attach to questions and Experiments, never to Hypotheses. Each
+Experiment's Evidence carries its verdict on that Hypothesis; the Hypothesis
+tally also counts Evidence no listed Experiment produced. An Experiment that
+tests no Hypothesis belongs to the question whose Decision or Blocker it, or
+its Evidence, touches. The trail is session-scoped per project and graph
+target.
+
+The DAG's Research flow uses one column per node type, ordered ResearchQuestion, Hypothesis, Decision, Blocker,
 Experiment, then Evidence. All question depths share the ResearchQuestion column;
 relations affect ordering within a column, never type placement. Columns start at
 the same top row. Manual pins remain explicit position overrides.

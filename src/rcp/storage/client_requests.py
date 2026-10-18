@@ -86,6 +86,30 @@ class ClientRequestStoreMixin(StoreMixinBase):
             finally:
                 _ADMISSION.reset(token)
 
+    def bind_client_request(self, operation_id: str) -> None:
+        """Record the open request as answered by a turn an earlier request admitted."""
+        scope = _ADMISSION.get()
+        if scope is None or scope[0] is not self:
+            raise RuntimeError("Binding a client request requires its admission scope.")
+        admission = scope[1]
+        with self.connection() as connection:
+            try:
+                connection.execute(
+                    """INSERT INTO client_requests
+                    (project_id, user_id, key, route, operation_id, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        admission.project_id,
+                        admission.user_id,
+                        admission.key,
+                        admission.route,
+                        operation_id,
+                        self.now(),
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ClientRequestConflict("Request key has already been admitted.") from exc
+
 
 def record_client_request(
     store: object,

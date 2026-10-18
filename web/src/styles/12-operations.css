@@ -1348,6 +1348,23 @@
 .evidence-flag-row.has-error {
   border-left: 3px solid var(--red);
 }
+.evidence-flag-row.addressing {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  padding: 8px 8px 8px 16px;
+}
+.evidence-flag-strip-text {
+  white-space: nowrap;
+}
+.evidence-flag-strip-title {
+  color: var(--muted);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .evidence-flag-finding {
   overflow-wrap: anywhere;
   margin: 0 0 12px;
@@ -1357,7 +1374,8 @@
   flex-wrap: wrap;
 }
 @media (max-width: 560px) {
-  .evidence-flag-row .card-actions > button {
+  .evidence-flag-row .card-actions > button,
+  .evidence-flag-row.addressing > button {
     min-height: 44px;
     min-width: 44px;
   }

@@ -58,7 +58,12 @@ from rcp.providers import ProviderUsage, classify_terminal_error, require_runtim
 from rcp.providers.live_status import AgentStatus
 from rcp.storage.client_requests import record_client_request
 from rcp.storage.digest import append_task_failed
-from rcp.storage.evidence_flags import record_evidence_flag_address
+from rcp.storage.evidence_flags import (
+    adopt_legacy_evidence_flag_requests,
+    record_evidence_flag_address,
+    settle_ended_evidence_flag_addresses,
+    settle_evidence_flag_address,
+)
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     ACTIVE_AGENT_TASK_STATUSES,
@@ -1974,6 +1979,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 (now, now, detail, detail, now, selected_json),
             )
             for operation_id in interrupted:
+                settle_evidence_flag_address(connection, operation_id, "interrupted")
                 self._insert_agent_task_event(
                     connection,
                     operation_id,
@@ -4259,6 +4265,8 @@ class AgentTaskStoreMixin(StoreMixinBase):
         ).rowcount
         if changed != 1:
             return _AgentTaskTransitionResult("refused", observed_status)
+        if target_status in {"succeeded", "failed", "interrupted", "paused"}:
+            settle_evidence_flag_address(connection, operation_id, target_status)
         return _AgentTaskTransitionResult("applied", observed_status)
 
     @staticmethod
@@ -5551,6 +5559,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 ),
             )
             for operation_id in interrupted:
+                settle_evidence_flag_address(connection, operation_id, "interrupted")
                 self._insert_auto_research_task_lifecycle_notice(
                     connection,
                     operation_id=operation_id,
@@ -5575,6 +5584,8 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     tier="summary",
                     created_at=now,
                 )
+            adopt_legacy_evidence_flag_requests(connection)
+            settle_ended_evidence_flag_addresses(connection)
 
     def prune_operational_storage(self, *, now: datetime | None = None) -> dict[str, int]:
         """Age out bulky run payloads. `graph_runs` rows are never deleted, so

@@ -49,7 +49,10 @@ magnifies the page without resizing RCP windows. Verify at 390px.
 
 No wordmark, logo, or revision label sits beside the project name. Group labelled
 Sync/Ask together and icon-only History/Refresh together. Agent tasks are
-icon-only and accessible. Inbox carries a colored count; DAG is under Research.
+icon-only and accessible. Inbox carries a colored count; DAG is under Research. Research has no page
+heading: one View picker at the end of the tab strip switches between the
+drill-down and the DAG and sets which records show; on phones it sits in the ⋯
+menu. The DAG toolbar's type and layer filter is its Lens menu.
 Paper is under Artifacts' Files | Paper switch, retaining route `paper` and an
 unsynced badge on Artifacts. The member's pinned pages follow Paper in that
 switch; on phones it scrolls within its own width, pin titles truncate, and
@@ -68,8 +71,18 @@ boundaries follow [revision observation](api-web-and-desktop-projections.md#revi
 
 ## Projections
 
-Research shows question-centered paths and separates unconnected records. Research
-flow places types in the order defined by the [Research projection](api-web-and-desktop-projections.md#research).
+Research is a drill-down, one level per screen, with a trail back up. Question
+cards show the question and its motivation (text that only restates the title
+is skipped), and count only what is one relation
+away: sub-questions, Hypotheses, undecided Decisions, open Blockers. Hypothesis
+cards show the statement, then three rows in page order: inputs (with undecided Decisions and open
+Blockers), Experiments (with active ones), and Evidence (with the verdict tally). A question page lists sub-questions, Hypotheses, and work
+that tests no Hypothesis. A Hypothesis page puts its Experiments in the middle, one collapsed
+Inputs box before them, and one Evidence box after each; boxes and the verdict
+tally open as their own trail step, never a box stacked under the row. At phone
+width each Experiment keeps its Evidence box beside it. Records no question
+reaches stay explicit. Research flow places types in the order defined by the
+[Research projection](api-web-and-desktop-projections.md#research).
 
 Runs has no page title. Needs Action and In progress are unfolded, mixed-mode,
 reverse-chronological lists. Only runs stopped pending human action belong in
@@ -141,15 +154,18 @@ on the existing draft path.
 The Inbox uses the consolidation load for an **Evidence to check** section and
 includes its rows in the open total. Each row shows the kind, night, current
 Evidence title, and finding. **Address** starts the backend-authorized node Work
-chat and opens the returned chat in Agents; **Open chat** replaces it while the
-flag is addressing. The row stays until its icon-only **Dismiss** action succeeds.
+chat and keeps the member where they are. While the turn runs the row collapses to
+one strip: a spinner, the kind, the title, and an icon-only **Open chat**. A
+turn that finishes the work removes the row. Any other end brings the full row back
+with a red edge, an icon-only retry in place of Address, and **Open chat**.
+Otherwise the row stays until its icon-only **Dismiss** action succeeds.
 **Open Evidence** opens node detail. **Open source** opens a URL source in a new
 tab, or a repository alias or absolute path in the existing file preview, and is
 offered only for a URL or a path that resolves to a configured repository file.
 The section and its count appear on every graph target. On a branch, rows read
 their Evidence from the branch's graph, every open flag offers Address because
-main's endpoint decides it, and Address and Open chat switch to main, where the
-flag's chat is bound.
+main's endpoint decides it, and Open chat switches to main, where the flag's chat
+is bound.
 A failed action marks the row with a red edge and replaces that action with one
 icon-only retry. Controls wrap and retain phone-sized targets at 390px.
 
