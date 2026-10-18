@@ -644,6 +644,9 @@ function MemberApp({
     setupOpen: isSetupHash(window.location.hash),
   }));
   const [graphTarget, setGraphTarget] = useState<GraphTargetRef>(initialRoute.graphTarget);
+  const [groupFiling, setGroupFiling] = useState<{ projectId: string; groupId: string } | null>(
+    null,
+  );
   const [requestedChat, setRequestedChat] = useState(() => ({
     hash: window.location.hash,
     projectId: initialRoute.project.projectId,
@@ -4114,15 +4117,10 @@ function MemberApp({
           onCreated={(id) => {
             const groupId = setupRoute.kind === "create" ? setupRoute.groupId : undefined;
             if (!groupId) return openProject(id);
-            // Creation is the same in every space; filing into a group is one move after it.
-            void api(`/api/projects/${encodeURIComponent(id)}/group`, {
-              method: "PUT",
-              body: JSON.stringify({ group_id: groupId }),
-            })
-              .catch((error) =>
-                console.warn("Could not file the new project into its group", error),
-              )
-              .then(() => openProject(id));
+            // Creation is the same in every space; the group's shelf files the project
+            // with one move, where a failed move keeps its retry.
+            setGroupFiling({ projectId: id, groupId });
+            window.location.hash = projectGroupHash(groupId);
           }}
           setupRoute={setupRoute}
         />
@@ -4172,6 +4170,8 @@ function MemberApp({
           projects={projects}
           groups={projectGroups}
           onGroupsChanged={loadProjectIndex}
+          groupFiling={groupFiling}
+          onGroupFilingTaken={() => setGroupFiling(null)}
           invitations={projectInvitations}
           onAnswerInvitation={answerProjectInvitation}
           spaceRuns={spaceRuns}

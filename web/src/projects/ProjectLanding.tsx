@@ -51,6 +51,8 @@ interface Props extends AppearancePickerProps {
   projects: ProjectCard[];
   groups: ProjectGroup[];
   onGroupsChanged: () => Promise<void>;
+  groupFiling: { projectId: string; groupId: string } | null;
+  onGroupFilingTaken: () => void;
   invitations: ProjectInvitation[];
   onAnswerInvitation: (invitationId: string, response: "accept" | "decline") => Promise<void>;
   spaceRuns: SpaceRunIndexEntry[];
@@ -327,6 +329,8 @@ export function ProjectLanding({
   projects,
   groups = [],
   onGroupsChanged,
+  groupFiling,
+  onGroupFilingTaken,
   invitations,
   onAnswerInvitation,
   spaceRuns,
@@ -371,6 +375,20 @@ export function ProjectLanding({
     identity?.space_kind === "team" ? identity.space_name || "Team space" : "Personal space";
   const actions = useProjectGroupActions(onGroupsChanged);
   const drag = useProjectGroupDrag(projects, groups, actions.move);
+  useEffect(() => {
+    if (!groupFiling) return;
+    onGroupFilingTaken();
+    // A failed filing is keyed to the group, so its shelf header keeps the retry.
+    void actions
+      .run(groupFiling.groupId, () =>
+        api(`/api/projects/${encodeURIComponent(groupFiling.projectId)}/group`, {
+          method: "PUT",
+          body: JSON.stringify({ group_id: groupFiling.groupId }),
+        }),
+      )
+      .then((filed) => filed && onOpen(groupFiling.projectId));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per handed-over filing; actions and callbacks are recreated every render
+  }, [groupFiling]);
   const [groupMenu, setGroupMenu] = useState(false);
   const [nameDialog, setNameDialog] = useState<{
     group?: ProjectGroup;
