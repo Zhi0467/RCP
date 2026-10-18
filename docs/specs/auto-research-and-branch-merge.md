@@ -147,8 +147,10 @@ loops on other branches; human views stay unfiltered.
 
 An orchestrator fork archives automatically when its head still equals its parent
 head and no writer can reach it: no unsettled task using it as graph target or
-bound merge destination, no publication of unknown outcome, no undelivered watcher
-or worker mail, no live child Experiment, and no accepted admission targeting it.
+bound merge destination, no unstopped worker that can still resume there from its
+session and stage, no nested fork with such work, no publication of unknown outcome,
+no undelivered watcher or worker mail, no live child Experiment, and no accepted
+admission targeting it.
 The child poll rechecks this under the canonical write lock. `branch --archive <id>`
 archives an owned fork, never the root's own branch. Member forks never auto-archive.
 

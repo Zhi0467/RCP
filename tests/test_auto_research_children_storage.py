@@ -2833,5 +2833,14 @@ def test_empty_fork_archive_waits_for_all_writers_admissions_and_known_commit(tm
     store.create_auto_research_child_work(route, task)
     assert not store.archive_empty_auto_research_fork(parent.project_id, head)
     store.complete_agent_task(task.operation_id, applied_revision=None, result={})
+    # So does a failed worker that can still resume from its session and stage.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET status='failed', native_session_id='s', stage_root='/stage' "
+            "WHERE operation_id=?",
+            (task.operation_id,),
+        )
+    assert not store.archive_empty_auto_research_fork(parent.project_id, head)
+    store.request_auto_research_child_work_stop("nested")
     assert store.archive_empty_auto_research_fork(parent.project_id, head)
     assert not store.branch_admits_new_work(parent.project_id, target.branch_id)

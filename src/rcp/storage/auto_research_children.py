@@ -259,9 +259,31 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 or head.transition_id != branch["parent_transition_id"]
             ):
                 return False
-            if cast("AppStore", self)._unsettled_graph_target_tasks_in_connection(
-                connection, project_id, head.target
-            ):
+            store = cast("AppStore", self)
+
+            def has_work(target: GraphTargetRef) -> bool:
+                # A failed or interrupted worker with its session and stage can still resume.
+                return bool(
+                    store._unsettled_graph_target_tasks_in_connection(
+                        connection, project_id, target
+                    )
+                ) or (
+                    connection.execute(
+                        "SELECT 1 FROM auto_research_child_work AS route "
+                        "JOIN graph_runs AS task ON task.operation_id=route.current_operation_id "
+                        "JOIN episodes AS parent ON parent.episode_id=route.episode_id "
+                        "WHERE route.project_id=? AND task.graph_target_json=? "
+                        "AND route.stop_requested_at IS NULL "
+                        "AND task.status IN ('failed', 'interrupted') "
+                        "AND task.native_session_id IS NOT NULL AND task.stage_root IS NOT NULL "
+                        "AND parent.status NOT IN ('completed', 'failed', 'needs_action', 'stopped') "
+                        "LIMIT 1",
+                        (project_id, graph_target_json(target)),
+                    ).fetchone()
+                    is not None
+                )
+
+            if has_work(head.target):
                 return False
             target_json = graph_target_json(head.target)
             # A nested fork with live work still merges back into this one.
@@ -270,11 +292,7 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 "AND json_extract(parent_target_json, '$.branch_id')=?",
                 (project_id, head.target.branch_id),
             ).fetchall():
-                if cast("AppStore", self)._unsettled_graph_target_tasks_in_connection(
-                    connection,
-                    project_id,
-                    GraphTargetRef(kind="branch", branch_id=nested["branch_id"]),
-                ):
+                if has_work(GraphTargetRef(kind="branch", branch_id=nested["branch_id"])):
                     return False
             # A failed publication may have landed remotely despite an unchanged
             # local snapshot. It is never evidence that the fork stayed empty.
