@@ -31,9 +31,7 @@ import {
   bulletinIsOwnPost,
   bulletinLabelMap,
   bulletinMentionCandidates,
-  bulletinOrderChannels,
   bulletinPostState,
-  bulletinReplyContext,
   bulletinSegments,
   bulletinTargetKey,
   bulletinThreads,
@@ -117,10 +115,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
   };
   const page = useProjectResource(profile);
   const channelList = useProjectResource(channelsProfile);
-  const channels = useMemo(
-    () => bulletinOrderChannels(channelList.value ?? []),
-    [channelList.value],
-  );
+  const channels = channelList.value ?? [];
   const current = channels.find((item) => item.target_key === channelKey);
   const otherUnread = channels.some((item) => item.target_key !== channelKey && item.unread > 0);
   const canPost = isMember && page.value?.can_post === true;
@@ -382,9 +377,6 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
       );
     const agent = item.author.kind === "agent";
     const author = bulletinAuthor(item);
-    // A thread child sits under its parent; only a reply whose parent is on an
-    // older page quotes it.
-    const parent = replies !== null && item.reply_to ? bulletinReplyContext(item, posts) : null;
     const own = canPost && bulletinIsOwnPost(item, actorId);
     const isEditing = editing?.postId === item.post_id;
     const confirming = confirmDelete === item.post_id;
@@ -410,12 +402,6 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
               </span>
             )}
           </header>
-          {parent && (
-            <p className="bulletin-quote">
-              <CornerUpLeft size={12} /> {parent.author}:{" "}
-              {bulletinDecodeMentions(parent.excerpt, candidates)}
-            </p>
-          )}
           {isEditing ? (
             <div className="bulletin-edit">
               <textarea

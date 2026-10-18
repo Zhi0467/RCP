@@ -304,19 +304,6 @@
   flex: none;
   font-size: var(--type-xs);
 }
-.bulletin-quote {
-  align-items: center;
-  border-left: 2px solid var(--line-strong);
-  color: var(--muted);
-  display: flex;
-  font-size: var(--type-sm);
-  gap: 4px;
-  margin: 3px 0 0;
-  overflow: hidden;
-  padding-left: 8px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .bulletin-text {
   font-size: var(--type-base);
   line-height: 1.45;

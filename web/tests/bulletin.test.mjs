@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import {
   bulletinThreads,
   bulletinAuthor,
-  bulletinReplyContext,
   bulletinSegments,
   bulletinMentionCandidates,
   bulletinEncodeMentions,
@@ -13,25 +12,24 @@ import {
   bulletinInsert,
   bulletinPostState,
   bulletinIsOwnPost,
-  bulletinOrderChannels,
   bulletinChannelTarget,
   bulletinTargetKey,
 } from "../src/chat/bulletinModel.ts";
 
-test("threads retain out-of-page parents and server author snapshots", () => {
+test("threads group replies under parents and retain server author snapshots", () => {
   const post = (id, reply_to = null) => ({
     post_id: id,
     reply_to,
     author: { kind: "member", display_name: "Member" },
   });
-  const posts = [post("reply", "root"), post("orphan", "earlier"), post("root")];
+  const posts = [post("reply", "root"), post("root")];
   const threads = bulletinThreads(posts);
   assert.deepEqual(
     threads.map(({ post }) => post.post_id),
-    ["orphan", "root"],
+    ["root"],
   );
   assert.deepEqual(
-    threads[1].replies.map((post) => post.post_id),
+    threads[0].replies.map((post) => post.post_id),
     ["reply"],
   );
   assert.equal(bulletinAuthor(posts[0]), "Member");
@@ -39,20 +37,6 @@ test("threads retain out-of-page parents and server author snapshots", () => {
     bulletinAuthor({ author: { kind: "agent", actor_label: "Worker", operation_id: "op" } }),
     "Worker",
   );
-});
-
-test("reply context uses the parent snapshot across pages", () => {
-  const parent = {
-    post_id: "root",
-    author: { kind: "member", display_name: "Member" },
-    text: "First line\nSecond line",
-  };
-  const reply = { post_id: "reply", reply_to: "root" };
-  const inline = bulletinReplyContext(reply, [parent]);
-  assert.equal(inline.author, parent.author.display_name);
-  assert.equal(inline.excerpt.includes("\n"), false);
-  assert.deepEqual(bulletinReplyContext({ ...reply, reply_parent: parent }, []), inline);
-  assert.equal(bulletinReplyContext(reply, []), null);
 });
 
 test("text splits into prose, node links, and known or recorded mentions", () => {
@@ -126,24 +110,7 @@ test("post state and authorship gate edit and delete", () => {
   assert.equal(bulletinIsOwnPost({ author: { kind: "agent", user_id: "u1" } }, "u1"), false);
 });
 
-test("channels order main first, then newest branch, then name", () => {
-  const channel = (target_key, branch_id, name, last_post_at) => ({
-    target_key,
-    branch_id,
-    name,
-    last_post_at,
-    unread: 0,
-  });
-  const ordered = bulletinOrderChannels([
-    channel("branch:b", "b", "beta", null),
-    channel("branch:a", "a", "alpha", null),
-    channel("branch:c", "c", "gamma", "2026-10-02T00:00:00Z"),
-    channel("main", null, "main", "2026-10-01T00:00:00Z"),
-  ]);
-  assert.deepEqual(
-    ordered.map((item) => item.target_key),
-    ["main", "branch:c", "branch:a", "branch:b"],
-  );
-  assert.deepEqual(bulletinChannelTarget(ordered[1]), { kind: "branch", branch_id: "c" });
-  assert.equal(bulletinTargetKey(bulletinChannelTarget(ordered[0])), "main");
+test("channels map to graph targets", () => {
+  assert.deepEqual(bulletinChannelTarget({ branch_id: "c" }), { kind: "branch", branch_id: "c" });
+  assert.equal(bulletinTargetKey(bulletinChannelTarget({ branch_id: null })), "main");
 });

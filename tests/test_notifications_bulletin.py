@@ -26,10 +26,10 @@ def test_mentions_post_edit_recipient_only_and_restart_dedup(tmp_path):
             member.user_id, session_id=session.session_id
         )["device_id"]
     first, second = members[1][0], members[2][0]
-    post = store.add_bulletin_post(
+    post = store.mutate_bulletin_post(
         "project",
         "main",
-        f"<@member:{author.user_id}> <@member:{first.user_id}> <@member:{first.user_id}>",
+        text=f"<@member:{author.user_id}> <@member:{first.user_id}> <@member:{first.user_id}>",
         user_id=author.user_id,
         key="post",
     )
@@ -45,19 +45,21 @@ def test_mentions_post_edit_recipient_only_and_restart_dedup(tmp_path):
     store.mutate_bulletin_post(
         "project",
         "main",
-        post["post_id"],
+        post_id=post["post_id"],
         text=f"<@member:{first.user_id}> <@member:{second.user_id}>",
         user_id=author.user_id,
         key="edit",
+        action="edit",
     )
     # Removing the mention before a pass must not erase its accepted event.
     store.mutate_bulletin_post(
         "project",
         "main",
-        post["post_id"],
+        post_id=post["post_id"],
         text="removed mentions",
         user_id=author.user_id,
         key="remove",
+        action="edit",
     )
     restarted = NotificationSender(AppStore(store.path), catalog, admission=RuntimeAdmissionGate())
     restarted.run_pass()
@@ -71,8 +73,12 @@ def test_mentions_post_edit_recipient_only_and_restart_dedup(tmp_path):
     restarted.run_pass()
     assert store.notification_outbox() == []
     # A branch channel opens through the ordinary branch route.
-    store.add_bulletin_post(
-        "project", "branch:fork-1", f"<@member:{first.user_id}>", user_id=author.user_id, key="b"
+    store.mutate_bulletin_post(
+        "project",
+        "branch:fork-1",
+        text=f"<@member:{first.user_id}>",
+        user_id=author.user_id,
+        key="b",
     )
     restarted.run_pass()
     assert [row["deep_link"] for row in store.notification_outbox()] == [
@@ -89,11 +95,11 @@ def test_deleted_post_mention_is_consumed_without_notification(tmp_path):
 
     author = other_member(store)
     store.seat_project_member("p", author.user_id)
-    post = store.add_bulletin_post(
-        "p", "main", f"<@member:{recipient}>", user_id=author.user_id, key="post"
+    post = store.mutate_bulletin_post(
+        "p", "main", text=f"<@member:{recipient}>", user_id=author.user_id, key="post"
     )
     store.mutate_bulletin_post(
-        "p", "main", post["post_id"], user_id=author.user_id, key="delete", action="delete"
+        "p", "main", post_id=post["post_id"], user_id=author.user_id, key="delete", action="delete"
     )
     catalog = SimpleNamespace(open=lambda _: (_ for _ in ()).throw(OSError("offline")))
     sender = NotificationSender(store, catalog, admission=RuntimeAdmissionGate())

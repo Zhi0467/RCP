@@ -104,12 +104,12 @@ def post_bulletin(
     human = identity.require_patch_capable_identity(request)
     target = _target(store, project, branch_id)
     try:
-        post = store.add_bulletin_post(
+        post = store.mutate_bulletin_post(
             project,
             target.key,
-            body.text,
             user_id=human.user_id,
             key=body.key,
+            text=body.text,
             reply_to=body.reply_to,
         )
         return {"post": post}
@@ -172,7 +172,7 @@ def edit_bulletin(
             "post": store.mutate_bulletin_post(
                 project,
                 target.key,
-                post_id,
+                post_id=post_id,
                 user_id=human.user_id,
                 key=body.key,
                 text=body.text,
@@ -200,7 +200,7 @@ def delete_bulletin(
             "post": store.mutate_bulletin_post(
                 project,
                 target.key,
-                post_id,
+                post_id=post_id,
                 user_id=human.user_id,
                 key=f"delete:{post_id}",
                 action="delete",

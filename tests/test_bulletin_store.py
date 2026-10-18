@@ -44,16 +44,16 @@ def test_target_and_project_isolation_and_reply_depth(store):
     )
     store.seat_project_member("other", store.local_owner.user_id)
     with pytest.raises(BulletinError, check=lambda exc: exc.code == "bulletin_reply_invalid"):
-        store.add_bulletin_post(
+        store.mutate_bulletin_post(
             "other",
             "main",
-            "reply",
+            text="reply",
             user_id=store.local_owner.user_id,
             key="a",
             reply_to=first["post_id"],
         )
-    member = store.add_bulletin_post(
-        "other", "main", "hello", user_id=store.local_owner.user_id, key="b"
+    member = store.mutate_bulletin_post(
+        "other", "main", text="hello", user_id=store.local_owner.user_id, key="b"
     )
     assert member["author"]["user_id"] == store.local_owner.user_id
     assert member["author"]["kind"] == "member"
@@ -233,8 +233,8 @@ def test_inline_refs_and_mentions_validate_live_target_roster(store):
 
 def test_member_edit_delete_author_receipts_and_reply_placeholders(store):
     owner = store.local_owner.user_id
-    parent = store.add_bulletin_post(
-        "project", "main", "#hyp/original", user_id=owner, key="parent"
+    parent = store.mutate_bulletin_post(
+        "project", "main", text="#hyp/original", user_id=owner, key="parent"
     )
     reply = post(store, "reply", reply_to=parent["post_id"])
     other = other_member(store)
@@ -244,18 +244,24 @@ def test_member_edit_delete_author_receipts_and_reply_placeholders(store):
             store.mutate_bulletin_post(
                 "project",
                 "main",
-                parent["post_id"],
+                post_id=parent["post_id"],
                 user_id=other.user_id,
                 key=action,
                 text="changed",
                 action=action,
             )
     edited = store.mutate_bulletin_post(
-        "project", "main", parent["post_id"], user_id=owner, key="edit", text="#hyp/updated"
+        "project",
+        "main",
+        post_id=parent["post_id"],
+        user_id=owner,
+        key="edit",
+        text="#hyp/updated",
+        action="edit",
     )
     assert edited["edited_at"] and edited["refs"] == ["hyp/updated"] and edited["reply_count"] == 1
     deleted = store.mutate_bulletin_post(
-        "project", "main", parent["post_id"], user_id=owner, key="delete", action="delete"
+        "project", "main", post_id=parent["post_id"], user_id=owner, key="delete", action="delete"
     )
     assert (
         deleted["deleted_at"]
@@ -264,14 +270,25 @@ def test_member_edit_delete_author_receipts_and_reply_placeholders(store):
     )
     assert (
         store.mutate_bulletin_post(
-            "project", "main", parent["post_id"], user_id=owner, key="delete", action="delete"
+            "project",
+            "main",
+            post_id=parent["post_id"],
+            user_id=owner,
+            key="delete",
+            action="delete",
         )
         == deleted
     )
     assert len(store.list_bulletin("project", "main")["posts"]) == 2
     with pytest.raises(BulletinError, check=lambda exc: exc.code == "bulletin_post_deleted"):
         store.mutate_bulletin_post(
-            "project", "main", parent["post_id"], user_id=owner, key="later", text="later"
+            "project",
+            "main",
+            post_id=parent["post_id"],
+            user_id=owner,
+            key="later",
+            text="later",
+            action="edit",
         )
     store.execute_bulletin_command(
         "project", "turn", "delete", post_id=reply["post_id"], key="delete-reply"
@@ -293,8 +310,10 @@ def test_channels_unread_and_monotone_read_cursor(store, monkeypatch):
             )
     first = post(store, "first")
     second = post(store, "second")
-    store.add_bulletin_post("project", "main", "own", user_id=owner, key="own")
-    store.add_bulletin_post("project", "branch:recent", "recent", user_id=owner, key="recent")
+    store.mutate_bulletin_post("project", "main", text="own", user_id=owner, key="own")
+    store.mutate_bulletin_post(
+        "project", "branch:recent", text="recent", user_id=owner, key="recent"
+    )
     channels = store.bulletin_channels("project", owner)
     assert [item["target_key"] for item in channels] == ["main", "branch:recent", "branch:b"]
     assert channels[0]["unread"] == 2 and channels[2]["last_post_at"] is None

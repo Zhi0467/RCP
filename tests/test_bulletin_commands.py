@@ -217,17 +217,17 @@ def test_agent_mentions_are_first_in_snapshot_and_read(store, tmp_path):  # noqa
     with store.connection() as connection:
         task = connection.execute("SELECT * FROM graph_runs WHERE operation_id='turn'").fetchone()
         actor_id = bulletin_actor_id(connection, task)
-    post = store.add_bulletin_post(
+    post = store.mutate_bulletin_post(
         "project",
         "main",
-        f"For <@agent:{actor_id}>",
+        text=f"For <@agent:{actor_id}>",
         key="mention",
         user_id=store.local_owner.user_id,
     )
-    store.add_bulletin_post(
+    store.mutate_bulletin_post(
         "project",
         "main",
-        "More recent ordinary post",
+        text="More recent ordinary post",
         key="ordinary",
         user_id=store.local_owner.user_id,
     )

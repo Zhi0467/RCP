@@ -421,38 +421,6 @@ class BulletinStoreMixin(StoreMixinBase):
                 )
             ]
 
-    def mutate_bulletin_post(
-        self,
-        project_id: str,
-        target_key: str,
-        post_id: str,
-        *,
-        user_id: str,
-        key: str,
-        text: str | None = None,
-        action: str = "edit",
-    ) -> dict[str, Any]:
-        if action not in {"edit", "delete"}:
-            raise BulletinError("bulletin_command_invalid")
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            if not live_project_member(connection, project_id, user_id):
-                raise BulletinError("bulletin_forbidden")
-            ProjectProvisioningStoreMixin._require_project_accepts_new_work(connection, project_id)
-            outcome = _post(
-                connection,
-                project_id,
-                target_key,
-                now=self.now(),
-                author={"kind": "member", "user_id": user_id},
-                key=key,
-                text=text,
-                reply_to=None,
-                action=action,
-                post_id=post_id,
-            )
-        return _result(outcome)["post"]
-
     def mark_bulletin_read(
         self, project_id: str, target_key: str, user_id: str, sequence_post_id: str
     ) -> None:
@@ -535,37 +503,44 @@ class BulletinStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             return _list(connection, project_id, target_key, cursor)
 
-    def add_bulletin_post(
+    def mutate_bulletin_post(
         self,
         project_id: str,
         target_key: str,
-        text: str,
         *,
         user_id: str,
         key: str,
+        action: str = "post",
+        text: str | None = None,
         reply_to: str | None = None,
+        post_id: str | None = None,
     ) -> dict[str, Any]:
+        """Post, edit, or delete as a member; a new post snapshots its author's name."""
+
+        if action not in {"post", "edit", "delete"}:
+            raise BulletinError("bulletin_command_invalid")
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             if not live_project_member(connection, project_id, user_id):
                 raise BulletinError("bulletin_forbidden")
             ProjectProvisioningStoreMixin._require_project_accepts_new_work(connection, project_id)
-            user = connection.execute(
-                "SELECT display_name FROM space_users WHERE user_id=?", (user_id,)
-            ).fetchone()
+            author = {"kind": "member", "user_id": user_id}
+            if action == "post":
+                user = connection.execute(
+                    "SELECT display_name FROM space_users WHERE user_id=?", (user_id,)
+                ).fetchone()
+                author["display_name"] = user["display_name"] or user_id
             outcome = _post(
                 connection,
                 project_id,
                 target_key,
                 now=self.now(),
-                author={
-                    "kind": "member",
-                    "user_id": user_id,
-                    "display_name": user["display_name"] or user_id,
-                },
+                author=author,
                 key=key,
                 text=text,
                 reply_to=reply_to,
+                action=action,
+                post_id=post_id,
             )
         return _result(outcome)["post"]
 

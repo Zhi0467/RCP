@@ -78,11 +78,9 @@ export function bulletinActorLabel(actor: Pick<BulletinActor, "kind" | "instruct
   return actor.instruction_title || bulletinActorKind(actor);
 }
 
-/** Replies whose parent is outside this page remain visible. */
 export function bulletinThreads(posts: readonly BulletinPost[]) {
-  const ids = new Set(posts.map((post) => post.post_id));
   return posts
-    .filter((post) => !post.reply_to || !ids.has(post.reply_to))
+    .filter((post) => !post.reply_to)
     .map((post) => ({
       post,
       replies: posts.filter((reply) => reply.reply_to === post.post_id),
@@ -93,13 +91,6 @@ export function bulletinAuthor(post: Pick<BulletinPost, "author">): string {
   return post.author.kind === "member"
     ? (post.author.display_name ?? post.author.user_id ?? "Member")
     : (post.author.actor_label ?? post.author.operation_id ?? "Agent");
-}
-
-export function bulletinReplyContext(post: BulletinPost, posts: readonly BulletinPost[]) {
-  const parent = post.reply_parent ?? posts.find((item) => item.post_id === post.reply_to);
-  return parent
-    ? { author: bulletinAuthor(parent), excerpt: parent.text.replace(/\s+/g, " ").trim() }
-    : null;
 }
 
 /** Clock time for today's posts, a short date for older ones. */
@@ -130,17 +121,6 @@ export function bulletinChannelTarget(channel: Pick<BulletinChannel, "branch_id"
 
 export function bulletinTargetKey(target: GraphTargetRef): string {
   return target.kind === "main" ? "main" : `branch:${target.branch_id}`;
-}
-
-/** Main first, then branches by newest post, then name. */
-export function bulletinOrderChannels(channels: readonly BulletinChannel[]): BulletinChannel[] {
-  const rank = (channel: BulletinChannel) => (channel.branch_id ? 1 : 0);
-  return [...channels].sort(
-    (left, right) =>
-      rank(left) - rank(right) ||
-      (right.last_post_at ?? "").localeCompare(left.last_post_at ?? "") ||
-      left.name.localeCompare(right.name),
-  );
 }
 
 // ---- Text segments ----

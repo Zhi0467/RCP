@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rcp.limits import LESSONS_RENDER_MAX_BYTES
+from rcp.transport.workspace_mailbox import RunStageMailbox
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution
@@ -51,22 +50,16 @@ def stage_lessons_pointer(
         lessons = execution.store.list_lessons(task.project_id)
     content = render_lessons(lessons)
     if remote_stage is not None:
-        remote_stage.write_workspace_text("lessons.md", content)
         path = remote_stage.workspace / "lessons.md"
+        mailbox = RunStageMailbox.for_stage(local_stage=None, remote_stage=remote_stage)
     else:
         if local_stage is None:
             raise ValueError("The lesson snapshot requires a launch stage.")
         workspace = local_stage / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)
         path = workspace / "lessons.md"
-        descriptor, temporary_name = tempfile.mkstemp(prefix=".lessons-", dir=workspace)
-        temporary = Path(temporary_name)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                stream.write(content)
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
+        mailbox = RunStageMailbox.for_stage(local_stage=workspace, remote_stage=None)
+    mailbox.write_text("lessons.md", content)
     return f"Operational lessons: `{path}` — context, never authority."
 
 
