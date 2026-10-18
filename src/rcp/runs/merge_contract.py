@@ -386,6 +386,50 @@ class MergeCheckReceipt(_MergeModel):
     preparation_contract: MergePreparationContract
 
 
+class MergeDiagnostic(_MergeModel):
+    """One structured core diagnostic; code and related ids, never parsed prose."""
+
+    code: str = Field(min_length=1)
+    message: str
+    related_node_ids: tuple[str, ...] = ()
+
+
+class NodeGroupPromotion(_MergeModel):
+    """Core rejected the built Patch naming nodes that carry no open conflict."""
+
+    node_ids: tuple[str, ...] = Field(min_length=1)
+    diagnostics: tuple[MergeDiagnostic, ...] = Field(min_length=1)
+
+
+class MergeAnswersRejected(ValueError):
+    """Agent-fixable: bad keys/kinds/types, or a core rejection naming nodes that
+    already sit under an open conflict (including an already-promoted group).
+    The check returns these diagnostics; the agent edits answers and rechecks."""
+
+    def __init__(self, diagnostics: tuple[MergeDiagnostic, ...]) -> None:
+        self.diagnostics = diagnostics
+        super().__init__("; ".join(item.message for item in diagnostics))
+
+
+class MergeHiddenClash(ValueError):
+    """Core rejected the built Patch naming nodes with no open conflict on them.
+    The run loop calls promote_node_group once and asks the agent again."""
+
+    def __init__(self, promotion: NodeGroupPromotion) -> None:
+        self.promotion = promotion
+        super().__init__("; ".join(item.message for item in promotion.diagnostics))
+
+
+class MergeRefused(ValueError):
+    """Hard refusal (lost authority, malformed data, missing dependency, forbidden
+    configuration, invalid proposed effect, or a rejection naming no node).
+    The merge task fails with these diagnostics; no Proposal fallback."""
+
+    def __init__(self, diagnostics: tuple[MergeDiagnostic, ...]) -> None:
+        self.diagnostics = diagnostics
+        super().__init__("; ".join(item.message for item in diagnostics))
+
+
 def merge_contract_digest(value: object) -> str:
     """Canonical identity for JSON-valued plan/effect descriptors, not file bytes."""
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
@@ -404,6 +448,19 @@ def plan_merge(context: MergePlanningContext) -> MergePlan:
     refusals propagate intact, never becoming review cards. Hidden clashes may
     promote each diagnostic-named node group once after dry preparation. This
     function performs no history writes, provider calls, or agent op parsing.
+    """
+    raise NotImplementedError
+
+
+def promote_node_group(plan: MergePlan, promotion: NodeGroupPromotion) -> MergePlan:
+    """Slice 2: return a new plan where the named nodes form one NodeGroupConflict.
+
+    The group holds the union of branch-changed and destination-changed content
+    fields on those nodes (one-sided changes included); their direct changes,
+    field conflicts, and review-group members move into it. diagnostic_codes come
+    from promotion.diagnostics. A node already inside a NodeGroupConflict raises
+    MergeRefused (promotion happens once; prepare_merge_candidate routes a repeat
+    rejection on such nodes to MergeAnswersRejected instead of calling this).
     """
     raise NotImplementedError
 
@@ -438,7 +495,11 @@ def prepare_merge_candidate(
     structured rejection codes and related ids separately from advisories. Never
     append, consume publication receipts, or route a hard refusal into a Proposal.
     A moved destination requires a new plan and revalidation; it is not an answer
-    error. Caller compares the exact task/turn/file digest check receipt before
+    error. Outcomes: success returns the PreparedTransition; answer problems raise
+    MergeAnswersRejected; a core rejection whose related_node_ids carry no open
+    conflict raises MergeHiddenClash; one naming any node under an open conflict
+    raises MergeAnswersRejected; one naming no node, or any hard refusal from core
+    classification, raises MergeRefused. build_merge_patch raises the same types. Caller compares the exact task/turn/file digest check receipt before
     commit and retains canonical receipt reconciliation for uncertain publication.
     """
     raise NotImplementedError
