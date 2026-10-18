@@ -86,8 +86,8 @@ export function EpisodeTimeline({
     svg = useRef<SVGSVGElement>(null),
     pop = useRef<HTMLDivElement>(null);
   const rows = useMemo(
-    () => timelineRows(data, childExperiments, graphRefs),
-    [data, childExperiments, graphRefs],
+    () => timelineRows(data, childExperiments, graphRefs, graphTarget),
+    [data, childExperiments, graphRefs, graphTarget],
   );
   const bounds = useMemo(() => timelineBounds(data), [data]);
   const [window, setWindow] = useState<[number, number] | null>(null);
@@ -833,7 +833,9 @@ export function EpisodeTimeline({
                         </g>
                       )}
                       <text x={8} y={r.y - 2}>
-                        {r.label.length > 25 ? r.label.slice(0, 24) + "…" : r.label}
+                        {r.label.length > (r.archived ? 21 : 25)
+                          ? r.label.slice(0, r.archived ? 20 : 24) + "…"
+                          : r.label}
                       </text>
                       {(r.targetLabel || r.subtitle) && (
                         <text x={8} y={r.y + 14} className="roster-tick">

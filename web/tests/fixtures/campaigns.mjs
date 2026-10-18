@@ -100,6 +100,7 @@ export function withGraphBranch(overrides = {}) {
       branch_id: branchId,
       episode_id: episode.episode_id,
       base_head: baseHead,
+      parent_head: baseHead,
       head: branchHead,
       merge_eligible: true,
       merge_blocked_reason: null,

@@ -54,7 +54,7 @@ export function graphPickerOptions(
 
 export function graphRefParentLabel(ref: GraphRef, refs: readonly GraphRef[]): string | null {
   if (ref.kind !== "branch") return null;
-  const head = ref.parent_head ?? ref.base_head;
+  const head = ref.parent_head;
   return head ? `from ${branchName(refs, head.target)}@${head.revision}` : null;
 }
 

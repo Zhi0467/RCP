@@ -488,7 +488,7 @@ test("Project history labels system, attributed, and legacy revisions without in
     }),
   );
 
-  const revisions = html.split(/<li class="info"[^>]*>/).slice(1);
+  const revisions = html.split(/<li[^>]*data-revision="\d+"[^>]*>/).slice(1);
   const human = revisions.find((row) => row.includes("Recorded a human change."));
   const agent = revisions.find((row) => row.includes("Recorded an Agent change."));
   const system = revisions.find((row) => row.includes("Project identity adopted."));
@@ -519,9 +519,6 @@ test("history exposes fork controls for independent and grouped revisions", () =
     [...html.matchAll(/data-revision="(\d+)"/g)].map((match) => Number(match[1])),
     [6, 5],
   );
-  assert.equal(
-    (html.match(/class="icon-button history-fork-action"[^>]*disabled=""/g) ?? []).length,
-    2,
-  );
-  assert.equal((html.match(/class="history-revision-menu"/g) ?? []).length, 2);
+  assert.equal((html.match(/aria-label="Fork from here"[^>]*disabled=""/g) ?? []).length, 2);
+  assert.equal((html.match(/aria-haspopup="menu"/g) ?? []).length, 2);
 });

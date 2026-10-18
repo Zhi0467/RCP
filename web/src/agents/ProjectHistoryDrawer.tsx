@@ -1,5 +1,6 @@
 import { Clock3, ExternalLink, GitFork, MoreHorizontal, RotateCcw, X } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { ApiError } from "../core/api";
 import { taskKindLabel, taskStatusLabel } from "./agentTasks";
 import type { AgentTask, RevisionSummary } from "../core/types";
 import { EpisodeReportLink } from "../experiments/EpisodeReportLink";
@@ -15,6 +16,7 @@ interface Props {
   onClose: () => void;
   onFork?: (revision: number, requestId: string) => Promise<void>;
   forkDisabled?: boolean;
+  reportError: (message: string) => void;
 }
 
 type HistoryEntry =
@@ -32,6 +34,7 @@ export function ProjectHistoryDrawer({
   onClose,
   onFork,
   forkDisabled,
+  reportError,
 }: Props) {
   const historyEntries = groupEpisodeRevisions(summaries);
 
@@ -100,6 +103,7 @@ export function ProjectHistoryDrawer({
                         episodeReportHref={episodeReportHref}
                         onFork={onFork}
                         forkDisabled={forkDisabled}
+                        reportError={reportError}
                         key={`episode:${entry.episodeId}`}
                       />
                     ) : (
@@ -107,6 +111,7 @@ export function ProjectHistoryDrawer({
                         summary={entry.summary}
                         onFork={onFork}
                         forkDisabled={forkDisabled}
+                        reportError={reportError}
                         key={`revision:${entry.summary.to_revision}`}
                       />
                     ),
@@ -130,6 +135,7 @@ function EpisodeRevisionGroup({
   episodeReportHref,
   onFork,
   forkDisabled,
+  reportError,
 }: {
   projectId: string;
   episodeId: string;
@@ -137,6 +143,7 @@ function EpisodeRevisionGroup({
   episodeReportHref: Props["episodeReportHref"];
   onFork: Props["onFork"];
   forkDisabled: Props["forkDisabled"];
+  reportError: Props["reportError"];
 }) {
   const [reportOpenError, setReportOpenError] = useState<string | null>(null);
   const newest = summaries[0];
@@ -186,6 +193,7 @@ function EpisodeRevisionGroup({
               summary={summary}
               onFork={onFork}
               forkDisabled={forkDisabled}
+              reportError={reportError}
               key={summary.to_revision}
             />
           ))}
@@ -199,14 +207,34 @@ function RevisionItem({
   summary,
   onFork,
   forkDisabled,
+  reportError,
 }: {
   summary: RevisionSummary;
   onFork: Props["onFork"];
   forkDisabled: Props["forkDisabled"];
+  reportError: Props["reportError"];
 }) {
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const requestId = useRef<string | null>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = (event: Event) => {
+      if (event instanceof KeyboardEvent) {
+        if (event.key === "Escape") setMenuOpen(false);
+      } else if (!(event.target instanceof Node) || !menu.current?.contains(event.target)) {
+        setMenuOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", close);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", close);
+    };
+  }, [menuOpen]);
   const fork = async () => {
     if (!onFork || busy || forkDisabled) return;
     requestId.current ??= crypto.randomUUID();
@@ -214,8 +242,15 @@ function RevisionItem({
     setFailure(null);
     try {
       await onFork(summary.to_revision, requestId.current);
+      requestId.current = null;
     } catch (error) {
-      setFailure(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      if (error instanceof TypeError || (error instanceof ApiError && error.status >= 500)) {
+        setFailure(message);
+      } else {
+        requestId.current = null;
+        reportError(message);
+      }
     } finally {
       setBusy(false);
     }
@@ -255,28 +290,33 @@ function RevisionItem({
                 >
                   <GitFork size={14} />
                 </button>
-                <details
-                  className="history-revision-menu"
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape") event.currentTarget.open = false;
-                  }}
-                >
-                  <summary className="icon-button" aria-label="Revision actions">
+                <div className="history-revision-menu" ref={menu}>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Revision actions"
+                    aria-haspopup="menu"
+                    aria-expanded={menuOpen}
+                    onClick={() => setMenuOpen(!menuOpen)}
+                  >
                     <MoreHorizontal size={16} />
-                  </summary>
-                  <div>
-                    <button
-                      className="button compact secondary"
-                      disabled={busy || forkDisabled}
-                      onClick={(event) => {
-                        event.currentTarget.closest("details")?.removeAttribute("open");
-                        void fork();
-                      }}
-                    >
-                      <GitFork size={14} /> Fork from here
-                    </button>
-                  </div>
-                </details>
+                  </button>
+                  {menuOpen && (
+                    <div className="agent-row-menu-list" role="menu">
+                      <button
+                        type="button"
+                        role="menuitem"
+                        disabled={busy || forkDisabled}
+                        onClick={() => {
+                          setMenuOpen(false);
+                          void fork();
+                        }}
+                      >
+                        <GitFork size={14} /> Fork from here
+                      </button>
+                    </div>
+                  )}
+                </div>
               </>
             ))}
         </div>

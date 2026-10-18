@@ -5580,6 +5580,7 @@ function MemberApp({
       )}
       {projectHistoryOpen && (
         <ProjectHistoryDrawer
+          reportError={reportErrorNotice}
           key={graphSessionKey(project.id, graphTarget)}
           projectId={project.id}
           onFork={async (revision, requestId) => {
