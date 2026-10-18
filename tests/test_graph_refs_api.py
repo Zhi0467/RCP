@@ -516,3 +516,63 @@ def test_human_fork_unavailable_state_is_retryable(manifest, tmp_path, monkeypat
     assert response.status_code == 201, response.text
     assert response.json()["branch_id"] == request["request_id"]
     assert len(app.state.background_tasks.store.graph_branches(project_id)) == 1
+
+
+def test_human_fork_experiment_records_its_branch_isolation(manifest, tmp_path) -> None:
+    from rcp.service import RunRequest
+    from rcp.storage import AgentTaskRecord
+
+    from .test_episode_lifecycle_acceptance import _add_worker_seat
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    _add_worker_seat(app, node_id="exp/fork", title="Fork run", objective="Run on a human fork.")
+    head = app.state.catalog.open(project_id).history.head_ref()
+    with signed_in_client(app) as client:
+        fork = client.post(
+            f"/api/projects/{project_id}/graph-refs",
+            json={"request_id": str(uuid.uuid4()), "at": f"main@{head.revision}"},
+        )
+        assert fork.status_code == 201, fork.text
+    target = GraphTargetRef(kind="branch", branch_id=fork.json()["branch_id"])
+    episode_id = str(uuid.uuid4())
+    request = RunRequest(
+        provider="codex",
+        run_on="laptop",
+        run_truth_scope=["repo-a"],
+        chat_scope="node",
+        chat_id=episode_id,
+        node_id="exp/fork",
+        message="Run it.",
+        mode="work",
+        trigger="experiment_run",
+        patch_kind="experiment_loop",
+        control_node_id="exp/fork",
+        control_revision=head.revision,
+        control_episode_id=episode_id,
+        control_invocation=1,
+        control_invocation_ceiling=3,
+        control_completion_criteria=["The run finishes."],
+    )
+    assert request.graph_isolation is False
+    now = store.now()
+    task = store.create_experiment_episode_with_invocation(
+        AgentTaskRecord(
+            operation_id=str(uuid.uuid4()),
+            project_id=project_id,
+            episode_id=episode_id,
+            graph_target=target,
+            kind="node_chat",
+            status="queued",
+            request=request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Queued.",
+            authorized_by=authorized_human(app),
+        )
+    )
+    episode = store.episode(episode_id)
+    assert episode is not None and episode.graph_isolation is True
+    assert task.request["graph_isolation"] is episode.graph_isolation
+    assert task.request["isolation_owner_episode_id"] == episode.isolation_owner_episode_id

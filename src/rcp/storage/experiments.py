@@ -345,6 +345,9 @@ class ExperimentStoreMixin(StoreMixinBase):
                     "graph_isolation": isolation_parent.graph_isolation,
                 }
             )
+        # A human-owned fork has no owner episode, so the episode's effective
+        # isolation comes from its branch target; record that, not the request's.
+        if isolation_parent is not None or graph_branch is not None:
             record = record.model_copy(
                 update={
                     "request": {

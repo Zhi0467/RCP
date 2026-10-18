@@ -128,4 +128,3 @@ exact boundary source from the preceding immutable fixture.
 records (migration 55), including a same-id legacy branch, its Evidence patch,
 renamed and retired names, and its archive state. The exact boundary source
 upgrades the preceding fixture and creates that branch through its public APIs.
-
