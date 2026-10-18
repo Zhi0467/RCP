@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pydantic import BaseModel, JsonValue
 
 from rcp.core.authority import classify_graph_changes, derived_agent_action
-from rcp.core.materialize import apply_valid_patch
+from rcp.core.materialize import apply_valid_patch, prepare_patch_bookkeeping
 from rcp.core.models import (
     CURRENT_PROPOSAL_DEPENDENCY_RULE,
     GatedCard,
@@ -18,7 +18,12 @@ from rcp.core.models import (
     Proposal,
     graph_fields,
 )
-from rcp.core.operations import GraphOperation, ProposalOperation, graph_operations_from_proposal
+from rcp.core.operations import (
+    CreateProposalsOperation,
+    GraphOperation,
+    ProposalOperation,
+    graph_operations_from_proposal,
+)
 from rcp.core.transitions import GraphTransitionManager
 from rcp.core.validation import ValidationContext
 from rcp.core.validation.proposals import (
@@ -275,12 +280,19 @@ def group_reviews(
             )
             for component in components
         ]
+        # A predecessor is withdrawn once, even when some of its replacement
+        # members are now admitted directly or cancel out to no-ops.
+        predecessors = [
+            {identity for candidate in component for identity in candidate.replaces_proposal_ids}
+            for component in components
+        ]
         for i in range(len(components)):
             joined = next(
                 (
                     j
                     for j in range(i + 1, len(components))
                     if _interferes(footprints[i], footprints[j])
+                    or predecessors[i] & predecessors[j]
                 ),
                 None,
             )
@@ -378,6 +390,7 @@ def plan_merge(context: MergePlanningContext) -> MergePlan:
     source = _source_for_comparison(context, baseline)
     changes, conflicts = compare_graphs(baseline, source, context.destination_graph)
     changes = retain_pending_effects(context, changes)
+    conflicts = _pending_conflicts(context, changes, conflicts)
     direct, reviews = _route_changes(context, changes, conflicts)
     return MergePlan(
         **context.model_dump(), direct_changes=direct, conflicts=conflicts, review_groups=reviews
@@ -431,6 +444,7 @@ def retain_pending_effects(
     source_changes, _ = compare_graphs(baseline, context.source_graph, baseline)
     subjects = {(c.collection, c.entity_id) for c in source_changes}
     changed_coordinates = {c.change_id for c in source_changes}
+    rebased: dict[str, MergeChange] = {}
     for review in pending_reviews(context):
         outstanding = _pending_changes(context, review)
         if subjects.intersection((c.collection, c.entity_id) for c in outstanding):
@@ -444,18 +458,19 @@ def retain_pending_effects(
             for change in source_changes:
                 if change.change_id not in old_coordinates:
                     continue
-                target = getattr(context.destination_graph, change.collection)
-                if change.entity_id is not None:
-                    target = target.get(change.entity_id)
-                if change.field_name is None:
-                    value = _value(target)
-                elif change.entity_id is not None:
-                    value = _field(target, change.field_name)
-                else:
-                    value = PresentValue(
-                        value=semantic_document(target) if isinstance(target, BaseModel) else target
-                    )
-                retained[change.change_id] = change.model_copy(update={"destination": value})
+                value = _coordinate_value(context.destination_graph, change)
+                # Undelivered work never became the destination's baseline.
+                # Reverting it to the fork value cancels it without undoing
+                # newer destination work at that coordinate.
+                branch = (
+                    value
+                    if change.branch == _coordinate_value(context.base_graph, change)
+                    else change.branch
+                )
+                rebased[change.change_id] = change.model_copy(
+                    update={"base": value, "branch": branch, "destination": value}
+                )
+                retained[change.change_id] = rebased[change.change_id]
     for change in changes:
         # Presence supersedes older fields on that entity (including a source
         # deletion after an earlier pending content review).
@@ -465,12 +480,99 @@ def retain_pending_effects(
                 for k, c in retained.items()
                 if (c.collection, c.entity_id) != (change.collection, change.entity_id)
             }
-        retained[change.change_id] = change
+        retained[change.change_id] = rebased.get(change.change_id, change)
+    # An older removal and a newer field edit are competing presence choices,
+    # not two operations that can be applied together. Preserve the edited
+    # surviving entity as the keep-node answer, including destination-only work.
+    for removal in tuple(retained.values()):
+        if removal.field_name is not None or removal.branch.present:
+            continue
+        edits = {
+            c.change_id: c
+            for c in (*source_changes, *retained.values())
+            if (c.collection, c.entity_id) == (removal.collection, removal.entity_id)
+            and c.field_name is not None
+        }
+        if not edits:
+            continue
+        assert isinstance(removal.destination, PresentValue)
+        assert isinstance(removal.destination.value, dict)
+        surviving = dict(removal.destination.value)
+        for edit in edits.values():
+            assert edit.field_name is not None
+            if isinstance(edit.branch, PresentValue):
+                surviving[edit.field_name] = edit.branch.value
+            else:
+                surviving.pop(edit.field_name, None)
+            retained.pop(edit.change_id, None)
+        retained[removal.change_id] = removal.model_copy(
+            update={"destination": PresentValue(value=surviving)}
+        )
     return tuple(
         sorted(
             retained.values(), key=lambda c: (c.collection, c.entity_id or "", c.field_name or "")
         )
     )
+
+
+def _coordinate_value(state: GraphState, change: MergeChange) -> MergeValue:
+    value = getattr(state, change.collection)
+    if change.entity_id is None:
+        return PresentValue(
+            value=semantic_document(value) if isinstance(value, BaseModel) else value
+        )
+    entity = value.get(change.entity_id)
+    return _field(entity, change.field_name) if change.field_name else _value(entity)
+
+
+def _pending_conflicts(
+    context: MergePlanningContext,
+    changes: tuple[MergeChange, ...],
+    conflicts: tuple[MergeConflict, ...],
+) -> tuple[MergeConflict, ...]:
+    """Reconcile conflicts with pending coordinates' effective comparison values."""
+    by_id = {c.change_id: c for c in changes}
+    result: list[MergeConflict] = []
+    for conflict in conflicts:
+        if isinstance(conflict, FieldConflict):
+            change = by_id.get(conflict.conflict_id)
+            if (
+                change is None
+                or change.destination == change.base
+                or change.branch == change.destination
+            ):
+                continue
+            conflict = _field_conflict(change)
+        result.append(conflict)
+    present = {c.conflict_id for c in result}
+    for change in changes:
+        if (
+            change.field_name is None
+            and change.entity_id is not None
+            and not change.branch.present
+            and change.destination.present
+            and change.change_id not in present
+        ):
+            baseline = context.previous_source_graph or context.base_graph
+            previous = getattr(baseline, change.collection).get(change.entity_id)
+            source = getattr(context.source_graph, change.collection).get(change.entity_id)
+            edited = (
+                previous is not None and source is not None and _value(previous) != _value(source)
+            )
+            if change.destination == change.base and not edited:
+                continue
+            result.append(
+                PresenceConflict(
+                    conflict_id=change.change_id,
+                    collection=change.collection,
+                    entity_id=change.entity_id,
+                    base=change.base,
+                    branch=change.branch,
+                    destination=change.destination,
+                    removed_on="branch",
+                )
+            )
+    return tuple(result)
 
 
 def _route_changes(
@@ -494,7 +596,7 @@ def _encode_candidates(
     The local import keeps the planner/builder relationship acyclic. The sibling
     module arrives with slice 3; no encoder or semantic-op inference lives here.
     """
-    from rcp.runs.merge_patch import _construct_effects  # pyright: ignore[reportMissingImports]
+    from rcp.runs.merge_patch import construct_effects  # pyright: ignore[reportMissingImports]
 
     by_coordinate = {(c.collection, c.entity_id, c.field_name): c for c in changes}
     for conflict in conflicts:
@@ -503,7 +605,7 @@ def _encode_candidates(
                 ((c.collection, c.entity_id, c.field_name), c) for c in conflict.incident_edges
             )
     provisional = MergePlan(**context.model_dump(), direct_changes=changes, conflicts=conflicts)
-    effects = _construct_effects(provisional, {key: c.branch for key, c in by_coordinate.items()})
+    effects = construct_effects(provisional, {key: c.branch for key, c in by_coordinate.items()})
     candidates = tuple(
         CandidateGroup(
             tuple(
@@ -628,6 +730,8 @@ def classify_candidates(
         if result.disposition == "admitted":
             direct.extend(c for c in candidate.changes if c.change_id not in conflicted)
             admitted.extend(candidate.operations)
+            if predecessors:
+                reviews.append(ReviewCandidate(candidate.changes, (), predecessors))
         elif result.disposition == "reviewable":
             reviews.append(
                 ReviewCandidate(candidate.changes, result.review_operations, predecessors)
@@ -645,26 +749,47 @@ def classify_candidates(
             )
     staged = context.destination_graph
     if admitted:
-        staged = apply_valid_patch(
-            staged,
-            context.captured_authority.patch_template.model_copy(
-                update={"ops": admitted, "revision": context.destination_head.revision + 1}
-            ),
+        patch = context.captured_authority.patch_template.model_copy(
+            update={"ops": admitted, "revision": context.destination_head.revision + 1}
         )
+        patch = patch.model_copy(update={"agent_action": derived_agent_action(staged, patch)})
+        staged = GraphTransitionManager().prepare_validated(staged, [patch]).projection.graph
     return tuple(direct), _connected_pending_reviews(context, staged, reviews)
 
 
 def _connected_pending_reviews(
     context: MergePlanningContext, state: GraphState, reviews: list[ReviewCandidate]
 ) -> tuple[ReviewGroup, ...]:
-    """A connected predecessor can name different subjects from the new work."""
+    """A connected predecessor can name different subjects from the new work.
+
+    Design §6 requires pulling in those subjects so no merge Proposal stales another.
+    """
     included = {identity for candidate in reviews for identity in candidate.replaces_proposal_ids}
     remaining = [r for r in pending_reviews(context) if r.proposal.id not in included]
     while True:
         groups = group_reviews(state, reviews)
         for previous in remaining:
-            footprint = proposal_dependencies_and_effects(state, _draft(previous.proposal.ops))
-            if not any(_interferes(footprint, group.footprint) for group in groups):
+            draft = _draft(previous.proposal.ops)
+            filing = prepare_patch_bookkeeping(
+                context.destination_graph,
+                Patch(
+                    kind="work",
+                    author="human",
+                    producer="human",
+                    summary="Inspect pending dependencies",
+                    created_at=context.captured_authority.patch_template.created_at,
+                    revision=context.destination_head.revision,
+                    ops=[CreateProposalsOperation(op="create_proposals", proposals=[draft])],
+                ),
+            ).ops[0]
+            assert filing.op == "create_proposals"
+            # Core checks the complete admitted transition's writes against the
+            # stamped dependency snapshot, including incident sets and causes.
+            direct_interference = proposal_is_stale(state, filing.proposals[0])
+            footprint = proposal_dependencies_and_effects(context.destination_graph, draft)
+            if not direct_interference and not any(
+                _interferes(footprint, group.footprint) for group in groups
+            ):
                 continue
             changes = _pending_changes(context, previous)
             if changes:

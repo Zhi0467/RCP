@@ -478,7 +478,7 @@ def test_planner_routes_through_core_and_binds_review_effects(monkeypatch):
         ]
 
     monkeypatch.setitem(
-        sys.modules, "rcp.runs.merge_patch", SimpleNamespace(_construct_effects=construct)
+        sys.modules, "rcp.runs.merge_patch", SimpleNamespace(construct_effects=construct)
     )
     before = context.model_dump_json()
     plan = plan_merge(context)
@@ -607,7 +607,7 @@ def test_pending_effect_cancelled_by_new_source_agreement_is_explicit(monkeypatc
     monkeypatch.setitem(
         sys.modules,
         "rcp.runs.merge_patch",
-        SimpleNamespace(_construct_effects=lambda plan, selected: []),
+        SimpleNamespace(construct_effects=lambda plan, selected: []),
     )
     plan = plan_merge(context)
     assert not plan.direct_changes
@@ -663,7 +663,7 @@ def test_connected_pending_predecessor_retains_its_other_subject(monkeypatch):
         ]
 
     monkeypatch.setitem(
-        sys.modules, "rcp.runs.merge_patch", SimpleNamespace(_construct_effects=encode)
+        sys.modules, "rcp.runs.merge_patch", SimpleNamespace(construct_effects=encode)
     )
     plan = plan_merge(context)
     assert len(plan.review_groups) == 1
@@ -692,3 +692,206 @@ def test_context_rejects_prior_review_from_another_source():
     )
     with pytest.raises(ValueError):
         plan_merge(context.model_copy(update={"prior_reviews": (review,)}))
+
+
+@pytest.fixture
+def node_effect_encoder(monkeypatch):
+    """Stub only slice 3's node edit/removal encoding; routing uses real core."""
+    import sys
+    from types import SimpleNamespace
+
+    from rcp.core.operations import NodeUpdate, RemoveNodesOperation, UpdateNodesOperation
+
+    def encode(plan, selected):
+        effects = []
+        for change in plan.direct_changes:
+            assert change.collection == "nodes"
+            if change.branch == change.destination:
+                continue
+            if change.field_name is None:
+                assert not change.branch.present
+                operation = RemoveNodesOperation(op="remove_nodes", node_ids=[change.entity_id])
+            else:
+                operation = UpdateNodesOperation(
+                    op="update_nodes",
+                    nodes=[
+                        NodeUpdate(
+                            id=change.entity_id, changes={change.field_name: change.branch.value}
+                        )
+                    ],
+                )
+            effects.append(
+                SimpleNamespace(
+                    operations=[operation],
+                    coordinates={(change.collection, change.entity_id, change.field_name)},
+                )
+            )
+        return effects
+
+    monkeypatch.setitem(
+        sys.modules, "rcp.runs.merge_patch", SimpleNamespace(construct_effects=encode)
+    )
+
+
+def _with_prior(context, operations, *, status="pending"):
+    proposal = Proposal.model_validate(
+        {
+            "id": "prop/earlier",
+            "title": "Earlier",
+            "card": {},
+            "status": status,
+            "ops": operations,
+        }
+    )
+    review = PriorReview(
+        subject_key="earlier-subject",
+        proposal=proposal,
+        provenance=context.provenance,
+        effect_digest="2" * 64,
+    )
+    destination = context.destination_graph.model_copy(
+        update={"proposals": {proposal.id: proposal}}
+    )
+    return context.model_copy(update={"prior_reviews": (review,), "destination_graph": destination})
+
+
+@pytest.mark.parametrize("status", ["pending", "rejected", "approved"])
+@pytest.mark.parametrize(("title", "destination_title"), [("Y", "Original"), ("Original", "Z")])
+def test_pending_comparison_uses_destination_and_reversion_cancels(
+    node_effect_encoder, status, title, destination_title
+):
+    base = _state()
+    previous = _edit(base, title="X").model_copy(update={"revision": 2})
+    source = _edit(previous, title=title).model_copy(update={"revision": 3})
+    destination = _edit(base, title=destination_title).model_copy(update={"revision": 4})
+    context = _with_prior(
+        _context(base, source, destination, previous=previous),
+        [
+            {
+                "op": "update_nodes",
+                "intent": "content_change",
+                "nodes": [{"id": "rq/question", "changes": {"title": "X"}}],
+            }
+        ],
+        status=status,
+    )
+    plan = plan_merge(context)
+    (group,) = plan.review_groups
+    (change,) = group.changes
+    if status == "pending":
+        assert not plan.conflicts
+        assert change.base == change.destination == PresentValue(value=destination_title)
+        assert change.branch == PresentValue(value="Z" if title == "Original" else "Y")
+        assert group.replaces_proposal_ids == ("prop/earlier",)
+        assert bool(group.footprint.effects) == (title == "Y")
+    else:
+        (conflict,) = plan.conflicts
+        assert conflict.base == PresentValue(value="X")
+        assert conflict.branch == PresentValue(value=title)
+        assert not group.replaces_proposal_ids
+
+
+@pytest.mark.parametrize("destination_motivation", ["Original motivation", "New motivation"])
+def test_pending_removal_and_new_field_edit_become_one_presence_conflict(
+    node_effect_encoder, destination_motivation
+):
+    base = _state()
+    previous = _edit(base, title="X").model_copy(update={"revision": 2})
+    source = _edit(previous, motivation="New motivation").model_copy(update={"revision": 3})
+    destination = _edit(
+        base, question="Destination question", motivation=destination_motivation
+    ).model_copy(update={"revision": 4})
+    context = _with_prior(
+        _context(base, source, destination, previous=previous),
+        [{"op": "remove_nodes", "intent": "removal", "node_ids": ["rq/question"]}],
+    )
+    plan = plan_merge(context)
+    (conflict,) = plan.conflicts
+    assert isinstance(conflict, PresenceConflict)
+    assert conflict.allowed_answer_kinds == ("keep-removal", "keep-node")
+    assert not conflict.branch.present
+    assert conflict.destination.value["motivation"] == "New motivation"
+    assert conflict.destination.value["question"] == "Destination question"
+    (group,) = plan.review_groups
+    assert group.replaces_proposal_ids == ("prop/earlier",)
+    (change,) = group.changes
+    assert change.field_name is None
+    assert change.destination == conflict.destination
+    assert not plan.direct_changes
+
+
+def test_admitted_pending_content_keeps_a_withdrawal_slot(node_effect_encoder):
+    from rcp.core.models import Blocker
+
+    blocker = Blocker(id="blk/one", type="blocker", title="Original", description="Before")
+    base = GraphState(revision=1, project_truth_scope=["repo-a"], nodes={blocker.id: blocker})
+    previous = _edit(base, title="Pending").model_copy(update={"revision": 2})
+    source = _edit(previous, description="New description").model_copy(update={"revision": 3})
+    context = _with_prior(
+        _context(base, source, base.model_copy(update={"revision": 4}), previous=previous),
+        [
+            {
+                "op": "update_nodes",
+                "intent": "content_change",
+                "nodes": [{"id": blocker.id, "changes": {"title": "Pending"}}],
+            }
+        ],
+    )
+    plan = plan_merge(context)
+    assert not plan.conflicts
+    assert {c.field_name for c in plan.direct_changes} == {"title", "description"}
+    (group,) = plan.review_groups
+    assert group.replaces_proposal_ids == ("prop/earlier",)
+    assert not group.footprint.effects
+
+
+def test_direct_incident_edge_replaces_pending_removal_on_other_subject(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    from rcp.core.models import Blocker
+    from rcp.core.operations import CreateEdgesOperation, NewEdge
+    from rcp.core.validation.proposals import ProposalResource
+
+    base = _state()
+    blocker = Blocker(id="blk/one", type="blocker", title="Blocker", description="Blocked")
+    base.nodes[blocker.id] = blocker
+    previous = base.model_copy(update={"revision": 2})
+    edge = Edge(
+        id="rq/question::blocked_by::blk/one",
+        source="rq/question",
+        target=blocker.id,
+        relation="blocked_by",
+    )
+    source = previous.model_copy(update={"revision": 3, "edges": {edge.id: edge}})
+    context = _with_prior(
+        _context(base, source, base.model_copy(update={"revision": 4}), previous=previous),
+        [{"op": "remove_nodes", "intent": "removal", "node_ids": ["rq/question"]}],
+    )
+
+    def encode(plan, selected):
+        return [
+            SimpleNamespace(
+                operations=[
+                    CreateEdgesOperation(
+                        op="create_edges",
+                        edges=[
+                            NewEdge(source=edge.source, target=edge.target, relation=edge.relation)
+                        ],
+                    )
+                ],
+                coordinates=set(selected),
+            )
+        ]
+
+    monkeypatch.setitem(
+        sys.modules, "rcp.runs.merge_patch", SimpleNamespace(construct_effects=encode)
+    )
+    plan = plan_merge(context)
+    assert not plan.conflicts
+    assert [c.entity_id for c in plan.direct_changes] == [edge.id]
+    (group,) = plan.review_groups
+    assert group.replaces_proposal_ids == ("prop/earlier",)
+    assert [c.entity_id for c in group.changes] == ["rq/question"]
+    assert ProposalResource(kind="edge", id=edge.id) in group.footprint.effects
+    assert ProposalResource(kind="edge", id=edge.id) in group.footprint.dependencies
