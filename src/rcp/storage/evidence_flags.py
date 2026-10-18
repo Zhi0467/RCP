@@ -57,7 +57,7 @@ _FIELDS = (
     "created_at",
 )
 _LOCKS = KeyedLocks()
-_ADMISSION: ContextVar[tuple[object, str, str, str, str] | None] = ContextVar(
+_ADMISSION: ContextVar[tuple[object, str, str, str] | None] = ContextVar(
     "evidence_flag_admission", default=None
 )
 
@@ -112,7 +112,7 @@ def record_evidence_flag_address(
     admission = _ADMISSION.get()
     if admission is None or admission[0] is not store:
         return
-    _, project_id, flag_id, user_id, request_id = admission
+    _, project_id, flag_id, user_id = admission
     flag = _flag(connection, project_id, flag_id)
     chat_id = task.request.get("chat_id")
     if (
@@ -128,14 +128,12 @@ def record_evidence_flag_address(
     ):
         raise EvidenceFlagError("flag_address_conflict")
     _member(connection, project_id, user_id)
-    try:
-        changed = connection.execute(
-            "UPDATE evidence_flags SET state='addressing',chat_id=?,operation_id=?,address_request_id=? "
-            "WHERE project_id=? AND flag_id=? AND state='open'",
-            (chat_id, task.operation_id, request_id, project_id, flag_id),
-        ).rowcount
-    except sqlite3.IntegrityError as exc:
-        raise EvidenceFlagError("flag_key_conflict") from exc
+    # The request receipt is the admitted task's client request row.
+    changed = connection.execute(
+        "UPDATE evidence_flags SET state='addressing',chat_id=?,operation_id=? "
+        "WHERE project_id=? AND flag_id=? AND state='open'",
+        (chat_id, task.operation_id, project_id, flag_id),
+    ).rowcount
     if changed != 1:
         raise EvidenceFlagError("flag_address_conflict")
 
@@ -169,14 +167,18 @@ class EvidenceFlagStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             return _record(_flag(connection, project_id, flag_id))
 
-    def evidence_flag_address_result(self, project_id: str, flag_id: str) -> dict[str, Any]:
+    def evidence_flag_address_result(
+        self, project_id: str, flag_id: str, operation_id: str | None = None
+    ) -> dict[str, Any]:
+        """The flag with its latest turn, or with `operation_id`'s turn on a replay."""
         with self.connection() as connection:
             row = _flag(connection, project_id, flag_id)
-            return {
-                "flag": _record(row),
-                "chat_id": row["chat_id"],
-                "operation_id": row["operation_id"],
-            }
+        task = cast("AppStore", self).agent_task(operation_id) if operation_id else None
+        return {
+            "flag": _record(row),
+            "chat_id": task.request["chat_id"] if task else row["chat_id"],
+            "operation_id": task.operation_id if task else row["operation_id"],
+        }
 
     def dismiss_evidence_flag(
         self, project_id: str, flag_id: str, *, user_id: str
@@ -198,31 +200,20 @@ class EvidenceFlagStoreMixin(StoreMixinBase):
 
     @contextmanager
     def evidence_flag_admission(
-        self, project_id: str, flag_id: str, *, user_id: str, request_id: str
-    ) -> Iterator[tuple[dict[str, Any], bool]]:
-        """Yield the flag and whether this request already addressed it."""
-        if not request_id.strip():
-            raise EvidenceFlagError("flag_key_invalid")
+        self, project_id: str, flag_id: str, *, user_id: str
+    ) -> Iterator[dict[str, Any]]:
         with _LOCKS(f"{self.path.resolve()}:{project_id}:{flag_id}"):
             with self.connection() as connection:
                 _member(connection, project_id, user_id)
                 cast("AppStore", self)._require_project_accepts_new_work(connection, project_id)
                 row = _flag(connection, project_id, flag_id)
-                previous = connection.execute(
-                    "SELECT flag_id FROM evidence_flags WHERE project_id=? AND address_request_id=?",
-                    (project_id, request_id),
-                ).fetchone()
-                if previous is not None and previous["flag_id"] != flag_id:
-                    raise EvidenceFlagError("flag_key_conflict")
-                # A replay returns the bound chat even after its turn closed the flag.
-                replay = previous is not None
-                if row["state"] == "dismissed" and not replay:
+                if row["state"] == "dismissed":
                     raise EvidenceFlagError("flag_dismissed")
                 if row["kind"] in NOTICE_FLAG_KINDS:
                     raise EvidenceFlagError("flag_not_addressable")
-            token = _ADMISSION.set((self, project_id, flag_id, user_id, request_id))
+            token = _ADMISSION.set((self, project_id, flag_id, user_id))
             try:
-                yield _record(row), replay
+                yield _record(row)
             finally:
                 _ADMISSION.reset(token)
 

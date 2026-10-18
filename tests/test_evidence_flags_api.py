@@ -114,7 +114,7 @@ def test_address_admits_one_ordinary_work_turn_and_replays(flagged):
 
 def test_a_failed_address_turn_reopens_the_flag_for_another(flagged):
     app, client, store, project, flag = flagged
-    outcomes = iter(["error", "done"])
+    outcomes = iter(["error", "error", "done"])
 
     async def stream(project_id, kind, request, execution):
         yield _event_frame(AgentEvent(event=next(outcomes), text="provider failed"))
@@ -122,19 +122,22 @@ def test_a_failed_address_turn_reopens_the_flag_for_another(flagged):
     app.state.background_tasks.stream = stream
     base = f"/api/projects/{project}/consolidation"
     url = f"{base}/evidence-flags/{flag['flag_id']}/address"
-    first = client.post(url, json={"request_id": "first"}).json()
-    wait_for_task(store, first["operation_id"], expect="failed")
+
+    def address(request_id, expect):
+        result = client.post(url, json={"request_id": request_id}).json()
+        wait_for_task(store, result["operation_id"], expect=expect)
+        return result
+
+    first = address("first", "failed")
     [reopened] = client.get(base).json()["evidence_flags"]
     assert (reopened["state"], reopened["chat_id"]) == ("open", first["chat_id"])
-    assert (
-        client.post(url, json={"request_id": "first"}).json()["operation_id"]
-        == first["operation_id"]
-    )
-
-    second = client.post(url, json={"request_id": "second"}).json()
-    assert second["operation_id"] != first["operation_id"]
-    wait_for_task(store, second["operation_id"], expect="succeeded")
+    # Each request keeps its own turn across later attempts and their outcomes.
+    second = address("second", "failed")
+    assert address("first", "failed")["operation_id"] == first["operation_id"]
+    third = address("third", "succeeded")
     assert client.get(base).json()["evidence_flags"] == []
+    assert address("first", "failed")["chat_id"] == first["chat_id"]
+    assert len({first["operation_id"], second["operation_id"], third["operation_id"]}) == 3
 
 
 def test_address_refuses_a_consolidation_notice(flagged):
