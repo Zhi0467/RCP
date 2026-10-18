@@ -142,6 +142,8 @@ a new fork.
 A run whose target is a fork reads graph history only on the fork and its
 ancestors, each through the revision it was forked at; other runs read main and
 every branch. The prompt renders that same scope, and reading grants no writes.
+The loop-overlap builder takes the same scope, so such a run is shown no live
+loops on other branches; human views stay unfiltered.
 
 An orchestrator fork archives automatically when its head still equals its parent
 head and no writer can reach it: no unsettled task using it as graph target or

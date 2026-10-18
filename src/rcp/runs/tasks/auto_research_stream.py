@@ -36,12 +36,7 @@ from rcp.agents.command_mailbox import (
     serve_command_mailbox,
     stage_command_mailbox,
 )
-from rcp.agents.command_protocol import (
-    CommandRequest,
-    CommandResponse,
-    CommandVerb,
-    ValidateCommandRequest,
-)
+from rcp.agents.command_protocol import CommandRequest, CommandResponse, ValidateCommandRequest
 from rcp.agents.continuation_prompt import (
     LaunchPhase,
     MasterRef,
@@ -1551,8 +1546,6 @@ def _actor_launch_prompt(
     staged_head: GraphHeadRef | None = None,
     report_pending: Callable[[str], bool] = lambda _session_id: False,
     fresh_parts: tuple[str, ...] = (),
-    command_client: str | None = None,
-    allowed_verbs: tuple[CommandVerb, ...] = (),
 ) -> tuple[str, str, MasterRef]:
     """Stage one actor launch; return its contract path, prompt, and the session's master.
 
@@ -1572,8 +1565,6 @@ def _actor_launch_prompt(
             execution,
             local_stage,
             remote_stage,
-            command_client=command_client,
-            allowed_verbs=allowed_verbs,
         ),
     )
     key = master_key(AUTO_RESEARCH_POLICY_VERSION, ontology_extensions=ontology_extensions)
@@ -1640,6 +1631,11 @@ def _orchestrator_prompt(
     browser_grant: BrowserGrant,
     child_profiles: ChildSeatProfileChoices,
 ) -> tuple[str, str, MasterRef, dict[str, object]]:
+    allowed_verbs = auto_research_allowed_verbs(
+        "orchestrator",
+        graph_read_scope=graph_read_scope,
+        bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
+    )
     repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path} for item in context.repositories
     ]
@@ -1663,9 +1659,7 @@ def _orchestrator_prompt(
         write_scope=write_scope,
         group_context=context.group_context,
         skill_pointers=skill_pointers,
-        allowed_verbs=auto_research_allowed_verbs(
-            "orchestrator", graph_read_scope=graph_read_scope
-        ),
+        allowed_verbs=allowed_verbs,
         child_profiles=child_profiles,
     )
 
@@ -1706,6 +1700,7 @@ def _orchestrator_prompt(
             patch_path=patch_path,
             output_schema_path=schema_path,
             command_client=command_client,
+            allowed_verbs=allowed_verbs,
             instruction_path=instruction_path,
             messages_path=messages_path,
             lifecycle_path=lifecycle_path,
@@ -1735,6 +1730,7 @@ def _orchestrator_prompt(
             patch_path=patch_path,
             output_schema_path=schema_path,
             command_client=command_client,
+            allowed_verbs=allowed_verbs,
             messages_path=messages_path,
             lifecycle_path=lifecycle_path,
             retry_diagnostics_path=_retry_diagnostics_path(
@@ -1773,10 +1769,6 @@ def _orchestrator_prompt(
             else f"auto_research_orchestrator_{execution.continuation}"
         ),
         master_label_prefix="auto_research-orchestrator-master",
-        command_client=command_client,
-        allowed_verbs=auto_research_allowed_verbs(
-            "orchestrator", graph_read_scope=graph_read_scope
-        ),
         render_master=render_master,
         start_contract=start_contract,
         continuation_parts=continuation_parts,
@@ -1840,6 +1832,11 @@ def _worker_prompt(
     node = service.history.state().nodes.get(turn.binding.control_node_id or "")
     if node is None:
         raise ValueError("AutoResearch worker seat is no longer in the graph.")
+    allowed_verbs = auto_research_allowed_verbs(
+        "worker",
+        graph_read_scope=graph_read_scope,
+        bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
+    )
     repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path} for item in context.repositories
     ]
@@ -1853,7 +1850,7 @@ def _worker_prompt(
         write_scope=write_scope,
         group_context=context.group_context,
         reply_key=reply_key,
-        allowed_verbs=auto_research_allowed_verbs("worker", graph_read_scope=graph_read_scope),
+        allowed_verbs=allowed_verbs,
     )
 
     def render_master() -> str:
@@ -1869,6 +1866,7 @@ def _worker_prompt(
             patch_path=patch_path,
             output_schema_path=schema_path,
             command_client=command_client,
+            allowed_verbs=allowed_verbs,
             reply_key=reply_key,
             messages_path=messages_path,
             write_scope=write_scope,
@@ -1902,8 +1900,6 @@ def _worker_prompt(
             else f"auto_research_worker_{execution.continuation}"
         ),
         master_label_prefix="auto_research-worker-master",
-        command_client=command_client,
-        allowed_verbs=auto_research_allowed_verbs("worker", graph_read_scope=graph_read_scope),
         render_master=render_master,
         start_contract=render_master,
         continuation_parts=continuation_parts,

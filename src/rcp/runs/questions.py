@@ -353,7 +353,7 @@ class WorkCommandHandler:
                 execution.store,
                 execution.operation_id,
                 request,
-                post_allowed="lesson" in self.allowed_verbs and identity.authority == "broker",
+                post_allowed=True,
             )
         if isinstance(request, LessonCommandRequest):
             execution = self.execution
@@ -525,7 +525,9 @@ def work_command_handler(
             and task.dispatch_authority is not None
             and task.dispatch_authority.task_contract == "work_auto"
         ):
-            verbs.update({"lesson", "bulletin"})
+            verbs.add("lesson")
+            if execution.store.bulletin_enabled_for_task(execution.operation_id):
+                verbs.add("bulletin")
     if work_ask_authorized(execution):
         verbs.add("ask")
     return WorkCommandHandler(

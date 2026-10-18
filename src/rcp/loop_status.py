@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from typing import Literal, TypeVar
+from typing import TYPE_CHECKING, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -25,6 +25,9 @@ from rcp.storage.models import (
     EpisodeStatus,
     ExperimentControlProjectionSnapshot,
 )
+
+if TYPE_CHECKING:
+    from rcp.agents.graph_read_scope import GraphReadScope
 
 
 class EpisodeStarter(BaseModel):
@@ -261,9 +264,16 @@ def other_branch_loops(
     *,
     graph_target: GraphTargetRef,
     node_id: str | None = None,
+    read_scope: GraphReadScope | None = None,
 ) -> LoopOverlap:
-    """Live loops off this target; optionally restrict to kickoff's node."""
+    """Live loops off this target; optionally restrict to kickoff's node.
 
+    An agent passes its launch read scope; human projections pass none. A fork
+    reads its ancestry only up to the fork point, so live loops elsewhere are hidden.
+    """
+
+    if read_scope is not None and read_scope.ancestry_ceilings is not None:
+        return LoopOverlap()
     snapshots = store.project_experiment_control_projection_snapshots(project_id)
     candidates = sorted(
         (
@@ -395,6 +405,7 @@ def loop_status_projection(
     node_id: str,
     *,
     graph_target: GraphTargetRef,
+    read_scope: GraphReadScope | None = None,
 ) -> LoopStatusProjection:
     """Fresh target-local status, including empty state, plus live overlap rows."""
 
@@ -408,6 +419,6 @@ def loop_status_projection(
         state=current.state if current else "none",
         current=current,
         live_elsewhere=other_branch_loops(
-            store, project_id, graph_target=graph_target, node_id=node_id
+            store, project_id, graph_target=graph_target, node_id=node_id, read_scope=read_scope
         ),
     )

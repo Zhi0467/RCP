@@ -883,6 +883,7 @@ def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
         mode="resume",
         write_scope=_work_write_scope(),
         command_client="rcp-command",
+        allowed_verbs=("validate",),
         reply_key="worker-reply-key",
         seat_node_type="hypothesis",
         seat_node_id="hyp/example",
@@ -907,6 +908,7 @@ def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
 @pytest.mark.parametrize("actor", ["orchestrator", "retry", "worker"])
 def test_auto_research_ask_contract_is_only_in_orchestrator_bootstraps(monkeypatch, actor):
     from rcp.agents import auto_research_prompt as auto
+    from rcp.agents.auto_research_commands import auto_research_allowed_verbs
 
     calls = []
 
@@ -922,6 +924,9 @@ def test_auto_research_ask_contract_is_only_in_orchestrator_bootstraps(monkeypat
         patch_path="/stage/patch.json",
         output_schema_path="/stage/schema.json",
         command_client="test-command-client",
+        allowed_verbs=auto_research_allowed_verbs(
+            "worker" if actor == "worker" else "orchestrator"
+        ),
         write_scope=_work_write_scope(),
     )
     if actor == "retry":
@@ -955,9 +960,16 @@ def test_auto_research_ask_rendering_follows_resolved_verbs(monkeypatch):
 
     assert "ask" in auto_research_allowed_verbs("orchestrator")
     assert "ask" not in auto_research_allowed_verbs("worker")
+    for role in ("orchestrator", "worker"):
+        verbs = auto_research_allowed_verbs(role, bulletin=False)
+        assert "bulletin" not in verbs
+        assert "bulletin --read" not in auto._command_invocations("client", verbs, role)
+        assert "bulletin --read" in auto._command_invocations(
+            "client", auto_research_allowed_verbs(role), role
+        )
     monkeypatch.setattr(auto, "auto_research_allowed_verbs", lambda _role: ("validate",))
-    assert "validate patch.json" in auto._command_invocations("test-command-client")
-    assert "ask --key" not in auto._command_invocations("test-command-client")
+    assert "validate patch.json" in auto._command_invocations("test-command-client", ("validate",))
+    assert "ask --key" not in auto._command_invocations("test-command-client", ("validate",))
     assert auto._orchestrator_ask_contract() == ""
 
 

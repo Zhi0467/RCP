@@ -12,6 +12,7 @@ from hashlib import sha256
 
 import pytest
 
+from rcp.agents.auto_research_commands import auto_research_allowed_verbs
 from rcp.agents.auto_research_prompt import (
     _decision_disposition,
     auto_research_orchestrator_task_contract,
@@ -118,6 +119,7 @@ def test_contract_sentences_follow_the_project_type(renamed: None) -> None:
         patch_path="/stage/patch.json",
         output_schema_path="/stage/schema.json",
         command_client="test-command-client",
+        allowed_verbs=auto_research_allowed_verbs("orchestrator"),
         write_scope=_work_write_scope(),
     )
     assert "without changing an existing Goal or Design" in _flat(orchestrator)

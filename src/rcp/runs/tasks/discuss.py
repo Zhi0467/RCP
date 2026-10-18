@@ -756,6 +756,10 @@ async def stream_discuss_run(
                     reuse=resuming,
                 )
 
+            project_id = service._project_id
+            if project_id is None:
+                raise ValueError("Graph history reads require a canonical project identity.")
+            read_scope = GraphReadScope.resolve(project_id, service.history, context.group_context)
             context = context.model_copy(
                 update=stage_branch_read_context(context, service, local_stage, remote_stage)
             )
@@ -768,7 +772,7 @@ async def stream_discuss_run(
                         remote_stage,
                         state=service.history.state(),
                         graph_target=service.history.graph_target,
-                        history=service.history,
+                        read_scope=read_scope,
                     )
                 }
             )
@@ -844,11 +848,8 @@ async def stream_discuss_run(
                 for item in context.repositories
             ]
             compute_profiles = service.compute_prompt_profiles(request.resolved_compute_context)
-            project_id = service._project_id
-            if project_id is None:
-                raise ValueError("Graph history reads require a canonical project identity.")
             graph_read_scope = (
-                GraphReadScope.resolve(project_id, service.history, context.group_context)
+                read_scope
                 if request.artifact_edit is None or not request.artifact_edit.origin_bound
                 else None
             )

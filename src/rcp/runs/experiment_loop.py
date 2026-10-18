@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.schema import (
     EXPERIMENT_WATCH_OUTPUT_PREFIX as _EXPERIMENT_WATCH_OUTPUT_PREFIX,
 )
@@ -59,8 +58,7 @@ from rcp.watchers import (
 )
 
 if TYPE_CHECKING:
-    from rcp.history.branches import BranchHistoryManager
-    from rcp.history.manager import HistoryManager
+    from rcp.agents.graph_read_scope import GraphReadScope
     from rcp.runs.episodes.wrapup import EpisodeWrapupSpec
 
 _EXIT_STATUSES = frozenset({"completed"})
@@ -1121,7 +1119,7 @@ def stage_chat_loop_status(
     *,
     state: GraphState,
     graph_target: GraphTargetRef,
-    history: HistoryManager | BranchHistoryManager,
+    read_scope: GraphReadScope | None,
 ) -> dict[str, object] | None:
     """Fresh read-only status, independent of live watcher-maintenance resources."""
 
@@ -1133,7 +1131,11 @@ def stage_chat_loop_status(
     task = execution.store.agent_task(execution.operation_id) if execution is not None else None
     status = (
         loop_status_projection(
-            execution.store, task.project_id, request.node_id, graph_target=task.graph_target
+            execution.store,
+            task.project_id,
+            request.node_id,
+            graph_target=task.graph_target,
+            read_scope=read_scope,
         )
         if execution is not None and task is not None
         else LoopStatusProjection(
@@ -1150,13 +1152,7 @@ def stage_chat_loop_status(
     path = _stage_or_reuse_task_input(
         local_stage, remote_stage, f"loop-status-watchers-{digest}.json", content
     )
-    result = {**chat_loop_status(status), "watcher_state_path": path}
-    if (
-        task is not None
-        and GraphReadScope.resolve(task.project_id, history).ancestry_ceilings is not None
-    ):
-        result.pop("live_elsewhere", None)
-    return result
+    return {**chat_loop_status(status), "watcher_state_path": path}
 
 
 async def stage_chat_experiment_watcher_resources(

@@ -262,7 +262,7 @@ def _auto_research_child_work_contract(
 
 ## Auto-research child Work boundary
 
-You are the ordinary node Work child `{route.worker_id}` delegated by an Auto-research
+You are the ordinary Work child `{route.worker_id}` delegated by an Auto-research
 orchestrator. Complete only this child assignment, which every later turn in this session
 continues:
 
@@ -292,8 +292,12 @@ source of graph truth. A wake names the newly claimed mail to read before contin
 
 
 def _child_allowed_verbs(turn: WorkTurn) -> frozenset[str]:
+    execution = turn.execution
+    bulletin = execution is not None and execution.store.bulletin_enabled_for_task(
+        execution.operation_id
+    )
     return (
-        frozenset({"validate", "message", "lesson", "bulletin"})
+        frozenset({"validate", "message", "lesson", *(("bulletin",) if bulletin else ())})
         | (turn.graph_read_scope.verbs if turn.graph_read_scope is not None else frozenset())
         | (
             turn.compute_commands.allowed_verbs
@@ -533,8 +537,6 @@ def _compose_child_fresh_prompt(
                 turn.execution,
                 turn.local_stage,
                 turn.remote_stage,
-                command_client=turn.patch_inputs.command_client,
-                allowed_verbs=_child_allowed_verbs(turn),
             ),
             contract_path,
             render,
@@ -554,8 +556,6 @@ def _compose_child_fresh_prompt(
             auto_research_child_boundary=_auto_research_child_work_contract(turn, route),
         ),
         stable_values=values,
-        command_client=turn.patch_inputs.command_client,
-        allowed_verbs=_child_allowed_verbs(turn),
         skill_pointers=staged.skill_pointers,
         attachment_pointers=staged.attachment_pointers,
         ontology_extensions=turn.context.ontology_extensions,
@@ -635,8 +635,6 @@ def _compose_child_retry_prompt(
         turn.execution,
         turn.local_stage,
         turn.remote_stage,
-        command_client=turn.patch_inputs.command_client,
-        allowed_verbs=_child_allowed_verbs(turn),
     )
     return _ComposedWorkPrompt(
         contract_path=contract_path,

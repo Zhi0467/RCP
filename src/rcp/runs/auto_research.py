@@ -2125,7 +2125,9 @@ class AutoResearchCommandDispatcher:
         self, context: AutoResearchCommandContext, request: CommandRequest
     ) -> None:
         if request.verb not in auto_research_allowed_verbs(
-            context.request.role, graph_read_scope=self.graph_read_scope
+            context.request.role,
+            graph_read_scope=self.graph_read_scope,
+            bulletin=self.store.bulletin_enabled_for_task(context.task.operation_id),
         ):
             raise AutoResearchCommandInvalid(
                 "Only the Auto-research orchestrator may issue mutating staged commands."

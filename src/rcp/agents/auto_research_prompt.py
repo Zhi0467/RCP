@@ -11,6 +11,7 @@ from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
 from rcp.agents.group_context import GroupContext, group_prompt_value
 from rcp.agents.loop_overlap import render_loop_interference_rule
 from rcp.agents.prompts import (
+    BULLETIN_BODY_RULE,
     PROVIDER_NATIVE_SUBAGENT_LIFETIME,
     REPLY_STYLE,
     ask_contract,
@@ -101,7 +102,9 @@ def _optional_pointer(label: str, path: str | None) -> str:
 
 
 def _command_invocations(
-    command_client: str, role: Literal["orchestrator", "worker"] = "orchestrator"
+    command_client: str,
+    allowed_verbs: tuple[CommandVerb, ...],
+    role: Literal["orchestrator", "worker"] = "orchestrator",
 ) -> str:
     """Refresh the complete callable surface and its turn-bound command prefix."""
 
@@ -146,10 +149,12 @@ def _command_invocations(
     }
     commands = "\n".join(
         f"  - `{invocation}`"
-        for verb in auto_research_allowed_verbs(role)
+        for verb in allowed_verbs
         if verb not in GRAPH_HISTORY_VERBS
         for invocation in invocations[verb]
     )
+    if "bulletin" in allowed_verbs:
+        commands += f"\n  {BULLETIN_BODY_RULE}"
     return f"""Staged command client:
 - Command prefix: `{command_client}`
 - Exact invocations, all prefixed by that command:
@@ -245,11 +250,13 @@ def _child_seat_profile_choices(choices: dict[str, dict[str, dict[str, list[str]
 
 
 def _auto_research_commands(
-    command_client: str, child_profiles: dict[str, dict[str, dict[str, list[str]]]]
+    command_client: str,
+    child_profiles: dict[str, dict[str, dict[str, list[str]]]],
+    allowed_verbs: tuple[CommandVerb, ...],
 ) -> str:
     """Explain operational semantics once when the native session starts."""
 
-    return f"""{_command_invocations(command_client)}
+    return f"""{_command_invocations(command_client, allowed_verbs)}
 - `patch.json`, setup seeds, worker instructions, and optional Experiment goals must be direct
   regular UTF-8 files in this run workspace, never a nested path or symlink. Write one concise executable worker
   assignment or Experiment goal, then pass its filename. A supplied goal becomes the child
@@ -506,6 +513,7 @@ def auto_research_orchestrator_task_contract(
     patch_path: str,
     output_schema_path: str,
     command_client: str,
+    allowed_verbs: tuple[CommandVerb, ...],
     write_scope: ProjectWriteScope,
     graph_read_scope: GraphReadScope | None = None,
     ontology_extensions: bool = False,
@@ -556,7 +564,7 @@ Worker coordination:
 - There is no blocking primitive. Continue useful independent work, send a message, or register a
   graph condition and let RCP wake the saved session. Do not poll or keep a turn open to wait.
 
-{_packages(skill_pointers)}{_auto_research_commands(command_client, child_profiles)}
+{_packages(skill_pointers)}{_auto_research_commands(command_client, child_profiles, allowed_verbs)}
 {_orchestrator_ask_contract()}
 {_orchestrator_stale_guidance()}{_graph_output_contract(patch_path=patch_path, output_schema_path=output_schema_path)}
 {_later_launches()}
@@ -582,6 +590,7 @@ def auto_research_worker_task_contract(
     patch_path: str,
     output_schema_path: str,
     command_client: str,
+    allowed_verbs: tuple[CommandVerb, ...],
     reply_key: str,
     write_scope: ProjectWriteScope,
     graph_read_scope: GraphReadScope | None = None,
@@ -623,7 +632,7 @@ Worker operational boundary:
   `.research` state directly, and never repeat a completed external side effect merely to improve
   graph reflection.
 
-{_command_invocations(command_client, "worker")}
+{_command_invocations(command_client, allowed_verbs, "worker")}
 
 Coordination:
 - You cannot spawn, pause, resume, stop, or direct another worker; start an episode; register a
@@ -656,6 +665,7 @@ def auto_research_orchestrator_continuation_contract(
     patch_path: str,
     output_schema_path: str,
     command_client: str,
+    allowed_verbs: tuple[CommandVerb, ...],
     write_scope: ProjectWriteScope,
     graph_read_scope: GraphReadScope | None = None,
     ontology_extensions: bool = False,
@@ -704,7 +714,7 @@ for this continuation.
 {_decision_disposition()}
 {REPEATED_RULES_NOTE}
 {graph_rules(edits=True, ontology_extensions=ontology_extensions)}
-{_packages(skill_pointers)}{_command_invocations(command_client)}
+{_packages(skill_pointers)}{_command_invocations(command_client, allowed_verbs)}
 {_orchestrator_ask_contract()}
 {_orchestrator_stale_guidance()}The prefix above replaces every earlier command prefix. There is no Retry command. Resume reuses
 the saved allocation. If RCP returns `resume_unavailable` for a worker, use fresh `spawn`. For a

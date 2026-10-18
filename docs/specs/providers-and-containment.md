@@ -562,8 +562,10 @@ can ask RCP how the graph changed, through two read-only command verbs:
 That covers Discuss, Work, Experiment loops, the Auto-research orchestrator and
 its children, branch merge and its corrections, Seed and Refresh, the paper
 coach, and nightly consolidation. A run may read main and every branch of its
-project, and the runs that [group read scope](#group-read-scope) names also read
-every project in their group; writes stay pinned to the run's one target.
+project, except that a run on a fork reads only its
+[ancestry](auto-research-and-branch-merge.md#forks). The runs that
+[group read scope](#group-read-scope) names also read every project in their
+group; writes stay pinned to the run's one target.
 
 Each change in an answer gives the entity id, type, title, change kind, and
 every changed field's before and after value, never unchanged fields. Each step
@@ -1295,6 +1297,11 @@ Editing and deleting require the stored roster actor identity, allowing later
 turns of the same actor to manage their own posts. Receipts make all three
 mutations replay-safe within each turn; fresh mutations share the existing
 transactional Stop fence. Discuss retains read-only access.
+
+A run holds the `bulletin` verb only while its owning episode's Bulletin is on;
+holding it means read and post, and that one resolved verb set drives both the
+contract's usage lines and command admission. The per-launch prompt line names
+only the snapshot file, beside the lessons pointer.
 
 Launch snapshots and `bulletin --read` include a mentions section first, newest
 first within the render budget, followed by member ids and names, agents/roster,
