@@ -114,19 +114,26 @@ def _parse(
         )
     )[:BULLETIN_REFS_MAX_COUNT]
     members = {member["user_id"] for member in _members(connection, project_id)}
-    agents = {
-        bulletin_actor_id(connection, row)
-        for row in connection.execute(
-            "SELECT * FROM graph_runs WHERE project_id=? AND visible=1", (project_id,)
-        )
-        if GraphTargetRef.model_validate_json(row["graph_target_json"]).key == target_key
-    }
     mentions = [
         {"kind": kind, "id": identity}
         for kind, identity in dict.fromkeys(re.findall(r"<@(member|agent):([^<>\s]+)>", text))
-        if identity in (members if kind == "member" else agents)
+        if kind == "agent" or identity in members
     ]
-    return refs, mentions
+    if "<@agent:" not in text:
+        return refs, mentions
+    target = (
+        GraphTargetRef(kind="main")
+        if target_key == "main"
+        else GraphTargetRef(kind="branch", branch_id=target_key.removeprefix("branch:"))
+    )
+    agents = {
+        bulletin_actor_id(connection, row)
+        for row in connection.execute(
+            "SELECT * FROM graph_runs WHERE project_id=? AND graph_target_json=? AND visible=1",
+            (project_id, graph_target_json(target)),
+        )
+    }
+    return refs, [m for m in mentions if m["kind"] == "member" or m["id"] in agents]
 
 
 def _list(
@@ -201,11 +208,7 @@ def _post(
             sort_keys=True,
         ).encode()
     ).hexdigest()
-    author_key = (
-        author["kind"]
-        + ":"
-        + (author.get("actor_id") or author.get("operation_id") or author.get("user_id", ""))
-    )
+    author_key = author["kind"] + ":" + (author.get("operation_id") or author.get("user_id", ""))
     receipt = connection.execute(
         "SELECT args_digest,result_json FROM bulletin_command_receipts WHERE project_id=? AND target_key=? AND author_key=? AND key=?",
         (project_id, target_key, author_key, key),
@@ -246,10 +249,10 @@ def _post(
         error = "bulletin_text_invalid"
     elif reply_to is not None:
         parent = connection.execute(
-            "SELECT reply_to FROM bulletin_posts WHERE project_id=? AND target_key=? AND post_id=?",
+            "SELECT reply_to,deleted_at FROM bulletin_posts WHERE project_id=? AND target_key=? AND post_id=?",
             (project_id, target_key, reply_to),
         ).fetchone()
-        if parent is None or parent["reply_to"] is not None:
+        if parent is None or parent["reply_to"] is not None or parent["deleted_at"] is not None:
             error = "bulletin_reply_invalid"
     if action != "post":
         existing = connection.execute(
@@ -269,7 +272,11 @@ def _post(
     if error:
         outcome = {"error": error}
     else:
-        refs, mentions = _parse(connection, project_id, target_key, text or "")
+        refs, mentions = (
+            ([], [])
+            if action == "delete"
+            else _parse(connection, project_id, target_key, text or "")
+        )
         if action == "edit":
             connection.execute(
                 "UPDATE bulletin_posts SET text=?,refs_json=?,mentions_json=?,edited_at=? WHERE post_id=?",
@@ -302,11 +309,7 @@ def _post(
                 ),
             )
         for mention in mentions:
-            if (
-                action != "delete"
-                and mention["kind"] == "member"
-                and mention["id"] != author.get("user_id")
-            ):
+            if mention["kind"] == "member" and mention["id"] != author.get("user_id"):
                 connection.execute(
                     "INSERT OR IGNORE INTO bulletin_mention_observations(project_id,target_key,post_id,user_id,created_at) VALUES(?,?,?,?,?)",
                     (project_id, target_key, post_id, mention["id"], now),
@@ -322,6 +325,12 @@ def _post(
         connection.execute(
             "DELETE FROM bulletin_posts WHERE project_id=? AND target_key=? AND sequence NOT IN (SELECT sequence FROM bulletin_posts WHERE project_id=? AND target_key=? ORDER BY sequence DESC LIMIT ?)",
             (project_id, target_key, project_id, target_key, BULLETIN_POSTS_PER_TARGET_MAX),
+        )
+        connection.execute(
+            "DELETE FROM bulletin_mention_observations WHERE project_id=? AND target_key=? "
+            "AND observed_at IS NOT NULL "
+            "AND NOT EXISTS (SELECT 1 FROM bulletin_posts p WHERE p.post_id=bulletin_mention_observations.post_id)",
+            (project_id, target_key),
         )
     connection.execute(
         "INSERT INTO bulletin_command_receipts VALUES (?,?,?,?,?,?)",

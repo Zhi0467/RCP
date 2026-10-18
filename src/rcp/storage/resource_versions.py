@@ -437,7 +437,6 @@ def install_bulletin_resource_versions(connection: sqlite3.Connection) -> None:
             "edited_at",
             "deleted_at",
         ),
-        "bulletin_reads": ("project_id", "target_key", "user_id", "last_sequence"),
         "graph_branches": ("project_id", "branch_id", "name", "archived"),
         "project_members": ("project_id", "user_id"),
         "questions": ("project_id", "origin_json", "state", "withdrawn_readonly"),
@@ -485,7 +484,7 @@ def install_bulletin_resource_versions(connection: sqlite3.Connection) -> None:
             [_bump("ROW.project_id", "bulletin")],
             columns=columns,
             # Posts own their table's triggers; the roster inputs share other owners' tables.
-            suffix="" if table in {"bulletin_posts", "bulletin_reads"} else "_bulletin",
+            suffix="" if table == "bulletin_posts" else "_bulletin",
         )
 
     _install(

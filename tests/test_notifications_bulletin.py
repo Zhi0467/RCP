@@ -72,3 +72,27 @@ def test_mentions_post_edit_recipient_only_and_restart_dedup(tmp_path):
         store.drop_notification(row["device_id"], row["notification_id"])
     restarted.run_pass()
     assert store.notification_outbox() == []
+
+
+def test_deleted_post_mention_is_consumed_without_notification(tmp_path):
+    from .test_bulletin_store import other_member
+    from .test_notification_storage import _setup
+
+    store, _device = _setup(tmp_path)
+    recipient = store.local_owner.user_id
+
+    author = other_member(store)
+    store.seat_project_member("p", author.user_id)
+    post = store.add_bulletin_post(
+        "p", "main", f"<@member:{recipient}>", user_id=author.user_id, key="post"
+    )
+    store.mutate_bulletin_post(
+        "p", "main", post["post_id"], user_id=author.user_id, key="delete", action="delete"
+    )
+    catalog = SimpleNamespace(open=lambda _: (_ for _ in ()).throw(OSError("offline")))
+    sender = NotificationSender(store, catalog, admission=RuntimeAdmissionGate())
+    sender.run_pass()
+    assert store.notification_outbox() == []
+    assert store.unobserved_bulletin_mentions("p") == []
+    sender.run_pass()
+    assert store.notification_outbox() == []

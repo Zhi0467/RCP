@@ -290,3 +290,132 @@ def test_channels_unread_and_monotone_read_cursor(store, monkeypatch):
     assert store.bulletin_channels("project", owner)[0]["unread"] == 0
     with pytest.raises(BulletinError, check=lambda exc: exc.code == "bulletin_post_not_found"):
         store.mark_bulletin_read("project", "branch:b", owner, second["post_id"])
+
+
+def test_agent_receipts_are_per_turn_but_authorship_spans_turns(store):
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=json_set(request_json,'$.chat_id','shared')"
+        )
+    first = post(store, "same-key")
+    task = store.agent_task("turn")
+    with store.connection() as connection:
+        connection.execute("UPDATE graph_runs SET status='succeeded' WHERE operation_id='turn'")
+    store.create_agent_task(task.model_copy(update={"operation_id": "next-turn"}))
+    second = store.execute_bulletin_command(
+        "project", "next-turn", "post", key="same-key", text="note"
+    )["post"]
+    assert first["post_id"] != second["post_id"]
+    assert post(store, "same-key") == first
+    assert (
+        store.execute_bulletin_command("project", "next-turn", "post", key="same-key", text="note")[
+            "post"
+        ]
+        == second
+    )
+    edited = store.execute_bulletin_command(
+        "project", "next-turn", "edit", post_id=first["post_id"], key="edit", text="updated"
+    )["post"]
+    assert edited["text"] == "updated"
+    assert store.execute_bulletin_command(
+        "project", "next-turn", "delete", post_id=first["post_id"], key="delete"
+    )["post"]["deleted_at"]
+
+
+def test_agent_mention_resolution_is_target_local_and_delete_skips_parsing(store, monkeypatch):
+    import sqlite3
+
+    from rcp.core.transition_models import GraphTargetRef
+    from rcp.storage.bulletin import _parse
+
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO graph_branches(project_id,branch_id,parent_target_json,parent_revision,created_by,created_at,name) "
+            "VALUES('project','other','{}',0,'member',?,'Other')",
+            (store.now(),),
+        )
+    task = store.agent_task("turn")
+    store.create_agent_task(
+        task.model_copy(
+            update={
+                "operation_id": "other-target",
+                "status": "succeeded",
+                "request": {**task.request, "chat_id": "other-chat"},
+                "graph_target": GraphTargetRef(kind="branch", branch_id="other"),
+            }
+        )
+    )
+
+    def target_rows_only(cursor, values):
+        row = sqlite3.Row(cursor, values)
+        if "operation_id" in row.keys():  # noqa: SIM118 - sqlite rows iterate values
+            assert row["operation_id"] != "other-target"
+        return row
+
+    with store.connection() as connection:
+        connection.row_factory = target_rows_only
+        _, mentions = _parse(connection, "project", "main", "<@agent:chat:chat>")
+    assert mentions == [{"kind": "agent", "id": "chat:chat"}]
+    first = post(store, "mention", text="<@agent:chat:chat>")
+
+    def refuse_parse(*args):
+        pytest.fail("delete must not parse mentions")
+
+    monkeypatch.setattr("rcp.storage.bulletin._parse", refuse_parse)
+    assert store.execute_bulletin_command(
+        "project", "turn", "delete", post_id=first["post_id"], key="delete"
+    )["post"]["deleted_at"]
+
+
+def test_reply_to_deleted_post_is_refused(store):
+    parent = post(store, "parent")
+    store.execute_bulletin_command(
+        "project", "turn", "delete", post_id=parent["post_id"], key="delete"
+    )
+    with pytest.raises(BulletinError, check=lambda exc: exc.code == "bulletin_reply_invalid"):
+        post(store, "reply", reply_to=parent["post_id"])
+
+
+def test_read_cursor_does_not_bump_shared_bulletin_version(store):
+    owner = store.local_owner.user_id
+    first, second = post(store, "first"), post(store, "second")
+    with store.connection() as connection:
+        before = connection.execute(
+            "SELECT SUM(generation) FROM resource_versions WHERE resource='bulletin'"
+        ).fetchone()[0]
+    for item in (first, second):
+        store.mark_bulletin_read("project", "main", owner, item["post_id"])
+    assert store.bulletin_channels("project", owner)[0]["unread"] == 0
+    with store.connection() as connection:
+        connection.execute("DELETE FROM bulletin_reads")
+        assert (
+            connection.execute(
+                "SELECT SUM(generation) FROM resource_versions WHERE resource='bulletin'"
+            ).fetchone()[0]
+            == before
+        )
+
+
+def test_retention_prunes_only_observed_orphan_mentions(store, monkeypatch):
+    monkeypatch.setattr("rcp.storage.bulletin.BULLETIN_POSTS_PER_TARGET_MAX", 1)
+    text = f"<@member:{store.local_owner.user_id}>"
+    observed = post(store, "observed", text=text)
+    with store.connection() as connection:
+        connection.execute("UPDATE bulletin_mention_observations SET observed_at=?", (store.now(),))
+    pending = post(store, "pending", text=text)
+    retained = post(store, "retained", text=text)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE bulletin_mention_observations SET observed_at=? WHERE post_id=?",
+            (store.now(), retained["post_id"]),
+        )
+    store.execute_bulletin_command(
+        "project", "turn", "edit", post_id=retained["post_id"], key="edit", text=text
+    )
+    with store.connection() as connection:
+        ids = {
+            row[0]
+            for row in connection.execute("SELECT post_id FROM bulletin_mention_observations")
+        }
+    assert observed["post_id"] not in ids
+    assert ids == {pending["post_id"], retained["post_id"]}

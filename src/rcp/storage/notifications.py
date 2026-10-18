@@ -105,7 +105,14 @@ class NotificationStoreMixin(StoreMixinBase):
                     user_id,
                 ),
             ).rowcount
-            if observed and live_project_member(connection, notification["project_id"], user_id):
+            if (
+                observed
+                and live_project_member(connection, notification["project_id"], user_id)
+                and connection.execute(
+                    "SELECT 1 FROM bulletin_posts WHERE post_id=? AND deleted_at IS NULL",
+                    (notification["item_id"],),
+                ).fetchone()
+            ):
                 self.enqueue_notification(connection, recipient_user_id=user_id, **notification)
             return bool(observed)
 

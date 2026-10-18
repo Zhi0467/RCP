@@ -46,6 +46,18 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Bulletin channels without shared read-cursor invalidation.
+        "00c0b6c14b77405e1d47dd09ff41cd88e86430823af88dc6371eeed77ba94778",
+        "08645d9816b51375707893a88017486ec75c352d38dffff888abf5f177ae9e23",
+        "32b5a73dbf749358b0a8ce42f863097d4c2cdafc6f2def3597c74aeeb930f570",
+        "3343cdb72370536bb77c542c3d2b113767e74017629b125d182c87f6f3770b98",
+        "71a8ddacc31ded89a5cb3e92ae6593f7b74bebbed23378dca4582e367954408f",
+        "a6124b7d54623785335eae5a83e7186f3446bbba578e8c079ffdc11812cbae10",
+        "af0cdea0919535c273dc62c4237aed28d8f571a3daff30dcd652c682ed4e033e",
+        "c7ec2a49bb6e004714fbe04788e4efbc0147352dbaa312b6f73e140eab410a21",
+        "d5c5bcd62b91b4707a895aa45a1e82ad1233864ff74832e8c6154b3d6ec39d2e",
+        "dcdeff1c0c75e0ebc193a79091b32dd79a85d3e13d4bd755ce5f3011b9bc963a",
+        "fcf1206635640bfe38715f61a29e903efedf0505ec06dc229e766f2741dfee4e",
         # Graph Bulletin (v56) and project worker seats (v57): fresh, fixture and in-place upgrades.
         "1dabcec04d1e675fdba28a69f57bf09034afb548583be4207d8611f118238f4d",
         "1dbb1fded84d064ef1d5af68c833701f619ae364ef8aaca367f8c36d8ae12dcb",

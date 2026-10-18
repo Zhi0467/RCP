@@ -1267,11 +1267,11 @@ launch authority. Work-capable staged commands support
 `bulletin --delete P --key K`; references come from inline `#node-id` text.
 Editing and deleting require the stored roster actor identity, allowing later
 turns of the same actor to manage their own posts. Receipts make all three
-mutations replay-safe; fresh mutations share the existing transactional Stop
-fence. Discuss retains read-only access.
+mutations replay-safe within each turn; fresh mutations share the existing
+transactional Stop fence. Discuss retains read-only access.
 
 Launch snapshots and `bulletin --read` include a mentions section first, newest
-first within the render budget, followed by roster, member ids and names, and
-posts. Agents write `<@member:USER_ID>` or `<@agent:ACTOR_ID>` tokens using these
-identities. Context is captured or explicitly read, never pushed into a running
-turn. Mentioning an agent grants no capability and launches nothing.
+first within the render budget, followed by member ids and names, agents/roster,
+and posts. Budget is allocated to mentions, posts, members, then agents. Agents
+write `<@member:USER_ID>` or `<@agent:ACTOR_ID>` tokens using these identities.
+Context is captured or explicitly read, never pushed into a running turn. Mentioning an agent grants no capability and launches nothing.

@@ -1834,17 +1834,20 @@ path soft-deletes the post. Only its author may edit or delete; another author
 gets `403 bulletin_not_author`, and editing a deleted post gets
 `409 bulletin_post_deleted`. Deleted replies and deleted top-level posts without
 replies are omitted; parents with replies remain empty placeholders. Posts
-include `edited_at`, `deleted_at`, `mentions`, and `reply_count`.
+include `edited_at`, `deleted_at`, `mentions`, and `reply_count`. Replying to a
+deleted post is refused with `bulletin_reply_invalid`.
 
 `GET .../bulletin/channels` lists main first, then non-archived branches ordered
 by last post descending and name. Each row includes target, branch id, name,
 last post time, and unread count capped at 99. Unread excludes the member's own
 posts. `POST .../bulletin/read` with `{sequence_post_id}` advances that member's
-target-local cursor without moving it backwards.
+target-local cursor without moving it backwards or bumping the shared Bulletin
+resource version; the read client refetches channels itself.
 
 A member mention produces at most one `bulletin_mention` notification per post
 and mentioned member, including mentions first added by an edit, excluding
 self-mentions. This preference defaults on. Reconciliation retains durable
-observations across restarts; links open
+observations across restarts. Deleting a post before reconciliation suppresses
+its notification; editing away a mention preserves the accepted event. Links open
 `#/projects/{project_id}?view=chats&channel={target_key}&post={post_id}`.
 Agent mentions never wake or launch work.

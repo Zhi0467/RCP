@@ -446,4 +446,5 @@ and soft-delete timestamps. Membership, author identity, receipt lookup, Stop
 admission, and mutation are checked within the storage transaction. These rows
 are operational records and do not mutate canonical graph history. Restore
 schema fingerprints, backup integrity, and resource-version registries include
-the migration's tables and triggers.
+the migration's tables and triggers. Post retention also prunes observed mention
+rows whose posts no longer exist; unobserved rows remain for reconciliation.
