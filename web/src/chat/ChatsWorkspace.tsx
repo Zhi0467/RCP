@@ -1113,10 +1113,12 @@ export function ChatsWorkspace({
             historyMessages={selectedOrchestratorTurns?.history}
             chatId={selected.chatId}
             presentation="workspace"
-            readOnly
+            // While the chain runs its turns are the orchestrator's; once it ends,
+            // the card takes ordinary chat turns on the chain's branch.
+            readOnly={!selectedChainEpisode || Boolean(selected.humanTurnRefusal)}
             questionEpisodeId={selectedChainEpisode?.episode_id}
             readOnlyNotice={
-              selectedChainEpisode && onSendOrchestratorMessage ? (
+              selectedChainEpisode && selected.humanTurnRefusal && onSendOrchestratorMessage ? (
                 <OrchestratorComposer
                   episode={selectedChainEpisode}
                   busyAction={episodeAction}
@@ -1125,7 +1127,9 @@ export function ChatsWorkspace({
               ) : undefined
             }
             graphChangesDisabled={graphChangesDisabled}
-            onStartTask={onStartTask}
+            onStartTask={(kind, request, requestId) =>
+              onStartTask(kind, request, requestId, selected.graphTarget ?? graphTarget)
+            }
             onResumeTask={onResumeTask}
             onRetryTask={onRetryTask}
             onRefreshTask={onRefreshTask}

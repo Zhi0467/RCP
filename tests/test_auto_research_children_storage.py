@@ -2817,5 +2817,16 @@ def test_empty_fork_archive_waits_for_all_writers_admissions_and_known_commit(tm
     assert not store.archive_empty_auto_research_fork(
         parent.project_id, head.model_copy(update={"revision": 1})
     )
+    # An open nested fork still merges back into this one.
+    nested = store.create_graph_branch(
+        project_id=parent.project_id,
+        branch_id=str(uuid.uuid4()),
+        owner_episode_id=parent.episode_id,
+        parent_head=head,
+        created_by="orchestrator:test",
+        auto_archive=True,
+    )
+    assert not store.archive_empty_auto_research_fork(parent.project_id, head)
+    store.set_branch_archived(parent.project_id, nested.branch_id, archived=True)
     assert store.archive_empty_auto_research_fork(parent.project_id, head)
     assert not store.branch_admits_new_work(parent.project_id, target.branch_id)

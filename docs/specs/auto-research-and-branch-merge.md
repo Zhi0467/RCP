@@ -216,6 +216,14 @@ or merge refusal. Add N turns refuses while a human turn is active in a lineage
 child, naming the chat; admission locks composers again. Session/stage exclusion
 still prevents overlap.
 
+The chain's orchestrator conversation (chat id = root episode id = its branch)
+follows the same lock with `auto_research_orchestrator_running`. After the chain
+ends it takes ordinary project-chat turns on that branch. The first resumes the
+newest member's orchestrator session and stage, or starts fresh with
+`orchestrator_session_unavailable`, `provider_mismatch`, or `machine_mismatch`.
+Add N turns refuses while such a turn is active, and viewer Send on an ended
+chain's orchestrator artifact continues this conversation with a Work turn.
+
 Lifecycle notices are RCP facts: child settlement/recovery, child Experiment
 attention/ending, and graph readiness. Source transition and deduplicated notice
 commit together. Busy actors receive input after their turn. Sleeping delivery

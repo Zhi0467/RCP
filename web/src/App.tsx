@@ -2747,20 +2747,22 @@ function MemberApp({
       kind: AgentTaskKind,
       request: AgentTaskRequest,
       requestId?: string,
+      // A conversation opened in place from another graph posts to its own graph.
+      target: GraphTargetRef = graphTarget,
     ): Promise<AgentTask> => {
       const finishTaskStart = beginTaskStart();
       if (!finishTaskStart) throw new Error("Another task start is already being submitted.");
       const admissionId = requestId ?? crypto.randomUUID();
       const mutation =
         projectId && (kind === "node_chat" || kind === "project_chat")
-          ? beginChatSend(store, projectId, graphTarget, kind, request, admissionId)
+          ? beginChatSend(store, projectId, target, kind, request, admissionId)
           : projectId
             ? beginTaskPublication(store, projectId)
             : null;
       try {
         const task = await api<AgentTask>(
           kind === "node_chat" || kind === "project_chat"
-            ? graphPath(`${apiBase}/tasks/${kind}`)
+            ? graphTargetUrl(`${apiBase}/tasks/${kind}`, target)
             : `${apiBase}/tasks/${kind}`,
           {
             method: "POST",
@@ -2773,7 +2775,7 @@ function MemberApp({
         );
         if (
           (kind === "node_chat" || kind === "project_chat") &&
-          !sameGraphTarget(task.graph_target, graphTarget)
+          !sameGraphTarget(task.graph_target, target)
         )
           throw new Error("Conversation start returned a different graph target.");
         mutation?.settle(task);
@@ -2789,16 +2791,7 @@ function MemberApp({
         finishTaskStart();
       }
     },
-    [
-      apiBase,
-      graphPath,
-      graphTarget,
-      projectId,
-      isActiveGraph,
-      beginTaskStart,
-      recordStartedTask,
-      store,
-    ],
+    [apiBase, graphTarget, projectId, isActiveGraph, beginTaskStart, recordStartedTask, store],
   );
   const loadWebMcpConversation = useCallback(
     (chatId: string) => loadChatTranscript(apiBase, chatId, api, graphTarget),

@@ -10,18 +10,33 @@ import "../../src/styles.css";
 declare global {
   interface Window {
     sentMessages: unknown[][];
+    startedTasks: unknown[][];
   }
 }
 window.sentMessages = [];
+window.startedTasks = [];
+// `?chain=running` holds the card while the orchestrator runs; otherwise the chain has ended.
+const running = new URLSearchParams(window.location.search).get("chain") === "running";
 
 const profile = { provider: "codex", model: "", reasoning: "medium", run_on: "local" };
 const project = {
   id: "project",
   name: "Project",
   agent_profiles: { node_chat: profile, project_chat: profile },
-  provider_readiness: {},
-  repositories: [],
-  project_truth_scope: [],
+  provider_readiness: {
+    local: {
+      codex: {
+        provider: "codex",
+        label: "Codex",
+        installed: true,
+        authenticated: true,
+        models: [],
+      },
+    },
+  },
+  repositories: [{ alias: "repo", machine: "local", path: "/repo" }],
+  project_truth_scope: ["repo"],
+  state_repository: "repo",
   machines: [{ alias: "local", host: null }],
 } as unknown as ProjectSnapshot;
 const branch = { kind: "branch" as const, branch_id: "root-episode" };
@@ -70,6 +85,9 @@ const conversation: ChatConversation = {
   graphTarget: branch,
   conversationKind: "auto_research",
   orchestratorEpisodeId: "root-episode",
+  humanTurnRefusal: running
+    ? { code: "auto_research_orchestrator_running", detail: "The orchestrator is running." }
+    : null,
 };
 // The mail a wake delivered is known only to the transcript.
 const chatTranscripts = new Map<string, ChatTranscript>([
@@ -98,17 +116,17 @@ const chatTranscripts = new Map<string, ChatTranscript>([
     } as unknown as ChatTranscript,
   ],
 ]);
-// The newest chain member has ended, so a message adds turns.
+// The newest chain member is still running (mail), or has ended.
 const episode = {
   episode_id: "member-two",
   project_id: "project",
   mode: "auto_research",
   graph_target: branch,
-  status: "completed",
+  status: running ? "running" : "completed",
   health: "needs_action",
   updated_at: "2026-10-01T00:10:00Z",
   can_message: true,
-  message_requires_continuation: true,
+  message_requires_continuation: !running,
   message_refusal: null,
 } as unknown as Episode;
 
@@ -134,15 +152,27 @@ function Fixture() {
         // Viewed from main: a branch orchestrator opens in place, like any agent.
         graphTarget={{ kind: "main" }}
         glossaryIndex={buildGlossaryIndex({})}
-        runScope={[]}
+        runScope={["repo"]}
         tasks={tasks}
         watchers={[]}
         graphChangesDisabled={false}
         unreadChatIds={new Set()}
         chatTranscripts={chatTranscripts}
         onSelect={setSelected}
-        onStartTask={async () => {
-          throw new Error("An orchestrator card never starts a chat turn");
+        onStartTask={async (kind, request, requestId, graphTarget) => {
+          window.startedTasks.push([kind, request, requestId, graphTarget]);
+          return {
+            ...tasks[0],
+            operation_id: "chat-turn",
+            kind,
+            request,
+            status: "running",
+            settled: false,
+            finished: false,
+            result: null,
+            created_at: "2026-10-01T00:20:00Z",
+            updated_at: "2026-10-01T00:20:00Z",
+          } as unknown as AgentTask;
         }}
         onResumeTask={() => {}}
         onRetryTask={() => {}}

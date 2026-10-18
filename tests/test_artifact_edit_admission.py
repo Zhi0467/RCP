@@ -636,6 +636,40 @@ def test_viewer_send_continues_the_chat_with_a_work_turn(edit_origin, monkeypatc
     assert edited.request["artifact_edit"]["origin_bound"]
 
 
+def test_viewer_send_continues_an_ended_orchestrator_chat(manifest, tmp_path, monkeypatch):
+    from rcp.runs.artifact_edit_admission import artifact_send_chat_turn
+    from rcp.service import ArtifactContextRequest
+
+    from .test_branch_chats import _app_branch, _end_orchestrator
+
+    app, _main, episode, root = _app_branch(manifest, tmp_path)
+    store = app.state.catalog.store
+    descriptor = _stored_artifact(
+        app, root.operation_id, "report.md", b"Original", episode_id=episode.episode_id
+    )
+    artifact = store.artifact(descriptor.artifact_id)
+    context = ArtifactContextRequest(
+        operation_id=root.operation_id, artifact_id=artifact.artifact_id, selections=[]
+    )
+    # While the chain runs, Send keeps the origin-bound orchestrator edit.
+    assert artifact_send_chat_turn(store, artifact, context, "Rerun") is None
+    _end_orchestrator(app, root, tmp_path / "stage")
+    monkeypatch.setattr(app.state.background_tasks, "launch_admitted", store.agent_task)
+    response = signed_in_client(app).post(
+        f"/api/projects/{episode.project_id}/artifacts/{artifact.artifact_id}/comments",
+        json={"comments": [{"text": "Rerun with seed 2"}]},
+    )
+    assert response.status_code == 202, response.text
+    sent = store.agent_task(response.json()["operation_id"])
+    assert sent.kind == "project_chat"
+    assert sent.request["mode"] == "work"
+    assert sent.request["chat_id"] == episode.episode_id == episode.graph_target.branch_id
+    assert sent.request["node_id"] is None
+    assert sent.graph_target == episode.graph_target
+    assert sent.native_session_id == "orchestrator-session"
+    assert not sent.request["artifact_edit"]["origin_bound"]
+
+
 @pytest.mark.parametrize("previous_provider", ["codex", "claude"])
 def test_composer_edit_advances_current_chat_session(edit_origin, monkeypatch, previous_provider):
     app, store, origin = edit_origin

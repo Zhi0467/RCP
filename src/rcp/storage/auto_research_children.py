@@ -264,6 +264,16 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
             ):
                 return False
             target_json = graph_target_json(head.target)
+            # An open nested fork still merges back into this one.
+            if (
+                connection.execute(
+                    "SELECT 1 FROM graph_branches WHERE project_id=? AND archived=0 "
+                    "AND json_extract(parent_target_json, '$.branch_id')=? LIMIT 1",
+                    (project_id, head.target.branch_id),
+                ).fetchone()
+                is not None
+            ):
+                return False
             # A failed publication may have landed remotely despite an unchanged
             # local snapshot. It is never evidence that the fork stayed empty.
             if (

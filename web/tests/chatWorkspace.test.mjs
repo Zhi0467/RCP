@@ -123,6 +123,15 @@ test("artifact edits continue the conversation their artifact came from", () => 
       request: { chat_id: null, artifact_edit: { reply_episode_id: "member" } },
       ...later,
     }),
+    // An ordinary turn posted after the chain ended joins its card by chat id.
+    task({
+      operation_id: "chat-turn",
+      kind: "project_chat",
+      graph_target: branch,
+      request: { chat_id: "chain", message: "Summarize." },
+      created_at: "2026-07-28T00:06:00Z",
+      updated_at: "2026-07-28T00:06:00Z",
+    }),
   ];
   const conversations = groupChatConversations([], tasks, {}, "Project");
   const byId = new Map(conversations.map((item) => [item.chatId, item]));
@@ -130,7 +139,7 @@ test("artifact edits continue the conversation their artifact came from", () => 
   assert.equal(byId.get("experiment").kind, "node_chat");
   assert.equal(conversationAgentStatus(byId.get("experiment"), new Set()).state, "working");
   const chain = byId.get("chain");
-  assert.equal(chain.updatedAt, later.updated_at);
+  assert.equal(chain.updatedAt, "2026-07-28T00:06:00Z");
   const turns = orchestratorChatTurns(chain, [
     { role: "user", operation_id: "chain-edit", text: "Relabel." },
   ]);
@@ -139,6 +148,7 @@ test("artifact edits continue the conversation their artifact came from", () => 
     [
       ["orchestrator", "project_chat", "Start."],
       ["chain-edit", "artifact_edit", "Relabel."],
+      ["chat-turn", "project_chat", "Summarize."],
     ],
   );
   assert.equal(turns.history.length, 0);

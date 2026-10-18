@@ -1388,11 +1388,15 @@ instruction or the human mail it delivered, then its answers; worker turns keep
 their own cards. An artifact edit with a `chat_id` belongs to that chat's card and
 refreshes its order and status, but never creates a card by itself. Loaded turns supply live status and
 progress, and the episode's `needs_action` health (an open question) files the
-card under needs-you. The card has no chat composer: its composer, with the
-episode's open questions, sends **Message orchestrator** to the newest chain
-member, gated by that member's `can_message`, `message_refusal`, and
+card under needs-you. While the chain runs, the card's `human_turn_refusal` is
+`auto_research_orchestrator_running` and its composer, with the episode's open
+questions, sends **Message orchestrator** to the newest chain member, gated by
+that member's `can_message`, `message_refusal`, and
 `message_requires_continuation` exactly as Runs is. The composer explains
-`episode_merge_reserved` and `episode_isolation_unavailable` refusals.
+`episode_merge_reserved` and `episode_isolation_unavailable` refusals. Once the
+chain ends, the card has the ordinary chat composer and posts project-chat turns
+to its own branch, even when opened from main; those turns join the card and its
+transcript beside the orchestrator turns. Add N turns stays in Runs.
 
 The composer shows **Work in a worktree** before the first Work turn. The backend
 projects eligibility and the reason a zero/multiple-repository or wrong-machine
