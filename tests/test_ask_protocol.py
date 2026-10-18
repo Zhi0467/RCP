@@ -131,8 +131,33 @@ async def test_validate_only_and_child_work_handlers_refuse_ask(monkeypatch, chi
             execution=SimpleNamespace(operation_id="task"),
             route=SimpleNamespace(episode_id="episode"),
             compute_commands=SimpleNamespace(allowed_verbs=frozenset({"launch"})),
+            allowed_verbs=frozenset({"validate", "message", "lesson", "launch"}),
         )
         await module._serve_auto_research_child_work_mailbox(**kwargs)
     else:
         await module.serve_patch_validation_mailbox(**kwargs)
+    assert [response.status for response in captured] == ["invalid"]
+
+
+@pytest.mark.asyncio
+async def test_child_work_mailbox_enforces_its_launch_surface(monkeypatch):
+    from .test_bulletin_commands import request as bulletin_request
+
+    captured = []
+    identity = SimpleNamespace(episode_id="episode", task_id="task", authority="broker")
+
+    async def serve(**kwargs):
+        captured.append(await kwargs["handler"](bulletin_request("read"), identity))
+
+    monkeypatch.setattr(auto_research_child_work, "serve_command_mailbox", serve)
+    await auto_research_child_work._serve_auto_research_child_work_mailbox(
+        staged=SimpleNamespace(mailbox=SimpleNamespace(remote_stage=None), invocation_gate=None),
+        execution=SimpleNamespace(operation_id="task"),
+        route=SimpleNamespace(episode_id="episode"),
+        validate=lambda _: pytest.fail("a Bulletin read must not validate a patch"),
+        stop=asyncio.Event(),
+        budget=patch_validator.PatchValidationBudget(),
+        compute_commands=SimpleNamespace(allowed_verbs=frozenset()),
+        allowed_verbs=frozenset({"validate", "message", "lesson"}),
+    )
     assert [response.status for response in captured] == ["invalid"]
