@@ -944,3 +944,348 @@ def test_forward_edge_layer_is_derived_after_later_endpoints_materialize() -> No
     assert not report.rejected
     materialized = apply_valid_patch(state, patch)
     assert materialized.edges["rq/forward-blocked::blocked_by::blk/forward-blocker"].layer == "seam"
+
+
+@pytest.fixture
+def merge_check(monkeypatch):
+    from rcp.agents.command_mailbox import CommandTurnIdentity
+    from rcp.agents.command_protocol import MergeAnswersArguments, MergeAnswersCommandRequest
+    from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+    from rcp.runs import merge_contract
+    from rcp.runs.merge_contract import MergePlan, MergePreparationContract
+    from rcp.runs.patch_validator import MergeAnswersCheck
+
+    # Planner and preparation are implemented in parallel slices. This tests only
+    # the command boundary against their frozen contract.
+    plan = MergePlan.model_construct(
+        merge_task_id="merge-task",
+        plan_id="a" * 64,
+        source_head=GraphHeadRef(
+            target=GraphTargetRef(kind="branch", branch_id="source"), revision=2
+        ),
+        destination_head=GraphHeadRef(revision=3),
+        preparation_contract=MergePreparationContract(
+            ruleset_tag="test",
+            trigger_manifest={},
+            transition_trace_schema={},
+            orchestrator_patch_schema={},
+        ),
+    )
+    history = object()
+    checked = []
+
+    def prepare(plan, answers, history):
+        checked.append((plan, answers, history))
+        return object()
+
+    monkeypatch.setattr(merge_contract, "prepare_merge_candidate", prepare)
+    checker = MergeAnswersCheck(
+        plan=plan, history=history, task_id="merge-task", turn_id="merge-turn"
+    )
+    identity = CommandTurnIdentity(
+        episode_id=None, task_id="merge-task", turn_id="merge-turn", authority="validate_only"
+    )
+
+    def request(content=b'{"answers": {}, "cards": {}}\r\n', *, index=0):
+        return MergeAnswersCommandRequest(
+            mailbox_id="a" * 32,
+            request_id=f"{index:032x}",
+            credential="b" * 64,
+            verb="merge_answers",
+            arguments=MergeAnswersArguments(action="check", answers=content.decode("utf-8")),
+        )
+
+    return checker, identity, request, checked
+
+
+def test_merge_answers_check_has_no_patch_budget_and_binds_exact_receipt(merge_check):
+    import hashlib
+
+    from rcp.limits import PATCH_SELF_CHECK_MAX_COUNT
+
+    checker, identity, request, checked = merge_check
+    content = b'{"answers": {}, "cards": {}}\r\n'
+    for index in range(PATCH_SELF_CHECK_MAX_COUNT + 1):
+        response = checker(request(content, index=index), identity)
+        assert response.status == "ok"
+    assert len(checked) == PATCH_SELF_CHECK_MAX_COUNT + 1
+    assert all(plan is checker.plan and history is checker.history for plan, _, history in checked)
+    receipt = checker.require_receipt(content)
+    assert receipt.answers_digest == hashlib.sha256(content).hexdigest()
+    assert receipt.task_id == identity.task_id
+    assert receipt.turn_id == identity.turn_id
+    assert receipt.plan_id == checker.plan.plan_id
+    assert receipt.source_head == checker.plan.source_head
+    assert receipt.destination_head == checker.plan.destination_head
+    assert receipt.preparation_contract == checker.plan.preparation_contract
+    with pytest.raises(ValueError):
+        checker.require_receipt(content.replace(b"\r\n", b"\n"))
+    checker.set_plan(checker.plan, turn_id="next-turn")
+    with pytest.raises(ValueError):
+        checker.require_receipt(content)
+
+
+@pytest.mark.parametrize(
+    "outcome", ["invalid", "hidden_clash", "refused", "timeout", "destination_moved"]
+)
+def test_merge_answers_check_preserves_typed_failures_without_receipt(
+    merge_check, monkeypatch, outcome
+):
+    from rcp.history import RevisionConflict
+    from rcp.runs import merge_contract
+    from rcp.runs.merge_contract import (
+        MergeAnswersRejected,
+        MergeDiagnostic,
+        MergeHiddenClash,
+        MergeRefused,
+        NodeGroupPromotion,
+    )
+    from rcp.transport import StateUnavailable
+
+    checker, identity, request, _ = merge_check
+    diagnostics = (
+        MergeDiagnostic(code="test-rejection", message="Rejected", related_node_ids=("node",)),
+    )
+    failures = {
+        "invalid": MergeAnswersRejected(diagnostics),
+        "hidden_clash": MergeHiddenClash(
+            NodeGroupPromotion(node_ids=("node",), diagnostics=diagnostics)
+        ),
+        "refused": MergeRefused(diagnostics),
+        "timeout": TimeoutError("Preparation timed out"),
+        "destination_moved": RevisionConflict("Destination moved"),
+    }
+
+    def prepare(*_args):
+        raise failures[outcome]
+
+    monkeypatch.setattr(merge_contract, "prepare_merge_candidate", prepare)
+    response = checker(request(), identity)
+    assert response.status == (
+        "unavailable" if outcome in {"timeout", "destination_moved"} else "invalid"
+    )
+    assert not checker.receipts
+    assert (checker.hidden_clash is not None) == (outcome == "hidden_clash")
+    assert (checker.refusal is not None) == (outcome == "refused")
+    assert (checker.unavailable is not None) == (outcome in {"timeout", "destination_moved"})
+    assert checker.destination_moved == (outcome == "destination_moved")
+    if outcome in {"timeout", "destination_moved"}:
+        with pytest.raises(StateUnavailable):
+            checker.require_receipt(b'{"answers": {}, "cards": {}}\r\n')
+    if outcome in {"invalid", "hidden_clash", "refused"}:
+        assert (
+            response.result["outcome"]
+            == {
+                "invalid": "answers_rejected",
+                "hidden_clash": "promotion",
+                "refused": "refused",
+            }[outcome]
+        )
+    if outcome in {"invalid", "refused"}:
+        assert response.result["diagnostics"] == [diagnostics[0].model_dump(mode="json")]
+    if outcome == "hidden_clash":
+        assert response.result["promotion"]["node_ids"] == ["node"]
+
+
+def test_merge_answers_rejects_patch_shape_and_foreign_turn_before_preparation(merge_check):
+    from dataclasses import replace
+
+    checker, identity, request, checked = merge_check
+    response = checker(request(b'{"ops": []}'), identity)
+    assert response.status == "invalid"
+    assert checker(request(), replace(identity, turn_id="other-turn")).status == "invalid"
+    assert not checked
+    assert not checker.receipts
+
+
+@pytest.mark.parametrize("turn_id", ["merge-turn", "rebased-turn"])
+def test_merge_check_discards_inflight_receipt_when_plan_changes(merge_check, monkeypatch, turn_id):
+    from rcp.runs import merge_contract
+
+    checker, identity, request, _ = merge_check
+
+    def prepare(*_args):
+        checker.set_plan(checker.plan, turn_id=turn_id)
+        return object()
+
+    monkeypatch.setattr(merge_contract, "prepare_merge_candidate", prepare)
+    assert checker(request(), identity).status == "unavailable"
+    assert not checker.receipts
+
+
+@pytest.mark.asyncio
+async def test_repeated_native_session_events_do_not_repeat_checkpoint_receipts():
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from rcp.agents import AgentEvent, AgentProcessControl
+    from rcp.background import AgentTaskExecution, BackgroundAgentTasks
+
+    store = Mock()
+    execution = AgentTaskExecution(
+        operation_id="merge-task", store=store, control=AgentProcessControl()
+    )
+
+    async def frames():
+        for session_id in ("first", "first", "first", "second", "second"):
+            event = AgentEvent(event="session", session_id=session_id)
+            yield f"data: {event.model_dump_json()}\n\n"
+
+    await BackgroundAgentTasks._consume_frames(
+        SimpleNamespace(store=store),
+        frames(),
+        SimpleNamespace(provider="claude", run_on="local"),
+        execution,
+        Mock(),
+        recorded=False,
+    )
+    checkpoints = [
+        call.args[2]["native_session_id"]
+        for call in store.record_agent_task_receipt.call_args_list
+        if call.args[1] == "native_agent_checkpoint"
+    ]
+    assert checkpoints == ["first", "second"]
+
+
+def test_merge_check_still_running_at_turn_end_is_unavailable(merge_check, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from rcp.runs import merge_contract
+    from rcp.transport import StateUnavailable
+
+    checker, identity, request, _ = merge_check
+    entered, release = Event(), Event()
+
+    def prepare(*args):
+        entered.set()
+        assert release.wait(5)
+        return object()
+
+    monkeypatch.setattr(merge_contract, "prepare_merge_candidate", prepare)
+    with ThreadPoolExecutor() as pool:
+        result = pool.submit(checker, request(), identity)
+        try:
+            assert entered.wait(5)
+            with pytest.raises(StateUnavailable):
+                checker.require_receipt(b'{"answers": {}, "cards": {}}\r\n')
+        finally:
+            release.set()
+        assert result.result().status == "ok"
+    assert checker.require_receipt(b'{"answers": {}, "cards": {}}\r\n')
+
+
+@pytest.mark.parametrize("failure_site", ["preparation", "receipt_store"])
+def test_merge_check_internal_error_rejects_previous_receipt_and_clears_pending(
+    merge_check, monkeypatch, failure_site
+):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from rcp.runs import merge_contract
+
+    checker, identity, request, _ = merge_check
+    assert checker(request(), identity).status == "ok"
+    snapshot = checker.latest_answers
+    receipts = list(checker.receipts)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("Unexpected failure")
+
+    if failure_site == "preparation":
+        monkeypatch.setattr(merge_contract, "prepare_merge_candidate", fail)
+    else:
+        store = Mock()
+        store.record_agent_task_receipt.side_effect = fail
+        checker.execution = SimpleNamespace(store=store, operation_id="merge-task")
+    response = checker(request(index=1), identity)
+    assert response.status == "invalid"
+    assert response.result["outcome"] == "internal_error"
+    assert checker.internal_error
+    assert checker._pending_checks == 0
+    assert checker.receipts == receipts
+    assert checker.latest_answers is snapshot
+    with pytest.raises(ValueError, match="Unexpected failure"):
+        checker.require_receipt(request().arguments.answers.encode())
+    checker.set_plan(checker.plan, turn_id="new-turn")
+    assert checker.internal_error is None
+    assert checker.latest_answers is None
+
+
+def test_merge_check_success_clears_refusal_and_retains_only_checked_answers(
+    merge_check, monkeypatch
+):
+    from rcp.history import RevisionConflict
+    from rcp.runs import merge_contract
+    from rcp.runs.merge_contract import MergeDiagnostic, MergeRefused
+
+    checker, identity, request, _ = merge_check
+
+    def refuse(*_args):
+        raise MergeRefused((MergeDiagnostic(code="refused", message="Refused"),))
+
+    monkeypatch.setattr(merge_contract, "prepare_merge_candidate", refuse)
+    assert checker(request(), identity).status == "invalid"
+    assert checker.refusal is not None
+    assert checker._pending_checks == 0
+    monkeypatch.setattr(merge_contract, "prepare_merge_candidate", lambda *_args: object())
+    assert checker(request(index=1), identity).status == "ok"
+    assert checker.refusal is None
+    snapshot = checker.latest_answers
+    assert snapshot is not None
+    assert snapshot.answers == {}
+
+    def moved(*_args):
+        raise RevisionConflict("Destination moved")
+
+    monkeypatch.setattr(merge_contract, "prepare_merge_candidate", moved)
+    changed = b'{"answers": {"new": {"kind": "branch"}}, "cards": {}}'
+    assert checker(request(changed, index=2), identity).status == "unavailable"
+    assert checker.destination_moved
+    assert checker.latest_answers is snapshot
+    assert checker._pending_checks == 0
+    assert checker.require_receipt(request().arguments.answers.encode())
+
+
+def test_merge_check_old_generation_completion_cannot_decrement_current_pending(
+    merge_check, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from rcp.runs import merge_contract
+    from rcp.transport import StateUnavailable
+
+    checker, identity, request, _ = merge_check
+    old_entered, old_release = Event(), Event()
+    current_entered, current_release = Event(), Event()
+
+    def old_prepare(*_args):
+        old_entered.set()
+        assert old_release.wait(5)
+        return object()
+
+    def current_prepare(*_args):
+        current_entered.set()
+        assert current_release.wait(5)
+        return object()
+
+    monkeypatch.setattr(merge_contract, "prepare_merge_candidate", old_prepare)
+    with ThreadPoolExecutor() as pool:
+        old = pool.submit(checker, request(), identity)
+        try:
+            assert old_entered.wait(5)
+            checker.set_plan(checker.plan, turn_id=identity.turn_id)
+            monkeypatch.setattr(merge_contract, "prepare_merge_candidate", current_prepare)
+            current = pool.submit(checker, request(index=1), identity)
+            assert current_entered.wait(5)
+            old_release.set()
+            assert old.result(timeout=5).status == "unavailable"
+            assert checker._pending_checks == 1
+            with pytest.raises(StateUnavailable):
+                checker.require_receipt(request().arguments.answers.encode())
+        finally:
+            old_release.set()
+            current_release.set()
+        assert current.result(timeout=5).status == "ok"
+    assert checker._pending_checks == 0
