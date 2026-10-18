@@ -161,6 +161,41 @@ def settle_evidence_flag_address(
     )
 
 
+def address_request_route(flag_id: str) -> str:
+    """The client request route an Address request is recorded under."""
+    return f"evidence_flags/{flag_id}/address"
+
+
+def adopt_legacy_evidence_flag_requests(connection: sqlite3.Connection) -> None:
+    """Move Address request ids older releases kept on the flag into client requests.
+
+    Replays read only `client_requests`; startup moves each old id there once,
+    under its turn's authorizer, and clears the column.
+    """
+    rows = connection.execute(
+        "SELECT f.flag_id,f.project_id,f.address_request_id,f.operation_id,"
+        "r.authorized_user_id,r.created_at FROM evidence_flags f "
+        "JOIN graph_runs r ON r.operation_id=f.operation_id "
+        "WHERE f.address_request_id IS NOT NULL AND r.authorized_user_id IS NOT NULL"
+    ).fetchall()
+    connection.executemany(
+        "INSERT OR IGNORE INTO client_requests "
+        "(project_id,user_id,key,route,operation_id,created_at) VALUES (?,?,?,?,?,?)",
+        [
+            (
+                row["project_id"],
+                row["authorized_user_id"],
+                row["address_request_id"],
+                address_request_route(row["flag_id"]),
+                row["operation_id"],
+                row["created_at"],
+            )
+            for row in rows
+        ],
+    )
+    connection.execute("UPDATE evidence_flags SET address_request_id=NULL")
+
+
 def settle_ended_evidence_flag_addresses(connection: sqlite3.Connection) -> None:
     """Settle addressing flags whose turn already ended.
 

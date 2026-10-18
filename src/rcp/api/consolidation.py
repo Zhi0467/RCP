@@ -34,7 +34,7 @@ from rcp.runs.evidence_flag_commands import is_current_evidence
 from rcp.storage import AppStore
 from rcp.storage.client_requests import ClientRequestConflict
 from rcp.storage.consolidation import ConsolidationRun, ConsolidationSchedule
-from rcp.storage.evidence_flags import EvidenceFlagError
+from rcp.storage.evidence_flags import EvidenceFlagError, address_request_route
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
 Store = Annotated[AppStore, Depends(get_store)]
@@ -303,7 +303,7 @@ def address_evidence_flag(
     project_id = catalog.resolve_project_id(project_id)
     try:
         with store.client_request_admission(
-            project_id, human.user_id, body.request_id, f"evidence_flags/{flag_id}/address"
+            project_id, human.user_id, body.request_id, address_request_route(flag_id)
         ) as receipt:
             # A replay returns its own turn, even after that turn settled the flag.
             if receipt is not None:

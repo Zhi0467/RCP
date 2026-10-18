@@ -227,6 +227,33 @@ def test_startup_settles_a_flag_an_older_release_left_addressing(flagged, outcom
     )
 
 
+def test_startup_adopts_an_address_request_an_older_release_kept_on_the_flag(flagged):
+    app, client, store, project, flag = flagged
+    launches = []
+
+    async def stream(project_id, kind, request, execution):
+        launches.append(execution)
+        yield _event_frame(AgentEvent(event="done"))
+
+    app.state.background_tasks.stream = stream
+    url = f"/api/projects/{project}/consolidation/evidence-flags/{flag['flag_id']}/address"
+    result = client.post(url, json={"request_id": "legacy"}).json()
+    wait_for_task(store, result["operation_id"], expect="succeeded")
+    # An older release kept the request only on the flag and left it addressing.
+    with store.connection() as connection:
+        connection.execute("DELETE FROM client_requests WHERE key='legacy'")
+        connection.execute(
+            "UPDATE evidence_flags SET state='addressing', address_request_id='legacy' "
+            "WHERE flag_id=?",
+            (flag["flag_id"],),
+        )
+    store.interrupt_active_agent_tasks()
+    replay = client.post(url, json={"request_id": "legacy"})
+    assert replay.status_code == 200
+    assert replay.json()["operation_id"] == result["operation_id"]
+    assert len(launches) == 1
+
+
 def test_address_refuses_a_consolidation_notice(flagged):
     app, client, store, project, flag = flagged
     launches = []

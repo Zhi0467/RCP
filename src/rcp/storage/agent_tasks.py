@@ -59,6 +59,7 @@ from rcp.providers.live_status import AgentStatus
 from rcp.storage.client_requests import record_client_request
 from rcp.storage.digest import append_task_failed
 from rcp.storage.evidence_flags import (
+    adopt_legacy_evidence_flag_requests,
     record_evidence_flag_address,
     settle_ended_evidence_flag_addresses,
     settle_evidence_flag_address,
@@ -5583,6 +5584,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     tier="summary",
                     created_at=now,
                 )
+            adopt_legacy_evidence_flag_requests(connection)
             settle_ended_evidence_flag_addresses(connection)
 
     def prune_operational_storage(self, *, now: datetime | None = None) -> dict[str, int]:
