@@ -473,44 +473,52 @@ def test_human_fork_merge_admits_and_recovers_without_episode_budget(
     harness, template = _owned_merge(manifest, tmp_path)
     store = harness.store
     assert harness.episode.authorized_by is not None
-    source = create_graph_fork(
-        harness.service.history,
-        store,
-        project_id=harness.project_id,
-        branch_id=str(uuid.uuid4()),
-        parent_head=harness.branch.head_ref()
-        if parent_branch
-        else harness.service.history.head_ref(),
-        authorized_by=harness.episode.authorized_by,
-        created_by="human:fork",
-        owner_episode_id=None,
-    )
-    binding = MergeBinding(
-        source=source.graph_target,
-        source_head=source.head_ref(),
-        destination=source.branch_metadata().effective_parent_head.target,
-        requires_agent=False,
-    )
     authority = template.dispatch_authority
     assert authority is not None
-    task = template.model_copy(
-        update={
-            "episode_id": None,
-            "graph_target": source.graph_target,
-            "request": {
-                **template.request,
+    parent_head = harness.branch.head_ref() if parent_branch else harness.service.history.head_ref()
+
+    def member_merge():
+        source = create_graph_fork(
+            harness.service.history,
+            store,
+            project_id=harness.project_id,
+            branch_id=str(uuid.uuid4()),
+            parent_head=parent_head,
+            authorized_by=harness.episode.authorized_by,
+            created_by="human:fork",
+            owner_episode_id=None,
+        )
+        binding = MergeBinding(
+            source=source.graph_target,
+            source_head=source.head_ref(),
+            destination=source.branch_metadata().effective_parent_head.target,
+            requires_agent=False,
+        )
+        task = template.model_copy(
+            update={
+                "operation_id": str(uuid.uuid4()),
                 "episode_id": None,
-                "merge_binding": binding.model_dump(mode="json"),
-            },
-            "dispatch_authority": authority.model_copy(
-                update={"scope": authority.scope.model_copy(update={"episode_id": None})}
-            ),
-        }
-    )
+                "graph_target": source.graph_target,
+                "request": {
+                    **template.request,
+                    "episode_id": None,
+                    "merge_binding": binding.model_dump(mode="json"),
+                },
+                "dispatch_authority": authority.model_copy(
+                    update={"scope": authority.scope.model_copy(update={"episode_id": None})}
+                ),
+            }
+        )
+        return source, binding, task
+
+    source, binding, task = member_merge()
     store.create_branch_merge_task(task)
     store.reserve_branch_merge_invocation(task.operation_id)
     store.fail_agent_task(task.operation_id, "Process restarted", status="interrupted")
     assert store.requeue_owned_merge_task(task.operation_id).episode_id is None
+    # A sibling fork cannot merge into the same parent while this merge enters it.
+    with pytest.raises(ValueError, match="^merge_destination_merging$"):
+        store.create_branch_merge_task(member_merge()[2])
     assert store.episode_budget_meter(harness.episode.episode_id).invocations_used == 1
     resolved = store.agent_task_authority(task.project_id, task.operation_id)
     assert resolved.merge_source == source.graph_target and resolved.merge_dispatcher == "member"

@@ -870,12 +870,25 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 raise ValueError("merge_destination_missing")
             if destination["archived"]:
                 raise ValueError("merge_destination_archived")
+        # The destination is busy while a merge leaves it or another merge enters it;
+        # an unbound episode merge always enters main.
         if (
             connection.execute(
                 "SELECT 1 FROM graph_runs WHERE project_id=? AND kind='branch_merge' "
-                "AND status IN ('queued','running','pausing') AND graph_target_json=? "
-                "AND operation_id != ? LIMIT 1",
-                (record.project_id, graph_target_json(binding.destination), record.operation_id),
+                "AND status IN ('queued','running','pausing') AND operation_id != ? "
+                "AND (graph_target_json=? "
+                "OR (json_extract(request_json, '$.merge_binding.destination.kind')=? "
+                "AND json_extract(request_json, '$.merge_binding.destination.branch_id') IS ?) "
+                "OR (?='main' AND json_extract(request_json, '$.merge_binding') IS NULL)) "
+                "LIMIT 1",
+                (
+                    record.project_id,
+                    record.operation_id,
+                    graph_target_json(binding.destination),
+                    binding.destination.kind,
+                    binding.destination.branch_id,
+                    binding.destination.kind,
+                ),
             ).fetchone()
             is not None
         ):
