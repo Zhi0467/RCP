@@ -2668,7 +2668,7 @@ class AutoResearchChildWorkRecord(BaseModel):
     worker_id: str
     episode_id: str
     project_id: str
-    control_node_id: str
+    control_node_id: str | None
     root_operation_id: str
     current_operation_id: str
     admitted_by_operation_id: str

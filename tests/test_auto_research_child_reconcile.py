@@ -148,6 +148,7 @@ def _admit_command(
     file_kind: str | None,
     filename: str | None,
     content: str | None,
+    graph_target: GraphTargetRef | None = None,
 ) -> None:
     now = store.now()
     command_file = None
@@ -175,6 +176,8 @@ def _admit_command(
         "arguments": arguments,
         planned_field: child_id,
     }
+    if graph_target is not None:
+        payload["resolved_graph_target"] = graph_target.model_dump(mode="json")
     if command_file_metadata is not None:
         payload["command_file"] = command_file_metadata
     store.start_agent_command(
@@ -203,9 +206,19 @@ class _UnusedExperimentCoordinator:
         raise AssertionError("Experiment coordinator was not expected")
 
 
-@pytest.mark.parametrize("seat_type", ["blocker", "research_question"])
-def test_restart_reconciles_spawn_from_immutable_snapshot_once(tmp_path, seat_type) -> None:
+@pytest.mark.parametrize("fork", [False, True])
+def test_restart_reconciles_spawn_from_immutable_snapshot_once(tmp_path, fork) -> None:
     store, episode, root = _setup(tmp_path)
+    target = episode.graph_target
+    if fork:
+        branch = store.create_graph_branch(
+            project_id=episode.project_id,
+            branch_id=str(uuid.uuid4()),
+            owner_episode_id=episode.episode_id,
+            parent_head=GraphHeadRef(target=target, revision=0),
+            created_by=root.operation_id,
+        )
+        target = GraphTargetRef(kind="branch", branch_id=branch.branch_id)
     key = "spawn-after-runtime-repair"
     child_id = str(
         uuid.uuid5(
@@ -226,6 +239,7 @@ def test_restart_reconciles_spawn_from_immutable_snapshot_once(tmp_path, seat_ty
         file_kind="instruction",
         filename="worker.md",
         content=instruction,
+        graph_target=target if fork else None,
     )
     command = store.auto_research_child_admission_command(child_id)
     assert command is not None and command.command_id == "spawn-command"
@@ -237,14 +251,14 @@ def test_restart_reconciles_spawn_from_immutable_snapshot_once(tmp_path, seat_ty
         background,
         _UnusedExperimentCoordinator(),  # type: ignore[arg-type]
         worker_request_factory=_worker_request,
-        seat_node_type=lambda _project_id, _episode_id, _node_id: seat_type,
+        seat_node_type=lambda _project_id, _episode_id, _node_id: "blocker",
     )
     second = reconcile_pending_auto_research_child_admissions(
         store,
         background,
         _UnusedExperimentCoordinator(),  # type: ignore[arg-type]
         worker_request_factory=_worker_request,
-        seat_node_type=lambda _project_id, _episode_id, _node_id: seat_type,
+        seat_node_type=lambda _project_id, _episode_id, _node_id: "blocker",
     )
 
     route = store.auto_research_child_work(child_id)
@@ -255,6 +269,7 @@ def test_restart_reconciles_spawn_from_immutable_snapshot_once(tmp_path, seat_ty
     assert second.examined == 0
     assert route is not None and route.instruction == instruction
     assert task is not None and task.request["message"] == instruction
+    assert task.graph_target == target
     assert admission is not None and admission.state == "reflected"
     assert invocation is not None and invocation.status == "ok"
     assert store.episode_budget_meter(episode.episode_id).invocations_used == (

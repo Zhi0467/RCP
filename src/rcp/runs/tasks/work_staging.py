@@ -269,9 +269,7 @@ async def stage_work_turn(
             if execution is not None
             else None
         )
-        graph_read_scope = GraphReadScope(
-            project_id=write_scope.project_id, target=service.history.graph_target
-        )
+        graph_read_scope = GraphReadScope.resolve(write_scope.project_id, service.history)
         validator_lifecycle = start_validator_mailbox(
             service,
             patch_inputs.validator_staged,

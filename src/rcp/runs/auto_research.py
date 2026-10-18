@@ -46,6 +46,7 @@ from rcp.agents.command_protocol import (
     command_requires_idempotency_key,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
+from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import (
     AGENT_COMMAND_EVENT_MAX_BYTES,
     AUTO_RESEARCH_APPLY_MAX_PER_TURN,
@@ -757,6 +758,7 @@ class AutoResearchCommandContext:
     task: AgentTaskRecord
     request: AutoResearchRunRequest
     command_file: AutoResearchCommandFile | None = None
+    child_graph_target: GraphTargetRef | None = None
     consume_command_file: AutoResearchCommandFileConsumer | None = None
     refresh_command_state: AutoResearchCommandStateRefresher | None = None
 
@@ -1112,6 +1114,29 @@ class AutoResearchCommandDispatcher:
         if prior is not None:
             attempt = self._start_retry_attempt(context, request, start_payload, prior)
             return self._dispatch_retry(context, request, prior, attempt)
+
+        child_arguments = request.arguments
+        if isinstance(child_arguments, (SpawnArguments, ExperimentKickoffArguments)):
+            if child_arguments.at is not None:
+                return CommandResponse(
+                    request_id=request.request_id,
+                    status="invalid",
+                    result={"code": "fork_atomic_admission_unavailable"},
+                    message="Atomic fork and child admission is not available.",
+                )
+            try:
+                target = resolve_auto_research_child_target(
+                    self.store, context.episode, child_arguments.target
+                )
+            except ValueError as exc:
+                return CommandResponse(
+                    request_id=request.request_id,
+                    status="invalid",
+                    result={"code": "child_target_refused"},
+                    message=str(exc),
+                )
+            context = replace(context, child_graph_target=target)
+            start_payload["resolved_graph_target"] = target.model_dump(mode="json")
 
         keyed_apply = (
             isinstance(request, ApplyCommandRequest) and request.idempotency_key is not None
@@ -1542,6 +1567,7 @@ class AutoResearchCommandDispatcher:
             original_context = replace(
                 original_context,
                 command_file=self._recorded_command_file(prior, recorded_request),
+                child_graph_target=recorded_child_graph_target(prior, original_context.episode),
             )
             reconciled = self._reconcile_unknown(
                 original_context,
@@ -1767,6 +1793,7 @@ class AutoResearchCommandDispatcher:
         context = replace(
             context,
             command_file=self._recorded_command_file(prior, request),
+            child_graph_target=recorded_child_graph_target(prior, context.episode),
         )
         worker = self.store.agent_task(planned_worker_id)
         if worker is not None:
@@ -2095,15 +2122,16 @@ class AutoResearchCommandDispatcher:
             return self.effects.apply(context, request.arguments, planned_apply_id)
         if request.verb == "spawn":
             assert planned_worker_id is not None
-            node_type = self.effects.seat_node_type(
-                context.task.project_id,
-                context.episode.episode_id,
-                request.arguments.seat_node_id,
-            )
-            if node_type is None:
-                raise AutoResearchCommandInvalid(
-                    "Auto-research workers must be seated on an existing graph node."
+            if request.arguments.seat_node_id is not None and request.arguments.target is None:
+                node_type = self.effects.seat_node_type(
+                    context.task.project_id,
+                    context.episode.episode_id,
+                    request.arguments.seat_node_id,
                 )
+                if node_type is None:
+                    raise AutoResearchCommandInvalid(
+                        "Auto-research workers must be seated on an existing graph node."
+                    )
             outcome = self.effects.spawn(context, request.arguments, planned_worker_id)
             if outcome.status != "ok":
                 return outcome
@@ -2248,7 +2276,7 @@ def validate_auto_research_worker_request(
         request.mode != "work"
         or request.trigger != "orchestrator"
         or request.patch_kind != "work"
-        or request.chat_scope != "node"
+        or request.chat_scope != ("project" if arguments.project else "node")
         or request.node_id != arguments.seat_node_id
         or request.message != instruction
         or request.chat_id != planned_worker_id
@@ -2337,3 +2365,28 @@ def _effect_from_recorded_invocation(
         message=message,
         result=result,
     )
+
+
+def resolve_auto_research_child_target(
+    store: AppStore,
+    episode: EpisodeRecord,
+    target: str | None,
+) -> GraphTargetRef:
+    """Resolve a name once before the command admission; only lineage branches admit."""
+    if target is None:
+        return episode.graph_target
+    branches = store.branches_owned_by(episode.project_id, episode.episode_id)
+    branch_id = target.removeprefix("branch:")
+    branch = next((row for row in branches if branch_id in (row.branch_id, row.name)), None)
+    if branch is None or branch.archived:
+        raise ValueError("The child target must be an open branch owned by this episode lineage.")
+    return GraphTargetRef(kind="branch", branch_id=branch.branch_id)
+
+
+def recorded_child_graph_target(
+    command: AgentCommandInvocationRecord,
+    episode: EpisodeRecord,
+) -> GraphTargetRef:
+    """Pre-target writers used their parent; newer commands retain the resolved identity."""
+    target = command.start_payload.get("resolved_graph_target")
+    return episode.graph_target if target is None else GraphTargetRef.model_validate(target)

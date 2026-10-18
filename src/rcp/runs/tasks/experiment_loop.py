@@ -2875,10 +2875,7 @@ async def _stream_work_graph_repair(
         task_record = execution.store.agent_task(execution.operation_id)
         if task_record is None:
             raise ValueError("The graph-reading task record is unavailable.")
-        graph_read_scope = GraphReadScope(
-            project_id=task_record.project_id,
-            target=service.history.graph_target,
-        )
+        graph_read_scope = GraphReadScope.resolve(task_record.project_id, service.history)
         validator_lifecycle = _start_work_validator_mailbox(
             service,
             patch_inputs.validator_staged,

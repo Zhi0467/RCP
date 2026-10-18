@@ -46,6 +46,20 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Project worker seats (v57): fresh, fixture and in-place upgrades.
+        "a266cf9318730688e35f7fb91b0d3a9e90b6db4eedec96b8a4e0a3ce0fa516d8",
+        "275a9623a7675cb4ebaaaea9168f99f2dbbd4ec5025fa9811709f169f663c092",
+        "16a7823f27f69219307ba484ef1e3c94d995a6307c199102f3fd57fa12485197",
+        "0b8de8324121f734fc28280238db93dc5458f5c81ff883261e52af9ab6dd566a",
+        "114352daddfd611324a85832f4ec58fea65a6066d3403c7e0eb449fd9ab5abfe",
+        "48aac4ecf5b5bec9dc6f32367a8fda172c489a423e60d96cf09bee6a98a23dbe",
+        "131bc2f0ce641981e06cfa92fbf8fc2741387646fad1ad48d6459269237ee23c",
+        "4687242d1f0f2f70b79a5c5ad40251c153e080aeefe99860a128acf10f792c68",
+        "0478a1d3756f895d8576c56f067199210225d432b9517d0efdfe6fefd4edcff4",
+        "3c1ff5e1877ef289e57a3c4934957c89fb3030f5f88a1fb272c7845f5c6b760e",
+        "649ffc2e8bd49ec8c72b8ca8ec4195b3fecdc5d146843bb06bbb966cc35b5b4a",
+        "e3c0c93521842a75020255c443120bb3a776735762de5d0803e662b507bf2415",
+        "fc8d9bd7e0203e3d3355b871c9cc9aeacaa86b54b20cf2fda9a41ddae2756e7a",
         # Graph Bulletin (v56): fresh, fixture and in-place upgrades.
         "1214abad987240c394d85b5ba31720bd1f01513d32036d0dac7fd31bb9fbc08e",
         "372f5fbf681e4f764e40c53d22c07bebbfc3398c106a163c8eb9336e4a322038",

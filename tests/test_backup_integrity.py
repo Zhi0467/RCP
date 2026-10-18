@@ -50,4 +50,4 @@ def test_database_schema_digest_is_shared_by_live_and_immutable_readers(
         immutable_digest = database_schema_sha256(immutable)
 
     assert live_digest == immutable_digest
-    assert live_digest == "8cbba76ed1314b1a736ec68fdb7efbec52591d4415b2bb21f67d3a0bfdbd23a3"
+    assert live_digest == "4fc88902b51e02431f87505fa3db3ddb0bbea8866dcd0d8b06007e94c52226d8"

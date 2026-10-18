@@ -643,6 +643,13 @@ def space_runs(
                 or (
                     episode.graph_target.kind == "branch"
                     and metadata_snapshot.parent_graph_target != episode.graph_target
+                    and episode.graph_target.branch_id
+                    not in {
+                        branch.branch_id
+                        for branch in store.branches_owned_by(
+                            record.project_id, route.auto_research_episode_id
+                        )
+                    }
                 )
             ):
                 raise ValueError("Archived Experiment route does not identify its durable episode.")

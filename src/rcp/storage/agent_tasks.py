@@ -56,6 +56,7 @@ from rcp.limits import (
 )
 from rcp.providers import ProviderUsage, classify_terminal_error, require_runtime_id
 from rcp.providers.live_status import AgentStatus
+from rcp.storage.branch_names import _chain_root
 from rcp.storage.client_requests import record_client_request
 from rcp.storage.digest import append_task_failed
 from rcp.storage.evidence_flags import record_evidence_flag_address
@@ -1042,17 +1043,20 @@ class AgentTaskStoreMixin(StoreMixinBase):
     ) -> None:
         rows = connection.execute(
             "SELECT request_json FROM graph_runs WHERE project_id = ? "
-            "AND graph_target_json = ? AND episode_id IS NULL "
+            "AND episode_id IS NULL "
             "AND kind IN ('node_chat', 'project_chat') "
             "AND status IN ('queued', 'running', 'pausing')",
-            (episode.project_id, graph_target_json(episode.graph_target)),
+            (episode.project_id,),
         ).fetchall()
         for row in rows:
             request = json.loads(row["request_json"])
             chat_id = request.get("chat_id")
             if _origin_bound_edit(request) or not isinstance(chat_id, str):
                 continue
-            if self._child_chat_owner(connection, episode.project_id, chat_id) is not None:
+            owner = self._child_chat_owner(connection, episode.project_id, chat_id)
+            if owner is not None and _chain_root(
+                connection, episode.project_id, owner["episode_id"]
+            ) == _chain_root(connection, episode.project_id, episode.episode_id):
                 raise ValueError(f"auto_research_child_turn_active:{chat_id}")
 
     def _insert_agent_task(
@@ -1211,7 +1215,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     )
         else:
             episode = connection.execute(
-                "SELECT project_id, graph_target_json FROM episodes WHERE episode_id = ?",
+                "SELECT project_id, mode, graph_target_json FROM episodes WHERE episode_id = ?",
                 (record.episode_id,),
             ).fetchone()
             if episode is None:
@@ -1222,7 +1226,21 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 json.loads(episode["graph_target_json"]).get("branch_id")
                 != record.graph_target.branch_id
             ):
-                raise ValueError("an episode task cannot change its graph target")
+                branch = connection.execute(
+                    "SELECT owner_episode_id FROM graph_branches WHERE project_id=? AND branch_id=?",
+                    (record.project_id, record.graph_target.branch_id),
+                ).fetchone()
+                if not (
+                    episode["mode"] == "auto_research"
+                    and record.kind in {"node_chat", "project_chat"}
+                    and record.request.get("trigger") == "orchestrator"
+                    and record.request.get("patch_kind", "work") == "work"
+                    and record.graph_target.kind == "branch"
+                    and branch is not None
+                    and branch["owner_episode_id"]
+                    == _chain_root(connection, record.project_id, record.episode_id)
+                ):
+                    raise ValueError("an episode task cannot change its graph target")
 
         if record.parent_operation_id is None:
             return

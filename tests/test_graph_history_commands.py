@@ -145,3 +145,59 @@ def test_branch_changes_uses_branch_base_and_oversized_engine_page_is_refused(
     response = handle_graph_history_command(service, scope, request(branch_changes=branch_id))
     assert response.status == "invalid"
     assert response.result["code"] == "graph_history_response_too_large"
+
+
+def test_fork_scope_enforces_ancestry_revisions_and_cursor_binding(history_query):
+    from .test_history_forks import fork_metadata
+
+    service, unrestricted, branch = history_query
+    parent_head = branch.head_ref()
+    fork = service.history.create_episode_branch(fork_metadata(service.history, parent_head))
+    nested = service.history.create_episode_branch(fork_metadata(service.history, fork.head_ref()))
+    scope = GraphReadScope.resolve("project", nested)
+    assert scope.ancestry_ceilings == (
+        fork.head_ref(),
+        parent_head,
+        branch.branch_metadata().base_head,
+    )
+    assert GraphReadScope.resolve("project", branch).ancestry_ceilings is None
+    episode_root = service.history.create_episode_branch(
+        fork_metadata(service.history, service.history.head_ref()).model_copy(
+            update={"kind": "auto_research"}
+        )
+    )
+    assert GraphReadScope.resolve("project", episode_root).ancestry_ceilings is None
+    # Saved pre-change grants retain their project-wide semantics.
+    assert GraphReadScope.model_validate({"project_id": "project", "target": {}}) == (
+        GraphReadScope.resolve("project", service.history)
+    )
+    roundtrip = GraphReadScope.model_validate_json(scope.model_dump_json())
+    assert roundtrip == scope
+    args = {"from": f"{parent_head.target.key}@1", "to": str(parent_head.target.key) + "@2"}
+    first = handle_graph_history_command(service, scope, request(**args))
+    assert first.status == "ok"
+    assert first.result["cursor"] is not None
+    branch.append(_branch_patch("ev/post-fork"))
+    service.history.append(_branch_patch("ev/post-root"))
+    for head in (f"{parent_head.target.key}@head", "main@head"):
+        denied = handle_graph_history_command(
+            service, scope, request("graph_log", id="ev/long", at=head)
+        )
+        assert denied.result["code"] == "graph_history_scope_refused"
+    continued = handle_graph_history_command(
+        service, roundtrip, request(**args, cursor=first.result["cursor"])
+    )
+    assert continued.status == "ok"
+    denied = handle_graph_history_command(
+        service, unrestricted, request(**args, cursor=first.result["cursor"])
+    )
+    assert denied.result["code"] == "graph_history_cursor_invalid"
+    sibling = service.history.create_episode_branch(fork_metadata(service.history, parent_head))
+    denied = handle_graph_history_command(
+        service, scope, request("graph_log", id="ev/long", at=f"{sibling.graph_target.key}@head")
+    )
+    assert denied.result["code"] == "graph_history_scope_refused"
+    assert (
+        handle_graph_history_command(service, scope, request("graph_log", id="ev/long")).status
+        == "ok"
+    )

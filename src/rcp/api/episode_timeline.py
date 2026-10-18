@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Callable
+from typing import Any
 
 from rcp.api.episode_timeline_models import (
     EpisodeTimelineActor,
@@ -160,7 +161,7 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
     children = store.episodes_by_ids(list(routes))
     owners = {member.episode_id: member for member in chain} | children
 
-    def add_actor(actor_id: str, kind: str, label: str, owner: str, **values: object) -> None:
+    def add_actor(actor_id: str, kind: str, label: str, owner: str, **values: Any) -> None:
         actors[actor_id] = EpisodeTimelineActor(
             actor_id=actor_id,
             kind=kind,

@@ -81,7 +81,14 @@ def _owner(store, artifact):
     if artifact.episode_id and (
         episode is None
         or episode.project_id != artifact.project_id
-        or episode.graph_target != task.graph_target
+        or (
+            episode.graph_target != task.graph_target
+            and task.graph_target.branch_id
+            not in {
+                branch.branch_id
+                for branch in store.branches_owned_by(artifact.project_id, episode.episode_id)
+            }
+        )
     ):
         raise ValueError("The artifact's episode graph target is unavailable.")
     return task, episode

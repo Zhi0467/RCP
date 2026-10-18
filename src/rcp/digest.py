@@ -74,11 +74,26 @@ def _viewers_own(event: dict, user_id: str, chat_reads: dict | None) -> bool:
 
 def attribution(store, project_id: str, patch: Patch) -> dict:
     """Resolve source once, with explicit provenance ahead of producer fallbacks."""
-    result = {"actor_user_id": None, "report_artifact_id": None, "deep_link": None}
-    if patch.branch_merge is not None:
+    result: dict[str, str | None] = {
+        "actor_user_id": None,
+        "report_artifact_id": None,
+        "deep_link": None,
+    }
+    if patch.branch_merge is not None and patch.branch_merge.episode_id is not None:
         episode_id = patch.branch_merge.episode_id
         kind, key, label = "episode", episode_id, _episode_title(store, episode_id)
         result["deep_link"] = deep_link(project_id, "main", "episode", episode_id)
+    elif patch.branch_merge is not None:
+        # A human-owned fork has no episode; its merge belongs to the dispatching member.
+        if patch.authorized_by is None:
+            kind, key, label = "unattributed", "human", "Unattributed"
+        else:
+            kind, key, label = (
+                "member",
+                patch.authorized_by.user_id,
+                patch.authorized_by.display_name,
+            )
+            result["actor_user_id"] = key
     else:
         operation_id = patch.source_operation_id or patch.task_id
         consolidation = (

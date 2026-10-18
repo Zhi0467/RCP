@@ -289,12 +289,13 @@ def _setup(
         authorized_by=fabricated_authorizer("Researcher"),
         graph_base_head=GraphHeadRef(revision=0),
         ensure_graph_target=lambda _episode: None,
-        episode_id=f"parent-{tmp_path.name}",
+        episode_id=str(uuid.uuid4()),
         operation_id=f"root-{tmp_path.name}",
     )
     wait_for_task(store, root.operation_id, expect="succeeded")
     assert parent.graph_target.kind == "branch"
-    assert parent.graph_target.branch_id == parent.episode_id
+    assert parent.graph_target.branch_id is not None
+    assert store.branch_owner(PROJECT_ID, parent.graph_target.branch_id) == parent.episode_id
     assert parent.graph_base_head == GraphHeadRef(revision=0)
     assert root.graph_target == parent.graph_target
     coordinator = AutoResearchExperimentCoordinator(
@@ -380,7 +381,9 @@ def test_kickoff_preserves_optional_goal_and_uses_current_node_work_profile(
     assert child is not None
     assert child.graph_target == task.graph_target
     assert child.graph_target.kind == "branch"
-    assert child.graph_target.branch_id == parent_id
+    parent = store.episode(parent_id)
+    assert parent is not None
+    assert child.graph_target == parent.graph_target
     assert child.graph_base_head == GraphHeadRef(revision=0)
     assert task.request["message"] == expected_message
     assert task.request["control_invocation_ceiling"] == expected_ceiling
@@ -1472,3 +1475,57 @@ def test_a_model_that_takes_no_effort_drops_the_settings_effort(
     assert pick(service, provider=provider, model="plain", reasoning=None) == ""
     with pytest.raises(AutoResearchChildProfileInvalid):
         pick(service, provider=provider, model="plain", reasoning="max")
+
+
+def test_fork_experiment_uses_target_readiness_and_replays_its_persisted_target(manifest, tmp_path):
+    from rcp.runs.graph_forks import create_graph_fork
+
+    service, store, background, coordinator, parent_id, root_id = _setup(manifest, tmp_path)
+    assert isinstance(service.history, HistoryManager)
+    parent = store.episode(parent_id)
+    assert parent is not None and parent.authorized_by is not None
+    source = service.history.head_ref()
+    branch = create_graph_fork(
+        service.history,
+        store,
+        project_id=PROJECT_ID,
+        branch_id=str(uuid.uuid4()),
+        owner_episode_id=parent_id,
+        parent_head=source,
+        authorized_by=parent.authorized_by,
+        created_by=f"orchestrator:{root_id}",
+    )
+    # Only the parent advances to blocked; readiness must come from the saved target.
+    service.history.append(_blocking_patch())
+    coordinator.project_service = lambda _project, _episode: service.for_graph_target(
+        branch.graph_target
+    )
+    child_id = str(uuid.uuid4())
+    _admit(store, parent_episode_id=parent_id, child_episode_id=child_id, admission_id="fork-child")
+    kickoff = partial(
+        coordinator.kick_off,
+        auto_research_episode_id=parent_id,
+        parent_operation_id=root_id,
+        child_episode_id=child_id,
+        node_id=EXPERIMENT_ID,
+        goal=None,
+        goal_sha256=None,
+        invocation_limit=1,
+        admission_id="fork-child",
+        graph_target=branch.graph_target,
+    )
+    action = kickoff()
+    assert action.operation_id is not None
+    child = store.episode(child_id)
+    task = store.agent_task(action.operation_id)
+    assert child is not None and task is not None
+    assert child.graph_target == task.graph_target == branch.graph_target
+    route = store.auto_research_child_experiment(child_id)
+    assert route is not None
+    assert route.request["resolved_graph_target"] == (branch.graph_target.model_dump(mode="json"))
+    store.set_branch_archived(PROJECT_ID, branch.branch_id, archived=True)
+    replay = kickoff()
+    assert replay.operation_id == action.operation_id
+    assert replay.allowance.used == 1
+    wait_for_task(store, task.operation_id, expect="succeeded")
+    background.shutdown()

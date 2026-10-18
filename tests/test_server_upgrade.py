@@ -145,6 +145,7 @@ def test_pre_ledger_fixture_records_migrations_and_never_rescans(
             (54,),
             (55,),
             (56,),
+            (57,),
         ]
 
         plan = connection.execute(
@@ -213,6 +214,64 @@ def test_immutable_server_boundaries_upgrade_and_start(
     shutil.copytree(fixture, copied)
 
     _exercise_candidate_upgrade(copied, baseline_schema=baseline_schema)
+
+
+def test_node_worker_upgrade_preserves_attempt_and_allows_project_seat(tmp_path: Path) -> None:
+    fixture = next(
+        path
+        for path in immutable_fixture_directories()
+        if path.name == "pre-graph-branches-v28-ae89ee3"
+    )
+    metadata = verify_fixture_integrity(fixture)
+    copied = tmp_path / "fixture"
+    shutil.copytree(fixture, copied)
+    database = _materialize_database(copied / "data")
+    operation = metadata["experiment_operation_id"]
+    admitted_by = metadata["active_operation_id"]
+    old_worker = (
+        "old-worker",
+        metadata["experiment_episode_id"],
+        metadata["project_id"],
+        "exp-1",
+        operation,
+        operation,
+        admitted_by,
+        "Measure",
+        hashlib.sha256(b"Measure").hexdigest(),
+        None,
+        "2026-01-01T00:00:00+00:00",
+        "2026-01-01T00:00:00+00:00",
+    )
+    old_attempt = (operation, "old-worker", operation, old_worker[-1])
+    # Write the frozen old schema directly, before any current model or migration runs.
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(
+            "INSERT INTO auto_research_child_work VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            old_worker,
+        )
+        connection.execute(
+            "INSERT INTO auto_research_child_work_attempts VALUES (?, ?, ?, ?)", old_attempt
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute("UPDATE auto_research_child_work SET control_node_id = NULL")
+    store = AppStore(database)
+    with store.connection() as connection:
+        assert (
+            tuple(connection.execute("SELECT * FROM auto_research_child_work").fetchone())
+            == old_worker
+        )
+        assert (
+            tuple(connection.execute("SELECT * FROM auto_research_child_work_attempts").fetchone())
+            == old_attempt
+        )
+        connection.execute("UPDATE auto_research_child_work SET control_node_id = NULL")
+        assert not connection.execute("PRAGMA foreign_key_check").fetchall()
+    store.close()
+    reopened = AppStore(database)
+    worker = reopened.auto_research_child_work("old-worker")
+    assert worker is not None and worker.control_node_id is None
+    reopened.close()
 
 
 @pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
