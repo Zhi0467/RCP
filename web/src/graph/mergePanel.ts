@@ -13,27 +13,17 @@ export interface MergeChoices {
   deleteCodeBranch: boolean;
 }
 
-export interface MergeDiffCounts {
-  changed: number;
-  delivered: number;
-  proposals: number;
-  conflicts: number;
-  needsAgent: number;
-}
-
-export type MergeDiffMark = "delivered" | "changed" | "proposal" | "needs_agent" | "conflict";
+export type MergeDiffMark = "delivered" | "changed" | "proposal" | "conflict";
 
 export const MERGE_MARK_SEVERITY: MergeDiffMark[] = [
   "delivered",
   "changed",
   "proposal",
-  "needs_agent",
   "conflict",
 ];
 
 export function mergePathMark(path: MergeDiffPath): MergeDiffMark {
   if (path.conflict) return "conflict";
-  if (path.needs_agent) return "needs_agent";
   if (path.needs_proposal) return "proposal";
   return path.delivered ? "delivered" : "changed";
 }
@@ -49,25 +39,6 @@ export function mergeDiffMarks(paths: MergeDiffPath[]): Map<string, MergeDiffMar
       marks.set(key, mark);
   }
   return marks;
-}
-
-export function mergeDiffCounts(paths: MergeDiffPath[]): MergeDiffCounts {
-  const counts: MergeDiffCounts = {
-    changed: 0,
-    delivered: 0,
-    proposals: 0,
-    conflicts: 0,
-    needsAgent: 0,
-  };
-  for (const mark of mergeDiffMarks(paths).values()) {
-    if (mark === "delivered") counts.delivered += 1;
-    else counts.changed += 1;
-    if (mark === "proposal") counts.proposals += 1;
-    if (mark === "conflict") counts.conflicts += 1;
-    // Every residue path goes to the merge agent, conflicts and Proposals included.
-    if (mark !== "changed" && mark !== "delivered") counts.needsAgent += 1;
-  }
-  return counts;
 }
 
 /** An agent lands code only with a merge commit; squash stays for agentless merges. */

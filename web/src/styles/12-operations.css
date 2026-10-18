@@ -414,9 +414,6 @@
 .diff-proposal {
   --diff-color: var(--plum);
 }
-.diff-needs_agent {
-  --diff-color: var(--amber);
-}
 .diff-delivered,
 .diff-context {
   --diff-color: var(--muted);
@@ -476,6 +473,8 @@
 }
 .branch-change-field-head {
   display: flex;
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
