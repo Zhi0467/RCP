@@ -175,6 +175,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
   const trigger = canPost && focused ? bulletinTrigger(draft, caret) : null;
   const shownTrigger = trigger && trigger.start !== dismissedAt ? trigger : null;
   const nodeList = useMemo(() => Object.values(nodes), [nodes]);
+  const nodeIds = useMemo(() => new Set(Object.keys(nodes)), [nodes]);
   const suggestions: Suggestion[] = !shownTrigger
     ? []
     : shownTrigger.char === "@"
@@ -296,7 +297,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
     });
 
   const renderText = (item: BulletinPost) =>
-    bulletinSegments(item.text, labels, item.mentions).map((segment, index) => {
+    bulletinSegments(item.text, labels, nodeIds, item.mentions).map((segment, index) => {
       if (segment.kind === "text") return segment.text;
       if (segment.kind === "node")
         return (

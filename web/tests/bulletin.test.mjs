@@ -58,8 +58,9 @@ test("reply context uses the parent snapshot across pages", () => {
 test("text splits into prose, node links, and known or recorded mentions", () => {
   const labels = new Map([["<@member:u1>", "Ada"]]);
   const segments = bulletinSegments(
-    "see #exp/fork-b. ask <@member:u1> and <@agent:worker:9>, not <@agent:ghost>",
+    "see #exp/fork-b. ask <@member:u1> and <@agent:worker:9>, not <@agent:ghost> or #exp/gone",
     labels,
+    new Set(["exp/fork-b"]),
     [{ kind: "agent", id: "worker:9" }],
   );
   assert.deepEqual(
@@ -71,6 +72,7 @@ test("text splits into prose, node links, and known or recorded mentions", () =>
   assert.equal(segments[3].label, "Ada");
   assert.deepEqual(segments[5].mention, { kind: "agent", id: "worker:9" });
   assert.equal(segments[6].text.includes("<@agent:ghost>"), true);
+  assert.equal(segments[6].text.includes("#exp/gone"), true);
 });
 
 test("composer names round-trip to stored tokens with unique labels", () => {

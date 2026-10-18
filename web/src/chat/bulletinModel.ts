@@ -152,13 +152,14 @@ const TOKEN = /<@(member|agent):([^>\s]+)>|#([A-Za-z0-9][A-Za-z0-9_./-]*)/g;
 const NODE_TRAILING = /[.,;:)]+$/;
 
 /**
- * Splits post text into prose, `#node` links, and mention tokens. A token
- * renders as a pill when its name is known or the server recorded it as a
- * mention; any other token stays prose.
+ * Splits post text into prose, `#node` links, and mention tokens. A `#id`
+ * links only when the node exists; a token renders as a pill when its name is
+ * known or the server recorded it as a mention; anything else stays prose.
  */
 export function bulletinSegments(
   text: string,
   labels: ReadonlyMap<string, string>,
+  nodeIds: ReadonlySet<string>,
   mentions: readonly BulletinMention[] = [],
 ): BulletinSegment[] {
   const segments: BulletinSegment[] = [];
@@ -174,7 +175,8 @@ export function bulletinSegments(
     push(text.slice(at, start));
     if (match[3] !== undefined) {
       const id = match[3].replace(NODE_TRAILING, "");
-      segments.push({ kind: "node", id });
+      if (nodeIds.has(id)) segments.push({ kind: "node", id });
+      else push(`#${id}`);
       at = start + 1 + id.length;
       continue;
     }
