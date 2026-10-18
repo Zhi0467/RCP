@@ -1,4 +1,4 @@
-import { ExternalLink, MessageSquare, RotateCw, X } from "lucide-react";
+import { ExternalLink, LoaderCircle, MessageSquare, RotateCw, X } from "lucide-react";
 import { useRef, useState } from "react";
 import type { EvidenceFlag, GraphNode } from "../core/types";
 import { addressEvidenceFlag, dismissEvidenceFlag } from "../core/api";
@@ -65,6 +65,8 @@ function FlagRow({
         requestId.current ??= crypto.randomUUID();
         const result = await addressEvidenceFlag(apiBase, flag.flag_id, requestId.current);
         onChanged(result.flag);
+        // The turn is bound; a later Address after it fails is a new request.
+        requestId.current = null;
       } else if (action === "dismiss") {
         onChanged((await dismissEvidenceFlag(apiBase, flag.flag_id)).flag);
       } else if (action === "open_chat") {
@@ -81,9 +83,35 @@ function FlagRow({
       setBusy(false);
     }
   };
+  if (flag.state === "addressing")
+    return (
+      <article
+        className="consolidation-row evidence-flag-row addressing"
+        data-flag-id={flag.flag_id}
+      >
+        <LoaderCircle size={15} className="spin" aria-hidden />
+        <span className="evidence-flag-strip-text">
+          Agent addressing <span className="eyebrow">{KIND_LABELS[flag.kind]}</span>
+        </span>
+        <span className="evidence-flag-strip-title">{title}</span>
+        <button
+          type="button"
+          className="icon-button"
+          data-action="open_chat"
+          aria-label="Open chat"
+          title="Open chat"
+          disabled={busy}
+          onClick={() => void run("open_chat")}
+        >
+          <MessageSquare size={16} />
+        </button>
+      </article>
+    );
+  // An open flag that keeps a chat is back from a failed Address turn.
+  const attemptFailed = flag.state === "open" && Boolean(flag.chat_id);
   return (
     <article
-      className={`consolidation-row evidence-flag-row${failure ? " has-error" : ""}`}
+      className={`consolidation-row evidence-flag-row${failure || attemptFailed ? " has-error" : ""}`}
       data-flag-id={flag.flag_id}
     >
       <div className="proposal-topline">
@@ -95,14 +123,14 @@ function FlagRow({
       <div className="card-actions">
         {actions.map((action) => {
           const mutates = action === "address" || action === "dismiss";
-          if (action === failure?.action)
+          if (action === failure?.action || (action === "address" && attemptFailed))
             return (
               <button
                 key={action}
                 type="button"
                 className="icon-button"
                 aria-label="Retry action"
-                title={failure.message}
+                title={action === failure?.action ? failure.message : "Address again"}
                 disabled={busy || (mutates && writesDisabled)}
                 onClick={() => void run(action)}
               >

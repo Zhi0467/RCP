@@ -154,15 +154,18 @@ on the existing draft path.
 The Inbox uses the consolidation load for an **Evidence to check** section and
 includes its rows in the open total. Each row shows the kind, night, current
 Evidence title, and finding. **Address** starts the backend-authorized node Work
-chat and opens the returned chat in Agents; **Open chat** replaces it while the
-flag is addressing. The row stays until its icon-only **Dismiss** action succeeds.
+chat and keeps the member where they are. While the turn runs the row collapses to
+one strip: a spinner, the kind, the title, and an icon-only **Open chat**. A
+successful turn removes the row. A failed or stopped turn brings the full row back
+with a red edge, an icon-only retry in place of Address, and **Open chat**.
+Otherwise the row stays until its icon-only **Dismiss** action succeeds.
 **Open Evidence** opens node detail. **Open source** opens a URL source in a new
 tab, or a repository alias or absolute path in the existing file preview, and is
 offered only for a URL or a path that resolves to a configured repository file.
 The section and its count appear on every graph target. On a branch, rows read
 their Evidence from the branch's graph, every open flag offers Address because
 main's endpoint decides it, and Open chat switches to main, where the flag's chat
-is bound. Address keeps the member where they are.
+is bound.
 A failed action marks the row with a red edge and replaces that action with one
 icon-only retry. Controls wrap and retain phone-sized targets at 390px.
 

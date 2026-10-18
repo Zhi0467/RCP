@@ -97,8 +97,9 @@ def test_address_admits_one_ordinary_work_turn_and_replays(flagged):
     assert task.dispatch_authority.task_contract == "work_auto"
     assert task.graph_target.branch_id is None
     assert len(launches) == 1
-    assert client.post(url, json={"request_id": "another-click"}).json() == result
-    assert client.get(base).json()["evidence_flags"] == [result["flag"]]
+    # The finished turn closed the flag; only the original request still replays.
+    assert client.get(base).json()["evidence_flags"] == []
+    assert client.post(url, json={"request_id": "another-click"}).status_code == 409
     # A lost response replays to the bound chat even after the Evidence leaves main.
     with store.connection() as connection:
         connection.execute(
@@ -109,6 +110,31 @@ def test_address_admits_one_ordinary_work_turn_and_replays(flagged):
     assert replay.status_code == 200
     assert replay.json()["chat_id"] == result["chat_id"]
     assert len(launches) == 1
+
+
+def test_a_failed_address_turn_reopens_the_flag_for_another(flagged):
+    app, client, store, project, flag = flagged
+    outcomes = iter(["error", "done"])
+
+    async def stream(project_id, kind, request, execution):
+        yield _event_frame(AgentEvent(event=next(outcomes), text="provider failed"))
+
+    app.state.background_tasks.stream = stream
+    base = f"/api/projects/{project}/consolidation"
+    url = f"{base}/evidence-flags/{flag['flag_id']}/address"
+    first = client.post(url, json={"request_id": "first"}).json()
+    wait_for_task(store, first["operation_id"], expect="failed")
+    [reopened] = client.get(base).json()["evidence_flags"]
+    assert (reopened["state"], reopened["chat_id"]) == ("open", first["chat_id"])
+    assert (
+        client.post(url, json={"request_id": "first"}).json()["operation_id"]
+        == first["operation_id"]
+    )
+
+    second = client.post(url, json={"request_id": "second"}).json()
+    assert second["operation_id"] != first["operation_id"]
+    wait_for_task(store, second["operation_id"], expect="succeeded")
+    assert client.get(base).json()["evidence_flags"] == []
 
 
 def test_address_refuses_a_consolidation_notice(flagged):

@@ -303,9 +303,10 @@ def address_evidence_flag(
     try:
         with store.evidence_flag_admission(
             project_id, flag_id, user_id=human.user_id, request_id=body.request_id
-        ) as flag:
-            # Replaying an addressing flag returns its bound chat whatever main now holds.
-            if flag["state"] == "open":
+        ) as (flag, replay):
+            # A replay, or a flag already addressing, returns its bound chat whatever
+            # main now holds; a flag reopened by a failed turn takes a new request.
+            if flag["state"] == "open" and not replay:
                 service = get_graph_service(catalog, project_id, initialize=False, write=True)
                 if not is_current_evidence(service.history.state(), flag["evidence_id"]):
                     raise EvidenceFlagError("flag_evidence_unavailable")

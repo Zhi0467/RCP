@@ -58,7 +58,10 @@ from rcp.providers import ProviderUsage, classify_terminal_error, require_runtim
 from rcp.providers.live_status import AgentStatus
 from rcp.storage.client_requests import record_client_request
 from rcp.storage.digest import append_task_failed
-from rcp.storage.evidence_flags import record_evidence_flag_address
+from rcp.storage.evidence_flags import (
+    record_evidence_flag_address,
+    settle_evidence_flag_address,
+)
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     ACTIVE_AGENT_TASK_STATUSES,
@@ -4259,6 +4262,8 @@ class AgentTaskStoreMixin(StoreMixinBase):
         ).rowcount
         if changed != 1:
             return _AgentTaskTransitionResult("refused", observed_status)
+        if target_status in {"succeeded", "failed", "interrupted", "paused"}:
+            settle_evidence_flag_address(connection, operation_id, target_status)
         return _AgentTaskTransitionResult("applied", observed_status)
 
     @staticmethod
