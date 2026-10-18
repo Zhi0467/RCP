@@ -342,7 +342,11 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
   const renderPost = (item: BulletinPost, replies: readonly BulletinPost[] | null) => {
     const state = bulletinPostState(item);
     const open = openThreads.has(item.post_id);
-    const thread = replies && replies.length > 0 && (
+    // Threads are one level deep: a reply shown alone (parent on an older page) takes none.
+    const canReply = replies !== null && canPost && item.reply_to === null;
+    // The server counts the whole thread; a page may hold only some replies.
+    const replyCount = Math.max(item.reply_count ?? 0, replies?.length ?? 0);
+    const thread = replies && replyCount > 0 && (
       <>
         <button
           type="button"
@@ -350,7 +354,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
           aria-expanded={open}
           onClick={() => toggleThread(item.post_id)}
         >
-          {replies.length} {replies.length === 1 ? "reply" : "replies"}
+          {replyCount} {replyCount === 1 ? "reply" : "replies"}
         </button>
         {open && (
           <div className="bulletin-thread">
@@ -457,9 +461,9 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
           )}
           {thread}
         </div>
-        {!isEditing && ((replies && canPost) || own) && (
+        {!isEditing && (canReply || own) && (
           <div className="bulletin-message-actions">
-            {replies && canPost && (
+            {canReply && (
               <button
                 type="button"
                 className="bulletin-message-action"

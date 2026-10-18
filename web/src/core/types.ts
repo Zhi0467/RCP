@@ -1682,7 +1682,8 @@ export interface BranchMergeProvenance {
   schema_generation: 1;
   merge_id: string;
   branch_id: string;
-  episode_id: string;
+  /** Absent for a human-owned fork's merge. */
+  episode_id: string | null;
   branch_base_head: GraphHeadRef;
   branch_head: GraphHeadRef;
   rebased_main_head: GraphHeadRef;
