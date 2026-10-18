@@ -3,7 +3,8 @@ import test from "node:test";
 
 import { api } from "../src/core/api.ts";
 import {
-  mergeDiffCounts,
+  mergePathMark,
+  branchDiffWord,
   mergeDiffMarks,
   mergeRequestBody,
   previewAnswersDraft,
@@ -22,7 +23,6 @@ function path(id, flags = {}) {
     conflict: false,
     needs_agent: false,
     needs_proposal: false,
-    residue_reason: null,
     ...flags,
   };
 }
@@ -37,21 +37,35 @@ const code = {
   conflict_files: [],
 };
 
-test("an entity carries its most severe path, and counts are per entity", () => {
+test("an entity carries its most severe path without replacing review with needs_agent", () => {
   const paths = [
-    path("a", { needs_proposal: true }),
-    path("a", { conflict: true }),
+    path("a", { needs_proposal: true, needs_agent: true }),
+    path("a", { conflict: true, needs_agent: true }),
     path("b", { delivered: true }),
     path("c"),
+    path("d", { needs_proposal: true, needs_agent: true }),
+    path("a", { entity: "edge", delivered: true }),
   ];
-  assert.equal(mergeDiffMarks(paths).get("node:a"), "conflict");
-  assert.deepEqual(mergeDiffCounts(paths), {
-    changed: 2,
-    delivered: 1,
-    proposals: 0,
-    conflicts: 1,
-    needsAgent: 1,
-  });
+  assert.deepEqual(
+    [...mergeDiffMarks(paths)],
+    [
+      ["node:a", "conflict"],
+      ["node:b", "delivered"],
+      ["node:c", "changed"],
+      ["node:d", "proposal"],
+      ["edge:a", "delivered"],
+    ],
+  );
+  assert.equal(
+    mergePathMark(path("e", { conflict: true, needs_proposal: true, needs_agent: true })),
+    "conflict",
+  );
+  for (const change of ["created", "updated", "removed"]) {
+    assert.equal(branchDiffWord(change, "changed"), change);
+    assert.equal(branchDiffWord(change, undefined), change);
+    assert.equal(branchDiffWord(change, "proposal"), "proposal");
+    assert.equal(branchDiffWord(change, "delivered"), "delivered");
+  }
 });
 
 test("a merge that needs an agent never squashes, and squash never keeps the branch open", () => {
@@ -62,7 +76,11 @@ test("a merge that needs an agent never squashes, and squash never keeps the bra
     removeWorktree: false,
     deleteCodeBranch: true,
   };
-  const agentless = { graph: { ops: 0, residue: [], paths: [] }, code, needs_agent: false };
+  const agentless = {
+    graph: { direct: 0, conflicts: 0, reviews: 0, paths: [] },
+    code,
+    needs_agent: false,
+  };
   assert.deepEqual(mergeRequestBody(agentless, choices, true), {
     history_mode: "squash",
     keep_branch_open: false,
@@ -71,15 +89,20 @@ test("a merge that needs an agent never squashes, and squash never keeps the bra
     delete_code_branch: false,
     target_branch: "main",
   });
-  const agent = { ...agentless, needs_agent: true };
-  const body = mergeRequestBody(agent, choices, true);
-  assert.equal(body.history_mode, "merge");
-  assert.equal(body.keep_branch_open, true);
-  assert.equal(body.archive_graph_branch, false);
+  for (const graph of [
+    { direct: 2, conflicts: 1, reviews: 0, paths: [] },
+    { direct: 2, conflicts: 0, reviews: 1, paths: [] },
+  ]) {
+    const agent = { ...agentless, graph, needs_agent: true };
+    const body = mergeRequestBody(agent, choices, true);
+    assert.equal(body.history_mode, "merge");
+    assert.equal(body.keep_branch_open, true);
+    assert.equal(body.archive_graph_branch, false);
+  }
 });
 
 test("Merge waits for the preview of the target the human typed", () => {
-  const preview = { code, graph: { paths: [] } };
+  const preview = { code, graph: { direct: 0, conflicts: 0, reviews: 0, paths: [] } };
   assert.ok(previewAnswersDraft(preview, null, null, "main"));
   // Typed but not yet previewed, and previewed for an older target.
   assert.ok(!previewAnswersDraft(preview, null, null, "release"));

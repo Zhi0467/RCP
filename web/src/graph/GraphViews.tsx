@@ -23,9 +23,8 @@ const BRANCH_DIFF_WORDS: Record<BranchDiffWord, string> = {
   updated: "Changed",
   removed: "Removed",
   changed: "Changed",
-  delivered: "Already merged",
-  proposal: "Proposal",
-  needs_agent: "Needs agent",
+  delivered: "Delivered",
+  proposal: "Review",
   conflict: "Conflict",
 };
 const BRANCH_DIFF_LEGEND: BranchDiffWord[] = [
@@ -33,8 +32,8 @@ const BRANCH_DIFF_LEGEND: BranchDiffWord[] = [
   "updated",
   "removed",
   "proposal",
-  "needs_agent",
   "conflict",
+  "delivered",
 ];
 import {
   ChevronDown,

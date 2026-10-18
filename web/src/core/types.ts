@@ -1774,11 +1774,11 @@ export interface CleanupEpisodeBody {
   confirm_discard?: boolean;
 }
 
-/** One changed field on a branch, classified by the same builder call Merge makes. */
+/** One changed field on a branch, projected from the merge plan. */
 export interface MergeDiffPath {
   entity: "node" | "edge" | "proposal" | "ambiguity" | "glossary" | "global";
   id: string;
-  field_path: string;
+  field_path: string; // Field name, or "$" for whole-entity presence.
   base: unknown;
   branch: unknown;
   main: unknown;
@@ -1786,12 +1786,11 @@ export interface MergeDiffPath {
   conflict: boolean;
   needs_agent: boolean;
   needs_proposal: boolean;
-  residue_reason: string | null;
 }
 
 export interface MergePreview {
   delivered_baseline: GraphHeadRef | null;
-  graph: { ops: number; residue: { path: string; reason: string }[]; paths: MergeDiffPath[] };
+  graph: { direct: number; conflicts: number; reviews: number; paths: MergeDiffPath[] };
   code: {
     repo_alias: string;
     source_branch: string;
