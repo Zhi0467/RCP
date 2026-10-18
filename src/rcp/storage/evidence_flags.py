@@ -108,7 +108,17 @@ def _flag(connection: sqlite3.Connection, project_id: str, flag_id: str) -> sqli
 def record_evidence_flag_address(
     store: object, connection: sqlite3.Connection, task: AgentTaskRecord
 ) -> None:
-    """Bind the flag in the same transaction that admits its ordinary node turn."""
+    """Bind the flag in the same transaction that admits its ordinary node turn.
+
+    A Resume or Retry of the flag's failed turn takes over the binding, unless the
+    flag was since dismissed or bound to another attempt.
+    """
+    if task.parent_operation_id is not None and task.attempt > 1:
+        connection.execute(
+            "UPDATE evidence_flags SET state='addressing',operation_id=? "
+            "WHERE operation_id=? AND state='open'",
+            (task.operation_id, task.parent_operation_id),
+        )
     admission = _ADMISSION.get()
     if admission is None or admission[0] is not store:
         return

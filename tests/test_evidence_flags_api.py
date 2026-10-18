@@ -140,6 +140,23 @@ def test_a_failed_address_turn_reopens_the_flag_for_another(flagged):
     assert len({first["operation_id"], second["operation_id"], third["operation_id"]}) == 3
 
 
+def test_a_retried_address_turn_carries_the_flag(flagged):
+    app, client, store, project, flag = flagged
+    outcomes = iter(["error", "done"])
+
+    async def stream(project_id, kind, request, execution):
+        yield _event_frame(AgentEvent(event=next(outcomes), text="provider failed"))
+
+    app.state.background_tasks.stream = stream
+    base = f"/api/projects/{project}/consolidation"
+    url = f"{base}/evidence-flags/{flag['flag_id']}/address"
+    first = client.post(url, json={"request_id": "first"}).json()
+    wait_for_task(store, first["operation_id"], expect="failed")
+    retried = client.post(f"/api/projects/{project}/tasks/{first['operation_id']}/retry", json={})
+    wait_for_task(store, retried.json()["operation_id"], expect="succeeded")
+    assert client.get(base).json()["evidence_flags"] == []
+
+
 def test_address_refuses_a_consolidation_notice(flagged):
     app, client, store, project, flag = flagged
     launches = []
