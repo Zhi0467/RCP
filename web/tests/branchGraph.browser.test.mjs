@@ -73,6 +73,32 @@ test("branch graph keeps canvas editing and chat while removed nodes are histori
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/branchGraph.html`,
     );
+    for (const width of [1400, 390]) {
+      await page.setViewportSize({ width, height: 1000 });
+      await page.getByRole("button", { name: "Branch: fork", exact: true }).click();
+      assert.deepEqual(
+        await page
+          .locator(".branch-picker-row")
+          .evaluateAll((rows) => rows.map((row) => row.dataset.branchId)),
+        ["main", "parent", "episode-branch"],
+      );
+      assert.ok(
+        await page
+          .locator('[data-branch-id="episode-branch"]')
+          .evaluate(
+            (row) =>
+              parseFloat(row.style.paddingLeft) >
+              parseFloat(row.previousElementSibling.style.paddingLeft),
+          ),
+      );
+      assert.ok(
+        await page
+          .locator(".branch-picker-popover")
+          .evaluate((el) => el.getBoundingClientRect().right <= innerWidth),
+      );
+      await page.keyboard.press("Escape");
+    }
+    await page.setViewportSize({ width: 1400, height: 1000 });
     await page.getByRole("button", { name: "Layout", exact: true }).click();
     await page.getByRole("button", { name: "Research flow", exact: true }).click();
     await page.keyboard.press("Escape");

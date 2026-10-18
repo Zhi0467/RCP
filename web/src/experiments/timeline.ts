@@ -4,7 +4,11 @@ import type {
   EpisodeTimelineResponse,
   EpisodeTimelineSignal,
   ExperimentLoopIndexEntry,
+  GraphRef,
 } from "../core/types";
+
+import { branchName } from "../core/branchNames.ts";
+import { graphRefParentLabel } from "../graph/graphPickerModel.ts";
 
 export type TimelineWindow = [number, number];
 export const MIN_TIMELINE_WINDOW = 10 * 60 * 1000;
@@ -22,6 +26,8 @@ export interface TimelineRow {
   label: string;
   subtitle: string | null;
   actors: EpisodeTimelineActor[];
+  targetLabel: string | null;
+  archived: boolean;
 }
 
 export function timelineActorLabel(
@@ -37,6 +43,26 @@ export function timelineActorLabel(
       actor.row_key.replace(/^node:/, "")
     );
   return actor.label;
+}
+
+export function timelineActorTarget(
+  actor: EpisodeTimelineActor,
+  refs: readonly GraphRef[],
+): string | null {
+  const target = actor.graph_target;
+  if (!target) return null;
+  const ref = refs.find(
+    (ref) =>
+      ref.kind === target.kind &&
+      ref.branch_id === (target.kind === "branch" ? target.branch_id : null),
+  );
+  return [
+    branchName(refs, target),
+    ref && graphRefParentLabel(ref, refs),
+    ref?.archived && "archived",
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 export function timelineOutcome(actor: EpisodeTimelineActor): string {
@@ -57,6 +83,7 @@ export const messageDisposition = {
 export function timelineRows(
   data: EpisodeTimelineResponse,
   children: ExperimentLoopIndexEntry[] = [],
+  refs: readonly GraphRef[] = [],
 ): TimelineRow[] {
   const rows = new Map<string, TimelineRow>();
   for (const actor of [...data.actors].sort(
@@ -78,6 +105,14 @@ export function timelineRows(
             ? (actor.links.control_node_id ?? actor.subtitle)
             : actor.subtitle,
         actors: [actor],
+        targetLabel: timelineActorTarget(actor, refs),
+        archived: refs.some(
+          (ref) =>
+            ref.kind === "branch" &&
+            actor.graph_target?.kind === "branch" &&
+            ref.branch_id === actor.graph_target.branch_id &&
+            ref.archived,
+        ),
       });
   }
   // A graph watcher names a node that may have no actor; its signals get a watcher row.
@@ -86,9 +121,11 @@ export function timelineRows(
       rows.set(signal.source_row_key, {
         rowKey: signal.source_row_key,
         kind: "watcher",
-        label: signal.source_row_key.replace(/^node:/, ""),
+        label: signal.source_row_key.replace(/^(?:branch:[^:]+:)?node:/, ""),
         subtitle: null,
         actors: [],
+        targetLabel: null,
+        archived: false,
       });
   return [...rows.values()];
 }
@@ -222,7 +259,7 @@ export function timelineWakeRows(
     return (
       source?.links.control_node_id ??
       source?.subtitle ??
-      signal.source_row_key.replace(/^node:/, "")
+      signal.source_row_key.replace(/^(?:branch:[^:]+:)?node:/, "")
     );
   };
   const causes: Record<string, string> = {

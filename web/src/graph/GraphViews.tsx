@@ -1,4 +1,5 @@
 import { useEvidenceFlags } from "./EvidenceFlagContext";
+import { branchName } from "../core/branchNames";
 import { MAIN_GRAPH } from "../core/graphTarget";
 import { ExperimentLoopMetadata } from "../experiments/ExperimentLoopMetadata";
 import { ComputeRouteNotice } from "../experiments/ComputeRouteNotice";
@@ -235,6 +236,7 @@ export function ScientificView({
 }
 
 interface DagProps extends Props, GraphEditingProps {
+  graphRefs?: GraphRef[] | null;
   graphTarget?: GraphTargetRef;
   branchChanges?: GraphBranchChanges | null;
   /** The branch's changed fields as the merge builder classifies them, when loaded. */
@@ -262,6 +264,7 @@ export function DagView({
   projectId,
   graphTarget,
   branchChanges,
+  graphRefs,
   mergePaths,
   onInspectTask,
   viewportRef,
@@ -716,6 +719,12 @@ export function DagView({
       />
       {branchChanges && (
         <div className="branch-graph-controls">
+          <span className="branch-graph-origin">
+            {branchName(graphRefs, branchChanges.base_head.target)}@
+            {branchChanges.base_head.revision}
+            {" → "}
+            {branchName(graphRefs, branchChanges.head.target)}@{branchChanges.head.revision}
+          </span>
           <div className="segmented" role="group" aria-label="Branch graph lens">
             <button
               type="button"

@@ -14,7 +14,13 @@ import { ApiError, renameGraphBranch, setGraphBranchArchived } from "../core/api
 import { branchName, branchNameProblem } from "../core/branchNames";
 import { sameGraphTarget } from "../core/graphTarget";
 import type { GraphRef, GraphTargetRef } from "../core/types";
-import { graphPickerOptions, graphRefTarget, refNeedsYou } from "./graphPickerModel";
+import {
+  graphPickerOptions,
+  graphRefDepth,
+  graphRefParentLabel,
+  graphRefTarget,
+  refNeedsYou,
+} from "./graphPickerModel";
 import "./GraphPicker.css";
 
 interface GraphPickerProps {
@@ -216,6 +222,7 @@ export function GraphPicker({
                     className="branch-picker-row"
                     key={ref.branch_id ?? "main"}
                     data-branch-id={ref.branch_id ?? "main"}
+                    style={{ paddingLeft: Math.min(graphRefDepth(ref, options), 4) * 12 }}
                   >
                     <span className="branch-picker-leading">
                       {current ? (
@@ -282,6 +289,12 @@ export function GraphPicker({
                           }}
                         >
                           {ref.name}
+                          {graphRefParentLabel(ref, refs ?? []) && (
+                            <span className="branch-picker-parent">
+                              {" "}
+                              · {graphRefParentLabel(ref, refs ?? [])}
+                            </span>
+                          )}
                         </button>
                         {refNeedsYou(ref) && (
                           <span className="branch-picker-attention" aria-label="Needs you" />

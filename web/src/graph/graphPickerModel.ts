@@ -1,3 +1,4 @@
+import { branchName } from "../core/branchNames.ts";
 import { sameGraphTarget } from "../core/graphTarget.ts";
 import type { AppView, GraphRef, GraphTargetRef } from "../core/types";
 
@@ -10,12 +11,12 @@ export function refNeedsYou(ref: GraphRef): boolean {
   return ref.kind === "branch" && ref.needs_you && !ref.archived;
 }
 
-/** Main first, then running branches; newest first within each group. */
+/** Parent before descendants; running then newest among siblings. */
 export function graphPickerOptions(
   refs: readonly GraphRef[],
   activeRef: GraphTargetRef,
 ): GraphRef[] {
-  return refs
+  const visible = refs
     .filter((ref) => !ref.archived || sameGraphTarget(graphRefTarget(ref), activeRef))
     .sort((a, b) => {
       if (a.kind === "main") return b.kind === "main" ? 0 : -1;
@@ -24,6 +25,52 @@ export function graphPickerOptions(
         Number(b.running) - Number(a.running) || Date.parse(b.created_at) - Date.parse(a.created_at)
       );
     });
+  const ordered: GraphRef[] = [];
+  const visited = new Set<GraphRef>();
+  const append = (ref: GraphRef) => {
+    if (visited.has(ref)) return;
+    visited.add(ref);
+    ordered.push(ref);
+    for (const child of visible) {
+      if (
+        child.kind === "branch" &&
+        child.parent_head?.target.kind === "branch" &&
+        child.parent_head.target.branch_id === ref.branch_id
+      )
+        append(child);
+    }
+  };
+  visible
+    .filter((ref) => {
+      const parent = ref.kind === "branch" ? ref.parent_head?.target : null;
+      return (
+        parent?.kind !== "branch" || !visible.some((item) => item.branch_id === parent.branch_id)
+      );
+    })
+    .forEach(append);
+  visible.forEach(append);
+  return ordered;
+}
+
+export function graphRefParentLabel(ref: GraphRef, refs: readonly GraphRef[]): string | null {
+  if (ref.kind !== "branch") return null;
+  const head = ref.parent_head ?? ref.base_head;
+  return head ? `from ${branchName(refs, head.target)}@${head.revision}` : null;
+}
+
+export function graphRefDepth(ref: GraphRef, refs: readonly GraphRef[]): number {
+  const seen = new Set<string>();
+  let depth = 0;
+  while (ref.kind === "branch" && ref.parent_head?.target.kind === "branch") {
+    const id = ref.parent_head.target.branch_id;
+    if (seen.has(id)) break;
+    seen.add(id);
+    const parent = refs.find((item) => item.branch_id === id);
+    if (!parent) break;
+    depth++;
+    ref = parent;
+  }
+  return depth;
 }
 
 export interface GraphPickerSelection {

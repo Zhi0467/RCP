@@ -1425,3 +1425,44 @@ button.relation-map-node:hover {
 .evidence-flag-action {
   color: var(--red);
 }
+
+.history-revision-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.history-revision-menu {
+  display: none;
+  position: relative;
+  flex-shrink: 0;
+}
+.history-revision-menu > summary {
+  list-style: none;
+}
+.history-revision-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.history-revision-menu > div {
+  position: absolute;
+  right: 0;
+  z-index: 2;
+  white-space: nowrap;
+  background: var(--surface);
+}
+.run-events li.history-fork-failed {
+  border-left-color: var(--red);
+}
+@media (max-width: 560px) {
+  .history-fork-action {
+    display: none;
+  }
+  .history-revision-menu {
+    display: block;
+  }
+  .history-revision-heading .icon-button,
+  .history-revision-menu button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}

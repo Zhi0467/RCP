@@ -15,9 +15,13 @@ const { conversationHref } = await server.ssrLoadModule("/src/chat/chatWorkspace
 const { parseProjectHash, projectHashAfterViewChange } = await server.ssrLoadModule(
   "/src/experiments/experimentBoardModel.ts",
 );
-const { graphPickerOptions, refNeedsYou, selectionAfterGraphSwitch } = await server.ssrLoadModule(
-  "/src/graph/graphPickerModel.ts",
-);
+const {
+  graphPickerOptions,
+  graphRefParentLabel,
+  graphRefDepth,
+  refNeedsYou,
+  selectionAfterGraphSwitch,
+} = await server.ssrLoadModule("/src/graph/graphPickerModel.ts");
 const main = { kind: "main" };
 const branch = { kind: "branch", branch_id: "branch /+" };
 
@@ -130,4 +134,39 @@ test("switch preserves view and only destination-owned selections", () => {
     chatId: null,
     episodeId: null,
   });
+});
+
+test("forks nest under their visible parent and retain exact provenance through archive filtering", () => {
+  const make = (id, parent, extra = {}) => ({
+    kind: "branch",
+    branch_id: id,
+    name: id,
+    created_at: "2026-01-01T00:00:00Z",
+    archived: false,
+    running: false,
+    parent_head: { target: parent, revision: 7 },
+    ...extra,
+  });
+  const root = make("root", main);
+  const fork = make("fork", { kind: "branch", branch_id: "root" }, { running: true });
+  const nested = make("nested", { kind: "branch", branch_id: "fork" });
+  const hidden = make("hidden", main, { archived: true });
+  const refs = [nested, hidden, fork, root];
+  assert.deepEqual(
+    graphPickerOptions(refs, main).map((r) => r.branch_id),
+    ["root", "fork", "nested"],
+  );
+  assert.equal(graphRefDepth(nested, refs), 2);
+  assert.equal(graphRefParentLabel(fork, refs), "from root@7");
+  assert.deepEqual(
+    graphPickerOptions([nested, { ...fork, archived: true }, root], main).map((r) => r.branch_id),
+    ["nested", "root"],
+  );
+  assert.equal(
+    graphRefParentLabel(
+      { ...root, parent_head: undefined, base_head: { target: main, revision: 2 } },
+      refs,
+    ),
+    "from main@2",
+  );
 });

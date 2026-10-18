@@ -14,6 +14,7 @@ import {
   timelineWakeRows,
   timelineSummary,
   timelineActorLabel,
+  timelineActorTarget,
   timelineOutcome,
   messageDisposition as disposition,
 } from "./timeline";
@@ -24,6 +25,7 @@ import type {
   EpisodeTimelineSpan,
   ExperimentLoopIndexEntry,
   GraphTargetRef,
+  GraphRef,
 } from "../core/types";
 
 const groups = {
@@ -59,6 +61,7 @@ export function EpisodeTimeline({
   browserTasks = [],
   projectId,
   graphTarget,
+  graphRefs = [],
   artifacts = [],
   apiBase,
   episodeId,
@@ -73,6 +76,7 @@ export function EpisodeTimeline({
   apiBase: string;
   episodeId: string;
   graphTarget?: GraphTargetRef;
+  graphRefs?: readonly GraphRef[];
   onInspectTask: (id: string) => void;
   childExperiments?: ExperimentLoopIndexEntry[];
   onOpenExperimentEntry?: (entry: ExperimentLoopIndexEntry) => void;
@@ -81,7 +85,10 @@ export function EpisodeTimeline({
   const host = useRef<HTMLDivElement>(null),
     svg = useRef<SVGSVGElement>(null),
     pop = useRef<HTMLDivElement>(null);
-  const rows = useMemo(() => timelineRows(data, childExperiments), [data, childExperiments]);
+  const rows = useMemo(
+    () => timelineRows(data, childExperiments, graphRefs),
+    [data, childExperiments, graphRefs],
+  );
   const bounds = useMemo(() => timelineBounds(data), [data]);
   const [window, setWindow] = useState<[number, number] | null>(null);
   const view = window ? clampWindow(window, bounds) : bounds;
@@ -818,15 +825,26 @@ export function EpisodeTimeline({
                         rx={5}
                         className="roster-label-bg"
                       />
+                      {r.archived && (
+                        <g transform={`translate(${left - 29},${r.y - 10})`} aria-label="Archived">
+                          <rect width={12} height={3} fill="none" stroke="currentColor" />
+                          <path d="M1 3v9h10V3M4 6h4" fill="none" stroke="currentColor" />
+                          <title>Archived</title>
+                        </g>
+                      )}
                       <text x={8} y={r.y - 2}>
                         {r.label.length > 25 ? r.label.slice(0, 24) + "…" : r.label}
                       </text>
-                      {r.subtitle && (
+                      {(r.targetLabel || r.subtitle) && (
                         <text x={8} y={r.y + 14} className="roster-tick">
-                          {r.subtitle.length > 27 ? r.subtitle.slice(0, 26) + "…" : r.subtitle}
+                          {(r.targetLabel || r.subtitle)!.length > 27
+                            ? (r.targetLabel || r.subtitle)!.slice(0, 26) + "…"
+                            : r.targetLabel || r.subtitle}
                         </text>
                       )}
-                      <title>{`${r.label}${r.subtitle ? ` · ${r.subtitle}` : ""}`}</title>
+                      <title>
+                        {[r.label, r.subtitle, r.targetLabel].filter(Boolean).join(" · ")}
+                      </title>
                     </>,
                   )}
                 </g>
@@ -903,6 +921,12 @@ export function EpisodeTimeline({
                           <dd>{selectedActor.subtitle}</dd>
                         </>
                       )}
+                      {selectedActor.graph_target && (
+                        <>
+                          <dt>Graph</dt>
+                          <dd>{timelineActorTarget(selectedActor, graphRefs)}</dd>
+                        </>
+                      )}
                       <dt>Outcome</dt>
                       <dd>{timelineOutcome(selectedActor)}</dd>
                       {selectedActor.started_at && (
@@ -945,7 +969,7 @@ export function EpisodeTimeline({
                           {projectId && selectedActor.kind === "worker" && (
                             <RunArtifacts
                               projectId={projectId}
-                              graphTarget={graphTarget}
+                              graphTarget={selectedActor.graph_target ?? graphTarget}
                               artifacts={artifactsForOperations(artifacts, [s.task_id])}
                             />
                           )}
@@ -1027,7 +1051,7 @@ export function EpisodeTimeline({
                     {projectId && selectedSpan.kind !== "report" && (
                       <RunArtifacts
                         projectId={projectId}
-                        graphTarget={graphTarget}
+                        graphTarget={actor(selectedSpan.actor_id)?.graph_target ?? graphTarget}
                         artifacts={artifactsForOperations(artifacts, [selectedSpan.task_id])}
                       />
                     )}
