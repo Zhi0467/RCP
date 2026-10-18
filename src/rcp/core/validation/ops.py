@@ -187,6 +187,7 @@ def validate_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> None:
                     "gated-transition",
                     f"Update to {node_id} requires a Proposal and human approval.",
                     ctx.revision,
+                    related_node_ids=[node_id],
                 )
         if (
             ctx.mode == "admission"

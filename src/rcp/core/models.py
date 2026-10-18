@@ -1257,8 +1257,8 @@ class GatedCard(BaseModel):
     decision_needed: Annotated[str, GraphField("content")] = ""
 
 
-# The dependency rule a newly filed Proposal is judged under; see Proposal.dependency_rule.
-CURRENT_PROPOSAL_DEPENDENCY_RULE: Literal[3] = 3
+# Ordinary new filings use rule 2; materialize selects rule 3 for new merge groups.
+CURRENT_PROPOSAL_DEPENDENCY_RULE: Literal[2] = 2
 
 
 class Proposal(BaseModel):

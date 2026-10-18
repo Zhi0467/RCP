@@ -295,9 +295,13 @@ filing stamps (dependencies, rule version, filer, revisions) and resolution
 fields, which filing resets. The agent Patch schema strips both sets, filing
 writes both, and merge identity excludes the filing stamps plus resolution
 revisions; the `history/delta.py` sets also exclude derived guidance-validity
-node fields. A pending source Proposal is filed again on main with current
-filing stamps while retaining its identity and authored content. Replay
-preserves the recorded dependency rule; that rule still controls staleness.
+node fields. A pending source Proposal is a new filing on the destination with
+current filing stamps, including its dependency rule, while retaining its identity
+and authored content. Ordinary destination filings use rule 2. Only connected
+multi-intent merge groups and atomic protected-edge replacements use rule 3,
+whose dependency and approval semantics are defined in
+`authority-and-proposals.md`. Replay preserves the recorded dependency rule;
+that rule still controls staleness and approval standing.
 Engine-written status and standing remain semantic. **Why:** v0.4.23 versioned
 the dependency rule, and every branch holding an older pending Proposal failed
 its merge self-check because the lists of filing fields had drifted apart. The

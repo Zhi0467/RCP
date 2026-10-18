@@ -57,10 +57,32 @@ DispatchPatchKind = Literal["seed", "refresh", "work", "experiment_loop"]
 ProjectMembershipCheck = Callable[[str, str], bool]
 
 
-class AgentAuthorizerDeparted(ValueError):
+class AuthorityRefusal(ValueError):
+    """An authority refusal retaining the gate's complete structured diagnostics."""
+
+    def __init__(self, diagnostics: Iterable[ValidationMessage]) -> None:
+        self.diagnostics = tuple(diagnostics)
+        super().__init__(
+            "; ".join(item.message for item in self.diagnostics if item.level == "reject")
+        )
+
+
+class AgentAuthorizerDeparted(AuthorityRefusal):
     """The live authorizer no longer holds project membership."""
 
     code = "agent_authorizer_departed"
+
+    def __init__(self, message: str) -> None:
+        super().__init__((ValidationMessage(level="reject", code=self.code, message=message),))
+
+
+class AgentTaskAuthorityRefused(AuthorityRefusal):
+    """The live agent task does not authorize this candidate's attribution or scope."""
+
+    code = "agent-task-authority-refused"
+
+    def __init__(self, message: str) -> None:
+        super().__init__((ValidationMessage(level="reject", code=self.code, message=message),))
 
 
 class AgentDispatchScope(BaseModel):
@@ -285,12 +307,12 @@ def require_apply(
 
     dispatch = authority.dispatch_authority
     if dispatch is None:
-        raise ValueError(
+        raise AgentTaskAuthorityRefused(
             f"Authority refused action 'apply': agent task {authority.operation_id!r} has no "
             "dispatch authority binding."
         )
     if authority.authorized_by is None:
-        raise ValueError(
+        raise AgentTaskAuthorityRefused(
             f"Authority refused action 'apply': agent task {authority.operation_id!r} has no "
             "authorizer snapshot."
         )
@@ -307,24 +329,27 @@ def require_apply(
         and dispatch.task_contract in ORCHESTRATOR_AGENT_TASK_CONTRACTS
     )
     if not compatible:
-        raise ValueError(
+        raise AgentTaskAuthorityRefused(
             "Authority refused action 'apply': "
             f"task contract {dispatch.task_contract!r} exposes no graph Patch channel."
         )
     if patch.profile is not None and patch.profile != dispatch.profile:
-        raise ValueError(
+        raise AgentTaskAuthorityRefused(
             "Authority refused action 'apply': Patch profile does not match the dispatch binding."
         )
     if patch.agent_action is not None and dispatch.profile != "orchestrator":
-        raise ValueError(
+        raise AgentTaskAuthorityRefused(
             "Authority refused action 'apply': only the orchestrator dispatch binding may carry "
             "an agent authority action."
         )
-    _require_scope_shape(
-        dispatch, action="apply", member_merge_source=authority.member_merge_source
-    )
+    try:
+        _require_scope_shape(
+            dispatch, action="apply", member_merge_source=authority.member_merge_source
+        )
+    except ValueError as exc:
+        raise AgentTaskAuthorityRefused(str(exc)) from exc
     if dispatch.task_contract not in APPLY_CAPABLE_TASK_CONTRACTS:
-        raise ValueError(
+        raise AgentTaskAuthorityRefused(
             "Authority refused action 'apply': "
             f"task contract {dispatch.task_contract!r} exposes no graph Patch channel."
         )
@@ -336,22 +361,22 @@ def require_apply(
         dispatch.task_contract == "orchestrate" and scope.patch_kind == "work"
     )
     if not compatible_scope:
-        raise ValueError(
+        raise AgentTaskAuthorityRefused(
             "Authority refused action 'apply': task contract and Patch scope are incompatible."
         )
     if patch.kind != scope.patch_kind:
-        raise ValueError(
+        raise AgentTaskAuthorityRefused(
             "Authority refused action 'apply': Patch kind does not match the dispatch scope."
         )
     if sorted(set(patch.run_truth_scope)) != scope.run_truth_scope:
-        raise ValueError(
+        raise AgentTaskAuthorityRefused(
             "Authority refused action 'apply': Patch run_truth_scope does not match the "
             "dispatch scope."
         )
     if patch.kind == "experiment_loop" and (
         patch.experiment_control_node_id != scope.control_node_id
     ):
-        raise ValueError(
+        raise AgentTaskAuthorityRefused(
             "Authority refused action 'apply': Experiment control node does not match the "
             "dispatch scope."
         )
@@ -1059,27 +1084,33 @@ class WriteAuthority:
             )
 
         if authorized_by is not None:
-            raise ValueError("explicit authorized_by is only valid for human approval patches")
+            raise AgentTaskAuthorityRefused(
+                "explicit authorized_by is only valid for human approval patches"
+            )
         operation_id = patch.source_operation_id
         if not operation_id or not operation_id.strip():
-            raise ValueError("agent patches require a non-empty direct source_operation_id")
+            raise AgentTaskAuthorityRefused(
+                "agent patches require a non-empty direct source_operation_id"
+            )
         if (
             project_id is None
             or self.agent_authority_resolver is None
             or self.project_membership_check is None
         ):
-            raise ValueError(
+            raise AgentTaskAuthorityRefused(
                 "agent attribution requires a canonical project-scoped agent_authority_resolver "
                 "and project_membership_check"
             )
         try:
             resolved = self.agent_authority_resolver(project_id, operation_id)
         except KeyError as exc:
-            raise ValueError(f"unknown agent task {operation_id!r}") from exc
+            raise AgentTaskAuthorityRefused(f"unknown agent task {operation_id!r}") from exc
         if resolved.operation_id != operation_id or resolved.project_id != project_id:
-            raise ValueError("agent authority resolver returned another task or project")
+            raise AgentTaskAuthorityRefused(
+                "agent authority resolver returned another task or project"
+            )
         if resolved.apply_target != apply_target:
-            raise ValueError(
+            raise AgentTaskAuthorityRefused(
                 f"agent task {operation_id!r} is authorized to Apply to "
                 f"{resolved.apply_target.key}, not {apply_target.key}"
             )
@@ -1089,19 +1120,23 @@ class WriteAuthority:
             and patch.kind == "experiment_loop"
             and resolved.episode_id is None
         ):
-            raise ValueError("Experiment-loop patches require canonical episode attribution")
+            raise AgentTaskAuthorityRefused(
+                "Experiment-loop patches require canonical episode attribution"
+            )
         if (
             dispatch.profile == "orchestrator"
             and resolved.episode_id is None
             and resolved.member_merge_source is None
         ):
-            raise ValueError("orchestrator agent tasks require a canonical episode_id")
+            raise AgentTaskAuthorityRefused(
+                "orchestrator agent tasks require a canonical episode_id"
+            )
         assert resolved.authorized_by is not None
         authorizer = self._canonical_authorizer(resolved.authorized_by)
         canonical = (authorizer, dispatch.profile, operation_id, resolved.episode_id)
         supplied = (patch.authorized_by, patch.profile, patch.task_id, patch.episode_id)
         if any(value is not None for value in supplied) and supplied != canonical:
-            raise ValueError(
+            raise AgentTaskAuthorityRefused(
                 "agent patch attribution does not match the canonical task attribution"
             )
         return patch.model_copy(
@@ -1259,9 +1294,7 @@ def capture_change_authority(
     )
     validate_authorship(admitted, report)
     if report.rejected:
-        raise ValueError(
-            "; ".join(item.message for item in report.messages if item.level == "reject")
-        )
+        raise AuthorityRefusal(report.messages)
     return CapturedChangeAuthority(
         project_id=project_id,
         apply_target=apply_target,
@@ -1303,6 +1336,7 @@ def classify_graph_changes(
     from rcp.core.models import GatedCard, Proposal
     from rcp.core.validation import validate_patch
     from rcp.core.validation.ops import REVIEWABLE_OPERATION_REFUSALS
+    from rcp.core.validation.proposals import PROPOSAL_REPLAY_RULE_ID
 
     groups = operation_groups if operation_groups is not None else (tuple(range(len(patch.ops))),)
     if operation_groups is not None and any(not group for group in groups):
@@ -1336,12 +1370,14 @@ def classify_graph_changes(
                 authorized_by=authorized_by,
                 apply_target=apply_target,
             )
+    except AuthorityRefusal as exc:
+        return tuple(
+            ChangeClassification(group, "refused", diagnostics=exc.diagnostics) for group in groups
+        )
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
         diagnostic = ValidationMessage(
             level="reject",
-            code=exc.code
-            if isinstance(exc, AgentAuthorizerDeparted)
-            else "write-authority-refused",
+            code="write-authority-refused",
             message=str(exc),
             patch_revision=patch.revision or None,
         )
@@ -1390,6 +1426,7 @@ def classify_graph_changes(
                 continue
             reviewable = all(
                 item.code in REVIEWABLE_OPERATION_REFUSALS
+                and item.rule_id != PROPOSAL_REPLAY_RULE_ID
                 for item in report.messages
                 if item.level == "reject"
             )

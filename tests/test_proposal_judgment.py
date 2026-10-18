@@ -740,3 +740,108 @@ def test_connected_removal_review_has_current_incident_snapshot(
     assert not report.rejected, report.messages
     filed = apply_valid_patch(state, patch)
     assert not proposal_is_stale(filed, filed.proposals["prop/merge-group"])
+
+
+def test_rule_two_approval_preserves_historical_standing(
+    manifest: Manifest,
+    tmp_path,
+) -> None:
+    from rcp.core.operations import CreateProposalsOperation, SetStandingOperation
+    from rcp.core.validation.proposals import proposal_approval_operations
+
+    service = _service(manifest, tmp_path)
+    state = service.history.materialize().state
+    content = {
+        "op": "update_nodes",
+        "intent": "content_change",
+        "nodes": [{"id": HYPOTHESIS_ID, "changes": {"statement": "Updated claim."}}],
+    }
+    patch = _merge_review_patch(state, content, deepcopy(INTENT_OPERATIONS["status_change"]))
+    create = patch.ops[0]
+    assert isinstance(create, CreateProposalsOperation)
+    source = create.proposals[0].model_copy(
+        update={
+            "dependency_rule": 2,
+            "raised_rev": state.revision,
+            "related_node_ids": [HYPOTHESIS_ID, STATUS_EVIDENCE_ID],
+        }
+    )
+    # Old multi-intent reviews accept every recorded related node, not merely
+    # the written subject. The shared constructor must retain that exact rule.
+    accepted = [
+        operation.node_id
+        for operation in proposal_approval_operations(state, source)
+        if isinstance(operation, SetStandingOperation)
+    ]
+    assert accepted == [HYPOTHESIS_ID, STATUS_EVIDENCE_ID]
+
+
+@pytest.mark.parametrize("recorded_rule", [1, 2, 3])
+@pytest.mark.parametrize("grouped", [False, True])
+def test_carried_proposal_receives_destination_filing_rule(
+    manifest: Manifest, tmp_path, recorded_rule: int, grouped: bool
+) -> None:
+    from rcp.core.materialize import prepare_patch_bookkeeping
+    from rcp.core.operations import CreateProposalsOperation
+
+    state = _service(manifest, tmp_path).history.materialize().state
+    operations = [
+        {
+            "op": "update_nodes",
+            "intent": "content_change",
+            "nodes": [{"id": HYPOTHESIS_ID, "changes": {"statement": "Updated claim."}}],
+        }
+    ]
+    if grouped:
+        operations.append(deepcopy(INTENT_OPERATIONS["status_change"]))
+    raw = _merge_review_patch(state, *operations).model_dump(mode="json")
+    raw["ops"][0]["proposals"][0].update(dependency_rule=recorded_rule, base_rev=1, raised_rev=1)
+    carried = Patch.model_validate(raw)
+    before = carried.model_dump_json()
+
+    filed = prepare_patch_bookkeeping(state, carried)
+
+    assert isinstance(filed.ops[0], CreateProposalsOperation)
+    proposal = filed.ops[0].proposals[0]
+    assert proposal.dependency_rule == (3 if grouped else 2)
+    assert proposal.base_rev == state.revision
+    assert proposal.raised_rev == 0
+    assert proposal.id == "prop/merge-group"
+    assert carried.model_dump_json() == before
+
+
+@pytest.mark.parametrize("invalid_changes", [{"statement": 7}, {"predictions": 7}])
+def test_invalid_review_footprints_return_structured_rejection_without_mutation(
+    manifest: Manifest,
+    tmp_path,
+    invalid_changes,
+) -> None:
+    from rcp.core.materialize import prepare_patch_bookkeeping
+    from rcp.core.operations import CreateProposalsOperation
+    from rcp.core.validation import ValidationContext, validate_patch
+    from rcp.core.validation.proposals import (
+        ProposalEffectRejected,
+        proposal_dependencies_and_effects,
+    )
+
+    state = _service(manifest, tmp_path).history.materialize().state
+    patch = _merge_review_patch(
+        state,
+        {
+            "op": "update_nodes",
+            "intent": "content_change",
+            "nodes": [{"id": HYPOTHESIS_ID, "changes": invalid_changes}],
+        },
+        deepcopy(INTENT_OPERATIONS["status_change"]),
+    )
+    patch = prepare_patch_bookkeeping(state, patch)
+    create = patch.ops[0]
+    assert isinstance(create, CreateProposalsOperation)
+    before = state.model_dump_json()
+    with pytest.raises(ProposalEffectRejected) as rejected:
+        proposal_dependencies_and_effects(state, create.proposals[0])
+    assert rejected.value.diagnostics
+    assert all(item.level == "reject" for item in rejected.value.diagnostics)
+    report = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"]))
+    assert report.rejected
+    assert state.model_dump_json() == before
