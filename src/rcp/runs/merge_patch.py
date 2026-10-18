@@ -1,0 +1,815 @@
+"""Deterministic merge construction and the shared, non-publishing preparation path."""
+
+from __future__ import annotations
+
+import json
+from collections import defaultdict
+from collections.abc import Iterable
+from copy import deepcopy
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, NoReturn
+
+from pydantic import BaseModel, TypeAdapter, ValidationError
+
+from rcp.agents.schema import agent_output_schema
+from rcp.core.authority import AgentAuthorizerDeparted, classify_graph_changes, derived_agent_action
+from rcp.core.materialize import apply_valid_patch, prepare_patch_bookkeeping
+from rcp.core.models import (
+    CURRENT_PROPOSAL_DEPENDENCY_RULE,
+    GatedCard,
+    GraphState,
+    Patch,
+    Proposal,
+    ValidationMessage,
+    graph_field,
+    graph_fields,
+)
+from rcp.core.operations import (
+    GraphOperation,
+    NewEdge,
+    ProposalOperation,
+    ProposalStatusChangeOperation,
+)
+from rcp.core.project_types import project_type_of
+from rcp.core.transition_models import TransitionTrace
+from rcp.core.transitions import (
+    TRANSITION_RULESET_TAG,
+    PreparedTransition,
+    project_transition_projection,
+    transition_trigger_manifest,
+)
+from rcp.core.validation import ValidationContext
+from rcp.core.validation.proposals import proposal_dependencies_and_effects, proposal_is_stale
+from rcp.history import PatchRejected, RevisionConflict
+from rcp.runs.merge_contract import (
+    ConflictAnswer,
+    FieldAnswer,
+    FieldConflict,
+    IncidentEdgeConflict,
+    MergeAnswers,
+    MergeAnswersRejected,
+    MergeChange,
+    MergedAnswer,
+    MergeDiagnostic,
+    MergeHiddenClash,
+    MergePlan,
+    MergePreparationContract,
+    MergeRefused,
+    MergeValue,
+    MissingValue,
+    NodeGroupConflict,
+    NodeGroupPromotion,
+    PresentValue,
+    ReviewGroup,
+    merge_contract_digest,
+)
+
+if TYPE_CHECKING:
+    from rcp.history import HistoryManager
+
+Coordinate = tuple[str, str | None, str | None]
+_OPERATION = TypeAdapter(GraphOperation)
+
+
+@dataclass
+class _Effect:
+    operations: list[GraphOperation]
+    coordinates: set[Coordinate]
+
+
+def _diagnostic(code: str, message: str, *nodes: str) -> MergeDiagnostic:
+    return MergeDiagnostic(code=code, message=message, related_node_ids=tuple(nodes))
+
+
+def _refuse(code: str, message: str, *nodes: str) -> NoReturn:
+    raise MergeRefused((_diagnostic(code, message, *nodes),))
+
+
+def _answer_error(conflict_id: str, message: str) -> NoReturn:
+    raise MergeAnswersRejected((_diagnostic("invalid-merge-answer", f"{conflict_id}: {message}"),))
+
+
+def _coordinate(change: MergeChange | FieldConflict) -> Coordinate:
+    return change.collection, change.entity_id, change.field_name
+
+
+def _patch(plan: MergePlan, operations: Iterable[GraphOperation]) -> Patch:
+    patch = plan.captured_authority.patch_template.model_copy(update={"ops": list(operations)})
+    return patch.model_copy(
+        update={"agent_action": derived_agent_action(plan.destination_graph, patch)}
+    )
+
+
+def _check_plan(plan: MergePlan) -> None:
+    # Frozen models can still contain mutable graph values; verify the whole binding.
+    if merge_contract_digest(plan.model_dump(mode="json", exclude={"plan_id"})) != plan.plan_id:
+        _refuse("invalid-merge-plan", "Merge plan content no longer matches its identity")
+
+
+def _field_value(plan: MergePlan, conflict: FieldConflict, answer: ConflictAnswer) -> MergeValue:
+    if answer.kind not in conflict.allowed_answer_kinds:
+        _answer_error(conflict.conflict_id, f"answer kind {answer.kind!r} is not allowed")
+    value = (
+        PresentValue(value=answer.value)
+        if isinstance(answer, MergedAnswer)
+        else getattr(conflict, answer.kind)
+    )
+    if isinstance(value, MissingValue):
+        _answer_error(conflict.conflict_id, "a model field cannot be absent")
+    owner: BaseModel | None = plan.destination_graph
+    if conflict.entity_id is not None:
+        owner = next(
+            (
+                entity
+                for graph in (plan.destination_graph, plan.source_graph, plan.base_graph)
+                if (entity := getattr(graph, conflict.collection).get(conflict.entity_id))
+                is not None
+            ),
+            None,
+        )
+        if owner is None:
+            _answer_error(conflict.conflict_id, "field owner is absent from every snapshot")
+    elif conflict.collection == "ontology":
+        owner = plan.destination_graph.ontology
+    field = type(owner).model_fields.get(conflict.field_name)
+    if field is None or graph_field(field).role != "content":
+        _answer_error(conflict.conflict_id, "not a content field of the model")
+    try:
+        # Strict JSON validation preserves JSON enum/datetime forms without numeric coercion.
+        TypeAdapter(field.rebuild_annotation()).validate_json(
+            json.dumps(value.value, allow_nan=False), strict=True
+        )
+    except (ValidationError, TypeError, ValueError) as exc:
+        _answer_error(conflict.conflict_id, str(exc))
+    return value
+
+
+def _resolved_changes(plan: MergePlan, answers: MergeAnswers) -> dict[Coordinate, MergeValue]:
+    expected = {conflict.conflict_id for conflict in plan.conflicts}
+    if set(answers.answers) != expected:
+        _answer_error("answers", f"expected keys {sorted(expected)}, got {sorted(answers.answers)}")
+    unknown = set(answers.cards) - {group.subject_key for group in plan.review_groups}
+    if unknown:
+        _answer_error("cards", f"unknown review subjects {sorted(unknown)}")
+    selected = {
+        _coordinate(change): change.branch
+        for change in (*plan.direct_changes, *(c for g in plan.review_groups for c in g.changes))
+    }
+    for conflict in plan.conflicts:
+        answer = answers.answers[conflict.conflict_id]
+        if answer.kind not in conflict.allowed_answer_kinds:
+            _answer_error(conflict.conflict_id, f"answer kind {answer.kind!r} is not allowed")
+        if isinstance(conflict, FieldConflict):
+            selected[_coordinate(conflict)] = _field_value(plan, conflict, answer)
+        elif isinstance(conflict, NodeGroupConflict):
+            nested = None
+            if isinstance(answer, MergedAnswer):
+                try:
+                    nested = TypeAdapter(dict[str, dict[str, FieldAnswer]]).validate_python(
+                        answer.value, strict=True
+                    )
+                except ValidationError as exc:
+                    _answer_error(conflict.conflict_id, str(exc))
+                keys = {(node, field) for node, fields in nested.items() for field in fields}
+                if keys != {(field.entity_id, field.field_name) for field in conflict.fields}:
+                    _answer_error(
+                        conflict.conflict_id, "merged group must answer exactly its fields"
+                    )
+            for field in conflict.fields:
+                if field.entity_id is None:
+                    _answer_error(conflict.conflict_id, "node group field needs a node identity")
+                item = nested[field.entity_id][field.field_name] if nested is not None else answer
+                selected[_coordinate(field)] = _field_value(plan, field, item)
+        else:
+            collection = (
+                "nodes" if isinstance(conflict, IncidentEdgeConflict) else conflict.collection
+            )
+            identity = (
+                conflict.node_id
+                if isinstance(conflict, IncidentEdgeConflict)
+                else conflict.entity_id
+            )
+            surviving_side = "destination" if conflict.removed_on == "branch" else "branch"
+            selected[(collection, identity, None)] = (
+                MissingValue()
+                if answer.kind == "keep-removal"
+                else getattr(conflict, surviving_side)
+            )
+            # Presence controls all fields of that entity, including deterministic work.
+            for key in list(selected):
+                if key[:2] == (collection, identity) and key[2] is not None:
+                    del selected[key]
+            if isinstance(conflict, IncidentEdgeConflict):
+                for edge in conflict.incident_edges:
+                    if answer.kind == "keep-removal":
+                        for key in list(selected):
+                            if key[:2] == ("edges", edge.entity_id):
+                                del selected[key]
+                        selected[("edges", edge.entity_id, None)] = MissingValue()
+                    else:
+                        selected[_coordinate(edge)] = getattr(edge, surviving_side)
+    return selected
+
+
+def _documents(
+    plan: MergePlan, selected: dict[Coordinate, MergeValue]
+) -> dict[tuple[str, str | None], tuple[Any, set[Coordinate]]]:
+    documents: dict[tuple[str, str | None], tuple[Any, set[Coordinate]]] = {}
+    # Presence before fields; an explicit presence conflict has already removed its fields.
+    for coordinate in sorted(selected, key=lambda key: (key[0], key[1] or "", key[2] or "")):
+        collection, identity, field = coordinate
+        value = selected[coordinate]
+        key = collection, identity
+        if key not in documents:
+            current = getattr(plan.destination_graph, collection)
+            if identity is not None:
+                current = current.get(identity)
+            raw = current.model_dump(mode="json") if isinstance(current, BaseModel) else current
+            documents[key] = deepcopy(raw), set()
+        raw, coordinates = documents[key]
+        coordinates.add(coordinate)
+        if field is None:
+            raw = deepcopy(value.value) if isinstance(value, PresentValue) else None
+        else:
+            if raw is None or isinstance(value, MissingValue):
+                _refuse("invalid-merge-change", f"Cannot write absent field {coordinate!r}")
+            raw[field] = deepcopy(value.value)
+        documents[key] = raw, coordinates
+    return documents
+
+
+def _status_cause(plan: MergePlan, identity: str, status: Any) -> dict[str, Any]:
+    source = plan.source_graph.nodes.get(identity)
+    if source is not None and getattr(source, "status", None) == status:
+        for fact in reversed(plan.source_human_facts):
+            operation = fact.operation
+            if isinstance(operation, ProposalStatusChangeOperation):
+                for update in operation.nodes:
+                    if update.id == identity and update.changes == {"status": status}:
+                        return {"kind": "human_edit"}
+        graph = plan.source_graph
+    else:
+        graph = plan.destination_graph
+    for transition in reversed(graph.belief_transitions):
+        if transition.hypothesis_id == identity and transition.to_status == status:
+            if transition.cause.get("kind") == "human_edit":
+                _refuse(
+                    "unproven-human-judgment",
+                    "No exact source human fact proves this status",
+                    identity,
+                )
+            return deepcopy(transition.cause)
+    _refuse(
+        "missing-status-cause", "No recorded transition proves the carried status cause", identity
+    )
+
+
+def _ops(raw: list[dict[str, Any]]) -> list[GraphOperation]:
+    try:
+        return [_OPERATION.validate_python(operation) for operation in raw]
+    except ValidationError as exc:
+        _refuse("malformed-operation", str(exc))
+
+
+def _retirement_operation(identity: str, edge: dict[str, Any]) -> dict[str, Any]:
+    if edge["relation"] == "supersedes":
+        return {
+            "op": "supersede_nodes",
+            "nodes": [
+                {
+                    "id": identity,
+                    "superseded_by": edge["target"],
+                    "explanation": edge.get("explanation", ""),
+                }
+            ],
+        }
+    return {
+        "op": "merge_nodes",
+        "merges": [
+            {
+                "duplicate": identity,
+                "canonical": edge["target"],
+                "explanation": edge.get("explanation", ""),
+            }
+        ],
+    }
+
+
+def _construct_effects(plan: MergePlan, selected: dict[Coordinate, MergeValue]) -> list[_Effect]:
+    documents = _documents(plan, selected)
+    creates: list[_Effect] = []
+    edges: list[_Effect] = []
+    updates: list[_Effect] = []
+    other: list[_Effect] = []
+    project_type = project_type_of(plan.destination_graph)
+    semantic: dict[str, tuple[dict[str, Any], set[Coordinate]]] = {}
+    for (collection, _identity), (raw, coordinates) in documents.items():
+        if (
+            collection != "edges"
+            or raw is None
+            or raw.get("relation") not in {"supersedes", "duplicate_of"}
+        ):
+            continue
+        node_key = "nodes", raw["source"]
+        node_document = documents.get(node_key)
+        if node_document is None or node_document[0] is None:
+            continue
+        node_raw, node_coordinates = node_document
+        lifecycle = project_type.lifecycle_field(node_raw["type"])
+        if node_raw.get(lifecycle) == "superseded":
+            semantic[raw["source"]] = raw, coordinates | node_coordinates
+    semantic_edges = {edge[0]["id"] for edge in semantic.values()}
+    for (collection, identity), (raw, coordinates) in documents.items():
+        current = getattr(plan.destination_graph, collection)
+        current = current.get(identity) if identity is not None else current
+        before = current.model_dump(mode="json") if isinstance(current, BaseModel) else current
+        if raw == before:
+            continue
+        operations: list[dict[str, Any]] = []
+        if collection == "nodes":
+            assert identity is not None
+            if raw is None:
+                updates.append(
+                    _Effect(_ops([{"op": "remove_nodes", "node_ids": [identity]}]), coordinates)
+                )
+                continue
+            if current is None:
+                from rcp.core.operations import strict_project_node
+
+                try:
+                    node = strict_project_node(raw)
+                except ValidationError as exc:
+                    _refuse("malformed-operation", str(exc), identity)
+                raw = node.model_dump(
+                    mode="json",
+                    exclude=set(graph_fields(type(node), role="engine")),
+                    exclude_defaults=True,
+                )
+                standing = raw.pop("standing", "asserted")
+                status = getattr(node, "status", None)
+                lifecycle = project_type.lifecycle_field(node.type)
+                retired = getattr(node, lifecycle) == "superseded"
+                choice = (
+                    project_type.is_chooser(node.type)
+                    and node.model_dump().get("selected_option") is not None
+                )
+                if retired:
+                    raw[lifecycle] = type(node).model_fields[lifecycle].get_default()
+                    semantic.setdefault(
+                        identity, ({"relation": "supersedes", "target": None}, coordinates)
+                    )
+                belief = project_type.is_belief(node.type)
+                chosen = None
+                if choice:
+                    chosen = raw.pop("selected_option")
+                    raw["status"] = "open"
+                if belief:
+                    raw["status"] = "proposed"
+                operations.append({"op": "create_nodes", "nodes": [raw]})
+                if choice:
+                    operations.append(
+                        {
+                            "op": "update_nodes",
+                            "nodes": [
+                                {
+                                    "id": identity,
+                                    "changes": {"status": "decided", "selected_option": chosen},
+                                }
+                            ],
+                        }
+                    )
+                if not belief and not retired and standing != "asserted":
+                    operations.append(
+                        {"op": "set_standing", "node_id": identity, "standing": standing}
+                    )
+                creates.append(_Effect(_ops(operations), coordinates))
+                review: list[dict[str, Any]] = []
+                if retired:
+                    edge, combined = semantic[identity]
+                    coordinates = coordinates | combined
+                    review.append(_retirement_operation(identity, edge))
+                elif belief and status != "proposed":
+                    review.append(
+                        {
+                            "op": "update_nodes",
+                            "nodes": [
+                                {
+                                    "id": identity,
+                                    "changes": {"status": status},
+                                    "cause": _status_cause(plan, identity, status),
+                                }
+                            ],
+                        }
+                    )
+                if (belief or retired) and standing != "asserted":
+                    review.append({"op": "set_standing", "node_id": identity, "standing": standing})
+                if review:
+                    updates.append(_Effect(_ops(review), coordinates))
+                continue
+            current = plan.destination_graph.nodes[identity]
+            fields = graph_fields(type(current), role="content")
+            changes = {
+                field: raw[field]
+                for field in sorted(fields - {"standing"})
+                if raw[field] != before[field]
+            }
+            lifecycle = project_type.lifecycle_field(current.type)
+            if changes.get(lifecycle) == "superseded" and identity not in semantic:
+                semantic[identity] = (
+                    {"relation": "supersedes", "target": None, "explanation": ""},
+                    coordinates,
+                )
+            if identity in semantic:
+                edge, combined = semantic[identity]
+                changes.pop(project_type.lifecycle_field(current.type), None)
+                coordinates = coordinates | combined
+                operations.append(_retirement_operation(identity, edge))
+            if changes:
+                update: dict[str, Any] = {"id": identity, "changes": changes}
+                if project_type.is_belief(current.type) and "status" in changes:
+                    update["cause"] = _status_cause(plan, identity, changes["status"])
+                operations.append({"op": "update_nodes", "nodes": [update]})
+            standing = raw["standing"]
+            # Content writes implicitly reset standing; the selected destination value survives.
+            if standing != before["standing"] or (
+                operations
+                and standing != "asserted"
+                and not project_type.is_protected_belief(current.type)
+            ):
+                operations.append({"op": "set_standing", "node_id": identity, "standing": standing})
+            if operations:
+                updates.append(_Effect(_ops(operations), coordinates))
+        elif collection == "edges":
+            assert identity is not None
+            if identity in semantic_edges:
+                continue
+            if current is not None:
+                operations.append({"op": "remove_edges", "edge_ids": [identity]})
+            if raw is not None:
+                raw = {key: value for key, value in raw.items() if key in NewEdge.model_fields}
+                operations.append({"op": "create_edges", "edges": [raw]})
+            if operations:
+                edges.append(_Effect(_ops(operations), coordinates))
+        elif collection == "proposals":
+            assert identity is not None
+            # Source resolution is source history, never authority on the destination.
+            source = plan.source_graph.proposals.get(identity)
+            if (
+                source is not None
+                and source.status == "pending"
+                and not proposal_is_stale(plan.source_graph, source)
+                and current is None
+            ):
+                operations = [
+                    {
+                        "op": "create_proposals",
+                        "proposals": [
+                            source.model_dump(
+                                mode="json",
+                                exclude=set(graph_fields(Proposal, proposal_owner="filing")),
+                            )
+                        ],
+                    }
+                ]
+        elif collection == "glossary":
+            if raw is None:
+                _refuse("unsupported-merge-effect", "Glossary removal has no graph operation")
+            operations = [
+                {
+                    "op": "upsert_glossary",
+                    "terms": [
+                        {key: raw[key] for key in ("term", "plain_definition", "where_defined")}
+                    ],
+                }
+            ]
+        elif collection == "ambiguities":
+            if current is None and raw is not None:
+                operations = [
+                    {
+                        "op": "create_ambiguities",
+                        "ambiguities": [
+                            {key: value for key, value in raw.items() if key != "raised_rev"}
+                        ],
+                    }
+                ]
+            elif raw is not None and set(key for key in raw if raw[key] != before[key]) <= {
+                "status"
+            }:
+                operations = [
+                    {
+                        "op": "resolve_ambiguities",
+                        "resolutions": [{"id": identity, "status": raw["status"]}],
+                    }
+                ]
+            else:
+                _refuse("unsupported-merge-effect", "Ambiguity edit has no graph operation")
+        elif collection == "ontology":
+            operations = [{"op": "set_ontology", "ontology": raw}]
+        elif collection == "project_truth_scope":
+            operations = [{"op": "set_project_truth_scope", "truth_scope": raw}]
+        if operations and collection not in {"nodes", "edges"}:
+            other.append(_Effect(_ops(operations), coordinates))
+    return creates + edges + updates + other
+
+
+def _classify(
+    plan: MergePlan,
+    operations: list[GraphOperation],
+    prefix: list[GraphOperation] | None = None,
+):
+    state = plan.destination_graph
+    prefix = prefix or []
+    candidate = prepare_patch_bookkeeping(state, _patch(plan, [*prefix, *operations]))
+    groups = None
+    if prefix and candidate.agent_action == derived_agent_action(state, _patch(plan, prefix)):
+        groups = (tuple(range(len(prefix))), tuple(range(len(prefix), len(candidate.ops))))
+    # A newly introduced Decision declaration must be validated with its outcome;
+    # the prefix has already been admitted, so that entire sequence is coherent.
+    results = classify_graph_changes(
+        state,
+        candidate,
+        authority=plan.captured_authority,
+        project_id=plan.captured_authority.project_id,
+        apply_target=plan.destination_head.target,
+        context=ValidationContext(project_truth_scope=state.project_truth_scope),
+        operation_groups=groups,
+    )
+    return next((result for result in results if result.disposition == "refused"), results[-1])
+
+
+def _staged_graph(plan: MergePlan, operations: list[GraphOperation]) -> GraphState:
+    patch = _patch(plan, operations).model_copy(
+        update={"revision": plan.destination_head.revision + 1}
+    )
+    return apply_valid_patch(plan.destination_graph, patch)
+
+
+def _diagnostics(messages: Iterable[ValidationMessage]) -> tuple[MergeDiagnostic, ...]:
+    return tuple(
+        MergeDiagnostic(
+            code=item.code, message=item.message, related_node_ids=tuple(item.related_node_ids)
+        )
+        for item in messages
+        if item.level == "reject"
+    )
+
+
+def _combine_review_ops(operations: Iterable[ProposalOperation]) -> list[ProposalOperation]:
+    # Earlier pending effects survive, while new writes to the same field take precedence.
+    result: list[ProposalOperation] = []
+    for operation in operations:
+        if operation in result:
+            continue
+        if operation.op == "update_nodes":
+            for index, prior in enumerate(result):
+                if (
+                    prior.op == "update_nodes"
+                    and prior.intent == operation.intent
+                    and len(prior.nodes) == len(operation.nodes) == 1
+                    and prior.nodes[0].id == operation.nodes[0].id
+                ):
+                    update = operation.nodes[0].model_copy(
+                        update={"changes": {**prior.nodes[0].changes, **operation.nodes[0].changes}}
+                    )
+                    result[index] = operation.model_copy(update={"nodes": [update]})
+                    break
+            else:
+                result.append(operation)
+        elif operation.op == "set_standing":
+            result = [
+                item
+                for item in result
+                if not (item.op == "set_standing" and item.node_id == operation.node_id)
+            ]
+            result.append(operation)
+        else:
+            result.append(operation)
+    return result
+
+
+def _outstanding_review_ops(
+    plan: MergePlan,
+    operations: list[ProposalOperation],
+    selected: dict[Coordinate, MergeValue],
+) -> list[ProposalOperation]:
+    """Do not resurrect an earlier effect explicitly resolved to destination."""
+
+    def retains_destination(identity: str, field: str) -> bool:
+        value = selected.get(("nodes", identity, field))
+        node = plan.destination_graph.nodes.get(identity)
+        return (
+            isinstance(value, PresentValue)
+            and node is not None
+            and value.value == node.model_dump(mode="json")[field]
+        )
+
+    result: list[ProposalOperation] = []
+    for operation in operations:
+        if operation.op == "update_nodes":
+            updates = []
+            for update in operation.nodes:
+                changes = {
+                    key: value
+                    for key, value in update.changes.items()
+                    if not retains_destination(update.id, key)
+                }
+                if changes:
+                    updates.append(update.model_copy(update={"changes": changes}))
+            if updates:
+                result.append(operation.model_copy(update={"nodes": updates}))
+        elif operation.op != "set_standing" or not retains_destination(
+            operation.node_id, "standing"
+        ):
+            result.append(operation)
+    return result
+
+
+def _review_proposal(
+    plan: MergePlan, group: ReviewGroup, operations: list[ProposalOperation], answers: MergeAnswers
+) -> Proposal:
+    if group.subject_key not in answers.cards:
+        _answer_error(group.subject_key, "missing review card")
+    identity = merge_contract_digest(
+        {
+            "source": plan.source_head.model_dump(mode="json"),
+            "destination": plan.destination_head.target.model_dump(mode="json"),
+            "subject": group.subject_key,
+            "ops": [op.model_dump(mode="json", exclude_unset=True) for op in operations],
+        }
+    )
+    return Proposal(
+        id=f"proposal/merge-{identity}",
+        title="Review branch changes",
+        card=GatedCard.model_validate(answers.cards[group.subject_key].model_dump()),
+        ops=operations,
+        dependency_rule=CURRENT_PROPOSAL_DEPENDENCY_RULE,
+    )
+
+
+def build_merge_patch(plan: MergePlan, answers: MergeAnswers) -> Patch:
+    """Resolve typed answers, encode effects, and route every effect through core."""
+    _check_plan(plan)
+    selected = _resolved_changes(plan, answers)
+    effects = _construct_effects(plan, selected)
+    group_coordinates = {
+        group.subject_key: {_coordinate(change) for change in group.changes}
+        for group in plan.review_groups
+    }
+    staged = plan.destination_graph
+    direct: list[GraphOperation] = []
+    reviews: dict[str, list[ProposalOperation]] = defaultdict(list)
+    # Review groups are classified together, after all direct prerequisites exist.
+    pending: dict[str, list[GraphOperation]] = defaultdict(list)
+    for effect in effects:
+        keys = [key for key, coords in group_coordinates.items() if coords & effect.coordinates]
+        if len(keys) > 1:
+            _refuse("merge-review-groups-changed", "A coherent effect spans multiple review groups")
+        # Creation is admitted separately so a new belief's judgment can be reviewed.
+        if keys and not any(op.op == "create_nodes" for op in effect.operations):
+            pending[keys[0]].extend(effect.operations)
+            continue
+        result = _classify(plan, effect.operations, direct)
+        if result.disposition == "refused":
+            raise MergeRefused(_diagnostics(result.diagnostics))
+        if result.disposition == "reviewable":
+            if not keys:
+                _refuse(
+                    "merge-review-group-missing", "Reviewable effect has no planned review subject"
+                )
+            reviews[keys[0]].extend(result.review_operations)
+        else:
+            direct.extend(effect.operations)
+            staged = _staged_graph(plan, direct)
+    for key in sorted(pending):
+        result = _classify(plan, pending[key], direct)
+        if result.disposition == "refused":
+            raise MergeRefused(_diagnostics(result.diagnostics))
+        if result.disposition == "reviewable":
+            reviews[key].extend(result.review_operations)
+        else:
+            direct.extend(pending[key])
+            staged = _staged_graph(plan, direct)
+    proposals: list[Proposal] = []
+    withdrawals: list[dict[str, str]] = []
+    footprints = []
+    for group in sorted(plan.review_groups, key=lambda item: item.subject_key):
+        operations = reviews.get(group.subject_key, [])
+        old_ops: list[ProposalOperation] = []
+        for identity in sorted(group.replaces_proposal_ids):
+            prior = next(
+                (
+                    review
+                    for review in plan.prior_reviews
+                    if review.proposal.id == identity and review.subject_key == group.subject_key
+                ),
+                None,
+            )
+            live = plan.destination_graph.proposals.get(identity)
+            if prior is None or live is None or live.status != "pending" or live != prior.proposal:
+                _refuse(
+                    "invalid-merge-review-replacement",
+                    f"No scoped live pending review {identity!r}",
+                )
+            old_ops.extend(_outstanding_review_ops(plan, prior.proposal.ops, selected))
+            withdrawals.append(
+                {"id": identity, "reason": "Replaced by a newer branch merge review."}
+            )
+        combined = _combine_review_ops([*old_ops, *operations])
+        if not combined:
+            continue
+        proposal = _review_proposal(plan, group, combined, answers)
+        probe = _classify(plan, _ops([{"op": "create_proposals", "proposals": [proposal]}]), direct)
+        if probe.disposition != "admitted":
+            raise MergeRefused(_diagnostics(probe.diagnostics))
+        footprint = proposal_dependencies_and_effects(staged, proposal)
+        for previous in footprints:
+            if (
+                footprint.effects & previous.dependencies
+                or previous.effects & footprint.dependencies
+            ):
+                _refuse(
+                    "merge-review-groups-changed",
+                    "Answered review groups now affect one another; replan them together",
+                )
+        footprints.append(footprint)
+        proposals.append(proposal)
+    final = list(direct)
+    if withdrawals:
+        final.extend(_ops([{"op": "withdraw_proposals", "proposals": withdrawals}]))
+    if proposals:
+        final.extend(_ops([{"op": "create_proposals", "proposals": proposals}]))
+    candidate = prepare_patch_bookkeeping(plan.destination_graph, _patch(plan, final))
+    if candidate.ops:
+        result = _classify(plan, candidate.ops)
+        if result.disposition != "admitted":
+            raise MergeRefused(_diagnostics(result.diagnostics))
+    return candidate
+
+
+def _preparation_contract() -> MergePreparationContract:
+    return MergePreparationContract.model_validate(
+        {
+            "ruleset_tag": TRANSITION_RULESET_TAG,
+            "trigger_manifest": transition_trigger_manifest().model_dump(mode="json"),
+            "transition_trace_schema": TransitionTrace.model_json_schema(),
+            "orchestrator_patch_schema": agent_output_schema(profile="orchestrator"),
+        }
+    )
+
+
+def _reject_preparation(plan: MergePlan, messages: Iterable[ValidationMessage]) -> NoReturn:
+    diagnostics = _diagnostics(messages)
+    nodes = {node for item in diagnostics for node in item.related_node_ids}
+    if not nodes:
+        raise MergeRefused(diagnostics)
+    open_nodes: set[str] = set()
+    for conflict in plan.conflicts:
+        if isinstance(conflict, NodeGroupConflict):
+            open_nodes.update(conflict.node_ids)
+        elif isinstance(conflict, IncidentEdgeConflict):
+            open_nodes.add(conflict.node_id)
+        elif conflict.collection == "nodes" and conflict.entity_id is not None:
+            open_nodes.add(conflict.entity_id)
+    if nodes & open_nodes:
+        raise MergeAnswersRejected(diagnostics)
+    raise MergeHiddenClash(
+        NodeGroupPromotion(node_ids=tuple(sorted(nodes)), diagnostics=diagnostics)
+    )
+
+
+def prepare_merge_candidate(
+    plan: MergePlan, answers: MergeAnswers, history: HistoryManager
+) -> PreparedTransition:
+    """The single dry preparation for check and commit; never appends history."""
+    _check_plan(plan)
+    if plan.preparation_contract != _preparation_contract():
+        _refuse(
+            "merge-preparation-contract-changed", "Merge preparation rules changed; reload the plan"
+        )
+    if history.head_ref() != plan.destination_head:
+        raise RevisionConflict("Merge destination moved; rebuild the plan")
+    candidate = build_merge_patch(plan, answers)
+    try:
+        prepared, report, current = history.validate_candidate(candidate)
+    except PatchRejected as exc:
+        _reject_preparation(plan, exc.report.messages)
+    except AgentAuthorizerDeparted as exc:
+        _refuse(exc.code, str(exc))
+    if current.revision != plan.destination_head.revision:
+        raise RevisionConflict("Merge destination moved during preparation; rebuild the plan")
+    if report.rejected:
+        _reject_preparation(plan, report.messages)
+    if prepared.transition is None:
+        _refuse("missing-merge-transition", "History did not prepare a transition")
+    if prepared.transition.pre_head != plan.destination_head:
+        raise RevisionConflict("Merge destination head differs from the prepared transition")
+    if prepared.branch_merge != plan.provenance or prepared.authorized_by != plan.authorized_by:
+        _refuse(
+            "merge-preparation-binding-changed",
+            "History changed the merge's provenance or authorizer",
+        )
+    graph = apply_valid_patch(current, prepared)
+    return PreparedTransition(
+        patch=prepared,
+        projection=project_transition_projection(graph, prepared.transition, canonical=False),
+    )

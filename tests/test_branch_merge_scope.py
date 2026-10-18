@@ -131,50 +131,87 @@ def _remove_source_repository(harness):
     )
 
 
+def _plan(harness, operation):
+    from rcp.runs.branch_merge import BranchMergeContext, BranchMergeEligibility
+    from rcp.runs.branch_merge_admission import start_branch_merge
+    from rcp.runs.branch_merge_request import BranchMergeRunRequest
+    from tests.test_merge_patch import MISSING, change, plan_from_context
+
+    history = harness.service.history
+    scope = history.state().project_truth_scope
+    request = BranchMergeRunRequest(
+        episode_id=harness.episode.episode_id,
+        provider="codex",
+        model="gpt-5",
+        reasoning="medium",
+        run_on="laptop",
+        run_truth_scope=scope,
+        chat_scope="project",
+        mode="work",
+        trigger="human",
+        patch_kind="work",
+    )
+    task = start_branch_merge(
+        harness.app.state.background_tasks,
+        harness.project_id,
+        request,
+        authorized_by=authorized_human(harness.app),
+        launch=False,
+    )
+    context = BranchMergeContext.create(
+        merge_task_id=task.operation_id,
+        authorized_by=task.authorized_by,
+        metadata=harness.branch.branch_metadata(),
+        eligibility=BranchMergeEligibility(branch_head=harness.branch.head_ref()),
+        base_graph=harness.branch.base_state(),
+        branch_graph=harness.branch.state(),
+        main_head=history.head_ref(),
+        main_graph=history.state(),
+        run_truth_scope=scope,
+    )
+    collection = "nodes" if operation["op"] == "create_nodes" else "proposals"
+    entity_id = operation[collection][0]["id"]
+    return plan_from_context(
+        context,
+        authority=history.write_authority,
+        template_episode_id=harness.episode.episode_id,
+        direct_changes=(
+            change(
+                collection,
+                entity_id,
+                None,
+                MISSING,
+                getattr(harness.branch.state(), collection)[entity_id],
+                MISSING,
+            ),
+        ),
+    )
+
+
 @pytest.mark.parametrize("sourced_branch", ["node", "proposal"], indirect=True)
 @pytest.mark.parametrize("removed_from_main", [False, True])
-def test_merge_provenance_uses_current_project_membership(
-    sourced_branch, monkeypatch, removed_from_main
-):
+def test_merge_provenance_uses_current_project_membership(sourced_branch, removed_from_main):
+    from rcp.runs.merge_contract import MergeRefused
+    from rcp.runs.merge_patch import prepare_merge_candidate
+    from tests.test_merge_patch import answers
+
     harness, operation, branch_patch = sourced_branch
     assert harness.service.manifest.agent.default_run_truth_scope == ["repo-a"]
     if removed_from_main:
         _remove_source_repository(harness)
-    main_before = harness.service.history.head_ref()
-    launcher = merge_api._PatchWritingLauncher(
-        json.dumps({"summary": "Carry source provenance.", "ops": [operation]})
-    )
-    monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
+    plan = _plan(harness, operation)
+    before = harness.service.history.head_ref()
 
-    response = harness.client.post(
-        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge", json={}
-    )
-    clean_invalid = removed_from_main and operation["op"] == "create_nodes"
-    assert response.status_code == (409 if clean_invalid else 202), response.text
-    (admitted,) = [
-        task
-        for task in harness.store.agent_tasks(harness.project_id)
-        if task.kind == "branch_merge"
-    ]
-    operation_id = admitted.operation_id
-    task = wait_for_task(
-        harness.store, operation_id, expect="failed" if removed_from_main else "succeeded"
-    )
-
-    main = harness.service.history.state()
     if removed_from_main:
-        assert launcher.calls == 0
-        assert harness.service.history.head_ref() == main_before
-        if clean_invalid:
-            assert task.stage_root is None
-        else:
-            assert task.stage_root is not None
-        assert task.error is not None
-        assert harness.branch.merge_receipts() == []
+        with pytest.raises(MergeRefused) as failure:
+            prepare_merge_candidate(plan, answers(plan), harness.service.history)
+        assert failure.value.diagnostics
+        assert harness.service.history.head_ref() == before
     else:
-        merged = harness.service.history.load_patches()[-1]
-        assert merged.run_truth_scope == ["repo-a", "repo-b"]
-        assert merged.repositories_read == []
+        prepared = prepare_merge_candidate(plan, answers(plan), harness.service.history)
+        assert prepared.patch.run_truth_scope == ["repo-a", "repo-b"]
+        assert prepared.patch.repositories_read == []
+        main = prepared.projection.graph
         if operation["op"] == "create_nodes":
             assert main.nodes["ev/non-default-source"].source_refs[0].truth_repository == "repo-b"
         else:
@@ -184,15 +221,37 @@ def test_merge_provenance_uses_current_project_membership(
                 proposal.ops[0].nodes[0].changes["source_refs"][0]["truth_repository"] == "repo-b"
             )
             assert main.nodes["rq/scope"].question == "Original question?"
-        assert harness.branch.merge_receipts()[-1].outcome == "committed"
+        assert harness.service.history.head_ref() == before
+    assert harness.branch.merge_receipts() == []
 
-    # Ordinary Work keeps its selected run scope even though the project is wider.
     report = validate_patch(
         harness.branch.base_state(),
         branch_patch.model_copy(update={"run_truth_scope": ["repo-a"]}),
         ValidationContext(["repo-a", "repo-b"]),
     )
     assert "source-outside-run-scope" in {message.code for message in report.messages}
+
+
+@pytest.mark.parametrize("sourced_branch", ["node", "proposal"], indirect=True)
+def test_merge_fails_closed_when_membership_changes_after_plan(sourced_branch):
+    from rcp.history import RevisionConflict
+    from rcp.runs.merge_patch import prepare_merge_candidate
+    from tests.test_merge_patch import answers
+
+    harness, operation, _branch_patch = sourced_branch
+    plan = _plan(harness, operation)
+    _remove_source_repository(harness)
+    before = harness.service.history.head_ref()
+
+    with pytest.raises(RevisionConflict):
+        prepare_merge_candidate(plan, answers(plan), harness.service.history)
+
+    main = harness.service.history.state()
+    assert main.project_truth_scope == ["repo-a"]
+    assert "prop/non-default-source" not in main.proposals
+    assert "ev/non-default-source" not in main.nodes
+    assert harness.service.history.head_ref() == before
+    assert harness.branch.merge_receipts() == []
 
 
 @pytest.mark.parametrize("sourced_branch", ["proposal"], indirect=True)

@@ -6,9 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from rcp.agents.branch_merge_prompt import branch_merge_task_contract
 from rcp.agents.graph_read_scope import GraphReadScope
-from rcp.agents.graph_rules import graph_rules
 from rcp.core.models import GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
@@ -16,18 +14,13 @@ from rcp.runs.branch_merge import (
     BranchMergeContext,
     BranchMergeEligibility,
     BranchMergeRunOutcome,
-    BranchMergeSemanticConflict,
     BranchMergeStage,
-    build_deterministic_merge_ops,
-    parse_branch_merge_candidate,
-    prepare_branch_merge_with_history,
-    render_merge_residue,
     stream_branch_merge_run,
 )
+from rcp.runs.merge_patch import build_merge_patch, prepare_merge_candidate
 from rcp.service import RunRequest
 from tests.helpers import unchecked_write_authority
-
-from .test_branch_merge import _branch_source_ref, _context, _local_scope, _SequenceLauncher
+from tests.test_branch_merge import _branch_source_ref, _context, _local_scope, _SequenceLauncher
 
 
 def _append(history, *ops: dict, human: bool = False) -> None:
@@ -175,87 +168,6 @@ class _NoProvider:
         pytest.fail("An ordinary deterministic merge must not launch a provider")
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("new_experiment", [False, True])
-@pytest.mark.parametrize("refresh_guidance", [False, True])
-async def test_merge_recomputes_guidance_validity_without_provider(
-    manifest, tmp_path: Path, new_experiment: bool, refresh_guidance: bool
-) -> None:
-    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
-    experiment = {
-        "id": "exp/guided",
-        "type": "experiment",
-        "title": "Guided experiment",
-        "objective": "Follow the gate result.",
-        "status": "implementing",
-        "current_summary": "Waiting for the gate.",
-        "next_action": "Resolve the gate.",
-    }
-    create_experiment = {"op": "create_nodes", "nodes": [experiment]}
-    create_edge = {
-        "op": "create_edges",
-        "edges": [
-            {
-                "id": "edge/gate",
-                "source": experiment["id"],
-                "target": "blk/branch-only",
-                "relation": "blocked_by",
-            }
-        ],
-    }
-    _append(history, _new_blocker())
-    if not new_experiment:
-        _append(history, create_experiment, create_edge)
-    template = _context()
-    base_head = history.head_ref()
-    branch = history.create_branch(
-        template.metadata.model_copy(
-            update={
-                "base_head": base_head,
-                "head": base_head.model_copy(update={"target": template.metadata.head.target}),
-            }
-        )
-    )
-    if new_experiment:
-        _append(branch, create_experiment, create_edge)
-    guidance = _update(
-        experiment["id"], current_summary="The gate is resolved.", next_action="Continue the work."
-    )
-    _append(branch, _update("blk/branch-only", status="resolved"), guidance)
-    if refresh_guidance:
-        _append(branch, guidance)
-    source = branch.state()
-    assert source.nodes[experiment["id"]].current_summary_stale is not refresh_guidance
-
-    def load_context() -> BranchMergeContext:
-        metadata = branch.branch_metadata()
-        return BranchMergeContext.create(
-            merge_task_id=template.merge_task_id,
-            authorized_by=template.authorized_by,
-            metadata=metadata,
-            eligibility=BranchMergeEligibility(branch_head=metadata.head),
-            base_graph=branch.base_state(),
-            branch_graph=source,
-            main_head=history.head_ref(),
-            main_graph=history.state(),
-            run_truth_scope=["repo-a"],
-        )
-
-    outcome, _frames, _workspace = await _run(tmp_path, history, load_context)
-
-    assert outcome.status == "committed", outcome.diagnostic
-    assert outcome.correction_rounds == 0
-    assert history.state().revision == base_head.revision + 1
-    merged = history.state().nodes[experiment["id"]]
-    assert merged.status == "implementing"
-    assert merged.current_summary == "The gate is resolved."
-    assert merged.next_action == "Continue the work."
-    assert merged.current_summary_stale is True
-    assert merged.next_action_stale is True
-    assert history.state().nodes["blk/branch-only"].status == "resolved"
-    assert branch.state() == source
-
-
 async def _run(tmp_path: Path, history, load_context: Callable, launcher=None):
     root = tmp_path / "stage"
     workspace = root / "workspace"
@@ -278,207 +190,6 @@ async def _run(tmp_path: Path, history, load_context: Callable, launcher=None):
         )
     ]
     return outcome, frames, workspace
-
-
-@pytest.mark.asyncio
-async def test_ordinary_builder_validates_and_commits_without_provider(
-    merge_history, tmp_path: Path
-) -> None:
-    history, branch, load_context = merge_history
-    _append(
-        branch,
-        _new_blocker(),
-        _update(
-            "blk/existing",
-            description="Branch description.",
-            extension_fields={"branch_label": "branch"},
-        ),
-        {"op": "remove_edges", "edge_ids": ["edge/base"]},
-        {
-            "op": "create_edges",
-            "edges": [
-                {
-                    "id": "edge/branch",
-                    "source": "ev/base",
-                    "target": "blk/branch-only",
-                    "relation": "addresses",
-                }
-            ],
-        },
-    )
-    _append(
-        history,
-        _update(
-            "blk/existing",
-            title="Main title",
-            extension_fields={
-                "branch_label": "base",
-                "obsolete": "remove me",
-                "main_note": "Preserve main",
-            },
-        ),
-    )
-    context = load_context()
-    ops, residue = build_deterministic_merge_ops(context)
-    assert not residue
-    candidate = parse_branch_merge_candidate(
-        json.dumps({"summary": "Carry ordinary changes.", "ops": []}),
-        context,
-        deterministic_ops=ops,
-    )
-    prepared = prepare_branch_merge_with_history(
-        history, candidate, expected_main_head=context.main_head, context=context
-    )
-    merged = prepared.projection.graph
-    assert merged.nodes["blk/existing"].title == "Main title"
-    assert merged.nodes["blk/existing"].description == "Branch description."
-    assert merged.nodes["blk/existing"].extension_fields == {
-        "branch_label": "branch",
-        "main_note": "Preserve main",
-    }
-    assert (
-        merged.nodes["blk/branch-only"].source_refs
-        == branch.state().nodes["blk/branch-only"].source_refs
-    )
-    assert "edge/base" not in merged.edges
-    assert merged.edges["edge/branch"].target == "blk/branch-only"
-    assert history.head_ref() == context.main_head
-
-    outcome, frames, _workspace = await _run(tmp_path, history, load_context)
-
-    assert outcome.status == "committed", outcome.diagnostic
-    assert outcome.correction_rounds == outcome.rebase_rounds == 0
-    assert outcome.native_session_id is None
-    assert outcome.receipt is not None
-    assert outcome.receipt.provenance.branch_head == context.metadata.head
-    assert history.state().revision == context.main_head.revision + 1
-    assert history.state().nodes == merged.nodes
-    assert history.state().edges == merged.edges
-    assert history.materialize(write_outputs=False).state == history.state()
-    assert branch.head_ref() == context.metadata.head
-    assert any('"event":"done"' in frame for frame in frames)
-
-
-def test_builder_leaves_protected_changes_and_conflicts_for_judgment(merge_history) -> None:
-    history, branch, load_context = merge_history
-    _append(branch, _update("rq/merge", question="A revised question?"), human=True)
-    _append(branch, _update("blk/existing", description="Branch description."), _new_blocker())
-    _append(history, _update("blk/existing", description="Main description."))
-
-    ops, residue = build_deterministic_merge_ops(load_context())
-
-    assert ops == [_new_blocker()]
-    assert ("nodes", "rq/merge", "question") in residue
-    assert ("nodes", "blk/existing", "description") in residue
-
-
-@pytest.mark.asyncio
-async def test_decision_options_and_selection_remain_one_agent_update(
-    merge_history, tmp_path: Path
-) -> None:
-    history, branch, load_context = merge_history
-    choice = _update(
-        "dec/choice",
-        options=["Revised design"],
-        selected_option="Revised design",
-        status="decided",
-    )
-    context = load_context()
-    branch.append(
-        Patch(
-            kind="work",
-            author="agent",
-            profile="orchestrator",
-            summary="Choose the revised design.",
-            run_truth_scope=["repo-a"],
-            source_operation_id="branch-work",
-            task_id="branch-work",
-            episode_id=context.metadata.episode_id,
-            authorized_by=context.authorized_by,
-            agent_action="decision_choice",
-            ops=[choice, _new_blocker()],
-        )
-    )
-    ops, residue = build_deterministic_merge_ops(load_context())
-    assert ops == [_new_blocker()]
-    assert residue == {
-        ("nodes", "dec/choice", "options"): "decision_outcome",
-        ("nodes", "dec/choice", "selected_option"): "decision_outcome",
-        ("nodes", "dec/choice", "status"): "decision_outcome",
-    }
-    launcher = _SequenceLauncher(
-        [
-            json.dumps(
-                {
-                    "summary": "Carry the design choice.",
-                    "agent_action": "decision_choice",
-                    "ops": [choice],
-                }
-            )
-        ]
-    )
-
-    outcome, _frames, _workspace = await _run(tmp_path, history, load_context, launcher)
-
-    assert outcome.status == "committed", outcome.diagnostic
-    assert outcome.correction_rounds == 0
-    assert launcher.sessions == [None]
-    assert history.state().nodes["dec/choice"].selected_option == "Revised design"
-    assert history.state().nodes["blk/branch-only"].source_refs
-    # The built plan reaches the agent as a staged input, not as inlined prompt text.
-    plans = sorted((tmp_path / "stage" / "inputs").glob("*-branch-merge-plan-*.json"))
-    assert [json.loads(plan.read_text())["ops"] for plan in plans] == [ops]
-    contract = next((tmp_path / "stage" / "inputs").glob("*-branch-merge.md")).read_text()
-    assert plans[0].name in contract
-    assert '"op": "create_nodes"' not in contract
-
-
-@pytest.mark.asyncio
-async def test_mixed_merge_keeps_built_ops_through_residue_correction(
-    merge_history, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    history, branch, load_context = merge_history
-    _append(branch, _new_blocker(), _update("blk/existing", description="Branch description."))
-    _append(history, _update("blk/existing", description="Main description."))
-    context = load_context()
-    ops, residue = build_deterministic_merge_ops(context)
-    assert residue == {("nodes", "blk/existing", "description"): "conflict"}
-    candidates: list[Patch] = []
-    validate = history.validate_candidate
-
-    def record_candidate(patch, **kwargs):
-        candidates.append(patch.model_copy(deep=True))
-        return validate(patch, **kwargs)
-
-    monkeypatch.setattr(history, "validate_candidate", record_candidate)
-    launcher = _SequenceLauncher(
-        [
-            json.dumps(
-                {
-                    "summary": "Resolve the conflicting description.",
-                    "ops": [_update("blk/existing", description="Resolution.", **extra)],
-                }
-            )
-            for extra in ({"title": "An unrelated rewrite"}, {})
-        ]
-    )
-
-    outcome, _frames, _workspace = await _run(tmp_path, history, load_context, launcher)
-
-    assert outcome.status == "committed", outcome.diagnostic
-    assert outcome.correction_rounds == 1
-    assert launcher.sessions == [None, "native-session"]
-    assert len(candidates) == 2
-    expected = parse_branch_merge_candidate(
-        json.dumps({"summary": "Built changes.", "ops": []}),
-        context,
-        deterministic_ops=ops,
-    ).ops
-    for candidate in candidates:
-        assert candidate.ops[: len(expected)] == expected
-    assert history.state().nodes["blk/existing"].description == "Resolution."
-    assert history.state().nodes["blk/existing"].title == "Base title"
-    assert history.state().nodes["blk/branch-only"].source_refs
 
 
 @pytest.mark.asyncio
@@ -566,73 +277,6 @@ async def test_provider_merge_without_session_cannot_restart_after_main_moves(
     assert all(patch.branch_merge is None for patch in history.load_patches())
 
 
-@pytest.mark.asyncio
-async def test_project_configuration_residue_fails_without_provider(
-    merge_history, tmp_path: Path
-) -> None:
-    history, branch, load_context = merge_history
-    ontology = branch.state().ontology.model_dump(mode="json")
-    ontology["fields"][0]["definition"] = "A changed project definition."
-    _append(branch, {"op": "set_ontology", "ontology": ontology}, human=True)
-    before = history.head_ref()
-
-    outcome, frames, _workspace = await _run(tmp_path, history, load_context)
-
-    assert outcome.status == "rejected"
-    assert "ontology" in outcome.diagnostic
-    assert outcome.correction_rounds == 0
-    assert history.head_ref() == before
-    assert any('"event":"error"' in frame for frame in frames)
-
-
-@pytest.mark.asyncio
-async def test_invalid_built_candidate_retains_patch_and_fails_without_provider(
-    merge_history, tmp_path: Path
-) -> None:
-    history, branch, load_context = merge_history
-    fields = {**branch.state().nodes["blk/existing"].extension_fields, "human_note": "Private"}
-    _append(branch, _update("blk/existing", extension_fields=fields), human=True)
-    context = load_context()
-    ops, residue = build_deterministic_merge_ops(context)
-    assert ops and not residue
-
-    outcome, _frames, workspace = await _run(tmp_path, history, load_context)
-
-    assert outcome.status == "rejected"
-    assert "human_note" in outcome.diagnostic
-    assert outcome.correction_rounds == 0
-    assert outcome.native_session_id is None
-    assert outcome.receipt is None
-    assert history.head_ref() == context.main_head
-    assert json.loads((workspace / "patch.json").read_text(encoding="utf-8"))["ops"] == ops
-    assert branch.head_ref() == context.metadata.head
-
-
-@pytest.mark.asyncio
-async def test_invalid_fixed_ops_reject_before_launching_for_protected_residue(
-    merge_history, tmp_path: Path
-) -> None:
-    history, branch, load_context = merge_history
-    fields = {**branch.state().nodes["blk/existing"].extension_fields, "human_note": "Private"}
-    _append(branch, _update("blk/existing", extension_fields=fields), human=True)
-    _append(branch, _update("rq/merge", question="A revised question?"), human=True)
-    context = load_context()
-    ops, residue = build_deterministic_merge_ops(context)
-    assert ops
-    assert residue == {("nodes", "rq/merge", "question"): "protected_node"}
-
-    outcome, frames, _workspace = await _run(tmp_path, history, load_context)
-
-    assert outcome.status == "rejected"
-    assert "human_note" in outcome.diagnostic
-    assert outcome.native_session_id is None
-    assert outcome.correction_rounds == 0
-    assert outcome.receipt is None
-    assert history.head_ref() == context.main_head
-    assert branch.head_ref() == context.metadata.head
-    assert any('"event":"error"' in frame for frame in frames)
-
-
 def _forked(manifest, *main_ops: dict, human_ops: tuple[dict, ...] = ()):
     """One main history and a branch forked after the given main operations."""
 
@@ -668,103 +312,6 @@ def _forked(manifest, *main_ops: dict, human_ops: tuple[dict, ...] = ()):
     return history, branch, load_context
 
 
-@pytest.mark.asyncio
-async def test_editing_a_node_main_already_accepted_needs_no_merge_agent(
-    manifest, tmp_path: Path
-) -> None:
-    history, branch, load_context = _forked(
-        manifest,
-        _new_blocker(),
-        human_ops=({"op": "set_standing", "node_id": "blk/branch-only", "standing": "accepted"},),
-    )
-    _append(branch, _update("blk/branch-only", description="A revised branch finding."))
-
-    ops, residue = build_deterministic_merge_ops(load_context())
-
-    assert ops and not residue
-    outcome, _frames, _workspace = await _run(tmp_path, history, load_context)
-
-    assert outcome.status == "committed", outcome.diagnostic
-    merged = history.state().nodes["blk/branch-only"]
-    assert merged.description == "A revised branch finding."
-    # The agent edit resets the standing exactly as it did on the branch.
-    assert merged.standing == "asserted"
-
-
-@pytest.mark.asyncio
-async def test_a_human_content_edit_keeps_the_standing_both_sides_agree_on(
-    manifest, tmp_path: Path
-) -> None:
-    history, branch, load_context = _forked(
-        manifest,
-        _new_blocker(),
-        human_ops=({"op": "set_standing", "node_id": "blk/branch-only", "standing": "accepted"},),
-    )
-    _append(branch, _update("blk/branch-only", description="A revised finding."), human=True)
-
-    ops, residue = build_deterministic_merge_ops(load_context())
-
-    assert not residue
-    assert ops[-1] == {
-        "op": "set_standing",
-        "node_id": "blk/branch-only",
-        "standing": "accepted",
-    }
-    outcome, _frames, _workspace = await _run(tmp_path, history, load_context)
-
-    assert outcome.status == "committed", outcome.diagnostic
-    merged = history.state().nodes["blk/branch-only"]
-    assert merged.description == "A revised finding."
-    assert merged.standing == "accepted"
-
-
-@pytest.mark.asyncio
-async def test_a_standing_move_on_main_after_the_fork_stays_a_decision(
-    manifest, tmp_path: Path
-) -> None:
-    history, branch, load_context = _forked(manifest, _new_blocker())
-    _append(branch, _update("blk/branch-only", description="A revised branch finding."))
-    _append(
-        history,
-        {"op": "set_standing", "node_id": "blk/branch-only", "standing": "accepted"},
-        human=True,
-    )
-
-    _ops, residue = build_deterministic_merge_ops(load_context())
-
-    assert residue == {("nodes", "blk/branch-only", "description"): "main_standing_changed"}
-
-
-def test_merge_residue_renders_every_reason_it_reports() -> None:
-    residue = {
-        ("nodes", "blk/existing", "description"): "conflict",
-        ("nodes", "rq/merge", "question"): "protected_node",
-    }
-
-    block = render_merge_residue(residue)
-
-    assert '"path": "nodes/blk/existing/description"' in block
-    assert '"reason": "protected_node"' in block
-    assert "decision_outcome" not in block
-
-
-def test_merge_contract_cites_the_plan_file_instead_of_inlining_it() -> None:
-    contract = branch_merge_task_contract(
-        context_path="/stage/inputs/context.json",
-        context_id="a" * 64,
-        patch_path="/stage/workspace/patch.json",
-        validator_command="python3 validator.py validate patch.json",
-        review_contract_json="{}",
-        plan_path="/stage/inputs/plan.json",
-        residue_block=render_merge_residue({("nodes", "dec/choice", "status"): "decision_outcome"}),
-    )
-
-    assert "/stage/inputs/plan.json" in contract
-    assert '"op": "create_nodes"' not in contract
-    assert '"path": "nodes/dec/choice/status"' in contract
-    assert graph_rules(edits=True, ontology_extensions=False) in contract
-
-
 def _replace_edge(edge, **changes) -> list[dict]:
     raw = edge.model_dump(mode="json", exclude={"created_rev", "layer"})
     raw.update(changes)
@@ -774,113 +321,509 @@ def _replace_edge(edge, **changes) -> list[dict]:
     ]
 
 
-@pytest.mark.asyncio
-async def test_edge_explanation_merge_commits_without_provider(merge_history, tmp_path: Path):
-    history, branch, load_context = merge_history
-    _append(branch, *_replace_edge(branch.state().edges["edge/base"], explanation="Branch detail."))
-    source_head = branch.head_ref()
+def test_legacy_merge_request_without_binding_retains_main_dispatch():
+    from rcp.runs.branch_merge_request import BranchMergeRunRequest
 
-    outcome, _frames, _workspace = await _run(tmp_path, history, load_context)
-
-    assert outcome.status == "committed", outcome.diagnostic
-    assert outcome.correction_rounds == 0
-    assert history.state().edges["edge/base"].explanation == "Branch detail."
-    assert history.materialize(write_outputs=False).state == history.state()
-    assert branch.head_ref() == source_head
-
-
-def test_edge_replacement_conformance_uses_its_net_change(merge_history):
-    history, branch, load_context = merge_history
-    operations = _replace_edge(branch.state().edges["edge/base"], explanation="Branch detail.")
-    _append(branch, *operations)
-    context = load_context()
-    candidate = parse_branch_merge_candidate(
-        json.dumps({"summary": "Carry the edge detail.", "ops": operations}), context
+    request = BranchMergeRunRequest.model_validate(
+        {
+            "episode_id": "legacy-owner",
+            "provider": "codex",
+            "model": "gpt-5",
+            "reasoning": "medium",
+            "run_on": "laptop",
+            "run_truth_scope": ["repo-a"],
+            "chat_scope": "project",
+            "mode": "work",
+            "trigger": "human",
+            "patch_kind": "work",
+        }
     )
+    assert request.merge_binding is None
+    assert "merge_binding" not in request.model_dump(mode="json")
+    assert "merge_binding" not in json.loads(request.model_dump_json())
+    assert request.episode_id == "legacy-owner"
+    context = _context()
+    old_context = context.model_dump(mode="json", exclude={"dispatcher_episode_id"})
+    assert BranchMergeContext.model_validate(old_context).context_id == context.context_id
 
-    prepared = prepare_branch_merge_with_history(
-        history, candidate, expected_main_head=context.main_head, context=context
-    )
 
-    assert prepared.projection.graph.edges["edge/base"].explanation == "Branch detail."
-    assert history.head_ref() == context.main_head
+def _changes(context, *coordinates):
+    """Explicit fixture coordinates, never a planner or a three-way comparison."""
+    from tests.test_merge_patch import MISSING, change
 
+    def read(graph, collection, entity_id, field_name):
+        item = getattr(graph, collection)
+        if entity_id is not None:
+            item = item.get(entity_id, MISSING)
+        if item is not MISSING and field_name is not None:
+            item = getattr(item, field_name)
+        return item.model_dump(mode="json") if hasattr(item, "model_dump") else item
 
-@pytest.mark.parametrize("candidate_kind", ["remove_only", "unrelated_field", "wrong_value"])
-def test_edge_replacement_still_rejects_incomplete_or_unrelated_changes(
-    merge_history, candidate_kind: str
-):
-    history, branch, load_context = merge_history
-    original = branch.state().edges["edge/base"]
-    _append(branch, *_replace_edge(original, explanation="Branch detail."))
-    operations = _replace_edge(original, explanation="Branch detail.")
-    if candidate_kind == "remove_only":
-        operations.pop()
-    elif candidate_kind == "unrelated_field":
-        operations[-1]["edges"][0]["relation"] = "informs"
-        operations[-1]["edges"][0]["target"] = "dec/choice"
-    else:
-        operations[-1]["edges"][0]["explanation"] = "Unrequested detail."
-    context = load_context()
-    candidate = parse_branch_merge_candidate(
-        json.dumps({"summary": "Invalid edge replacement.", "ops": operations}), context
-    )
-
-    with pytest.raises(BranchMergeSemanticConflict):
-        prepare_branch_merge_with_history(
-            history, candidate, expected_main_head=context.main_head, context=context
+    return tuple(
+        change(
+            *coordinate,
+            *(
+                read(graph, *coordinate)
+                for graph in (context.base_graph, context.branch_graph, context.main_graph)
+            ),
         )
+        for coordinate in coordinates
+    )
 
-    assert history.head_ref() == context.main_head
-    assert history.state().edges[original.id] == original
+
+def _field_conflict(change):
+    from rcp.runs.merge_contract import FieldConflict
+
+    return FieldConflict(
+        conflict_id=change.change_id,
+        collection=change.collection,
+        entity_id=change.entity_id,
+        field_name=change.field_name,
+        base=change.base,
+        branch=change.branch,
+        destination=change.destination,
+        allowed_answer_kinds=("branch", "destination")
+        if change.collection == "nodes" and change.field_name in {"status", "standing"}
+        else ("branch", "destination", "merged"),
+    )
 
 
-@pytest.mark.asyncio
-async def test_edge_builder_preserves_compatible_main_changes(merge_history, tmp_path: Path):
+def _review_group(state, changes, *operations):
+    from rcp.core.models import CURRENT_PROPOSAL_DEPENDENCY_RULE, Proposal
+    from rcp.core.validation.proposals import proposal_dependencies_and_effects
+    from rcp.runs.merge_contract import ReviewGroup, merge_contract_digest
+
+    proposal = Proposal.model_validate(
+        {
+            "id": "prop/fixture-review",
+            "title": "Review merged changes",
+            "card": {
+                "situation_cold": "The source changed an existing belief.",
+                "why_human_now": "This change requires review.",
+                "consequences": "Approval carries the changed belief.",
+                "decision_needed": "Approve or reject the changed belief.",
+            },
+            "dependency_rule": CURRENT_PROPOSAL_DEPENDENCY_RULE,
+            "ops": list(operations),
+        }
+    )
+    return ReviewGroup(
+        subject_key="nodes/" + "/".join(sorted({c.entity_id for c in changes})),
+        changes=changes,
+        footprint=proposal_dependencies_and_effects(state, proposal),
+        effect_digest=merge_contract_digest(proposal.model_dump(mode="json")["ops"]),
+    )
+
+
+def test_ordinary_builder_validates_without_writing(merge_history):
+    from tests.test_merge_patch import answers, plan_from_context
+
+    history, branch, load_context = merge_history
+    _append(
+        branch,
+        _new_blocker(),
+        _update("blk/existing", description="Branch description."),
+        {"op": "remove_edges", "edge_ids": ["edge/base"]},
+    )
+    _append(history, _update("blk/existing", title="Main title"))
+    context = load_context()
+    plan = plan_from_context(
+        context,
+        direct_changes=_changes(
+            context,
+            ("nodes", "blk/branch-only", None),
+            ("nodes", "blk/existing", "description"),
+            ("edges", "edge/base", None),
+        ),
+    )
+    before = history.head_ref()
+    source = branch.state().model_dump_json()
+
+    prepared = prepare_merge_candidate(plan, answers(plan), history)
+
+    merged = prepared.projection.graph
+    assert merged.nodes["blk/existing"].title == "Main title"
+    assert merged.nodes["blk/existing"].description == "Branch description."
+    assert (
+        merged.nodes["blk/branch-only"].source_refs
+        == branch.state().nodes["blk/branch-only"].source_refs
+    )
+    assert "edge/base" not in merged.edges
+    assert history.head_ref() == before
+    assert branch.state().model_dump_json() == source
+    assert (
+        build_merge_patch(plan, answers(plan)).model_dump_json()
+        == build_merge_patch(plan, answers(plan)).model_dump_json()
+    )
+
+
+def test_builder_combines_direct_changes_conflicts_and_protected_review(merge_history):
+    from rcp.runs.merge_contract import MergedAnswer
+    from tests.test_merge_patch import answers, plan_from_context
+
+    history, branch, load_context = merge_history
+    _append(branch, _update("rq/merge", question="A revised question?"), human=True)
+    _append(branch, _update("blk/existing", description="Branch description."), _new_blocker())
+    _append(history, _update("blk/existing", description="Main description."))
+    context = load_context()
+    protected = _changes(context, ("nodes", "rq/merge", "question"))
+    group = _review_group(
+        context.main_graph,
+        protected,
+        {**_update("rq/merge", question="A revised question?"), "intent": "content_change"},
+    )
+    (clash,) = _changes(context, ("nodes", "blk/existing", "description"))
+    conflict = _field_conflict(clash)
+    plan = plan_from_context(
+        context,
+        direct_changes=_changes(context, ("nodes", "blk/branch-only", None)),
+        conflicts=(conflict,),
+        review_groups=(group,),
+    )
+
+    prepared = prepare_merge_candidate(
+        plan,
+        answers(
+            plan, overrides={conflict.conflict_id: MergedAnswer(value="Resolved description.")}
+        ),
+        history,
+    )
+
+    merged = prepared.projection.graph
+    assert merged.nodes["blk/existing"].description == "Resolved description."
+    assert merged.nodes["blk/existing"].title == "Base title"
+    assert "blk/branch-only" in merged.nodes
+    assert merged.nodes["rq/merge"].question == "What should the project test?"
+    assert len(merged.proposals) == 1
+    proposal = next(iter(merged.proposals.values()))
+    assert proposal.ops[0].nodes[0].changes == {"question": "A revised question?"}
+
+
+def test_decision_options_and_selection_remain_one_update(merge_history):
+    from tests.test_merge_patch import answers, plan_from_context
+
+    history, branch, load_context = merge_history
+    context = load_context()
+    branch.append(
+        Patch(
+            kind="work",
+            author="agent",
+            profile="orchestrator",
+            summary="Choose the revised design.",
+            run_truth_scope=["repo-a"],
+            source_operation_id="branch-work",
+            task_id="branch-work",
+            episode_id=context.metadata.episode_id,
+            authorized_by=context.authorized_by,
+            agent_action="decision_choice",
+            ops=[
+                _update(
+                    "dec/choice",
+                    options=["Revised design"],
+                    selected_option="Revised design",
+                    status="decided",
+                )
+            ],
+        )
+    )
+    context = load_context()
+    plan = plan_from_context(
+        context,
+        direct_changes=_changes(
+            context,
+            *(("nodes", "dec/choice", field) for field in ("options", "selected_option", "status")),
+        ),
+    )
+
+    candidate = build_merge_patch(plan, answers(plan))
+    prepared = prepare_merge_candidate(plan, answers(plan), history)
+
+    assert candidate.agent_action == "decision_choice"
+    assert prepared.projection.graph.nodes["dec/choice"].selected_option == "Revised design"
+    updates = [
+        n
+        for op in candidate.ops
+        if op.op == "update_nodes"
+        for n in op.nodes
+        if n.id == "dec/choice"
+    ]
+    assert len(updates) == 1
+    assert updates[0].changes["options"] == ["Revised design"]
+    assert updates[0].changes["selected_option"] == "Revised design"
+
+
+def test_project_configuration_change_is_a_hard_refusal(merge_history):
+    from rcp.runs.merge_contract import MergeRefused
+    from tests.test_merge_patch import answers, plan_from_context
+
+    history, branch, load_context = merge_history
+    ontology = branch.state().ontology.model_dump(mode="json")
+    ontology["fields"][0]["definition"] = "A changed project definition."
+    _append(branch, {"op": "set_ontology", "ontology": ontology}, human=True)
+    context = load_context()
+    plan = plan_from_context(context, direct_changes=_changes(context, ("ontology", None, None)))
+    before = history.head_ref()
+
+    with pytest.raises(MergeRefused) as failure:
+        prepare_merge_candidate(plan, answers(plan), history)
+
+    assert {item.code for item in failure.value.diagnostics} == {"graph-action-refused"}
+    assert history.head_ref() == before
+
+
+@pytest.mark.parametrize("with_review", [False, True])
+def test_invalid_human_only_field_never_falls_back_to_review(merge_history, with_review):
+    from rcp.runs.merge_contract import MergeRefused
+    from tests.test_merge_patch import answers, plan_from_context
+
+    history, branch, load_context = merge_history
+    fields = {**branch.state().nodes["blk/existing"].extension_fields, "human_note": "Private"}
+    _append(branch, _update("blk/existing", extension_fields=fields), human=True)
+    if with_review:
+        _append(branch, _update("rq/merge", question="Revised?"), human=True)
+    context = load_context()
+    groups = ()
+    if with_review:
+        groups = (
+            _review_group(
+                context.main_graph,
+                _changes(context, ("nodes", "rq/merge", "question")),
+                {**_update("rq/merge", question="Revised?"), "intent": "content_change"},
+            ),
+        )
+    plan = plan_from_context(
+        context,
+        direct_changes=_changes(context, ("nodes", "blk/existing", "extension_fields")),
+        review_groups=groups,
+    )
+    before = history.head_ref()
+
+    with pytest.raises(MergeRefused) as failure:
+        prepare_merge_candidate(plan, answers(plan), history)
+
+    assert "extension-field-human-only" in {item.code for item in failure.value.diagnostics}
+    assert history.head_ref() == before
+    assert history.state().proposals == {}
+
+
+def test_editing_a_node_main_already_accepted_resets_standing(manifest):
+    from tests.test_merge_patch import answers, plan_from_context
+
+    history, branch, load_context = _forked(
+        manifest,
+        _new_blocker(),
+        human_ops=({"op": "set_standing", "node_id": "blk/branch-only", "standing": "accepted"},),
+    )
+    _append(branch, _update("blk/branch-only", description="A revised branch finding."))
+    context = load_context()
+    plan = plan_from_context(
+        context,
+        direct_changes=_changes(
+            context,
+            ("nodes", "blk/branch-only", "description"),
+            ("nodes", "blk/branch-only", "standing"),
+        ),
+    )
+
+    prepared = prepare_merge_candidate(plan, answers(plan), history)
+
+    assert (
+        prepared.projection.graph.nodes["blk/branch-only"].description
+        == "A revised branch finding."
+    )
+    assert prepared.projection.graph.nodes["blk/branch-only"].standing == "asserted"
+
+
+def test_human_content_edit_preserves_agreed_standing(manifest):
+    from tests.test_merge_patch import answers, plan_from_context
+
+    history, branch, load_context = _forked(
+        manifest,
+        _new_blocker(),
+        human_ops=({"op": "set_standing", "node_id": "blk/branch-only", "standing": "accepted"},),
+    )
+    _append(branch, _update("blk/branch-only", description="A revised finding."), human=True)
+    context = load_context()
+    plan = plan_from_context(
+        context, direct_changes=_changes(context, ("nodes", "blk/branch-only", "description"))
+    )
+
+    prepared = prepare_merge_candidate(plan, answers(plan), history)
+
+    assert prepared.projection.graph.nodes["blk/branch-only"].description == "A revised finding."
+    assert prepared.projection.graph.nodes["blk/branch-only"].standing == "accepted"
+
+
+@pytest.mark.parametrize("pick", ["branch", "destination"])
+def test_standing_choice_survives_implicit_content_effects(manifest, pick):
+    from rcp.runs.merge_contract import SideAnswer
+    from tests.test_merge_patch import answers, plan_from_context
+
+    history, branch, load_context = _forked(manifest, _new_blocker())
+    _append(branch, _update("blk/branch-only", description="A revised finding."))
+    _append(
+        history,
+        {"op": "set_standing", "node_id": "blk/branch-only", "standing": "accepted"},
+        human=True,
+    )
+    context = load_context()
+    (standing,) = _changes(context, ("nodes", "blk/branch-only", "standing"))
+    conflict = _field_conflict(standing)
+    plan = plan_from_context(
+        context,
+        direct_changes=_changes(context, ("nodes", "blk/branch-only", "description")),
+        conflicts=(conflict,),
+    )
+
+    prepared = prepare_merge_candidate(
+        plan, answers(plan, overrides={conflict.conflict_id: SideAnswer(kind=pick)}), history
+    )
+
+    assert prepared.projection.graph.nodes["blk/branch-only"].description == "A revised finding."
+    assert prepared.projection.graph.nodes["blk/branch-only"].standing == (
+        "accepted" if pick == "destination" else "asserted"
+    )
+
+
+@pytest.mark.parametrize("conflicting", [False, True])
+def test_edge_replacement_preserves_destination_work(merge_history, conflicting):
+    from rcp.runs.merge_contract import MergedAnswer
+    from tests.test_merge_patch import answers, plan_from_context
+
     history, branch, load_context = merge_history
     original = branch.state().edges["edge/base"]
     _append(branch, *_replace_edge(original, explanation="Branch detail."))
-    _append(history, *_replace_edge(original, relation="informs", target="dec/choice"))
+    _append(
+        history,
+        *_replace_edge(
+            original,
+            relation="informs",
+            target="dec/choice",
+            explanation="Main detail." if conflicting else original.explanation,
+        ),
+    )
+    context = load_context()
+    (detail,) = _changes(context, ("edges", original.id, "explanation"))
+    conflict = _field_conflict(detail)
+    plan = plan_from_context(
+        context,
+        direct_changes=() if conflicting else (detail,),
+        conflicts=(conflict,) if conflicting else (),
+    )
+    response = answers(
+        plan,
+        overrides={conflict.conflict_id: MergedAnswer(value="Resolved detail.")}
+        if conflicting
+        else {},
+    )
+    before = history.head_ref()
 
-    outcome, _frames, _workspace = await _run(tmp_path, history, load_context)
+    candidate = build_merge_patch(plan, response)
+    prepared = prepare_merge_candidate(plan, response, history)
 
-    assert outcome.status == "committed", outcome.diagnostic
-    edge = history.state().edges[original.id]
+    assert [op.op for op in candidate.ops] == ["remove_edges", "create_edges"]
+    edge = prepared.projection.graph.edges[original.id]
     assert (edge.relation, edge.target, edge.explanation) == (
         "informs",
         "dec/choice",
-        "Branch detail.",
+        "Resolved detail." if conflicting else "Branch detail.",
     )
+    assert history.head_ref() == before
+
+    from rcp.runs.branch_merge import commit_branch_merge_with_history
+
+    commit_branch_merge_with_history(history, candidate, expected_main_head=before)
+    assert history.state().edges[original.id] == edge
+    assert history.materialize(write_outputs=False).state == history.state()
+    assert branch.head_ref() == plan.source_head
 
 
-@pytest.mark.asyncio
-async def test_conflicting_edge_replacement_can_be_resolved_by_provider(
-    merge_history, tmp_path: Path
-):
-    history, branch, load_context = merge_history
-    original = branch.state().edges["edge/base"]
-    _append(branch, *_replace_edge(original, explanation="Branch detail."))
-    _append(history, *_replace_edge(original, explanation="Main detail."))
-    ops, residue = build_deterministic_merge_ops(load_context())
-    assert ops == []
-    assert residue == {("edges", original.id, "explanation"): "conflict"}
-    launcher = _SequenceLauncher(
-        [
-            json.dumps(
-                {
-                    "summary": "Resolve the conflicting explanation.",
-                    "ops": _replace_edge(original, explanation="Resolved detail."),
-                }
-            )
+@pytest.mark.parametrize("new_experiment", [False, True])
+@pytest.mark.parametrize("refresh_guidance", [False, True])
+def test_merge_recomputes_guidance_validity(
+    manifest, new_experiment: bool, refresh_guidance: bool
+) -> None:
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
+    experiment = {
+        "id": "exp/guided",
+        "type": "experiment",
+        "title": "Guided experiment",
+        "objective": "Follow the gate result.",
+        "status": "implementing",
+        "current_summary": "Waiting for the gate.",
+        "next_action": "Resolve the gate.",
+    }
+    create_experiment = {"op": "create_nodes", "nodes": [experiment]}
+    create_edge = {
+        "op": "create_edges",
+        "edges": [
+            {
+                "id": "edge/gate",
+                "source": experiment["id"],
+                "target": "blk/branch-only",
+                "relation": "blocked_by",
+            }
+        ],
+    }
+    _append(history, _new_blocker())
+    if not new_experiment:
+        _append(history, create_experiment, create_edge)
+    template = _context()
+    base_head = history.head_ref()
+    branch = history.create_branch(
+        template.metadata.model_copy(
+            update={
+                "base_head": base_head,
+                "head": base_head.model_copy(update={"target": template.metadata.head.target}),
+            }
+        )
+    )
+    if new_experiment:
+        _append(branch, create_experiment, create_edge)
+    guidance = _update(
+        experiment["id"], current_summary="The gate is resolved.", next_action="Continue the work."
+    )
+    _append(branch, _update("blk/branch-only", status="resolved"), guidance)
+    if refresh_guidance:
+        _append(branch, guidance)
+    source = branch.state()
+    assert source.nodes[experiment["id"]].current_summary_stale is not refresh_guidance
+
+    def load_context() -> BranchMergeContext:
+        metadata = branch.branch_metadata()
+        return BranchMergeContext.create(
+            merge_task_id=template.merge_task_id,
+            authorized_by=template.authorized_by,
+            metadata=metadata,
+            eligibility=BranchMergeEligibility(branch_head=metadata.head),
+            base_graph=branch.base_state(),
+            branch_graph=source,
+            main_head=history.head_ref(),
+            main_graph=history.state(),
+            run_truth_scope=["repo-a"],
+        )
+
+    from tests.test_merge_patch import answers, plan_from_context
+
+    context = load_context()
+    coordinates = [("nodes", "blk/branch-only", "status")]
+    if new_experiment:
+        coordinates += [("nodes", experiment["id"], None), ("edges", "edge/gate", None)]
+    else:
+        coordinates += [
+            ("nodes", experiment["id"], field) for field in ("current_summary", "next_action")
         ]
-    )
-
-    outcome, _frames, _workspace = await _run(tmp_path, history, load_context, launcher)
-
-    assert outcome.status == "committed", outcome.diagnostic
-    assert outcome.correction_rounds == 0
-    assert launcher.sessions == [None]
-    assert history.state().edges[original.id].explanation == "Resolved detail."
+    plan = plan_from_context(context, direct_changes=_changes(context, *coordinates))
+    prepared = prepare_merge_candidate(plan, answers(plan), history)
+    merged = prepared.projection.graph.nodes[experiment["id"]]
+    assert merged.status == "implementing"
+    assert merged.current_summary == "The gate is resolved."
+    assert merged.next_action == "Continue the work."
+    assert merged.current_summary_stale is True
+    assert merged.next_action_stale is True
+    assert prepared.projection.graph.nodes["blk/branch-only"].status == "resolved"
+    assert branch.state() == source
+    assert history.head_ref() == base_head
 
 
 @pytest.mark.parametrize("protected", [False, True])
@@ -892,7 +835,7 @@ def test_nested_merge_uses_exact_parent_and_destination_rules(merge_history, pro
         branch_merge_receipt_from_committed_patch,
         commit_branch_merge_with_history,
     )
-    from tests.test_branch_merge_proposals import _proposal
+    from tests.test_merge_patch import answers, plan_from_context
 
     history, destination, original_context = merge_history
     _append(destination, _update("blk/existing", description="Parent before fork."))
@@ -927,50 +870,35 @@ def test_nested_merge_uses_exact_parent_and_destination_rules(merge_history, pro
         main_graph=destination.state(),
         run_truth_scope=["repo-a"],
     )
-    ops, residue = build_deterministic_merge_ops(context)
-    assert bool(residue) is protected
-    draft_ops = []
-    if protected:
-        forbidden = parse_branch_merge_candidate(
-            json.dumps({"summary": "Direct change.", "ops": [_update(changed_id, **changes)]}),
-            context,
+    (field_name,) = changes
+    planned = _changes(context, ("nodes", changed_id, field_name))
+    groups = (
+        (
+            _review_group(
+                context.main_graph,
+                planned,
+                {**_update(changed_id, **changes), "intent": "content_change"},
+            ),
         )
-        with pytest.raises(BranchMergeSemanticConflict):
-            prepare_branch_merge_with_history(
-                destination, forbidden, expected_main_head=context.main_head, context=context
-            )
-        draft_ops = [
-            {
-                "op": "create_proposals",
-                "proposals": [
-                    _proposal(
-                        {
-                            "op": "update_nodes",
-                            "intent": "content_change",
-                            "nodes": [{"id": changed_id, "changes": changes}],
-                        }
-                    )
-                ],
-            }
-        ]
-    candidate = parse_branch_merge_candidate(
-        json.dumps({"summary": "Merge fork.", "ops": draft_ops}),
-        context,
-        deterministic_ops=ops,
+        if protected
+        else ()
     )
-    prepare_branch_merge_with_history(
-        destination, candidate, expected_main_head=context.main_head, context=context
+    plan = plan_from_context(
+        context, direct_changes=() if protected else planned, review_groups=groups
     )
+    prepared = prepare_merge_candidate(plan, answers(plan), destination)
     committed = commit_branch_merge_with_history(
-        destination, candidate, expected_main_head=context.main_head
+        destination,
+        build_merge_patch(plan, answers(plan)),
+        expected_main_head=plan.destination_head,
     )
+    assert committed.projection.graph == prepared.projection.graph
     assert committed.projection.head.target == destination.graph_target
     assert (
         branch_merge_receipt_from_committed_patch(committed.patch).result_main_head.target
         == destination.graph_target
     )
     assert committed.patch.branch_merge is not None
-    assert (committed.patch.episode_id is None) is human
     assert (committed.patch.branch_merge.episode_id is None) is human
     assert committed.patch.branch_merge.branch_base_head == parent_head
     assert destination.state().nodes["blk/existing"].title == "Destination advanced."
@@ -982,27 +910,33 @@ def test_nested_merge_uses_exact_parent_and_destination_rules(merge_history, pro
     assert history.state().nodes["blk/existing"].description == "Base description."
 
 
-def test_legacy_merge_request_without_binding_retains_main_dispatch():
-    from rcp.runs.branch_merge_request import BranchMergeRunRequest
+def test_extension_fields_conflict_uses_the_whole_answer(merge_history):
+    from rcp.runs.merge_contract import MergedAnswer
+    from tests.test_merge_patch import answers, plan_from_context
 
-    request = BranchMergeRunRequest.model_validate(
-        {
-            "episode_id": "legacy-owner",
-            "provider": "codex",
-            "model": "gpt-5",
-            "reasoning": "medium",
-            "run_on": "laptop",
-            "run_truth_scope": ["repo-a"],
-            "chat_scope": "project",
-            "mode": "work",
-            "trigger": "human",
-            "patch_kind": "work",
-        }
+    history, branch, load_context = merge_history
+    _append(branch, _update("blk/existing", extension_fields={"branch_label": "branch"}))
+    _append(
+        history,
+        _update(
+            "blk/existing",
+            extension_fields={
+                "branch_label": "base",
+                "obsolete": "remove me",
+                "main_note": "Preserve main",
+            },
+        ),
     )
-    assert request.merge_binding is None
-    assert "merge_binding" not in request.model_dump(mode="json")
-    assert "merge_binding" not in json.loads(request.model_dump_json())
-    assert request.episode_id == "legacy-owner"
-    context = _context()
-    old_context = context.model_dump(mode="json", exclude={"dispatcher_episode_id"})
-    assert BranchMergeContext.model_validate(old_context).context_id == context.context_id
+    context = load_context()
+    (change,) = _changes(context, ("nodes", "blk/existing", "extension_fields"))
+    conflict = _field_conflict(change)
+    plan = plan_from_context(context, conflicts=(conflict,))
+    merged_fields = {"branch_label": "branch", "main_note": "Preserve main"}
+
+    prepared = prepare_merge_candidate(
+        plan,
+        answers(plan, overrides={conflict.conflict_id: MergedAnswer(value=merged_fields)}),
+        history,
+    )
+
+    assert prepared.projection.graph.nodes["blk/existing"].extension_fields == merged_fields
