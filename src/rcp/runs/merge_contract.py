@@ -173,10 +173,13 @@ class ReviewGroup(_MergeModel):
     dependencies. subject_key identifies the sorted subjects, independent of
     Proposal ids, heads, and card prose. effect_digest binds the exact proposed
     effect, including outstanding pending effects on re-merge. The planner computes
-    it as merge_contract_digest([c.model_dump(mode="json") for c in changes] +
-    [outstanding prior-review effects]). The run loop reuses card prose on rebase
-    only when the new group's digest equals the old one. Recompute footprints after
-    answers change effects; never infer dependencies in the merge layer. Unfiled footprint drafts
+    it as merge_contract_digest of the ordered changes' model_dump(mode="json")
+    values followed by outstanding pending predecessors' operation
+    model_dump(mode="json") values, ordered by Proposal id and then recorded
+    operation order, and recomputes it when promotion leaves member values open.
+    The run loop reuses card prose on rebase only when the new group's digest
+    equals the old one. Recompute footprints after answers change effects; never
+    infer dependencies in the merge layer. Unfiled footprint drafts
     explicitly use CURRENT_PROPOSAL_DEPENDENCY_RULE; Proposal's default retains
     historical rule 1 and must not be used for a new review.
     """
@@ -460,14 +463,13 @@ def plan_merge(context: MergePlanningContext) -> MergePlan:
 
 
 def promote_node_group(plan: MergePlan, promotion: NodeGroupPromotion) -> MergePlan:
-    """Slice 2: return a new plan where the named nodes form one NodeGroupConflict.
-
-    The group holds the union of branch-changed and destination-changed content
-    fields on those nodes (one-sided changes included); their direct changes,
-    field conflicts, and review-group members move into it. diagnostic_codes come
-    from promotion.diagnostics. A node already inside a NodeGroupConflict raises
-    MergeRefused (promotion happens once; prepare_merge_candidate routes a repeat
-    rejection on such nodes to MergeAnswersRejected instead of calling this).
+    """Slice 2: move named nodes' direct changes and field conflicts into one
+    NodeGroupConflict covering the union of both sides' changed content fields,
+    with codes from promotion.diagnostics, while protected members retain their
+    ReviewGroups, subject keys and card slots and also appear in the node conflict
+    so its answer selects their proposed values (recompute affected effect digests).
+    A node already in a NodeGroupConflict raises MergeRefused; preparation instead
+    routes repeat rejection on such nodes to MergeAnswersRejected.
     """
     raise NotImplementedError
 
