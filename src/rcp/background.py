@@ -1891,7 +1891,17 @@ class BackgroundAgentTasks:
         else:
             if record.dispatch_authority is None:
                 raise ValueError("The admitted task has no dispatch authority.")
-            require_dispatch(record.dispatch_authority)
+            require_dispatch(
+                record.dispatch_authority,
+                member_merge_source=(
+                    request.merge_binding.source
+                    if isinstance(request, BranchMergeRunRequest)
+                    and request.episode_id is None
+                    and request.merge_binding is not None
+                    and request.merge_binding.dispatcher_episode_id is None
+                    else None
+                ),
+            )
 
         request_episode_id = (
             request.episode_id

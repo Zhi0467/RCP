@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from contextlib import suppress
+from typing import overload
 
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphTargetRef
+from rcp.history import HistoryManager
+from rcp.history.branches import BranchHistoryManager
 from rcp.history.queries import HeadSpec, HistoryEngine
 from rcp.runs.branch_merge import (
     BranchMergeContext,
@@ -21,12 +24,35 @@ from rcp.storage import AppStore, EpisodeRecord
 from rcp.transport import StateUnavailable
 
 
+@overload
+def merge_history(service: ProjectService, target: None = None) -> HistoryManager: ...
+
+
+@overload
+def merge_history(
+    service: ProjectService, target: GraphTargetRef
+) -> HistoryManager | BranchHistoryManager: ...
+
+
+def merge_history(
+    service: ProjectService, target: GraphTargetRef | None = None
+) -> HistoryManager | BranchHistoryManager:
+    """Resolve a merge ref through the canonical project history owner."""
+    history = service.history
+    root = history.parent if isinstance(history, BranchHistoryManager) else history
+    if target is None or target.kind == "main":
+        return root
+    return root.branch(
+        target.branch_id or "", expected_project_id=root.project_id, initialize=False
+    )
+
+
 def _active_branch_writer_task_ids(
-    store: AppStore, episode: EpisodeRecord, *, target: GraphTargetRef, exclude_operation_id: str
+    store: AppStore, project_id: str, *, target: GraphTargetRef, exclude_operation_id: str
 ) -> list[str]:
     return [
         item.operation_id
-        for item in store.unsettled_graph_target_tasks(episode.project_id, target)
+        for item in store.unsettled_graph_target_tasks(project_id, target)
         if item.operation_id != exclude_operation_id
         and item.kind != "branch_merge"
         and item.status in {"queued", "running", "pausing"}
@@ -37,30 +63,35 @@ def _active_branch_writer_task_ids(
 def load_branch_merge_context(
     service: ProjectService,
     store: AppStore,
-    episode: EpisodeRecord,
+    episode: EpisodeRecord | None,
     *,
     operation_id: str,
     authorized_by: AuthorizedHuman,
     merge_binding: MergeBinding | None = None,
 ) -> BranchMergeContext:
-    current = store.episode(episode.episode_id)
-    if (
-        current is None
-        or current.project_id != episode.project_id
-        or current.graph_target != episode.graph_target
-    ):
-        raise ValueError("episode_isolation_owner_changed")
-    source = merge_binding.source if merge_binding else episode.graph_target
+    if episode is not None:
+        current = store.episode(episode.episode_id)
+        if (
+            current is None
+            or current.project_id != episode.project_id
+            or current.graph_target != episode.graph_target
+        ):
+            raise ValueError("episode_isolation_owner_changed")
+    if merge_binding is None and episode is None:
+        raise ValueError("merge_source_binding_missing")
+    if merge_binding is not None:
+        source = merge_binding.source
+    else:
+        assert episode is not None
+        source = episode.graph_target
     destination = merge_binding.destination if merge_binding else GraphTargetRef()
-    history = getattr(service.history, "parent", service.history)
-    branch = history.branch(
-        source.branch_id or "",
-        expected_episode_id=store.branch_owner(episode.project_id, source.branch_id or ""),
-        expected_project_id=episode.project_id,
-        initialize=False,
-    )
-    engine: HistoryEngine = service.history_engine
+    branch = merge_history(service, source)
+    assert isinstance(branch, BranchHistoryManager)
     metadata = branch.branch_metadata()
+    project_id = metadata.project_id
+    if episode is not None and episode.project_id != project_id:
+        raise ValueError("merge_project_mismatch")
+    engine: HistoryEngine = service.history_engine
     branch_head = engine.resolve(HeadSpec(revision="head"), default_target=source)
     if merge_binding is not None and branch_head != merge_binding.source_head:
         raise ValueError("merge_source_head_changed")
@@ -71,7 +102,7 @@ def load_branch_merge_context(
         raise StateUnavailable("The graph branch changed while its merge context loaded.")
     active_writers = _active_branch_writer_task_ids(
         store,
-        episode,
+        project_id,
         target=source,
         exclude_operation_id=operation_id,
     )

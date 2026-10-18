@@ -35,11 +35,15 @@ class BranchMergeRunRequest(RunRequest):
 
     model_config = ConfigDict(extra="forbid")
 
-    episode_id: str = Field(min_length=1)
-    merge_binding: MergeBinding | None = None
+    episode_id: str | None = Field(default=None, min_length=1)
+    merge_binding: MergeBinding | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def require_dedicated_merge_shape(self) -> BranchMergeRunRequest:
+        if self.episode_id is None and (
+            self.merge_binding is None or self.merge_binding.dispatcher_episode_id is not None
+        ):
+            raise ValueError("merge_requires_episode_or_member_binding")
         if (
             self.provider is None
             or self.model is None

@@ -118,6 +118,12 @@ class AgentTaskAuthority(BaseModel):
     authorized_by: AuthorizedHuman | None
     dispatch_authority: AgentDispatchAuthority | None
     episode_id: str | None = Field(default=None, min_length=1)
+    merge_source: GraphTargetRef | None = None
+    merge_dispatcher: Literal["member", "orchestrator"] | None = None
+
+    @property
+    def member_merge_source(self) -> GraphTargetRef | None:
+        return self.merge_source if self.merge_dispatcher == "member" else None
 
 
 ORDINARY_AGENT_TASK_CONTRACTS: frozenset[AgentCapability] = frozenset(
@@ -133,12 +139,19 @@ def _require_scope_shape(
     authority: AgentDispatchAuthority,
     *,
     action: Literal["dispatch", "apply"],
+    member_merge_source: GraphTargetRef | None = None,
 ) -> None:
     contract = authority.task_contract
     scope = authority.scope
+    if member_merge_source is not None and (
+        member_merge_source.kind != "branch"
+        or authority.profile != "orchestrator"
+        or contract != "orchestrate"
+    ):
+        raise ValueError("member merge authority requires an exact branch source and orchestrator")
     if contract == "orchestrate":
         if (
-            scope.episode_id is None
+            (scope.episode_id is None and member_merge_source is None)
             or not scope.run_truth_scope
             or scope.patch_kind != "work"
             or any(
@@ -233,7 +246,9 @@ def _require_scope_shape(
         )
 
 
-def require_dispatch(authority: AgentDispatchAuthority) -> AgentDispatchAuthority:
+def require_dispatch(
+    authority: AgentDispatchAuthority, *, member_merge_source: GraphTargetRef | None = None
+) -> AgentDispatchAuthority:
     """Require one closed profile/task-contract pair for this exact dispatch."""
 
     compatible = (
@@ -248,7 +263,7 @@ def require_dispatch(authority: AgentDispatchAuthority) -> AgentDispatchAuthorit
             f"profile {authority.profile!r} does not permit task contract "
             f"{authority.task_contract!r}."
         )
-    _require_scope_shape(authority, action="dispatch")
+    _require_scope_shape(authority, action="dispatch", member_merge_source=member_merge_source)
     return authority
 
 
@@ -302,7 +317,9 @@ def require_apply(
             "Authority refused action 'apply': only the orchestrator dispatch binding may carry "
             "an agent authority action."
         )
-    _require_scope_shape(dispatch, action="apply")
+    _require_scope_shape(
+        dispatch, action="apply", member_merge_source=authority.member_merge_source
+    )
     if dispatch.task_contract not in APPLY_CAPABLE_TASK_CONTRACTS:
         raise ValueError(
             "Authority refused action 'apply': "
@@ -1062,7 +1079,11 @@ class WriteAuthority:
             and resolved.episode_id is None
         ):
             raise ValueError("Experiment-loop patches require canonical episode attribution")
-        if dispatch.profile == "orchestrator" and resolved.episode_id is None:
+        if (
+            dispatch.profile == "orchestrator"
+            and resolved.episode_id is None
+            and resolved.member_merge_source is None
+        ):
             raise ValueError("orchestrator agent tasks require a canonical episode_id")
         assert resolved.authorized_by is not None
         authorizer = self._canonical_authorizer(resolved.authorized_by)
@@ -1114,6 +1135,13 @@ class WriteAuthority:
             raise ValueError("agent authority resolver returned another task or project")
         if resolved.apply_target != receipt.provenance.rebased_main_head.target:
             raise ValueError("a branch merge receipt requires its recorded destination authority")
+        if resolved.merge_source is None:
+            if resolved.episode_id is None or resolved.episode_id != receipt.provenance.episode_id:
+                raise ValueError("a legacy branch merge receipt requires its recorded episode")
+        elif resolved.merge_source != GraphTargetRef(
+            kind="branch", branch_id=receipt.provenance.branch_id
+        ):
+            raise ValueError("a branch merge receipt requires its recorded source authority")
         dispatch = resolved.dispatch_authority
         if dispatch is None:
             raise ValueError("branch merge receipt task has no dispatch authority binding")
