@@ -54,6 +54,7 @@ from rcp.storage import (
     AppStore,
     Artifact,
     EpisodeMode,
+    EpisodeRecord,
 )
 from rcp.storage.artifacts import ArtifactDeleteRefused
 from rcp.storage.research_views import ResearchViewConflict
@@ -105,6 +106,22 @@ def _source_node_id(
         return None
     node_id = task.request.get("node_id")
     return node_id if isinstance(node_id, str) and node_id else None
+
+
+def _worker_on_owned_fork(store: AppStore, episode: EpisodeRecord, task: AgentTaskRecord) -> bool:
+    """An Auto-research worker spawned onto a fork its lineage owns keeps its own target."""
+    target = task.graph_target
+    work = store.auto_research_child_work_for_operation(task.operation_id)
+    return (
+        episode.mode == "auto_research"
+        and work is not None
+        and work.episode_id == episode.episode_id
+        and target.kind == "branch"
+        and any(
+            branch.branch_id == target.branch_id
+            for branch in store.branches_owned_by(episode.project_id, episode.episode_id)
+        )
+    )
 
 
 def _artifact_source_hrefs(
@@ -162,7 +179,10 @@ def _artifact_source_hrefs(
             if episode_id and (
                 episode is None
                 or episode.project_id != project_id
-                or episode.graph_target != target
+                or (
+                    episode.graph_target != target
+                    and not _worker_on_owned_fork(store, episode, task)
+                )
             ):
                 continue
             if episode is not None:
@@ -377,15 +397,18 @@ def saved_artifacts(
 def _name_artifact_branches(
     store: AppStore, project_id: str, entries: list[SavedArtifactResponse]
 ) -> None:
-    """Name each entry's branch from its episode, else its producing task."""
+    """Name each entry's branch from its producing task, else its episode.
+
+    A worker spawned onto a fork shares its parent's episode but not its target.
+    """
     names = store.branch_names(project_id)
     for entry in entries:
         episode = store.episode(entry.episode_id) if entry.episode_id else None
         task = store.agent_task(entry.operation_id) if entry.operation_id else None
-        if episode is not None and episode.project_id == project_id:
-            target = episode.graph_target
-        elif task is not None and task.project_id == project_id:
+        if task is not None and task.project_id == project_id:
             target = task.graph_target
+        elif episode is not None and episode.project_id == project_id:
+            target = episode.graph_target
         else:
             continue
         if target.kind == "branch" and target.branch_id is not None:

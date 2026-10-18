@@ -514,6 +514,57 @@ def test_auto_research_worker_artifact_opens_its_validated_branch_chat(manifest,
     assert transcript.json()["graph_target"] == parent.graph_target.model_dump(mode="json")
 
 
+def test_worker_artifact_on_an_owned_fork_keeps_its_fork_provenance(manifest, tmp_path):
+    from rcp.core.graph_targets import graph_target_json
+    from rcp.runs.graph_forks import create_graph_fork
+
+    app, _, parent, parent_root = _app_branch(manifest, tmp_path)
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    service = app.state.catalog.open(project_id)
+    fork_id = str(uuid.uuid4())
+    create_graph_fork(
+        service.history,
+        store,
+        branch_id=fork_id,
+        owner_episode_id=parent.episode_id,
+        project_id=project_id,
+        parent_head=service.history.head_ref(),
+        created_by=f"orchestrator:{parent_root}",
+        authorized_by=parent.authorized_by,
+    )
+    worker_id = str(uuid.uuid4())
+    task = _routed_worker(
+        store,
+        parent,
+        admitted_by=parent_root,
+        worker_id=worker_id,
+        seat_node_id="rq/learning-after-shift",
+        instruction="Measure recall on the fork.",
+    )
+    fork = GraphTargetRef(kind="branch", branch_id=fork_id)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET graph_target_json = ? WHERE operation_id = ?",
+            (graph_target_json(fork), task.operation_id),
+        )
+    task = store.agent_task(task.operation_id)
+    store.checkpoint_agent_task(
+        task.operation_id,
+        native_session_id=str(uuid.uuid4()),
+        stage_root=str(tmp_path / "worker-stage"),
+    )
+    store.complete_agent_task(
+        task.operation_id, applied_revision=None, result=_keep_task_artifact(app, task)
+    )
+    _save_source_chat(app, task)
+    entries = signed_in_client(app).get(f"/api/projects/{project_id}/artifacts").json()
+    entry = next(item for item in entries if item["operation_id"] == task.operation_id)
+    assert entry["graph_branch_name"] == store.branch_names(project_id)[fork_id]
+    route = urlsplit(entry["source_chat_href"].removeprefix("#"))
+    assert parse_qs(route.query)["branch_id"] == [fork_id]
+
+
 def test_saved_preview_survives_missing_or_unavailable_source_chat(
     manifest, tmp_path, monkeypatch, caplog
 ):
