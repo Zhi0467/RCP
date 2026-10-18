@@ -28,7 +28,8 @@ const items = document.getElementById("items"),
 const message = document.getElementById("message");
 const askFix = document.getElementById("askFix");
 // Every comment is one object: its text, and the selection it is anchored to (or
-// none, for the whole artifact). Edit now and Send post the same list.
+// none, for the whole artifact). Send posts the queued list; Edit now posts only
+// the comment being written and leaves the list alone.
 const comments = [];
 let current = null;
 let viewerState = null;
@@ -124,11 +125,15 @@ try {
   render();
   notice.textContent = "Saved comments could not be restored.";
 }
-function addComment(selection) {
+function draftComment(selection) {
   const text = message.value.trim();
-  if (!text) return false;
+  if (!text) return null;
   const anchor = selection && selection.kind !== "whole" ? selection : null;
-  const comment = { text: text.slice(0, 2048), selection: anchor };
+  return { text: text.slice(0, 2048), selection: anchor };
+}
+function addComment(selection) {
+  const comment = draftComment(selection);
+  if (!comment) return false;
   // The server refuses a list past these limits, so the list never grows past them.
   if (comments.length >= config.maxSelections) {
     notice.textContent = `A prompt can include at most ${config.maxSelections} comments.`;
@@ -306,12 +311,12 @@ async function refreshState() {
   updateSend();
 }
 message.addEventListener("input", () => { sendError = ""; saveComments(); updateSend(); });
-async function postComments(now) {
+async function postComments(now, only = null) {
   sendError = "";
   sending = true;
   updateSend();
   // A comment added while this send is in flight stays in the list.
-  const sent = comments.slice();
+  const sent = only ? [only] : comments.slice();
   try {
     const response = await fetch(config.commentsUrl, {
       method: "POST",
@@ -345,17 +350,27 @@ async function postComments(now) {
   } catch (error) {
     sendError = error.message;
     notice.textContent = sendError;
+    // A refused Edit now keeps its comment, queued for another try.
+    if (only) {
+      comments.push(only);
+      saveComments();
+      render();
+    }
   } finally {
     sending = false;
     updateSend();
   }
 }
-// Edit now adds the comment being written to the list, then asks for the edit at once.
+// Edit now asks for an edit from the comment being written alone.
 editNow.addEventListener("click", () => {
-  if (editNow.disabled || !addComment(current)) return;
+  const comment = editNow.disabled ? null : draftComment(current);
+  if (!comment) return;
+  message.value = "";
+  current = null;
+  saveComments();
   clearSelection();
   offerComposer(null);
-  void postComments(true);
+  void postComments(true, comment);
 });
 send.addEventListener("click", () => {
   if (!send.disabled) void postComments(false);

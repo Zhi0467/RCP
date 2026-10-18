@@ -275,13 +275,15 @@ HTML/raster/SVG support gestures (on immediately in panel, opt-in inline).
 Other viewable types accept whole-artifact comments; PDF/download-only refuse.
 Each comment is text plus optional selection. Starting on text highlights it;
 figure/blank-space drags select area. The floating window offers Add comment or
-Edit now, which files and sends all comments. Cancel/Escape discards it. A corner
+Edit now, which sends only the comment being written and leaves the tray as it is.
+Cancel/Escape discards it; a plain click elsewhere in the artifact closes it. A corner
 count icon opens the tray with Remove, whole-artifact comment, and Send to original
-chat. These are prompt inputs, never graph annotations.
+chat, which sends every filed comment. These are prompt inputs, never graph annotations.
 
 The shell saves filed comments/unsent text per artifact in the browser profile.
-Both send paths post the same list, with `edit_now` for immediate editing. A 409
-keeps it with the reason; success clears it and reports the operation to the parent.
+Both send paths post a comment list, with `edit_now` for immediate editing. A refusal
+keeps the comments with the reason (a refused Edit now files its comment in the tray);
+success removes only the comments it sent and reports the operation to the parent.
 Explicit fresh-session admission is labelled on both actions. Unavailable origins
 only disable editing. A later edit failure comes from `edit_failure` until replaced.
 Theme follows the containing app, or remembered appearance when standalone.

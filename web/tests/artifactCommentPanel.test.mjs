@@ -202,6 +202,30 @@ test("Edit now and Send post one comment list, and resubmit only with fresh-sess
   ]);
 });
 
+test("Edit now posts only the comment being written and keeps the queued list", async () => {
+  const app = shell();
+  await settle();
+  const { general, message, editNow } = app.elements;
+  for (const text of ["First queued", "Second queued"]) {
+    message.value = text;
+    app.addComment({ kind: "whole" });
+  }
+  app.setSendStatus(200);
+  general.listeners.click();
+  message.value = "Edit this now";
+  message.listeners.input();
+  editNow.listeners.click();
+  await settle();
+  const [post] = app.requests.filter((request) => request.url === "/comments");
+  const body = JSON.parse(post.options.body);
+  assert.deepEqual(body.comments, [{ text: "Edit this now", selection: null }]);
+  assert.equal(body.edit_now, true);
+  assert.deepEqual(
+    JSON.parse([...app.saved.values()].at(-1)).comments.map((comment) => comment.text),
+    ["First queued", "Second queued"],
+  );
+});
+
 test("shell stops permanent state failures until Retry and keeps polling transient failures", async () => {
   for (const status of [403, 404, 410, 0, 409, 503]) {
     const app = shell();

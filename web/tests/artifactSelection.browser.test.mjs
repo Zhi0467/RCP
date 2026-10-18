@@ -152,8 +152,10 @@ test("direct preview drags require confirmation, preserve text, and keep working
       assert.deepEqual(await page.evaluate(() => confirmed), [], "a drag is not a capture");
       const originalOutline = await outline.boundingBox();
       await page.mouse.click(...origin);
-      await drag(page, origin, [origin[0] + 2, origin[1] + 2]);
-      assert.equal(await pending.isVisible(), true, "clicks do not dismiss confirmation");
+      await pending.waitFor({ state: "hidden" });
+      assert.equal(await outline.count(), 0, "a click elsewhere dismisses confirmation");
+      await drag(page, origin, destination);
+      await pending.waitFor({ state: "visible" });
       assert.deepEqual(await outline.boundingBox(), originalOutline);
       const gestureSurface =
         kind === "html" ? page.frameLocator("iframe").locator("body") : page.locator("#image");

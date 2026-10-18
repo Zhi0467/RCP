@@ -252,7 +252,12 @@ function installArtifactSelection(surface, publish, isActive = () => true) {
       const drawn = drag.started;
       const element = drag.element;
       endDrag();
-      if (!drawn) return;
+      // A plain click elsewhere dismisses whatever selection the viewer is offering.
+      if (!drawn) {
+        clear();
+        publish(null);
+        return;
+      }
       if (right - left < 4 || bottom - top < 4) {
         clear();
         return;
@@ -289,7 +294,11 @@ function installArtifactSelection(surface, publish, isActive = () => true) {
       }
       const selection = doc.getSelection();
       const text = bounded(selection?.toString(), 4096);
-      if (!text || !selection?.rangeCount) return;
+      if (!text || !selection?.rangeCount) {
+        clear();
+        publish(null);
+        return;
+      }
       clear();
       const range = selection.getRangeAt(0);
       const container =
