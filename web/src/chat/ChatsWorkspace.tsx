@@ -61,6 +61,7 @@ import type {
   WatcherRecord,
 } from "../core/types";
 import { AgentBoard, type AgentBoardCard } from "./AgentBoard";
+import { BulletinPanel } from "./BulletinPanel";
 import { ProviderMark, hasProviderLogo } from "../projects/ProviderMark";
 import { EpisodeAuthor } from "../experiments/EpisodeRunControls";
 import { loadChatDisplay, setChatArchived, setChatPinned, setChatTitle } from "../core/api";
@@ -831,6 +832,14 @@ export function ChatsWorkspace({
             {archiveError}
           </p>
         )}
+        <BulletinPanel
+          key={`${project.id}:${graphTarget.kind === "branch" ? graphTarget.branch_id : "main"}`}
+          projectId={project.id}
+          target={graphTarget}
+          actorId={actorId}
+          nodes={nodes}
+          onOpenNode={onOpenNode}
+        />
         <AgentBoard
           columns={boardColumns}
           labels={BOARD_LABELS}
@@ -1104,10 +1113,12 @@ export function ChatsWorkspace({
             historyMessages={selectedOrchestratorTurns?.history}
             chatId={selected.chatId}
             presentation="workspace"
-            readOnly
+            // While the chain runs its turns are the orchestrator's; once it ends,
+            // the card takes ordinary chat turns on the chain's branch.
+            readOnly={!selectedChainEpisode || Boolean(selected.humanTurnRefusal)}
             questionEpisodeId={selectedChainEpisode?.episode_id}
             readOnlyNotice={
-              selectedChainEpisode && onSendOrchestratorMessage ? (
+              selectedChainEpisode && selected.humanTurnRefusal && onSendOrchestratorMessage ? (
                 <OrchestratorComposer
                   episode={selectedChainEpisode}
                   busyAction={episodeAction}
@@ -1116,7 +1127,9 @@ export function ChatsWorkspace({
               ) : undefined
             }
             graphChangesDisabled={graphChangesDisabled}
-            onStartTask={onStartTask}
+            onStartTask={(kind, request, requestId) =>
+              onStartTask(kind, request, requestId, selected.graphTarget ?? graphTarget)
+            }
             onResumeTask={onResumeTask}
             onRetryTask={onRetryTask}
             onRefreshTask={onRefreshTask}

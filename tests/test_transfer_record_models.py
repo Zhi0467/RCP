@@ -564,7 +564,8 @@ def test_branch_names_transfer_with_reservations_and_preserve_older_payloads(
         store._insert_transfer_episodes(connection, records, {})
         exported = store._transfer_episodes(connection, PROJECT_ID, ())
     assert exported == records.episodes
-    assert store.project_transfer_record_schema_version(PROJECT_ID) == 4
+    # Import backfills the episode's own branch record, which only version 6 carries.
+    assert store.project_transfer_record_schema_version(PROJECT_ID) == 6
     backup_path = tmp_path / "backup.sqlite3"
     store.online_snapshot(backup_path)
     backup = AppStore.open_read_only_snapshot(backup_path)

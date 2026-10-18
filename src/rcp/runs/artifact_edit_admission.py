@@ -140,6 +140,15 @@ def artifact_reply_origin(
     raise AgentTaskAdmissionConflict("The artifact's reply thread is unavailable.")
 
 
+def _artifact_chat_id(origin: AgentTaskRecord, reply_episode_id: str | None) -> object:
+    """The artifact's conversation: an orchestrator thread's is its chain root's branch."""
+    return (
+        origin.graph_target.branch_id
+        if reply_episode_id is not None
+        else origin.request.get("chat_id")
+    )
+
+
 def artifact_comment_message(message: str | None, context: ArtifactContextRequest) -> str:
     """The human's turn text: any free text, then each anchored comment by its number.
 
@@ -221,21 +230,13 @@ def admit_chat_artifact_edit(
     """Attach an edit to the current chat without borrowing the origin's session."""
     context = request.artifact_context
     assert context is not None
-    artifact, origin, _ = _checked_artifact(store, service, project_id, context)
-    if not request.chat_id or origin.request.get("chat_id") != request.chat_id:
+    artifact, origin, reply_episode_id = _checked_artifact(store, service, project_id, context)
+    if not request.chat_id or _artifact_chat_id(origin, reply_episode_id) != request.chat_id:
         raise ValueError("The artifact belongs to another chat.")
-    master = (
-        store.latest_session_master(project_id, origin.native_session_id)
-        if origin.native_session_id
-        else None
-    )
-    owner = store.agent_task(master[0]) if master else origin
-    revoking = owner is not None and (
-        owner.kind == "auto_research" or owner.request.get("patch_kind") == "experiment_loop"
-    )
-    # A read-only Auto-research child chat composes only comments, which keep
-    # the origin-bound Discuss edit the viewer uses.
-    if revoking or store.child_human_turn_refusal(project_id, request.chat_id) is not None:
+    # A read-only Auto-research child or running orchestrator chat composes only
+    # comments, which keep the origin-bound Discuss edit the viewer uses. Any
+    # other chat, Experiment chats included, takes an ordinary human turn.
+    if store.child_human_turn_refusal(project_id, request.chat_id) is not None:
         if request.mode == "work":
             raise ValueError("This artifact can only be edited in Discuss here.")
         return admit_artifact_edit(store, service, project_id, request)
@@ -257,6 +258,41 @@ def admit_chat_artifact_edit(
             "message": artifact_comment_message(request.message, context),
         }
     )
+
+
+def artifact_send_chat_turn(
+    store: AppStore, artifact: Artifact, context: ArtifactContextRequest, message: str
+) -> tuple[Literal["node_chat", "project_chat"], dict[str, object]] | None:
+    """The viewer's Send as an ordinary Work turn in the artifact's chat.
+
+    Returns the task kind and the body a composer would post, or None when the
+    origin's chat takes no human turns now (a running orchestrator or a read-only
+    Auto-research child), which keeps the origin-bound edit. An ended chain's
+    orchestrator thread is its root's project chat. The turn runs on the chat's
+    latest profile, as the composer would.
+    """
+    origin, reply_episode_id = artifact_reply_origin(store, artifact)
+    chat_id = _artifact_chat_id(origin, reply_episode_id)
+    if not isinstance(chat_id, str) or not chat_id:
+        return None
+    if store.child_human_turn_refusal(artifact.project_id, chat_id) is not None:
+        return None
+    kind: Literal["node_chat", "project_chat"] = (
+        "project_chat"
+        if reply_episode_id is not None or origin.request.get("chat_scope") == "project"
+        else "node_chat"
+    )
+    latest = store.current_chat_session(artifact.project_id, kind, chat_id) or origin
+    body: dict[str, object] = {
+        "message": message,
+        "mode": "work",
+        "chat_id": chat_id,
+        "node_id": None if reply_episode_id is not None else origin.request.get("node_id"),
+        "artifact_context": context.model_dump(mode="json"),
+    }
+    for key in ("provider", "model", "reasoning", "run_on"):
+        body[key] = latest.request.get(key)
+    return kind, body
 
 
 def admit_artifact_edit(

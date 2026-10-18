@@ -39,9 +39,12 @@ _MUTATING = frozenset(
     (
         "ask",
         "lesson",
+        "bulletin",
         "flag",
         "apply",
         "spawn",
+        "merge",
+        "branch",
         "pause",
         "resume",
         "stop",
@@ -60,6 +63,80 @@ class ClientInputError(Exception):
 
 
 _PROFILE_PICK_FLAGS = (("provider", "--provider"), ("model", "--model"), ("reasoning", "--effort"))
+# Parser enforcement and root prompt invocations share these option records.
+SPAWN_SEAT_OPTIONS = (("seat_node", "--seat-node", "<node-id>"), ("project", "--project", None))
+CHILD_TARGET_OPTIONS = (("at", "--at", "<ref@R>"), ("target", "--target", "<branch>"))
+CHILD_SEED_OPTION = ("seed_file", "--seed-file", "<filename>")
+# Parser enforcement and every usage renderer share these option records.
+KEY_OPTION = ("key", "--key", "<key>")
+MERGE_SOURCE = ("branch_id", "<branch-id>")
+BRANCH_ARCHIVE = ("archive", "--archive", "<branch-id>")
+BULLETIN_READ = ("read", "--read", None)
+BULLETIN_POST = ("post", "--post", None)
+BULLETIN_EDIT = ("edit", "--edit", "<post-id>")
+BULLETIN_DELETE = ("delete", "--delete", "<post-id>")
+BULLETIN_REPLY_TO = ("reply_to", "--reply-to", "<post-id>")
+BULLETIN_CURSOR = ("cursor", "--cursor", "<cursor>")
+BULLETIN_BODY = ("body_file", "<body-file>")
+
+
+def _option_usage(option):
+    _, flag, value = option
+    return f"{flag} {value}" if value else flag
+
+
+def merge_usage():
+    return f"merge {_option_usage(KEY_OPTION)} {MERGE_SOURCE[1]}"
+
+
+def branch_usage():
+    return f"branch {_option_usage(BRANCH_ARCHIVE)}"
+
+
+def bulletin_usages():
+    key, body = _option_usage(KEY_OPTION), BULLETIN_BODY[1]
+    return (
+        f"bulletin {_option_usage(BULLETIN_READ)} [{_option_usage(BULLETIN_CURSOR)}]",
+        f"bulletin {_option_usage(BULLETIN_POST)} {key} "
+        f"[{_option_usage(BULLETIN_REPLY_TO)}] {body}",
+        f"bulletin {_option_usage(BULLETIN_EDIT)} {key} {body}",
+        f"bulletin {_option_usage(BULLETIN_DELETE)} {key}",
+    )
+
+
+def child_target_usage():
+    alternatives = " | ".join(f"{flag} {value}" for _, flag, value in CHILD_TARGET_OPTIONS)
+    _, seed_flag, seed_value = CHILD_SEED_OPTION
+    return f"[{alternatives}] [{seed_flag} {seed_value} (requires --at)]"
+
+
+def spawn_seat_usage():
+    return (
+        "("
+        + " | ".join(f"{flag} {value}" if value else flag for _, flag, value in SPAWN_SEAT_OPTIONS)
+        + ")"
+    )
+
+
+def _add_child_target_arguments(parser):
+    target = parser.add_mutually_exclusive_group()
+    for dest, flag, value in CHILD_TARGET_OPTIONS:
+        target.add_argument(flag, dest=dest, metavar=value)
+    dest, flag, value = CHILD_SEED_OPTION
+    parser.add_argument(flag, dest=dest, metavar=value)
+
+
+def _child_target_arguments(namespace, workspace):
+    arguments = {
+        dest: _nonblank(getattr(namespace, dest), flag)
+        for dest, flag, _ in CHILD_TARGET_OPTIONS
+        if getattr(namespace, dest) is not None
+    }
+    if namespace.seed_file is not None:
+        if namespace.at is None:
+            raise ClientInputError("--seed-file requires --at")
+        arguments["seed_file"] = _keyed_command_file(workspace, namespace.seed_file, "seed file")
+    return arguments
 
 
 def _add_profile_pick_arguments(parser):
@@ -196,6 +273,17 @@ def _parser():
     flag.add_argument("--finding", required=True)
     flag.add_argument("--source")
 
+    bulletin = subparsers.add_parser("bulletin")
+    bulletin_actions = bulletin.add_mutually_exclusive_group(required=True)
+    for dest, option, value in (BULLETIN_POST, BULLETIN_READ, BULLETIN_EDIT, BULLETIN_DELETE):
+        if value is None:
+            bulletin_actions.add_argument(option, dest=dest, action="store_true")
+        else:
+            bulletin_actions.add_argument(option, dest=dest, metavar=value)
+    for dest, option, value in (KEY_OPTION, BULLETIN_REPLY_TO, BULLETIN_CURSOR):
+        bulletin.add_argument(option, dest=dest, metavar=value)
+    bulletin.add_argument(BULLETIN_BODY[0], nargs="?", metavar=BULLETIN_BODY[1])
+
     lesson = subparsers.add_parser("lesson")
     lesson_actions = lesson.add_subparsers(dest="lesson_action", required=True)
     for action in ("add", "list", "update", "delete"):
@@ -218,6 +306,11 @@ def _parser():
     validate = subparsers.add_parser("validate")
     validate.add_argument("patch_path")
 
+    merge_answers = subparsers.add_parser("merge-answers")
+    answer_commands = merge_answers.add_subparsers(dest="action", required=True)
+    check_answers = answer_commands.add_parser("check")
+    check_answers.add_argument("answers_path")
+
     apply = subparsers.add_parser("apply")
     apply.add_argument("--key", required=True)
     apply.add_argument("patch_path")
@@ -227,9 +320,24 @@ def _parser():
     status_target.add_argument("--worker-id")
     status_target.add_argument("--episode-id")
 
+    merge = subparsers.add_parser("merge")
+    merge.add_argument(KEY_OPTION[1], dest=KEY_OPTION[0], required=True, metavar=KEY_OPTION[2])
+    merge.add_argument(MERGE_SOURCE[0], metavar=MERGE_SOURCE[1])
+    branch = subparsers.add_parser("branch")
+    # Archive is idempotent; an omitted key gets a fresh one.
+    branch.add_argument(KEY_OPTION[1], dest=KEY_OPTION[0], metavar=KEY_OPTION[2])
+    dest, option, value = BRANCH_ARCHIVE
+    branch.add_argument(option, dest=dest, required=True, metavar=value)
+
     spawn = subparsers.add_parser("spawn")
     spawn.add_argument("--key", required=True)
-    spawn.add_argument("--seat-node", required=True)
+    seat = spawn.add_mutually_exclusive_group(required=True)
+    for dest, flag, value in SPAWN_SEAT_OPTIONS:
+        if value is None:
+            seat.add_argument(flag, dest=dest, action="store_true")
+        else:
+            seat.add_argument(flag, dest=dest, metavar=value)
+    _add_child_target_arguments(spawn)
     spawn.add_argument("--instruction-file", required=True)
     _add_profile_pick_arguments(spawn)
 
@@ -258,6 +366,7 @@ def _parser():
     episode.add_argument("--goal-file")
     episode.add_argument("--invocation-limit", type=int)
     _add_profile_pick_arguments(episode)
+    _add_child_target_arguments(episode)
 
     inbox = subparsers.add_parser("inbox")
     inbox.add_argument("--key", required=True)
@@ -284,26 +393,34 @@ def _nonblank(value, label):
 
 def _request_arguments(namespace, workspace):
     verb = namespace.verb.replace("-", "_")
-    if verb == "validate":
-        patch_path = _regular_workspace_file(
-            workspace, namespace.patch_path, "patch.json", required_name="patch.json"
+    if verb in ("validate", "merge_answers"):
+        is_patch = verb == "validate"
+        label = "patch.json" if is_patch else "answers file"
+        path = _regular_workspace_file(
+            workspace,
+            namespace.patch_path if is_patch else namespace.answers_path,
+            label,
+            required_name="patch.json" if is_patch else None,
         )
         try:
-            with open(patch_path, "rb") as stream:
+            with open(path, "rb") as stream:
                 if os.fstat(stream.fileno()).st_size > COMMAND_MAILBOX_MAX_REQUEST_BYTES:
                     raise ClientInputError(
-                        "patch.json exceeds the "
+                        f"{label} exceeds the "
                         f"{COMMAND_MAILBOX_MAX_REQUEST_BYTES}-byte command request limit"
                     )
                 content = stream.read(COMMAND_MAILBOX_MAX_REQUEST_BYTES + 1)
             if len(content) > COMMAND_MAILBOX_MAX_REQUEST_BYTES:
                 raise ClientInputError(
-                    "patch.json exceeds the "
+                    f"{label} exceeds the "
                     f"{COMMAND_MAILBOX_MAX_REQUEST_BYTES}-byte command request limit"
                 )
-            return verb, None, {"patch": content.decode("utf-8")}
+            arguments = {"patch" if is_patch else "answers": content.decode("utf-8")}
+            if not is_patch:
+                arguments["action"] = namespace.action
+            return verb, None, arguments
         except (OSError, UnicodeError) as exc:
-            raise ClientInputError(f"patch.json could not be read: {exc}") from exc
+            raise ClientInputError(f"{label} could not be read: {exc}") from exc
     if verb == "status":
         worker_id = namespace.worker_id
         if worker_id is not None:
@@ -335,6 +452,45 @@ def _request_arguments(namespace, workspace):
             arguments.update({"from": namespace.from_head, "to": namespace.to_head})
             arguments["ids"] = namespace.ids + namespace.filter_ids
         return verb, None, arguments
+    if verb == "bulletin":
+        if namespace.read:
+            if namespace.key or namespace.reply_to or namespace.body_file:
+                raise ClientInputError("Bulletin reads accept only a cursor")
+            return verb, None, {"action": "read", "cursor": namespace.cursor}
+        if namespace.delete:
+            if namespace.cursor or namespace.body_file or namespace.reply_to:
+                raise ClientInputError("Bulletin deletes accept only a post id and key")
+            return (
+                verb,
+                _nonblank(namespace.key, "idempotency key"),
+                {
+                    "action": "delete",
+                    "post_id": namespace.delete,
+                },
+            )
+        if namespace.edit and namespace.reply_to:
+            raise ClientInputError("Bulletin edits accept no reply target")
+        if namespace.cursor or not namespace.body_file:
+            raise ClientInputError("Bulletin posts require a body file and accept no cursor")
+        path = _regular_workspace_file(workspace, namespace.body_file, "Bulletin body")
+        try:
+            with open(path, encoding="utf-8") as stream:
+                text = stream.read(COMMAND_MAILBOX_MAX_REQUEST_BYTES + 1)
+        except (OSError, UnicodeError) as exc:
+            raise ClientInputError(f"Bulletin body could not be read: {exc}") from exc
+        return (
+            verb,
+            _nonblank(namespace.key, "idempotency key"),
+            {
+                "action": "edit" if namespace.edit else "post",
+                "text": _nonblank(text, "Bulletin body"),
+                **(
+                    {"post_id": namespace.edit}
+                    if namespace.edit
+                    else {"reply_to": namespace.reply_to}
+                ),
+            },
+        )
     if verb == "lesson":
         action = namespace.lesson_action
         arguments = {"action": action}
@@ -347,6 +503,17 @@ def _request_arguments(namespace, workspace):
         if action in ("update", "delete"):
             arguments["lesson_id"] = _nonblank(namespace.id, "lesson id")
         return verb, _nonblank(namespace.key, "idempotency key"), arguments
+    if verb == "branch":
+        return (
+            verb,
+            _nonblank(namespace.key, "idempotency key")
+            if namespace.key is not None
+            else uuid.uuid4().hex,
+            {
+                "action": "archive",
+                "branch_id": _nonblank(namespace.archive, "branch id"),
+            },
+        )
     key = _nonblank(namespace.key, "idempotency key")
     if verb == "flag":
         arguments = {
@@ -368,12 +535,19 @@ def _request_arguments(namespace, workspace):
             workspace, namespace.patch_path, "patch.json", required_name="patch.json"
         )
         arguments = {"patch_file": patch_file}
+    elif verb == "merge":
+        arguments = {"branch_id": _nonblank(namespace.branch_id, "branch id")}
     elif verb == "spawn":
         instruction_file = _keyed_command_file(
             workspace, namespace.instruction_file, "instruction file"
         )
         arguments = {
-            "seat_node_id": _nonblank(namespace.seat_node, "seat node"),
+            **(
+                {"project": True}
+                if namespace.project
+                else {"seat_node_id": _nonblank(namespace.seat_node, "seat node")}
+            ),
+            **_child_target_arguments(namespace, workspace),
             "instruction_file": instruction_file,
             **_profile_pick(namespace),
         }
@@ -413,6 +587,7 @@ def _request_arguments(namespace, workspace):
                 goal_file = _keyed_command_file(workspace, goal_file, "goal file")
             arguments = {
                 "action": "kick_off_experiment",
+                **_child_target_arguments(namespace, workspace),
                 "node_id": _nonblank(node_id, "Experiment node"),
                 "goal_file": goal_file,
                 "invocation_limit": invocation_limit,
@@ -427,6 +602,9 @@ def _request_arguments(namespace, workspace):
                 raise ClientInputError(
                     "--invocation-limit is available only for Experiment kickoff"
                 )
+            for dest, flag, _ in (*CHILD_TARGET_OPTIONS, CHILD_SEED_OPTION):
+                if getattr(namespace, dest) is not None:
+                    raise ClientInputError(f"{flag} is available only for Experiment kickoff")
             for dest, flag in _PROFILE_PICK_FLAGS:
                 if getattr(namespace, dest) is not None:
                     raise ClientInputError(
@@ -497,7 +675,7 @@ def _client_failure(verb, status, message, delivery=None):
 def _not_answered(verb, timeout):
     repeat = (
         "Run the check again."
-        if verb == "validate"
+        if verb in ("validate", "merge_answers", "merge-answers")
         else "Repeat the exact same command, with the same key, to get its result."
     )
     return _client_failure(
@@ -918,8 +1096,10 @@ def _requested_verb(argv):
         if argument in (
             "ask",
             "lesson",
+            "bulletin",
             "flag",
             "validate",
+            "merge-answers",
             "graph_diff",
             "graph_log",
             "graph-diff",
@@ -927,6 +1107,8 @@ def _requested_verb(argv):
             "apply",
             "status",
             "spawn",
+            "merge",
+            "branch",
             "pause",
             "resume",
             "stop",

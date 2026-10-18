@@ -205,12 +205,21 @@ and names a valid Evidence-to-Hypothesis epistemic edge as cause. Other intents
 use a rationale without an invented evidence cause.
 
 Canonical branch merge may propose an exact `standing_change` or a `status_change`
-with canonically proven human cause. It may bundle at most one content, one status,
-and one standing intent for the same existing protected node, independently
-validated and approved atomically. Explicit proposed standing overrides implicit
-accepted standing. It may also propose exact removal of an accepted ordinary
-node. Merge conformance proves every effect against the source delta; none of
-these forms grants direct approval or accepted-node removal.
+with canonically proven human cause. Dependency rule 3 permits a connected group
+of intents whose approval effects overlap another member's effects or dependencies,
+validated and approved atomically. Shared read-only dependencies alone do not
+connect a group. This includes removing and recreating one protected edge.
+An existing retirement edge may be replaced to edit its content while keeping
+its id, endpoints, and relation; new retirement relations still require the
+dedicated supersede or merge operation. If merge answers remove a connecting
+effect, the surviving components become separate Proposals using the supplied card.
+Explicit proposed standing overrides implicit accepted standing; rule 3 implicitly
+accepts only written subjects, leaving read-only dependencies unchanged. Earlier
+rules retain their same-node bundle admission and approval-standing behavior.
+Approval replays the stored effects plus their exact implicit standing operations.
+Merge may also propose exact removal of an accepted ordinary node.
+RCP builds every merge effect from the planned three-way diff and the agent's
+answers; none of these forms grants direct approval or accepted-node removal.
 
 Every agent Proposal waits for a human. An orchestrator writes its children's
 instructions and cannot independently approve them. Any agent may withdraw a
@@ -218,11 +227,16 @@ pending obsolete or duplicate Proposal; withdrawal applies no semantic operation
 
 Creation snapshots referenced nodes, edges, and project configuration. Removal
 also snapshots the exact incident-edge set, including empty. A Proposal filed
-under dependency rule 2 also depends on each Evidence-edge cause's Evidence node,
+under dependency rule 2 or 3 also depends on each Evidence-edge cause's Evidence node,
 so any change to that Evidence stales it: rewording it (Address, consolidation) or
-accepting or rejecting it in a later Sync. Proposals filed
-earlier keep rule 1, because replay re-derives dependencies and must judge them
-as filed. Changed dependencies, recreated edges, or changed incident sets make
+accepting or rejecting it in a later Sync. New ordinary Proposals use rule 2;
+only new connected multi-intent merge groups, including atomic protected-edge
+replacements, use rule 3. Rule 3 allows a replacement edge to exist at filing
+when the same Proposal removes it before recreation. A carried pending source
+Proposal is a new destination filing and receives current destination stamps,
+including rule 2 or 3 according to its form. Replay of existing records preserves
+their recorded rule, because it must judge them as filed.
+Changed dependencies, unexpected recreated edges, or changed incident sets make
 approval stale: Sync withdraws it without semantic change. Multiple judgments in
 one Sync evaluate in order and commit atomically.
 

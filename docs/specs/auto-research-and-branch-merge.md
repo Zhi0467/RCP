@@ -118,6 +118,67 @@ keep the child's episode id; admission checks the task target, not equality with
 the branch owner. Branch writes advance only branch graph/control/guidance/events;
 ordinary human and agent work may keep advancing main.
 
+## Forks
+
+A fork is a graph branch with its own UUID4 id, unlike an episode branch whose id
+is its episode id, and an exact parent head (`main@R` or `branch:<id>@R`) fixed
+at creation. Its owner is an episode lineage (the chain root) or, for a member's
+fork, no episode. A lineage owns its persistent branch and every fork it created.
+[History and graph targets](graph-history-and-transitions.md#append-only-history-and-graph-targets)
+own metadata and replay.
+
+The orchestrator places children with `spawn` and `episode --kick-off-experiment`.
+`--at <ref@R>` forks any project ref, resolved once to an exact head; a bare `@R`
+names the root's branch. `--target <branch>` (id or name) uses an open
+lineage-owned branch; archived, foreign, and main targets refuse with
+`child_target_refused`. Omitting both keeps the root's branch. `spawn --project`
+and `--seat-node` choose the seat, never the target. `--seed-file <file>` requires
+`--at` and must hold at least one operation valid under the orchestrator profile.
+Fork reservation, seed snapshot, child admission, and budget spend commit in one
+command start. RCP then publishes the fork and commits the seed as its first
+Patch before the child launches; retry re-drives that recorded identity, never
+a new fork.
+
+A run whose target is a fork reads graph history only on the fork and its
+ancestors, each through the revision it was forked at; other runs read main and
+every branch. The prompt renders that same scope, and reading grants no writes.
+The loop-overlap builder takes the same scope, so such a run is shown no live
+loops on other branches; human views stay unfiltered.
+
+An orchestrator fork archives automatically when its head still equals its parent
+head and no writer can reach it: no unsettled task using it as graph target or
+bound merge destination, no unstopped worker that can still resume there from its
+session and stage, no nested fork with such work, no publication of unknown outcome,
+no undelivered watcher or worker mail, no live child Experiment, and no accepted
+admission targeting it.
+The child poll rechecks this under the canonical write lock. `branch --archive <id>`
+archives an owned fork, never the root's own branch. Member forks never auto-archive.
+
+`merge --key K <fork>` delivers an owned fork into its parent when the lineage owns
+both and the parent is open. A fork of main or of a foreign branch has no owned
+destination (`merge_main_requires_human`, `merge_branch_not_owned`). The
+[semantic merge](#semantic-rebase-and-merge) runs against the parent: a plan with no
+conflicts or review cards commits without a provider; one that needs the agent spends
+one lineage invocation, reserved at admission or when the parent's advance first needs
+it, and refuses with `merge_budget_exhausted`. Protected beliefs arrive as pending Proposals on the
+parent. The root must be running without ending or Stop; a delivered head, a live
+source writer, or another merge into that parent refuses. Merge does not archive.
+**Why:** invariant 3 lets the orchestrator merge only within its own lineage; main
+truth changes only by human dispatch.
+
+Any member may fork an explicit `main@R` or `branch:<id>@R` with
+`POST /api/projects/{project_id}/graph-refs` (`{request_id, at, name?}`; the
+UUID4 `request_id` becomes the branch id) and deliver any fork, member or
+lineage, into its parent with `POST .../graph-refs/{branch_id}/merge`
+(`{request_id}`), without an episode or budget; the branch picker offers Merge on
+each open, merge-eligible fork. An episode branch refuses
+(`merge_source_is_episode_branch`) and delivers through episode Merge. A member
+merge carries no episode attribution, even out of a lineage fork. **Why:** a
+lineage fork of main, or of a branch the lineage does not own, has no owned
+destination, so only a member can deliver it. A member fork has no owner episode,
+so the first Experiment admitted on it becomes the isolation owner that later
+Experiments there share, reserved at admission before any launch binds it.
+
 ## Graph and code isolation
 
 Auto-research always isolates its graph. An omitted code-isolation choice resolves
@@ -159,6 +220,15 @@ or merge refusal. Add N turns refuses while a human turn is active in a lineage
 child, naming the chat; admission locks composers again. Session/stage exclusion
 still prevents overlap.
 
+The chain's orchestrator conversation (chat id = root episode id = its branch)
+follows the same lock with `auto_research_orchestrator_running`. After the chain
+ends it takes ordinary project-chat turns on that branch. The first resumes the
+newest member's orchestrator session and stage, or starts fresh with
+`orchestrator_session_unavailable`, `provider_mismatch`, `machine_mismatch`, or the
+ordinary dropped-session reason. The conversation's graph target is that branch.
+Add N turns refuses while such a turn is active, and viewer Send on an ended
+chain's orchestrator artifact continues this conversation with a Work turn.
+
 Lifecycle notices are RCP facts: child settlement/recovery, child Experiment
 attention/ending, and graph readiness. Source transition and deduplicated notice
 commit together. Busy actors receive input after their turn. Sleeping delivery
@@ -193,7 +263,9 @@ control, which excludes Experiment graph conditions.
 
 The exact RCP-authored prefix exposes validation/keyed Apply, status, keyed worker
 spawn and pause/resume/stop, star mail, graph-condition registration, child
-Experiment kickoff/stop/exact-resume, inbox harvest/clear, ask, and guarded finish.
+Experiment kickoff/stop/exact-resume, keyed fork merge and fork archive (see
+[Forks](#forks)), inbox harvest/clear, the Bulletin while it is on, ask, and
+guarded finish.
 Spawn/kickoff may select provider/model/effort. Root commands expose no compute
 helper verbs; child Work uses `launch` on the generic route or direct scheduler
 submission. Validation/reply policy remains surface-specific.
@@ -329,15 +401,15 @@ unmerged index, and dirty submodules refuse. RCP commits only ordinary episode
 leftovers with `git add -A`, excluding ignored files, under a fixed RCP identity.
 It never commits shared-checkout changes, resets, stashes, force-pushes, or pushes.
 
-The graph builder and `git merge-tree --write-tree` classify residue. With none,
+The merge plan and `git merge-tree --write-tree` decide whether judgment is needed. With none,
 RCP builds the landing commit from the tested tree: a clean checked-out target
 fast-forwards in one step; an unchecked-out target moves by compare-and-swap.
 Source/target commits and checkout identity are rechecked before landing. Code
 lands and is verified before the graph transition.
 
-Either code conflict or graph residue starts one merge task in chat Integrate's
+Either code conflict or a graph plan needing answers starts one merge task in chat Integrate's
 local-merge scope. RCP verifies its landing contains both recorded source and
-target commits before graph commit. With no graph residue, the code turn is
+target commits before graph commit. With no graph answers needed, the code turn is
 followed by agentless graph delivery. Code-only tasks target main with no graph
 side. Missing landing fails before graph commit; next Merge starts a fresh
 attempt. A later graph failure never undoes landed code.
@@ -358,56 +430,69 @@ not change delivery into failure.
 
 ## Semantic rebase and merge
 
-Merge context contains immutable base, exact branch/main heads and graphs, typed
-base-to-branch delta, bounded Patch summaries/provenance, canonical human actions,
-delivered heads, schema/validator, and deterministic conflicts. Dispatch pins main's
-current truth membership; `repositories_read` is empty. Changed membership requires
-new dispatch; out-of-membership provenance refuses.
+RCP builds every merge Patch; the merge agent never writes operations. The loader
+captures the exact base, source, and destination heads and graphs, canonical human
+source facts, scoped earlier merge reviews, and the dispatching human's live
+authority. Dispatch pins the destination's current truth membership;
+`repositories_read` is empty. Changed membership requires new dispatch.
 
-The deterministic builder emits authorable non-conflicting node creations/ordinary
-updates and legal edge creates/removes/replacements. Replacement overlays changed
-branch fields on main, preserving compatible main edits; validation checks net
-changes and both operations' authority. It cannot leave an edge missing or smuggle
-unrelated edits. Already-present values are omitted. Protected changes, conflicting
-nodes, Decision outcomes, removals, and source Proposals remain in agent residue,
-keeping coupled fields together.
+The planner (`runs/merge_plan.py`) is a pure three-way comparison over whole fields
+whose model role is `content`; `engine` and `identity` fields never diff, and every
+graph model field declares its role. A one-sided change wins, identical changes agree,
+and different changes to one field conflict. Removal on one side against an edit, a new
+reference, or a new or edited incident edge on the other is a presence conflict.
+Re-merge compares from the last delivered source snapshot; a field under a still-pending
+earlier merge review compares against the destination's current value, so the new
+review replaces it with the resolved outstanding and new effects together. Outstanding
+effects are computed by the loader from the canonical filing snapshot and stored as
+changes, without carrying that snapshot in the plan; historical operations never run
+against the live destination. A stale review contributes no outstanding effect, so its subjects
+use ordinary three-way comparison. Reverting source work can cancel a pending effect:
+the predecessor is withdrawn without re-filing its operations. Rejected work is not
+resurrected, and approved work yields to later destination judgments.
+**Why:** a second, merge-only model of graph semantics drifted from core on every
+schema or rule change; whole-field comparison over declared roles has nothing to drift.
 
-Ordinary edits reset standing as on the branch. A mere main acceptance does not
-defer them; agreed stronger branch/main standing is restored. A human standing
-change on main since fork is deferred for explicit judgment. Each residue path's
-reason comes from the same mapping rendered in the contract. Built operations are
-staged as a file. Guidance text merges, but backend freshness flags do not: main's
-transition recomputes validity from merged dependencies.
+Core decides each change's route (`classify_graph_changes`): admitted changes are
+written directly, reviewable ones become pending Proposals, refused ones fail the merge
+with the exact diagnostic. Protected changes are grouped by their core-reported approval
+dependencies and effects into one Proposal per connected group, so approving one merge
+Proposal never makes another from the same merge stale. Planning, splitting answered
+groups, and core filing admission share one connectivity function, which recomputes
+combined approval footprints until stable. The builder
+(`runs/merge_patch.py`) encodes Decision outcomes, decided creation, supersede and merge,
+and edge replacement with the operation sequences core accepts; a carried status keeps the
+cause its source transition recorded, and only an exact canonical human source fact keeps
+`human_edit`. Creation keeps every writable content field, including explicit default
+values, and restores a Decision's selected lifecycle after reconstructing its choice.
+Live source Proposals that overlap a review join its connected group: their operations
+are filed in that group's Proposal. Independent source Proposals retain identity and
+content with destination filing stamps.
 
-Empty residue commits without a provider. Otherwise the agent writes residue only;
-RCP prepends built operations for validation and commit. Unsupported configuration,
-invalid fixed operations, and mandatory source Proposals with out-of-scope provenance
-fail before launch, outside an unrepairable correction loop.
-**Why:** deterministic paths already have a specified result; the agent is needed
-only for unresolved judgment. Agentless still requires human dispatch. Merges are
-pairwise against current main, never a batch of branches.
+The agent answers only real conflicts and writes card prose for review groups, in
+`answers.json`: `branch`, `destination`, or a `merged` value (node `status` and
+`standing` pick a side), keep-removal or keep-node for presence conflicts. It runs
+`merge-answers check`, which dry-runs the same preparation as commit and binds a
+receipt to the exact answers bytes, plan, and heads; a turn ends only with a passing
+receipt for the collected bytes, or the task fails with the reason. A matching receipt
+takes precedence over refusal or clash diagnostics from other attempted answer files.
+Core coherence clashes become
+node-level questions during planning or preparation, even when those nodes already
+have ordinary field conflicts. Promotion happens once per node group; repeated clashes
+go back to the agent's check. Answer-dependent construction and review-footprint
+failures also return answer diagnostics with conflict ids; authority and other hard
+refusals remain terminal. A plan with no
+conflicts and no review cards commits without a provider.
+**Why:** deterministic paths already have a specified result; the agent is needed only
+for judgment, and a check that runs the commit path cannot disagree with commit.
+Agentless merge still requires human dispatch. Merges are pairwise against the current
+destination, never a batch of branches.
 
-The merge agent has the orchestrator graph profile under the dispatching human.
-It gets scratch and, only for code landing, the episode worktree/shared-checkout
-roots rendered from the resolved scope. It gains no membership, ontology,
-configuration, approval, server, or general branch authority. The combined Patch
-commits one main transition or nothing; conflicts use bounded same-session
-correction, not a manual node-conflict viewer.
-
-Legal direct changes may accompany protected main Proposals. Branch human judgment
-does not let the agent approve on main: its Inbox reviews again. Exact canonical
-human initiating operations prove special status/standing causes, never prose or
-inferred intent. The [Proposal rules](authority-and-proposals.md#protected-belief-proposals)
-allow coupled content/status/standing review and accepted ordinary-node removal.
-Every effect must match branch delta without unrelated changes.
-
-Live pending source Proposals retain identity/content. Resolved/stale ones remain
-branch history; their resulting graph changes are represented separately. Proposal
-identity is deterministic from branch, semantic operations, and last delivered
-head (base before first merge). Validated receipts and snapshots suppress unchanged
-re-proposals even after rejection on main; genuinely new source changes still
-require review. Unsupported ontology, human-only ordinary extension edits, and
-mutually invalidating review combinations fail explicitly without partial commit.
+The merge agent has the orchestrator graph profile under the dispatching human. It gets
+scratch and, only for code landing, the episode worktree/shared-checkout roots rendered
+from the resolved scope. It gains no membership, ontology, configuration, approval,
+server, or general branch authority. One merge commits one destination transition or
+nothing.
 
 Append compares prepared main head. If it advanced, RCP rebuilds/re-prepares;
 it never overwrites or concatenates history. Paused/failed attempts leave histories
@@ -420,7 +505,7 @@ Only main watchers see the successful main transition, exactly once.
 
 The parent has one health/recommendation; child/task states support it. Detail
 shows branch name/base/head, merge state (`unmerged`, `merging`,
-`merged-through-head`, `needs-action`, `failed`), task/correction history, and
+`merged-through-head`, `needs-action`, `failed`), task history, and
 report/error. Paused/interrupted merge tasks retain diagnostics and offer fresh
 Merge when eligible.
 
@@ -449,10 +534,9 @@ controls the shared view target. Reports retain original lifecycle versions;
 artifact edits create later versions without changing graph/lifecycle provenance.
 Root artifact comments stay in its thread without budget spend.
 
-Branches are episode-created and merge only on human dispatch. General branch
-creation, cherry-pick, conflict editing, and repository rollback are not current
-features. A version-control model remains a possible direction, not a permanent
-exclusion or authority exception.
+Every branch is an episode branch or a fork of an exact head, and only a human
+merges into main. Cherry-pick, free-form conflict editing, and repository rollback
+are not current features.
 
 ### Browser preference in Auto-research
 

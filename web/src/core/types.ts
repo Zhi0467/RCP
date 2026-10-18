@@ -1682,7 +1682,8 @@ export interface BranchMergeProvenance {
   schema_generation: 1;
   merge_id: string;
   branch_id: string;
-  episode_id: string;
+  /** Absent for a human-owned fork's merge. */
+  episode_id: string | null;
   branch_base_head: GraphHeadRef;
   branch_head: GraphHeadRef;
   rebased_main_head: GraphHeadRef;
@@ -1773,11 +1774,11 @@ export interface CleanupEpisodeBody {
   confirm_discard?: boolean;
 }
 
-/** One changed field on a branch, classified by the same builder call Merge makes. */
+/** One changed field on a branch, projected from the merge plan. */
 export interface MergeDiffPath {
   entity: "node" | "edge" | "proposal" | "ambiguity" | "glossary" | "global";
   id: string;
-  field_path: string;
+  field_path: string; // Field name, or "$" for whole-entity presence.
   base: unknown;
   branch: unknown;
   main: unknown;
@@ -1785,12 +1786,11 @@ export interface MergeDiffPath {
   conflict: boolean;
   needs_agent: boolean;
   needs_proposal: boolean;
-  residue_reason: string | null;
 }
 
 export interface MergePreview {
   delivered_baseline: GraphHeadRef | null;
-  graph: { ops: number; residue: { path: string; reason: string }[]; paths: MergeDiffPath[] };
+  graph: { direct: number; conflicts: number; reviews: number; paths: MergeDiffPath[] };
   code: {
     repo_alias: string;
     source_branch: string;
@@ -1805,13 +1805,14 @@ export interface MergePreview {
 
 export interface GraphBranchSummary {
   branch_id: string;
-  episode_id: string;
+  episode_id: string | null;
   base_head: GraphHeadRef;
+  parent_head: GraphHeadRef | null;
   head: GraphHeadRef;
   merge_eligible: boolean;
   merge_blocked_reason: string | null;
   /** The newest member of the branch's episode chain; `episode_id` is the chain root. */
-  current_episode_id: string;
+  current_episode_id: string | null;
   merge_state: "unmerged" | "running" | "merged" | "needs_action" | "failed";
   latest_successful_merge: BranchMergeReceipt | null;
   active_merge_task_id: string | null;
@@ -1824,7 +1825,7 @@ export type GraphRef =
       kind: "branch";
       archived: boolean;
       /** The chain root's mode: who made the branch. */
-      mode: EpisodeMode;
+      mode: EpisodeMode | null;
       /** The one display name: stored, or the date fallback the backend computed. */
       name: string;
       /** An agent task on this branch is active. */
@@ -2682,6 +2683,7 @@ export interface ExperimentStartResponse extends AgentTask {
 }
 
 export interface Episode extends EpisodeLoopMetadata {
+  bulletin_enabled: boolean;
   browser_requested: boolean;
   code_worktree: boolean;
   graph_isolation: boolean;
@@ -2748,6 +2750,7 @@ export interface EpisodeTimelineLinks {
 }
 
 export interface EpisodeTimelineActor {
+  graph_target?: GraphTargetRef | null;
   actor_id: string;
   kind: "human" | "orchestrator" | "worker" | "experiment" | "agent" | "watcher";
   label: string;
@@ -2861,6 +2864,7 @@ export interface EpisodeMessage {
 }
 
 export interface StartEpisodeRequest {
+  bulletin_enabled?: boolean;
   browser_requested?: boolean;
   mode: "auto_research";
   code_worktree?: boolean | null;

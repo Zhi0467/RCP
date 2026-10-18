@@ -46,7 +46,7 @@ def history_query(manifest, tmp_path):
         PaperService(manifest, AppStore(tmp_path / "app.db")),
         project_id="project",
     )
-    branch = service.history.create_episode_branch(_branch_metadata(service.history))
+    branch = service.history.create_branch(_branch_metadata(service.history))
     branch.append(_branch_patch("ev/long", title="界" * 60_000))
     scope = GraphReadScope(project_id=service._project_id, target=branch.graph_target)
     return service, scope, branch
@@ -149,6 +149,75 @@ def test_branch_changes_uses_branch_base_and_oversized_engine_page_is_refused(
     assert response.result["code"] == "graph_history_response_too_large"
 
 
+def test_fork_scope_enforces_ancestry_revisions_and_cursor_binding(history_query, monkeypatch):
+    from .test_history_forks import fork_metadata
+
+    service, unrestricted, branch = history_query
+    parent_head = branch.head_ref()
+    fork = service.history.create_branch(fork_metadata(service.history, parent_head))
+    nested = service.history.create_branch(fork_metadata(service.history, fork.head_ref()))
+    scope = GraphReadScope.resolve("project", nested)
+    assert scope.ancestry_ceilings == (
+        fork.head_ref(),
+        parent_head,
+        branch.branch_metadata().base_head,
+    )
+    assert GraphReadScope.resolve("project", branch).ancestry_ceilings is None
+    episode_root = service.history.create_branch(
+        fork_metadata(service.history, service.history.head_ref()).model_copy(
+            update={"kind": "auto_research"}
+        )
+    )
+    assert GraphReadScope.resolve("project", episode_root).ancestry_ceilings is None
+    # Saved pre-change grants retain their project-wide semantics.
+    assert GraphReadScope.model_validate({"project_id": "project", "target": {}}) == (
+        GraphReadScope.resolve("project", service.history)
+    )
+    with monkeypatch.context() as guard:
+        guard.setattr(
+            ProjectService,
+            "history_engine",
+            property(lambda _: pytest.fail("scope refused before engine read")),
+        )
+        for revision in (parent_head.revision + 1, 999):
+            denied = handle_graph_history_command(
+                service,
+                scope,
+                request("graph_log", id="ev/long", at=f"{parent_head.target.key}@{revision}"),
+            )
+            assert denied.result["code"] == "graph_history_scope_refused"
+    roundtrip = GraphReadScope.model_validate_json(scope.model_dump_json())
+    assert roundtrip == scope
+    args = {"from": f"{parent_head.target.key}@1", "to": str(parent_head.target.key) + "@2"}
+    first = handle_graph_history_command(service, scope, request(**args))
+    assert first.status == "ok"
+    assert first.result["cursor"] is not None
+    branch.append(_branch_patch("ev/post-fork"))
+    service.history.append(_branch_patch("ev/post-root"))
+    for head in (f"{parent_head.target.key}@head", "main@head"):
+        denied = handle_graph_history_command(
+            service, scope, request("graph_log", id="ev/long", at=head)
+        )
+        assert denied.result["code"] == "graph_history_scope_refused"
+    continued = handle_graph_history_command(
+        service, roundtrip, request(**args, cursor=first.result["cursor"])
+    )
+    assert continued.status == "ok"
+    denied = handle_graph_history_command(
+        service, unrestricted, request(**args, cursor=first.result["cursor"])
+    )
+    assert denied.result["code"] == "graph_history_cursor_invalid"
+    sibling = service.history.create_branch(fork_metadata(service.history, parent_head))
+    denied = handle_graph_history_command(
+        service, scope, request("graph_log", id="ev/long", at=f"{sibling.graph_target.key}@head")
+    )
+    assert denied.result["code"] == "graph_history_scope_refused"
+    assert (
+        handle_graph_history_command(service, scope, request("graph_log", id="ev/long")).status
+        == "ok"
+    )
+
+
 def group_context(sibling_id):
     return GroupContext(
         project_id="own",
@@ -171,7 +240,9 @@ def group_context(sibling_id):
 
 
 def test_group_scope_allows_all_sibling_targets_only():
-    scope = GraphReadScope.for_launch("own", GraphTargetRef(), group_context("sibling"))
+    scope = GraphReadScope(
+        project_id="own", target=GraphTargetRef(), group_context=group_context("sibling")
+    )
     assert "readable_project_ids" not in scope.model_dump()
     assert GraphReadScope.model_validate_json(scope.model_dump_json()) == scope
     unavailable = group_context("sibling").model_copy(
@@ -183,9 +254,9 @@ def test_group_scope_allows_all_sibling_targets_only():
             )
         }
     )
-    assert not GraphReadScope.for_launch("own", GraphTargetRef(), unavailable).readable(
-        "sibling", GraphTargetRef()
-    )
+    assert not GraphReadScope(
+        project_id="own", target=GraphTargetRef(), group_context=unavailable
+    ).readable("sibling", GraphTargetRef())
     for target in (GraphTargetRef(), GraphTargetRef(kind="branch", branch_id="branch")):
         assert scope.readable("own", target)
         assert scope.readable("sibling", target)
@@ -196,7 +267,9 @@ def test_group_scope_allows_all_sibling_targets_only():
 def test_group_history_resolves_sibling_and_binds_cursor(history_query, verb):
     service, scope, branch = history_query
     own = ProjectService(service.manifest, service.history, service.paper, project_id="own")
-    scope = GraphReadScope.for_launch("own", scope.target, group_context("project"))
+    scope = GraphReadScope(
+        project_id="own", target=scope.target, group_context=group_context("project")
+    )
     args = (
         {"id": "ev/long", "at": f"{branch.graph_target.key}@head"}
         if verb == "graph_log"

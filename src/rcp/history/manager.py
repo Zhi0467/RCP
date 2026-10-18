@@ -287,7 +287,7 @@ class RevisionConflict(ValueError):
 
 
 class BranchMergeAlreadyCommitted(RuntimeError):
-    """The same stable branch head already has an accepted main merge."""
+    """The same stable branch head already has an accepted destination merge."""
 
     def __init__(self, patch: Patch, materialization: MaterializationResult) -> None:
         self.patch = patch
@@ -306,7 +306,7 @@ class BranchMergeAlreadyResolved(RuntimeError):
         self.receipt = receipt
         super().__init__(
             "graph branch merge "
-            f"{receipt.provenance.merge_id} already resolved without a main Patch"
+            f"{receipt.provenance.merge_id} already resolved without a destination Patch"
         )
 
 
@@ -562,6 +562,23 @@ class HistoryManager:
             revisions = branch_revisions.get(branch_id, [])
             if revisions and max(revisions) != head.revision:
                 raise ValueError("restored branch Patch inventory does not match its captured head")
+
+        from rcp.history.ancestry import validate_branch_ancestry
+
+        retained_branches = {
+            branch_id: GraphBranchMetadata.model_validate_json(
+                sources[f"branches/{branch_id}/branch.json"][0].read_bytes()
+            )
+            for branch_id in expected_branches
+        }
+        validate_branch_ancestry(retained_branches, main_revision=expected_main_head.revision)
+        for branch_id, metadata in retained_branches.items():
+            if metadata.branch_id != branch_id or metadata.head != expected_branches[branch_id]:
+                raise ValueError("restored branch metadata differs from its captured identity")
+            if sorted(branch_revisions.get(branch_id, [])) != list(
+                range(metadata.effective_parent_head.revision + 1, metadata.head.revision + 1)
+            ):
+                raise ValueError("restored branch Patch inventory is incomplete")
 
         for _key, value in sorted(ordered):
             source, sha256, size = sources[value]
@@ -853,15 +870,18 @@ class HistoryManager:
             transition_id=transition_id,
         )
 
-    def create_episode_branch(
-        self,
-        metadata: GraphBranchMetadata,
-    ) -> BranchHistoryManager:
-        """Create one episode branch at the exact current accepted main head."""
+    def validate_branch_parent(self, parent_head: GraphHeadRef, branch_id: str) -> GraphHeadRef:
+        from rcp.history.branches import branch_parent_snapshot
 
-        from rcp.history.branches import create_episode_branch
+        with self.workspace.read_snapshot():
+            base, _ = branch_parent_snapshot(self, parent_head, branch_id)
+            return base
 
-        return create_episode_branch(self, metadata)
+    def create_branch(self, metadata: GraphBranchMetadata) -> BranchHistoryManager:
+        """Create a branch from its exact immutable parent under the append fence."""
+        from rcp.history.branches import create_branch
+
+        return create_branch(self, metadata)
 
     def branch(
         self,
@@ -900,7 +920,7 @@ class HistoryManager:
 
     def branch_read_snapshots(
         self,
-        identities: list[tuple[str, str, str]],
+        identities: list[tuple[str, str | None, str]],
         *,
         refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
     ) -> dict[str, BranchReadSnapshot | None]:
@@ -931,8 +951,10 @@ class HistoryManager:
         self,
         branch_id: str,
         merge_id: str,
+        *,
+        destination: GraphTargetRef | None = None,
     ) -> BranchMergeReceipt | None:
-        return self.branch(branch_id).reconcile_merge_receipt(merge_id)
+        return self.branch(branch_id).reconcile_merge_receipt(merge_id, destination=destination)
 
     def current_materialization(self) -> MaterializationResult:
         """Replay current canonical history once and return state plus reports."""
@@ -1002,6 +1024,37 @@ class HistoryManager:
                 # catches up on its next pass without changing that outcome.
                 logging.getLogger(__name__).exception("Accepted transition notification failed")
 
+    def _require_merge_not_delivered(
+        self, patch: Patch, current: MaterializationResult, target: GraphTargetRef
+    ) -> None:
+        provenance = patch.branch_merge
+        if provenance is None:
+            return
+        if provenance.rebased_main_head.target != target:
+            raise ValueError("branch merge Patch names a different destination target")
+        metadata = self.branch(provenance.branch_id, initialize=False).branch_metadata()
+        if provenance.branch_base_head != metadata.effective_parent_head:
+            raise ValueError("branch merge Patch names a different immutable source parent")
+        if provenance.episode_id != metadata.episode_id:
+            raise ValueError("branch merge Patch names a different source episode")
+        matching = [
+            existing
+            for existing in current.patches
+            if existing.admission == "accepted"
+            and existing.branch_merge is not None
+            and existing.branch_merge.merge_id == provenance.merge_id
+            and existing.branch_merge.rebased_main_head.target == target
+        ]
+        if len(matching) > 1:
+            raise ValueError("destination history contains duplicate branch merge provenance")
+        if matching:
+            raise BranchMergeAlreadyCommitted(matching[0], current)
+        from rcp.history.branches import existing_receipt_for_append
+
+        receipt = existing_receipt_for_append(self, current, provenance)
+        if receipt is not None:
+            raise BranchMergeAlreadyResolved(receipt)
+
     def _append_locked(
         self,
         patch: Patch,
@@ -1025,23 +1078,7 @@ class HistoryManager:
         if self.workspace.materialization_repair_required:
             self._repair_materializations_locked()
             current = self.materialize(write_outputs=False)
-        if patch.branch_merge is not None:
-            matching_merges = [
-                existing
-                for existing in current.patches
-                if existing.admission == "accepted"
-                and existing.branch_merge is not None
-                and existing.branch_merge.merge_id == patch.branch_merge.merge_id
-            ]
-            if len(matching_merges) > 1:
-                raise ValueError("main history contains duplicate branch merge provenance")
-            if matching_merges:
-                raise BranchMergeAlreadyCommitted(matching_merges[0], current)
-            from rcp.history.branches import existing_receipt_for_main_append
-
-            receipt = existing_receipt_for_main_append(self, current, patch.branch_merge)
-            if receipt is not None:
-                raise BranchMergeAlreadyResolved(receipt)
+        self._require_merge_not_delivered(patch, current, GraphTargetRef())
         if expected_revision is not None and current.state.revision != expected_revision:
             raise RevisionConflict(
                 f"the graph moved from revision {expected_revision} to "
@@ -1115,6 +1152,15 @@ class HistoryManager:
             if self.workspace.materialization_repair_required:
                 self._repair_materializations_locked()
                 current = self.materialize(write_outputs=False)
+            if patch.branch_merge is not None and not patch.ops:
+                prepared, report = self._admit_patch_locked(
+                    current.state,
+                    patch,
+                    self._next_revision(),
+                    authorized_by=authorized_by,
+                    apply_target=self.graph_target,
+                )
+                return prepared, report, current.state
             prepared, report, _candidate = self._validate_candidate_locked(
                 current,
                 patch,
@@ -1236,6 +1282,35 @@ class HistoryManager:
         )
         return prepared, report, state
 
+    def _admit_patch_locked(
+        self,
+        state: GraphState,
+        patch: Patch,
+        revision: int,
+        *,
+        authorized_by: AuthorizedHuman | None,
+        apply_target: GraphTargetRef,
+    ) -> tuple[Patch, ValidationReport]:
+        """Apply both live gates, also for an empty merge's dry preparation."""
+        patch, writer, report = self.write_authority.admit(
+            state,
+            patch.model_copy(update={"revision": revision}),
+            project_id=self.project_id,
+            authorized_by=authorized_by,
+            apply_target=apply_target,
+        )
+        patch = prepare_patch_bookkeeping(state, patch)
+        # Gate 2 still reports malformed data after a permission refusal.
+        report.messages.extend(
+            validate_patch(
+                state,
+                patch,
+                build_validation_context(self.manifest, state),
+                writer=writer,
+            ).messages
+        )
+        return patch, report
+
     def _prepare_transition_locked(
         self,
         current: MaterializationResult,
@@ -1256,25 +1331,15 @@ class HistoryManager:
         prepared_sources: list[Patch] = []
         for raw_patch in raw_patches:
             validation_state = staged.model_copy(update={"revision": current.state.revision})
-            patch, writer, report = self.write_authority.admit(
+            patch, report = self._admit_patch_locked(
                 validation_state,
-                raw_patch.model_copy(update={"revision": revision}),
-                project_id=self.project_id,
+                raw_patch,
+                revision,
                 authorized_by=authorized_by,
                 apply_target=target,
             )
             aggregate.messages.extend(report.messages)
-            # Gate 2 runs even after a permission refusal, so a writer sees every
-            # broken rule at once. Nothing is applied unless both gates pass.
-            patch = prepare_patch_bookkeeping(validation_state, patch)
-            rules = validate_patch(
-                validation_state,
-                patch,
-                build_validation_context(self.manifest, validation_state),
-                writer=writer,
-            )
-            aggregate.messages.extend(rules.messages)
-            if report.rejected or rules.rejected:
+            if report.rejected:
                 return patch, aggregate, None
             try:
                 candidate = apply_valid_patch(validation_state, patch)

@@ -15,6 +15,10 @@ from rcp.limits import (
     ASK_CHOICE_MAX_COUNT,
     ASK_CHOICE_MAX_LENGTH,
     ASK_QUESTION_MAX_LENGTH,
+    BULLETIN_CURSOR_MAX_CHARS,
+    BULLETIN_KEY_MAX_CHARS,
+    BULLETIN_REPLY_MAX_CHARS,
+    BULLETIN_TEXT_MAX_CHARS,
     COMMAND_ASK_POLL_SECONDS,
     EVIDENCE_FLAG_FINDING_MAX_CHARS,
     EVIDENCE_FLAG_SOURCE_MAX_CHARS,
@@ -32,11 +36,14 @@ COMMAND_UNAVAILABLE = 2
 
 CommandVerb = Literal[
     "validate",
+    "merge_answers",
     "graph_diff",
     "graph_log",
     "apply",
     "status",
     "spawn",
+    "merge",
+    "branch",
     "pause",
     "resume",
     "stop",
@@ -48,12 +55,15 @@ CommandVerb = Literal[
     "launch",
     "ask",
     "lesson",
+    "bulletin",
     "flag",
 ]
 CommandStatus = Literal["ok", "invalid", "unavailable"]
 MutatingCommandVerb = Literal[
     "apply",
     "spawn",
+    "merge",
+    "branch",
     "pause",
     "resume",
     "stop",
@@ -65,6 +75,7 @@ MutatingCommandVerb = Literal[
     "launch",
     "ask",
     "lesson",
+    "bulletin",
     "flag",
 ]
 
@@ -72,6 +83,8 @@ MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
     {
         "apply",
         "spawn",
+        "merge",
+        "branch",
         "pause",
         "resume",
         "stop",
@@ -83,6 +96,7 @@ MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
         "launch",
         "ask",
         "lesson",
+        "bulletin",
         "flag",
     }
 )
@@ -108,10 +122,35 @@ class ValidateArguments(BaseModel):
     patch: str
 
 
+class MergeAnswersArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    action: Literal["check"]
+    answers: str
+
+
 class ApplyArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     patch_file: Literal["patch.json"]
+
+
+class BranchArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    branch_id: str = Field(min_length=1, max_length=200)
+
+    @field_validator("branch_id")
+    @classmethod
+    def nonblank_branch(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("branch id must not be blank")
+        return value
+
+
+class BranchArchiveArguments(BranchArguments):
+    action: Literal["archive"]
 
 
 class StatusArguments(BaseModel):
@@ -188,10 +227,53 @@ class GraphLogArguments(BaseModel):
         return value
 
 
-class SpawnArguments(BaseModel):
+class _ChildTargetArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    seat_node_id: str = Field(min_length=1, max_length=200)
+    at: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    target: str | None = Field(
+        default=None, min_length=1, max_length=200, exclude_if=lambda value: value is None
+    )
+    seed_file: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+        pattern=_SAFE_WORKSPACE_FILENAME,
+        exclude_if=lambda value: value is None,
+    )
+
+    @field_validator("at")
+    @classmethod
+    def exact_fork_head(cls, value: str | None) -> str | None:
+        if value is not None:
+            head = parse_head(value)
+            if head.target is None or head.revision == "head":
+                raise ValueError("at requires an explicit graph ref and numeric revision")
+        return value
+
+    @field_validator("target")
+    @classmethod
+    def nonblank_target(cls, value: str | None) -> str | None:
+        if value is not None:
+            value = value.strip()
+            if not value:
+                raise ValueError("target must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def valid_target_options(self) -> _ChildTargetArguments:
+        if self.at is not None and self.target is not None:
+            raise ValueError("at and target are mutually exclusive")
+        if self.seed_file is not None and self.at is None:
+            raise ValueError("seed_file requires at")
+        return self
+
+
+class SpawnArguments(_ChildTargetArguments):
+    seat_node_id: str | None = Field(
+        default=None, min_length=1, max_length=200, exclude_if=lambda value: value is None
+    )
+    project: bool = Field(default=False, exclude_if=lambda value: not value)
     instruction_file: str = Field(
         min_length=1,
         max_length=255,
@@ -210,11 +292,19 @@ class SpawnArguments(BaseModel):
 
     @field_validator("seat_node_id")
     @classmethod
-    def strip_nonblank_text(cls, value: str) -> str:
+    def strip_nonblank_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         stripped = value.strip()
         if not stripped:
             raise ValueError("seat node id must not be blank")
         return stripped
+
+    @model_validator(mode="after")
+    def exactly_one_seat(self) -> SpawnArguments:
+        if (self.seat_node_id is not None) == self.project:
+            raise ValueError("spawn requires exactly one of seat_node_id and project")
+        return self
 
 
 class WorkerControlArguments(BaseModel):
@@ -253,9 +343,7 @@ class WatchGraphArguments(BaseModel):
         return stripped
 
 
-class ExperimentKickoffArguments(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
+class ExperimentKickoffArguments(_ChildTargetArguments):
     action: Literal["kick_off_experiment"]
     node_id: str = Field(min_length=1, max_length=200)
     goal_file: str | None = Field(
@@ -368,6 +456,38 @@ class FlagArguments(BaseModel):
         return value
 
 
+class BulletinArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    action: Literal["post", "read", "edit", "delete"]
+    text: str | None = Field(default=None, min_length=1, max_length=BULLETIN_TEXT_MAX_CHARS)
+    post_id: str | None = Field(default=None, min_length=1, max_length=BULLETIN_REPLY_MAX_CHARS)
+    reply_to: str | None = Field(default=None, min_length=1, max_length=BULLETIN_REPLY_MAX_CHARS)
+    cursor: str | None = Field(default=None, min_length=1, max_length=BULLETIN_CURSOR_MAX_CHARS)
+
+    @model_validator(mode="after")
+    def valid_action(self) -> BulletinArguments:
+        if self.action == "read":
+            if any(value is not None for value in (self.text, self.post_id, self.reply_to)):
+                raise ValueError("Bulletin reads accept only a cursor")
+        else:
+            if self.cursor is not None:
+                raise ValueError("Bulletin mutations accept no cursor")
+            if self.action == "delete":
+                if self.text is not None:
+                    raise ValueError("Bulletin deletes accept no text")
+            elif self.text is None or not self.text.strip():
+                raise ValueError("Bulletin posts and edits require nonblank text")
+            if self.action in {"edit", "delete"}:
+                if self.post_id is None or self.reply_to is not None:
+                    raise ValueError(
+                        "Bulletin edits and deletes require a post id and no reply target"
+                    )
+            elif self.post_id is not None:
+                raise ValueError("Bulletin posts accept no post id")
+        return self
+
+
 class LessonArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -439,6 +559,11 @@ class ValidateCommandRequest(_CommandRequest):
     arguments: ValidateArguments
 
 
+class MergeAnswersCommandRequest(_CommandRequest):
+    verb: Literal["merge_answers"]
+    arguments: MergeAnswersArguments
+
+
 class ApplyCommandRequest(_CommandRequest):
     verb: Literal["apply"]
     arguments: ApplyArguments
@@ -457,6 +582,16 @@ class GraphDiffCommandRequest(_CommandRequest):
 class GraphLogCommandRequest(_CommandRequest):
     verb: Literal["graph_log"]
     arguments: GraphLogArguments
+
+
+class MergeCommandRequest(_CommandRequest):
+    verb: Literal["merge"]
+    arguments: BranchArguments
+
+
+class BranchCommandRequest(_CommandRequest):
+    verb: Literal["branch"]
+    arguments: BranchArchiveArguments
 
 
 class SpawnCommandRequest(_CommandRequest):
@@ -529,6 +664,21 @@ class FlagCommandRequest(_CommandRequest):
         return self
 
 
+class BulletinCommandRequest(_CommandRequest):
+    idempotency_key: str | None = Field(
+        default=None, min_length=1, max_length=BULLETIN_KEY_MAX_CHARS
+    )
+
+    verb: Literal["bulletin"]
+    arguments: BulletinArguments
+
+    @model_validator(mode="after")
+    def mutation_is_keyed(self) -> BulletinCommandRequest:
+        if self.arguments.action != "read" and self.idempotency_key is None:
+            raise ValueError("Bulletin mutations require an idempotency key")
+        return self
+
+
 class LessonCommandRequest(_CommandRequest):
     verb: Literal["lesson"]
     arguments: LessonArguments
@@ -542,10 +692,13 @@ class LessonCommandRequest(_CommandRequest):
 
 CommandRequest: TypeAlias = Annotated[
     ValidateCommandRequest
+    | MergeAnswersCommandRequest
     | ApplyCommandRequest
     | StatusCommandRequest
     | GraphDiffCommandRequest
     | GraphLogCommandRequest
+    | MergeCommandRequest
+    | BranchCommandRequest
     | SpawnCommandRequest
     | PauseCommandRequest
     | ResumeCommandRequest
@@ -557,6 +710,7 @@ CommandRequest: TypeAlias = Annotated[
     | FinishCommandRequest
     | LaunchCommandRequest
     | AskCommandRequest
+    | BulletinCommandRequest
     | LessonCommandRequest
     | FlagCommandRequest,
     Field(discriminator="verb"),

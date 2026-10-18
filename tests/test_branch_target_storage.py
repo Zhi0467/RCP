@@ -365,7 +365,7 @@ def test_branch_merge_task_requires_a_quiet_branch_and_exact_authority(
     episode, root = _create_auto_episode(store)
 
     # The queued orchestrator turn is a live writer; the episode's ending is not a condition.
-    with pytest.raises(ValueError, match="active writer"):
+    with pytest.raises(ValueError, match="merge_source_has_live_writer"):
         store.create_branch_merge_task(_merge_task(store, episode, "merge-active"))
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
 
@@ -453,7 +453,7 @@ def test_ordinary_branch_recovery_settles_and_merge_fences_new_chat(tmp_path):
         continuation_cause="retry",
     )
     assert recovered.episode_id is None
-    with pytest.raises(ValueError, match="active writer"):
+    with pytest.raises(ValueError, match="merge_source_has_live_writer"):
         store.create_branch_merge_task(_merge_task(store, episode, "merge-during-recovery"))
     store.complete_agent_task(recovered.operation_id, applied_revision=None, result={})
     assert store.unsettled_graph_target_tasks(episode.project_id, episode.graph_target) == []
@@ -579,5 +579,5 @@ def test_ordinary_branch_work_and_merge_admission_are_atomic(tmp_path, monkeypat
         finally:
             release.set()
         assert first.result().operation_id == first_id
-        with pytest.raises(ValueError, match="active writer|being merged"):
+        with pytest.raises(ValueError, match="merge_source_has_live_writer|being merged"):
             second.result()

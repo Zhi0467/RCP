@@ -6,15 +6,23 @@ import {
   Check,
   ChevronDown,
   GitBranch,
+  GitMerge,
   LoaderCircle,
   Pencil,
   X,
 } from "lucide-react";
-import { ApiError, renameGraphBranch, setGraphBranchArchived } from "../core/api";
+import { ApiError, mergeGraphFork, renameGraphBranch, setGraphBranchArchived } from "../core/api";
 import { branchName, branchNameProblem } from "../core/branchNames";
 import { sameGraphTarget } from "../core/graphTarget";
 import type { GraphRef, GraphTargetRef } from "../core/types";
-import { graphPickerOptions, graphRefTarget, refNeedsYou } from "./graphPickerModel";
+import {
+  graphPickerOptions,
+  graphRefCanMerge,
+  graphRefDepth,
+  graphRefParentLabel,
+  graphRefTarget,
+  refNeedsYou,
+} from "./graphPickerModel";
 import "./GraphPicker.css";
 
 interface GraphPickerProps {
@@ -63,7 +71,11 @@ export function GraphPicker({
   const [name, setName] = useState("");
   const [warning, setWarning] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [confirm, setConfirm] = useState<Branch | null>(null);
+  const [confirm, setConfirm] = useState<{
+    action: "archive" | "merge";
+    ref: Branch;
+    requestId: string;
+  } | null>(null);
   const [position, setPosition] = useState({ top: 0, right: 0 });
   const button = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLDivElement>(null);
@@ -153,6 +165,20 @@ export function GraphPicker({
     }
   }
 
+  async function merge(ref: Branch, requestId: string) {
+    if (busy) return;
+    setBusy(true);
+    setWarning(null);
+    try {
+      await mergeGraphFork(projectId, ref.branch_id, requestId);
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(false);
+      setConfirm(null);
+    }
+  }
+
   async function archive(ref: Branch) {
     if (busy) return;
     setBusy(true);
@@ -216,6 +242,7 @@ export function GraphPicker({
                     className="branch-picker-row"
                     key={ref.branch_id ?? "main"}
                     data-branch-id={ref.branch_id ?? "main"}
+                    style={{ paddingLeft: Math.min(graphRefDepth(ref, options), 4) * 12 }}
                   >
                     <span className="branch-picker-leading">
                       {current ? (
@@ -282,12 +309,35 @@ export function GraphPicker({
                           }}
                         >
                           {ref.name}
+                          {graphRefParentLabel(ref, refs ?? []) && (
+                            <span className="branch-picker-parent">
+                              {" "}
+                              · {graphRefParentLabel(ref, refs ?? [])}
+                            </span>
+                          )}
                         </button>
                         {refNeedsYou(ref) && (
                           <span className="branch-picker-attention" aria-label="Needs you" />
                         )}
                         {ref.kind === "branch" && (
                           <>
+                            {graphRefCanMerge(ref) && (
+                              <button
+                                className="branch-picker-action"
+                                aria-label={`Merge ${ref.name}`}
+                                disabled={busy}
+                                onClick={() => {
+                                  setWarning(null);
+                                  setConfirm({
+                                    action: "merge",
+                                    ref,
+                                    requestId: crypto.randomUUID(),
+                                  });
+                                }}
+                              >
+                                <GitMerge size={15} />
+                              </button>
+                            )}
                             <button
                               className="branch-picker-action"
                               aria-label={`Rename ${ref.name}`}
@@ -306,7 +356,8 @@ export function GraphPicker({
                               disabled={busy}
                               onClick={() => {
                                 setWarning(null);
-                                if (!ref.archived && ref.merge_state !== "merged") setConfirm(ref);
+                                if (!ref.archived && ref.merge_state !== "merged")
+                                  setConfirm({ action: "archive", ref, requestId: "" });
                                 else void archive(ref);
                               }}
                             >
@@ -340,7 +391,11 @@ export function GraphPicker({
               if (!busy) setConfirm(null);
             }}
           >
-            <h2 id={`${listId}-confirm`}>Archive {confirm.name} without merging?</h2>
+            <h2 id={`${listId}-confirm`}>
+              {confirm.action === "merge"
+                ? `Merge ${confirm.ref.name} into ${branchName(refs, confirm.ref.parent_head?.target ?? { kind: "main" })}?`
+                : `Archive ${confirm.ref.name} without merging?`}
+            </h2>
             <div>
               <button
                 className="button secondary"
@@ -350,8 +405,16 @@ export function GraphPicker({
               >
                 Cancel
               </button>
-              <button className="button" disabled={busy} onClick={() => void archive(confirm)}>
-                Archive
+              <button
+                className="button"
+                disabled={busy}
+                onClick={() =>
+                  void (confirm.action === "merge"
+                    ? merge(confirm.ref, confirm.requestId)
+                    : archive(confirm.ref))
+                }
+              >
+                {confirm.action === "merge" ? "Merge" : "Archive"}
               </button>
             </div>
           </dialog>,

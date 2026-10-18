@@ -56,7 +56,7 @@ test("a stopped ineligible branch submits a deliberate merge and shows the serve
       route.fulfill({
         json: {
           delivered_baseline: null,
-          graph: { ops: 1, residue: [], paths: [] },
+          graph: { direct: 1, conflicts: 0, reviews: 0, paths: [] },
           code: null,
           needs_agent: false,
         },

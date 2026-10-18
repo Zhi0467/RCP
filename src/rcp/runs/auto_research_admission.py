@@ -235,6 +235,7 @@ def continue_auto_research(
         updated_at=now,
         continues_episode_id=source.episode_id,
         continuation_request_id=request_id,
+        bulletin_enabled=source.bulletin_enabled,
         browser_requested=source.browser_requested,
         code_worktree=source.code_worktree,
         graph_isolation=source.graph_isolation,
@@ -319,6 +320,8 @@ def reserve_auto_research(
     episode_id = episode_id or str(uuid.uuid4())
     if graph_base_head.target.kind != "main":
         raise ValueError("Auto-research must branch from an exact main graph head.")
+    # The chain's branch is named by its root episode; the orchestrator's
+    # conversation and Runs card key on that identity. Forks get their own ids.
     graph_target = GraphTargetRef(kind="branch", branch_id=episode_id)
     operation_id = operation_id or str(uuid.uuid4())
     run_request = auto_research_root_request(request, episode_id=episode_id).model_copy(
@@ -348,6 +351,7 @@ def reserve_auto_research(
         graph_base_head=graph_base_head,
         status="queued",
         invocation_ceiling=request.invocation_ceiling,
+        bulletin_enabled=request.bulletin_enabled,
         browser_requested=request.browser_requested,
         code_worktree=request.code_worktree,
         graph_isolation=request.graph_isolation,
@@ -883,6 +887,7 @@ def start_auto_research_child_work(
     instruction: str,
     instruction_sha256: str,
     admission_id: str | None = None,
+    graph_target: GraphTargetRef | None = None,
 ) -> AgentTaskRecord:
     """Atomically spend B and launch one routed ordinary node Work task."""
 
@@ -891,8 +896,9 @@ def start_auto_research_child_work(
         request.mode != "work"
         or request.trigger != "orchestrator"
         or request.patch_kind != "work"
-        or request.chat_scope != "node"
-        or not request.node_id
+        or request.chat_scope not in {"node", "project"}
+        or (request.chat_scope == "node" and not request.node_id)
+        or (request.chat_scope == "project" and request.node_id is not None)
         or request.message != instruction
         or request.chat_id != worker_id
         or request.session_id is not None
@@ -910,18 +916,20 @@ def start_auto_research_child_work(
             "graph_isolation": episode.graph_isolation,
         }
     )
-    tasks._validate_request_type("node_chat", request)
+    kind = "project_chat" if request.chat_scope == "project" else "node_chat"
+    target = graph_target or episode.graph_target
+    tasks._validate_request_type(kind, request)
     operation_id = worker_id
     request_data = request.model_dump(mode="json")
     estimate, samples = tasks.store.agent_task_estimate(
         episode.project_id,
-        "node_chat",
+        kind,
         request_data,
     )
     dispatch_authority = resolved_dispatch_authority(
         tasks.store,
         tasks.dispatch_authority_resolver,
-        "node_chat",
+        kind,
         request,
         project_id=episode.project_id,
         operation_id=operation_id,
@@ -932,8 +940,8 @@ def start_auto_research_child_work(
         operation_id=operation_id,
         project_id=episode.project_id,
         episode_id=episode_id,
-        graph_target=episode.graph_target,
-        kind="node_chat",
+        graph_target=target,
+        kind=kind,
         status="queued",
         request=request_data,
         created_at=now,
@@ -959,7 +967,9 @@ def start_auto_research_child_work(
         created_at=now,
         updated_at=now,
     )
-    tasks.admit_provider_task(episode.project_id, request, isolation_episode_id=episode.episode_id)
+    tasks.admit_provider_task(
+        episode.project_id, request, graph_target=target, isolation_episode_id=episode.episode_id
+    )
     _, stored = tasks.store.create_auto_research_child_work(
         route,
         task,
@@ -1038,7 +1048,7 @@ def auto_research_child_work_task(
     if (
         current.project_id != route.project_id
         or current.episode_id != route.episode_id
-        or current.kind != "node_chat"
+        or current.kind not in {"node_chat", "project_chat"}
     ):
         raise ValueError("The worker route lost its ordinary Work task lineage.")
     return route, current
@@ -1130,7 +1140,7 @@ def _start_auto_research_child_work_wake(
     dispatch_authority = resolved_dispatch_authority(
         tasks.store,
         tasks.dispatch_authority_resolver,
-        "node_chat",
+        current.kind,
         request,
         project_id=current.project_id,
         parent=current,
@@ -1140,7 +1150,7 @@ def _start_auto_research_child_work_wake(
     request_data = request.model_dump(mode="json")
     estimate, samples = tasks.store.agent_task_estimate(
         current.project_id,
-        "node_chat",
+        current.kind,
         request_data,
     )
     assert episode.authorized_by is not None
@@ -1149,8 +1159,8 @@ def _start_auto_research_child_work_wake(
         operation_id=operation_id,
         project_id=current.project_id,
         episode_id=episode_id,
-        graph_target=episode.graph_target,
-        kind="node_chat",
+        graph_target=current.graph_target,
+        kind=current.kind,
         status="queued",
         request=request_data,
         created_at=now,
@@ -1168,7 +1178,12 @@ def _start_auto_research_child_work_wake(
         authorized_by=episode.authorized_by,
         dispatch_authority=dispatch_authority,
     )
-    tasks.admit_provider_task(episode.project_id, request, isolation_episode_id=episode.episode_id)
+    tasks.admit_provider_task(
+        episode.project_id,
+        request,
+        graph_target=current.graph_target,
+        isolation_episode_id=episode.episode_id,
+    )
     if continuation == "watcher_wake":
         stored = tasks.store.create_auto_research_child_work_watcher_wake_task(
             task,
@@ -1279,7 +1294,7 @@ def resume_auto_research_child_work(
     dispatch_authority = resolved_dispatch_authority(
         tasks.store,
         tasks.dispatch_authority_resolver,
-        "node_chat",
+        previous.kind,
         request,
         project_id=previous.project_id,
         parent=previous,
@@ -1292,8 +1307,8 @@ def resume_auto_research_child_work(
         operation_id=operation_id,
         project_id=previous.project_id,
         episode_id=episode_id,
-        graph_target=episode.graph_target,
-        kind="node_chat",
+        graph_target=previous.graph_target,
+        kind=previous.kind,
         status="queued",
         request=request.model_dump(mode="json"),
         created_at=now,
@@ -1378,11 +1393,13 @@ def start_auto_research_child_experiment(
     request: RunRequest,
     *,
     admission_id: str | None = None,
+    graph_target: GraphTargetRef | None = None,
 ) -> AgentTaskRecord:
     """Launch invocation one through the ordinary Experiment task stream."""
 
     parent = _auto_research_parent_episode(tasks, route.auto_research_episode_id)
-    intent_keys = set(route.request) - set(_CHILD_PROFILE_PICK_FIELDS)
+    target = graph_target or parent.graph_target
+    intent_keys = set(route.request) - set(_CHILD_PROFILE_PICK_FIELDS) - {"resolved_graph_target"}
     if intent_keys != {"goal", "invocation_limit"}:
         raise ValueError("The child Experiment route has an invalid launch intent.")
     goal = route.request["goal"]
@@ -1446,7 +1463,7 @@ def start_auto_research_child_experiment(
         operation_id=operation_id,
         project_id=route.project_id,
         episode_id=route.child_episode_id,
-        graph_target=parent.graph_target,
+        graph_target=target,
         kind="node_chat",
         status="queued",
         request=request_data,
@@ -1460,7 +1477,7 @@ def start_auto_research_child_experiment(
         authorized_by=parent.authorized_by,
         dispatch_authority=dispatch_authority,
     )
-    tasks.admit_provider_task(route.project_id, request, graph_target=parent.graph_target)
+    tasks.admit_provider_task(route.project_id, request, graph_target=target)
     stored = tasks.store.create_experiment_episode_with_invocation(
         task,
         request.watcher_ids,
@@ -1899,6 +1916,7 @@ def _require_auto_research_retry_target_ready(
 
 ChildProfileRefusal = Literal["provider_unready", "model_unknown", "effort_unknown"]
 ChildProfileChoices = dict[str, dict[str, list[str]]]
+ChildSeatProfileChoices = dict[str, ChildProfileChoices]
 
 
 class AutoResearchChildProfileInvalid(ValueError):
@@ -1919,16 +1937,18 @@ class AutoResearchChildProfileInvalid(ValueError):
 def auto_research_child_profile_choices(
     service: ProjectService,
     providers: tuple[str, ...] = PROVIDER_IDS,
+    *,
+    kind: Literal["node_chat", "project_chat"] = "node_chat",
 ) -> ChildProfileChoices:
     """The provider profiles an orchestrator may name for a child, by provider.
 
-    A child runs on the node Work profile's machine. A provider is listed when its
+    A child runs on its seat's Work profile machine. A provider is listed when its
     readiness there is installed, authenticated, and Work-launchable, with each
     catalog model id and that model's effort choices. Readiness not yet cached is
     probed once, so a provider never checked on this machine is still offered.
     """
 
-    machine = service.manifest.machine_map.get(service.manifest.agent_profile("node_chat").run_on)
+    machine = service.manifest.machine_map.get(service.manifest.agent_profile(kind).run_on)
     if machine is None:
         return {}
     choices: ChildProfileChoices = {}
@@ -1946,12 +1966,21 @@ def auto_research_child_profile_choices(
     return choices
 
 
+def auto_research_child_seat_profile_choices(service: ProjectService) -> ChildSeatProfileChoices:
+    """Resolve each seat's catalog through the same path that checks child picks."""
+    return {
+        "node": auto_research_child_profile_choices(service, kind="node_chat"),
+        "project": auto_research_child_profile_choices(service, kind="project_chat"),
+    }
+
+
 def require_auto_research_child_profile_pick(
     service: ProjectService,
     *,
     provider: str | None,
     model: str | None,
     reasoning: str | None,
+    kind: Literal["node_chat", "project_chat"] = "node_chat",
 ) -> str | None:
     """Refuse an orchestrator's explicit child pick the child's machine cannot run.
 
@@ -1961,8 +1990,8 @@ def require_auto_research_child_profile_pick(
 
     if provider is None and model is None and reasoning is None:
         return reasoning
-    picked = provider or service.manifest.agent_profile("node_chat").provider
-    models = auto_research_child_profile_choices(service, (picked,)).get(picked)
+    picked = provider or service.manifest.agent_profile(kind).provider
+    models = auto_research_child_profile_choices(service, (picked,), kind=kind).get(picked)
     if models is None:
         raise AutoResearchChildProfileInvalid(
             "provider_unready",
@@ -1978,14 +2007,14 @@ def require_auto_research_child_profile_pick(
         # A provider-only pick never inherits another provider's Settings effort:
         # resolution fills the catalog head's default, or, with an unknown catalog,
         # leaves the CLI to pick its own. The Settings provider keeps its profile.
-        if provider != service.manifest.agent_profile("node_chat").provider:
+        if provider != service.manifest.agent_profile(kind).provider:
             reasoning = ""
         if not models:
             return reasoning
     # Check the effort the child will actually run with, including one kept from
     # Settings when only a model was named.
     resolved = service.resolve_agent_profile(
-        "node_chat", provider=provider, model=model, reasoning=reasoning
+        kind, provider=provider, model=model, reasoning=reasoning
     )
     efforts = models.get(resolved.model, [])
     if not reasoning:
@@ -2427,13 +2456,13 @@ def _validate_existing_child_work_fresh(
         or existing.operation_id != operation_id
         or existing.project_id != route.project_id
         or existing.episode_id != episode_id
-        or existing.kind != "node_chat"
+        or existing.kind not in {"node_chat", "project_chat"}
         or existing.parent_operation_id is not None
         or not isinstance(request, RunRequest)
         or request.mode != "work"
         or request.trigger != "orchestrator"
         or request.patch_kind != "work"
-        or request.chat_scope != "node"
+        or request.chat_scope != ("project" if route.control_node_id is None else "node")
         or request.chat_id != worker_id
         or request.node_id != route.control_node_id
         or request.message != route.instruction
@@ -2466,7 +2495,7 @@ def _validate_existing_child_work_resume(
         or existing.operation_id != operation_id
         or existing.project_id != route.project_id
         or existing.episode_id != episode_id
-        or existing.kind != "node_chat"
+        or existing.kind not in {"node_chat", "project_chat"}
         or parent is None
         or parent.project_id != existing.project_id
         or parent.episode_id != episode_id
@@ -2532,12 +2561,12 @@ def _validate_existing_child_work_wake(
         or existing.operation_id != operation_id
         or existing.project_id != route.project_id
         or existing.episode_id != episode_id
-        or existing.kind != "node_chat"
+        or existing.kind not in {"node_chat", "project_chat"}
         or operation_id not in episode_invocations
         or parent is None
         or parent.project_id != existing.project_id
         or parent.episode_id != episode_id
-        or parent.kind != "node_chat"
+        or parent.kind != existing.kind
         or parent.status != "succeeded"
         or existing.attempt != parent.attempt + 1
         or not existing.native_session_id

@@ -10,6 +10,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from rcp.api.dependencies import (
+    get_attachment_store,
     get_background_tasks,
     get_catalog,
     get_graph_service,
@@ -20,9 +21,9 @@ from rcp.api.dependencies import (
     require_registered_project,
 )
 from rcp.api.episode_timeline import worker_label
-from rcp.api.episodes import episode_on_branch
+from rcp.api.episodes import child_experiment_on_owned_branch
 from rcp.api.identity import IdentityAccess
-from rcp.api.tasks import _agent_artifact_response
+from rcp.api.tasks import _agent_artifact_response, start_ordinary_task
 from rcp.artifact_comments import (
     COMMENTABLE_MEDIA_TYPES,
     comment_panel,
@@ -37,6 +38,7 @@ from rcp.artifact_views import (
     artifact_viewer_document,
 )
 from rcp.artifacts import AgentArtifactDescriptor, ArtifactMediaType, ArtifactView, artifact_view
+from rcp.attachments import ChatAttachmentStore
 from rcp.background import BackgroundAgentTasks
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import ARTIFACT_CONTEXT_MAX_SELECTIONS, STEERING_MESSAGE_MAX_CHARS
@@ -45,6 +47,7 @@ from rcp.runs.artifact_edit_admission import (
     ArtifactFreshSessionRequired,
     admit_artifact_edit,
     artifact_edit_availability,
+    artifact_send_chat_turn,
     start_artifact_edit,
 )
 from rcp.service import ArtifactContextRequest, ArtifactSelection, RunRequest
@@ -54,6 +57,7 @@ from rcp.storage import (
     AppStore,
     Artifact,
     EpisodeMode,
+    EpisodeRecord,
 )
 from rcp.storage.artifacts import ArtifactDeleteRefused
 from rcp.storage.research_views import ResearchViewConflict
@@ -105,6 +109,22 @@ def _source_node_id(
         return None
     node_id = task.request.get("node_id")
     return node_id if isinstance(node_id, str) and node_id else None
+
+
+def _worker_on_owned_fork(store: AppStore, episode: EpisodeRecord, task: AgentTaskRecord) -> bool:
+    """An Auto-research worker spawned onto a fork its lineage owns keeps its own target."""
+    target = task.graph_target
+    work = store.auto_research_child_work_for_operation(task.operation_id)
+    return (
+        episode.mode == "auto_research"
+        and work is not None
+        and work.episode_id == episode.episode_id
+        and target.kind == "branch"
+        and any(
+            branch.branch_id == target.branch_id
+            for branch in store.branches_owned_by(episode.project_id, episode.episode_id)
+        )
+    )
 
 
 def _artifact_source_hrefs(
@@ -162,7 +182,10 @@ def _artifact_source_hrefs(
             if episode_id and (
                 episode is None
                 or episode.project_id != project_id
-                or episode.graph_target != target
+                or (
+                    episode.graph_target != target
+                    and not _worker_on_owned_fork(store, episode, task)
+                )
             ):
                 continue
             if episode is not None:
@@ -191,15 +214,7 @@ def _artifact_source_hrefs(
                 else:
                     child = store.auto_research_child_experiment(episode.episode_id)
                     if not episode.control_node_id or (
-                        child is not None
-                        and (
-                            child.project_id != project_id
-                            or child.control_node_id != episode.control_node_id
-                            or target.branch_id is None
-                            or not episode_on_branch(
-                                store, child.auto_research_episode_id, target.branch_id
-                            )
-                        )
+                        child is not None and not child_experiment_on_owned_branch(store, episode)
                     ):
                         continue
             if task.kind not in {"node_chat", "project_chat"} or not isinstance(chat_id, str):
@@ -377,15 +392,18 @@ def saved_artifacts(
 def _name_artifact_branches(
     store: AppStore, project_id: str, entries: list[SavedArtifactResponse]
 ) -> None:
-    """Name each entry's branch from its episode, else its producing task."""
+    """Name each entry's branch from its producing task, else its episode.
+
+    A worker spawned onto a fork shares its parent's episode but not its target.
+    """
     names = store.branch_names(project_id)
     for entry in entries:
         episode = store.episode(entry.episode_id) if entry.episode_id else None
         task = store.agent_task(entry.operation_id) if entry.operation_id else None
-        if episode is not None and episode.project_id == project_id:
-            target = episode.graph_target
-        elif task is not None and task.project_id == project_id:
+        if task is not None and task.project_id == project_id:
             target = task.graph_target
+        elif episode is not None and episode.project_id == project_id:
+            target = episode.graph_target
         else:
             continue
         if target.kind == "branch" and target.branch_id is not None:
@@ -806,6 +824,7 @@ def comment_artifact(
     store: Annotated[AppStore, Depends(get_store)],
     identity_access: Annotated[IdentityAccess, Depends(get_identity_access)],
     background_tasks: Annotated[BackgroundAgentTasks, Depends(get_background_tasks)],
+    attachment_store: Annotated[ChatAttachmentStore, Depends(get_attachment_store)],
 ):
     artifact = store.artifact(artifact_id)
     if artifact is None or artifact.project_id != project_id:
@@ -825,21 +844,30 @@ def comment_artifact(
     if origin is None:
         raise HTTPException(status_code=409, detail="The artifact's origin is unavailable.")
     service = get_graph_service(catalog, project_id, origin.graph_target.branch_id, write=True)
+    context = ArtifactContextRequest(
+        operation_id=origin.operation_id,
+        artifact_id=artifact_id,
+        fresh_session=body.fresh_session,
+        edit_now=body.edit_now,
+        selections=selections,
+    )
     try:
+        # Send continues the artifact's chat with a Work turn, exactly as its composer would.
+        turn = None if body.edit_now else artifact_send_chat_turn(store, artifact, context, general)
+        if turn is not None:
+            return start_ordinary_task(
+                project_id,
+                turn[0],
+                turn[1],
+                catalog=catalog,
+                store=store,
+                attachment_store=attachment_store,
+                background_tasks=background_tasks,
+                authorized_by=author,
+                branch_id=origin.graph_target.branch_id,
+            ).model_dump(mode="json")
         admitted = admit_artifact_edit(
-            store,
-            service,
-            project_id,
-            RunRequest(
-                message=general,
-                artifact_context=ArtifactContextRequest(
-                    operation_id=origin.operation_id,
-                    artifact_id=artifact_id,
-                    fresh_session=body.fresh_session,
-                    edit_now=body.edit_now,
-                    selections=selections,
-                ),
-            ),
+            store, service, project_id, RunRequest(message=general, artifact_context=context)
         )
         return start_artifact_edit(
             background_tasks,

@@ -126,6 +126,8 @@ class WorkValidatorMailboxLifecycle:
     suspension: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
     command_handler: CommandHandler | None = None
+    # The verbs this mailbox enforces, set by the owner that resolved them.
+    allowed_verbs: frozenset[str] | None = None
     _ownership_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def detach(self) -> None:
@@ -587,6 +589,7 @@ def start_work_validator_mailbox(
     validate: Callable[[str], PatchValidationResult] | None,
     serve: Callable[..., Awaitable[None]] = serve_patch_validation_mailbox,
     command_handler: CommandHandler | None = None,
+    allowed_verbs: frozenset[str] | None = None,
     resume_context: dict[str, object] | None = None,
     responses: dict[str, CommandResponse] | None = None,
     terminal: dict[str, str] | None = None,
@@ -604,13 +607,23 @@ def start_work_validator_mailbox(
                 staged.cleanup()
             raise
         return WorkValidatorMailboxLifecycle(
-            staged, execution, stop, task, command_handler=command_handler
+            staged,
+            execution,
+            stop,
+            task,
+            command_handler=command_handler,
+            allowed_verbs=allowed_verbs,
         )
 
     stop = threading.Event()
     result: Future[None] = Future()
     owner = WorkValidatorMailboxLifecycle(
-        staged, execution, stop, result, command_handler=command_handler
+        staged,
+        execution,
+        stop,
+        result,
+        command_handler=command_handler,
+        allowed_verbs=allowed_verbs,
     )
     responses = responses if responses is not None else {}
     terminal = terminal if terminal is not None else {}

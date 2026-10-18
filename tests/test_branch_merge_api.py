@@ -13,11 +13,13 @@ from pathlib import Path
 from typing import Literal
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, AgentProcessControl
-from rcp.agents.command_protocol import GraphDiffCommandRequest
+from rcp.agents.command_protocol import GraphDiffCommandRequest, MergeAnswersCommandRequest
 from rcp.agents.graph_read_scope import GraphReadScope
+from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.prompts import render_graph_history
 from rcp.api.app import create_app
 from rcp.api.episode_routes import _resolved_branch_merge_request
@@ -31,6 +33,7 @@ from rcp.core.models import (
 )
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import BranchMergeAlreadyCommitted
+from rcp.history.branches import BranchHistoryManager
 from rcp.limits import (
     REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS,
     REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
@@ -48,7 +51,7 @@ from rcp.runs.branch_merge import branch_merge_id
 from rcp.runs.branch_merge_admission import start_branch_merge
 from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.tasks.branch_merge import _apply_receipt_to_execution
-from rcp.service import RunRequest, resolve_dispatch_authority
+from rcp.service import ProjectService, RunRequest, resolve_dispatch_authority
 from rcp.setup import ProjectSetupRequest
 from rcp.storage import (
     AgentTaskRecord,
@@ -76,14 +79,14 @@ BranchChange = Literal["none", "evidence", "status", "bookkeeping"]
 
 @dataclass(frozen=True)
 class _BranchHarness:
-    app: object
+    app: FastAPI
     client: TestClient
     project_id: str
     store: AppStore
-    service: object
+    service: ProjectService
     episode: EpisodeRecord
     root: AgentTaskRecord
-    branch: object
+    branch: BranchHistoryManager
 
 
 def _main_fixture_patch() -> Patch:
@@ -183,6 +186,7 @@ def _create_branch_harness(
     *,
     change: BranchChange,
     ended: bool = True,
+    independent: bool = False,
 ) -> _BranchHarness:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
@@ -195,13 +199,17 @@ def _create_branch_harness(
     base_head = service.history.head_ref()
     assert base_head.transition_id is not None
     episode_id = str(uuid.uuid4())
-    target = GraphTargetRef(kind="branch", branch_id=episode_id)
-    branch = service.history.create_episode_branch(
+    branch_id = str(uuid.uuid4()) if independent else episode_id
+    root_id = str(uuid.uuid4())
+    target = GraphTargetRef(kind="branch", branch_id=branch_id)
+    branch = service.history.create_branch(
         GraphBranchMetadata(
-            branch_id=episode_id,
+            branch_id=branch_id,
             episode_id=episode_id,
             project_id=project_id,
             base_head=base_head,
+            parent_head=base_head if independent else None,
+            created_by=f"orchestrator:{root_id}" if independent else None,
             head=GraphHeadRef(
                 target=target,
                 revision=base_head.revision,
@@ -212,7 +220,6 @@ def _create_branch_harness(
     )
 
     now = store.now()
-    root_id = str(uuid.uuid4())
     episode = EpisodeRecord(
         episode_id=episode_id,
         project_id=project_id,
@@ -355,7 +362,7 @@ def _current_receipt(harness: _BranchHarness, *, task_id: str) -> BranchMergeRec
         provenance=BranchMergeProvenance(
             merge_id=branch_merge_id(metadata),
             branch_id=metadata.branch_id,
-            episode_id=metadata.episode_id,
+            episode_id=harness.episode.episode_id,
             branch_base_head=metadata.base_head,
             branch_head=metadata.head,
             rebased_main_head=main_head,
@@ -421,47 +428,28 @@ def test_episode_projection_distinguishes_merge_failures_from_tasks_needing_acti
     assert summary["merge_eligible"] is True
 
 
-def _candidate_for(change: Literal["evidence", "status"]) -> str:
-    if change == "evidence":
-        operations: list[dict[str, object]] = [
-            {
-                "op": "create_nodes",
-                "nodes": [
-                    {
-                        "id": "ev/branch-result",
-                        "type": "evidence",
-                        "title": "Branch result",
-                        "observation": "The isolated branch recorded a result.",
-                        "origin": "internal_run",
-                    }
-                ],
+def _answers_for_plan(plan):
+    return {
+        "answers": {
+            conflict["conflict_id"]: {
+                "kind": "branch" if "branch" in conflict["allowed_answer_kinds"] else "keep-node"
             }
-        ]
-    else:
-        operations = [
-            {
-                "op": "update_nodes",
-                "nodes": [
-                    {
-                        "id": "blk/merge-ready",
-                        "changes": {"status": "resolved"},
-                    }
-                ],
+            for conflict in plan["conflicts"]
+        },
+        "cards": {
+            group["subject_key"]: {
+                "situation_cold": "The branch changed this protected subject.",
+                "why_human_now": "The merge requires a human review.",
+                "consequences": "Approval applies the branch changes.",
+                "decision_needed": "Approve the proposed changes.",
             }
-        ]
-    return json.dumps(
-        {
-            "summary": "Carry the isolated branch result onto main.",
-            "ops": operations,
-            "repositories_read": [],
-            "change_summary": ["Merged the branch's semantic result."],
-        }
-    )
+            for group in plan["review_groups"]
+        },
+    }
 
 
-class _PatchWritingLauncher:
-    def __init__(self, candidate: str) -> None:
-        self.candidate = candidate
+class _AnswersWritingLauncher:
+    def __init__(self) -> None:
         self.calls = 0
         self.session_id = f"merge-native-{uuid.uuid4()}"
 
@@ -472,11 +460,33 @@ class _PatchWritingLauncher:
         *,
         cwd: Path,
         session_id: str | None,
+        invocation_gate: ProviderInvocationGate,
         **_kwargs: object,
     ) -> AsyncIterator[AgentEvent]:
         self.calls += 1
-        assert _kwargs["invocation_gate"] is not None
-        (cwd / "patch.json").write_text(self.candidate, encoding="utf-8")
+        assert invocation_gate is not None
+        plan_path = max(
+            (cwd.parent / "inputs").glob("*-merge-plan-*.json"), key=lambda p: p.stat().st_mtime_ns
+        )
+        plan = json.loads(plan_path.read_text())
+        (cwd / "answers.json").write_text(json.dumps(_answers_for_plan(plan)), encoding="utf-8")
+        async with invocation_gate.serve_current_session():
+            process = await asyncio.create_subprocess_exec(
+                *invocation_gate.client_executable_argv(),
+                *invocation_gate.client_arguments(),
+                "--timeout",
+                "30",
+                "--workspace",
+                str(cwd),
+                "merge-answers",
+                "check",
+                str(cwd / "answers.json"),
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await process.communicate()
+        assert process.returncode == 0, (stdout.decode(), stderr.decode())
         yield AgentEvent(event="session", session_id=session_id or self.session_id)
         yield AgentEvent(event="provider_exit", text='{"return_code":0}')
         yield AgentEvent(event="done")
@@ -519,7 +529,7 @@ def test_start_episode_projects_the_exact_main_transition_into_its_branch_head(
         episode = tasks.store.episode(record.episode_id)
         assert episode is not None
         service.history.branch(
-            episode.episode_id,
+            episode.graph_target.branch_id,
             expected_episode_id=episode.episode_id,
             expected_project_id=episode.project_id,
         )
@@ -538,10 +548,15 @@ def test_start_episode_projects_the_exact_main_transition_into_its_branch_head(
     assert payload["graph_base_head"] == exact_main.model_dump(mode="json")
     assert branch["base_head"] == exact_main.model_dump(mode="json")
     assert branch["head"] == {
-        "target": {"kind": "branch", "branch_id": payload["episode_id"]},
+        "target": payload["graph_target"],
         "revision": exact_main.revision,
         "transition_id": exact_main.transition_id,
     }
+    assert branch["branch_id"] == payload["episode_id"]
+    assert (
+        tasks.store.branch_owner(payload["project_id"], branch["branch_id"])
+        == payload["episode_id"]
+    )
     assert launch_observations == [payload["root_operation_id"]]
 
     # A second start runs beside the first on its own branch.
@@ -553,7 +568,7 @@ def test_start_episode_projects_the_exact_main_transition_into_its_branch_head(
     branches = service.manifest.research_dir / "branches"
     assert sorted(
         path.name for path in branches.iterdir() if not path.name.startswith(".")
-    ) == sorted([payload["episode_id"], second.json()["episode_id"]])
+    ) == sorted([branch["branch_id"], second.json()["graph_branch"]["branch_id"]])
 
 
 def test_start_episode_keeps_a_visible_failed_reservation_when_branch_creation_fails(
@@ -576,7 +591,7 @@ def test_start_episode_keeps_a_visible_failed_reservation_when_branch_creation_f
     def unavailable_branch(_metadata):
         raise ValueError("canonical branch publication unavailable")
 
-    monkeypatch.setattr(service.history, "create_episode_branch", unavailable_branch)
+    monkeypatch.setattr(service.history, "create_branch", unavailable_branch)
     response = signed_in_client(app).post(
         f"/api/projects/{project_id}/episodes",
         json={"mode": "auto_research", "invocation_ceiling": 2},
@@ -620,14 +635,14 @@ def test_episode_list_projects_a_reservation_while_remote_branch_publication_is_
     tasks = app.state.background_tasks
     entered = threading.Event()
     release = threading.Event()
-    real_create = service.history.create_episode_branch
+    real_create = service.history.create_branch
 
     def delayed_create(metadata):
         entered.set()
         assert release.wait(timeout=5)
         return real_create(metadata)
 
-    monkeypatch.setattr(service.history, "create_episode_branch", delayed_create)
+    monkeypatch.setattr(service.history, "create_branch", delayed_create)
     monkeypatch.setattr(tasks, "_spawn_record", lambda record, _request, **_kwargs: record)
     start_client = signed_in_client(app)
     list_client = signed_in_client(app)
@@ -681,21 +696,9 @@ def test_restart_reconciles_an_already_published_reserved_branch(
     )
 
     def ensure(reserved: EpisodeRecord) -> None:
-        service.history.create_episode_branch(
-            GraphBranchMetadata(
-                branch_id=reserved.episode_id,
-                episode_id=reserved.episode_id,
-                project_id=reserved.project_id,
-                base_head=reserved.graph_base_head,
-                head=GraphHeadRef(
-                    target=reserved.graph_target,
-                    revision=base_head.revision,
-                    transition_id=base_head.transition_id,
-                ),
-                created_at=reserved.created_at,
-                authorized_by=reserved.authorized_by,
-            )
-        )
+        from rcp.api.episode_branches import ensure_episode_graph_target
+
+        ensure_episode_graph_target(reserved, catalog=app.state.catalog)
 
     ensure(episode)
     restarted = BackgroundAgentTasks(tasks.store, tasks.stream)
@@ -725,6 +728,7 @@ def test_episode_projection_and_merge_admission_are_exact_and_recover_by_fresh_d
         "branch_id",
         "episode_id",
         "base_head",
+        "parent_head",
         "head",
         "merge_eligible",
         "merge_blocked_reason",
@@ -740,6 +744,7 @@ def test_episode_projection_and_merge_admission_are_exact_and_recover_by_fresh_d
         "branch_id": metadata.branch_id,
         "episode_id": metadata.episode_id,
         "base_head": metadata.base_head.model_dump(mode="json"),
+        "parent_head": metadata.effective_parent_head.model_dump(mode="json"),
         "head": metadata.head.model_dump(mode="json"),
         "merge_eligible": True,
         "merge_blocked_reason": None,
@@ -903,7 +908,7 @@ def test_ended_branch_merges_after_a_paused_attempt_is_retired(
     assert store.agent_task(root.operation_id).status == "paused"
     assert store.auto_research_is_quiescent(harness.episode.episode_id)
     assert _episode_payload(harness)["graph_branch"]["merge_eligible"] is True
-    launcher = _PatchWritingLauncher(_candidate_for("evidence"))
+    launcher = _AnswersWritingLauncher()
     monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
 
     response = harness.client.post(
@@ -934,7 +939,7 @@ def test_ended_branch_merges_over_an_unresolved_paused_writer(
         store.mark_episode_stop_skipped(harness.episode.episode_id)
     else:
         store.end_episode_without_report(harness.episode.episode_id, ending="human_pause")
-    launcher = _PatchWritingLauncher(_candidate_for("evidence"))
+    launcher = _AnswersWritingLauncher()
     monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
 
     assert _episode_payload(harness)["graph_branch"]["merge_eligible"] is True
@@ -1156,7 +1161,7 @@ def test_committed_merge_persists_its_receipt_before_success_and_evaluates_main_
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     harness = _create_branch_harness(manifest, tmp_path, change="status")
-    launcher = _PatchWritingLauncher(_candidate_for("status"))
+    launcher = _AnswersWritingLauncher()
     monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
     # Keep delivery pending after the condition is completed; this test is about
     # which graph the merge boundary evaluates, not the subsequent chat turn.
@@ -1190,7 +1195,10 @@ def test_committed_merge_persists_its_receipt_before_success_and_evaluates_main_
     task = wait_for_task(harness.store, operation_id, expect="succeeded")
     assert launcher.calls == 0
     assert task.applied_revision == harness.service.history.state().revision
-    assert harness.service.history.state().nodes["blk/merge-ready"].status == "resolved"
+    assert (
+        harness.service.history.state().nodes["blk/merge-ready"].model_dump()["status"]
+        == "resolved"
+    )
     receipts = harness.branch.merge_receipts()
     assert len(receipts) == 1
     assert receipts[0].outcome == "committed"
@@ -1219,7 +1227,7 @@ def test_graph_projection_reconciles_a_crashed_commit_and_blocks_duplicate_merge
     provenance = BranchMergeProvenance(
         merge_id=merge_id,
         branch_id=metadata.branch_id,
-        episode_id=metadata.episode_id,
+        episode_id=harness.episode.episode_id,
         branch_base_head=metadata.base_head,
         branch_head=metadata.head,
         rebased_main_head=main_head,
@@ -1291,7 +1299,7 @@ def test_crash_receipt_reconciliation_accepts_later_main_history(
     provenance = BranchMergeProvenance(
         merge_id=branch_merge_id(metadata),
         branch_id=metadata.branch_id,
-        episode_id=metadata.episode_id,
+        episode_id=harness.episode.episode_id,
         branch_base_head=metadata.base_head,
         branch_head=metadata.head,
         rebased_main_head=harness.service.history.head_ref(),
@@ -1472,9 +1480,34 @@ def test_merge_history_client_and_main_observation(manifest, tmp_path, monkeypat
         assert response.status == "ok"
         assert response.result["changes"]
         calls.append(response)
-        patch = json.loads(_candidate_for("status"))
-        patch["ops"][0]["nodes"][0]["changes"]["title"] = "Merged title"
-        (cwd / "patch.json").write_text("invalid" if len(calls) == 1 else json.dumps(patch))
+        plan = json.loads(next((cwd.parent / "inputs").glob("*-merge-plan-*.json")).read_text())
+        answers = _answers_for_plan(plan)
+        for conflict in plan["conflicts"]:
+            if conflict.get("field_name") == "title":
+                answers["answers"][conflict["conflict_id"]] = {
+                    "kind": "merged",
+                    "value": "Merged title",
+                }
+        staged = handlers[0]["staged"]
+        for payload, expected_status in (
+            ({"answers": {}, "cards": {}}, "invalid"),
+            (answers, "ok"),
+        ):
+            text = json.dumps(payload)
+            (cwd / "answers.json").write_text(text)
+            check = handlers[0]["command_handler"](
+                MergeAnswersCommandRequest.model_validate(
+                    {
+                        "mailbox_id": invocation_gate.mailbox_id,
+                        "request_id": uuid.uuid4().hex,
+                        "credential": staged.credential.token,
+                        "verb": "merge_answers",
+                        "arguments": {"action": "check", "answers": text},
+                    }
+                ),
+                staged.credential.identity,
+            )
+            assert check.status == expected_status, check
         yield AgentEvent(event="session", session_id="merge-reader-session")
         yield AgentEvent(event="done")
 
@@ -1489,9 +1522,32 @@ def test_merge_history_client_and_main_observation(manifest, tmp_path, monkeypat
         if task.kind == "branch_merge"
     )
     task = wait_for_task(harness.store, task.operation_id, expect="succeeded")
-    assert len(calls) == 2
+    assert len(calls) == 1
+    assert harness.service.history.state().nodes["blk/merge-ready"].title == "Merged title"
     seen = harness.store.graph_seen_head(
         harness.project_id, harness.episode.episode_id, "merge-reader-session", GraphTargetRef()
     )
     assert seen == harness.service.history.head_ref()
     assert seen.revision == task.applied_revision
+
+
+def test_independent_episode_branch_merges_into_main(manifest, tmp_path, monkeypatch):
+    harness = _create_branch_harness(manifest, tmp_path, change="status", independent=True)
+    monkeypatch.setattr(
+        harness.app.state.launcher,
+        "stream",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("provider launched")),
+    )
+    response = harness.client.post(
+        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge",
+        json={"keep_branch_open": True},
+    )
+    assert response.status_code == 202, response.text
+    assert harness.branch.branch_id != harness.episode.episode_id
+    (receipt,) = harness.branch.validated_merge_receipts()
+    assert receipt.provenance.branch_id == harness.branch.branch_id
+    assert receipt.provenance.episode_id == harness.episode.episode_id
+    assert (
+        harness.service.history.state().nodes["blk/merge-ready"].model_dump()["status"]
+        == "resolved"
+    )

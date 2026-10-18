@@ -15,6 +15,7 @@ from rcp.runs.auto_research import (
     AutoResearchRunRequest,
     AutoResearchSeatNodeType,
     auto_research_planned_effect_id,
+    recorded_child_graph_target,
     validate_auto_research_worker_request,
 )
 from rcp.runs.auto_research_admission import (
@@ -36,6 +37,7 @@ from rcp.storage import (
 
 if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
+    from rcp.service import ProjectService
 
 
 AutoResearchWorkerRequestFactory = Callable[
@@ -71,6 +73,7 @@ def reconcile_pending_auto_research_child_admissions(
     worker_request_factory: AutoResearchWorkerRequestFactory,
     seat_node_type: AutoResearchSeatNodeType,
     episode_id: str | None = None,
+    project_service: Callable[[str], ProjectService] | None = None,
 ) -> AutoResearchChildAdmissionReconciliation:
     """Re-drive command starts that committed before their child route did.
 
@@ -96,6 +99,16 @@ def reconcile_pending_auto_research_child_admissions(
             context = _command_context(store, admission, command)
             command_file = _recorded_command_file(store, admission, command)
             context = replace(context, command_file=command_file)
+            arguments = command.start_payload.get("arguments")
+            fork_result = {}
+            if isinstance(arguments, dict) and arguments.get("at") is not None:
+                from rcp.runs.auto_research_fork_admission import ensure_child_fork
+
+                if project_service is None:
+                    raise AutoResearchCommandUnavailable("The fork history is unavailable.")
+                fork_result = ensure_child_fork(
+                    store, project_service(admission.project_id), context, command
+                )
             if admission.child_kind == "work":
                 outcome = _reconcile_spawn(
                     store,
@@ -114,6 +127,8 @@ def reconcile_pending_auto_research_child_admissions(
                     command,
                     context,
                 )
+            if outcome.status == "ok" and fork_result:
+                outcome = outcome.model_copy(update={"result": {**outcome.result, **fork_result}})
             _finish_command_if_unknown(store, command, outcome)
         except Exception as exc:
             current = store.auto_research_child_admission(admission.admission_id)
@@ -205,6 +220,7 @@ def _command_context(
         episode=episode,
         task=task,
         request=request,
+        child_graph_target=recorded_child_graph_target(command, episode),
     )
 
 
@@ -277,13 +293,12 @@ def _reconcile_spawn(
     snapshot = context.command_file
     if snapshot is None or snapshot.filename != arguments.instruction_file:
         raise ValueError("The admitted Spawn command lost its instruction snapshot.")
-    node_type = seat_node_type(
-        admission.project_id,
-        admission.episode_id,
-        arguments.seat_node_id,
-    )
-    if node_type is None:
-        raise ValueError("Auto-research workers must be seated on an existing graph node.")
+    if arguments.seat_node_id is not None and arguments.target is None and arguments.at is None:
+        node_type = seat_node_type(
+            admission.project_id, admission.episode_id, arguments.seat_node_id
+        )
+        if node_type is None:
+            raise ValueError("The worker seat must name an existing node.")
     if store.auto_research_child_work(admission.child_id) is not None:
         raise ValueError("The admitted Spawn already has an unreflected child route.")
     request = worker_request_factory(
@@ -312,6 +327,7 @@ def _reconcile_spawn(
         instruction=snapshot.text,
         instruction_sha256=snapshot.sha256,
         admission_id=admission.admission_id,
+        graph_target=context.child_graph_target,
     )
     return AutoResearchCommandEffectResult(
         message="Ordinary Work was seated and queued after recovery.",
@@ -355,6 +371,7 @@ def _reconcile_experiment(
         goal_sha256=goal_sha256,
         invocation_limit=arguments.invocation_limit,
         admission_id=admission.admission_id,
+        graph_target=context.child_graph_target,
         provider=arguments.provider,
         model=arguments.model,
         reasoning=arguments.reasoning,

@@ -33,6 +33,7 @@ ResourceName = Literal[
     "consolidation",
     "digest",
     "lessons",
+    "bulletin",
     "episodes",
     "refs",
     "artifacts",

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   timelineRows,
+  timelineActorTarget,
+  timelineActorLabel,
   timelineBounds,
   clampWindow,
   zoomWindow,
@@ -197,4 +199,55 @@ test("summary partitions every shown actor and message exactly once", () => {
   assert.equal(summary.totalMessages, 6);
   assert.equal(summary.handoffs, 1);
   assert.equal(summary.truncated, true);
+});
+
+test("fork actors retain their target and archive provenance under the parent run", () => {
+  const target = { kind: "branch", branch_id: "fork" };
+  const refs = [
+    { kind: "branch", branch_id: "root", name: "source" },
+    {
+      kind: "branch",
+      branch_id: "fork",
+      name: "recheck",
+      archived: true,
+      parent_head: { target: { kind: "branch", branch_id: "root" }, revision: 7 },
+    },
+  ];
+  const actors = [
+    actor("root", "orchestrator"),
+    actor("worker", "worker", "worker", { graph_target: target }),
+    actor("original", "experiment", "branch:root:node:exp", { graph_target: refs[0] }),
+    actor("forked", "experiment", "branch:fork:node:exp", { graph_target: target }),
+  ];
+  const rows = timelineRows(data({ actors }), [], refs, { kind: "branch", branch_id: "root" });
+  assert.equal(rows.length, 4);
+  assert.deepEqual(
+    rows.slice(1).map((row) => row.actors[0].actor_id),
+    ["worker", "original", "forked"],
+  );
+  assert.equal(rows[1].targetLabel, rows[3].targetLabel);
+  assert.deepEqual(
+    rows.map((row) => row.archived),
+    [false, true, false, true],
+  );
+  assert.deepEqual(rows[3].actors[0].graph_target, target);
+  assert.equal(rows[2].targetLabel, null);
+  assert.deepEqual(refs[1].parent_head, {
+    target: { kind: "branch", branch_id: "root" },
+    revision: 7,
+  });
+  assert.notEqual(rows[3].targetLabel, null);
+  assert.equal(timelineActorTarget(actor("legacy", "worker"), refs), null);
+});
+
+test("same-target actors retain their node subtitle and branch row keys resolve the node id", () => {
+  const target = { kind: "branch", branch_id: "root" };
+  const item = actor("child", "experiment", "branch:root:node:exp/check", {
+    graph_target: target,
+    links: { control_node_id: "exp/check" },
+  });
+  const [row] = timelineRows(data({ actors: [item] }), [], [], target);
+  assert.equal(row.targetLabel, null);
+  assert.equal(row.subtitle, item.links.control_node_id);
+  assert.equal(timelineActorLabel({ ...item, links: {} }), item.links.control_node_id);
 });

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import ValidationError
 
+from rcp.core.transition_models import GraphTargetRef
 from rcp.runs.auto_research import (
     AutoResearchEndingSignal,
     AutoResearchRunRequest,
@@ -131,13 +132,21 @@ class EpisodeReconciler:
                 route.child_episode_id
                 for route in self.store.auto_research_child_experiments(episode_id)
             )
+        targets = {episode.graph_target.key: episode.graph_target}
+        if episode.mode == "auto_research":
+            targets.update(
+                (
+                    f"branch:{branch.branch_id}",
+                    GraphTargetRef(kind="branch", branch_id=branch.branch_id),
+                )
+                for branch in self.store.branches_owned_by(episode.project_id, episode_id)
+            )
         return any(
             task.visible
             and task.episode_id in owned_episode_ids
             and not isinstance(task.request.get("artifact_edit"), dict)
-            for task in self.store.unsettled_graph_target_tasks(
-                episode.project_id, episode.graph_target
-            )
+            for target in targets.values()
+            for task in self.store.unsettled_graph_target_tasks(episode.project_id, target)
         )
 
     def reconcile_auto_research_wrapup(

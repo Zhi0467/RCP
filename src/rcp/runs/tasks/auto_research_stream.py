@@ -36,7 +36,12 @@ from rcp.agents.command_mailbox import (
     serve_command_mailbox,
     stage_command_mailbox,
 )
-from rcp.agents.command_protocol import CommandRequest, CommandResponse, ValidateCommandRequest
+from rcp.agents.command_protocol import (
+    CommandRequest,
+    CommandResponse,
+    CommandVerb,
+    ValidateCommandRequest,
+)
 from rcp.agents.continuation_prompt import (
     LaunchPhase,
     MasterRef,
@@ -66,8 +71,8 @@ from rcp.runs.auto_research import (
     AutoResearchRunRequest,
 )
 from rcp.runs.auto_research_admission import (
-    ChildProfileChoices,
-    auto_research_child_profile_choices,
+    ChildSeatProfileChoices,
+    auto_research_child_seat_profile_choices,
 )
 from rcp.runs.auto_research_lifecycle import (
     AUTO_RESEARCH_LIFECYCLE_HANDOFF_FILE,
@@ -90,7 +95,7 @@ from rcp.runs.chat import (
     _project_write_scope,
     _read_chat_patch,
 )
-from rcp.runs.lessons import stage_lessons_pointer
+from rcp.runs.lessons import stage_operational_context_pointer
 from rcp.runs.patch_validator import command_rejection_recorder
 from rcp.runs.session_master import (
     commit_prepared_graph_observation,
@@ -260,14 +265,19 @@ async def stream_auto_research_orchestrator_run(
         context.group_context = build_group_context(
             service, execution.store, turn.request.run_on or ""
         )
-        graph_read_scope = GraphReadScope.for_launch(
-            project_id=turn.task.project_id,
-            target=turn.task.graph_target,
-            group_context=context.group_context,
+        graph_read_scope = GraphReadScope.resolve(
+            turn.task.project_id, service.history, context.group_context
+        )
+        # The one command surface this turn's prompt renders and its dispatcher enforces.
+        allowed_verbs = auto_research_allowed_verbs(
+            "orchestrator",
+            graph_read_scope=graph_read_scope,
+            bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
         )
         command_dispatcher = command_dispatcher.with_command_files(
             service=service,
             graph_read_scope=graph_read_scope,
+            allowed_verbs=allowed_verbs,
             reader=lambda name, max_bytes: command_files.read_text(name, max_bytes=max_bytes),
             consumer=command_files.remove_if_sha256,
             refresher=lambda: _refreshed_orchestrator_state_paths(
@@ -360,6 +370,7 @@ async def stream_auto_research_orchestrator_run(
                 patch_path=patch_path,
                 schema_path=schema_path,
                 command_client=staged_commands.client_command(),
+                allowed_verbs=allowed_verbs,
                 graph_read_scope=graph_read_scope,
                 staged_head=staged_head,
                 messages_path=messages_path,
@@ -367,7 +378,7 @@ async def stream_auto_research_orchestrator_run(
                 skill_pointers=orchestrator_skill_pointers,
                 write_scope=write_scope,
                 browser_grant=browser_grant,
-                child_profiles=auto_research_child_profile_choices(service),
+                child_profiles=auto_research_child_seat_profile_choices(service),
             )
             read_dirs = _chat_read_dirs(
                 context,
@@ -608,11 +619,16 @@ async def stream_auto_research_worker_run(
             f"auto_research-patch-schema-{schema_digest}.json",
             schema,
         )
-        graph_read_scope = GraphReadScope.for_launch(
-            project_id=turn.task.project_id,
-            target=turn.task.graph_target,
-            group_context=context.group_context,
+        graph_read_scope = GraphReadScope.resolve(
+            turn.task.project_id, service.history, context.group_context
         )
+        # The one command surface this turn's prompt renders and its dispatcher enforces.
+        allowed_verbs = auto_research_allowed_verbs(
+            "worker",
+            graph_read_scope=graph_read_scope,
+            bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
+        )
+        command_dispatcher = command_dispatcher.with_allowed_verbs(allowed_verbs)
         staged_head = prepare_graph_observation(
             execution,
             service,
@@ -666,6 +682,7 @@ async def stream_auto_research_worker_run(
                 patch_path=patch_path,
                 schema_path=schema_path,
                 command_client=staged_commands.client_command(),
+                allowed_verbs=allowed_verbs,
                 graph_read_scope=graph_read_scope,
                 staged_head=staged_head,
                 reply_key=_worker_reply_key(turn),
@@ -1112,7 +1129,10 @@ def _orchestrator_stage_actor_id(
     episode = execution.store.episode(turn.task.episode_id or "")
     if episode is None or episode.continues_episode_id is None:
         return turn.binding.actor_operation_id
-    root = execution.store.episode(episode.graph_target.branch_id or "")
+    owner_id = execution.store.branch_owner(
+        episode.project_id, episode.graph_target.branch_id or ""
+    )
+    root = execution.store.episode(owner_id) if owner_id else None
     if root is None or root.root_operation_id is None:
         raise ValueError("The continued Auto-research episode lost its chain root.")
     return root.root_operation_id
@@ -1560,7 +1580,14 @@ def _actor_launch_prompt(
     values["browser"] = browser_grant.model_dump(
         include={"status", "reason_code", "session_name", "invocation_dir"}
     )
-    fresh_parts = (*fresh_parts, stage_lessons_pointer(execution, local_stage, remote_stage))
+    fresh_parts = (
+        *fresh_parts,
+        stage_operational_context_pointer(
+            execution,
+            local_stage,
+            remote_stage,
+        ),
+    )
     key = master_key(AUTO_RESEARCH_POLICY_VERSION, ontology_extensions=ontology_extensions)
     node = classify(
         LaunchPhase(session_id=session_id, phase=_LAUNCH_PHASES[execution.continuation])
@@ -1616,6 +1643,7 @@ def _orchestrator_prompt(
     patch_path: str,
     schema_path: str,
     command_client: str,
+    allowed_verbs: tuple[CommandVerb, ...],
     graph_read_scope: GraphReadScope | None = None,
     staged_head: GraphHeadRef | None = None,
     messages_path: str | None,
@@ -1623,7 +1651,7 @@ def _orchestrator_prompt(
     skill_pointers: list[dict[str, object]],
     write_scope: ProjectWriteScope,
     browser_grant: BrowserGrant,
-    child_profiles: ChildProfileChoices,
+    child_profiles: ChildSeatProfileChoices,
 ) -> tuple[str, str, MasterRef, dict[str, object]]:
     repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path} for item in context.repositories
@@ -1648,9 +1676,7 @@ def _orchestrator_prompt(
         write_scope=write_scope,
         group_context=context.group_context,
         skill_pointers=skill_pointers,
-        allowed_verbs=auto_research_allowed_verbs(
-            "orchestrator", graph_read_scope=graph_read_scope
-        ),
+        allowed_verbs=allowed_verbs,
         child_profiles=child_profiles,
     )
 
@@ -1691,6 +1717,7 @@ def _orchestrator_prompt(
             patch_path=patch_path,
             output_schema_path=schema_path,
             command_client=command_client,
+            allowed_verbs=allowed_verbs,
             instruction_path=instruction_path,
             messages_path=messages_path,
             lifecycle_path=lifecycle_path,
@@ -1720,6 +1747,7 @@ def _orchestrator_prompt(
             patch_path=patch_path,
             output_schema_path=schema_path,
             command_client=command_client,
+            allowed_verbs=allowed_verbs,
             messages_path=messages_path,
             lifecycle_path=lifecycle_path,
             retry_diagnostics_path=_retry_diagnostics_path(
@@ -1765,11 +1793,13 @@ def _orchestrator_prompt(
             render_group_context(context.group_context),
             question_part,
             auto_research_branch_read_pointers(
-                context.main_graph_path, shared_repositories, repositories
+                context.parent_graph_path,
+                shared_repositories,
+                repositories,
+                branch_name=context.branch_name,
+                branch_parent=context.branch_parent,
             ),
-            render_loop_overlap(
-                loops, ask_allowed="ask" in auto_research_allowed_verbs("orchestrator")
-            ),
+            render_loop_overlap(loops, ask_allowed="ask" in allowed_verbs),
             render_auto_research_overlap(other_runs),
         ),
         report_pending=lambda session_id: execution.store.episode_report_rebootstrap_pending(
@@ -1794,6 +1824,7 @@ def _worker_prompt(
     patch_path: str,
     schema_path: str,
     command_client: str,
+    allowed_verbs: tuple[CommandVerb, ...],
     graph_read_scope: GraphReadScope | None = None,
     staged_head: GraphHeadRef | None = None,
     reply_key: str,
@@ -1830,7 +1861,7 @@ def _worker_prompt(
         write_scope=write_scope,
         group_context=context.group_context,
         reply_key=reply_key,
-        allowed_verbs=auto_research_allowed_verbs("worker", graph_read_scope=graph_read_scope),
+        allowed_verbs=allowed_verbs,
     )
 
     def render_master() -> str:
@@ -1846,6 +1877,7 @@ def _worker_prompt(
             patch_path=patch_path,
             output_schema_path=schema_path,
             command_client=command_client,
+            allowed_verbs=allowed_verbs,
             reply_key=reply_key,
             messages_path=messages_path,
             write_scope=write_scope,
@@ -2246,10 +2278,8 @@ async def _settle_worker_patch(
         context = _auto_research_context(service, turn.request, stage)
         # The launch's group, which the reused read_dirs were built from.
         context.group_context = group_context
-        graph_read_scope = GraphReadScope.for_launch(
-            project_id=turn.task.project_id,
-            target=turn.task.graph_target,
-            group_context=context.group_context,
+        graph_read_scope = GraphReadScope.resolve(
+            turn.task.project_id, service.history, context.group_context
         )
         correction_head = prepare_graph_observation(
             execution,
@@ -2314,7 +2344,11 @@ async def _settle_worker_patch(
                         command_client=correction_mailbox.client_command(),
                     ),
                     render_group_context(context.group_context),
-                    stage_lessons_pointer(execution, stage.local, stage.remote),
+                    stage_operational_context_pointer(
+                        execution,
+                        stage.local,
+                        stage.remote,
+                    ),
                     browser_prompt_line(correction_grant),
                 ],
                 master=master,

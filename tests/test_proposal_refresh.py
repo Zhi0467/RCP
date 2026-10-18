@@ -116,7 +116,7 @@ def _reword_evidence(service):
     )
 
 
-def test_rewording_cause_evidence_stales_only_rule_two_proposals(filed):
+def test_rewording_cause_evidence_stales_rule_two_and_newer_proposals(filed):
     service = filed.state.service
     proposal = service.history.state().proposals[PROPOSAL]
     assert proposal.dependency_rule == 2
@@ -126,6 +126,8 @@ def test_rewording_cause_evidence_stales_only_rule_two_proposals(filed):
 
     state = service.history.state()
     assert project_graph_attention(state).stale_proposal_ids == [PROPOSAL]
+    merge_review = proposal.model_copy(update={"dependency_rule": 3})
+    assert proposal_is_stale(state, merge_review)
     # Proposals filed before rule 2 stay judged as replay judged them.
     legacy = Proposal.model_validate(proposal.model_dump(mode="json") | {"dependency_rule": 1})
     assert not proposal_is_stale(state, legacy)

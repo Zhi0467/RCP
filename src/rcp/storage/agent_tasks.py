@@ -56,6 +56,7 @@ from rcp.limits import (
 )
 from rcp.providers import ProviderUsage, classify_terminal_error, require_runtime_id
 from rcp.providers.live_status import AgentStatus
+from rcp.storage.branch_names import _chain_root
 from rcp.storage.client_requests import record_client_request
 from rcp.storage.digest import append_task_failed
 from rcp.storage.evidence_flags import (
@@ -236,6 +237,8 @@ class AgentTaskStoreMixin(StoreMixinBase):
     ) -> AgentTaskRecord:
         if record.kind == "episode_report":
             raise ValueError("episode report tasks must use their episode wrap-up allocation")
+        if record.kind == "branch_merge":
+            raise ValueError("branch merge tasks must use their dedicated admission")
         if record.episode_id is not None:
             raise ValueError("episode tasks must spend from their episode manager atomically")
         try:
@@ -564,13 +567,10 @@ class AgentTaskStoreMixin(StoreMixinBase):
             )
 
     def create_branch_merge_task(self, record: AgentTaskRecord) -> AgentTaskRecord:
-        """Admit one human-dispatched, graph-only merge without spending episode budget."""
-
-        from rcp.runs.task_policy import task_graph_capable
+        """Admit a merge and its optional invocation allocation in one transaction."""
 
         if (
             record.kind != "branch_merge"
-            or record.episode_id is None
             or record.status != "queued"
             or not record.visible
             or record.parent_operation_id is not None
@@ -586,7 +586,6 @@ class AgentTaskStoreMixin(StoreMixinBase):
             or authority.scope.patch_kind != "work"
         ):
             raise ValueError("a branch merge requires exact graph-only orchestrator authority")
-        require_dispatch(authority)
         try:
             with self.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -596,46 +595,330 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 ).fetchone()
                 if existing is not None:
                     stored = self._agent_task_record(existing)
-                    if stored.model_dump(exclude=AGENT_TASK_PROJECTION_FIELDS) != record.model_dump(
-                        exclude=AGENT_TASK_PROJECTION_FIELDS
-                    ):
+                    if record.request.get("merge_binding") is not None:
+                        identity = {
+                            "operation_id",
+                            "project_id",
+                            "episode_id",
+                            "graph_target",
+                            "kind",
+                            "request",
+                            "authorized_by",
+                            "dispatch_authority",
+                        }
+                        matches = stored.model_dump(include=identity) == record.model_dump(
+                            include=identity
+                        )
+                    else:
+                        excluded = set(AGENT_TASK_PROJECTION_FIELDS)
+                        matches = stored.model_dump(exclude=excluded) == record.model_dump(
+                            exclude=excluded
+                        )
+                    if not matches:
                         raise ValueError("the branch merge task conflicts with its durable id")
                     return stored
                 self._require_project_accepts_new_work(connection, record.project_id)
-                episode = connection.execute(
-                    "SELECT * FROM episodes WHERE episode_id = ?",
-                    (record.episode_id,),
-                ).fetchone()
-                if episode is None:
-                    raise KeyError(record.episode_id)
-                stored_episode = self._episode_record(episode)
-                code_only = record.graph_target.kind == "main"
-                if (
-                    stored_episode.graph_target.branch_id
-                    != (None if code_only else stored_episode.episode_id)
-                    or stored_episode.project_id != record.project_id
-                    or stored_episode.graph_target != record.graph_target
-                ):
-                    raise ValueError("branch merge requires its exact owner episode")
-                # A branch merges on branch facts: nothing about the episode's
-                # status, ending, or paused turns is a condition, and merging ends
-                # nothing. The only writers that matter are live graph-capable tasks.
-                # A code-only merge writes no graph, so main's writers are not in its way.
-                if not code_only and any(
-                    task.kind != "branch_merge"
-                    and task.status in {"queued", "running", "pausing"}
-                    and task_graph_capable(task.kind, task.request)
-                    for task in self._unsettled_graph_target_tasks_in_connection(
-                        connection, record.project_id, record.graph_target
-                    )
-                ):
-                    raise ValueError("the graph branch still has an active writer")
+                binding = self._require_merge_binding(connection, record, admission=True)
+                if binding is not None and binding.dispatcher_episode_id is not None:
+                    dispatcher = connection.execute(
+                        "SELECT status FROM graph_runs WHERE operation_id=?",
+                        (binding.dispatcher_operation_id,),
+                    ).fetchone()
+                    if dispatcher is None or dispatcher["status"] != "running":
+                        raise ValueError("merge_episode_not_accepting_work")
+                member_source = (
+                    binding.source
+                    if binding is not None and binding.dispatcher_episode_id is None
+                    else None
+                )
+                require_dispatch(authority, member_merge_source=member_source)
+                stored_episode = None
+                if record.episode_id is not None:
+                    episode = connection.execute(
+                        "SELECT * FROM episodes WHERE episode_id=?", (record.episode_id,)
+                    ).fetchone()
+                    if episode is None:
+                        raise KeyError(record.episode_id)
+                    stored_episode = cast("AppStore", self)._episode_record(episode)
+                    if stored_episode.project_id != record.project_id:
+                        raise ValueError("branch merge requires its exact owner episode")
+                if binding is None:
+                    owner = connection.execute(
+                        "SELECT owner_episode_id FROM graph_branches WHERE project_id=? AND branch_id=?",
+                        (record.project_id, record.graph_target.branch_id),
+                    ).fetchone()
+                    if (
+                        stored_episode is None
+                        or stored_episode.graph_target != record.graph_target
+                        or (
+                            record.graph_target.kind == "branch"
+                            and (owner is None or owner[0] != record.episode_id)
+                        )
+                    ):
+                        raise ValueError("branch merge requires its exact owner episode")
+                self._require_merge_source_available(connection, record)
                 self._insert_agent_task(connection, record, continuation_cause="fresh")
+                if (
+                    binding is not None
+                    and binding.dispatcher_episode_id is not None
+                    and binding.requires_agent
+                ):
+                    assert stored_episode is not None
+                    self._reserve_merge_invocation(connection, stored_episode, record)
         except sqlite3.IntegrityError as exc:
             raise ValueError("another merge is already active for this branch") from exc
         stored = self.agent_task(record.operation_id)
         assert stored is not None
         return stored
+
+    def _require_merge_source_available(
+        self, connection: sqlite3.Connection, record: AgentTaskRecord
+    ) -> None:
+        from rcp.runs.task_policy import task_graph_capable
+
+        if record.graph_target.kind == "main":
+            return  # Legacy code-only merge has no graph source.
+        writers = self._unsettled_graph_target_tasks_in_connection(
+            connection, record.project_id, record.graph_target
+        )
+        if any(
+            task.operation_id != record.operation_id
+            and task.status in {"queued", "running", "pausing"}
+            and task_graph_capable(task.kind, task.request)
+            for task in writers
+        ):
+            raise ValueError("merge_source_has_live_writer")
+
+    def recoverable_bound_merge_tasks(self) -> list[AgentTaskRecord]:
+        """Return bound recovery candidates once; canonical delivery decides failed recovery."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM graph_runs WHERE kind='branch_merge' "
+                "AND status IN ('queued','interrupted','failed') "
+                "AND json_type(request_json, '$.merge_binding')='object' "
+                "ORDER BY created_at, operation_id"
+            ).fetchall()
+        return [self._agent_task_record(row) for row in rows]
+
+    def _reserve_merge_invocation(
+        self, connection, episode: EpisodeRecord, record: AgentTaskRecord
+    ):
+        pending = cast("AppStore", self)._pending_child_budget_reservations(
+            connection, episode.episode_id, "work"
+        )
+        if episode.invocations_used + pending >= episode.invocation_ceiling:
+            raise ValueError("merge_budget_exhausted")
+        connection.execute(
+            "INSERT INTO episode_invocations (episode_id, operation_id, invocation_number, created_at) VALUES (?, ?, ?, ?)",
+            (
+                record.episode_id,
+                record.operation_id,
+                episode.invocations_used + 1,
+                record.created_at,
+            ),
+        )
+        connection.execute(
+            "UPDATE episodes SET invocations_used=invocations_used+1, updated_at=? WHERE episode_id=?",
+            (record.created_at, record.episode_id),
+        )
+
+    def reserve_branch_merge_invocation(self, operation_id: str) -> AgentTaskRecord:
+        """Reserve judgment once if the plan needs conflict answers or review cards."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM graph_runs WHERE operation_id=?", (operation_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(operation_id)
+            task = self._agent_task_record(row)
+            if task.kind != "branch_merge" or task.status not in {"queued", "running"}:
+                raise ValueError("merge_allocation_not_queued")
+            binding = self._require_merge_binding(connection, task, admission=True)
+            if binding is None:
+                raise ValueError("merge_binding_required")
+            if binding.requires_agent:
+                return task
+            if binding.dispatcher_episode_id is not None:
+                row = connection.execute(
+                    "SELECT * FROM episodes WHERE episode_id=?", (task.episode_id,)
+                ).fetchone()
+                self._reserve_merge_invocation(
+                    connection, cast("AppStore", self)._episode_record(row), task
+                )
+            request = {
+                **task.request,
+                "merge_binding": binding.model_copy(update={"requires_agent": True}).model_dump(
+                    mode="json"
+                ),
+            }
+            now = self.now()
+            connection.execute(
+                "UPDATE graph_runs SET request_json=?, updated_at=? WHERE operation_id=?",
+                (json.dumps(request), now, operation_id),
+            )
+            return task.model_copy(update={"request": request, "updated_at": now})
+
+    def requeue_owned_merge_task(self, operation_id: str) -> AgentTaskRecord:
+        """Resume interrupted delivery on its allocation, or settle a fenced recovery."""
+        refusal = None
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM graph_runs WHERE operation_id=?", (operation_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(operation_id)
+            task = self._agent_task_record(row)
+            if task.kind != "branch_merge" or task.status != "interrupted":
+                raise ValueError("merge_recovery_not_interrupted")
+            now = self.now()
+            try:
+                binding = self._require_merge_binding(connection, task, admission=True)
+                if binding is None:
+                    raise ValueError("merge_binding_required")
+            except ValueError as exc:
+                if str(exc) != "merge_episode_not_accepting_work":
+                    raise
+                refusal = exc
+                # Generic failure deliberately refuses terminal->terminal changes;
+                # this is the dedicated recovery decision on an interrupted merge.
+                connection.execute(
+                    "UPDATE graph_runs SET status='failed', phase='failed', updated_at=?, "
+                    "finished_at=?, last_activity_at=?, error=?, status_message=? "
+                    "WHERE operation_id=? AND status='interrupted'",
+                    (now, now, now, str(exc), str(exc), operation_id),
+                )
+                self._insert_agent_task_receipt(
+                    connection,
+                    operation_id,
+                    "operation_failed",
+                    self._bounded_receipt_payload({"status": "failed", "code": str(exc)}),
+                    tier="summary",
+                    created_at=now,
+                )
+                self._insert_agent_task_event(
+                    connection, operation_id, str(exc), level="error", created_at=now
+                )
+                append_task_failed(connection, operation_id, now, previous_status="interrupted")
+            if refusal is None:
+                cast("AppStore", self)._require_project_accepts_new_work(
+                    connection, task.project_id
+                )
+                self._require_merge_source_available(connection, task)
+                connection.execute(
+                    "UPDATE graph_runs SET status='queued', attempt=attempt+1, updated_at=?, "
+                    "started_at=NULL, finished_at=NULL, phase='queued', error=NULL, failure_kind=NULL, "
+                    "native_session_id=NULL, stage_root=NULL, stage_host=NULL, write_scope_fingerprint=NULL, "
+                    "status_message='Recovering fork merge.' WHERE operation_id=?",
+                    (now, operation_id),
+                )
+                self._insert_agent_task_receipt(
+                    connection,
+                    operation_id,
+                    "operation_dispatch_reset",
+                    self._bounded_receipt_payload({"reason": "owned_merge_recovery"}),
+                    tier="summary",
+                    created_at=now,
+                )
+        if refusal is not None:
+            raise refusal
+        result = self.agent_task(operation_id)
+        assert result is not None
+        return result
+
+    @staticmethod
+    def _require_merge_binding(
+        connection: sqlite3.Connection, record: AgentTaskRecord, *, admission: bool = False
+    ):
+        """Recheck source, destination and dispatcher at admission and live Apply."""
+        from rcp.runs.branch_merge_request import MergeBinding
+        from rcp.storage.branch_names import _chain_root
+
+        raw = record.request.get("merge_binding")
+        if raw is None:
+            # Old human-dispatched episode merges always target main.
+            _require_merge_destination_open(connection, record, GraphTargetRef())
+            return None
+        binding = MergeBinding.model_validate(raw)
+        if record.request.get("episode_id") != record.episode_id:
+            raise ValueError("merge_dispatcher_mismatch")
+        if binding.source != record.graph_target or binding.source_head.target != binding.source:
+            raise ValueError("merge_source_mismatch")
+        source = connection.execute(
+            "SELECT * FROM graph_branches WHERE project_id=? AND branch_id=?",
+            (record.project_id, binding.source.branch_id),
+        ).fetchone()
+        if (
+            source is None
+            or GraphTargetRef.model_validate_json(source["parent_target_json"])
+            != binding.destination
+        ):
+            raise ValueError("merge_destination_not_source")
+        destination = None
+        if binding.destination.kind == "branch":
+            destination = connection.execute(
+                "SELECT owner_episode_id, archived FROM graph_branches WHERE project_id=? AND branch_id=?",
+                (record.project_id, binding.destination.branch_id),
+            ).fetchone()
+            if destination is None:
+                raise ValueError("merge_destination_missing")
+            if destination["archived"]:
+                raise ValueError("merge_destination_archived")
+        _require_merge_destination_open(connection, record, binding.destination)
+        if binding.dispatcher_episode_id is None:
+            from rcp.storage.membership import live_project_member
+
+            # A member merges any fork; an episode branch delivers through episode Merge.
+            if record.episode_id is not None or source["branch_id"] == source["owner_episode_id"]:
+                raise ValueError("merge_source_is_episode_branch")
+            if record.authorized_by is None or not live_project_member(
+                connection, record.project_id, record.authorized_by.user_id
+            ):
+                raise ValueError("merge_member_required")
+            return binding
+        if binding.destination.kind == "main":
+            raise ValueError("merge_main_requires_human")
+        if binding.dispatcher_episode_id != record.episode_id:
+            raise ValueError("merge_dispatcher_mismatch")
+        root = _chain_root(connection, record.project_id, binding.dispatcher_episode_id)
+        if (
+            source["owner_episode_id"] != root
+            or destination is None
+            or destination["owner_episode_id"] != root
+        ):
+            raise ValueError("merge_branch_not_owned")
+        dispatcher = connection.execute(
+            "SELECT run.*, invocation.role FROM graph_runs run "
+            "JOIN auto_research_invocations invocation ON invocation.operation_id=run.operation_id "
+            "WHERE run.operation_id=? AND run.project_id=? AND run.episode_id=?",
+            (binding.dispatcher_operation_id, record.project_id, binding.dispatcher_episode_id),
+        ).fetchone()
+        if (
+            dispatcher is None
+            or dispatcher["kind"] != "auto_research"
+            or dispatcher["role"] != "orchestrator"
+        ):
+            raise ValueError("merge_requires_owning_orchestrator")
+        if record.authorized_by is None or (
+            record.authorized_by.space_id != dispatcher["authorized_space_id"]
+            or record.authorized_by.user_id != dispatcher["authorized_user_id"]
+            or record.authorized_by.display_name != dispatcher["authorized_display_name"]
+        ):
+            raise ValueError("merge_dispatcher_mismatch")
+        if admission:
+            episode = connection.execute(
+                "SELECT status, ending, stop_requested_at FROM episodes WHERE episode_id=?",
+                (binding.dispatcher_episode_id,),
+            ).fetchone()
+            if (
+                episode is None
+                or episode["status"] != "running"
+                or episode["ending"] is not None
+                or episode["stop_requested_at"] is not None
+            ):
+                raise ValueError("merge_episode_not_accepting_work")
+        return binding
 
     def _child_chat_owner(
         self, connection: sqlite3.Connection, project_id: str, chat_id: str
@@ -664,27 +947,59 @@ class AgentTaskStoreMixin(StoreMixinBase):
         ).fetchall()
         return {row["episode_id"] for row in rows}
 
+    @staticmethod
+    def _orchestrator_chat_target(
+        connection: sqlite3.Connection, project_id: str, chat_id: str
+    ) -> GraphTargetRef | None:
+        """The branch of the Auto-research chain whose root episode is this chat."""
+
+        row = connection.execute(
+            "SELECT root.graph_target_json FROM episodes AS root "
+            "JOIN graph_branches AS branch ON branch.project_id = root.project_id "
+            "AND branch.owner_episode_id = root.episode_id "
+            "AND branch.branch_id = json_extract(root.graph_target_json, '$.branch_id') "
+            "WHERE root.project_id = ? AND root.episode_id = ? AND root.mode = 'auto_research'",
+            (project_id, chat_id),
+        ).fetchone()
+        return GraphTargetRef.model_validate_json(row[0]) if row is not None else None
+
+    @staticmethod
+    def _auto_research_lineage_running(connection: sqlite3.Connection, episode_id: str) -> bool:
+        """Whether any Auto-research episode on this episode's graph target is still live."""
+
+        return (
+            connection.execute(
+                "SELECT 1 FROM episodes AS member JOIN episodes AS owner "
+                "ON member.project_id = owner.project_id "
+                "AND member.graph_target_json = owner.graph_target_json "
+                "WHERE owner.episode_id = ? AND member.mode = 'auto_research' "
+                "AND member.status NOT IN ('completed', 'failed', 'needs_action', 'stopped') "
+                "LIMIT 1",
+                (episode_id,),
+            ).fetchone()
+            is not None
+        )
+
     def child_human_turn_refusal(self, project_id: str, chat_id: str) -> dict[str, str] | None:
-        """Why a read-only Auto-research child chat refuses an ordinary human turn."""
+        """Why a read-only Auto-research child or orchestrator chat refuses a human turn."""
         with self.connection() as connection:
             return self._child_human_turn_refusal(connection, project_id, chat_id)
 
     def _child_human_turn_refusal(
         self, connection: sqlite3.Connection, project_id: str, chat_id: str
     ) -> dict[str, str] | None:
+        if self._orchestrator_chat_target(connection, project_id, chat_id) is not None:
+            # An ended chain's orchestrator conversation takes ordinary human turns.
+            if self._auto_research_lineage_running(connection, chat_id):
+                return {
+                    "code": "auto_research_orchestrator_running",
+                    "detail": "This orchestrator is still running. Message orchestrator.",
+                }
+            return None
         owner = self._child_chat_owner(connection, project_id, chat_id)
         if owner is None:
             return None
-        running = connection.execute(
-            "SELECT 1 FROM episodes AS member JOIN episodes AS owner "
-            "ON member.project_id = owner.project_id "
-            "AND member.graph_target_json = owner.graph_target_json "
-            "WHERE owner.episode_id = ? AND member.mode = 'auto_research' "
-            "AND member.status NOT IN ('completed', 'failed', 'needs_action', 'stopped') "
-            "LIMIT 1",
-            (owner["episode_id"],),
-        ).fetchone()
-        if running is not None:
+        if self._auto_research_lineage_running(connection, owner["episode_id"]):
             return {
                 "code": "auto_research_child_read_only",
                 "detail": "This child belongs to a running orchestrator lineage. Message orchestrator.",
@@ -732,6 +1047,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
             return
         owner = self._child_chat_owner(connection, record.project_id, chat_id)
         if owner is None:
+            refusal = self._child_human_turn_refusal(connection, record.project_id, chat_id)
+            if refusal is not None:
+                raise ValueError(refusal["code"])
             return
         parent = connection.execute(
             "SELECT episode_id FROM graph_runs WHERE operation_id = ?",
@@ -851,20 +1169,33 @@ class AgentTaskStoreMixin(StoreMixinBase):
     def _require_no_active_human_child_turn(
         self, connection: sqlite3.Connection, episode: EpisodeRecord
     ) -> None:
+        root = _chain_root(connection, episode.project_id, episode.episode_id)
         rows = connection.execute(
-            "SELECT request_json FROM graph_runs WHERE project_id = ? "
-            "AND graph_target_json = ? AND episode_id IS NULL "
-            "AND kind IN ('node_chat', 'project_chat') "
-            "AND status IN ('queued', 'running', 'pausing')",
-            (episode.project_id, graph_target_json(episode.graph_target)),
+            "WITH RECURSIVE chain(episode_id) AS (SELECT ? UNION "
+            "SELECT next.episode_id FROM episodes AS next "
+            "JOIN chain ON next.continues_episode_id = chain.episode_id), "
+            "chats(chat_id) AS ("
+            "SELECT worker.worker_id FROM auto_research_child_work AS worker "
+            "JOIN chain ON chain.episode_id = worker.episode_id UNION "
+            "SELECT json_extract(root.request_json, '$.chat_id') "
+            "FROM auto_research_child_work AS worker "
+            "JOIN chain ON chain.episode_id = worker.episode_id "
+            "JOIN graph_runs AS root ON root.operation_id = worker.root_operation_id UNION "
+            "SELECT child.child_episode_id FROM auto_research_child_experiments AS child "
+            "JOIN chain ON chain.episode_id = child.auto_research_episode_id "
+            # The chain's own orchestrator conversation.
+            "UNION SELECT ?) "
+            "SELECT run.request_json FROM graph_runs AS run "
+            "JOIN chats ON chats.chat_id = json_extract(run.request_json, '$.chat_id') "
+            "WHERE run.project_id = ? AND run.episode_id IS NULL "
+            "AND run.kind IN ('node_chat', 'project_chat') "
+            "AND run.status IN ('queued', 'running', 'pausing')",
+            (root, root, episode.project_id),
         ).fetchall()
         for row in rows:
             request = json.loads(row["request_json"])
-            chat_id = request.get("chat_id")
-            if _origin_bound_edit(request) or not isinstance(chat_id, str):
-                continue
-            if self._child_chat_owner(connection, episode.project_id, chat_id) is not None:
-                raise ValueError(f"auto_research_child_turn_active:{chat_id}")
+            if not _origin_bound_edit(request):
+                raise ValueError(f"auto_research_child_turn_active:{request['chat_id']}")
 
     def _insert_agent_task(
         self,
@@ -884,7 +1215,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         self._validate_experiment_task_insert(connection, record)
         self._validate_graph_target_insert(connection, record)
         self._require_graph_branch_admission_open(connection, record)
-        if record.kind == "branch_merge":
+        if record.kind == "branch_merge" and record.request.get("merge_binding") is None:
             reservation = connection.execute(
                 "SELECT json_extract(state_json, '$.merge_reservation') "
                 "FROM episode_isolation_states WHERE project_id = ? AND owner_episode_id = ?",
@@ -896,7 +1227,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 held != record.operation_id
             ):
                 raise ValueError("episode_merge_reservation_changed")
-        elif not _origin_bound_edit(record.request):
+        elif record.kind != "branch_merge" and not _origin_bound_edit(record.request):
             self.require_episode_binding_admission_open(
                 connection,
                 record.project_id,
@@ -998,6 +1329,10 @@ class AgentTaskStoreMixin(StoreMixinBase):
     ) -> None:
         """Bind every graph-capable continuation to its durable target."""
 
+        if record.kind == "branch_merge" and record.request.get("merge_binding") is not None:
+            AgentTaskStoreMixin._require_merge_binding(connection, record)
+            return
+
         if record.episode_id is None:
             if record.graph_target.kind == "branch":
                 if (
@@ -1009,21 +1344,16 @@ class AgentTaskStoreMixin(StoreMixinBase):
                         "only an ordinary conversation may independently target a branch"
                     )
                 branch = connection.execute(
-                    "SELECT project_id, graph_target_json FROM episodes WHERE episode_id = ?",
-                    (record.graph_target.branch_id,),
+                    "SELECT 1 FROM graph_branches WHERE project_id=? AND branch_id=?",
+                    (record.project_id, record.graph_target.branch_id),
                 ).fetchone()
-                if (
-                    branch is None
-                    or branch["project_id"] != record.project_id
-                    or GraphTargetRef.model_validate_json(branch["graph_target_json"])
-                    != record.graph_target
-                ):
+                if branch is None:
                     raise ValueError(
                         "a branch conversation requires its exact project graph branch"
                     )
         else:
             episode = connection.execute(
-                "SELECT project_id, graph_target_json FROM episodes WHERE episode_id = ?",
+                "SELECT project_id, mode, graph_target_json FROM episodes WHERE episode_id = ?",
                 (record.episode_id,),
             ).fetchone()
             if episode is None:
@@ -1034,7 +1364,21 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 json.loads(episode["graph_target_json"]).get("branch_id")
                 != record.graph_target.branch_id
             ):
-                raise ValueError("an episode task cannot change its graph target")
+                branch = connection.execute(
+                    "SELECT owner_episode_id FROM graph_branches WHERE project_id=? AND branch_id=?",
+                    (record.project_id, record.graph_target.branch_id),
+                ).fetchone()
+                if not (
+                    episode["mode"] == "auto_research"
+                    and record.kind in {"node_chat", "project_chat"}
+                    and record.request.get("trigger") == "orchestrator"
+                    and record.request.get("patch_kind", "work") == "work"
+                    and record.graph_target.kind == "branch"
+                    and branch is not None
+                    and branch["owner_episode_id"]
+                    == _chain_root(connection, record.project_id, record.episode_id)
+                ):
+                    raise ValueError("an episode task cannot change its graph target")
 
         if record.parent_operation_id is None:
             return
@@ -1051,15 +1395,19 @@ class AgentTaskStoreMixin(StoreMixinBase):
     def _require_graph_branch_admission_open(
         connection: sqlite3.Connection, record: AgentTaskRecord
     ) -> None:
-        """Serialize new graph writers with merge while admitting read-only tasks."""
+        """Refuse archived targets; serialize graph writers with an active merge."""
 
         from rcp.runs.task_policy import task_graph_capable
 
-        if (
-            record.graph_target.kind != "branch"
-            or record.kind == "branch_merge"
-            or not task_graph_capable(record.kind, record.request)
-        ):
+        if record.graph_target.kind != "branch":
+            return
+        archived = connection.execute(
+            "SELECT archived FROM graph_branches WHERE project_id=? AND branch_id=?",
+            (record.project_id, record.graph_target.branch_id),
+        ).fetchone()
+        if archived is not None and archived[0]:
+            raise ValueError("graph_branch_archived")
+        if record.kind == "branch_merge" or not task_graph_capable(record.kind, record.request):
             return
         merging = connection.execute(
             """
@@ -1283,24 +1631,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
     ) -> sqlite3.Row | None:
         return connection.execute(
             """
-            SELECT run.*, EXISTS (
-                SELECT 1 FROM graph_run_receipts AS receipt
-                WHERE receipt.operation_id = run.operation_id
-                  AND receipt.category IN (
-                      'experiment_recovery_abandoned', 'auto_research_recovery_abandoned'
-                  )
-            ) AS recovery_abandoned, (
-                SELECT CASE
-                    WHEN SUM(receipt.category = 'provider_terminal_error'
-                             AND json_extract(receipt.payload_json, '$.classification')
-                                 = 'stale_session') THEN 'session_stale'
-                    WHEN SUM(receipt.category = 'continuation_context_unavailable'
-                             AND json_extract(receipt.payload_json, '$.retry_required') = 1)
-                        THEN 'session_context_unavailable'
-                END
-                FROM graph_run_receipts AS receipt
-                WHERE receipt.operation_id = run.operation_id
-            ) AS session_dropped
+            SELECT run.*, """
+            + _SESSION_DROP_COLUMNS
+            + """
             FROM graph_runs AS run
             WHERE project_id = ? AND kind = ?
               AND json_extract(request_json, '$.chat_id') = ?
@@ -1342,6 +1675,59 @@ class AgentTaskStoreMixin(StoreMixinBase):
         if row["recovery_abandoned"] or dropped is not None:
             return current.model_copy(update={"native_session_id": None})
         return current
+
+    def _orchestrator_session_seed(
+        self, connection: sqlite3.Connection, record: AgentTaskRecord, chat_id: str
+    ) -> tuple[str, sqlite3.Row | None] | None:
+        """The orchestrator session an ended chain's first human turn resumes.
+
+        None when the chat is no Auto-research chain root on this target. Otherwise
+        the reason code and the newest chain member's orchestrator binding, or no
+        binding when that session cannot continue on this turn's provider and machine.
+        """
+
+        if self._orchestrator_chat_target(connection, record.project_id, chat_id) != (
+            record.graph_target
+        ):
+            return None
+        member = connection.execute(
+            "WITH RECURSIVE chain(episode_id) AS (SELECT ? UNION "
+            "SELECT next.episode_id FROM episodes AS next "
+            "JOIN chain ON next.continues_episode_id = chain.episode_id) "
+            "SELECT episode.episode_id, episode.root_operation_id FROM episodes AS episode "
+            "JOIN chain USING (episode_id) ORDER BY episode.created_at DESC, episode.rowid DESC "
+            "LIMIT 1",
+            (chat_id,),
+        ).fetchone()
+        latest = cast("AppStore", self)._auto_research_actor_latest_row(
+            connection, member["episode_id"], member["root_operation_id"] or ""
+        )
+        binding = (
+            None
+            if latest is None
+            else connection.execute(
+                "SELECT run.*, " + _SESSION_DROP_COLUMNS + " FROM graph_runs AS run "
+                "WHERE run.operation_id = ?",
+                (latest["operation_id"],),
+            ).fetchone()
+        )
+        if (
+            binding is None
+            or binding["history_only"]
+            or not binding["native_session_id"]
+            or not binding["stage_root"]
+        ):
+            return "orchestrator_session_unavailable", None
+        # A session the provider already dropped cannot continue here either.
+        if binding["recovery_abandoned"]:
+            return "session_recovery_abandoned", None
+        if (dropped := self._dropped_chat_session_reason(binding)) is not None:
+            return dropped, None
+        previous = json.loads(binding["request_json"])
+        for field, code in (("provider", "provider_mismatch"), ("run_on", "machine_mismatch")):
+            if previous.get(field) != record.request.get(field):
+                return code, None
+        return "orchestrator_session", binding
 
     def _bind_chat_stage(
         self,
@@ -1442,6 +1828,20 @@ class AgentTaskStoreMixin(StoreMixinBase):
             )
             reason = "no_session_yet"
             session_id = None
+            source_operation_id = current["operation_id"] if current is not None else None
+            if current is None and (
+                seed := self._orchestrator_session_seed(connection, record, chat_id)
+            ):
+                reason, binding = seed
+                if binding is not None:
+                    session_id = binding["native_session_id"]
+                    source_operation_id = binding["operation_id"]
+                    record = record.model_copy(
+                        update={
+                            "stage_host": binding["stage_host"],
+                            "stage_root": binding["stage_root"],
+                        }
+                    )
             if current is not None:
                 previous = json.loads(current["request_json"])
                 unresolved = current["status"] in {
@@ -1536,7 +1936,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 "outcome": "continued" if session_id else "fresh",
                 "reason_code": reason,
                 "session_id": session_id,
-                "source_operation_id": current["operation_id"] if current else None,
+                "source_operation_id": source_operation_id,
             }
             if session_id is None:
                 record = record.model_copy(
@@ -2065,14 +2465,16 @@ class AgentTaskStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             row = connection.execute(
                 """
-                SELECT operation_id, project_id, episode_id, kind, graph_target_json,
-                       dispatch_authority_json,
-                       authorized_space_id, authorized_user_id, authorized_display_name
-                FROM graph_runs
+                SELECT * FROM graph_runs
                 WHERE project_id = ? AND operation_id = ?
                 """,
                 (project_id, operation_id),
             ).fetchone()
+            binding = (
+                self._require_merge_binding(connection, self._agent_task_record(row))
+                if row is not None and row["kind"] == "branch_merge"
+                else None
+            )
         if row is None:
             raise KeyError(operation_id)
         dispatch_json = row["dispatch_authority_json"]
@@ -2080,9 +2482,19 @@ class AgentTaskStoreMixin(StoreMixinBase):
         return AgentTaskAuthority(
             operation_id=str(row["operation_id"]),
             project_id=str(row["project_id"]),
-            apply_target=(GraphTargetRef() if row["kind"] == "branch_merge" else stored_target),
+            apply_target=(
+                binding.destination
+                if binding is not None
+                else GraphTargetRef()
+                if row["kind"] == "branch_merge"
+                else stored_target
+            ),
             authorized_by=self._authorized_human_snapshot(row),
             episode_id=row["episode_id"],
+            merge_source=binding.source if binding is not None else None,
+            merge_dispatcher=("member" if binding.dispatcher_episode_id is None else "orchestrator")
+            if binding is not None
+            else None,
             dispatch_authority=(
                 AgentDispatchAuthority.model_validate_json(dispatch_json)
                 if dispatch_json is not None
@@ -2533,7 +2945,15 @@ class AgentTaskStoreMixin(StoreMixinBase):
         rows = connection.execute(
             """
             SELECT run.* FROM graph_runs AS run
-            WHERE run.project_id = ? AND run.graph_target_json = ?
+            WHERE run.project_id = ?
+              AND (
+                run.graph_target_json = ?
+                OR (
+                  run.kind = 'branch_merge'
+                  AND json_extract(run.request_json, '$.merge_binding.destination.kind') = ?
+                  AND json_extract(run.request_json, '$.merge_binding.destination.branch_id') IS ?
+                )
+              )
               AND (
                 run.status IN ('queued', 'running', 'pausing')
                 OR (
@@ -2557,7 +2977,12 @@ class AgentTaskStoreMixin(StoreMixinBase):
               )
             ORDER BY run.created_at, run.operation_id
             """,
-            (project_id, graph_target_json(graph_target)),
+            (
+                project_id,
+                graph_target_json(graph_target),
+                graph_target.kind,
+                graph_target.branch_id,
+            ),
         ).fetchall()
         return [self._agent_task_record(row) for row in rows]
 
@@ -2596,6 +3021,17 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 ) ORDER BY created_at, operation_id
                 """,
                 (episode_id, int(include_hidden)) + (() if newest is None else (newest,)),
+            ).fetchall()
+        return [self._agent_task_record(row) for row in rows]
+
+    def branch_merge_tasks(self, project_id: str, source: GraphTargetRef) -> list[AgentTaskRecord]:
+        """Every merge out of one branch, whoever dispatched it, in creation order."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM graph_runs WHERE project_id=? AND kind='branch_merge' "
+                "AND graph_target_json=? ORDER BY created_at, operation_id",
+                (project_id, graph_target_json(source)),
             ).fetchall()
         return [self._agent_task_record(row) for row in rows]
 
@@ -2688,11 +3124,15 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 """,
                 (project_id, chat_id, project_id, chat_id),
             ).fetchall()
+            # An Auto-research chain's orchestrator conversation lives on its branch.
+            orchestrator = self._orchestrator_chat_target(connection, project_id, chat_id)
         targets = {
             target.key: target
             for row in rows
             for target in [GraphTargetRef.model_validate_json(row["graph_target_json"])]
         }
+        if orchestrator is not None:
+            targets[orchestrator.key] = orchestrator
         if len(targets) > 1:
             raise ValueError("This conversation has conflicting graph target bindings.")
         return next(iter(targets.values()), None)
@@ -5097,13 +5537,29 @@ class AgentTaskStoreMixin(StoreMixinBase):
             ).fetchone()
             state = EpisodeIsolationState.model_validate_json(state_row[0]) if state_row else None
             attempt = state.merge_attempt if state else None
+            from rcp.runs.branch_merge_request import MergeBinding
+
+            raw_binding = task.request.get("merge_binding")
+            binding = MergeBinding.model_validate(raw_binding) if raw_binding is not None else None
             if (
                 task.kind != "branch_merge"
-                or task.episode_id != receipt.provenance.episode_id
                 or task.authorized_by != receipt.authorized_by
-                or attempt is None
-                or attempt.attempt_id != operation_id
-                or attempt.graph_task_id is not None
+                or (
+                    binding is not None
+                    and (
+                        binding.source_head != receipt.provenance.branch_head
+                        or binding.destination != receipt.result_main_head.target
+                    )
+                )
+                or (
+                    binding is None
+                    and (
+                        task.episode_id != receipt.provenance.episode_id
+                        or attempt is None
+                        or attempt.attempt_id != operation_id
+                        or attempt.graph_task_id is not None
+                    )
+                )
             ):
                 raise ValueError("episode_merge_receipt_mismatch")
             if task.status == "succeeded":
@@ -5118,7 +5574,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     now,
                     now,
                     revision,
-                    self._bounded_result_json({"agentless": True}),
+                    self._bounded_result_json(
+                        {"agentless": binding is None or not binding.requires_agent}
+                    ),
                     now,
                     operation_id,
                 ),
@@ -5710,3 +6168,58 @@ class AgentTaskStoreMixin(StoreMixinBase):
             raise ValueError(
                 "Chat session context immutable binding conflict: " + ", ".join(conflicts)
             )
+
+
+def _require_merge_destination_open(
+    connection: sqlite3.Connection, record: AgentTaskRecord, destination: GraphTargetRef
+) -> None:
+    """A destination is busy while a merge leaves it or another merge enters it.
+
+    An unbound episode merge always enters main.
+    """
+    if (
+        connection.execute(
+            "SELECT 1 FROM graph_runs WHERE project_id=? AND kind='branch_merge' "
+            "AND status IN ('queued','running','pausing') AND operation_id != ? "
+            # A second merge of the same source is the source's own refusal.
+            "AND graph_target_json != ? "
+            "AND (graph_target_json=? "
+            "OR (json_extract(request_json, '$.merge_binding.destination.kind')=? "
+            "AND json_extract(request_json, '$.merge_binding.destination.branch_id') IS ?) "
+            "OR (?='main' AND json_extract(request_json, '$.merge_binding') IS NULL)) "
+            "LIMIT 1",
+            (
+                record.project_id,
+                record.operation_id,
+                graph_target_json(record.graph_target),
+                graph_target_json(destination),
+                destination.kind,
+                destination.branch_id,
+                destination.kind,
+            ),
+        ).fetchone()
+        is not None
+    ):
+        raise ValueError("merge_destination_merging")
+
+
+# Why a run's native session can no longer continue, from its receipts.
+_SESSION_DROP_COLUMNS = """
+    EXISTS (
+        SELECT 1 FROM graph_run_receipts AS receipt
+        WHERE receipt.operation_id = run.operation_id
+          AND receipt.category IN (
+              'experiment_recovery_abandoned', 'auto_research_recovery_abandoned'
+          )
+    ) AS recovery_abandoned, (
+        SELECT CASE
+            WHEN SUM(receipt.category = 'provider_terminal_error'
+                     AND json_extract(receipt.payload_json, '$.classification')
+                         = 'stale_session') THEN 'session_stale'
+            WHEN SUM(receipt.category = 'continuation_context_unavailable'
+                     AND json_extract(receipt.payload_json, '$.retry_required') = 1)
+                THEN 'session_context_unavailable'
+        END
+        FROM graph_run_receipts AS receipt
+        WHERE receipt.operation_id = run.operation_id
+    ) AS session_dropped"""

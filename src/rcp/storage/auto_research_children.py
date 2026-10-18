@@ -6,8 +6,10 @@ import hashlib
 import json
 import sqlite3
 import uuid
-from typing import Literal
+from typing import TYPE_CHECKING, Literal, cast
 
+from rcp.core.graph_targets import graph_target_json
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import (
     AGENT_COMMAND_EVENT_MAX_BYTES,
     AUTO_RESEARCH_CHILD_EXPERIMENTS_PER_INVOCATION,
@@ -36,6 +38,13 @@ from rcp.storage.models import (
     EpisodeReportConflict,
     _required_timestamp,
 )
+
+if TYPE_CHECKING:
+    from rcp.storage import AppStore
+
+
+# The child kind of an admitted child Experiment episode.
+_EXPERIMENT_CHILD: Literal["experiment"] = "experiment"
 
 # The one selection a Harvest consumes and the pending counts report.
 _PENDING_NOTICES = """FROM auto_research_lifecycle_notices
@@ -200,6 +209,156 @@ def _bounded_auto_research_lifecycle_notice(
 class AutoResearchChildrenStoreMixin(StoreMixinBase):
     """Storage policy for ordinary children controlled by an Auto-research parent."""
 
+    def graph_branch_live_child_counts(self, project_id: str, branch_id: str) -> dict[str, int]:
+        """Count current child writers and waiting worker routes on one branch."""
+
+        with self.connection() as connection:
+            workers = connection.execute(
+                "SELECT route.worker_id, route.episode_id, run.status "
+                "FROM auto_research_child_work AS route JOIN graph_runs AS run "
+                "ON run.operation_id=route.current_operation_id WHERE route.project_id=? "
+                "AND json_extract(run.graph_target_json, '$.branch_id')=?",
+                (project_id, branch_id),
+            ).fetchall()
+            waiting: set[str] = set()
+            for episode_id in {row["episode_id"] for row in workers}:
+                waiting.update(self._auto_research_waiting_child_work_ids(connection, episode_id))
+            experiments = connection.execute(
+                "SELECT COUNT(*) FROM auto_research_child_experiments AS route "
+                "JOIN episodes AS child ON child.episode_id=route.child_episode_id "
+                "WHERE route.project_id=? AND json_extract(child.graph_target_json, '$.branch_id')=? "
+                "AND route.state IN ('pending', 'running') "
+                "AND child.status IN ('queued', 'running', 'stopping', 'wrapping_up')",
+                (project_id, branch_id),
+            ).fetchone()[0]
+        return {
+            "workers": sum(
+                row["status"] in ACTIVE_AGENT_TASK_STATUSES or row["worker_id"] in waiting
+                for row in workers
+            ),
+            "experiments": int(experiments),
+        }
+
+    def archive_empty_auto_research_fork(self, project_id: str, head: GraphHeadRef) -> bool:
+        """Retire an unchanged automatic fork under its caller's canonical write lock.
+
+        The SQLite write transaction serializes this decision with new admissions
+        and every writer settlement. The caller holds the workspace transaction
+        from exact-head inspection through this update.
+        """
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            branch = connection.execute(
+                "SELECT * FROM graph_branches WHERE project_id=? AND branch_id=? "
+                "AND auto_archive=1 AND archived=0",
+                (project_id, head.target.branch_id),
+            ).fetchone()
+            if branch is None or (
+                head.revision != branch["parent_revision"]
+                or head.transition_id != branch["parent_transition_id"]
+            ):
+                return False
+            store = cast("AppStore", self)
+
+            def has_work(target: GraphTargetRef) -> bool:
+                # A failed or interrupted worker with its session and stage can still resume.
+                return bool(
+                    store._unsettled_graph_target_tasks_in_connection(
+                        connection, project_id, target
+                    )
+                ) or (
+                    connection.execute(
+                        "SELECT 1 FROM auto_research_child_work AS route "
+                        "JOIN graph_runs AS task ON task.operation_id=route.current_operation_id "
+                        "JOIN episodes AS parent ON parent.episode_id=route.episode_id "
+                        "WHERE route.project_id=? AND task.graph_target_json=? "
+                        "AND route.stop_requested_at IS NULL "
+                        "AND task.status IN ('failed', 'interrupted') "
+                        "AND task.native_session_id IS NOT NULL AND task.stage_root IS NOT NULL "
+                        "AND parent.status NOT IN ('completed', 'failed', 'needs_action', 'stopped') "
+                        "LIMIT 1",
+                        (project_id, graph_target_json(target)),
+                    ).fetchone()
+                    is not None
+                )
+
+            if has_work(head.target):
+                return False
+            target_json = graph_target_json(head.target)
+            # A nested fork with live work still merges back into this one.
+            for nested in connection.execute(
+                "SELECT branch_id FROM graph_branches WHERE project_id=? AND archived=0 "
+                "AND json_extract(parent_target_json, '$.branch_id')=?",
+                (project_id, head.target.branch_id),
+            ).fetchall():
+                if has_work(GraphTargetRef(kind="branch", branch_id=nested["branch_id"])):
+                    return False
+            # A failed publication may have landed remotely despite an unchanged
+            # local snapshot. It is never evidence that the fork stayed empty.
+            if (
+                connection.execute(
+                    "SELECT 1 FROM graph_runs WHERE project_id=? AND graph_target_json=? "
+                    "AND json_extract(result_json, '$.graph_update.commit_status')='unknown' LIMIT 1",
+                    (project_id, target_json),
+                ).fetchone()
+                is not None
+            ):
+                return False
+            if (
+                connection.execute(
+                    "SELECT 1 FROM watchers WHERE project_id=? AND graph_target_json=? "
+                    "AND status IN ('active', 'degraded', 'completed') AND notified=0 LIMIT 1",
+                    (project_id, target_json),
+                ).fetchone()
+                is not None
+            ):
+                return False
+            if (
+                connection.execute(
+                    "SELECT 1 FROM auto_research_child_experiments AS route JOIN episodes AS child "
+                    "ON child.episode_id=route.child_episode_id WHERE route.project_id=? "
+                    "AND child.graph_target_json=? AND route.state IN ('pending', 'running') LIMIT 1",
+                    (project_id, target_json),
+                ).fetchone()
+                is not None
+            ):
+                return False
+            if (
+                connection.execute(
+                    "SELECT 1 FROM auto_research_child_work AS route JOIN graph_runs AS task "
+                    "ON task.operation_id=route.current_operation_id JOIN auto_research_messages AS mail "
+                    "ON mail.recipient_task_id=route.worker_id AND mail.episode_id=route.episode_id "
+                    "WHERE route.project_id=? AND task.graph_target_json=? AND mail.delivered_at IS NULL "
+                    "AND route.stop_requested_at IS NULL LIMIT 1",
+                    (project_id, target_json),
+                ).fetchone()
+                is not None
+            ):
+                return False
+            pending = connection.execute(
+                "SELECT admission.child_id, command.payload_json "
+                "FROM auto_research_child_admissions AS admission "
+                "LEFT JOIN graph_run_events AS command ON command.episode_id=admission.episode_id "
+                "AND command.event_kind='command' AND command.command_phase='start' "
+                "AND (json_extract(command.payload_json, '$.planned_worker_id')=admission.child_id "
+                "OR json_extract(command.payload_json, '$.planned_episode_effect_id')=admission.child_id) "
+                "WHERE admission.project_id=? AND admission.state='accepted'",
+                (project_id,),
+            ).fetchall()
+            for admission in pending:
+                # A missing command is unsettled intent, not permission to archive.
+                if admission["payload_json"] is None:
+                    return False
+                payload = json.loads(admission["payload_json"])
+                if payload.get("resolved_graph_target") == head.target.model_dump(mode="json"):
+                    return False
+            connection.execute(
+                "UPDATE graph_branches SET archived=1 WHERE project_id=? AND branch_id=?",
+                (project_id, head.target.branch_id),
+            )
+        return True
+
     def record_auto_research_child_admission(
         self,
         record: AutoResearchChildAdmissionRecord,
@@ -214,6 +373,29 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
         stored = self.auto_research_child_admission(record.admission_id)
         assert stored is not None
         return stored
+
+    @staticmethod
+    def _pending_child_budget_reservations(
+        connection: sqlite3.Connection,
+        episode_id: str,
+        child_kind: str,
+        *,
+        exclude_child_id: str | None = None,
+    ) -> int:
+        """Accepted intents reserve one first allocation until reflected or cancelled."""
+        row = connection.execute(
+            "SELECT COUNT(*) FROM auto_research_child_admissions AS admission "
+            "WHERE episode_id=? AND child_kind=? AND state='accepted' "
+            "AND (? IS NULL OR child_id != ?) "
+            "AND NOT EXISTS (SELECT 1 FROM auto_research_child_work AS worker "
+            "WHERE worker.worker_id=admission.child_id AND admission.child_kind='work') "
+            "AND NOT EXISTS (SELECT 1 FROM auto_research_experiment_invocations AS spend "
+            "WHERE spend.child_episode_id=admission.child_id "
+            "AND admission.child_kind='experiment')",
+            (episode_id, child_kind, exclude_child_id, exclude_child_id),
+        ).fetchone()
+        assert row is not None
+        return int(row[0])
 
     def _insert_auto_research_child_admission(
         self,
@@ -235,6 +417,18 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 raise ValueError("the child admission identity already names another intent")
             return stored
         self._validate_auto_research_parent_admission(episode)
+        pending = self._pending_child_budget_reservations(
+            connection, episode.episode_id, record.child_kind
+        )
+        if record.child_kind == "work":
+            if episode.invocations_used + pending >= episode.invocation_ceiling:
+                raise EpisodeInvocationCeilingReached(
+                    "the Auto-research operational invocation ceiling is exhausted"
+                )
+        else:
+            allowance = self._auto_research_experiment_allowance(connection, episode.episode_id)
+            if allowance.remaining <= pending:
+                raise AutoResearchExperimentAllowanceReached(allowance)
         connection.execute(
             """
             INSERT INTO auto_research_child_admissions (
@@ -402,7 +596,7 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
             or record.current_operation_id != task.operation_id
             or record.episode_id != task.episode_id
             or record.project_id != task.project_id
-            or task.kind != "node_chat"
+            or task.kind != ("project_chat" if record.control_node_id is None else "node_chat")
             or task.status != "queued"
             or not task.visible
             or task.parent_operation_id is not None
@@ -410,7 +604,7 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
             or task.request.get("trigger") != "orchestrator"
             or task.request.get("node_id") != record.control_node_id
         ):
-            raise ValueError("an Auto-research child must be an ordinary queued node Work task")
+            raise ValueError("an Auto-research child must be an ordinary queued Work task")
         try:
             with self.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -437,7 +631,13 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 ).fetchone()
                 if actor is None or actor["role"] != "orchestrator":
                     raise ValueError("only the canonical orchestrator may admit ordinary Work")
-                if episode.invocations_used >= episode.invocation_ceiling:
+                if (
+                    episode.invocations_used
+                    + self._pending_child_budget_reservations(
+                        connection, episode.episode_id, "work", exclude_child_id=record.worker_id
+                    )
+                    >= episode.invocation_ceiling
+                ):
                     raise EpisodeInvocationCeilingReached(
                         "the Auto-research operational invocation ceiling is exhausted"
                     )
@@ -558,7 +758,7 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
             if (
                 task.status != "queued"
                 or not task.visible
-                or task.kind != "node_chat"
+                or task.kind != current_task.kind
                 or task.project_id != route.project_id
                 or task.episode_id != route.episode_id
                 or task.parent_operation_id != current_task.operation_id
@@ -760,7 +960,7 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 if (
                     record.status != "queued"
                     or not record.visible
-                    or record.kind != "node_chat"
+                    or record.kind != current.kind
                     or record.project_id != route.project_id
                     or record.episode_id != route.episode_id
                     or record.parent_operation_id != current.operation_id
@@ -791,7 +991,13 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                     )
                 if self._has_active_chat_overlap(connection, record):
                     return None
-                if episode.invocations_used >= episode.invocation_ceiling:
+                if (
+                    episode.invocations_used
+                    + self._pending_child_budget_reservations(
+                        connection, episode.episode_id, "work"
+                    )
+                    >= episode.invocation_ceiling
+                ):
                     raise EpisodeInvocationCeilingReached(
                         "the Auto-research operational invocation ceiling is exhausted"
                     )
@@ -1156,7 +1362,13 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
         if route is None or route["state"] != "running":
             raise ValueError("the child Experiment invocation has no live parent route")
         allowance = self._auto_research_experiment_allowance(connection, auto_research_episode_id)
-        if allowance.remaining == 0:
+        pending = self._pending_child_budget_reservations(
+            connection,
+            auto_research_episode_id,
+            _EXPERIMENT_CHILD,
+            exclude_child_id=child_episode_id,
+        )
+        if allowance.remaining <= pending:
             raise AutoResearchExperimentAllowanceReached(allowance)
         connection.execute(
             """
@@ -1195,7 +1407,7 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
             connection,
             admission_id=admission_id,
             episode_id=record.auto_research_episode_id,
-            child_kind="experiment",
+            child_kind=_EXPERIMENT_CHILD,
             child_id=record.child_episode_id,
             updated_at=record.updated_at,
         )
@@ -1336,7 +1548,7 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
             source_id = operation_id
             parent_episode_id = str(experiment["auto_research_episode_id"])
             payload = {
-                "kind": "experiment",
+                "kind": _EXPERIMENT_CHILD,
                 "episode_id": str(experiment["child_episode_id"]),
                 "operation_id": operation_id,
                 "status": status,

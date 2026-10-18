@@ -168,6 +168,7 @@ def _record_branch_target_child_experiment(
     *,
     node_id: str = "exp/launched",
     branch_ops: list[dict[str, object]] | None = None,
+    fork: bool = False,
 ) -> tuple[EpisodeRecord, EpisodeRecord]:
     """Persist one real Auto-research branch and an Experiment child that uses it."""
 
@@ -180,7 +181,7 @@ def _record_branch_target_child_experiment(
     parent_id = str(uuid.uuid4())
     parent_target = GraphTargetRef(kind="branch", branch_id=parent_id)
     base_head = service.history.head_ref()
-    service.history.create_episode_branch(
+    service.history.create_branch(
         GraphBranchMetadata(
             branch_id=parent_id,
             episode_id=parent_id,
@@ -242,6 +243,19 @@ def _record_branch_target_child_experiment(
             ),
         ),
     )
+    if fork:
+        from rcp.runs.graph_forks import create_graph_fork
+
+        parent_target = create_graph_fork(
+            service.history,
+            store,
+            project_id=project_id,
+            branch_id=str(uuid.uuid4()),
+            parent_head=service.history.branch(parent_id).head_ref(),
+            authorized_by=authorizer,
+            created_by=root_id,
+            owner_episode_id=parent_id,
+        ).graph_target
     branch_service = service.for_graph_target(
         parent_target,
         expected_episode_id=parent_id,
@@ -1085,6 +1099,24 @@ def test_human_branch_experiment_index_preserves_own_parentage(manifest, tmp_pat
         assert entry["parent_watching"] is False
         assert entry["graph_target"] == owner.graph_target.model_dump(mode="json")
         assert entry["episode"]["isolation_owner_episode_id"] == owner.episode_id
+
+
+def test_owned_fork_experiment_runs_and_human_stop(manifest, tmp_path):
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    append_fixture_patch(app.state.service, seed_patch())
+    append_fixture_patch(app.state.service, _experiment_patch())
+    _, child = _record_branch_target_child_experiment(app, fork=True)
+    with signed_in_client(app) as client:
+        response = client.get("/api/episodes", params={"mode": "experiment_loop"})
+        assert response.status_code == 200
+        assert any(
+            row["episode"]["episode_id"] == child.episode_id for row in response.json()["entries"]
+        )
+        response = client.post(
+            f"/api/projects/{child.project_id}/episodes/{child.episode_id}/stop", json={}
+        )
+        assert response.status_code == 200
+        assert app.state.background_tasks.store.episode(child.episode_id).stop_requested_at
 
 
 def test_branch_modified_child_experiment_uses_exact_target_across_index_and_stop(
@@ -2152,7 +2184,9 @@ def test_index_reports_live_branch_failures_and_skips_historical_failures(
 
             monkeypatch.setattr(app.state.service, "for_graph_target", unavailable)
         elif failure == "binding":
-            monkeypatch.setattr(api_index_module, "episode_on_branch", lambda *args: False)
+            monkeypatch.setattr(
+                api_index_module, "child_experiment_on_owned_branch", lambda *args: False
+            )
         else:
 
             def unbound(*args, **kwargs):

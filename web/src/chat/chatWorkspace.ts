@@ -225,11 +225,13 @@ export function conversationTurnRequest(submission: ConversationTurnSubmission):
 }
 
 /** Starts a task; `requestId` is the start's Idempotency-Key, so sending the
- *  same start again after an unanswered request admits at most one turn. */
+ *  same start again after an unanswered request admits at most one turn. A chat
+ *  turn posts to the viewed graph unless `graphTarget` names the conversation's own. */
 export type StartConversationTask = (
   kind: AgentTaskKind,
   request: AgentTaskRequest,
   requestId?: string,
+  graphTarget?: GraphTargetRef,
 ) => Promise<AgentTask>;
 
 /** One ordinary Discuss/Work dispatch boundary shared by the visible composer
@@ -243,17 +245,23 @@ export async function startConversationTurn(
   return startTask(submission.kind, conversationTurnRequest(submission), requestId);
 }
 
-/** An Auto-research orchestrator turn: its chain's conversation is named by the
- *  chain root, which is also the branch every chain member writes. */
+/** An Auto-research orchestrator turn, or an artifact edit replying to its chain:
+ *  the chain's conversation is named by the chain root, which is also the branch
+ *  every chain member writes. */
 function orchestratorChatId(task: AgentTask): string | null {
-  if (task.kind !== "auto_research" || task.request.role !== "orchestrator") return null;
+  const edit = task.request.artifact_edit as { reply_episode_id?: string | null } | undefined;
+  const turn =
+    (task.kind === "auto_research" && task.request.role === "orchestrator") ||
+    (task.kind === "artifact_edit" && Boolean(edit?.reply_episode_id));
+  if (!turn) return null;
   return task.graph_target?.kind === "branch" ? (task.graph_target.branch_id ?? null) : null;
 }
 
 export function chatIdForTask(task: AgentTask): string | null {
   const orchestrator = orchestratorChatId(task);
   if (orchestrator) return orchestrator;
-  if (task.kind !== "node_chat" && task.kind !== "project_chat") return null;
+  if (task.kind !== "node_chat" && task.kind !== "project_chat" && task.kind !== "artifact_edit")
+    return null;
   const value = task.request.chat_id;
   return typeof value === "string" && value.trim() ? value : null;
 }
@@ -301,8 +309,14 @@ export function groupChatConversations(
   for (const task of tasks) {
     const chatId = chatIdForTask(task);
     if (!chatId) continue;
-    const orchestrator = task.kind === "auto_research";
-    const kind: ChatKind = orchestrator ? "project_chat" : (task.kind as ChatKind);
+    const orchestrator = orchestratorChatId(task) !== null;
+    const kind: ChatKind = orchestrator
+      ? "project_chat"
+      : task.kind !== "artifact_edit"
+        ? (task.kind as ChatKind)
+        : task.request.chat_scope === "project"
+          ? "project_chat"
+          : "node_chat";
     const nodeId =
       kind === "node_chat" && typeof task.request.node_id === "string"
         ? task.request.node_id
@@ -344,9 +358,11 @@ export function groupChatConversations(
 
 /**
  * The orchestrator conversation as NodeChat reads a chat: each loaded orchestrator
- * turn becomes a project-chat turn carrying the human input its transcript line
- * recorded (or the starting instruction), so status and progress come from the
- * live task; the transcript keeps only turns the bounded task list no longer holds.
+ * turn or artifact edit becomes a project-chat turn carrying the human input its
+ * transcript line recorded (or the starting instruction; an ordinary chat turn
+ * keeps its own kind and message), so status and progress
+ * come from the live task; the transcript keeps only turns the bounded task list
+ * no longer holds.
  */
 export function orchestratorChatTurns(
   conversation: ChatConversation,
@@ -362,16 +378,19 @@ export function orchestratorChatTurns(
   );
   return {
     tasks: conversation.tasks.map((task) => {
-      const instruction = task.request.instruction;
+      // An ordinary turn posted after the chain ended carries its own message.
+      const input = task.kind === "project_chat" ? task.request.message : task.request.instruction;
       const message =
         humanText.get(task.operation_id) ??
-        (typeof instruction === "string" && instruction.trim() ? instruction : null);
+        (typeof input === "string" && input.trim() ? input : null);
       return {
         ...task,
-        kind: "project_chat",
+        // An artifact edit stays an edit, so it never takes a turn's Retry.
+        kind: task.kind === "artifact_edit" ? "artifact_edit" : "project_chat",
         request: {
           ...task.request,
           chat_id: conversation.chatId,
+          chat_scope: "project",
           message,
           trigger: message ? "human" : "orchestrator",
         },

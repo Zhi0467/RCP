@@ -21,7 +21,7 @@ def test_branch_graph_workspace_sync_isolated_with_delta_and_human_history(
     app, main, episode, _root = _app_branch(manifest, tmp_path, owner_mode=owner_mode)
     client = signed_in_client(app)
     base = f"/api/projects/{episode.project_id}"
-    params = {"branch_id": episode.episode_id}
+    params = {"branch_id": episode.graph_target.branch_id}
     main_before = main.history.state()
     opened = client.get(base, params=params)
     assert opened.status_code == 200, opened.text
@@ -31,7 +31,7 @@ def test_branch_graph_workspace_sync_isolated_with_delta_and_human_history(
     assert snapshot["graph_changes"]["nodes"] == []
     assert snapshot["graph_mutation"]["available"] is True
     listed = client.get(f"{base}/episodes").json()
-    assert listed[0]["graph_branch"]["branch_id"] == episode.episode_id
+    assert listed[0]["graph_branch"]["branch_id"] == episode.graph_target.branch_id
     assert listed[0]["graph_branch"]["merge_eligible"] is False
     draft = {
         "base_revision": snapshot["revision"],
@@ -151,7 +151,7 @@ def test_branch_inbox_approval_has_human_authority_only_on_selected_branch(manif
     client = signed_in_client(app)
     response = client.post(
         f"/api/projects/{episode.project_id}/sync",
-        params={"branch_id": episode.episode_id},
+        params={"branch_id": episode.graph_target.branch_id},
         json={
             "base_revision": branch.history.state().revision,
             "proposals": [
@@ -252,7 +252,7 @@ def test_graph_changes_project_from_the_immutable_base_after_a_rejected_first_pa
     app, main, episode, root = _app_branch(manifest, tmp_path)
     client = signed_in_client(app)
     base = f"/api/projects/{episode.project_id}"
-    params = {"branch_id": episode.episode_id}
+    params = {"branch_id": episode.graph_target.branch_id}
     branch = main.for_graph_target(episode.graph_target).history
     rejected, _result = branch.append(
         Patch(
@@ -305,9 +305,9 @@ def test_branch_watermarks_fence_revisions_without_replaying(manifest, tmp_path,
     app, main, episode, _root = _app_branch(manifest, tmp_path)
     client = signed_in_client(app)
     base = f"/api/projects/{episode.project_id}"
-    params = {"branch_id": episode.episode_id}
+    params = {"branch_id": episode.graph_target.branch_id}
     keys = (
-        {"name": "graph", "ref": f"branch:{episode.episode_id}"},
+        {"name": "graph", "ref": f"branch:{episode.graph_target.branch_id}"},
         {"name": "graph", "ref": "main"},
     )
     snapshot = client.get(base, params=params).json()
@@ -325,7 +325,10 @@ def test_branch_watermarks_fence_revisions_without_replaying(manifest, tmp_path,
     task_key = {"name": "tasks.status"}
     assert resource_watermark_tokens(client, episode.project_id, task_key) == (
         resource_watermark_tokens(
-            client, episode.project_id, task_key, current_ref=f"branch:{episode.episode_id}"
+            client,
+            episode.project_id,
+            task_key,
+            current_ref=f"branch:{episode.graph_target.branch_id}",
         )
     )
     synced = client.post(
@@ -375,7 +378,8 @@ def test_remote_raw_branch_history_does_not_refresh(manifest, tmp_path, monkeypa
 
     monkeypatch.setattr(workspace, "refresh_if_stale", forbidden)
     response = signed_in_client(app).get(
-        f"/api/projects/{episode.project_id}/history", params={"branch_id": episode.episode_id}
+        f"/api/projects/{episode.project_id}/history",
+        params={"branch_id": episode.graph_target.branch_id},
     )
     assert response.status_code == 200, response.text
     assert [row["revision"] for row in response.json()] == [patch.revision]
@@ -430,7 +434,7 @@ def test_branch_reads_reuse_the_shared_engine_main_prefix(manifest, tmp_path, mo
     monkeypatch.setattr(materialize, "_apply_patch", refuse_main_replay)
     client = signed_in_client(app)
     base = f"/api/projects/{episode.project_id}"
-    params = {"branch_id": episode.episode_id}
+    params = {"branch_id": episode.graph_target.branch_id}
     for endpoint in ("/graph/changes", ""):
         for _ in range(2):
             response = client.get(base + endpoint, params=params)

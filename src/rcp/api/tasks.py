@@ -46,6 +46,7 @@ from rcp.artifacts import (
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskRequest, BackgroundAgentTasks
 from rcp.conversation_worktrees import conversation_worktree_recovery_admission
+from rcp.core.models import AuthorizedHuman
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import STEERING_MESSAGE_MAX_CHARS
 from rcp.project_references import resolve_project_references
@@ -331,6 +332,152 @@ def _reject_history_only_control(record: AgentTaskRecord) -> None:
         )
 
 
+def start_ordinary_task(
+    project_id: str,
+    kind: AgentTaskKind,
+    body: dict[str, object],
+    *,
+    catalog: ProjectCatalog,
+    store: AppStore,
+    attachment_store: ChatAttachmentStore,
+    background_tasks: BackgroundAgentTasks,
+    authorized_by: AuthorizedHuman,
+    branch_id: str | None,
+) -> AgentTaskRecord:
+    """Validate, admit, and start one task exactly as the task route does."""
+    service = get_graph_service(catalog, project_id, branch_id, initialize=False, write=True)
+    if branch_id is not None and kind not in {"node_chat", "project_chat"}:
+        raise HTTPException(
+            status_code=422,
+            detail="Only ordinary conversations can target a graph branch here.",
+        )
+    chat_admission_lock = None
+    try:
+        with _task_preparation_service(service) as reader:
+            request = _validated_task_request(reader, kind, body)
+            if isinstance(request, RunRequest):
+                request = _admit_artifact_context_request(
+                    store,
+                    reader,
+                    project_id,
+                    kind,
+                    request,
+                )
+        if task_graph_capable(kind, request):
+            require_graph_edit_admission(
+                store, catalog.resolve_project_id(project_id), service.history.graph_target
+            )
+
+        if isinstance(request, RunRequest) and request.artifact_edit is not None:
+            kind = (
+                "artifact_edit"
+                if request.artifact_edit.launch_kind == "revoking"
+                else ("project_chat" if request.chat_scope == "project" else "node_chat")
+            )
+        if kind in {"node_chat", "project_chat"}:
+            assert isinstance(request, RunRequest)
+        if (
+            kind in {"node_chat", "project_chat"}
+            and isinstance(request, RunRequest)
+            and (request.artifact_edit is None or not request.artifact_edit.origin_bound)
+        ):
+            assert request.chat_id is not None
+            chat_admission_lock = admit_fresh_chat_turn(service, store, project_id, request)
+            request = chat_admission_lock.__enter__()
+        operation_id = (
+            request.artifact_edit.operation_id
+            if isinstance(request, RunRequest) and request.artifact_edit is not None
+            else str(uuid.uuid4())
+        )
+        claimed_set: tuple[str, str] | None = None
+        if kind in {"node_chat", "project_chat"}:
+            assert isinstance(request, RunRequest)
+            supplied = (request.attachment_set_id, request.attachment_client_id)
+            if any(supplied) and not all(supplied):
+                raise ValueError(
+                    "Chat attachments require both attachment_set_id and attachment_client_id."
+                )
+            if request.attachment_set_id or request.references:
+                assert request.chat_id is not None
+                claimed = attachment_store.claim(
+                    project_id=project_id,
+                    chat_id=request.chat_id,
+                    client_id=request.attachment_client_id,
+                    attachment_set_id=request.attachment_set_id,
+                    operation_id=operation_id,
+                    reference_files=resolve_project_references(
+                        store, catalog, project_id, request.references
+                    ),
+                )
+                claimed_set = (claimed.attachment_batch_id, operation_id)
+                request = request.model_copy(
+                    update={
+                        "attachment_set_id": None,
+                        "attachment_client_id": None,
+                        "attachment_batch_id": claimed.attachment_batch_id,
+                        "attachments": claimed.attachments,
+                        "references": [],
+                    }
+                )
+        composer_edit = (
+            request.artifact_edit
+            if isinstance(request, RunRequest)
+            and request.artifact_edit is not None
+            and not request.artifact_edit.origin_bound
+            else None
+        )
+        try:
+            # Expiry checks admitted edits under this lock, so the base must
+            # stay readable until the task that protects it is recorded.
+            with (
+                store.artifact_lock(composer_edit.artifact_id)
+                if composer_edit is not None
+                else nullcontext()
+            ):
+                if composer_edit is not None:
+                    try:
+                        store.read_artifact_bytes(
+                            composer_edit.artifact_id, composer_edit.base_version
+                        )
+                    except (KeyError, OSError, ValueError) as exc:
+                        raise AgentTaskAdmissionConflict(
+                            "The selected artifact version is no longer available. "
+                            "Send the comment again."
+                        ) from exc
+                    # An Undo or another edit since admission makes the
+                    # comment's base stale; the human must select again.
+                    current = store.artifact(composer_edit.artifact_id)
+                    if current is None or current.current_version != composer_edit.base_version:
+                        raise AgentTaskAdmissionConflict(
+                            "This artifact changed to a new version after the parts "
+                            "were selected. Select them again."
+                        )
+                record = background_tasks.start(
+                    project_id,
+                    kind,
+                    request,
+                    operation_id=operation_id,
+                    authorized_by=authorized_by,
+                    graph_target=service.history.graph_target,
+                )
+        except BaseException:
+            if claimed_set is not None and store.agent_task(operation_id) is None:
+                attachment_store.release(*claimed_set)
+            raise
+    except AgentTaskAdmissionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ClientRequestConflict:
+        raise
+    except StateUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        if chat_admission_lock is not None:
+            chat_admission_lock.__exit__(None, None, None)
+    return record
+
+
 @router.post(
     "/api/projects/{project_id}/tasks/{kind}",
     status_code=202,
@@ -372,141 +519,17 @@ def start_agent_task(
                 record = store.agent_task(existing.operation_id or "")
                 assert record is not None
                 return _agent_task_response(store, record, background_tasks)
-            service = get_graph_service(
-                catalog, project_id, branch_id, initialize=False, write=True
+            record = start_ordinary_task(
+                project_id,
+                kind,
+                body,
+                catalog=catalog,
+                store=store,
+                attachment_store=attachment_store,
+                background_tasks=background_tasks,
+                authorized_by=authorized_by,
+                branch_id=branch_id,
             )
-            if branch_id is not None and kind not in {"node_chat", "project_chat"}:
-                raise HTTPException(
-                    status_code=422,
-                    detail="Only ordinary conversations can target a graph branch here.",
-                )
-            chat_admission_lock = None
-            try:
-                with _task_preparation_service(service) as reader:
-                    request = _validated_task_request(reader, kind, body)
-                    if isinstance(request, RunRequest):
-                        request = _admit_artifact_context_request(
-                            store,
-                            reader,
-                            project_id,
-                            kind,
-                            request,
-                        )
-                if task_graph_capable(kind, request):
-                    require_graph_edit_admission(
-                        store, catalog.resolve_project_id(project_id), service.history.graph_target
-                    )
-
-                if isinstance(request, RunRequest) and request.artifact_edit is not None:
-                    kind = (
-                        "artifact_edit"
-                        if request.artifact_edit.launch_kind == "revoking"
-                        else ("project_chat" if request.chat_scope == "project" else "node_chat")
-                    )
-                if kind in {"node_chat", "project_chat"}:
-                    assert isinstance(request, RunRequest)
-                if (
-                    kind in {"node_chat", "project_chat"}
-                    and isinstance(request, RunRequest)
-                    and (request.artifact_edit is None or not request.artifact_edit.origin_bound)
-                ):
-                    assert request.chat_id is not None
-                    chat_admission_lock = admit_fresh_chat_turn(service, store, project_id, request)
-                    request = chat_admission_lock.__enter__()
-                operation_id = (
-                    request.artifact_edit.operation_id
-                    if isinstance(request, RunRequest) and request.artifact_edit is not None
-                    else str(uuid.uuid4())
-                )
-                claimed_set: tuple[str, str] | None = None
-                if kind in {"node_chat", "project_chat"}:
-                    assert isinstance(request, RunRequest)
-                    supplied = (request.attachment_set_id, request.attachment_client_id)
-                    if any(supplied) and not all(supplied):
-                        raise ValueError(
-                            "Chat attachments require both attachment_set_id and attachment_client_id."
-                        )
-                    if request.attachment_set_id or request.references:
-                        assert request.chat_id is not None
-                        claimed = attachment_store.claim(
-                            project_id=project_id,
-                            chat_id=request.chat_id,
-                            client_id=request.attachment_client_id,
-                            attachment_set_id=request.attachment_set_id,
-                            operation_id=operation_id,
-                            reference_files=resolve_project_references(
-                                store, catalog, project_id, request.references
-                            ),
-                        )
-                        claimed_set = (claimed.attachment_batch_id, operation_id)
-                        request = request.model_copy(
-                            update={
-                                "attachment_set_id": None,
-                                "attachment_client_id": None,
-                                "attachment_batch_id": claimed.attachment_batch_id,
-                                "attachments": claimed.attachments,
-                                "references": [],
-                            }
-                        )
-                composer_edit = (
-                    request.artifact_edit
-                    if isinstance(request, RunRequest)
-                    and request.artifact_edit is not None
-                    and not request.artifact_edit.origin_bound
-                    else None
-                )
-                try:
-                    # Expiry checks admitted edits under this lock, so the base must
-                    # stay readable until the task that protects it is recorded.
-                    with (
-                        store.artifact_lock(composer_edit.artifact_id)
-                        if composer_edit is not None
-                        else nullcontext()
-                    ):
-                        if composer_edit is not None:
-                            try:
-                                store.read_artifact_bytes(
-                                    composer_edit.artifact_id, composer_edit.base_version
-                                )
-                            except (KeyError, OSError, ValueError) as exc:
-                                raise AgentTaskAdmissionConflict(
-                                    "The selected artifact version is no longer available. "
-                                    "Send the comment again."
-                                ) from exc
-                            # An Undo or another edit since admission makes the
-                            # comment's base stale; the human must select again.
-                            current = store.artifact(composer_edit.artifact_id)
-                            if (
-                                current is None
-                                or current.current_version != composer_edit.base_version
-                            ):
-                                raise AgentTaskAdmissionConflict(
-                                    "This artifact changed to a new version after the parts "
-                                    "were selected. Select them again."
-                                )
-                        record = background_tasks.start(
-                            project_id,
-                            kind,
-                            request,
-                            operation_id=operation_id,
-                            authorized_by=authorized_by,
-                            graph_target=service.history.graph_target,
-                        )
-                except BaseException:
-                    if claimed_set is not None and store.agent_task(operation_id) is None:
-                        attachment_store.release(*claimed_set)
-                    raise
-            except AgentTaskAdmissionConflict as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
-            except ClientRequestConflict:
-                raise
-            except StateUnavailable as exc:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
-            except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
-            finally:
-                if chat_admission_lock is not None:
-                    chat_admission_lock.__exit__(None, None, None)
             # A task admitted a moment ago has not run, so it can carry no note yet.
             return _agent_task_response(store, record, background_tasks)
     except ClientRequestConflict as exc:

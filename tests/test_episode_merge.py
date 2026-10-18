@@ -388,14 +388,14 @@ def test_target_moved_after_preparation_blocks_graph_commit(manifest, tmp_path, 
     harness = _create_branch_harness(manifest, tmp_path, change="status")
     shared, binding = _isolated(harness, tmp_path)
     (Path(binding.worktree_path) / "file").write_text("episode")
-    original = merge.prepare_branch_merge_with_history
+    original = merge.prepare_merge_candidate
 
     def move_target(*args, **kwargs):
         prepared = original(*args, **kwargs)
         git(shared, "update-ref", "refs/heads/main", binding.starting_commit)
         return prepared
 
-    monkeypatch.setattr(merge, "prepare_branch_merge_with_history", move_target)
+    monkeypatch.setattr(merge, "prepare_merge_candidate", move_target)
     revision = harness.service.history.state().revision
     response = harness.client.post(
         f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge",
@@ -667,7 +667,122 @@ def test_code_only_conflict_runs_one_code_merge_turn(manifest, tmp_path, monkeyp
     assert reconciler.latest_experiment_leaf(owner_id) is None
 
 
-def test_diff_paths_carry_the_merge_builders_classification(manifest, tmp_path):
+def _plan_for_preview(base, source, destination):
+    from rcp.runs.merge_contract import MergePlanningContext
+    from rcp.runs.merge_plan import plan_merge
+    from tests.test_merge_patch import make_plan
+
+    fixture = make_plan(base=base, source=source, destination=destination)
+    context = MergePlanningContext.model_validate(
+        fixture.model_dump(include=set(MergePlanningContext.model_fields))
+    )
+    return plan_merge(context)
+
+
+def test_preview_whole_entity_presence_inherits_its_field_conflict():
+    from rcp.core.models import Evidence, GraphState
+    from rcp.runs.episodes.merge import graph_merge_preview
+
+    base = GraphState(revision=1, project_truth_scope=["repo-a"])
+    evidence = Evidence(
+        id="ev/concurrent",
+        type="evidence",
+        title="Concurrent result",
+        observation="Branch observation",
+        origin="internal_run",
+    )
+    source = base.model_copy(update={"revision": 2, "nodes": {evidence.id: evidence}})
+    destination = base.model_copy(
+        update={
+            "nodes": {
+                evidence.id: evidence.model_copy(update={"observation": "Destination observation"})
+            }
+        }
+    )
+    plan = _plan_for_preview(base, source, destination)
+    assert len(plan.conflicts) == 1
+    preview = graph_merge_preview(plan)
+    [whole] = [path for path in preview.paths if path.field_path == "$"]
+    assert whole.entity == "node" and whole.id == evidence.id
+    assert whole.conflict and whole.needs_agent and not whole.delivered
+    assert not whole.needs_proposal
+    assert all(not path.delivered for path in preview.paths)
+
+
+def test_preview_implicit_incident_edge_removal_inherits_node_review():
+    from rcp.core.materialize import apply_valid_patch
+    from rcp.core.models import Edge, GraphState, Patch, ResearchQuestion
+    from rcp.runs.episodes.merge import graph_merge_preview
+
+    parent = ResearchQuestion(
+        id="rq/parent", type="research_question", title="Parent", question="Why?"
+    )
+    child = parent.model_copy(update={"id": "rq/child", "title": "Child"})
+    edge = Edge(
+        id="edge/subquestion",
+        source=parent.id,
+        target=child.id,
+        relation="has_subquestion",
+    )
+    base = GraphState(
+        revision=1,
+        project_truth_scope=["repo-a"],
+        nodes={parent.id: parent, child.id: child},
+        edges={edge.id: edge},
+    )
+    source = apply_valid_patch(
+        base,
+        Patch(
+            kind="approval",
+            author="human",
+            revision=2,
+            summary="Remove the parent question.",
+            ops=[{"op": "remove_nodes", "node_ids": [parent.id]}],
+        ),
+    )
+    plan = _plan_for_preview(base, source, base)
+    assert len(plan.review_groups) == 1
+    assert not plan.conflicts
+    preview = graph_merge_preview(plan)
+    [removed_edge] = [path for path in preview.paths if path.entity == "edge"]
+    assert removed_edge.id == edge.id and removed_edge.field_path == "$"
+    assert removed_edge.branch is None and removed_edge.main is not None
+    assert removed_edge.needs_proposal and removed_edge.needs_agent
+    assert not removed_edge.delivered and not removed_edge.conflict
+
+
+@pytest.mark.parametrize("global_field", ["project_truth_scope", "ontology"])
+def test_preview_preserves_delivered_global_changes(global_field):
+    from rcp.core.models import GraphState, OntologyFieldDefinition, OntologyState
+    from rcp.runs.episodes.merge import graph_merge_preview
+
+    base = GraphState(revision=1, project_truth_scope=["repo-a"])
+    value = (
+        ["repo-a", "repo-b"]
+        if global_field == "project_truth_scope"
+        else OntologyState(
+            fields=[
+                OntologyFieldDefinition(
+                    owner_type="blocker",
+                    name="context",
+                    definition="Context for the blocker",
+                    kind="text",
+                )
+            ]
+        )
+    )
+    source = base.model_copy(update={"revision": 2, global_field: value})
+    destination = base.model_copy(update={global_field: value})
+    plan = _plan_for_preview(base, source, destination)
+    assert not plan.direct_changes and not plan.conflicts and not plan.review_groups
+    preview = graph_merge_preview(plan)
+    [path] = preview.paths
+    assert path.entity == "global" and path.id == global_field and path.field_path == global_field
+    assert path.branch == path.main and path.base != path.branch
+    assert path.delivered and not path.conflict and not path.needs_agent and not path.needs_proposal
+
+
+def test_diff_paths_carry_the_merge_plans_classification(manifest, tmp_path):
     harness = _create_branch_harness(manifest, tmp_path, change="evidence")
     competing = _branch_patch(harness.root.operation_id, "evidence")
     competing.ops[0].nodes[0].observation = "Main recorded a different result."
@@ -675,10 +790,88 @@ def test_diff_paths_carry_the_merge_builders_classification(manifest, tmp_path):
     url = f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge-preview"
 
     graph = harness.client.get(url).json()["graph"]
-    flagged = {path["residue_reason"] for path in graph["paths"] if path["residue_reason"]}
-    assert flagged == {item["reason"] for item in graph["residue"]}
+    assert set(graph) == {"direct", "conflicts", "reviews", "paths"}
+    assert graph["conflicts"] > 0
+    assert all(path["needs_agent"] for path in graph["paths"] if path["conflict"])
+    assert all(
+        set(path)
+        == {
+            "entity",
+            "id",
+            "field_path",
+            "base",
+            "branch",
+            "main",
+            "delivered",
+            "conflict",
+            "needs_agent",
+            "needs_proposal",
+        }
+        for path in graph["paths"]
+    )
     assert any(path["conflict"] for path in graph["paths"])
     assert not any(path["delivered"] for path in graph["paths"])
+
+
+def test_preview_counts_one_review_for_connected_protected_changes(manifest, tmp_path, monkeypatch):
+    from rcp.core.models import Patch
+    from tests import test_branch_merge_api as merge_api
+    from tests.helpers import authorized_human
+
+    seed = merge_api._main_fixture_patch().model_dump(mode="json")
+    seed["ops"][0]["nodes"].append(
+        {
+            "id": "rq/merge-review",
+            "type": "research_question",
+            "title": "Review subject",
+            "question": "Original question?",
+            "motivation": "Original motivation",
+        }
+    )
+    monkeypatch.setattr(merge_api, "_main_fixture_patch", lambda: Patch.model_validate(seed))
+    harness = _create_branch_harness(manifest, tmp_path, change="none")
+    harness.branch.append(
+        Patch(
+            kind="approval",
+            author="human",
+            summary="Revise the branch question.",
+            ops=[
+                {
+                    "op": "update_nodes",
+                    "nodes": [
+                        {
+                            "id": "rq/merge-review",
+                            "base_updated_rev": harness.branch.state()
+                            .nodes["rq/merge-review"]
+                            .updated_rev,
+                            "changes": {
+                                "question": "Revised question?",
+                                "motivation": "Revised motivation",
+                            },
+                        }
+                    ],
+                }
+            ],
+        ),
+        authorized_by=authorized_human(harness.app),
+    )
+    before = harness.service.history.head_ref()
+    response = harness.client.get(
+        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge-preview"
+    )
+    assert response.status_code == 200, response.text
+    preview = response.json()
+    assert preview["needs_agent"] is True
+    assert preview["graph"]["conflicts"] == 0
+    assert preview["graph"]["reviews"] == 1
+    paths = {path["field_path"]: path for path in preview["graph"]["paths"]}
+    for field in ("question", "motivation"):
+        assert paths[field]["needs_proposal"] is True
+        assert paths[field]["needs_agent"] is True
+        assert paths[field]["conflict"] is False
+        assert paths[field]["delivered"] is False
+    assert harness.service.history.head_ref() == before
+    assert not harness.branch.merge_receipts()
 
 
 def test_delivered_paths_stay_listed_after_a_merge(manifest, tmp_path):
@@ -723,8 +916,8 @@ def test_merge_task_failing_after_its_receipt_completes_on_the_next_merge(
     assert len(harness.branch.merge_receipts()) == 1
 
 
-def test_graph_residue_merges_after_the_worktree_was_discarded(manifest, tmp_path, monkeypatch):
-    from .test_branch_merge_api import _candidate_for, _PatchWritingLauncher
+def test_graph_conflict_merges_after_the_worktree_was_discarded(manifest, tmp_path, monkeypatch):
+    from .test_branch_merge_api import _AnswersWritingLauncher
 
     harness = _create_branch_harness(manifest, tmp_path, change="evidence")
     _, binding = _isolated(harness, tmp_path)
@@ -736,7 +929,7 @@ def test_graph_residue_merges_after_the_worktree_was_discarded(manifest, tmp_pat
     competing = _branch_patch(harness.root.operation_id, "evidence")
     competing.ops[0].nodes[0].observation = "Main recorded a different result."
     append_fixture_patch(harness.service, competing)
-    launcher = _PatchWritingLauncher(_candidate_for("evidence"))
+    launcher = _AnswersWritingLauncher()
     monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
 
     response = harness.client.post(
@@ -745,9 +938,13 @@ def test_graph_residue_merges_after_the_worktree_was_discarded(manifest, tmp_pat
     assert response.status_code == 202, response.text
     state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
     assert not state.merge_attempt.code_by_agent
-    task = wait_for_task(harness.store, state.merge_attempt.graph_task_id)
-    # The graph-only task reaches its provider with no repository roots.
-    assert launcher.calls >= 1, task.error
+    task = wait_for_task(harness.store, state.merge_attempt.graph_task_id, expect="succeeded")
+    # The graph-only task completes with no remaining repository worktree.
+    assert launcher.calls == 1, task.error
+    assert harness.service.history.state().nodes["ev/branch-result"].model_dump()[
+        "observation"
+    ] == ("The isolated branch recorded a result.")
+    assert len(harness.branch.merge_receipts()) == 1
 
 
 def test_a_later_graph_only_merge_keeps_the_code_delivery(manifest, tmp_path):

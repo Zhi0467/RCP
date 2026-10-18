@@ -7,6 +7,7 @@ running, or pausing graph-capable task is a writer, and it is named.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -16,10 +17,13 @@ import pytest
 
 from rcp.agents import AgentEvent
 from rcp.background import BackgroundAgentTasks
+from rcp.runs import branch_merge as merge_module
+from rcp.runs.branch_merge_request import BranchMergeRunRequest
+from rcp.runs.shared import _sse
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AutoResearchChildAdmissionRecord
 
-from .helpers import append_fixture_patch, wait_for_task
+from .helpers import wait_for_task
 from .test_auto_research_children_storage import (
     _experiment_route,
     _experiment_task,
@@ -27,13 +31,7 @@ from .test_auto_research_children_storage import (
     _work_pair,
 )
 from .test_background import _done_stream
-from .test_branch_merge_api import (
-    _branch_patch,
-    _candidate_for,
-    _create_branch_harness,
-    _episode_payload,
-    _PatchWritingLauncher,
-)
+from .test_branch_merge import _field, _Run
 from .test_branch_target_storage import (
     _create_auto_episode,
     _merge_task,
@@ -44,75 +42,67 @@ from .test_branch_target_storage import (
 )
 
 
-def _paused_branch_harness(manifest, tmp_path: Path):
-    harness = _create_branch_harness(manifest, tmp_path, change="evidence", ended=False)
-    stage = tmp_path / "paused-orchestrator-stage"
-    stage.mkdir()
-    (stage / "patch.json").write_text("retained unfinished provider output", encoding="utf-8")
-    harness.store.mark_agent_task_running(harness.root.operation_id)
-    harness.store.checkpoint_agent_task(
-        harness.root.operation_id, native_session_id="paused-session", stage_root=str(stage)
-    )
-    harness.store.request_agent_task_pause(harness.root.operation_id)
-    harness.store.pause_agent_task(harness.root.operation_id, detail="Paused by the human.")
-    return harness, stage
-
-
+@pytest.mark.asyncio
 @pytest.mark.parametrize("provider_fails", [False, True])
-def test_merge_over_a_paused_orchestrator_leaves_the_episode_exactly_as_it_was(
-    manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider_fails: bool
+async def test_merge_over_a_paused_orchestrator_leaves_the_episode_exactly_as_it_was(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider_fails: bool
 ) -> None:
-    harness, stage = _paused_branch_harness(manifest, tmp_path)
+    store, episode, root, _recovery = _paused_store(tmp_path)
+    stage = Path(root.stage_root)
+    retained = stage / "patch.json"
+    retained.write_bytes(b"retained unfinished provider output")
+    watcher = _watcher(store, episode, root, watcher_id="paused-watch")
+    store.create_watchers([watcher])
+    before_episode = store.episode(episode.episode_id)
+    before_root = store.agent_task(root.operation_id)
+    before_budget = store.episode_budget_meter(episode.episode_id)
+    before_watcher = store.watcher(watcher.watcher_id)
+    run = _Run(tmp_path, monkeypatch, conflicts=(_field(),) if provider_fails else ())
     if provider_fails:
-        # Only a conflict needs a provider now; ordinary merges are deterministic.
-        competing = _branch_patch(harness.root.operation_id, "evidence")
-        competing.ops[0].nodes[0].observation = "Main recorded a different result."
-        append_fixture_patch(harness.service, competing)
-    payload = _episode_payload(harness)
-    assert payload["task_control"] == "resume"
-    assert payload["graph_branch"]["merge_eligible"] is True
-    assert "merge_requires_end" not in payload["graph_branch"]
-    assert payload["graph_branch"]["current_episode_id"] == harness.episode.episode_id
-    budget = harness.store.episode_budget_meter(harness.episode.episode_id)
-    branch_head = harness.branch.head_ref()
-    watcher = _watcher(harness.store, harness.episode, harness.root, watcher_id="paused-watch")
-    harness.store.create_watchers([watcher])
 
-    async def fail_provider(*_args, **_kwargs):
-        yield AgentEvent(event="error", text="The merge provider is unavailable.")
+        def failed_provider(*args, **kwargs):
+            outcome, frames = run.provider(*args, **kwargs)
+            outcome.failed = True
+            return outcome, frames
 
-    launcher = _PatchWritingLauncher(_candidate_for("evidence"))
-    monkeypatch.setattr(
-        harness.app.state.launcher, "stream", fail_provider if provider_fails else launcher.stream
+        monkeypatch.setattr(merge_module, "_provider_turn", failed_provider)
+
+    async def stream(_project_id, _kind, _request, _execution):
+        for frame in await run.run():
+            yield frame
+        yield _sse(AgentEvent(event="done"))
+
+    request = BranchMergeRunRequest(
+        episode_id=episode.episode_id,
+        mode="work",
+        chat_scope="project",
+        provider="codex",
+        model="",
+        reasoning="medium",
+        run_on="local",
+        run_truth_scope=["repo-a"],
     )
-    response = harness.client.post(
-        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge", json={}
+    merge = store.create_branch_merge_task(
+        _merge_task(store, episode, str(uuid.uuid4())).model_copy(
+            update={"request": request.model_dump(mode="json")}
+        )
     )
-    assert response.status_code == 202, response.text
-    admitted = response.json()
-    assert admitted["ending"] is None
-    assert admitted["status"] == payload["status"]
-    # An ordinary merge is agentless and has already settled; a conflict is still running.
-    operation_id = (
-        admitted["graph_branch"]["active_merge_task_id"]
-        or admitted["graph_branch"]["latest_successful_merge"]["provenance"]["merge_task_id"]
+    tasks = BackgroundAgentTasks(store, stream)
+    tasks.launch_admitted(merge.operation_id)
+    await asyncio.to_thread(
+        wait_for_task,
+        store,
+        merge.operation_id,
+        expect="failed" if provider_fails else "succeeded",
     )
-    wait_for_task(harness.store, operation_id, expect="failed" if provider_fails else "succeeded")
-    episode = harness.store.episode(harness.episode.episode_id)
-    assert episode.ending is None
-    assert episode.stop_requested_at is None
-    assert episode.wrapup_state == harness.episode.wrapup_state
-    root = harness.store.agent_task(harness.root.operation_id)
-    assert root.status == "paused"
-    assert root.can_resume
-    assert root.native_session_id == "paused-session"
-    assert Path(root.stage_root) == stage
-    assert (stage / "patch.json").read_text(
-        encoding="utf-8"
-    ) == "retained unfinished provider output"
-    assert harness.branch.head_ref() == branch_head
-    assert harness.store.episode_budget_meter(harness.episode.episode_id) == budget
-    assert harness.store.watcher(watcher.watcher_id).status == "active"
+
+    assert run.outcome.status == ("rejected" if provider_fails else "committed")
+    assert len(run.commits) == (0 if provider_fails else 1)
+    assert store.episode(episode.episode_id) == before_episode
+    assert store.agent_task(root.operation_id) == before_root
+    assert store.episode_budget_meter(episode.episode_id) == before_budget
+    assert store.watcher(watcher.watcher_id) == before_watcher
+    assert retained.read_bytes() == b"retained unfinished provider output"
 
 
 def _paused_store(tmp_path: Path):
@@ -182,7 +172,7 @@ def test_a_resumed_turn_becomes_a_named_writer_that_blocks_the_merge(
         finally:
             release.set()
         assert first.result().operation_id == recovery.operation_id
-        with pytest.raises(ValueError, match="active writer"):
+        with pytest.raises(ValueError, match="merge_source_has_live_writer"):
             second.result()
     assert store.agent_task(merge.operation_id) is None
     assert store.agent_task(recovery.operation_id).status == "queued"
@@ -214,7 +204,7 @@ def test_only_a_live_child_turn_blocks_the_merge(
     if status == "paused":
         assert store.create_branch_merge_task(merge).kind == "branch_merge"
     else:
-        with pytest.raises(ValueError, match="active writer"):
+        with pytest.raises(ValueError, match="merge_source_has_live_writer"):
             store.create_branch_merge_task(merge)
         assert store.agent_task(merge.operation_id) is None
     assert store.episode(episode.episode_id).ending is None

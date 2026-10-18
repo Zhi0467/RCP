@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 
 import pytest
 
@@ -30,6 +31,7 @@ from rcp.core.authority import (
     require_dispatch,
 )
 from rcp.core.models import (
+    BranchMergeReceipt,
     Decision,
     Evidence,
     GraphState,
@@ -444,3 +446,70 @@ def test_ordinary_agent_cannot_set_standing() -> None:
     permission_report = WriteAuthority().validate_permissions(state, patch)
 
     assert "graph-action-refused" in {message.code for message in permission_report.messages}
+
+
+@pytest.mark.parametrize("case", ["legacy", "foreign_episode", "bound", "foreign_source", "member"])
+def test_merge_authority_binds_receipt_source_and_member_dispatch(case):
+    from rcp.runs.branch_merge import branch_merge_provenance
+
+    from .test_branch_merge import _context
+
+    context = _context()
+    source = context.metadata.head.target
+    episode_id = None if case == "member" else context.metadata.episode_id
+    dispatch = AgentDispatchAuthority(
+        profile="orchestrator",
+        task_contract="orchestrate",
+        scope=AgentDispatchScope(
+            run_truth_scope=["repo"], episode_id=episode_id, patch_kind="work"
+        ),
+    )
+    task = AgentTaskAuthority(
+        operation_id=context.merge_task_id,
+        project_id="project-one",
+        apply_target=GraphTargetRef(),
+        authorized_by=context.authorized_by,
+        dispatch_authority=dispatch,
+        episode_id=episode_id,
+        merge_source=source if case in {"bound", "foreign_source", "member"} else None,
+        merge_dispatcher="member" if case == "member" else "orchestrator",
+    )
+    if case == "foreign_episode":
+        task = task.model_copy(update={"episode_id": "foreign"})
+    if case == "foreign_source":
+        task = task.model_copy(
+            update={"merge_source": GraphTargetRef(kind="branch", branch_id="foreign")}
+        )
+    authority = WriteAuthority(
+        agent_authority_resolver=lambda *_: task, project_membership_check=seated_on_every_project
+    )
+    receipt = BranchMergeReceipt(
+        outcome="no_change",
+        provenance=branch_merge_provenance(context),
+        result_main_head=context.main_head,
+        authorized_by=context.authorized_by,
+    )
+    with pytest.raises(ValueError) if case.startswith("foreign_") else nullcontext():
+        authority.require_no_change_merge(receipt, project_id="project-one")
+    if case == "member":
+        assert require_dispatch(dispatch, member_merge_source=source) == dispatch
+        patch = Patch(
+            kind="work",
+            author="agent",
+            producer="agent",
+            summary="Merge",
+            run_truth_scope=["repo"],
+            source_operation_id=context.merge_task_id,
+            ops=[],
+        )
+        assert (
+            authority.stamp_attribution(
+                patch, project_id="project-one", authorized_by=None, apply_target=GraphTargetRef()
+            ).episode_id
+            is None
+        )
+        task = task.model_copy(update={"merge_dispatcher": None})
+        with pytest.raises(ValueError):
+            authority.stamp_attribution(
+                patch, project_id="project-one", authorized_by=None, apply_target=GraphTargetRef()
+            )

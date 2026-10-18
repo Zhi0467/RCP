@@ -6,9 +6,9 @@ import uuid
 import pytest
 
 from rcp.core.graph_targets import graph_target_json
-from rcp.core.models import GraphBranchMetadata
-from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.core.transition_models import GraphTargetRef
 from rcp.runs.experiment_loop import preflight_episode_wake
+from rcp.runs.graph_forks import create_graph_fork
 from rcp.skill_registry import SkillReference
 from rcp.storage import AppStore, WatcherStopRequest
 from rcp.watchers import WatcherBinding
@@ -24,6 +24,10 @@ def _retarget_episode(
 ) -> None:
     if graph_target.kind == "main":
         return
+    episode = store.episode(episode_id)
+    assert episode is not None
+    branch = store.graph_branch(episode.project_id, graph_target.branch_id or "")
+    assert branch is not None
     with store.connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
         connection.execute(
@@ -34,7 +38,7 @@ def _retarget_episode(
             """,
             (
                 graph_target_json(graph_target),
-                GraphHeadRef(revision=0).model_dump_json(),
+                branch.parent_head.model_dump_json(),
                 episode_id,
             ),
         )
@@ -48,23 +52,21 @@ def _adopted_loop(manifest, tmp_path, *, branch: bool, old_status: str = "comple
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app, invocation_ceiling=1)
     target = GraphTargetRef()
+    loop.start_episode(operation_id="loop-root")
     if branch:
         branch_id = str(uuid.uuid4())
         target = GraphTargetRef(kind="branch", branch_id=branch_id)
         base = loop.service.history.head_ref()
-        loop.service.history.create_episode_branch(
-            GraphBranchMetadata(
-                branch_id=branch_id,
-                episode_id=branch_id,
-                project_id=loop.project_id,
-                base_head=base,
-                head=GraphHeadRef(
-                    target=target, revision=base.revision, transition_id=base.transition_id
-                ),
-                authorized_by=loop.authorizer,
-            )
+        create_graph_fork(
+            loop.service.history,
+            loop.store,
+            branch_id=branch_id,
+            owner_episode_id=loop.episode_id,
+            project_id=loop.project_id,
+            parent_head=base,
+            created_by="orchestrator:loop-root",
+            authorized_by=loop.authorizer,
         )
-    loop.start_episode(operation_id="loop-root")
     _retarget_episode(loop.store, loop.episode_id, target)
     old_episode = loop.episode_id
     loop.arm_watcher(

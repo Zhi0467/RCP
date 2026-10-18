@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from rcp.agents.group_context import GroupContext
 from rcp.config import Manifest
@@ -32,7 +32,11 @@ class RunContext(BaseModel):
     refresh_delta: RefreshDelta | None = None
     graph_revision: int = Field(ge=0)
     graph_path: str
-    main_graph_path: str | None = None
+    parent_graph_path: str | None = Field(
+        default=None, validation_alias=AliasChoices("parent_graph_path", "main_graph_path")
+    )
+    branch_name: str | None = None
+    branch_parent: str | None = None
     shared_repositories: list[RepositoryPointer] = Field(default_factory=list)
     research_md_path: str
     introduction_path: str | None
@@ -78,7 +82,11 @@ class ChatContext(BaseModel):
     run_truth_scope: list[str]
     repositories: list[RepositoryPointer]
     graph_path: str
-    main_graph_path: str | None = None
+    parent_graph_path: str | None = Field(
+        default=None, validation_alias=AliasChoices("parent_graph_path", "main_graph_path")
+    )
+    branch_name: str | None = None
+    branch_parent: str | None = None
     shared_repositories: list[RepositoryPointer] = Field(default_factory=list)
     group_context: GroupContext | None = None
     loop_status: dict[str, Any] | None = None

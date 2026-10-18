@@ -32,6 +32,7 @@ import {
   unreadChatIdsFromReads,
   unsentConversation,
   orchestratorCanUnlock,
+  orchestratorChatTurns,
 } from "../src/chat/chatWorkspace.ts";
 import { agentBoardColumn } from "../src/chat/agentBoardModel.ts";
 import { graphTargetFromHash } from "../src/core/graphTarget.ts";
@@ -94,6 +95,63 @@ test("conversations group by chat id rather than latest node", () => {
   assert.equal(conversations.find((item) => item.chatId === "chat-a")?.title, "Node A");
   assert.equal(latestConversation(conversations, "node_chat", "node/a")?.chatId, "chat-b");
   assert.equal(chatIdForTask(tasks[2]), "chat-p");
+});
+
+test("artifact edits continue the conversation their artifact came from", () => {
+  const branch = { kind: "branch", branch_id: "chain" };
+  const later = { created_at: "2026-07-28T00:05:00Z", updated_at: "2026-07-28T00:05:00Z" };
+  const tasks = [
+    task({ operation_id: "turn", request: { chat_id: "experiment", node_id: "exp" } }),
+    task({
+      operation_id: "chat-edit",
+      kind: "artifact_edit",
+      status: "running",
+      active: true,
+      request: { chat_id: "experiment", chat_scope: "node", node_id: "exp" },
+      ...later,
+    }),
+    task({
+      operation_id: "orchestrator",
+      kind: "auto_research",
+      graph_target: branch,
+      request: { role: "orchestrator", instruction: "Start." },
+    }),
+    task({
+      operation_id: "chain-edit",
+      kind: "artifact_edit",
+      graph_target: branch,
+      request: { chat_id: null, artifact_edit: { reply_episode_id: "member" } },
+      ...later,
+    }),
+    // An ordinary turn posted after the chain ended joins its card by chat id.
+    task({
+      operation_id: "chat-turn",
+      kind: "project_chat",
+      graph_target: branch,
+      request: { chat_id: "chain", message: "Summarize." },
+      created_at: "2026-07-28T00:06:00Z",
+      updated_at: "2026-07-28T00:06:00Z",
+    }),
+  ];
+  const conversations = groupChatConversations([], tasks, {}, "Project");
+  const byId = new Map(conversations.map((item) => [item.chatId, item]));
+  assert.deepEqual([...byId.keys()].sort(), ["chain", "experiment"]);
+  assert.equal(byId.get("experiment").kind, "node_chat");
+  assert.equal(conversationAgentStatus(byId.get("experiment"), new Set()).state, "working");
+  const chain = byId.get("chain");
+  assert.equal(chain.updatedAt, "2026-07-28T00:06:00Z");
+  const turns = orchestratorChatTurns(chain, [
+    { role: "user", operation_id: "chain-edit", text: "Relabel." },
+  ]);
+  assert.deepEqual(
+    turns.tasks.map((item) => [item.operation_id, item.kind, item.request.message]),
+    [
+      ["orchestrator", "project_chat", "Start."],
+      ["chain-edit", "artifact_edit", "Relabel."],
+      ["chat-turn", "project_chat", "Summarize."],
+    ],
+  );
+  assert.equal(turns.history.length, 0);
 });
 
 test("opening a new chat reuses an unsent draft of the same kind and node only", () => {

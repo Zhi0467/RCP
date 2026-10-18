@@ -16,11 +16,17 @@ from pydantic import BaseModel, ValidationError
 
 from rcp.core.authority import WriteAuthority
 from rcp.core.materialize import apply_valid_patch
-from rcp.core.models import RELATION_SPEC, GraphState, Patch, ProjectNode
+from rcp.core.models import RELATION_SPEC, GraphState, Patch, ProjectNode, graph_fields
 from rcp.core.operations import graph_operations_from_proposal, operation_dict
 from rcp.core.validation import NODE_PREFIXES, ValidationContext, validate_patch
-from rcp.core.validation.proposals import proposal_is_stale
+from rcp.core.validation.proposals import proposal_approval_operations, proposal_is_stale
+from rcp.runs.merge_contract import (
+    MergeAnswers,
+    NodeGroupConflict,
+)
+from rcp.runs.merge_patch import prepare_merge_candidate
 from tests.helpers import seed_patch
+from tests.test_merge_regressions import _answers, _append, _approve, _commit, _fork_history, _plan
 
 SCOPE = ["repo-a"]
 STEPS = 1500
@@ -43,7 +49,7 @@ REQUIRED = {
     "hypothesis": {"statement": "The effect holds."},
     "decision": {"question": "Which setup?", "options": ["Setup one", "Setup two"]},
     "experiment": {"objective": "Measure the effect."},
-    "evidence": {"observation": "The run reported a value."},
+    "evidence": {"observation": "The run reported a value.", "origin": "analytic"},
     "blocker": {"description": "The cluster is down."},
 }
 ASSESSED = {"supports", "weakens", "refutes", "inconclusive", "contradicts"}
@@ -129,11 +135,14 @@ class _Generator:
         node_type = node_type or self.rng.choice(sorted(REQUIRED))
         return f"{NODE_PREFIXES[node_type]}/n{self.rng.randrange(8)}"
 
-    def new_node(self) -> dict[str, Any]:
-        node_type = self.rng.choice(sorted(REQUIRED))
-        node_id = f"{NODE_PREFIXES[node_type]}/n{self.rng.randrange(8)}"
+    def new_node(self, node_type: str | None = None, suffix: str | None = None) -> dict[str, Any]:
+        node_type = node_type or self.rng.choice(sorted(REQUIRED))
+        node_id = f"{NODE_PREFIXES[node_type]}/{suffix or f'n{self.rng.randrange(8)}'}"
         self.ever.append(node_id)
-        return {"id": node_id, "type": node_type, "title": "Node", **REQUIRED[node_type]}
+        node = {"id": node_id, "type": node_type, "title": "Node", **REQUIRED[node_type]}
+        if node_type == "evidence":
+            node["origin"] = self.rng.choice(["analytic", "unknown"])
+        return node
 
     def edge(self, state: GraphState) -> dict[str, Any]:
         relation = self.rng.choice(sorted(RELATION_SPEC))
@@ -152,6 +161,27 @@ class _Generator:
         if relation in ASSESSED and source.startswith("ev/"):
             edge["assessment"] = {"relevance": "direct", "weight": "moderate"}
         return edge
+
+    def merge_base(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Stratify real operations so rare endpoint/relation types cannot disappear."""
+        nodes = [self.new_node(kind, f"base{i}") for kind in sorted(REQUIRED) for i in range(2)]
+        edges = []
+        for relation, spec in sorted(RELATION_SPEC.items()):
+            source_type = self.rng.choice(sorted(spec.source_types))
+            target_type = (
+                source_type if spec.same_type else self.rng.choice(sorted(spec.target_types))
+            )
+            edge = {
+                "id": f"edge/{relation}",
+                "source": f"{NODE_PREFIXES[source_type]}/base0",
+                "target": f"{NODE_PREFIXES[target_type]}/base1",
+                "relation": relation,
+                "explanation": f"Base {relation}",
+            }
+            if relation in ASSESSED and source_type == "evidence":
+                edge["assessment"] = {"relevance": "direct", "weight": "moderate"}
+            edges.append(edge)
+        return nodes, edges
 
     def operation(self, state: GraphState, kind: str) -> dict[str, Any]:
         rng = self.rng
@@ -240,12 +270,13 @@ def test_node_id_fields_are_classified() -> None:
     assert found == LIVE_NODE_REFS | set(HISTORY_NODE_REFS) | set(NOT_NODE_REFS)
 
 
-@pytest.mark.parametrize("seed", range(4))
-def test_random_accepted_patches_keep_the_graph_well_formed(seed: int) -> None:
+def _random_accepted_patches(seed: int) -> tuple[Counter[str], Counter[str]]:
     rng = random.Random(seed)
     generator = _Generator(rng)
     state = apply_valid_patch(GraphState(project_truth_scope=SCOPE), seed_patch())
     accepted: Counter[str] = Counter()
+    node_types: Counter[str] = Counter()
+    relation_types: Counter[str] = Counter()
     # The first patch that broke each invariant, as a minimal reproducer.
     first_break: dict[str, tuple[set[str], list[dict[str, Any]], str | None]] = {}
     for _ in range(STEPS):
@@ -261,11 +292,293 @@ def test_random_accepted_patches_keep_the_graph_well_formed(seed: int) -> None:
         before = _violations(state)
         state = apply_valid_patch(state, patch)
         accepted.update({op.op for op in patch.ops})
+        for operation in patch.ops:
+            if operation.op == "create_nodes":
+                node_types.update(node.type for node in operation.nodes)
+            elif operation.op == "create_edges":
+                relation_types.update(edge.relation for edge in operation.edges)
         for name, ids in _violations(state).items():
             if name not in first_break and ids - before.get(name, set()):
                 ops = [operation_dict(op) for op in patch.ops]
                 first_break[name] = (ids - before.get(name, set()), ops, patch.author)
-    assert first_break == {}
+    assert first_break == {}, seed
     assert {kind: accepted[kind] for kind in OP_KINDS} == {
         kind: max(accepted[kind], MIN_ACCEPTED) for kind in OP_KINDS
     }
+    return node_types, relation_types
+
+
+def test_random_accepted_patches_keep_the_graph_well_formed() -> None:
+    node_types: Counter[str] = Counter()
+    relation_types: Counter[str] = Counter()
+    for seed in range(4):
+        nodes, relations = _random_accepted_patches(seed)
+        node_types.update(nodes)
+        relation_types.update(relations)
+    assert set(node_types) == set(REQUIRED), node_types
+    assert set(relation_types) == set(RELATION_SPEC), relation_types
+
+
+def _side_values(mode: int, label: str) -> tuple[str | None, str | None]:
+    """The four three-way cases, independent of planner classification."""
+    return (
+        (f"Branch {label}", None),
+        (None, f"Destination {label}"),
+        (f"Agreed {label}", f"Agreed {label}"),
+        (f"Branch {label}", f"Destination {label}"),
+    )[mode]
+
+
+def _merge_oracle(base, source, destination, plan, answers):
+    """Whole content-field oracle from input graphs, never from the built operations."""
+    expected = {}
+    conflicts = {
+        (conflict.collection, conflict.entity_id, conflict.field_name): conflict
+        for conflict in plan.conflicts
+        if conflict.kind == "field"
+    }
+    for collection in ("nodes", "edges"):
+        before, left, right = (getattr(state, collection) for state in (base, source, destination))
+        for identity in left.keys() | right.keys():
+            node = left.get(identity) or right[identity]
+            for field in graph_fields(type(node), role="content"):
+                key = (collection, identity, field)
+                if identity not in before:
+                    expected[key] = getattr(node, field)
+                    continue
+                b, s, d = (getattr(items[identity], field) for items in (before, left, right))
+                if s == b:
+                    expected[key] = d
+                elif d == b or s == d:
+                    expected[key] = s
+                else:
+                    conflict = conflicts[key]
+                    answer = answers.answers[conflict.conflict_id]
+                    expected[key] = (
+                        answer.value
+                        if answer.kind == "merged"
+                        else (s if answer.kind == "branch" else d)
+                    )
+    return expected
+
+
+def _assert_content(state, expected):
+    assert set(state.nodes) == {
+        identity for collection, identity, _ in expected if collection == "nodes"
+    }
+    assert set(state.edges) == {
+        identity for collection, identity, _ in expected if collection == "edges"
+    }
+    for (collection, identity, field), value in expected.items():
+        assert getattr(getattr(state, collection)[identity], field) == value, (
+            collection,
+            identity,
+            field,
+        )
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_generated_three_way_merge_preserves_content_through_approval(manifest, seed):
+    rng = random.Random(seed)
+    generator = _Generator(rng)
+    nodes, edges = generator.merge_base()
+    history, branch = _fork_history(manifest, nodes, edges=edges)
+    base = branch.base_state()
+    node_coverage: Counter[str] = Counter()
+    relation_coverage: Counter[str] = Counter()
+    for index, node in enumerate(nodes):
+        node_coverage[node["type"]] += 1
+        branch_changes, destination_changes = {}, {}
+        for offset, field in enumerate(("title", next(iter(REQUIRED[node["type"]])))):
+            values = _side_values((index + seed + offset) % 4, f"{node['id']} {field} {seed}")
+            for changes, value in zip((branch_changes, destination_changes), values, strict=True):
+                if value is not None:
+                    changes[field] = value
+        for owner, changes in ((branch, branch_changes), (history, destination_changes)):
+            if changes:
+                _append(
+                    owner, {"op": "update_nodes", "nodes": [{"id": node["id"], "changes": changes}]}
+                )
+    branch_edges, destination_edges = [], []
+    for index, edge in enumerate(edges):
+        relation_coverage[edge["relation"]] += 1
+        values = _side_values((index + seed) % 4, f"{edge['id']} {seed}")
+        for replacements, value in zip((branch_edges, destination_edges), values, strict=True):
+            if value is not None:
+                replacements.append({**edge, "explanation": value})
+    for owner, replacements in ((branch, branch_edges), (history, destination_edges)):
+        _append(
+            owner,
+            {"op": "remove_edges", "edge_ids": [edge["id"] for edge in replacements]},
+            {"op": "create_edges", "edges": replacements},
+        )
+    for owner, side in ((branch, "branch"), (history, "destination")):
+        for kind in sorted(REQUIRED):
+            _append(
+                owner, {"op": "create_nodes", "nodes": [generator.new_node(kind, f"{side}{seed}")]}
+            )
+    # A carried choice and its queued lifecycle are independent content fields.
+    decision_id = f"dec/branch{seed}"
+    _append(
+        branch,
+        {
+            "op": "update_nodes",
+            "nodes": [
+                {
+                    "id": decision_id,
+                    "changes": {
+                        "status": "decided",
+                        "selected_option": REQUIRED["decision"]["options"][0],
+                    },
+                }
+            ],
+        },
+    )
+    _append(
+        branch,
+        {
+            "op": "update_nodes",
+            "nodes": [
+                {
+                    "id": decision_id,
+                    "changes": {
+                        "status": "revisit",
+                    },
+                }
+            ],
+        },
+    )
+    for owner, standing in ((branch, "accepted"), (history, "contested")):
+        for node in nodes:
+            _append(owner, {"op": "set_standing", "node_id": node["id"], "standing": standing})
+    source, destination = branch.state(), history.state()
+    assert set(node_coverage) == set(REQUIRED)
+    assert set(relation_coverage) == set(RELATION_SPEC)
+    plan = _plan(history, branch)
+    selected = _answers(plan)
+    choices = {}
+    for conflict in plan.conflicts:
+        assert conflict.kind == "field"
+        if conflict.collection == "nodes" and conflict.field_name in {"status", "standing"}:
+            assert conflict.allowed_answer_kinds == ("branch", "destination")
+        kind = rng.choice(conflict.allowed_answer_kinds)
+        choices[conflict.conflict_id] = {"kind": kind}
+        if kind == "merged":
+            choices[conflict.conflict_id]["value"] = f"Combined {conflict.conflict_id} {seed}"
+    selected = MergeAnswers(answers=choices, cards=selected.cards)
+    expected = _merge_oracle(base, source, destination, plan, selected)
+    _commit(history, branch, plan, selected)
+    merged = history.state()
+    pending = list(merged.proposals.values())
+    assert pending
+    # Protected content and relation changes are still the destination's values.
+    for proposal in pending:
+        assert proposal.status == "pending"
+        assert not proposal_is_stale(merged, proposal)
+        for operation in proposal.ops:
+            if operation.op == "update_nodes":
+                for update in operation.nodes:
+                    for field in update.changes:
+                        assert getattr(merged.nodes[update.id], field) == getattr(
+                            destination.nodes[update.id], field
+                        )
+            if operation.op == "remove_edges":
+                for identity in operation.edge_ids or []:
+                    assert merged.edges[identity] == destination.edges[identity]
+            if operation.op == "set_standing":
+                assert (
+                    merged.nodes[operation.node_id].standing
+                    == destination.nodes[operation.node_id].standing
+                )
+    # Every approval order sampled by these seeds must preserve all remaining cards.
+    rng.shuffle(pending)
+    for proposal in pending:
+        state = history.state()
+        assert not proposal_is_stale(state, state.proposals[proposal.id])
+        approval = proposal_approval_operations(state, state.proposals[proposal.id])
+        for operation in approval:
+            if operation.op == "set_standing":
+                expected[("nodes", operation.node_id, "standing")] = operation.standing
+        _approve(history, proposal.id)
+    _assert_content(history.state(), expected)
+    _assert_content(history.materialize(write_outputs=False).state, expected)
+    assert _violations(history.state()) == {}
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_generated_incompatible_decision_choices_plan_a_group_without_partial_write(manifest, seed):
+    rng = random.Random(seed)
+    options = [f"Option {value}" for value in rng.sample(range(100), 3)]
+    generator = _Generator(rng)
+    decision = {**generator.new_node("decision", "choice"), "options": options}
+    history, branch = _fork_history(manifest, [decision])
+    chosen = rng.choice(options)
+    _append(
+        branch,
+        {
+            "op": "update_nodes",
+            "nodes": [
+                {
+                    "id": decision["id"],
+                    "changes": {"options": [option for option in options if option != chosen]},
+                }
+            ],
+        },
+    )
+    _append(
+        history,
+        {
+            "op": "update_nodes",
+            "nodes": [
+                {"id": decision["id"], "changes": {"selected_option": chosen, "status": "decided"}}
+            ],
+        },
+    )
+    before = history.state().model_dump_json(), history.head_ref(), history.slice(1)
+    source_before = branch.state().model_dump_json(), branch.head_ref()
+    plan = _plan(history, branch)
+    assert len(plan.conflicts) == 1
+    conflict = plan.conflicts[0]
+    assert isinstance(conflict, NodeGroupConflict)
+    assert conflict.node_ids == (decision["id"],)
+    assert {field.field_name for field in conflict.fields} >= {
+        "options",
+        "selected_option",
+        "status",
+    }
+    for side, expected in (("branch", branch.state()), ("destination", history.state())):
+        answers = MergeAnswers.model_validate(
+            {
+                **_answers(plan).model_dump(),
+                "answers": {conflict.conflict_id: {"kind": side}},
+            }
+        )
+        prepared = prepare_merge_candidate(plan, answers, history)
+        result = prepared.projection.graph.nodes[decision["id"]]
+        for field in ("options", "selected_option", "status"):
+            assert getattr(result, field) == getattr(expected.nodes[decision["id"]], field)
+        if side == "destination":
+            assert prepared.patch.ops == []
+    assert (history.state().model_dump_json(), history.head_ref(), history.slice(1)) == before
+    assert (branch.state().model_dump_json(), branch.head_ref()) == source_before
+    assert branch.validated_merge_receipts() == []
+
+
+@pytest.mark.parametrize("seed", range(2))
+def test_generated_remerge_cancels_reverted_pending_removal(manifest, seed):
+    generator = _Generator(random.Random(seed))
+    question = generator.new_node("research_question", "reverted")
+    history, branch = _fork_history(manifest, [question])
+    _append(branch, {"op": "remove_nodes", "node_ids": [question["id"]]})
+    plan = _plan(history, branch)
+    _commit(history, branch, plan, _answers(plan))
+    predecessor = next(iter(history.state().proposals.values()))
+    assert predecessor.status == "pending"
+    assert question["id"] in history.state().nodes
+    _append(branch, {"op": "create_nodes", "nodes": [question]})
+    plan = _plan(history, branch)
+    _commit(history, branch, plan, _answers(plan))
+    state = history.state()
+    assert state.proposals[predecessor.id].status == "withdrawn"
+    assert not [proposal for proposal in state.proposals.values() if proposal.status == "pending"]
+    assert state.nodes[question["id"]].question == question["question"]

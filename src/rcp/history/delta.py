@@ -3,13 +3,12 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from rcp.core.materialize import MaterializationResult
 from rcp.core.models import (
-    PROPOSAL_FILING_STAMPS,
     Ambiguity,
     AuthorizedHuman,
     Edge,
@@ -19,6 +18,7 @@ from rcp.core.models import (
     ProjectNode,
     Proposal,
     Standing,
+    graph_fields,
 )
 from rcp.core.operations import (
     CreateAmbiguitiesOperation,
@@ -945,18 +945,15 @@ def _unique_sentences(sentences: Iterable[str]) -> list[str]:
 
 
 # Main's transition recomputes guidance validity from its merged dependencies.
-_SEMANTIC_NODE_BOOKKEEPING = frozenset(
-    {"created_rev", "updated_rev", "current_summary_stale", "next_action_stale"}
+_SEMANTIC_NODE_BOOKKEEPING = frozenset().union(
+    *(graph_fields(model, role="engine") for model in get_args(get_args(ProjectNode)[0]))
 )
-_SEMANTIC_EDGE_BOOKKEEPING = frozenset({"created_rev"})
+_SEMANTIC_EDGE_BOOKKEEPING = graph_fields(Edge, role="engine")
 # A resolution's revision and operation are bookkeeping; its status, author, and
 # reasons are what the Proposal now says.
-_SEMANTIC_PROPOSAL_BOOKKEEPING = PROPOSAL_FILING_STAMPS | {
-    "resolved_rev",
-    "resolved_by_operation_id",
-}
-_SEMANTIC_AMBIGUITY_BOOKKEEPING = frozenset({"raised_rev"})
-_SEMANTIC_GLOSSARY_BOOKKEEPING = frozenset({"updated_rev"})
+_SEMANTIC_PROPOSAL_BOOKKEEPING = graph_fields(Proposal, role="engine")
+_SEMANTIC_AMBIGUITY_BOOKKEEPING = graph_fields(Ambiguity, role="engine")
+_SEMANTIC_GLOSSARY_BOOKKEEPING = graph_fields(GlossaryTerm, role="engine")
 
 
 class _StrictSemanticModel(BaseModel):
@@ -1075,35 +1072,30 @@ def semantic_delta(base: GraphState, branch: GraphState) -> SemanticDelta:
             branch.nodes,
             model=NodeSemanticDelta,
             id_field="node_id",
-            bookkeeping=_SEMANTIC_NODE_BOOKKEEPING,
         ),
         edges=_typed_collection_delta(
             base.edges,
             branch.edges,
             model=EdgeSemanticDelta,
             id_field="edge_id",
-            bookkeeping=_SEMANTIC_EDGE_BOOKKEEPING,
         ),
         proposals=_typed_collection_delta(
             base.proposals,
             branch.proposals,
             model=ProposalSemanticDelta,
             id_field="proposal_id",
-            bookkeeping=_SEMANTIC_PROPOSAL_BOOKKEEPING,
         ),
         ambiguities=_typed_collection_delta(
             base.ambiguities,
             branch.ambiguities,
             model=AmbiguitySemanticDelta,
             id_field="ambiguity_id",
-            bookkeeping=_SEMANTIC_AMBIGUITY_BOOKKEEPING,
         ),
         glossary=_typed_collection_delta(
             base.glossary,
             branch.glossary,
             model=GlossarySemanticDelta,
             id_field="term",
-            bookkeeping=_SEMANTIC_GLOSSARY_BOOKKEEPING,
         ),
         globals=globals_,
     )
@@ -1134,7 +1126,6 @@ def _typed_collection_delta(
     *,
     model: type[BaseModel],
     id_field: str,
-    bookkeeping: frozenset[str],
 ) -> list[Any]:
     result: list[Any] = []
     for identity in sorted(set(before) | set(after)):
@@ -1150,12 +1141,33 @@ def _typed_collection_delta(
             result.append(
                 model.model_validate({"change": "removed", id_field: identity, "before": old})
             )
-        elif old.model_dump(mode="json", exclude=bookkeeping) != new.model_dump(
-            mode="json", exclude=bookkeeping
-        ):
+        elif semantic_document(old) != semantic_document(new):
             result.append(
                 model.model_validate(
                     {"change": "updated", id_field: identity, "before": old, "after": new}
                 )
             )
     return result
+
+
+def semantic_document(value: BaseModel) -> dict[str, JsonValue]:
+    """Project declared content/identity, including nested field-role metadata.
+
+    Identity stays in whole values (list elements and references need it). Callers
+    comparing an entity's individual fields select its content-role fields.
+    Persisted records and their serializers remain untouched.
+    """
+    document = value.model_dump(mode="json", exclude=set(graph_fields(type(value), role="engine")))
+    for name in document:
+        document[name] = _semantic_nested(getattr(value, name), document[name])
+    return document
+
+
+def _semantic_nested(value: object, serialized: JsonValue) -> JsonValue:
+    if isinstance(value, BaseModel):
+        return semantic_document(value)
+    if isinstance(value, (list, tuple)) and isinstance(serialized, list):
+        return [_semantic_nested(item, raw) for item, raw in zip(value, serialized, strict=True)]
+    if isinstance(value, dict) and isinstance(serialized, dict):
+        return {key: _semantic_nested(value[key], raw) for key, raw in serialized.items()}
+    return serialized

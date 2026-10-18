@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
-from typing import Any, Literal
+from collections.abc import Iterable, Sequence
+from typing import Any, Literal, NamedTuple
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, field_serializer
 
 from rcp.core.authority import (
     CONTENT_CHANGE_INTENT,
@@ -27,9 +27,11 @@ from rcp.core.models import (
     Patch,
     Proposal,
     ResearchQuestion,
+    ValidationMessage,
 )
 from rcp.core.operations import (
     CreateNodesOperation,
+    CreateProposalsOperation,
     DecisionCause,
     EvidenceEdgeCause,
     GraphOperation,
@@ -44,9 +46,12 @@ from rcp.core.operations import (
     ProposalOperation,
     ProposalProtectedRelationOperation,
     ProposalRemovalOperation,
+    ProposalResolution,
     ProposalStandingChangeOperation,
     ProposalStatusChangeOperation,
     ProposalSupersedeOperation,
+    ResolveProposalsOperation,
+    SetStandingOperation,
     UpdateNodesOperation,
     graph_operations_from_proposal,
 )
@@ -54,6 +59,16 @@ from rcp.core.project_types import project_type_of
 from rcp.core.validation.constants import IDENTIFIER_RE
 from rcp.core.validation.nodes import validate_source_refs
 from rcp.core.validation.report import ValidationReport
+
+PROPOSAL_REPLAY_RULE_ID = "proposal-replay"
+
+
+class ProposalEffectRejected(ValueError):
+    """A proposed approval has structured graph-legality failures."""
+
+    def __init__(self, diagnostics: Iterable[ValidationMessage]) -> None:
+        self.diagnostics = tuple(diagnostics)
+        super().__init__("; ".join(item.message for item in self.diagnostics))
 
 
 def _protected_names(state: GraphState) -> str:
@@ -130,6 +145,304 @@ def proposal_updates_node(proposal: Proposal, node_id: str) -> bool:
     )
 
 
+class ProposalResource(BaseModel, frozen=True):
+    """An identity used to intersect approval writes with another review's reads."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: Literal["node", "edge", "config", "incident_edges"]
+    id: str
+
+
+class ProposalIncidentEdges(BaseModel, frozen=True):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    node_ids: frozenset[str]
+    edge_ids: frozenset[str]
+
+    @field_serializer("node_ids", "edge_ids", when_used="json")
+    def serialize_ids(self, values: frozenset[str]) -> list[str]:
+        return sorted(values)
+
+
+class ProposalDependenciesAndEffects(BaseModel, frozen=True):
+    """Read dependencies and actual approval writes; shared reads do not couple reviews.
+
+    Required absence contributes an ordinary edge dependency identity as well as
+    its explicit absence condition. Incident-set identities are per node, so a
+    newly created edge intersects a removal's dependency even without a prior ID.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    dependencies: frozenset[ProposalResource]
+    effects: frozenset[ProposalResource]
+    required_absent_edge_ids: frozenset[str]
+    incident_snapshots: tuple[ProposalIncidentEdges, ...]
+
+    @field_serializer("dependencies", "effects", when_used="json")
+    def serialize_resources(self, values: frozenset[ProposalResource]) -> list[dict[str, str]]:
+        return [
+            value.model_dump() for value in sorted(values, key=lambda item: (item.kind, item.id))
+        ]
+
+    @field_serializer("required_absent_edge_ids", when_used="json")
+    def serialize_absence(self, values: frozenset[str]) -> list[str]:
+        return sorted(values)
+
+
+def _proposal_approval_standing_targets(proposal: Proposal) -> list[str]:
+    """Keep historical acceptance semantics; rule 3 accepts only written subjects."""
+
+    explicit = {
+        operation.node_id
+        for operation in proposal.ops
+        if isinstance(operation, ProposalStandingChangeOperation)
+    }
+    if proposal.dependency_rule < 3:
+        if explicit:
+            return []
+        if len(proposal.ops) != 1 or proposal.ops[0].intent.startswith("legacy_"):
+            return list(proposal.related_node_ids)
+        operation = proposal.ops[0]
+        if isinstance(operation, (ProposalRemovalOperation, ProposalProtectedRelationOperation)):
+            return []
+        if isinstance(operation, (ProposalContentChangeOperation, ProposalStatusChangeOperation)):
+            return [operation.nodes[0].id]
+        if isinstance(operation, ProposalSupersedeOperation):
+            return [operation.nodes[0].id]
+        if isinstance(operation, ProposalMergeOperation):
+            return [operation.merges[0].duplicate]
+        return list(proposal.related_node_ids)
+    targets: list[str] = []
+    for operation in proposal.ops:
+        if operation.intent.startswith("legacy_"):
+            targets.extend(proposal.related_node_ids)
+        elif isinstance(operation, (ProposalContentChangeOperation, ProposalStatusChangeOperation)):
+            targets.extend(update.id for update in operation.nodes)
+        elif isinstance(operation, ProposalSupersedeOperation):
+            targets.extend(item.id for item in operation.nodes)
+        elif isinstance(operation, ProposalMergeOperation):
+            targets.extend(item.duplicate for item in operation.merges)
+    removed = _proposal_removal_targets(proposal)
+    return list(dict.fromkeys(target for target in targets if target not in explicit | removed))
+
+
+def proposal_approval_operations(
+    state: GraphState, proposal: Proposal, *, reason: str | None = None
+) -> list[GraphOperation]:
+    """Construct approval's exact ordered effects, including resolution and standing.
+
+    The caller checks staleness and human authority. This pure construction is
+    shared by Sync and dependency/effect analysis; it does not approve anything.
+    Legacy Decision normalization and dependency-rule standing behavior survive.
+    """
+
+    return [
+        *normalized_decision_proposal_ops(state, proposal),
+        ResolveProposalsOperation(
+            op="resolve_proposals",
+            resolutions=[ProposalResolution(id=proposal.id, status="approved", reason=reason)],
+        ),
+        *[
+            SetStandingOperation(op="set_standing", node_id=node_id, standing="accepted")
+            for node_id in _proposal_approval_standing_targets(proposal)
+        ],
+    ]
+
+
+class _ProposalDependencyInputs(NamedTuple):
+    node_ids: tuple[str, ...]
+    edge_ids: frozenset[str]
+    config_keys: tuple[str, ...]
+    required_absent_edge_ids: frozenset[str]
+    incident_snapshots: tuple[ProposalIncidentEdges, ...]
+    decision_ids: frozenset[str]
+    cause_evidence_sources: dict[str, str]
+
+
+def _proposal_dependency_contract(
+    state: GraphState, proposal: Proposal, *, derive_unfiled: bool = False
+) -> _ProposalDependencyInputs:
+    """One dependency derivation for staleness and approval interference analysis."""
+
+    # Drafts have no filing snapshot yet. Filed records retain exactly the
+    # dependency lists their writer recorded, including rule-1/2 behavior.
+    if derive_unfiled and not proposal.raised_rev:
+        from rcp.core.validation.registry import proposal_dependencies
+
+        nodes, edges, config = proposal_dependencies(state, proposal.ops)
+    else:
+        nodes, edges, config = (
+            proposal.related_node_ids,
+            proposal.related_edge_ids,
+            proposal.related_config_keys,
+        )
+    referenced_edges, decision_ids = _proposal_reference_dependencies(proposal)
+    edge_ids = set(edges) | referenced_edges
+    absent = _proposal_created_edge_ids(proposal)
+    if proposal.dependency_rule >= 3:
+        absent -= {
+            edge_id
+            for operation in proposal.ops
+            if isinstance(operation, ProposalProtectedRelationOperation)
+            and operation.op == "remove_edges"
+            for edge_id in operation.edge_ids or []
+        }
+    targets = _proposal_removal_targets(proposal)
+    snapshots: tuple[ProposalIncidentEdges, ...] = ()
+    if targets:
+        expected = set(edges)
+        if proposal.dependency_rule >= 3:
+            # Missing/recreated snapshotted IDs are rejected by the edge check
+            # below, so current endpoint filtering cannot hide an incident move.
+            expected = {
+                edge_id
+                for edge_id in expected
+                if edge_id in state.edges
+                and (
+                    state.edges[edge_id].source in targets or state.edges[edge_id].target in targets
+                )
+            }
+        snapshots = (
+            ProposalIncidentEdges(node_ids=frozenset(targets), edge_ids=frozenset(expected)),
+        )
+    return _ProposalDependencyInputs(
+        tuple(nodes),
+        frozenset(edge_ids),
+        tuple(config),
+        frozenset(absent),
+        snapshots,
+        frozenset(decision_ids),
+        proposal_cause_evidence_sources(state, proposal),
+    )
+
+
+def proposal_dependencies_and_effects(
+    state: GraphState, proposal: Proposal
+) -> ProposalDependenciesAndEffects:
+    """Describe a valid Proposal's reads and complete dry approval writes.
+
+    Pass the pre-approval state and either a filed Proposal or an unfiled draft.
+    The draft's dependency_rule must match the filing rule selected for its form.
+    Approval operations pass graph validation before the existing transition
+    engine derives implicit standing, lifecycle edges, incident-edge deletion
+    and guidance invalidation. Invalid effects raise ProposalEffectRejected
+    with structured diagnostics. This does not perform live authority admission.
+    Neither input nor canonical history is changed. An effect/dependency
+    intersection in either direction couples two reviews; shared reads do not.
+    """
+
+    try:
+        return _proposal_effect_footprint(state, proposal, validate=True)
+    except ProposalEffectRejected:
+        raise
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+        raise ProposalEffectRejected(
+            (
+                ValidationMessage(
+                    level="reject",
+                    code="malformed-operation",
+                    message=str(exc),
+                    patch_revision=state.revision + 1,
+                ),
+            )
+        ) from exc
+
+
+def _proposal_effect_footprint(
+    state: GraphState, proposal: Proposal, *, validate: bool
+) -> ProposalDependenciesAndEffects:
+    """Project effects; member projections are speculative until the whole group validates.
+
+    Edge replacement's create member is not legal alone. The group boundary may
+    inspect it without validation to find its dependency intersection, then must
+    validate the complete ordered group before admission.
+    """
+    from rcp.core.transitions import GraphTransitionManager
+    from rcp.core.validation.approval import is_decision_choice
+    from rcp.core.validation.patch import validate_patch
+    from rcp.core.validation.settings import ValidationContext
+
+    contract = _proposal_dependency_contract(state, proposal, derive_unfiled=True)
+    nodes = (
+        set(contract.node_ids)
+        | contract.decision_ids
+        | set(contract.cause_evidence_sources.values())
+    )
+    dependencies = {
+        *(ProposalResource(kind="node", id=value) for value in nodes),
+        *(
+            ProposalResource(kind="edge", id=value)
+            for value in contract.edge_ids | contract.required_absent_edge_ids
+        ),
+        *(ProposalResource(kind="config", id=value) for value in contract.config_keys),
+        *(
+            ProposalResource(kind="incident_edges", id=value)
+            for snapshot in contract.incident_snapshots
+            for value in snapshot.node_ids
+        ),
+    }
+    if not proposal.raised_rev:
+        proposal = proposal.model_copy(
+            update={
+                "base_rev": state.revision,
+                "raised_rev": state.revision,
+                "related_node_ids": list(contract.node_ids),
+                "related_edge_ids": sorted(contract.edge_ids),
+                "related_config_keys": list(contract.config_keys),
+            }
+        )
+    before = state.model_copy(update={"proposals": {**state.proposals, proposal.id: proposal}})
+    approval_ops = proposal_approval_operations(state, proposal)
+    chooses_decision = any(
+        isinstance(state.nodes.get(update.id), Decision) and is_decision_choice(update.changes)
+        for operation in approval_ops
+        if isinstance(operation, UpdateNodesOperation)
+        for update in operation.nodes
+    )
+    patch = Patch(
+        revision=state.revision + 1,
+        kind="approval",
+        author="human",
+        producer="human",
+        summary=f"Inspect approval effects of {proposal.id}.",
+        ops=approval_ops,
+        human_action="decision_choice" if chooses_decision else None,
+    )
+    if validate:
+        report = validate_patch(
+            before,
+            patch,
+            ValidationContext(project_truth_scope=state.project_truth_scope),
+        )
+        if report.rejected:
+            raise ProposalEffectRejected(item for item in report.messages if item.level == "reject")
+    after = GraphTransitionManager().prepare_validated(before, [patch]).projection.graph
+    effects: set[ProposalResource] = set()
+    for node_id in before.nodes.keys() | after.nodes.keys():
+        if before.nodes.get(node_id) != after.nodes.get(node_id):
+            effects.add(ProposalResource(kind="node", id=node_id))
+    for edge_id in before.edges.keys() | after.edges.keys():
+        if before.edges.get(edge_id) != after.edges.get(edge_id):
+            effects.add(ProposalResource(kind="edge", id=edge_id))
+            for graph in (before, after):
+                if edge := graph.edges.get(edge_id):
+                    effects.update(
+                        ProposalResource(kind="incident_edges", id=node_id)
+                        for node_id in (edge.source, edge.target)
+                    )
+    for key in before.config_revisions.keys() | after.config_revisions.keys():
+        if before.config_revisions.get(key) != after.config_revisions.get(key):
+            effects.add(ProposalResource(kind="config", id=key))
+    return ProposalDependenciesAndEffects(
+        dependencies=frozenset(dependencies),
+        effects=frozenset(effects),
+        required_absent_edge_ids=contract.required_absent_edge_ids,
+        incident_snapshots=contract.incident_snapshots,
+    )
+
+
 def proposal_is_stale(state: GraphState, proposal: Proposal) -> bool:
     """Whether the state a pending Proposal depends on has moved or disappeared."""
 
@@ -140,45 +453,40 @@ def moved_proposal_dependencies(state: GraphState, proposal: Proposal) -> list[s
     """The node, edge, and config ids whose move makes a pending Proposal stale."""
 
     dependency_revision = proposal.raised_rev or proposal.base_rev
+    contract = _proposal_dependency_contract(state, proposal)
     moved = [
         node_id
-        for node_id in proposal.related_node_ids
+        for node_id in contract.node_ids
         if node_id not in state.nodes or state.nodes[node_id].updated_rev > dependency_revision
     ]
     moved.extend(
         key
-        for key in proposal.related_config_keys
+        for key in contract.config_keys
         if state.config_revisions.get(key, 0) > dependency_revision
     )
-    referenced_edge_ids, decision_ids = _proposal_reference_dependencies(proposal)
     moved.extend(
         edge_id
-        for edge_id in sorted(set(proposal.related_edge_ids) | referenced_edge_ids)
+        for edge_id in sorted(contract.edge_ids)
         if edge_id not in state.edges or state.edges[edge_id].created_rev > dependency_revision
     )
     moved.extend(
-        edge_id
-        for edge_id in sorted(_proposal_created_edge_ids(proposal))
-        if edge_id in state.edges
+        edge_id for edge_id in sorted(contract.required_absent_edge_ids) if edge_id in state.edges
     )
-    removal_targets = _proposal_removal_targets(proposal)
-    if removal_targets:
-        current_incident_edge_ids = {
+    for snapshot in contract.incident_snapshots:
+        current = {
             edge.id
             for edge in state.edges.values()
-            if edge.source in removal_targets or edge.target in removal_targets
+            if edge.source in snapshot.node_ids or edge.target in snapshot.node_ids
         }
-        moved.extend(sorted(current_incident_edge_ids ^ set(proposal.related_edge_ids)))
-    # A cause edge that moved is already listed above; a current one still
-    # depends on the exact Evidence it starts from.
-    for edge_id, source_id in sorted(proposal_cause_evidence_sources(state, proposal).items()):
+        moved.extend(sorted(current ^ snapshot.edge_ids))
+    for edge_id, source_id in sorted(contract.cause_evidence_sources.items()):
         if state.edges[edge_id].created_rev <= dependency_revision:
             source = state.nodes.get(source_id)
             if source is None or source.updated_rev > dependency_revision:
                 moved.append(source_id)
     moved.extend(
         decision_id
-        for decision_id in sorted(decision_ids)
+        for decision_id in sorted(contract.decision_ids)
         if not isinstance(state.nodes.get(decision_id), Decision)
         or state.nodes[decision_id].updated_rev > dependency_revision
     )
@@ -434,8 +742,10 @@ def _validate_agent_proposal_boundary(
     def refuse(message: str) -> None:
         report.reject("invalid-agent-proposal-shape", message, revision)
 
-    if len(proposal.ops) != 1 and not _is_same_node_merge_bundle(
-        state, context_patch, proposal, writer
+    if len(proposal.ops) != 1 and not (
+        _is_connected_merge_bundle(state, context_patch, proposal, writer)
+        if proposal.dependency_rule >= 3
+        else _is_same_node_merge_bundle(state, context_patch, proposal, writer)
     ):
         refuse(f"Proposal {proposal.id} must declare exactly one protected-change intent.")
         return
@@ -444,11 +754,10 @@ def _validate_agent_proposal_boundary(
         REMOVAL_INTENT: _validate_removal_intent,
         SUPERSEDE_INTENT: _validate_supersede_intent,
         MERGE_INTENT: _validate_merge_intent,
-        PROTECTED_RELATION_CHANGE_INTENT: _validate_protected_relation_change_intent,
         STATUS_CHANGE_INTENT: _validate_status_change_intent,
         STANDING_CHANGE_INTENT: _validate_standing_change_intent,
     }
-    for operation in proposal.ops:
+    for operation_index, operation in enumerate(proposal.ops):
         intent = operation.intent
         if intent not in PROPOSAL_INTENTS:
             refuse(
@@ -456,9 +765,104 @@ def _validate_agent_proposal_boundary(
                 f"{', '.join(sorted(PROPOSAL_INTENTS))}."
             )
             continue
-        error = validators[intent](state, context_patch, operation, writer)
+        if intent == PROTECTED_RELATION_CHANGE_INTENT:
+            error = _validate_protected_relation_change_intent(
+                state,
+                context_patch,
+                operation,
+                writer,
+                proposal=proposal,
+                operation_index=operation_index,
+            )
+        else:
+            error = validators[intent](state, context_patch, operation, writer)
         if error is not None:
             refuse(f"Proposal {proposal.id} declares {intent!r}, but {error}")
+
+
+def _is_connected_merge_bundle(
+    state: GraphState, patch: Patch | None, proposal: Proposal, writer: Writer
+) -> bool:
+    """Only approvals that can invalidate one another belong in an atomic group.
+
+    In particular a protected edge's remove/recreate pair shares its edge
+    dependency. Each member still passes its intent validator and the entire
+    ordered group passes the ordinary approval operation validator below.
+    """
+
+    if not _is_branch_merge(patch, writer) or proposal.dependency_rule < 3:
+        return False
+    try:
+        return len(connected_proposal_operation_groups(state, proposal)) == 1
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        # The ordinary intent and operation validators report the invalid
+        # effect. It cannot gain the exceptional multi-intent admission form.
+        return False
+
+
+def connected_proposal_groups(
+    state: GraphState,
+    proposals: Sequence[Proposal],
+    *,
+    links: Sequence[frozenset[str]] | None = None,
+) -> tuple[tuple[int, ...], ...]:
+    """Connect approval groups by their complete effects and dependencies.
+
+    Recompute the combined footprint after each join: approval standing and
+    generated effects depend on the whole ordered group. Shared reads alone do
+    not join groups. Optional links keep replacements of one predecessor atomic.
+    Projections are speculative because an edge replacement's individual create
+    is not legal alone; callers validate each final group before filing.
+    """
+    from rcp.core.materialize import proposal_filing_dependency_rule
+
+    components = [[index] for index in range(len(proposals))]
+    while True:
+        footprints = []
+        for component in components:
+            operations = [op for index in component for op in proposals[index].ops]
+            draft = proposals[component[0]].model_copy(
+                update={
+                    "ops": operations,
+                    "raised_rev": 0,
+                    "dependency_rule": proposal_filing_dependency_rule(
+                        len(operations), branch_merge=True
+                    ),
+                }
+            )
+            footprints.append(_proposal_effect_footprint(state, draft, validate=False))
+        for left in range(len(components)):
+            joined = next(
+                (
+                    right
+                    for right in range(left + 1, len(components))
+                    if footprints[left].effects & footprints[right].dependencies
+                    or footprints[right].effects & footprints[left].dependencies
+                    or (
+                        links is not None
+                        and any(
+                            links[i] & links[j] for i in components[left] for j in components[right]
+                        )
+                    )
+                ),
+                None,
+            )
+            if joined is not None:
+                components[left] = sorted(components[left] + components.pop(joined))
+                break
+        else:
+            return tuple(tuple(component) for component in components)
+
+
+def connected_proposal_operation_groups(
+    state: GraphState, proposal: Proposal
+) -> tuple[tuple[ProposalOperation, ...], ...]:
+    """Split an ordered approval using the same rule as planning and admission."""
+    groups = connected_proposal_groups(
+        state,
+        [proposal.model_copy(update={"ops": [operation]}) for operation in proposal.ops],
+    )
+    return tuple(tuple(proposal.ops[index] for index in group) for group in groups)
 
 
 def _is_same_node_merge_bundle(
@@ -537,8 +941,8 @@ def _validate_status_change_intent(
         return "a status change must actually change the Hypothesis status."
     cause = update.cause
     if isinstance(cause, HumanEditCause) and _is_branch_merge(context_patch, writer):
-        # The merge owner separately proves this exact value against canonical
-        # human source operations. This remains a pending, unapplied Proposal.
+        # human_edit carries a proven source judgment; it stays pending for
+        # human review on the destination.
         return None
     if not isinstance(cause, EvidenceEdgeCause) or not cause.ref_id:
         return "a status change requires an evidence_edge cause naming an epistemic edge."
@@ -656,6 +1060,9 @@ def _validate_protected_relation_change_intent(
     context_patch: Patch | None,
     operation: ProposalOperation,
     writer: Writer,
+    *,
+    proposal: Proposal,
+    operation_index: int,
 ) -> str | None:
     if not isinstance(operation, ProposalProtectedRelationOperation):
         return "a protected relation change requires one create_edges or remove_edges operation."
@@ -669,7 +1076,26 @@ def _validate_protected_relation_change_intent(
         if edge.relation not in PROTECTED_EPISTEMIC_RELATIONS:
             return "a protected relation change must use a protected relation."
         if edge.relation in {"supersedes", "duplicate_of"}:
-            return "supersedes and duplicate_of must use their dedicated supersede or merge intent."
+            previous = state.edges.get(edge.id) if edge.id is not None else None
+            preceding = proposal.ops[:operation_index]
+            replaces_existing = (
+                _is_branch_merge(context_patch, writer)
+                and proposal.dependency_rule >= 3
+                and previous is not None
+                and (previous.source, previous.target, previous.relation)
+                == (edge.source, edge.target, edge.relation)
+                and any(
+                    isinstance(item, ProposalProtectedRelationOperation)
+                    and item.op == "remove_edges"
+                    and edge.id in (item.edge_ids or [])
+                    for item in preceding
+                )
+            )
+            # Editing an existing relation's prose does not retire its node
+            # again. New or retargeted retirement relations still require the
+            # semantic operation that owns their lifecycle effects.
+            if not replaces_existing:
+                return "supersedes and duplicate_of must use their dedicated supersede or merge intent."
         if context_patch is not None and any(
             node_id in created_node_ids(context_patch) for node_id in endpoints
         ):
@@ -814,11 +1240,24 @@ def _validate_proposal_ops(
         reference_patch=context_patch,
     )
     _validate_operations(replay_context)
-    errors = [message.message for message in replay_report.messages if message.level == "reject"]
-    if errors:
-        report.reject(
-            "invalid-proposal-ops",
-            f"Proposal {proposal.id} contains invalid replay operations: {'; '.join(errors)}",
-            revision,
-        )
-        return
+    for diagnostic in replay_report.messages:
+        if diagnostic.level == "reject":
+            report.messages.append(
+                diagnostic.model_copy(
+                    update={
+                        "message": f"Proposal {proposal.id}: {diagnostic.message}",
+                        "rule_id": PROPOSAL_REPLAY_RULE_ID,
+                        "operation_index": next(
+                            (
+                                index
+                                for index, operation in enumerate(context_patch.ops)
+                                if isinstance(operation, CreateProposalsOperation)
+                                and any(item.id == proposal.id for item in operation.proposals)
+                            ),
+                            None,
+                        )
+                        if context_patch is not None
+                        else None,
+                    }
+                )
+            )

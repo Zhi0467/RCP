@@ -407,6 +407,7 @@ def _effects(
     on_watcher_ready=None,
     apply_patch=None,
     on_graph_applied=None,
+    branch_head=None,
 ):
     return auto_research_command_effects(
         store=store,
@@ -418,6 +419,7 @@ def _effects(
         apply_patch=apply_patch,
         on_graph_applied=on_graph_applied,
         on_watcher_ready=on_watcher_ready,
+        branch_head=branch_head,
     )
 
 
@@ -1121,11 +1123,23 @@ def test_same_key_spawn_dispatches_a_worker_committed_before_process_launch(
     assert executions == ["fresh"]
 
 
+@pytest.mark.parametrize("fork", [False, True])
 def test_transient_spawn_failure_keeps_admission_for_same_key_recovery(
     tmp_path,
     monkeypatch,
+    fork,
 ) -> None:
     store, auto_research, root = _setup_auto_research(tmp_path)
+    branch = None
+    if fork:
+        branch = store.create_graph_branch(
+            project_id=auto_research.project_id,
+            branch_id=str(uuid.uuid4()),
+            owner_episode_id=auto_research.episode_id,
+            parent_head=GraphHeadRef(target=auto_research.graph_target, revision=0),
+            created_by=root.operation_id,
+            name="retry-target",
+        )
     executions: list[str] = []
 
     async def stream(_project_id, _kind, _request, execution):
@@ -1144,6 +1158,7 @@ def test_transient_spawn_failure_keeps_admission_for_same_key_recovery(
         arguments={
             "seat_node_id": "blk/check",
             "instruction_file": "worker.md",
+            **({"target": branch.name} if branch else {}),
         },
     )
     dispatcher = AutoResearchCommandDispatcher(
@@ -1174,6 +1189,8 @@ def test_transient_spawn_failure_keeps_admission_for_same_key_recovery(
     assert store.episode_budget_meter(auto_research.episode_id) == before
 
     monkeypatch.setattr("rcp.runs.auto_research_effects.start_auto_research_child_work", real_start)
+    if branch:
+        store.rename_branch(auto_research.project_id, branch.branch_id, "renamed-target")
     replay = dispatcher.dispatch(
         root.operation_id,
         request.model_copy(update={"request_id": "8" * 32}),
@@ -1181,7 +1198,12 @@ def test_transient_spawn_failure_keeps_admission_for_same_key_recovery(
 
     assert replay.status == "ok"
     assert replay.result["worker_id"] == worker_id
-    wait_for_task(store, worker_id, expect="succeeded")
+    worker = wait_for_task(store, worker_id, expect="succeeded")
+    assert worker.graph_target == (
+        GraphTargetRef(kind="branch", branch_id=branch.branch_id)
+        if branch
+        else auto_research.graph_target
+    )
     admission = store.auto_research_child_admission(worker_id)
     assert admission is not None and admission.state == "reflected"
     assert store.episode_budget_meter(auto_research.episode_id).invocations_used == (
@@ -2347,3 +2369,31 @@ def test_every_orchestrator_reply_reports_pending_inbox_until_a_harvest(tmp_path
     # The inbox reply is the inbox itself and stays within its own size bound.
     assert "inbox_pending" not in harvested.result
     assert "inbox_pending" not in status("4").result
+
+
+def test_status_collects_owned_fork_heads_before_reporting_unavailable(tmp_path):
+    from rcp.runs.auto_research import AutoResearchCommandUnavailable
+
+    store, episode, root = _setup_auto_research(tmp_path)
+    branches = [
+        store.create_graph_branch(
+            project_id=episode.project_id,
+            branch_id=str(uuid.uuid4()),
+            owner_episode_id=episode.episode_id,
+            parent_head=GraphHeadRef(revision=0),
+            created_by="orchestrator:test",
+        )
+        for _ in range(2)
+    ]
+    observed = []
+
+    def head(target):
+        observed.append(target.branch_id)
+        if len(observed) == 1:
+            raise OSError("unreachable")
+        return GraphHeadRef(target=target, revision=0)
+
+    effects = _effects(store, _RecordingBackground(store), branch_head=head)
+    with pytest.raises(AutoResearchCommandUnavailable):
+        effects.status(_context(store, episode, root), StatusArguments())
+    assert set(observed) == {branch.branch_id for branch in branches}

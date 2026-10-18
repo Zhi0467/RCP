@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
@@ -24,21 +25,31 @@ from rcp.core.models import (
     EpisodeMergeAttempt,
     EpisodeWorktreeBinding,
 )
-from rcp.core.transition_models import GraphHeadRef
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.history.branches import BranchHistoryManager
+from rcp.history.delta import semantic_delta, semantic_document
 from rcp.runs.branch_merge import (
     MAX_BRANCH_MERGE_REBASE_ROUNDS,
-    branch_merge_can_resolve_without_patch,
     branch_merge_id,
-    branch_merge_path_dispositions,
     branch_merge_provenance,
     branch_merge_receipt_from_committed_patch,
-    build_deterministic_merge_ops,
     commit_branch_merge_with_history,
-    parse_branch_merge_candidate,
-    prepare_branch_merge_with_history,
+    merge_planning_context,
 )
-from rcp.runs.branch_merge_context import load_branch_merge_context
+from rcp.runs.branch_merge_context import (
+    load_branch_merge_context,
+    merge_history,
+    preview_merge_planning_context,
+)
+from rcp.runs.branch_merge_request import MergeBinding
 from rcp.runs.episodes.isolation import isolation_locks
+from rcp.runs.merge_contract import (
+    MergeAnswers,
+    MergeChange,
+    MergePlan,
+)
+from rcp.runs.merge_patch import build_merge_patch, prepare_merge_candidate
+from rcp.runs.merge_plan import plan_merge
 from rcp.service import ProjectService
 from rcp.storage import AppStore, EpisodeRecord
 
@@ -74,7 +85,7 @@ class MergeCodePreview(BaseModel):
 
 
 class MergeDiffPath(BaseModel):
-    """One changed field on the branch, classified by the merge builder."""
+    """One changed field on the branch, projected from the merge plan."""
 
     entity: Literal["node", "edge", "proposal", "ambiguity", "glossary", "global"]
     id: str
@@ -86,12 +97,12 @@ class MergeDiffPath(BaseModel):
     conflict: bool
     needs_agent: bool
     needs_proposal: bool
-    residue_reason: str | None = None
 
 
 class MergeGraphPreview(BaseModel):
-    ops: int = 0
-    residue: list[dict[str, str]] = Field(default_factory=list)
+    direct: int = 0
+    conflicts: int = 0
+    reviews: int = 0
     paths: list[MergeDiffPath] = Field(default_factory=list)
 
 
@@ -100,6 +111,165 @@ class MergePreview(BaseModel):
     graph: MergeGraphPreview = Field(default_factory=MergeGraphPreview)
     code: MergeCodePreview | None = None
     needs_agent: bool = False
+
+
+def graph_merge_preview(plan: MergePlan) -> MergeGraphPreview:
+    """Project plan dispositions onto the source's complete changed-field list."""
+    paths: dict[tuple[str, str, str], MergeDiffPath] = {}
+    entities = {
+        "nodes": "node",
+        "edges": "edge",
+        "proposals": "proposal",
+        "ambiguities": "ambiguity",
+        "glossary": "glossary",
+    }
+    # Keep delivered source work visible; routing comes only from the plan below.
+    for collection, entity in entities.items():
+        base = getattr(plan.base_graph, collection)
+        source = getattr(plan.source_graph, collection)
+        destination = getattr(plan.destination_graph, collection)
+        for identity in sorted(base.keys() | source.keys()):
+            before = semantic_document(base[identity]) if identity in base else None
+            after = semantic_document(source[identity]) if identity in source else None
+            current = semantic_document(destination[identity]) if identity in destination else None
+            if before == after:
+                continue
+            fields = (
+                ["$"] if before is None or after is None else sorted(before.keys() | after.keys())
+            )
+            for field in fields:
+                old = before if field == "$" else (before or {}).get(field)
+                new = after if field == "$" else (after or {}).get(field)
+                if old == new:
+                    continue
+                paths[collection, identity, field] = MergeDiffPath.model_validate(
+                    dict(
+                        entity=entity,
+                        id=identity,
+                        field_path=field,
+                        base=old,
+                        branch=new,
+                        main=current if field == "$" or current is None else current.get(field),
+                        delivered=True,
+                        conflict=False,
+                        needs_agent=False,
+                        needs_proposal=False,
+                    )
+                )
+
+    for change in semantic_delta(plan.base_graph, plan.source_graph).globals:
+        current = getattr(plan.destination_graph, change.field)
+        paths[change.field, change.field, change.field] = MergeDiffPath(
+            entity="global",
+            id=change.field,
+            field_path=change.field,
+            base=change.before,
+            branch=change.after,
+            main=current.model_dump(mode="json") if isinstance(current, BaseModel) else current,
+            delivered=True,
+            conflict=False,
+            needs_agent=False,
+            needs_proposal=False,
+        )
+
+    def include(change, *, conflict=False, review=False):
+        collection = change.collection
+        identity = change.entity_id or collection
+        field = change.field_name or ("$" if collection in entities else collection)
+        key = collection, identity, field
+        path = paths.get(key)
+        if path is None:
+            path = MergeDiffPath.model_validate(
+                dict(
+                    entity=entities.get(collection, "global"),
+                    id=identity,
+                    field_path=field,
+                    base=change.base.value if change.base.present else None,
+                    branch=change.branch.value if change.branch.present else None,
+                    main=change.destination.value if change.destination.present else None,
+                    delivered=False,
+                    conflict=False,
+                    needs_agent=False,
+                    needs_proposal=False,
+                )
+            )
+        paths[key] = path
+        # A whole-entity presence row describes all its fields; a presence
+        # conflict in turn owns every changed field on the entity.
+        for owned_key in list(paths):
+            if owned_key[:2] != key[:2] or not (
+                owned_key == key or owned_key[2] == "$" or field == "$"
+            ):
+                continue
+            owned = paths[owned_key]
+            paths[owned_key] = owned.model_copy(
+                update=dict(
+                    delivered=False,
+                    conflict=owned.conflict or conflict,
+                    needs_agent=owned.needs_agent or conflict or review,
+                    needs_proposal=owned.needs_proposal or review,
+                )
+            )
+
+    for change in plan.direct_changes:
+        include(change)
+    for group in plan.review_groups:
+        for change in group.changes:
+            include(change, review=True)
+    for conflict in plan.conflicts:
+        if conflict.kind == "node_group":
+            for field in conflict.fields:
+                include(field, conflict=True)
+        elif conflict.kind == "field":
+            include(conflict, conflict=True)
+        else:
+            # Presence conflicts own the entire entity, including incident edges.
+            include(
+                MergeChange(
+                    change_id=conflict.conflict_id,
+                    collection="nodes" if conflict.kind == "incident_edge" else conflict.collection,
+                    entity_id=conflict.node_id
+                    if conflict.kind == "incident_edge"
+                    else conflict.entity_id,
+                    field_name=None,
+                    base=conflict.base,
+                    branch=conflict.branch,
+                    destination=conflict.destination,
+                ),
+                conflict=True,
+            )
+            if conflict.kind == "incident_edge":
+                for change in conflict.incident_edges:
+                    include(change, conflict=True)
+    # Node removal owns implicit incident-edge removal; the plan deliberately
+    # emits no second operation which could escape the node's review.
+    for key, path in list(paths.items()):
+        if path.entity != "edge" or path.branch is not None:
+            continue
+        edge = plan.base_graph.edges.get(path.id)
+        if edge is None:
+            continue
+        owners = [
+            paths["nodes", identity, "$"]
+            for identity in (edge.source, edge.target)
+            if identity not in plan.source_graph.nodes and ("nodes", identity, "$") in paths
+        ]
+        if any(not owner.delivered for owner in owners):
+            paths[key] = path.model_copy(
+                update=dict(
+                    delivered=False,
+                    conflict=path.conflict or any(owner.conflict for owner in owners),
+                    needs_agent=path.needs_agent or any(owner.needs_agent for owner in owners),
+                    needs_proposal=path.needs_proposal
+                    or any(owner.needs_proposal for owner in owners),
+                )
+            )
+    return MergeGraphPreview(
+        direct=len(plan.direct_changes),
+        conflicts=len(plan.conflicts),
+        reviews=len(plan.review_groups),
+        paths=[paths[key] for key in sorted(paths)],
+    )
 
 
 @dataclass(frozen=True)
@@ -198,7 +368,13 @@ def episode_code_merge(
 
 def merge_owner(store: AppStore, member: EpisodeRecord) -> EpisodeRecord:
     owner_id = (
-        member.isolation_owner_episode_id or member.graph_target.branch_id or member.episode_id
+        member.isolation_owner_episode_id
+        or (
+            store.branch_owner(member.project_id, member.graph_target.branch_id or "")
+            if member.graph_target.kind == "branch"
+            else None
+        )
+        or member.episode_id
     )
     owner = store.episode(owner_id)
     if owner is None or owner.project_id != member.project_id:
@@ -221,6 +397,45 @@ def _binding(store: AppStore, owner: EpisodeRecord) -> EpisodeIsolation:
     return binding
 
 
+def branch_merge_preview(
+    service: ProjectService,
+    store: AppStore,
+    branch_id: str,
+    *,
+    authorized_by: AuthorizedHuman,
+) -> MergePreview:
+    """Preview a member's fork delivery into its exact parent graph."""
+    source = GraphTargetRef(kind="branch", branch_id=branch_id)
+    branch = merge_history(service, source)
+    assert isinstance(branch, BranchHistoryManager)
+    metadata = branch.branch_metadata()
+    context = load_branch_merge_context(
+        service,
+        store,
+        None,
+        operation_id="preview",
+        authorized_by=authorized_by,
+        merge_binding=MergeBinding(
+            source=source,
+            destination=metadata.effective_parent_head.target,
+            source_head=metadata.head,
+        ),
+    )
+    plan = plan_merge(
+        preview_merge_planning_context(
+            service,
+            store,
+            context,
+            created_at=datetime.now(UTC),
+        )
+    )
+    return MergePreview(
+        delivered_baseline=context.review_base_head,
+        graph=graph_merge_preview(plan),
+        needs_agent=bool(plan.conflicts or plan.review_groups),
+    )
+
+
 def merge_preview(
     service: ProjectService,
     store: AppStore,
@@ -235,16 +450,12 @@ def merge_preview(
         context = load_branch_merge_context(
             service, store, owner, operation_id="preview", authorized_by=authorized_by
         )
-        ops, residue = build_deterministic_merge_ops(context)
-        preview.delivered_baseline = context.review_base_head
-        preview.graph = MergeGraphPreview(
-            ops=len(ops),
-            residue=[
-                {"path": "/".join(path), "reason": reason} for path, reason in residue.items()
-            ],
-            paths=branch_merge_path_dispositions(context, residue),
+        plan = plan_merge(
+            preview_merge_planning_context(service, store, context, created_at=datetime.now(UTC))
         )
-        preview.needs_agent = bool(residue)
+        preview.delivered_baseline = context.review_base_head
+        preview.graph = graph_merge_preview(plan)
+        preview.needs_agent = bool(plan.conflicts or plan.review_groups)
     state = store.episode_isolation_state(owner.project_id, owner.episode_id)
     if binding and binding.worktree and not _code_discarded(state):
         worktree = binding.worktree
@@ -300,7 +511,6 @@ def merge_preview(
                 for key in ("commits_ahead", "leftover_files", "status", "conflict_files")
             },
         )
-        preview.needs_agent |= facts["status"] == "conflict"
     return preview
 
 
@@ -374,7 +584,9 @@ def _graph_receipt(service, store, owner, attempt):
         service, store, owner, operation_id=attempt.attempt_id, authorized_by=attempt.authorized_by
     )
     branch = service.history.branch(
-        owner.episode_id, expected_episode_id=owner.episode_id, expected_project_id=owner.project_id
+        owner.graph_target.branch_id or "",
+        expected_episode_id=owner.episode_id,
+        expected_project_id=owner.project_id,
     )
     existing = branch.reconcile_merge_receipt(branch_merge_id(context.metadata))
     return (
@@ -392,15 +604,19 @@ def _commit_graph_once(service, store, owner, attempt):
     if attempt.graph_head is not None and context.metadata.head != attempt.graph_head:
         raise ValueError("merge_graph_head_changed")
     branch = service.history.branch(
-        owner.episode_id, expected_episode_id=owner.episode_id, expected_project_id=owner.project_id
+        owner.graph_target.branch_id or "",
+        expected_episode_id=owner.episode_id,
+        expected_project_id=owner.project_id,
     )
     existing = branch.reconcile_merge_receipt(branch_merge_id(context.metadata))
     if existing is not None:
         return existing if existing.provenance.merge_task_id == attempt.attempt_id else None
-    ops, residue = build_deterministic_merge_ops(context)
-    if residue:
-        raise ValueError("graph_residue_needs_merge_task")
-    if branch_merge_can_resolve_without_patch(context):
+    destination = merge_history(service, context.main_head.target)
+    plan = plan_merge(merge_planning_context(context, destination, created_at=datetime.now(UTC)))
+    if plan.conflicts or plan.review_groups:
+        raise ValueError("graph_answers_need_merge_task")
+    prepared = prepare_merge_candidate(plan, MergeAnswers(answers={}, cards={}), destination)
+    if not prepared.patch.ops:
         verify_episode_merge_code(store, owner)
         receipt = BranchMergeReceipt(
             outcome="no_change",
@@ -409,17 +625,11 @@ def _commit_graph_once(service, store, owner, attempt):
             authorized_by=attempt.authorized_by,
         )
     else:
-        candidate = parse_branch_merge_candidate(
-            json.dumps({"summary": "Merge episode graph changes.", "ops": []}),
-            context,
-            deterministic_ops=ops,
-        )
-        prepare_branch_merge_with_history(
-            service.history, candidate, expected_main_head=context.main_head, context=context
-        )
         verify_episode_merge_code(store, owner)
         committed = commit_branch_merge_with_history(
-            service.history, candidate, expected_main_head=context.main_head
+            destination,
+            build_merge_patch(plan, MergeAnswers(answers={}, cards={})),
+            expected_main_head=context.main_head,
         )
         receipt = branch_merge_receipt_from_committed_patch(committed.patch)
     branch.write_merge_receipt(receipt)
@@ -621,7 +831,7 @@ def merge_episode(
         ).merge_attempt
         try:
             context = None
-            residue = {}
+            graph_needs_agent = False
             if binding.graph_branch_id:
                 context = load_branch_merge_context(
                     service,
@@ -630,7 +840,12 @@ def merge_episode(
                     operation_id=attempt.attempt_id,
                     authorized_by=authorized_by,
                 )
-                _, residue = build_deterministic_merge_ops(context)
+                plan = plan_merge(
+                    preview_merge_planning_context(
+                        service, store, context, created_at=datetime.now(UTC)
+                    )
+                )
+                graph_needs_agent = bool(plan.conflicts or plan.review_groups)
             if (
                 not code_side
                 and context is not None
@@ -656,7 +871,7 @@ def merge_episode(
                 facts["target_branch"] = target
                 # Confirmed unfinished jobs always go to the agent, which stops them first.
                 code_by_agent = bool(attempt.unfinished_jobs) or (
-                    not already_merged and (bool(residue) or preview["status"] == "conflict")
+                    not already_merged and (graph_needs_agent or preview["status"] == "conflict")
                 )
                 if code_by_agent:
                     # When a merge task runs, its agent lands the code the way Integrate does.
@@ -684,13 +899,13 @@ def merge_episode(
             )
             if (
                 context is not None
-                and not residue
+                and not graph_needs_agent
                 and not graph_delivered
                 and not facts.get("code_by_agent")
             ):
                 dispatch_graph(attempt.attempt_id, launch=False)
                 store.mark_agent_task_running(attempt.attempt_id)
-            needs_task = bool(residue) or bool(facts.get("code_by_agent"))
+            needs_task = graph_needs_agent or bool(facts.get("code_by_agent"))
             attempt = _save(
                 store,
                 owner,

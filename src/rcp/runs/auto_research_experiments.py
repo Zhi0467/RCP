@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal
 
 from rcp.control import derive_experiment_control_state
 from rcp.core.models import Experiment
+from rcp.core.transition_models import GraphTargetRef
 from rcp.loop_status import LoopOverlap, other_branch_loops
 from rcp.runs.auto_research_admission import (
     ensure_auto_research_child_experiment_spawned,
@@ -61,6 +62,13 @@ class AutoResearchExperimentLimitInvalid(ValueError):
         )
 
 
+def require_auto_research_experiment_limit(
+    allowance: AutoResearchExperimentAllowance, invocation_limit: int | None
+) -> None:
+    if invocation_limit is not None and invocation_limit > allowance.total:
+        raise AutoResearchExperimentLimitInvalid(allowance)
+
+
 class AutoResearchExperimentCoordinator:
     """Graceful Auto-research child Experiment admission above existing paths."""
 
@@ -88,14 +96,14 @@ class AutoResearchExperimentCoordinator:
         goal_sha256: str | None,
         invocation_limit: int | None,
         admission_id: str,
+        graph_target: GraphTargetRef | None = None,
         provider: str | None = None,
         model: str | None = None,
         reasoning: str | None = None,
     ) -> AutoResearchExperimentAction:
         parent = self._parent(auto_research_episode_id, parent_operation_id)
         allowance = self.store.auto_research_experiment_allowance(auto_research_episode_id)
-        if invocation_limit is not None and invocation_limit > allowance.total:
-            raise AutoResearchExperimentLimitInvalid(allowance)
+        require_auto_research_experiment_limit(allowance, invocation_limit)
         if goal is not None:
             actual = hashlib.sha256(goal.encode("utf-8")).hexdigest()
             if goal_sha256 != actual or not goal.strip():
@@ -103,7 +111,17 @@ class AutoResearchExperimentCoordinator:
         elif goal_sha256 is not None:
             raise ValueError("An absent Experiment goal cannot carry a digest.")
 
+        target = graph_target or parent.graph_target
+        existing = self.store.auto_research_child_experiment(child_episode_id)
+        if target != parent.graph_target and target.key not in {
+            f"branch:{branch.branch_id}"
+            for branch in self.store.branches_owned_by(parent.project_id, auto_research_episode_id)
+            if not branch.archived or existing is not None
+        }:
+            raise ValueError("The child Experiment target is not an open owned branch.")
         service = self.project_service(parent.project_id, auto_research_episode_id)
+        if target != parent.graph_target:
+            service = service.for_graph_target(target)
         now = self.store.now()
         pick = {
             field: value
@@ -117,23 +135,25 @@ class AutoResearchExperimentCoordinator:
             "invocation_limit": invocation_limit,
             **pick,
         }
-        existing = self.store.auto_research_child_experiment(child_episode_id)
         if existing is not None:
+            child = self.store.episode(child_episode_id)
             if (
                 existing.auto_research_episode_id != auto_research_episode_id
                 or existing.project_id != parent.project_id
                 or existing.control_node_id != node_id
-                or existing.request != intent
+                or {k: v for k, v in existing.request.items() if k != "resolved_graph_target"}
+                != intent
+                or child is None
+                or child.graph_target != target
                 or existing.goal_sha256 != goal_sha256
                 or existing.parent_operation_id != parent_operation_id
             ):
                 raise ValueError(
                     "The Experiment kickoff identity already names another durable intent."
                 )
-            child = self.store.episode(child_episode_id)
             task = (
                 self.store.agent_task(child.root_operation_id)
-                if child is not None and child.root_operation_id is not None
+                if child.root_operation_id is not None
                 else None
             )
             if existing.state == "running" and task is not None:
@@ -149,17 +169,13 @@ class AutoResearchExperimentCoordinator:
                 episode_id=child_episode_id,
                 operation_id=task.operation_id if task is not None else None,
                 status=(
-                    existing.state
-                    if existing.state in {"cancelled", "terminal"}
-                    else child.status
-                    if child is not None
-                    else existing.state
+                    existing.state if existing.state in {"cancelled", "terminal"} else child.status
                 ),
                 allowance=self.store.auto_research_experiment_allowance(auto_research_episode_id),
                 live_elsewhere=other_branch_loops(
                     self.store,
                     parent.project_id,
-                    graph_target=parent.graph_target,
+                    graph_target=target,
                     node_id=node_id,
                 ),
             )
@@ -213,6 +229,7 @@ class AutoResearchExperimentCoordinator:
                     route,
                     request,
                     admission_id=admission_id,
+                    graph_target=target,
                 )
                 return AutoResearchExperimentAction(
                     disposition="created",
@@ -225,7 +242,7 @@ class AutoResearchExperimentCoordinator:
                     live_elsewhere=other_branch_loops(
                         self.store,
                         parent.project_id,
-                        graph_target=parent.graph_target,
+                        graph_target=target,
                         node_id=node_id,
                     ),
                 )

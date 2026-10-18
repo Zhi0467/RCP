@@ -12,6 +12,7 @@ from rcp.agents.command_protocol import (
     ApplyCommandRequest,
     AskCommandRequest,
     AskResult,
+    BulletinCommandRequest,
     CommandRequest,
     CommandResponse,
     FlagCommandRequest,
@@ -336,6 +337,24 @@ class WorkCommandHandler:
             ):
                 return refuse("Evidence flags require this consolidation turn's broker authority.")
             return handle_flag(self.service, execution.store, execution.operation_id, request)
+        if isinstance(request, BulletinCommandRequest):
+            from rcp.runs.bulletin import handle_bulletin
+
+            execution = self.execution
+            if (
+                execution is None
+                or identity.task_id != execution.operation_id
+                or identity.authority != "broker"
+            ):
+                return refuse(
+                    "The Bulletin requires this turn's task binding.", "bulletin_task_unavailable"
+                )
+            return handle_bulletin(
+                execution.store,
+                execution.operation_id,
+                request,
+                post_allowed=True,
+            )
         if isinstance(request, LessonCommandRequest):
             execution = self.execution
             if (
@@ -488,7 +507,7 @@ def work_command_handler(
         return WorkCommandHandler(
             execution,
             None,
-            frozenset({"validate", "apply", "lesson", "flag"})
+            frozenset({"validate", "apply", "lesson", "flag", "bulletin"})
             | (graph_read_scope.verbs if graph_read_scope else frozenset()),
             consolidation_apply,
             service,
@@ -507,6 +526,8 @@ def work_command_handler(
             and task.dispatch_authority.task_contract == "work_auto"
         ):
             verbs.add("lesson")
+            if execution.store.bulletin_enabled_for_task(execution.operation_id):
+                verbs.add("bulletin")
     if work_ask_authorized(execution):
         verbs.add("ask")
     return WorkCommandHandler(

@@ -98,7 +98,7 @@ from rcp.runs.experiment_loop import (
     stage_experiment_loop_context,
     validate_experiment_completion,
 )
-from rcp.runs.lessons import stage_lessons_pointer
+from rcp.runs.lessons import stage_operational_context_pointer
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,
@@ -864,6 +864,7 @@ def _loop_read_context(turn: WorkTurn) -> str:
             task.project_id,
             graph_target=task.graph_target,
             node_id=turn.request.control_node_id,
+            read_scope=turn.graph_read_scope,
         )
         if execution is not None and task is not None
         else LoopOverlap()
@@ -899,7 +900,11 @@ def _record_continuation_prompt(
     parts = [
         *parts,
         _loop_read_context(turn),
-        stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage),
+        stage_operational_context_pointer(
+            turn.execution,
+            turn.local_stage,
+            turn.remote_stage,
+        ),
     ]
     # An episode's browser intent is fixed at launch, so "off" has nothing to revoke.
     if browser_grant is not None and browser_grant.status != "not_requested":
@@ -1239,7 +1244,11 @@ def _compose_fresh_prompt(
         session_master_label(_EXPERIMENT_MASTER_LABEL, contract),
         contract,
     )
-    prompt += "\n\n" + stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage)
+    prompt += "\n\n" + stage_operational_context_pointer(
+        turn.execution,
+        turn.local_stage,
+        turn.remote_stage,
+    )
     return _ComposedExperimentPrompt(
         contract_path=contract_path,
         prompt=prompt,
@@ -2866,10 +2875,8 @@ async def _stream_work_graph_repair(
         task_record = execution.store.agent_task(execution.operation_id)
         if task_record is None:
             raise ValueError("The graph-reading task record is unavailable.")
-        graph_read_scope = GraphReadScope.for_launch(
-            project_id=task_record.project_id,
-            target=service.history.graph_target,
-            group_context=context.group_context,
+        graph_read_scope = GraphReadScope.resolve(
+            task_record.project_id, service.history, context.group_context
         )
         validator_lifecycle = _start_work_validator_mailbox(
             service,

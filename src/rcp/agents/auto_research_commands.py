@@ -12,15 +12,19 @@ def auto_research_allowed_verbs(
     role: Literal["orchestrator", "worker"],
     *,
     graph_read_scope: GraphReadScope | None = None,
+    bulletin: bool = True,
 ) -> tuple[CommandVerb, ...]:
     history_verbs = tuple(sorted(graph_read_scope.verbs)) if graph_read_scope else ()
+    bulletin_verbs: tuple[CommandVerb, ...] = ("bulletin",) if bulletin else ()
     if role == "worker":
-        return ("validate", "status", "message", "lesson", *history_verbs)
+        return ("validate", "status", "message", "lesson", *bulletin_verbs, *history_verbs)
     return (
         "validate",
         "apply",
         "status",
         "spawn",
+        "merge",
+        "branch",
         "pause",
         "resume",
         "stop",
@@ -31,5 +35,6 @@ def auto_research_allowed_verbs(
         "finish",
         "ask",
         "lesson",
+        *bulletin_verbs,
         *history_verbs,
     )

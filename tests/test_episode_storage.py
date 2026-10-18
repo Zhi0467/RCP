@@ -2012,8 +2012,8 @@ def test_branch_fallbacks_are_utc_and_legacy_names_survive_other_rename(tmp_path
     }
     assert store.branch_names("project") == expected
     with store.connection() as connection:
-        assert connection.execute("SELECT count(*) FROM branch_names").fetchone()[0] == 3
-        # Rows predating this migration have neither explicit names nor reservations.
+        assert connection.execute("SELECT count(*) FROM graph_branches").fetchone()[0] == 3
+        # Canonical branch labels survive removal of the retired name projection.
         connection.execute("DELETE FROM branch_names")
         connection.execute("DELETE FROM branch_name_reservations")
     assert store.branch_names("project") == expected

@@ -475,7 +475,8 @@ export function NodeChat({
     scope,
     relatedTasks.map((task) => `${task.operation_id}:${task.updated_at}`).join("\0"),
     !readOnly,
-    project.graph_target,
+    // The conversation's own graph: an orchestrator card opened from main lives on its branch.
+    graphTarget,
   );
   const scopeIdentityRef = useRef(`${project.id}\0${chatId}`);
   const requestedScopeKey = runScope.join("\0");

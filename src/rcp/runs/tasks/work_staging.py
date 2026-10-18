@@ -100,7 +100,10 @@ async def stage_work_turn(
         Callable[[WorkStageLayout, Path | PurePosixPath], StagedArtifactAccess] | None
     ) = None,
     stage_experiment_resources: (
-        Callable[[WorkStageLayout], Awaitable[list[StagedExperimentWatcherResource]]] | None
+        Callable[
+            [WorkStageLayout, GraphReadScope], Awaitable[list[StagedExperimentWatcherResource]]
+        ]
+        | None
     ) = None,
     select_skills: Callable[[RunRequest], tuple[SkillSelection, RunRequest]] | None = None,
 ) -> tuple[WorkTurn, StagedWorkInputs, _HandoffT]:
@@ -281,10 +284,8 @@ async def stage_work_turn(
             if execution is not None
             else None
         )
-        graph_read_scope = GraphReadScope.for_launch(
-            project_id=write_scope.project_id,
-            target=service.history.graph_target,
-            group_context=context.group_context,
+        graph_read_scope = GraphReadScope.resolve(
+            write_scope.project_id, service.history, context.group_context
         )
         validator_lifecycle = start_validator_mailbox(
             service,
@@ -297,7 +298,7 @@ async def stage_work_turn(
         )
         write_dirs = [Path(item) for item in write_scope.repository_roots]
         experiment_resources = (
-            await stage_experiment_resources(layout)
+            await stage_experiment_resources(layout, graph_read_scope)
             if stage_experiment_resources is not None
             else []
         )

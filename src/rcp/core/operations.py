@@ -19,6 +19,7 @@ from pydantic import (
 from rcp.core.models import (
     EdgeExpectation,
     EvidenceAssessment,
+    GraphField,
     OntologyState,
     ProjectNode,
     Proposal,
@@ -83,22 +84,22 @@ def _adapt_source_ref_datetimes(value: Any) -> None:
 
 
 class EvidenceEdgeCause(_StrictPayload):
-    kind: Literal["evidence_edge"]
-    ref_id: str
+    kind: Annotated[Literal["evidence_edge"], GraphField("identity")]
+    ref_id: Annotated[str, GraphField("content")]
 
 
 class DecisionCause(_StrictPayload):
-    kind: Literal["decision"]
-    ref_id: str
+    kind: Annotated[Literal["decision"], GraphField("identity")]
+    ref_id: Annotated[str, GraphField("content")]
 
 
 class ProposalResolutionCause(_StrictPayload):
-    kind: Literal["proposal_resolution"]
-    ref_id: str
+    kind: Annotated[Literal["proposal_resolution"], GraphField("identity")]
+    ref_id: Annotated[str, GraphField("content")]
 
 
 class HumanEditCause(_StrictPayload):
-    kind: Literal["human_edit"]
+    kind: Annotated[Literal["human_edit"], GraphField("identity")]
 
 
 BeliefCause: TypeAlias = Annotated[
@@ -108,34 +109,36 @@ BeliefCause: TypeAlias = Annotated[
 
 
 class NodeUpdate(_StrictPayload):
-    id: str
-    changes: dict[str, Any]
-    cause: BeliefCause | None = None
-    base_updated_rev: int | None = Field(default=None, ge=0)
+    id: Annotated[str, GraphField("identity")]
+    changes: Annotated[dict[str, Any], GraphField("content")]
+    cause: Annotated[BeliefCause | None, GraphField("content")] = None
+    base_updated_rev: Annotated[int | None, GraphField("engine")] = Field(default=None, ge=0)
 
 
 class SupersedeNode(_StrictPayload):
-    id: str
-    superseded_by: str | None = None
-    explanation: str = ""
-    cause: BeliefCause | None = None
+    id: Annotated[str, GraphField("identity")]
+    superseded_by: Annotated[str | None, GraphField("content")] = None
+    explanation: Annotated[str, GraphField("content")] = ""
+    cause: Annotated[BeliefCause | None, GraphField("content")] = None
 
 
 class NodeMerge(_StrictPayload):
-    duplicate: str
-    canonical: str
-    explanation: str = ""
-    cause: BeliefCause | None = None
+    duplicate: Annotated[str, GraphField("content")]
+    canonical: Annotated[str, GraphField("content")]
+    explanation: Annotated[str, GraphField("content")] = ""
+    cause: Annotated[BeliefCause | None, GraphField("content")] = None
 
 
 class NewEdge(_StrictPayload):
-    id: str | None = None
-    source: str
-    target: str
-    relation: str = Field(pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
-    explanation: str = ""
-    assessment: EvidenceAssessment | None = None
-    expectation: EdgeExpectation | None = None
+    id: Annotated[str | None, GraphField("identity")] = None
+    source: Annotated[str, GraphField("content")]
+    target: Annotated[str, GraphField("content")]
+    relation: Annotated[str, GraphField("content")] = Field(
+        pattern=r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"
+    )
+    explanation: Annotated[str, GraphField("content")] = ""
+    assessment: Annotated[EvidenceAssessment | None, GraphField("content")] = None
+    expectation: Annotated[EdgeExpectation | None, GraphField("content")] = None
 
     @field_validator("assessment", mode="before")
     @classmethod
@@ -146,18 +149,18 @@ class NewEdge(_StrictPayload):
 
 
 class NewAmbiguity(_StrictPayload):
-    id: str
-    question: str
-    why_it_matters: str
-    candidates: list[str] = Field(default_factory=list)
-    related_node_ids: list[str] = Field(default_factory=list)
-    artifact_refs: list[str] = Field(default_factory=list)
-    status: Literal["open", "resolved", "dismissed"] = "open"
+    id: Annotated[str, GraphField("identity")]
+    question: Annotated[str, GraphField("content")]
+    why_it_matters: Annotated[str, GraphField("content")]
+    candidates: Annotated[list[str], GraphField("content")] = Field(default_factory=list)
+    related_node_ids: Annotated[list[str], GraphField("content")] = Field(default_factory=list)
+    artifact_refs: Annotated[list[str], GraphField("content")] = Field(default_factory=list)
+    status: Annotated[Literal["open", "resolved", "dismissed"], GraphField("content")] = "open"
 
 
 class AmbiguityResolution(_StrictPayload):
-    id: str
-    status: Literal["resolved", "dismissed"]
+    id: Annotated[str, GraphField("identity")]
+    status: Annotated[Literal["resolved", "dismissed"], GraphField("content")]
 
 
 class ProposalResolution(_StrictPayload):
@@ -172,20 +175,22 @@ class ProposalWithdrawal(_StrictPayload):
 
 
 class NewGlossaryTerm(_StrictPayload):
-    term: str
-    plain_definition: str
-    where_defined: str | None = None
+    term: Annotated[str, GraphField("identity")]
+    plain_definition: Annotated[str, GraphField("content")]
+    where_defined: Annotated[str | None, GraphField("content")] = None
 
 
 class CoverageUpdate(_StrictPayload):
     """Decode historical reading reports; current admission rejects them."""
 
-    repositories_seen: list[str] = Field(default_factory=list)
-    repositories_never_seen: list[str] = Field(default_factory=list)
-    sessions_read: list[str] = Field(default_factory=list)
-    sessions_skipped: list[str] = Field(default_factory=list)
-    earliest_timestamp: datetime | None = None
-    note: str = "No seed has completed."
+    repositories_seen: Annotated[list[str], GraphField("content")] = Field(default_factory=list)
+    repositories_never_seen: Annotated[list[str], GraphField("content")] = Field(
+        default_factory=list
+    )
+    sessions_read: Annotated[list[str], GraphField("content")] = Field(default_factory=list)
+    sessions_skipped: Annotated[list[str], GraphField("content")] = Field(default_factory=list)
+    earliest_timestamp: Annotated[datetime | None, GraphField("content")] = None
+    note: Annotated[str, GraphField("content")] = "No seed has completed."
 
     @field_validator("earliest_timestamp", mode="before")
     @classmethod
@@ -194,9 +199,9 @@ class CoverageUpdate(_StrictPayload):
 
 
 class RepositoryDescriptor(_StrictPayload):
-    alias: str
-    machine: str
-    path: str
+    alias: Annotated[str, GraphField("content")]
+    machine: Annotated[str, GraphField("content")]
+    path: Annotated[str, GraphField("content")]
 
 
 class CreateNodesOperation(_StrictPayload):
@@ -252,47 +257,47 @@ class ResolveAmbiguitiesOperation(_StrictPayload):
 
 
 class ProposalContentChangeOperation(_StrictPayload):
-    op: Literal["update_nodes"]
-    intent: Literal["content_change"]
-    nodes: list[NodeUpdate]
+    op: Annotated[Literal["update_nodes"], GraphField("identity")]
+    intent: Annotated[Literal["content_change"], GraphField("identity")]
+    nodes: Annotated[list[NodeUpdate], GraphField("content")]
 
 
 class ProposalStatusChangeOperation(_StrictPayload):
-    op: Literal["update_nodes"]
-    intent: Literal["status_change"]
-    nodes: list[NodeUpdate]
+    op: Annotated[Literal["update_nodes"], GraphField("identity")]
+    intent: Annotated[Literal["status_change"], GraphField("identity")]
+    nodes: Annotated[list[NodeUpdate], GraphField("content")]
 
 
 class ProposalStandingChangeOperation(_StrictPayload):
-    op: Literal["set_standing"]
-    intent: Literal["standing_change"]
-    node_id: str
-    standing: Literal["asserted", "accepted", "contested"]
+    op: Annotated[Literal["set_standing"], GraphField("identity")]
+    intent: Annotated[Literal["standing_change"], GraphField("identity")]
+    node_id: Annotated[str, GraphField("content")]
+    standing: Annotated[Literal["asserted", "accepted", "contested"], GraphField("content")]
 
 
 class ProposalRemovalOperation(_StrictPayload):
-    op: Literal["remove_nodes"]
-    intent: Literal["removal"]
-    node_ids: list[str]
+    op: Annotated[Literal["remove_nodes"], GraphField("identity")]
+    intent: Annotated[Literal["removal"], GraphField("identity")]
+    node_ids: Annotated[list[str], GraphField("content")]
 
 
 class ProposalSupersedeOperation(_StrictPayload):
-    op: Literal["supersede_nodes"]
-    intent: Literal["supersede"]
-    nodes: list[SupersedeNode]
+    op: Annotated[Literal["supersede_nodes"], GraphField("identity")]
+    intent: Annotated[Literal["supersede"], GraphField("identity")]
+    nodes: Annotated[list[SupersedeNode], GraphField("content")]
 
 
 class ProposalMergeOperation(_StrictPayload):
-    op: Literal["merge_nodes"]
-    intent: Literal["merge"]
-    merges: list[NodeMerge]
+    op: Annotated[Literal["merge_nodes"], GraphField("identity")]
+    intent: Annotated[Literal["merge"], GraphField("identity")]
+    merges: Annotated[list[NodeMerge], GraphField("content")]
 
 
 class ProposalProtectedRelationOperation(_StrictPayload):
-    op: Literal["create_edges", "remove_edges"]
-    intent: Literal["protected_relation_change"]
-    edges: list[NewEdge] | None = None
-    edge_ids: list[str] | None = None
+    op: Annotated[Literal["create_edges", "remove_edges"], GraphField("identity")]
+    intent: Annotated[Literal["protected_relation_change"], GraphField("identity")]
+    edges: Annotated[list[NewEdge] | None, GraphField("content")] = None
+    edge_ids: Annotated[list[str] | None, GraphField("content")] = None
 
     @model_validator(mode="after")
     def require_matching_payload(self) -> ProposalProtectedRelationOperation:
@@ -304,40 +309,40 @@ class ProposalProtectedRelationOperation(_StrictPayload):
 
 
 class LegacyProposalContentChangeOperation(ProposalContentChangeOperation):
-    intent: Literal["legacy_content_change"]
+    intent: Annotated[Literal["legacy_content_change"], GraphField("identity")]
 
 
 class LegacyProposalStatusChangeOperation(ProposalStatusChangeOperation):
-    intent: Literal["legacy_status_change"]
+    intent: Annotated[Literal["legacy_status_change"], GraphField("identity")]
 
 
 class LegacyProposalRemovalOperation(ProposalRemovalOperation):
-    intent: Literal["legacy_removal"]
+    intent: Annotated[Literal["legacy_removal"], GraphField("identity")]
 
 
 class LegacyProposalSupersedeOperation(ProposalSupersedeOperation):
-    intent: Literal["legacy_supersede"]
+    intent: Annotated[Literal["legacy_supersede"], GraphField("identity")]
 
 
 class LegacyProposalMergeOperation(ProposalMergeOperation):
-    intent: Literal["legacy_merge"]
+    intent: Annotated[Literal["legacy_merge"], GraphField("identity")]
 
 
 class LegacyProposalProtectedRelationOperation(ProposalProtectedRelationOperation):
-    intent: Literal["legacy_protected_relation_change"]
+    intent: Annotated[Literal["legacy_protected_relation_change"], GraphField("identity")]
 
 
 class LegacyProposalSetProjectTruthScopeOperation(_StrictPayload):
-    op: Literal["set_project_truth_scope"]
-    intent: Literal["legacy_project_truth_scope_change"]
-    truth_scope: list[str]
-    repository: RepositoryDescriptor | None = None
+    op: Annotated[Literal["set_project_truth_scope"], GraphField("identity")]
+    intent: Annotated[Literal["legacy_project_truth_scope_change"], GraphField("identity")]
+    truth_scope: Annotated[list[str], GraphField("content")]
+    repository: Annotated[RepositoryDescriptor | None, GraphField("content")] = None
 
 
 class LegacyProposalSetOntologyOperation(_StrictPayload):
-    op: Literal["set_ontology"]
-    intent: Literal["legacy_ontology_change"]
-    ontology: OntologyState
+    op: Annotated[Literal["set_ontology"], GraphField("identity")]
+    intent: Annotated[Literal["legacy_ontology_change"], GraphField("identity")]
+    ontology: Annotated[OntologyState, GraphField("content")]
 
     @field_validator("ontology", mode="before")
     @classmethod
@@ -346,9 +351,9 @@ class LegacyProposalSetOntologyOperation(_StrictPayload):
 
 
 class LegacyProposalCreateNodesOperation(_StrictPayload):
-    op: Literal["create_nodes"]
-    intent: Literal["legacy_create_nodes"]
-    nodes: list[ProjectNode]
+    op: Annotated[Literal["create_nodes"], GraphField("identity")]
+    intent: Annotated[Literal["legacy_create_nodes"], GraphField("identity")]
+    nodes: Annotated[list[ProjectNode], GraphField("content")]
 
     @field_validator("nodes", mode="before")
     @classmethod
@@ -359,27 +364,27 @@ class LegacyProposalCreateNodesOperation(_StrictPayload):
 
 
 class LegacyProposalCreateAmbiguitiesOperation(_StrictPayload):
-    op: Literal["create_ambiguities"]
-    intent: Literal["legacy_create_ambiguities"]
-    ambiguities: list[NewAmbiguity]
+    op: Annotated[Literal["create_ambiguities"], GraphField("identity")]
+    intent: Annotated[Literal["legacy_create_ambiguities"], GraphField("identity")]
+    ambiguities: Annotated[list[NewAmbiguity], GraphField("content")]
 
 
 class LegacyProposalResolveAmbiguitiesOperation(_StrictPayload):
-    op: Literal["resolve_ambiguities"]
-    intent: Literal["legacy_resolve_ambiguities"]
-    resolutions: list[AmbiguityResolution]
+    op: Annotated[Literal["resolve_ambiguities"], GraphField("identity")]
+    intent: Annotated[Literal["legacy_resolve_ambiguities"], GraphField("identity")]
+    resolutions: Annotated[list[AmbiguityResolution], GraphField("content")]
 
 
 class LegacyProposalUpsertGlossaryOperation(_StrictPayload):
-    op: Literal["upsert_glossary"]
-    intent: Literal["legacy_upsert_glossary"]
-    terms: list[NewGlossaryTerm]
+    op: Annotated[Literal["upsert_glossary"], GraphField("identity")]
+    intent: Annotated[Literal["legacy_upsert_glossary"], GraphField("identity")]
+    terms: Annotated[list[NewGlossaryTerm], GraphField("content")]
 
 
 class LegacyProposalSetCoverageOperation(_StrictPayload):
-    op: Literal["set_coverage"]
-    intent: Literal["legacy_set_coverage"]
-    coverage: CoverageUpdate
+    op: Annotated[Literal["set_coverage"], GraphField("identity")]
+    intent: Annotated[Literal["legacy_set_coverage"], GraphField("identity")]
+    coverage: Annotated[CoverageUpdate, GraphField("content")]
 
 
 ProposalOperation: TypeAlias = Annotated[

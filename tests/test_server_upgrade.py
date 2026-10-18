@@ -11,6 +11,7 @@ import shutil
 import sqlite3
 import subprocess
 from contextlib import chdir
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -144,6 +145,9 @@ def test_pre_ledger_fixture_records_migrations_and_never_rescans(
             (53,),
             (54,),
             (55,),
+            (56,),
+            (57,),
+            (58,),
         ]
 
         plan = connection.execute(
@@ -195,7 +199,9 @@ def test_pre_ledger_fixture_records_migrations_and_never_rescans(
 @pytest.fixture(scope="module")
 def baseline_schema(tmp_path_factory: pytest.TempPathFactory) -> list[tuple[str, str, str, str]]:
     baseline = tmp_path_factory.mktemp("baseline") / "baseline.sqlite3"
-    AppStore(baseline).close()
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr("rcp.rcp_home.rcp_home", lambda: baseline.parent / "rcp-home")
+        AppStore(baseline).close()
     return _normalized_schema(baseline)
 
 
@@ -210,6 +216,64 @@ def test_immutable_server_boundaries_upgrade_and_start(
     shutil.copytree(fixture, copied)
 
     _exercise_candidate_upgrade(copied, baseline_schema=baseline_schema)
+
+
+def test_node_worker_upgrade_preserves_attempt_and_allows_project_seat(tmp_path: Path) -> None:
+    fixture = next(
+        path
+        for path in immutable_fixture_directories()
+        if path.name == "pre-graph-branches-v28-ae89ee3"
+    )
+    metadata = verify_fixture_integrity(fixture)
+    copied = tmp_path / "fixture"
+    shutil.copytree(fixture, copied)
+    database = _materialize_database(copied / "data")
+    operation = metadata["experiment_operation_id"]
+    admitted_by = metadata["active_operation_id"]
+    old_worker = (
+        "old-worker",
+        metadata["experiment_episode_id"],
+        metadata["project_id"],
+        "exp-1",
+        operation,
+        operation,
+        admitted_by,
+        "Measure",
+        hashlib.sha256(b"Measure").hexdigest(),
+        None,
+        "2026-01-01T00:00:00+00:00",
+        "2026-01-01T00:00:00+00:00",
+    )
+    old_attempt = (operation, "old-worker", operation, old_worker[-1])
+    # Write the frozen old schema directly, before any current model or migration runs.
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(
+            "INSERT INTO auto_research_child_work VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            old_worker,
+        )
+        connection.execute(
+            "INSERT INTO auto_research_child_work_attempts VALUES (?, ?, ?, ?)", old_attempt
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute("UPDATE auto_research_child_work SET control_node_id = NULL")
+    store = AppStore(database)
+    with store.connection() as connection:
+        assert (
+            tuple(connection.execute("SELECT * FROM auto_research_child_work").fetchone())
+            == old_worker
+        )
+        assert (
+            tuple(connection.execute("SELECT * FROM auto_research_child_work_attempts").fetchone())
+            == old_attempt
+        )
+        connection.execute("UPDATE auto_research_child_work SET control_node_id = NULL")
+        assert not connection.execute("PRAGMA foreign_key_check").fetchall()
+    store.close()
+    reopened = AppStore(database)
+    worker = reopened.auto_research_child_work("old-worker")
+    assert worker is not None and worker.control_node_id is None
+    reopened.close()
 
 
 @pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
@@ -339,11 +403,13 @@ def test_release_update_from_every_published_release_validates(
 def _assert_old_branch_merge_validates(live, branch_id: str) -> None:
     """The candidate's merge self-check accepts a branch the old release populated."""
     from rcp.core.transition_models import GraphTargetRef
-    from rcp.runs.branch_merge import build_deterministic_merge_ops
+    from rcp.runs.branch_merge import merge_planning_context
     from rcp.runs.branch_merge_admission import start_branch_merge
     from rcp.runs.branch_merge_context import load_branch_merge_context
     from rcp.runs.branch_merge_request import BranchMergeRunRequest
-    from rcp.runs.tasks.branch_merge import _validate_candidate
+    from rcp.runs.merge_contract import MergeAnswers
+    from rcp.runs.merge_patch import prepare_merge_candidate
+    from rcp.runs.merge_plan import plan_merge
     from rcp.storage import EpisodeRecord
 
     (card,) = live.state.catalog.cards()
@@ -395,23 +461,19 @@ def _assert_old_branch_merge_validates(live, branch_id: str) -> None:
         )
 
     context = load_context()
-    _ops, residue = build_deterministic_merge_ops(context)
-    # The node change merges deterministically; the agent carries the Proposal.
-    assert {path[0] for path in residue} == {"proposals"}
-    agent_ops = [
-        {
-            "op": "create_proposals",
-            "proposals": [
-                proposal.model_dump(mode="json", include={"id", "title", "card", "ops"})
-                for proposal in context.branch_graph.proposals.values()
-                if proposal.id not in context.base_graph.proposals
-            ],
-        }
-    ]
-    text = json.dumps({"summary": "Carry the branch.", "ops": agent_ops, "repositories_read": []})
-
-    result = _validate_candidate(service, load_context, text)
-    assert result.status == "valid", result.messages
+    plan = plan_merge(
+        merge_planning_context(
+            context, service.history, created_at=datetime.fromisoformat(store.now())
+        )
+    )
+    assert not plan.conflicts
+    assert not plan.review_groups
+    assert any(change.collection == "proposals" for change in plan.direct_changes)
+    prepared = prepare_merge_candidate(plan, MergeAnswers(answers={}, cards={}), service.history)
+    assert prepared.patch.transition is not None
+    source_ids = set(context.branch_graph.proposals) - set(context.base_graph.proposals)
+    assert source_ids
+    assert source_ids <= set(prepared.projection.graph.proposals)
 
 
 def _exercise_candidate_upgrade(

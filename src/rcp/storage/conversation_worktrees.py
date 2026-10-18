@@ -10,7 +10,6 @@ from rcp.core.models import (
     EpisodeMergeAttempt,
     EpisodeUnfinishedJob,
 )
-from rcp.core.transition_models import GraphTargetRef
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.provisioning import ProjectProvisioningStoreMixin
 
@@ -111,16 +110,16 @@ class ConversationWorktreeStoreMixin(StoreMixinBase):
             connection.execute("BEGIN IMMEDIATE")
             ProjectProvisioningStoreMixin._require_project_accepts_new_work(connection, project_id)
             root = connection.execute(
-                "SELECT graph_target_json, isolation_owner_episode_id FROM episodes "
-                "WHERE project_id = ? AND episode_id = ?",
+                "SELECT owner_episode_id FROM graph_branches WHERE project_id=? AND branch_id=?",
                 (project_id, branch_id),
             ).fetchone()
             if root is None:
                 raise KeyError(branch_id)
-            target = GraphTargetRef.model_validate_json(root[0])
-            if target.kind != "branch" or target.branch_id != branch_id:
-                raise KeyError(branch_id)
-            owner_id = root[1] or branch_id
+            connection.execute(
+                "UPDATE graph_branches SET archived=? WHERE project_id=? AND branch_id=?",
+                (int(archived), project_id, branch_id),
+            )
+            owner_id = root[0] or branch_id
             row = connection.execute(
                 "SELECT state_json FROM episode_isolation_states "
                 "WHERE project_id = ? AND owner_episode_id = ?",
@@ -131,11 +130,21 @@ class ConversationWorktreeStoreMixin(StoreMixinBase):
                 if row
                 else EpisodeIsolationState(owner_episode_id=owner_id)
             ).model_copy(update={"graph_archived": archived})
-            connection.execute(
-                "INSERT INTO episode_isolation_states VALUES (?, ?, ?) "
-                "ON CONFLICT(project_id, owner_episode_id) DO UPDATE SET state_json = excluded.state_json",
-                (project_id, owner_id, state.model_dump_json()),
-            )
+            # Older projections still read the root isolation flag. A lineage's
+            # other forks must never inherit one fork's visibility choice.
+            if (
+                connection.execute(
+                    "SELECT 1 FROM episodes WHERE project_id=? AND episode_id=? "
+                    "AND json_extract(graph_target_json, '$.branch_id')=?",
+                    (project_id, owner_id, branch_id),
+                ).fetchone()
+                is not None
+            ):
+                connection.execute(
+                    "INSERT INTO episode_isolation_states VALUES (?, ?, ?) "
+                    "ON CONFLICT(project_id, owner_episode_id) DO UPDATE SET state_json = excluded.state_json",
+                    (project_id, owner_id, state.model_dump_json()),
+                )
         return state
 
     def set_episode_isolation_status(
@@ -349,6 +358,12 @@ class ConversationWorktreeStoreMixin(StoreMixinBase):
         connection.execute(
             "UPDATE episode_isolation_states SET state_json = ? WHERE project_id = ? AND owner_episode_id = ?",
             (state.model_dump_json(), project_id, state.owner_episode_id),
+        )
+        connection.execute(
+            "UPDATE graph_branches SET archived=? WHERE project_id=? AND branch_id="
+            "(SELECT json_extract(graph_target_json, '$.branch_id') FROM episodes "
+            "WHERE project_id=? AND episode_id=?)",
+            (int(state.graph_archived), project_id, project_id, state.owner_episode_id),
         )
 
     def conversation_worktree(

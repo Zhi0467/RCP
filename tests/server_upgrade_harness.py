@@ -80,6 +80,14 @@ EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
         "ae89ee326aaa50ae198aba96ffafc0a79900c4ab",
         "e545028437e00837eff08790d89e9741ba44c6844094e6f51a348eee3e4d262a",
     ),
+    "pre-graph-branches-v28-ae89ee3": (
+        "ae89ee326aaa50ae198aba96ffafc0a79900c4ab",
+        "9b7b18b18b101753cb2bcad5b29de393ced15b995870569bdb0106cda576cbe3",
+    ),
+    "pre-graph-branches-v29-daad53e": (
+        "daad53e6d5a7ab763f69f0f1b631c354d8e8160a",
+        "bd3da231c46b0b179b958ecbf696e43aa20eab5fe1e1e82dd6a88c5f3636de8d",
+    ),
     "team-server-v1-78be62b": (
         "78be62b775fd62d7888c2e22d87569c103bffc83",
         "c6fc54845354bb000a9ae9dc26ac40446ba14f96f4f00b8ad8412338ec65da42",

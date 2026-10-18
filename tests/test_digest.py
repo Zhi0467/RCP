@@ -1,18 +1,21 @@
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import cast
 
+import pytest
+
 from rcp.core.models import Decision, Edge, GatedCard, GraphState, Patch, Proposal
 from rcp.core.transition_models import GraphHeadRef
-from rcp.digest import DigestProjector, assemble_digest, attribution, graph_event
+from rcp.digest import DigestProjector, _merged_revision, assemble_digest, attribution, graph_event
 from rcp.history.delta import semantic_delta
 from rcp.history.engine import ProjectHistoryEngine
 from rcp.history.queries import StepRecord
 from rcp.server_ops.maintenance import RuntimeAdmissionGate
 from rcp.storage import AppStore, ProjectRecord
-from rcp.storage.digest import digest_event
+from rcp.storage.digest import append_digest_event, digest_event
 
 from .helpers import authorized_human, signed_in_client
 
@@ -283,7 +286,10 @@ def test_attribution_precedence_and_missing_task(tmp_path):
     )
 
 
-def test_grouping_excludes_own_edit_retains_agent_touch_and_suppresses_merged_branch(tmp_path):
+@pytest.mark.parametrize("legacy", [True, False])
+def test_grouping_excludes_own_edit_retains_agent_touch_and_suppresses_merged_branch(
+    tmp_path, legacy
+):
     store = AppStore(tmp_path / "app.db")
     base = GraphState()
     live = GraphState(nodes={"d/one": _decision()})
@@ -316,6 +322,15 @@ def test_grouping_excludes_own_edit_retains_agent_touch_and_suppresses_merged_br
         item_id="4",
         payload=dict(episode_id="episode", title="Episode", edits=2, deep_link=None),
     )
+    if not legacy:
+        cast(dict, merge["payload"])["merged_branch_id"] = "independent-branch"
+        cast(dict, branch["payload"])["branch_id"] = "independent-branch"
+    with store.connection() as conn:
+        conn.execute("BEGIN")
+        stored_merge: dict = {key: value for key, value in merge.items() if key != "seq"}
+        append_digest_event(conn, **stored_merge)
+        target = "episode" if legacy else "independent-branch"
+        assert _merged_revision(conn, "p", f"branch:{target}") == 4
     result = assemble_digest(
         "p", "me", [event, own, merge, branch], {"seq": 0, "marked_at": "now"}, 4, live
     )
@@ -340,7 +355,9 @@ def test_branch_reset_drops_replaced_history_but_keeps_operational_attention(tmp
     assert assemble_digest("p", "me", [branch], mark, 1, live, runs=runs)["count"] == 0
     on_branch = assemble_digest("p", "me", [branch], mark, 1, live, runs=runs, target="branch:b")
     assert [group["edits"] for group in on_branch["changed"]] == [1]
-    result = assemble_digest("p", "me", [branch, waiting, reset], mark, 3, live, runs=runs)
+    result = assemble_digest(
+        "p", "me", [branch, waiting, reset], mark, 3, live, runs=runs, chain=frozenset({"b"})
+    )
     assert [item["item_id"] for item in result["needs_you"]] == ["b"]
     assert result["count"] == 1
 
@@ -537,13 +554,14 @@ def test_episode_needing_action_after_the_first_mark_reaches_the_digest(
     projector.run_pass()
     result = digest.read_digest(store, app.state.catalog, episode.project_id, user_id)
     [item] = result["needs_you"]
-    name = store.branch_names(episode.project_id)[episode.episode_id]
+    name = store.branch_names(episode.project_id)[episode.graph_target.branch_id]
     assert (item["kind"], item["item_id"], item["title"]) == (
         "auto_research",
-        episode.episode_id,
+        episode.graph_target.branch_id,
         name,
     )
-    assert "view=chats" in item["deep_link"] and "branch_id=" in item["deep_link"]
+    assert f"chat={episode.episode_id}" in item["deep_link"]
+    assert f"branch_id={episode.graph_target.branch_id}" in item["deep_link"]
 
 
 def test_a_standalone_experiment_is_named_by_its_node_on_its_own_branch(
@@ -681,3 +699,38 @@ def test_deleted_reports_leave_digest_and_count(manifest, tmp_path):
     after = read_digest(store, app.state.catalog, project_id, user_id)
     assert after["reports"] == []
     assert after["count"] == count - 2 == digest_counts(store, [project_id], user_id)[project_id]
+
+
+def test_human_branch_inventory_projects_its_changes_and_archive(tmp_path):
+    from rcp.digest import _archived_branches
+
+    store = _project_store(tmp_path)
+    branch_id = str(uuid.uuid4())
+    store.create_graph_branch(
+        project_id="p",
+        branch_id=branch_id,
+        owner_episode_id=None,
+        parent_head=GraphHeadRef(revision=0),
+        created_by=f"human:{branch_id}",
+        name="human-fork",
+    )
+    projector = DigestProjector(store, None, admission=RuntimeAdmissionGate())
+    assert projector._branch_targets("p") == {f"branch:{branch_id}": branch_id}
+    event = graph_event(
+        store,
+        "p",
+        f"branch:{branch_id}",
+        GraphState(),
+        _patch(),
+        GraphState(revision=1, nodes={"d/one": _decision()}),
+    )
+    assert event["payload"]["branch_id"] == branch_id
+    assert event["payload"]["episode_id"] is None
+    event["seq"] = 1
+    result = assemble_digest(
+        "p", "viewer", [event], {"seq": 0, "marked_at": "now"}, 1, target=f"branch:{branch_id}"
+    )
+    assert len(result["changed"]) == 1
+    store.set_branch_archived("p", branch_id, archived=True)
+    with store.connection() as conn:
+        assert _archived_branches(conn, "p") == {f"branch:{branch_id}"}

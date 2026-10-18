@@ -2370,13 +2370,14 @@ fn optional_digest(
 
 /// Every transfer record version this desktop relays. The negotiated
 /// team-shell protocol narrows it to the versions the target server accepts.
-const RELAYED_RECORD_SCHEMA_VERSIONS: [u64; 4] = [2, 3, 4, 5];
+const RELAYED_RECORD_SCHEMA_VERSIONS: [u64; 5] = [2, 3, 4, 5, 6];
 
 fn target_record_schema_versions(protocol: u32) -> &'static [u64] {
     match protocol {
         0..=3 => &[],
         4 => &RELAYED_RECORD_SCHEMA_VERSIONS[..1],
         5 => &RELAYED_RECORD_SCHEMA_VERSIONS[..3],
+        6 => &RELAYED_RECORD_SCHEMA_VERSIONS[..4],
         _ => &RELAYED_RECORD_SCHEMA_VERSIONS,
     }
 }
@@ -4289,7 +4290,7 @@ mod tests {
     #[test]
     fn archived_record_capability_round_trips_and_rejects_unsupported_versions() {
         let protocol: Value = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/team_shell_protocol_v6.json"
+            "../../../tests/fixtures/team_shell_protocol_v7.json"
         ))
         .unwrap();
         let legacy = safe_transfer_payload()["source_configuration"].clone();
@@ -4312,7 +4313,7 @@ mod tests {
             validate_source_configuration(&parsed).unwrap();
             assert_eq!(serde_json::to_value(parsed).unwrap(), included);
         }
-        for unsupported in [1, 6] {
+        for unsupported in [1, 7] {
             included["record_schema_version"] = serde_json::json!(unsupported);
             let parsed = serde_json::from_value(included.clone()).unwrap();
             assert!(validate_source_configuration(&parsed).is_err());
@@ -4333,7 +4334,11 @@ mod tests {
             "../../../tests/fixtures/team_shell_protocol_v6.json"
         ))
         .unwrap();
-        assert_eq!(six["protocol_version"], TEAM_SHELL_PROTOCOL_MAXIMUM);
+        let seven: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/team_shell_protocol_v7.json"
+        ))
+        .unwrap();
+        assert_eq!(seven["protocol_version"], TEAM_SHELL_PROTOCOL_MAXIMUM);
         let accepted = |protocol: u32| -> Vec<u64> {
             match protocol {
                 3 => Vec::new(),
@@ -4344,10 +4349,14 @@ mod tests {
                     five["native_transfer"]["record_schema_versions"].clone(),
                 )
                 .unwrap(),
-                _ => {
+                6 => {
                     serde_json::from_value(six["native_transfer"]["record_schema_versions"].clone())
                         .unwrap()
                 }
+                _ => serde_json::from_value(
+                    seven["native_transfer"]["record_schema_versions"].clone(),
+                )
+                .unwrap(),
             }
         };
         let request = prepare_request();
@@ -4359,7 +4368,7 @@ mod tests {
                 .unwrap()
                 .record_schema_version = None;
             validate_source_for_prepare(&source, &request, TARGET_SPACE_ID, protocol).unwrap();
-            for version in 2..=5 {
+            for version in 2..=6 {
                 source
                     .source_configuration
                     .as_mut()

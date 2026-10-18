@@ -149,6 +149,7 @@ import {
   startEpisode,
   startExperimentRun,
   stopEpisode,
+  createGraphFork,
 } from "./core/api";
 import {
   BACKEND_IDENTITY_EVENT,
@@ -2212,13 +2213,19 @@ function MemberApp({
       return;
     const requestedProjectId = projectId;
     const request = toHumanSyncRequest(normalizedPreviewDraft, graph);
-    let cancelled = false;
-    void api<TransitionPreviewResponse>(graphPath(`${apiBase}/sync/preview`), {
-      method: "POST",
-      body: JSON.stringify(request),
-    })
+    // A superseded preview is aborted, so refetches never stack replays on the server.
+    const controller = new AbortController();
+    void api<TransitionPreviewResponse>(
+      graphPath(`${apiBase}/sync/preview`),
+      { method: "POST", body: JSON.stringify(request), signal: controller.signal },
+      { readOnly: true },
+    )
       .then((response) => {
-        if (cancelled || !isActiveGraph(requestedProjectId)) return;
+        if (controller.signal.aborted || !isActiveGraph(requestedProjectId)) return;
+        const manifest = trustedProjectTransitionManifest(
+          getProjectSessionState(),
+          requestedProjectId,
+        );
         const projection = decodeProjectTransitionResponse(response.projection);
         const previewBaseHead = projection.base_head;
         if (!previewBaseHead) {
@@ -2271,21 +2278,19 @@ function MemberApp({
         }
         if (
           (transitionRulesetTag && transitionRulesetTag !== projection.ruleset_tag) ||
-          (transitionManifest && transitionManifest.ruleset_tag !== projection.ruleset_tag)
+          (manifest && manifest.ruleset_tag !== projection.ruleset_tag)
         ) {
           dispatchProjectSession({
             kind: "preview_ruleset_invalidated",
             project_id: requestedProjectId,
             head: previewBaseHead,
             ruleset_tag: projection.ruleset_tag,
-            manifest: transitionManifest,
+            manifest,
           });
           return;
         }
         const matchingManifestTag =
-          transitionManifest?.ruleset_tag === transitionRulesetTag
-            ? transitionManifest.ruleset_tag
-            : null;
+          manifest?.ruleset_tag === transitionRulesetTag ? manifest.ruleset_tag : null;
         const refusal = transitionSnapshotRefusal(currentProjection, {
           kind: "preview",
           snapshot: projection,
@@ -2315,7 +2320,7 @@ function MemberApp({
         });
       })
       .catch((error) => {
-        if (cancelled || !isActiveGraph(requestedProjectId)) return;
+        if (controller.signal.aborted || !isActiveGraph(requestedProjectId)) return;
         dispatchProjectSession({
           kind: "draft_preview_changed",
           projection: getProjectSessionState().draftTransitionProjection,
@@ -2323,9 +2328,8 @@ function MemberApp({
           pending: false,
         });
       });
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the project changes with any field and a refetched manifest is a new object; only the fields the preview reads rerun it
   }, [
     apiBase,
     graphPath,
@@ -2339,11 +2343,14 @@ function MemberApp({
     mutationsDisabled,
     normalizedPreviewDraft,
     ontologyDraftIsStale,
-    project,
+    project?.attention,
+    project?.experiment_control,
+    project?.primary_question,
+    project?.counts,
     projectId,
     projectReconciliation,
     transitionHead,
-    transitionManifest,
+    transitionManifest?.ruleset_tag,
     transitionRulesetTag,
   ]);
   // Only a listed conversation can be opened and so marked read; counting any
@@ -2740,20 +2747,22 @@ function MemberApp({
       kind: AgentTaskKind,
       request: AgentTaskRequest,
       requestId?: string,
+      // A conversation opened in place from another graph posts to its own graph.
+      target: GraphTargetRef = graphTarget,
     ): Promise<AgentTask> => {
       const finishTaskStart = beginTaskStart();
       if (!finishTaskStart) throw new Error("Another task start is already being submitted.");
       const admissionId = requestId ?? crypto.randomUUID();
       const mutation =
         projectId && (kind === "node_chat" || kind === "project_chat")
-          ? beginChatSend(store, projectId, graphTarget, kind, request, admissionId)
+          ? beginChatSend(store, projectId, target, kind, request, admissionId)
           : projectId
             ? beginTaskPublication(store, projectId)
             : null;
       try {
         const task = await api<AgentTask>(
           kind === "node_chat" || kind === "project_chat"
-            ? graphPath(`${apiBase}/tasks/${kind}`)
+            ? graphTargetUrl(`${apiBase}/tasks/${kind}`, target)
             : `${apiBase}/tasks/${kind}`,
           {
             method: "POST",
@@ -2766,7 +2775,7 @@ function MemberApp({
         );
         if (
           (kind === "node_chat" || kind === "project_chat") &&
-          !sameGraphTarget(task.graph_target, graphTarget)
+          !sameGraphTarget(task.graph_target, target)
         )
           throw new Error("Conversation start returned a different graph target.");
         mutation?.settle(task);
@@ -2782,16 +2791,7 @@ function MemberApp({
         finishTaskStart();
       }
     },
-    [
-      apiBase,
-      graphPath,
-      graphTarget,
-      projectId,
-      isActiveGraph,
-      beginTaskStart,
-      recordStartedTask,
-      store,
-    ],
+    [apiBase, graphTarget, projectId, isActiveGraph, beginTaskStart, recordStartedTask, store],
   );
   const loadWebMcpConversation = useCallback(
     (chatId: string) => loadChatTranscript(apiBase, chatId, api, graphTarget),
@@ -3140,6 +3140,7 @@ function MemberApp({
       requestId?: string,
       launchConfig?: AgentRunConfig,
       branchName: string | null = null,
+      bulletinEnabled = true,
     ): Promise<Episode> => {
       if (autoResearchRefusal) throw new Error(autoResearchRefusal);
       const finishTaskStart = beginTaskStart();
@@ -3155,6 +3156,7 @@ function MemberApp({
           {
             mode: "auto_research",
             browser_requested: browserRequested,
+            bulletin_enabled: bulletinEnabled,
             invocation_ceiling: invocationCeiling,
             starting_instruction: startingInstruction,
             branch_name: branchName,
@@ -3208,6 +3210,7 @@ function MemberApp({
     browserRequested = false,
     launchConfig?: AgentRunConfig,
     branchName: string | null = null,
+    bulletinEnabled = true,
   ) => {
     reportAutoResearchStartError(null);
     setAutoResearchBranchRefusal(null);
@@ -3220,6 +3223,7 @@ function MemberApp({
         undefined,
         launchConfig,
         branchName,
+        bulletinEnabled,
       );
     } catch (error) {
       setAutoResearchBranchRefusal(branchNameRefusal(error));
@@ -5045,6 +5049,7 @@ function MemberApp({
               key={graphSessionKey(project.id, graphTarget)}
               graphTarget={graphTarget}
               branchChanges={project.graph_changes}
+              graphRefs={projectGraphRefs}
               mergePaths={branchMergePaths}
               onInspectTask={selectTaskInspector}
               {...graphEditingProps}
@@ -5532,6 +5537,7 @@ function MemberApp({
           browserRequested,
           launchConfig,
           branchName,
+          bulletinEnabled,
         ) =>
           void authorizeAutoResearch(
             invocationCeiling,
@@ -5540,6 +5546,7 @@ function MemberApp({
             browserRequested,
             launchConfig,
             branchName,
+            bulletinEnabled,
           )
         }
         branchNameRefusal={autoResearchBranchRefusal}
@@ -5566,7 +5573,16 @@ function MemberApp({
       )}
       {projectHistoryOpen && (
         <ProjectHistoryDrawer
+          reportError={reportErrorNotice}
+          key={graphSessionKey(project.id, graphTarget)}
           projectId={project.id}
+          onFork={async (revision, requestId) => {
+            const ref = await createGraphFork(project.id, graphTarget, revision, requestId);
+            store.invalidate(resourceKeyId(refsProfile(project.id).key));
+            closeProjectHistory();
+            if (ref.kind === "branch") selectGraphRef({ kind: "branch", branch_id: ref.branch_id });
+          }}
+          forkDisabled={mutationsDisabled}
           summaries={historyRevisionSummaries}
           tasks={projectTasks}
           loading={historySummariesRevision !== graph.revision}

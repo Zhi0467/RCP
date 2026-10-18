@@ -47,24 +47,47 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                     JOIN episodes AS episode ON episode.episode_id = run.episode_id
                      AND episode.project_id = run.project_id
                     WHERE run.project_id = ? AND episode.mode = 'experiment_loop'
+                ),
+                edits AS (
+                    SELECT json_extract(request_json, '$.chat_id') AS chat_id,
+                           MAX(updated_at) AS updated_at
+                    FROM graph_runs
+                    WHERE project_id = ? AND visible = 1 AND kind = 'artifact_edit'
+                      AND json_extract(request_json, '$.chat_id') IS NOT NULL
+                      AND (? IS NULL OR json_extract(request_json, '$.chat_id') = ?)
+                    GROUP BY 1
                 )
-                SELECT chats.*, episode_chats.chat_id IS NOT NULL AS is_episode,
+                -- An artifact edit only refreshes a conversation its turns already hold.
+                SELECT chats.chat_id, chats.kind, chats.request_json, chats.graph_target_json,
+                       MAX(chats.updated_at, COALESCE(edits.updated_at, '')) AS updated_at,
+                       episode_chats.chat_id IS NOT NULL AS is_episode,
                        COALESCE(worker.episode_id, child.auto_research_episode_id)
                            AS orchestrator_episode_id
                 FROM chats
                 LEFT JOIN episode_chats
                   ON episode_chats.chat_id = chats.chat_id
                  AND episode_chats.graph_target_json = chats.graph_target_json
+                LEFT JOIN edits ON edits.chat_id = chats.chat_id
                 LEFT JOIN auto_research_child_work AS worker
                   ON worker.worker_id = chats.chat_id AND worker.project_id = chats.project_id
                 LEFT JOIN auto_research_child_experiments AS child
                   ON child.child_episode_id = chats.chat_id AND child.project_id = chats.project_id
                 WHERE chats.position = 1
                 """,
-                (project_id, chat_id, chat_id, project_id),
+                (project_id, chat_id, chat_id, project_id, project_id, chat_id, chat_id),
             ).fetchall()
+            orchestrators = {
+                summary["chat_id"]: summary
+                for summary in self._orchestrator_chat_summaries(connection, project_id, chat_id)
+            }
             summaries = []
             for row in rows:
+                if (orchestrator_card := orchestrators.get(row["chat_id"])) is not None:
+                    # A human turn after the chain ends continues the orchestrator's one card.
+                    orchestrator_card["updated_at"] = max(
+                        orchestrator_card["updated_at"], row["updated_at"]
+                    )
+                    continue
                 request = json.loads(row["request_json"])
                 target = json.loads(row["graph_target_json"])
                 orchestrator = row["orchestrator_episode_id"]
@@ -96,18 +119,19 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                         ),
                     }
                 )
-            summaries.extend(self._orchestrator_chat_summaries(connection, project_id, chat_id))
+            summaries.extend(orchestrators.values())
         return summaries
 
     def _orchestrator_chat_summaries(
         self, connection: Any, project_id: str, chat_id: str | None
     ) -> list[dict[str, Any]]:
-        """One conversation per Auto-research chain, named by its root, which is its branch."""
+        """One conversation per Auto-research chain, named by its owning branch."""
         roots = connection.execute(
-            "SELECT episode_id, graph_target_json FROM episodes "
-            "WHERE project_id = ? AND mode = 'auto_research' "
-            "AND json_extract(graph_target_json, '$.branch_id') = episode_id "
-            "AND (? IS NULL OR episode_id = ?)",
+            "SELECT e.episode_id, e.graph_target_json FROM episodes e "
+            "JOIN graph_branches b ON b.project_id=e.project_id AND b.owner_episode_id=e.episode_id "
+            "AND b.branch_id=json_extract(e.graph_target_json, '$.branch_id') "
+            "WHERE e.project_id = ? AND e.mode = 'auto_research' "
+            "AND (? IS NULL OR e.episode_id = ?)",
             (project_id, chat_id, chat_id),
         ).fetchall()
         names = resolve_branch_names(connection, project_id) if roots else {}
@@ -126,13 +150,15 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                     "graph_title": target["branch_id"][:8],
                     "kind": "project_chat",
                     "node_id": None,
-                    "title": names.get(root["episode_id"]) or "Orchestrator",
+                    "title": names.get(target["branch_id"]) or "Orchestrator",
                     "updated_at": updated_at,
                     "message_count": len(messages),
                     "last_message_preview": "",
                     "conversation_kind": "auto_research",
                     "orchestrator_episode_id": root["episode_id"],
-                    "human_turn_refusal": None,
+                    "human_turn_refusal": cast("AppStore", self)._child_human_turn_refusal(
+                        connection, project_id, root["episode_id"]
+                    ),
                 }
             )
         return summaries
@@ -150,18 +176,22 @@ class ChatDisplayStoreMixin(StoreMixinBase):
         """The chain's newest turn update, and each orchestrator turn's human input and answers.
 
         Every chain member writes the root's branch, so the branch names the chain.
-        The human input is the starting instruction or the human mail the turn
-        delivered; a wake with neither has no human line.
+        An artifact edit replying to the chain is one of its turns. The human input
+        is the starting instruction or the human mail the turn delivered; a wake with
+        neither has no human line.
         """
         runs = connection.execute(
             "SELECT run.operation_id, run.request_json, run.result_json, run.created_at, "
             "run.updated_at, run.finished_at FROM episodes AS root "
+            "JOIN graph_branches b ON b.project_id=root.project_id AND b.owner_episode_id=root.episode_id "
+            "AND b.branch_id=json_extract(root.graph_target_json, '$.branch_id') "
             "JOIN graph_runs AS run ON run.project_id = root.project_id "
             "AND run.graph_target_json = root.graph_target_json "
             "WHERE root.project_id = ? AND root.episode_id = ? AND root.mode = 'auto_research' "
-            "AND json_extract(root.graph_target_json, '$.branch_id') = root.episode_id "
-            "AND run.kind = 'auto_research' AND run.visible = 1 "
-            "AND json_extract(run.request_json, '$.role') = 'orchestrator' "
+            "AND run.visible = 1 AND ((run.kind = 'auto_research' "
+            "AND json_extract(run.request_json, '$.role') = 'orchestrator') "
+            "OR (run.kind = 'artifact_edit' "
+            "AND json_extract(run.request_json, '$.artifact_edit.reply_episode_id') IS NOT NULL)) "
             "ORDER BY run.created_at, run.operation_id",
             (project_id, root_episode_id),
         ).fetchall()

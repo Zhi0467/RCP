@@ -133,15 +133,52 @@ def _install(
         )
 
 
-# Every orchestrator continuation writes its chain root's branch/chat.
+# Migrations 49 and 54 retain their original same-ID branch/chat SQL.
 _TASK_CHAT = (
     "CASE WHEN ROW.kind='auto_research' AND json_extract(ROW.request_json,'$.role')='orchestrator' "
     "THEN json_extract(ROW.graph_target_json,'$.branch_id') "
     "ELSE json_extract(ROW.request_json,'$.chat_id') END"
 )
+_BRANCH_TASK_CHAT = (
+    "CASE WHEN ROW.kind='auto_research' AND json_extract(ROW.request_json,'$.role')='orchestrator' "
+    "THEN (SELECT owner_episode_id FROM graph_branches WHERE project_id=ROW.project_id "
+    "AND branch_id=json_extract(ROW.graph_target_json,'$.branch_id')) "
+    "ELSE json_extract(ROW.request_json,'$.chat_id') END"
+)
 
 
-def _install_task_progress(connection: sqlite3.Connection) -> None:
+def _install_task_status(connection: sqlite3.Connection, chat: str = _TASK_CHAT) -> None:
+    _install(
+        connection,
+        "graph_runs",
+        [
+            _bump("ROW.project_id", "tasks.status", predicate="ROW.visible=1"),
+            _bump(
+                "ROW.project_id",
+                "artifacts",
+                predicate="json_extract(ROW.request_json,'$.artifact_edit') IS NOT NULL",
+            ),
+            _bump("ROW.project_id", "refs", predicate="ROW.visible=1"),
+            _bump(
+                "ROW.project_id",
+                "graph",
+                predicate="ROW.visible=1 AND (json_extract(ROW.request_json,'$.patch_kind')='experiment_loop' "
+                "OR EXISTS(SELECT 1 FROM episodes WHERE episode_id=ROW.episode_id AND mode='experiment_loop'))",
+            ),
+            _bump("ROW.project_id", "terminals"),
+            _bump("ROW.project_id", "episodes", predicate="ROW.episode_id IS NOT NULL"),
+            _bump(
+                "ROW.project_id",
+                "chats",
+                predicate=f"({chat}) IS NOT NULL",
+            ),
+        ],
+        columns=("project_id", "operation_id", "status", "finished_at", "visible", "history_only"),
+        suffix="_status",
+    )
+
+
+def _install_task_progress(connection: sqlite3.Connection, chat: str = _TASK_CHAT) -> None:
     """Any change to a task row, in any column it has now, moves its progress views."""
     _install(
         connection,
@@ -150,7 +187,7 @@ def _install_task_progress(connection: sqlite3.Connection) -> None:
             _bump("ROW.project_id", "tasks.progress", predicate="ROW.visible=1"),
             _bump("ROW.project_id", "task", "ROW.operation_id"),
             _bump("ROW.project_id", "episode", "ROW.episode_id", "ROW.episode_id IS NOT NULL"),
-            _bump("ROW.project_id", "chat", _TASK_CHAT, f"({_TASK_CHAT}) IS NOT NULL"),
+            _bump("ROW.project_id", "chat", chat, f"({chat}) IS NOT NULL"),
         ],
     )
 
@@ -164,6 +201,45 @@ def migrate_agent_live_status(connection: sqlite3.Connection) -> None:
     for event in ("insert", "update", "delete"):
         connection.execute(f"DROP TRIGGER resource_graph_runs_{event}")
     _install_task_progress(connection)
+
+
+def _human_mail_chat_bumps(
+    scope: str,
+    root: str = "(SELECT json_extract(graph_target_json,'$.branch_id') "
+    "FROM episodes WHERE episode_id=ROW.episode_id)",
+) -> list[str]:
+    delivered = "ROW.sender_role='human' AND ROW.delivery_operation_id IS NOT NULL"
+    return [_bump(scope, "chats", predicate=delivered), _bump(scope, "chat", root, delivered)]
+
+
+def migrate_graph_branch_versions(connection: sqlite3.Connection) -> None:
+    for table in ("graph_runs", "graph_runs_status", "auto_research_messages"):
+        for event in ("insert", "update", "delete"):
+            connection.execute(f"DROP TRIGGER resource_{table}_{event}")
+    _install_task_status(connection, _BRANCH_TASK_CHAT)
+    _install_task_progress(connection, _BRANCH_TASK_CHAT)
+    scope = "(SELECT project_id FROM episodes WHERE episode_id=ROW.episode_id)"
+    _install(
+        connection,
+        "auto_research_messages",
+        [
+            _bump(scope, "episodes"),
+            _bump(scope, "episode", "ROW.episode_id"),
+            *_human_mail_chat_bumps(
+                scope,
+                "(SELECT b.owner_episode_id FROM graph_branches b JOIN episodes e ON e.project_id=b.project_id "
+                "AND b.branch_id=json_extract(e.graph_target_json,'$.branch_id') WHERE e.episode_id=ROW.episode_id)",
+            ),
+        ],
+    )
+    _install(
+        connection,
+        "graph_branches",
+        [
+            _bump("ROW.project_id", resource)
+            for resource in ("episodes", "refs", "graph", "digest", "chats", "artifacts")
+        ],
+    )
 
 
 def migrate_resource_versions(connection: sqlite3.Connection) -> None:
@@ -238,24 +314,7 @@ def migrate_resource_versions(connection: sqlite3.Connection) -> None:
                     else []
                 ),
                 _bump(scope, "episode", "ROW.episode_id"),
-                *(
-                    [
-                        _bump(
-                            scope,
-                            "chats",
-                            predicate="ROW.sender_role='human' AND ROW.delivery_operation_id IS NOT NULL",
-                        ),
-                        _bump(
-                            scope,
-                            "chat",
-                            "(SELECT json_extract(graph_target_json,'$.branch_id') "
-                            "FROM episodes WHERE episode_id=ROW.episode_id)",
-                            "ROW.sender_role='human' AND ROW.delivery_operation_id IS NOT NULL",
-                        ),
-                    ]
-                    if table == "auto_research_messages"
-                    else []
-                ),
+                *(_human_mail_chat_bumps(scope) if table == "auto_research_messages" else []),
             ],
         )
     for table, entity in (
@@ -316,34 +375,7 @@ def migrate_resource_versions(connection: sqlite3.Connection) -> None:
                 _bump(scope, "chat", chat, f"{chat} IS NOT NULL"),
             ],
         )
-    _install(
-        connection,
-        "graph_runs",
-        [
-            _bump("ROW.project_id", "tasks.status", predicate="ROW.visible=1"),
-            _bump(
-                "ROW.project_id",
-                "artifacts",
-                predicate="json_extract(ROW.request_json,'$.artifact_edit') IS NOT NULL",
-            ),
-            _bump("ROW.project_id", "refs", predicate="ROW.visible=1"),
-            _bump(
-                "ROW.project_id",
-                "graph",
-                predicate="ROW.visible=1 AND (json_extract(ROW.request_json,'$.patch_kind')='experiment_loop' "
-                "OR EXISTS(SELECT 1 FROM episodes WHERE episode_id=ROW.episode_id AND mode='experiment_loop'))",
-            ),
-            _bump("ROW.project_id", "terminals"),
-            _bump("ROW.project_id", "episodes", predicate="ROW.episode_id IS NOT NULL"),
-            _bump(
-                "ROW.project_id",
-                "chats",
-                predicate=f"({_TASK_CHAT}) IS NOT NULL",
-            ),
-        ],
-        columns=("project_id", "operation_id", "status", "finished_at", "visible", "history_only"),
-        suffix="_status",
-    )
+    _install_task_status(connection)
     _install_task_progress(connection)
     # Project metadata used by settings changes independently of canonical files.
     _install(
@@ -388,4 +420,79 @@ def migrate_episode_report_deletion(connection: sqlite3.Connection) -> None:
         [_bump("ROW.project_id", "artifacts")],
         columns=("wrapup_state",),
         suffix="_wrapup",
+    )
+
+
+def install_bulletin_resource_versions(connection: sqlite3.Connection) -> None:
+    """Posts and their live roster refresh through the existing project polling loop."""
+    roster_columns = {
+        "bulletin_posts": (
+            "project_id",
+            "target_key",
+            "operation_id",
+            "created_at",
+            "text",
+            "mentions_json",
+            "refs_json",
+            "edited_at",
+            "deleted_at",
+        ),
+        "graph_branches": ("project_id", "branch_id", "name", "archived"),
+        "project_members": ("project_id", "user_id"),
+        "questions": ("project_id", "origin_json", "state", "withdrawn_readonly"),
+        "graph_runs": (
+            "project_id",
+            "episode_id",
+            "kind",
+            "graph_target_json",
+            "request_json",
+            "status",
+            "visible",
+            "created_at",
+        ),
+        "episodes": (
+            "project_id",
+            "episode_id",
+            "mode",
+            "control_node_id",
+            "continues_episode_id",
+            "status",
+        ),
+        "auto_research_child_work": (
+            "project_id",
+            "episode_id",
+            "current_operation_id",
+            "control_node_id",
+            "instruction",
+            "stop_requested_at",
+        ),
+        "watchers": (
+            "project_id",
+            "episode_id",
+            "worker_id",
+            "chat_id",
+            "graph_target_json",
+            "status",
+            "notified",
+            "notification_operation_id",
+        ),
+    }
+    for table, columns in roster_columns.items():
+        _install(
+            connection,
+            table,
+            [_bump("ROW.project_id", "bulletin")],
+            columns=columns,
+            # Posts own their table's triggers; the roster inputs share other owners' tables.
+            suffix="" if table == "bulletin_posts" else "_bulletin",
+        )
+
+    _install(
+        connection,
+        "space_users",
+        [
+            "INSERT INTO resource_versions(scope,resource,entity,generation) SELECT project_id,'bulletin','',1 FROM project_members WHERE user_id=ROW.user_id ON CONFLICT(scope,resource,entity) DO UPDATE SET generation=generation+1;"
+        ],
+        columns=("user_id", "display_name", "removal_started_at"),
+        suffix="_bulletin",
     )

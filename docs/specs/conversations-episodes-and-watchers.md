@@ -132,7 +132,8 @@ text cannot select it; resolution never skips an unusable current binding.
 
 Every resolution records `chat_session_resolution`. Fresh-session reasons are
 `no_session_yet`, `session_history_only`, `session_recovery_abandoned`,
-`session_stage_unavailable`, `session_stale`, or `session_context_unavailable`.
+`session_stage_unavailable`, `session_stale`, `session_context_unavailable`, or
+`orchestrator_session_unavailable`.
 `session_limit` keeps the session. Viewer edits use an artifact's saved session
 without making it current; composer comments use the current chat session.
 **New session** creates a new chat id. Provider, host, stage, target and scope
@@ -343,9 +344,10 @@ jobs leave `worktree_kept` with worktree, code branch and graph branch intact fo
 a later Merge; confirmed standalone removal may remove the worktree.
 
 Episode Merge may commit leftovers respecting Gitignore, but refuses interrupted
-Git operations, unmerged entries and dirty submodules. No code/graph residue
-allows verified local landing and one graph transition without a provider turn;
-otherwise one merge agent lands code before RCP verifies and commits graph state.
+Git operations, unmerged entries and dirty submodules. With no code conflict
+and nothing for the agent to answer, RCP lands code locally and commits one graph
+transition without a provider turn; otherwise one merge agent lands code and
+answers the graph plan before RCP builds and commits the graph change.
 [Episode merge](auto-research-and-branch-merge.md#episode-code-merge-and-cleanup)
 owns landing and cleanup.
 

@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import (
     EPISODE_TIMELINE_ERROR_MAX_LENGTH,
     EPISODE_TIMELINE_HEADLINE_MAX_LENGTH,
@@ -36,6 +37,7 @@ class EpisodeTimelineActor(TimelineModel):
     subtitle: str | None = None
     row_key: str
     owner_episode_id: str
+    graph_target: GraphTargetRef | None = None
     started_at: str | None = None
     ended_at: str | None = None
     outcome: str | None = None

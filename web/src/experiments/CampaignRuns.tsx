@@ -34,6 +34,7 @@ import type {
   GraphRef,
   MergeEpisodeBody,
 } from "../core/types";
+import { branchName } from "../core/branchNames";
 import { BranchTag } from "../core/BranchTag";
 import { EpisodeMergePanel } from "./EpisodeMergePanel";
 import { EpisodeReportLink } from "./EpisodeReportLink";
@@ -418,7 +419,10 @@ export function AutoResearchEpisodeCard({
                 </span>
               </header>
               <div className="campaign-branch-heads">
-                <GraphHeadFact label="Base on main" head={episode.graph_branch.base_head} />
+                <GraphHeadFact
+                  label={`From ${branchName(graphRefs, episode.graph_branch.parent_head?.target)}`}
+                  head={episode.graph_branch.parent_head}
+                />
                 <span className="campaign-branch-head-path" aria-hidden="true" />
                 <GraphHeadFact label="Branch head" head={episode.graph_branch.head} />
                 {episode.graph_branch.latest_successful_merge && (
@@ -484,6 +488,7 @@ export function AutoResearchEpisodeCard({
               apiBase={apiBase}
               episodeId={episode.episode_id}
               graphTarget={episode.graph_target}
+              graphRefs={graphRefs ?? []}
               onInspectTask={onInspectTask}
               childExperiments={childExperiments}
               onOpenExperimentEntry={onOpenExperimentEntry}

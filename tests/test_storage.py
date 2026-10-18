@@ -311,7 +311,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
             """
         ).fetchall()
     assert migrations == list(AppStore._STORAGE_SCHEMA_MIGRATIONS)
-    assert migrations[-1] == (55, "project_groups_v1")
+    assert migrations[-1] == (58, "project_worker_seats_v1")
 
     def unexpected_migration(*_args) -> None:
         raise AssertionError("completed storage migration was rescanned")
@@ -2247,10 +2247,15 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "lesson_command_receipts": 0,
         "evidence_flags": 0,
         "evidence_flag_command_receipts": 0,
+        "bulletin_posts": 0,
+        "bulletin_command_receipts": 0,
+        "bulletin_reads": 0,
+        "bulletin_mention_observations": 0,
         "operational_lessons": 0,
         "chat_pins": 0,
         "conversation_worktrees": 0,
         "branch_names": 0,
+        "graph_branches": 0,
         "branch_name_reservations": 0,
         "episode_isolations": 0,
         "episode_isolation_states": 0,

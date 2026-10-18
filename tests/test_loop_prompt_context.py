@@ -318,11 +318,17 @@ async def test_failed_node_status_staging_closes_the_work_mailbox(manifest, tmp_
 @pytest.mark.parametrize(
     ("child", "rule_id"), [(False, "ask_human"), (True, "escalate_to_orchestrator")]
 )
-def test_loop_interference_prompt_uses_resolved_launch_verbs(manifest, tmp_path, child, rule_id):
+@pytest.mark.parametrize("blind", [False, True])
+def test_loop_interference_prompt_uses_resolved_launch_verbs(
+    manifest, tmp_path, monkeypatch, child, rule_id, blind
+):
     from types import SimpleNamespace
 
     from rcp.agents import AgentProcessControl
+    from rcp.agents.graph_read_scope import GraphReadScope
     from rcp.background import AgentTaskExecution
+    from rcp.loop_status import LoopOverlap
+    from rcp.runs.experiment_loop import stage_chat_loop_status
     from rcp.runs.questions import work_command_handler
     from rcp.runs.tasks.experiment_loop import _loop_read_context
     from rcp.runs.tasks.work import WorkTurn
@@ -350,6 +356,30 @@ def test_loop_interference_prompt_uses_resolved_launch_verbs(manifest, tmp_path,
         run_on="laptop",
         run_truth_scope=["repo-a"],
     )
+    scope = GraphReadScope(
+        project_id=episode.project_id,
+        target=episode.graph_target,
+        ancestry_ceilings=() if blind else None,
+    )
+
+    if blind:
+        monkeypatch.setattr(
+            store,
+            "project_experiment_control_projection_snapshots",
+            lambda *args, **kwargs: pytest.fail("blind overlap must not be queried"),
+        )
+    staged = stage_chat_loop_status(
+        request,
+        execution,
+        tmp_path,
+        None,
+        state=service.history.state(),
+        graph_target=episode.graph_target,
+        read_scope=scope,
+    )
+    assert staged is not None
+    if blind:
+        assert staged["live_elsewhere"] == LoopOverlap().model_dump(mode="json", exclude_none=True)
     turn = cast(
         WorkTurn,
         SimpleNamespace(
@@ -358,7 +388,7 @@ def test_loop_interference_prompt_uses_resolved_launch_verbs(manifest, tmp_path,
             context=service.assemble_chat(request),
             compute_commands=None,
             service=service,
-            graph_read_scope=None,
+            graph_read_scope=scope,
         ),
     )
     prompt = _loop_read_context(turn)

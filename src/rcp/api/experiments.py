@@ -20,7 +20,7 @@ from rcp.api.dependencies import (
     require_registered_project,
 )
 from rcp.api.episode_branches import ensure_episode_graph_target
-from rcp.api.episodes import _episode_for_http, episode_on_branch
+from rcp.api.episodes import _episode_for_http, child_experiment_on_owned_branch
 from rcp.api.experiment_controls import _experiment_control, _experiment_operational_state
 from rcp.api.graph_changes import require_graph_edit_admission
 from rcp.api.identity import IdentityAccess
@@ -171,6 +171,8 @@ def run_experiment(
                     state,
                     node_id,
                     graph_target=(
+                        # An episode's own branch is named by the episode, as before
+                        # forks; chat and Runs readers key on that identity.
                         GraphTargetRef(kind="branch", branch_id=episode_id)
                         if creates_branch
                         else target
@@ -308,9 +310,7 @@ def stop_bound_experiment_episode(
         raise HTTPException(status_code=409, detail="This is not an Experiment-loop episode.")
     if episode.graph_target.kind == "branch":
         route = store.auto_research_child_experiment(episode.episode_id)
-        if route is not None and not episode_on_branch(
-            store, route.auto_research_episode_id, episode.graph_target.branch_id
-        ):
+        if route is not None and not child_experiment_on_owned_branch(store, episode):
             raise HTTPException(
                 status_code=409,
                 detail="The branch Experiment lost its Auto-research parent binding.",
@@ -342,7 +342,9 @@ def stop_bound_experiment_episode(
             if episode.graph_target.kind == "main"
             else main_service.for_graph_target(
                 episode.graph_target,
-                expected_episode_id=episode.graph_target.branch_id,
+                expected_episode_id=store.branch_owner(
+                    project_id, episode.graph_target.branch_id or ""
+                ),
                 initialize=False,
             )
         )
@@ -433,7 +435,7 @@ def continue_experiment_episode(
         if source.graph_target.kind == "main"
         else main_service.for_graph_target(
             source.graph_target,
-            expected_episode_id=source.graph_target.branch_id,
+            expected_episode_id=store.branch_owner(project_id, source.graph_target.branch_id or ""),
         )
     )
     state = target_service.history.state()

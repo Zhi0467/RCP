@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import heapq
 import uuid
+from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import (
@@ -39,7 +41,7 @@ from rcp.limits import CHAT_PAGE_DEFAULT_LIMIT, CHAT_PAGE_MAX_LIMIT, CHAT_TITLE_
 from rcp.projects import ProjectCatalog
 from rcp.runs.browser_lifecycle import close_chat_browser_owners
 from rcp.runs.chat_admission import require_chat_graph_target
-from rcp.service import ChatSummary, ChatSummaryPage, ChatTranscript, RunRequest
+from rcp.service import ChatMessage, ChatSummary, ChatSummaryPage, ChatTranscript, RunRequest
 from rcp.storage import AppStore
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -414,15 +416,26 @@ def chat(
     project_id = catalog.resolve_project_id(project_id)
     summary = next(iter(store.chat_inventory(project_id, chat_id)), None)
     if (
-        transcript is None
-        and summary is not None
+        summary is not None
         and summary["conversation_kind"] == "auto_research"
         and summary["graph_target"] == service.history.graph_target.model_dump()
     ):
-        # The orchestrator's conversation is its chain's tasks and human mail, not a chat file.
-        messages = store.orchestrator_chat_messages(project_id, chat_id)
+        # The orchestrator's conversation is its chain's tasks and human mail; human turns
+        # after the chain ends add a chat file. Each source keeps its own order; the two interleave.
+        messages = list(
+            heapq.merge(
+                [
+                    ChatMessage.model_validate(message)
+                    for message in store.orchestrator_chat_messages(project_id, chat_id)
+                ],
+                transcript.messages if transcript is not None else [],
+                key=lambda message: datetime.fromisoformat(message.timestamp),
+            )
+        )
         if messages:
-            transcript = ChatTranscript.model_validate({**summary, "messages": messages})
+            transcript = ChatTranscript.model_validate(
+                {**summary, "message_count": len(messages), "messages": messages}
+            )
     if transcript is None:
         raise HTTPException(status_code=404, detail="Chat not found")
     transcript = transcript.model_copy(

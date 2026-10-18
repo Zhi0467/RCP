@@ -15,6 +15,7 @@ from typing import Any, cast
 import pytest
 
 from rcp.agents import AgentEvent, AgentProcessControl
+from rcp.agents.auto_research_commands import auto_research_allowed_verbs
 from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.agents.command_mailbox import stage_command_mailbox as _stage_command_mailbox
 from rcp.agents.command_protocol import GraphDiffCommandRequest, MessageCommandRequest
@@ -576,7 +577,7 @@ def _setup_branch_auto_research(
     )
     _enable_task_attribution(main_service, store)
     assert episode.authorized_by is not None
-    main_service.history.create_episode_branch(
+    main_service.history.create_branch(
         GraphBranchMetadata(
             branch_id=episode_id,
             episode_id=episode_id,
@@ -3128,11 +3129,15 @@ def test_orchestrator_receives_the_project_settings_package_paths() -> None:
         ),
         repositories=[],
     )
+    verbs = auto_research_allowed_verbs("orchestrator")
     fresh = auto_research_orchestrator_task_contract(
-        project_name="project", skill_pointers=pointers, **common
+        project_name="project", skill_pointers=pointers, allowed_verbs=verbs, **common
     )
     continued = auto_research_orchestrator_continuation_contract(
-        original_contract_path="/stage/inputs/original.md", mode="continuation", **common
+        original_contract_path="/stage/inputs/original.md",
+        mode="continuation",
+        allowed_verbs=verbs,
+        **common,
     )
     assert "/stage/inputs/original.md" in continued
     values = auto_research_prompt_values(group_context=None, **common)
@@ -3162,7 +3167,9 @@ def test_orchestrator_inbox_prompt_exposes_harvest_data_contract() -> None:
     from rcp.agents.auto_research_prompt import _auto_research_commands
     from rcp.storage import AutoResearchLifecycleNoticeRecord
 
-    prompt = _auto_research_commands("/stage/rcp-agent", {})
+    prompt = _auto_research_commands(
+        "/stage/rcp-agent", {}, auto_research_allowed_verbs("orchestrator")
+    )
     assert "inbox --harvest" in prompt
     assert "inbox --clear" in prompt
     assert "wake_suppressed" in prompt
@@ -3268,16 +3275,16 @@ def test_orchestrator_context_consumes_staged_main_graph_pointer(
     )
     request = AutoResearchRunRequest.model_validate(root.request)
     context = auto_research_stream_module._auto_research_context(service, request, stage)
-    assert context.main_graph_path is None
+    assert context.parent_graph_path is None
     assert list(stage_path.glob("inputs/main-graph-*")) == []
     context = auto_research_stream_module._orchestrator_launch_context(service, request, stage)
-    assert context.main_graph_path is not None
-    snapshot = Path(context.main_graph_path)
+    assert context.parent_graph_path is not None
+    snapshot = Path(context.parent_graph_path)
     assert snapshot.is_relative_to(stage_path / "inputs")
     assert json.loads(snapshot.read_text()) == main_service.history.state().model_dump(mode="json")
     if not remote:
         assert snapshot.stat().st_mode & 0o222 == 0
-    assert context.graph_path != context.main_graph_path
+    assert context.graph_path != context.parent_graph_path
     assert [(item.alias, item.path) for item in context.shared_repositories] == [
         (item.alias, manifest.repository_map[item.alias].path) for item in context.repositories
     ]
@@ -3304,7 +3311,7 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
     )
     context = auto_research_stream_module._auto_research_context(service, request, stage)
     read_path = str(stage_path / "inputs" / "main-graph-snapshot.json")
-    context = context.model_copy(update={"main_graph_path": read_path})
+    context = context.model_copy(update={"parent_graph_path": read_path})
     overlap = LoopOverlap(
         rows=[
             LoopStatusRow(
@@ -3354,6 +3361,7 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
             patch_path=str(stage_path / "patch.json"),
             schema_path=str(stage_path / "schema.json"),
             command_client="/stage/rcp-agent",
+            allowed_verbs=auto_research_allowed_verbs("orchestrator"),
             messages_path=None,
             lifecycle_path=None,
             skill_pointers=[],
@@ -3369,7 +3377,9 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
         master_text = Path(master.path).read_text()
         assert read_path not in master_text
         assert "main-loop" not in master_text
-        assert not {"main_graph_path", "shared_repositories", "other_branch_loops"} & values.keys()
+        assert (
+            not {"parent_graph_path", "shared_repositories", "other_branch_loops"} & values.keys()
+        )
 
 
 def test_child_profile_choices_list_at_most_the_capped_models_per_provider():

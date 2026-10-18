@@ -58,6 +58,7 @@ from rcp.watchers import (
 )
 
 if TYPE_CHECKING:
+    from rcp.agents.graph_read_scope import GraphReadScope
     from rcp.runs.episodes.wrapup import EpisodeWrapupSpec
 
 _EXIT_STATUSES = frozenset({"completed"})
@@ -1118,6 +1119,7 @@ def stage_chat_loop_status(
     *,
     state: GraphState,
     graph_target: GraphTargetRef,
+    read_scope: GraphReadScope | None,
 ) -> dict[str, object] | None:
     """Fresh read-only status, independent of live watcher-maintenance resources."""
 
@@ -1129,7 +1131,11 @@ def stage_chat_loop_status(
     task = execution.store.agent_task(execution.operation_id) if execution is not None else None
     status = (
         loop_status_projection(
-            execution.store, task.project_id, request.node_id, graph_target=task.graph_target
+            execution.store,
+            task.project_id,
+            request.node_id,
+            graph_target=task.graph_target,
+            read_scope=read_scope,
         )
         if execution is not None and task is not None
         else LoopStatusProjection(

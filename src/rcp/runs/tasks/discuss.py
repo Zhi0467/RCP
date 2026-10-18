@@ -66,7 +66,7 @@ from rcp.runs.chat import (
     stage_artifact_context,
 )
 from rcp.runs.experiment_loop import stage_chat_experiment_watcher_resources, stage_chat_loop_status
-from rcp.runs.lessons import stage_lessons_pointer
+from rcp.runs.lessons import stage_operational_context_pointer
 from rcp.runs.patch_validator import cleanup_patch_validation_mailbox
 from rcp.runs.question_snapshots import (
     QuestionSnapshot,
@@ -215,7 +215,7 @@ def _prepare_discuss_chat_prompt(
         human_message=request.message,
         node=node,
         master=master,
-        lessons_pointer=stage_lessons_pointer(execution, local_stage, remote_stage),
+        lessons_pointer=stage_operational_context_pointer(execution, local_stage, remote_stage),
         context_delta=context_delta,
         read_context=read_context,
         invoked_skill_pointers=invoked_package_pointers(
@@ -756,6 +756,10 @@ async def stream_discuss_run(
                     reuse=resuming,
                 )
 
+            project_id = service._project_id
+            if project_id is None:
+                raise ValueError("Graph history reads require a canonical project identity.")
+            read_scope = GraphReadScope.resolve(project_id, service.history, context.group_context)
             context = context.model_copy(
                 update=stage_branch_read_context(context, service, local_stage, remote_stage)
             )
@@ -768,6 +772,7 @@ async def stream_discuss_run(
                         remote_stage,
                         state=service.history.state(),
                         graph_target=service.history.graph_target,
+                        read_scope=read_scope,
                     )
                 }
             )
@@ -843,15 +848,8 @@ async def stream_discuss_run(
                 for item in context.repositories
             ]
             compute_profiles = service.compute_prompt_profiles(request.resolved_compute_context)
-            project_id = service._project_id
-            if project_id is None:
-                raise ValueError("Graph history reads require a canonical project identity.")
             graph_read_scope = (
-                GraphReadScope.for_launch(
-                    project_id=project_id,
-                    target=service.history.graph_target,
-                    group_context=context.group_context,
-                )
+                read_scope
                 if request.artifact_edit is None or not request.artifact_edit.origin_bound
                 else None
             )
@@ -1026,7 +1024,7 @@ async def stream_discuss_run(
                         parts=[
                             continuation_contract,
                             render_chat_read_context(context),
-                            stage_lessons_pointer(execution, local_stage, remote_stage),
+                            stage_operational_context_pointer(execution, local_stage, remote_stage),
                             question_part,
                         ],
                         master=master,
@@ -1058,7 +1056,9 @@ async def stream_discuss_run(
                         role="discuss_retry_base",
                     )
                     prompt += "\n\n" + render_chat_read_context(context)
-                    prompt += "\n\n" + stage_lessons_pointer(execution, local_stage, remote_stage)
+                    prompt += "\n\n" + stage_operational_context_pointer(
+                        execution, local_stage, remote_stage
+                    )
                     if execution is not None:
                         record_session_master(
                             execution.store,

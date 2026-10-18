@@ -86,7 +86,7 @@ def test_branch_discuss_and_work_share_normal_session_during_and_after_episode(
     client = signed_in_client(app)
     store = app.state.catalog.store
     project_id = app.state.default_project_id
-    branch_id = episode.episode_id
+    branch_id = episode.graph_target.branch_id
     branch = main.for_graph_target(episode.graph_target)
     launcher = ScriptedLauncher(
         [{}, {"patch.json": agent_patch_json(_branch_patch("ev/human-review"))}, {}],
@@ -112,7 +112,7 @@ def test_branch_discuss_and_work_share_normal_session_during_and_after_episode(
     assert launcher.launch_kwargs[0]["capability"] == "discuss"
 
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
-    store.mark_episode_stop_skipped(branch_id)
+    store.mark_episode_stop_skipped(episode.episode_id)
     second = client.post(
         url,
         json={**payload, "mode": "work", "session_id": first_task.native_session_id},
@@ -210,7 +210,7 @@ def test_branch_merge_admits_fresh_discuss_without_graph_authority(
         "mode": "discuss",
         "run_truth_scope": ["repo-a"],
     }
-    url = f"/api/projects/{episode.project_id}/tasks/{kind}?branch_id={episode.episode_id}"
+    url = f"/api/projects/{episode.project_id}/tasks/{kind}?branch_id={episode.graph_target.branch_id}"
 
     response = client.post(url, json=payload)
     assert response.status_code == 202, response.json()
@@ -248,7 +248,9 @@ def test_branch_chat_api_requires_existing_canonical_branch_and_explicit_route(m
         == 404
     )
     assert (
-        client.post(f"{base}/tasks/refresh?branch_id={episode.episode_id}", json={}).status_code
+        client.post(
+            f"{base}/tasks/refresh?branch_id={episode.graph_target.branch_id}", json={}
+        ).status_code
         == 422
     )
     assert (
@@ -258,6 +260,118 @@ def test_branch_chat_api_requires_existing_canonical_branch_and_explicit_route(m
         ).status_code
         == 422
     )
+
+
+def _end_orchestrator(app, root, stage: Path, *, seed="resumed"):
+    """Settle the chain root's orchestrator turn on a saved session, then end the chain."""
+    store = app.state.catalog.store
+    stage.mkdir()
+    store.checkpoint_agent_task(
+        root.operation_id, native_session_id="orchestrator-session", stage_root=str(stage)
+    )
+    store.complete_agent_task(root.operation_id, applied_revision=None, result={})
+    with store.connection() as connection:
+        if seed == "history_only":
+            connection.execute(
+                "UPDATE graph_runs SET history_only = 1 WHERE operation_id = ?",
+                (root.operation_id,),
+            )
+        elif seed == "other_provider":
+            connection.execute(
+                "UPDATE graph_runs SET request_json = ? WHERE operation_id = ?",
+                (json.dumps({**root.request, "provider": "claude"}), root.operation_id),
+            )
+        elif seed == "stale":
+            store._insert_agent_task_receipt(
+                connection,
+                root.operation_id,
+                "provider_terminal_error",
+                store._bounded_receipt_payload({"classification": "stale_session"}),
+                tier="summary",
+                created_at=store.now(),
+            )
+    store.mark_episode_stop_skipped(root.episode_id)
+
+
+@pytest.mark.parametrize("seed", ["resumed", "history_only", "other_provider", "stale"])
+def test_orchestrator_chat_takes_human_turns_only_after_the_chain_ends(
+    manifest, tmp_path, monkeypatch, seed
+):
+    app, _main, episode, root = _app_branch(manifest, tmp_path)
+    store = app.state.catalog.store
+    monkeypatch.setattr(app.state.background_tasks, "launch_admitted", store.agent_task)
+    client = signed_in_client(app)
+    url = (
+        f"/api/projects/{episode.project_id}/tasks/project_chat"
+        f"?branch_id={episode.graph_target.branch_id}"
+    )
+    payload = {
+        "chat_id": episode.episode_id,
+        "message": "What did the chain conclude?",
+        "mode": "work",
+        "provider": "codex",
+        "run_on": "laptop",
+        "run_truth_scope": ["repo-a"],
+    }
+    refused = client.post(url, json=payload)
+    assert refused.status_code == 422
+    assert refused.json()["detail"] == "auto_research_orchestrator_running"
+    assert (
+        store.child_human_turn_refusal(episode.project_id, episode.episode_id)["code"]
+        == "auto_research_orchestrator_running"
+    )
+
+    _end_orchestrator(app, root, tmp_path / "stage", seed=seed)
+    assert store.child_human_turn_refusal(episode.project_id, episode.episode_id) is None
+    # The conversation lives on the chain's branch, never main.
+    off_branch = client.post(url.split("?")[0], json=payload)
+    assert off_branch.status_code == 422
+    admitted = client.post(url, json=payload)
+    assert admitted.status_code == 202, admitted.json()
+    task = store.agent_task(admitted.json()["operation_id"])
+    assert task.request["chat_id"] == episode.episode_id
+    assert task.episode_id is None
+    (resolution,) = [
+        receipt.payload
+        for receipt in store.agent_task_receipts(task.operation_id)
+        if receipt.category == "chat_session_resolution"
+    ]
+    if seed == "resumed":
+        assert task.native_session_id == "orchestrator-session"
+        assert task.stage_root == str(tmp_path / "stage")
+        assert resolution["outcome"] == "continued"
+        assert resolution["source_operation_id"] == root.operation_id
+    else:
+        assert task.native_session_id is None
+        assert resolution["outcome"] == "fresh"
+        assert (
+            resolution["reason_code"]
+            == {
+                "history_only": "orchestrator_session_unavailable",
+                "other_provider": "provider_mismatch",
+                "stale": "session_stale",
+            }[seed]
+        )
+
+
+def test_orchestrator_chat_turn_blocks_chain_continuation(manifest, tmp_path, monkeypatch):
+    app, _main, episode, root = _app_branch(manifest, tmp_path)
+    store = app.state.catalog.store
+    monkeypatch.setattr(app.state.background_tasks, "launch_admitted", store.agent_task)
+    _end_orchestrator(app, root, tmp_path / "stage")
+    response = signed_in_client(app).post(
+        f"/api/projects/{episode.project_id}/tasks/project_chat"
+        f"?branch_id={episode.graph_target.branch_id}",
+        json={"chat_id": episode.episode_id, "message": "Summarize.", "mode": "discuss"},
+    )
+    assert response.status_code == 202, response.json()
+    source = store.episode(episode.episode_id)
+    with store.connection() as connection, pytest.raises(ValueError) as error:
+        store.require_auto_research_continuation_available(connection, source)
+    assert str(error.value) == f"auto_research_child_turn_active:{episode.episode_id}"
+    store.complete_agent_task(response.json()["operation_id"], applied_revision=None, result={})
+    with store.connection() as connection:
+        store.require_auto_research_continuation_available(connection, source)
 
 
 @pytest.mark.parametrize("action", ["resume", "retry"])
@@ -284,7 +398,7 @@ def test_branch_chat_recovery_uses_original_graph_target(manifest, tmp_path, mon
 
     monkeypatch.setattr(app.state.launcher, "stream", launch)
     started = client.post(
-        f"{base}/tasks/project_chat?branch_id={episode.episode_id}",
+        f"{base}/tasks/project_chat?branch_id={episode.graph_target.branch_id}",
         json={"chat_id": str(uuid.uuid4()), "message": "Record the result.", "mode": "work"},
     )
     assert started.status_code == 202, started.json()
@@ -320,7 +434,7 @@ def test_branch_chat_patch_repair_does_not_apply_to_main(manifest, tmp_path, mon
     )
     monkeypatch.setattr(app.state.launcher, "stream", launcher.stream)
     started = client.post(
-        f"{base}/tasks/project_chat?branch_id={episode.episode_id}",
+        f"{base}/tasks/project_chat?branch_id={episode.graph_target.branch_id}",
         json={"chat_id": str(uuid.uuid4()), "message": "Record the result.", "mode": "work"},
     )
     assert started.status_code == 202, started.json()
@@ -385,7 +499,7 @@ def test_human_branch_experiment_has_own_episode_and_target_bound_recovery(
         store.mark_episode_stop_skipped(branch_episode.episode_id)
     monkeypatch.setattr(app.state.launcher, "stream", launch)
     started = client.post(
-        f"{base}/experiments/exp%2Fbounded-loop/run?branch_id={branch_episode.episode_id}",
+        f"{base}/experiments/exp%2Fbounded-loop/run?branch_id={branch_episode.graph_target.branch_id}",
         json={"chat_id": str(uuid.uuid4())},
     )
     assert started.status_code == 202, started.json()
@@ -438,8 +552,9 @@ def test_restart_creates_and_launches_a_reserved_experiment_branch(
     assert response.status_code == 202, response.json()
     root = tasks.store.agent_task(response.json()["operation_id"])
     assert root.status == "queued"
+    branch_id = tasks.store.episode(root.episode_id).graph_target.branch_id
     with pytest.raises(KeyError):
-        service.history.branch(root.episode_id)
+        service.history.branch(branch_id)
 
     restarted = BackgroundAgentTasks(tasks.store, tasks.stream)
     spawned: list[str] = []
@@ -449,7 +564,7 @@ def test_restart_creates_and_launches_a_reserved_experiment_branch(
     ensure = partial(ensure_episode_graph_target, catalog=app.state.catalog)
     assert reconcile_reserved_experiment_branch_roots(restarted, ensure) == [root.operation_id]
     assert spawned == [root.operation_id]
-    assert service.history.branch(root.episode_id).head_ref().target.branch_id == root.episode_id
+    assert service.history.branch(branch_id).head_ref().target.branch_id == branch_id
 
 
 def test_branch_retry_does_not_initialize_branch(manifest, tmp_path, monkeypatch):
@@ -466,7 +581,7 @@ def test_branch_retry_does_not_initialize_branch(manifest, tmp_path, monkeypatch
     with signed_in_client(app) as client:
         started = client.post(
             f"/api/projects/{project_id}/tasks/project_chat",
-            params={"branch_id": episode.episode_id},
+            params={"branch_id": episode.graph_target.branch_id},
             json={"chat_id": str(uuid.uuid4()), "message": "Explain.", "mode": "discuss"},
         )
         assert started.status_code == 202, started.text

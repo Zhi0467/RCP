@@ -27,6 +27,8 @@ from rcp.agents.command_protocol import (
     WatchGraphCommandRequest,
 )
 from rcp.core.models import GraphState
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.limits import AUTO_RESEARCH_FORK_STATUS_MAX_ROWS
 from rcp.loop_status import other_branch_auto_research, other_branch_loops
 from rcp.runs.auto_research import (
     AutoResearchCommandContext,
@@ -34,6 +36,7 @@ from rcp.runs.auto_research import (
     AutoResearchCommandEffects,
     AutoResearchCommandInvalid,
     AutoResearchCommandUnavailable,
+    AutoResearchMergeCommand,
     AutoResearchValidateCommand,
     project_auto_research_episode,
     validate_auto_research_worker_request,
@@ -76,6 +79,7 @@ from rcp.storage.auto_research_children import (
     AutoResearchInboxNoticeUnacknowledgeable,
     auto_research_inbox_projection,
 )
+from rcp.transport import StateUnavailable
 
 if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
@@ -102,9 +106,11 @@ def auto_research_command_effects(
     graph_state: AutoResearchGraphState,
     execution_host: str,
     apply_patch: AutoResearchApplyPatch | None = None,
+    merge: AutoResearchMergeCommand | None = None,
     on_graph_applied: AutoResearchGraphApplied | None = None,
     on_watcher_ready: AutoResearchWatcherReadyHook | None = None,
     experiment_coordinator: AutoResearchExperimentCoordinator | None = None,
+    branch_head: Callable[[GraphTargetRef], GraphHeadRef] | None = None,
 ) -> AutoResearchCommandEffects:
     """Bind staged auto_research commands to the existing durable runtime seams.
 
@@ -217,6 +223,51 @@ def auto_research_command_effects(
         result["other_auto_research"] = other_branch_auto_research(
             store, episode.project_id, graph_target=episode.graph_target
         ).model_dump(mode="json", exclude_none=True)
+        forks = [
+            branch
+            for branch in store.branches_owned_by(episode.project_id, episode.episode_id)
+            if branch.branch_id != episode.graph_target.branch_id
+        ]
+        names = store.branch_names(episode.project_id)
+        fork_rows = []
+        unavailable_heads = []
+        for branch in forks[:AUTO_RESEARCH_FORK_STATUS_MAX_ROWS]:
+            if branch_head is None:
+                unavailable_heads.append(branch.branch_id)
+                continue
+            parent = branch.parent_head
+            parent_ref = (
+                "main"
+                if parent.target.kind == "main"
+                else f"branch:{names[parent.target.branch_id or '']}"
+            )
+            target = GraphTargetRef(kind="branch", branch_id=branch.branch_id)
+            try:
+                head = branch_head(target)
+            except (
+                AutoResearchCommandUnavailable,
+                StateUnavailable,
+                OSError,
+                ValueError,
+                KeyError,
+            ):
+                unavailable_heads.append(branch.branch_id)
+                continue
+            fork_rows.append(
+                {
+                    "branch_id": branch.branch_id,
+                    "name": branch.name,
+                    "parent": f"{parent_ref}@{parent.revision}",
+                    "head": head.model_dump(mode="json"),
+                    **store.graph_branch_live_child_counts(episode.project_id, branch.branch_id),
+                    "archived": branch.archived,
+                }
+            )
+        if unavailable_heads:
+            raise AutoResearchCommandUnavailable(
+                "Branch heads are unavailable: " + ", ".join(unavailable_heads)
+            )
+        result["forks"] = {"rows": fork_rows, "omitted": max(0, len(forks) - len(fork_rows))}
         if arguments.worker_id is not None:
             route, leaf = _worker_leaf(store, context, arguments.worker_id)
             result["worker"] = _worker_status(store, route, leaf)
@@ -280,6 +331,7 @@ def auto_research_command_effects(
                 instruction=snapshot.text,
                 instruction_sha256=snapshot.sha256,
                 admission_id=planned_worker_id,
+                graph_target=context.child_graph_target,
             )
         except AutoResearchChildProfileInvalid as exc:
             # The dispatcher cancels the accepted admission on an invalid result.
@@ -486,6 +538,7 @@ def auto_research_command_effects(
                     goal_sha256=goal_sha256,
                     invocation_limit=arguments.invocation_limit,
                     admission_id=planned_episode_effect_id,
+                    graph_target=context.child_graph_target,
                     provider=arguments.provider,
                     model=arguments.model,
                     reasoning=arguments.reasoning,
@@ -644,6 +697,14 @@ def auto_research_command_effects(
             return None
         if (
             isinstance(request, EpisodeCommandRequest)
+            and isinstance(request.arguments, ExperimentKickoffArguments)
+            and planned_effect_id is not None
+        ):
+            if store.auto_research_child_experiment(planned_effect_id) is None:
+                return None
+            return episode(context, request.arguments, planned_effect_id)
+        if (
+            isinstance(request, EpisodeCommandRequest)
             and isinstance(request.arguments, EpisodeControlArguments)
             and request.arguments.action == "resume"
             and planned_effect_id is not None
@@ -785,7 +846,8 @@ def auto_research_command_effects(
             or snapshot.filename != arguments.instruction_file
             or route.instruction != snapshot.text
             or route.instruction_sha256 != snapshot.sha256
-            or root.kind != "node_chat"
+            or root.kind != ("project_chat" if arguments.project else "node_chat")
+            or root.graph_target != (context.child_graph_target or context.episode.graph_target)
             or root.project_id != context.episode.project_id
             or root.episode_id != context.episode.episode_id
             or root.parent_operation_id is not None
@@ -825,6 +887,7 @@ def auto_research_command_effects(
         reconcile_unknown=reconcile_unknown,
         worker_lookup=worker_lookup,
         verify_spawn=verify_spawn,
+        merge=merge,
     )
 
 

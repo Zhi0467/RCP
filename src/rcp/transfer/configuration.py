@@ -250,6 +250,7 @@ def _inspect_retained_transfer_history(
         raise ValueError("retained main history is later than the transfer archive")
 
     branch_revisions: list[RetainedTransferBranch] = []
+    retained_metadata: dict[str, GraphBranchMetadata] = {}
     archive_heads = {
         head.target.branch_id: head.revision
         for head in archive.branch_heads
@@ -301,8 +302,12 @@ def _inspect_retained_transfer_history(
                 relative,
             )
         )
+        retained_metadata[branch_id] = branch_metadata
         expected_revisions = list(
-            range(branch_metadata.base_head.revision + 1, branch_metadata.head.revision + 1)
+            range(
+                branch_metadata.effective_parent_head.revision + 1,
+                branch_metadata.head.revision + 1,
+            )
         )
         if [revision for revision, _path in patch_paths] != expected_revisions:
             raise ValueError("retained branch Patch history does not match its metadata")
@@ -313,9 +318,9 @@ def _inspect_retained_transfer_history(
         failure = accepted_transition_head_chain_failure(
             patches,
             target=GraphTargetRef(kind="branch", branch_id=branch_id),
-            initial_transition_id=branch_metadata.base_head.transition_id,
+            initial_transition_id=branch_metadata.effective_parent_head.transition_id,
         )
-        transition_id = branch_metadata.base_head.transition_id
+        transition_id = branch_metadata.effective_parent_head.transition_id
         for patch in patches:
             if patch.admission == "accepted" and patch.transition is not None:
                 transition_id = patch.transition.transition_id
@@ -333,6 +338,9 @@ def _inspect_retained_transfer_history(
             )
         )
 
+    from rcp.history.ancestry import validate_branch_ancestry
+
+    validate_branch_ancestry(retained_metadata, main_revision=max(main_revisions, default=0))
     fingerprint = hashlib.sha256()
     for relative, digest in bound:
         fingerprint.update(relative.encode("utf-8"))

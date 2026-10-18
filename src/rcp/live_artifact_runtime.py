@@ -81,7 +81,14 @@ def _owner(store, artifact):
     if artifact.episode_id and (
         episode is None
         or episode.project_id != artifact.project_id
-        or episode.graph_target != task.graph_target
+        or (
+            episode.graph_target != task.graph_target
+            and task.graph_target.branch_id
+            not in {
+                branch.branch_id
+                for branch in store.branches_owned_by(artifact.project_id, episode.episode_id)
+            }
+        )
     ):
         raise ValueError("The artifact's episode graph target is unavailable.")
     return task, episode
@@ -99,13 +106,11 @@ def _graph_history(service, task):
             return history.parent
         return history.parent.branch(
             task.graph_target.branch_id,
-            expected_episode_id=task.graph_target.branch_id,
             expected_project_id=task.project_id,
             initialize=False,
         )
     return service.for_graph_target(
         task.graph_target,
-        expected_episode_id=task.graph_target.branch_id,
         initialize=False,
     ).history
 

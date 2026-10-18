@@ -84,6 +84,7 @@ class StartEpisodeBody(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     mode: Literal["auto_research"]
+    bulletin_enabled: bool = True
     browser_requested: bool = False
     code_worktree: bool | None = None
     graph_isolation: Literal[True] = True
@@ -241,6 +242,7 @@ class EpisodeResponse(EpisodeLoopMetadata):
     episode_id: str
     project_id: str
     mode: EpisodeMode
+    bulletin_enabled: bool = True
     browser_requested: bool = False
     code_worktree: bool
     graph_isolation: bool
@@ -343,7 +345,11 @@ def serialize_episode(
     ):
         raise ValueError("Experiment episode projection does not match its durable parent.")
     has_graph_branch = episode.graph_target.kind == "branch"
-    owns_graph_branch = has_graph_branch and episode.graph_target.branch_id == episode.episode_id
+    owns_graph_branch = (
+        has_graph_branch
+        and store.branch_owner(project_id, episode.graph_target.branch_id or "")
+        == episode.episode_id
+    )
     if owns_graph_branch and include_graph_branch and branch_summary is None:
         raise ValueError("a branch-target episode requires its strict graph branch summary")
 
@@ -428,6 +434,7 @@ def serialize_episode(
         episode_id=episode.episode_id,
         project_id=episode.project_id,
         mode=episode.mode,
+        bulletin_enabled=episode.bulletin_enabled,
         browser_requested=episode.browser_requested,
         code_worktree=episode.code_worktree,
         graph_isolation=episode.graph_isolation,
@@ -435,7 +442,11 @@ def serialize_episode(
         isolation_state=store.episode_isolation_state(
             project_id,
             episode.isolation_owner_episode_id
-            or episode.graph_target.branch_id
+            or (
+                store.branch_owner(project_id, episode.graph_target.branch_id or "")
+                if has_graph_branch
+                else None
+            )
             or episode.episode_id,
         ),
         control_node_id=episode.control_node_id,
@@ -541,13 +552,8 @@ def listed_episodes(
             or episode.status in _LIVE_EPISODE_STATUSES
         ):
             return True
-        state = store.episode_isolation_state(
-            project_id,
-            episode.isolation_owner_episode_id
-            or episode.graph_target.branch_id
-            or episode.episode_id,
-        )
-        return state is None or not state.graph_archived
+        branch = store.graph_branch(project_id, episode.graph_target.branch_id or "")
+        return branch is None or not branch.archived
 
     # Filter before the limit so hidden archived branches do not shrink the list.
     every = [episode for episode in store.episodes(project_id, limit=None) if listed(episode)]
@@ -556,7 +562,11 @@ def listed_episodes(
     # Agents lists every Auto-research orchestrator, so each chain's current
     # member stays listed however many newer episodes there are.
     for root in every:
-        if root.mode == "auto_research" and root.graph_target.branch_id == root.episode_id:
+        if (
+            root.mode == "auto_research"
+            and root.graph_target.kind == "branch"
+            and store.branch_owner(project_id, root.graph_target.branch_id or "") == root.episode_id
+        ):
             current = store.episode_chain(root.episode_id)[-1]
             if listed(current):
                 selected_by_id[current.episode_id] = current
@@ -680,9 +690,8 @@ def _chain_members(
 def episode_on_branch(store: AppStore, episode_id: str | None, branch_id: str) -> bool:
     """Whether ``episode_id`` names a member of the branch's continuation chain.
 
-    A branch keeps its chain root's id while child routes and Work allocations
-    belong to whichever member owns them now, so ownership is chain membership,
-    not identity with the root.
+    Continuations keep their chain's branch while child routes and Work allocations
+    belong to whichever member owns them now.
     """
 
     if episode_id is None:
@@ -692,6 +701,25 @@ def episode_on_branch(store: AppStore, episode_id: str | None, branch_id: str) -
         member is not None
         and member.graph_target.kind == "branch"
         and member.graph_target.branch_id == branch_id
+    )
+
+
+def child_experiment_on_owned_branch(store: AppStore, episode: EpisodeRecord) -> bool:
+    """Validate the durable child route against its exact target's lineage owner."""
+    route = store.auto_research_child_experiment(episode.episode_id)
+    if route is None:
+        return False
+    parent = store.episode(route.auto_research_episode_id)
+    return (
+        parent is not None
+        and parent.mode == "auto_research"
+        and parent.project_id == route.project_id == episode.project_id
+        and route.control_node_id == episode.control_node_id
+        and episode.graph_target.kind == "branch"
+        and any(
+            branch.branch_id == episode.graph_target.branch_id
+            for branch in store.branches_owned_by(episode.project_id, parent.episode_id)
+        )
     )
 
 

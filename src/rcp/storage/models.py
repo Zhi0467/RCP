@@ -2369,6 +2369,7 @@ class EpisodeRecord(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    bulletin_enabled: bool = True
     browser_requested: bool = False
     episode_id: str
     project_id: str
@@ -2396,8 +2397,7 @@ class EpisodeRecord(BaseModel):
     updated_at: str
     ended_at: str | None = None
     #: The ended episode this one adds turns to. A continuation runs on the
-    #: source's graph branch and native session; the branch keeps the chain
-    #: root's id as its ``branch_id`` forever.
+    #: source's graph branch and native session; branch ownership stays with the chain root.
     continues_episode_id: str | None = None
     #: The client's idempotency key for the continuation request.
     continuation_request_id: str | None = None
@@ -2418,14 +2418,8 @@ class EpisodeRecord(BaseModel):
             raise ValueError("a main-target episode cannot carry a branch base head")
         if self.graph_target.kind == "branch":
             self.graph_isolation = True
-            if self.graph_base_head is None or self.graph_base_head.target.kind != "main":
-                raise ValueError("a branch-target episode requires its immutable main base head")
-            if (
-                self.mode == "auto_research"
-                and self.graph_target.branch_id != self.episode_id
-                and self.continues_episode_id is None
-            ):
-                raise ValueError("an Auto-research episode must own its same-id graph branch")
+            if self.graph_base_head is None:
+                raise ValueError("a branch-target episode requires its immutable parent head")
         if self.continues_episode_id == self.episode_id:
             raise ValueError("an episode cannot continue itself")
         if self.continuation_request_id is not None and self.continues_episode_id is None:
@@ -2437,6 +2431,22 @@ class EpisodeRecord(BaseModel):
     @property
     def invocations_remaining(self) -> int:
         return max(0, self.invocation_ceiling - self.invocations_used)
+
+
+class GraphBranchRecord(BaseModel):
+    """Operational identity, ownership and visibility of a canonical graph branch."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str = Field(min_length=1)
+    branch_id: str = Field(min_length=1)
+    owner_episode_id: str | None = Field(default=None, min_length=1)
+    parent_head: GraphHeadRef
+    created_by: str = Field(min_length=1)
+    created_at: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    archived: bool = False
+    auto_archive: bool = False
 
 
 class EpisodeArchiveState(BaseModel):
@@ -2666,7 +2676,7 @@ class AutoResearchChildWorkRecord(BaseModel):
     worker_id: str
     episode_id: str
     project_id: str
-    control_node_id: str
+    control_node_id: str | None
     root_operation_id: str
     current_operation_id: str
     admitted_by_operation_id: str
@@ -3674,6 +3684,10 @@ _PROJECT_ID_TABLES = (
     "graph_watcher_reconciliation",
     "operational_lessons",
     "lesson_command_receipts",
+    "bulletin_posts",
+    "bulletin_command_receipts",
+    "bulletin_reads",
+    "bulletin_mention_observations",
     "evidence_flags",
     "evidence_flag_command_receipts",
     "digest_events",
@@ -3849,6 +3863,7 @@ __all__ = [
     "ExperimentControlProjectionSnapshot",
     "ExperimentLoopRuntime",
     "EpisodeArchiveState",
+    "GraphBranchRecord",
     "EpisodeBudgetMeter",
     "EpisodeEnding",
     "EpisodeInvocationCeilingReached",

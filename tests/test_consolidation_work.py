@@ -301,6 +301,7 @@ async def test_consolidation_bound_owner_pins_workflow_and_refuses_watchers(
         "apply",
         "lesson",
         "flag",
+        "bulletin",
     }
     launcher = ScriptedLauncher(
         [{"watch.json": "{}"}], message="Consolidation finished.", outcome=outcome

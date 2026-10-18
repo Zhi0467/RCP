@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from typing import TYPE_CHECKING, Literal, get_args
 
@@ -13,6 +13,7 @@ from rcp.core.models import (
     BranchMergeReceipt,
     GraphState,
     Patch,
+    ValidationMessage,
 )
 from rcp.core.operations import (
     CreateAmbiguitiesOperation,
@@ -21,6 +22,7 @@ from rcp.core.operations import (
     CreateProposalsOperation,
     GraphOperation,
     MergeNodesOperation,
+    ProposalOperation,
     RemoveEdgesOperation,
     RemoveNodesOperation,
     ResolveAmbiguitiesOperation,
@@ -41,6 +43,7 @@ from rcp.providers import AgentCapability
 
 if TYPE_CHECKING:
     from rcp.core.validation.report import ValidationReport
+    from rcp.core.validation.settings import ValidationContext
 
 
 AGENT_GRAPH_AUTHORITY_POLICY_VERSION = "s115-v2"
@@ -54,10 +57,32 @@ DispatchPatchKind = Literal["seed", "refresh", "work", "experiment_loop"]
 ProjectMembershipCheck = Callable[[str, str], bool]
 
 
-class AgentAuthorizerDeparted(ValueError):
+class AuthorityRefusal(ValueError):
+    """An authority refusal retaining the gate's complete structured diagnostics."""
+
+    def __init__(self, diagnostics: Iterable[ValidationMessage]) -> None:
+        self.diagnostics = tuple(diagnostics)
+        super().__init__(
+            "; ".join(item.message for item in self.diagnostics if item.level == "reject")
+        )
+
+
+class AgentAuthorizerDeparted(AuthorityRefusal):
     """The live authorizer no longer holds project membership."""
 
     code = "agent_authorizer_departed"
+
+    def __init__(self, message: str) -> None:
+        super().__init__((ValidationMessage(level="reject", code=self.code, message=message),))
+
+
+class AgentTaskAuthorityRefused(AuthorityRefusal):
+    """The live agent task does not authorize this candidate's attribution or scope."""
+
+    code = "agent-task-authority-refused"
+
+    def __init__(self, message: str) -> None:
+        super().__init__((ValidationMessage(level="reject", code=self.code, message=message),))
 
 
 class AgentDispatchScope(BaseModel):
@@ -118,6 +143,12 @@ class AgentTaskAuthority(BaseModel):
     authorized_by: AuthorizedHuman | None
     dispatch_authority: AgentDispatchAuthority | None
     episode_id: str | None = Field(default=None, min_length=1)
+    merge_source: GraphTargetRef | None = None
+    merge_dispatcher: Literal["member", "orchestrator"] | None = None
+
+    @property
+    def member_merge_source(self) -> GraphTargetRef | None:
+        return self.merge_source if self.merge_dispatcher == "member" else None
 
 
 ORDINARY_AGENT_TASK_CONTRACTS: frozenset[AgentCapability] = frozenset(
@@ -133,12 +164,19 @@ def _require_scope_shape(
     authority: AgentDispatchAuthority,
     *,
     action: Literal["dispatch", "apply"],
+    member_merge_source: GraphTargetRef | None = None,
 ) -> None:
     contract = authority.task_contract
     scope = authority.scope
+    if member_merge_source is not None and (
+        member_merge_source.kind != "branch"
+        or authority.profile != "orchestrator"
+        or contract != "orchestrate"
+    ):
+        raise ValueError("member merge authority requires an exact branch source and orchestrator")
     if contract == "orchestrate":
         if (
-            scope.episode_id is None
+            (scope.episode_id is None and member_merge_source is None)
             or not scope.run_truth_scope
             or scope.patch_kind != "work"
             or any(
@@ -233,7 +271,9 @@ def _require_scope_shape(
         )
 
 
-def require_dispatch(authority: AgentDispatchAuthority) -> AgentDispatchAuthority:
+def require_dispatch(
+    authority: AgentDispatchAuthority, *, member_merge_source: GraphTargetRef | None = None
+) -> AgentDispatchAuthority:
     """Require one closed profile/task-contract pair for this exact dispatch."""
 
     compatible = (
@@ -248,7 +288,7 @@ def require_dispatch(authority: AgentDispatchAuthority) -> AgentDispatchAuthorit
             f"profile {authority.profile!r} does not permit task contract "
             f"{authority.task_contract!r}."
         )
-    _require_scope_shape(authority, action="dispatch")
+    _require_scope_shape(authority, action="dispatch", member_merge_source=member_merge_source)
     return authority
 
 
@@ -267,12 +307,12 @@ def require_apply(
 
     dispatch = authority.dispatch_authority
     if dispatch is None:
-        raise ValueError(
+        raise AgentTaskAuthorityRefused(
             f"Authority refused action 'apply': agent task {authority.operation_id!r} has no "
             "dispatch authority binding."
         )
     if authority.authorized_by is None:
-        raise ValueError(
+        raise AgentTaskAuthorityRefused(
             f"Authority refused action 'apply': agent task {authority.operation_id!r} has no "
             "authorizer snapshot."
         )
@@ -289,22 +329,27 @@ def require_apply(
         and dispatch.task_contract in ORCHESTRATOR_AGENT_TASK_CONTRACTS
     )
     if not compatible:
-        raise ValueError(
+        raise AgentTaskAuthorityRefused(
             "Authority refused action 'apply': "
             f"task contract {dispatch.task_contract!r} exposes no graph Patch channel."
         )
     if patch.profile is not None and patch.profile != dispatch.profile:
-        raise ValueError(
+        raise AgentTaskAuthorityRefused(
             "Authority refused action 'apply': Patch profile does not match the dispatch binding."
         )
     if patch.agent_action is not None and dispatch.profile != "orchestrator":
-        raise ValueError(
+        raise AgentTaskAuthorityRefused(
             "Authority refused action 'apply': only the orchestrator dispatch binding may carry "
             "an agent authority action."
         )
-    _require_scope_shape(dispatch, action="apply")
+    try:
+        _require_scope_shape(
+            dispatch, action="apply", member_merge_source=authority.member_merge_source
+        )
+    except ValueError as exc:
+        raise AgentTaskAuthorityRefused(str(exc)) from exc
     if dispatch.task_contract not in APPLY_CAPABLE_TASK_CONTRACTS:
-        raise ValueError(
+        raise AgentTaskAuthorityRefused(
             "Authority refused action 'apply': "
             f"task contract {dispatch.task_contract!r} exposes no graph Patch channel."
         )
@@ -316,22 +361,22 @@ def require_apply(
         dispatch.task_contract == "orchestrate" and scope.patch_kind == "work"
     )
     if not compatible_scope:
-        raise ValueError(
+        raise AgentTaskAuthorityRefused(
             "Authority refused action 'apply': task contract and Patch scope are incompatible."
         )
     if patch.kind != scope.patch_kind:
-        raise ValueError(
+        raise AgentTaskAuthorityRefused(
             "Authority refused action 'apply': Patch kind does not match the dispatch scope."
         )
     if sorted(set(patch.run_truth_scope)) != scope.run_truth_scope:
-        raise ValueError(
+        raise AgentTaskAuthorityRefused(
             "Authority refused action 'apply': Patch run_truth_scope does not match the "
             "dispatch scope."
         )
     if patch.kind == "experiment_loop" and (
         patch.experiment_control_node_id != scope.control_node_id
     ):
-        raise ValueError(
+        raise AgentTaskAuthorityRefused(
             "Authority refused action 'apply': Experiment control node does not match the "
             "dispatch scope."
         )
@@ -611,6 +656,14 @@ def operation_actions(
     if isinstance(operation, SetOntologyOperation):
         return frozenset({SET_ONTOLOGY})
     raise ValueError(f"Unknown graph operation {getattr(operation, 'op', None)!r}.")
+
+
+def derived_agent_action(state: GraphState, patch: Patch) -> Literal["decision_choice"] | None:
+    """The agent action an orchestrator Patch must declare for its own ops."""
+
+    from rcp.core.validation.patch import patch_has_decision_outcome
+
+    return "decision_choice" if patch_has_decision_outcome(state, patch) else None
 
 
 def is_existing_protected_node(state: GraphState, node_id: str) -> bool:
@@ -1031,27 +1084,33 @@ class WriteAuthority:
             )
 
         if authorized_by is not None:
-            raise ValueError("explicit authorized_by is only valid for human approval patches")
+            raise AgentTaskAuthorityRefused(
+                "explicit authorized_by is only valid for human approval patches"
+            )
         operation_id = patch.source_operation_id
         if not operation_id or not operation_id.strip():
-            raise ValueError("agent patches require a non-empty direct source_operation_id")
+            raise AgentTaskAuthorityRefused(
+                "agent patches require a non-empty direct source_operation_id"
+            )
         if (
             project_id is None
             or self.agent_authority_resolver is None
             or self.project_membership_check is None
         ):
-            raise ValueError(
+            raise AgentTaskAuthorityRefused(
                 "agent attribution requires a canonical project-scoped agent_authority_resolver "
                 "and project_membership_check"
             )
         try:
             resolved = self.agent_authority_resolver(project_id, operation_id)
         except KeyError as exc:
-            raise ValueError(f"unknown agent task {operation_id!r}") from exc
+            raise AgentTaskAuthorityRefused(f"unknown agent task {operation_id!r}") from exc
         if resolved.operation_id != operation_id or resolved.project_id != project_id:
-            raise ValueError("agent authority resolver returned another task or project")
+            raise AgentTaskAuthorityRefused(
+                "agent authority resolver returned another task or project"
+            )
         if resolved.apply_target != apply_target:
-            raise ValueError(
+            raise AgentTaskAuthorityRefused(
                 f"agent task {operation_id!r} is authorized to Apply to "
                 f"{resolved.apply_target.key}, not {apply_target.key}"
             )
@@ -1061,15 +1120,23 @@ class WriteAuthority:
             and patch.kind == "experiment_loop"
             and resolved.episode_id is None
         ):
-            raise ValueError("Experiment-loop patches require canonical episode attribution")
-        if dispatch.profile == "orchestrator" and resolved.episode_id is None:
-            raise ValueError("orchestrator agent tasks require a canonical episode_id")
+            raise AgentTaskAuthorityRefused(
+                "Experiment-loop patches require canonical episode attribution"
+            )
+        if (
+            dispatch.profile == "orchestrator"
+            and resolved.episode_id is None
+            and resolved.member_merge_source is None
+        ):
+            raise AgentTaskAuthorityRefused(
+                "orchestrator agent tasks require a canonical episode_id"
+            )
         assert resolved.authorized_by is not None
         authorizer = self._canonical_authorizer(resolved.authorized_by)
         canonical = (authorizer, dispatch.profile, operation_id, resolved.episode_id)
         supplied = (patch.authorized_by, patch.profile, patch.task_id, patch.episode_id)
         if any(value is not None for value in supplied) and supplied != canonical:
-            raise ValueError(
+            raise AgentTaskAuthorityRefused(
                 "agent patch attribution does not match the canonical task attribution"
             )
         return patch.model_copy(
@@ -1112,8 +1179,15 @@ class WriteAuthority:
             raise ValueError(f"unknown agent task {operation_id!r}") from exc
         if resolved.operation_id != operation_id or resolved.project_id != project_id:
             raise ValueError("agent authority resolver returned another task or project")
-        if resolved.apply_target != GraphTargetRef():
-            raise ValueError("a branch merge receipt requires main-target Apply authority")
+        if resolved.apply_target != receipt.provenance.rebased_main_head.target:
+            raise ValueError("a branch merge receipt requires its recorded destination authority")
+        if resolved.merge_source is None:
+            if resolved.episode_id is None or resolved.episode_id != receipt.provenance.episode_id:
+                raise ValueError("a legacy branch merge receipt requires its recorded episode")
+        elif resolved.merge_source != GraphTargetRef(
+            kind="branch", branch_id=receipt.provenance.branch_id
+        ):
+            raise ValueError("a branch merge receipt requires its recorded source authority")
         dispatch = resolved.dispatch_authority
         if dispatch is None:
             raise ValueError("branch merge receipt task has no dispatch authority binding")
@@ -1127,7 +1201,7 @@ class WriteAuthority:
             repositories_read=[],
             profile="orchestrator",
             task_id=operation_id,
-            episode_id=receipt.provenance.episode_id,
+            episode_id=resolved.episode_id,
             authorized_by=receipt.authorized_by,
             ops=[],
         )
@@ -1138,9 +1212,378 @@ class WriteAuthority:
         )
         if bound.profile != "orchestrator":
             raise ValueError("a branch merge receipt requires orchestrator authority")
-        if resolved.episode_id != receipt.provenance.episode_id:
-            raise ValueError("branch merge receipt episode does not match its task authority")
         if resolved.authorized_by is None:
             raise ValueError("branch merge receipt task has no authorizer snapshot")
         if self._canonical_authorizer(resolved.authorized_by) != receipt.authorized_by:
             raise ValueError("branch merge receipt authorizer does not match its task authority")
+
+
+# These are the only Gate-1 refusals which can be represented as pending review.
+# Configuration, task, membership, and every other action remain hard refusals.
+_REVIEWABLE_GRAPH_ACTIONS: frozenset[GraphAction] = frozenset(
+    {
+        UPDATE_PROTECTED_EPISTEMIC,
+        REMOVE_PROTECTED_EPISTEMIC,
+        SUPERSEDE_PROTECTED_EPISTEMIC,
+        MERGE_PROTECTED_EPISTEMIC,
+        RESTRUCTURE_PROTECTED_EPISTEMIC,
+    }
+)
+
+
+@dataclass(frozen=True)
+class ChangeClassification:
+    """One atomic direct change and the exact result of the core gates.
+
+    ``review_operations`` is populated only after the supported pending Proposal
+    form passes validation. It never authorizes applying that effect directly.
+    ``clash`` identifies only core-owned node field-coherence failures. It never
+    admits effects or converts malformed/forbidden changes into pending review.
+    Diagnostics retain their codes and related resources; flags are not refusals.
+    """
+
+    operation_indices: tuple[int, ...]
+    disposition: Literal["admitted", "reviewable", "clash", "refused"]
+    review_operations: tuple[ProposalOperation, ...] = ()
+    diagnostics: tuple[ValidationMessage, ...] = ()
+
+
+class CapturedChangeAuthority(BaseModel):
+    """Serializable preflight authority for pure planning, never publication.
+
+    ``capture_change_authority`` obtains this snapshot from live admission. The
+    admitted Patch template has no operations. Consumers replace ops and derive
+    the candidate's action from those ops. Its complete attribution, scope and
+    target provenance stay bound. Preparation and publication check live authority again.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    project_id: str | None
+    apply_target: GraphTargetRef
+    patch_template: Patch
+
+    @model_validator(mode="after")
+    def require_empty_template(self) -> CapturedChangeAuthority:
+        if self.patch_template.ops:
+            raise ValueError("captured authority requires an empty-operation Patch template")
+        return self
+
+
+def capture_change_authority(
+    state: GraphState,
+    patch_template: Patch,
+    *,
+    authority: WriteAuthority,
+    project_id: str | None,
+    apply_target: GraphTargetRef,
+    authorized_by: AuthorizedHuman | None = None,
+) -> CapturedChangeAuthority:
+    """Run live admission once before passing an immutable envelope to a planner.
+
+    Refusals propagate; no failed task, membership, or authorship check produces
+    a capture. This checks authority only: the planner's later operations still
+    need both permission and legality classification, and final live preparation.
+    """
+    if patch_template.ops:
+        raise ValueError("authority capture requires an empty-operation Patch template")
+    admitted, _, report = authority.admit(
+        state,
+        patch_template,
+        project_id=project_id,
+        authorized_by=authorized_by,
+        apply_target=apply_target,
+    )
+    validate_authorship(admitted, report)
+    if report.rejected:
+        raise AuthorityRefusal(report.messages)
+    return CapturedChangeAuthority(
+        project_id=project_id,
+        apply_target=apply_target,
+        patch_template=admitted,
+    )
+
+
+def classify_graph_changes(
+    state: GraphState,
+    patch: Patch,
+    *,
+    authority: WriteAuthority | CapturedChangeAuthority,
+    project_id: str | None,
+    apply_target: GraphTargetRef,
+    context: ValidationContext,
+    authorized_by: AuthorizedHuman | None = None,
+    operation_groups: tuple[tuple[int, ...], ...] | None = None,
+) -> tuple[ChangeClassification, ...]:
+    """Classify coherent direct operation groups without applying any effect.
+
+    A live WriteAuthority resolves task/profile/authorizer authority first.
+    A CapturedChangeAuthority instead verifies the exact preflight envelope for
+    pure planning; it never substitutes for live preparation. Failure of either
+    binding refuses every group, before any Proposal conversion. By default
+    the entire Patch is one atomic change: creation plus connecting edges, or an
+    edge removal plus replacement, must not be judged as isolated operations.
+    Explicit groups must partition the operations in written order. Each
+    candidate prefix declares only the action derived from its own operations.
+    Earlier admitted groups provide staged context; pending review effects do not.
+
+    Both gates judge direct changes. Only protected action refusals and codes
+    explicitly owned as reviewable by operation rules are eligible for a
+    supported Proposal form, which must itself pass both gates. Node-named
+    field-coherence failures have the distinct clash disposition. Malformed data,
+    missing dependencies, and invalid proposed effects remain exact structured
+    refusals. This function does not repair invalid encodings or invent causes;
+    the builder must supply the correct ordered operations and truthful cause.
+    A final assembled Patch still requires authoritative transition preparation.
+    """
+    from rcp.core.materialize import apply_valid_patch, prepare_patch_bookkeeping
+    from rcp.core.models import GatedCard, Proposal
+    from rcp.core.validation import is_coherence_clash, validate_patch
+    from rcp.core.validation.ops import REVIEWABLE_OPERATION_REFUSALS
+    from rcp.core.validation.proposals import PROPOSAL_REPLAY_RULE_ID
+
+    groups = operation_groups if operation_groups is not None else (tuple(range(len(patch.ops))),)
+    if operation_groups is not None and any(not group for group in groups):
+        raise ValueError("operation_groups cannot contain empty groups")
+    if tuple(index for group in groups for index in group) != tuple(range(len(patch.ops))):
+        raise ValueError("operation_groups must partition Patch operations in written order")
+    if context.mode != "admission":
+        raise ValueError("change classification requires admission validation")
+    try:
+        if isinstance(authority, CapturedChangeAuthority):
+            # The Decision action follows from the ops, so a candidate may differ
+            # from its template there only by carrying exactly the derived action.
+            if (
+                project_id != authority.project_id
+                or apply_target != authority.apply_target
+                or patch.model_dump(exclude={"ops", "agent_action"})
+                != authority.patch_template.model_dump(exclude={"ops", "agent_action"})
+                or patch.agent_action != derived_agent_action(state, patch)
+                or (authorized_by is not None and authorized_by != patch.authorized_by)
+            ):
+                raise ValueError("candidate Patch does not match captured planning authority")
+            permission_gate = WriteAuthority()
+            writer = Writer.from_patch(patch)
+            admission = permission_gate.validate_permissions(state, patch)
+        else:
+            permission_gate = authority
+            patch, writer, admission = authority.admit(
+                state,
+                patch,
+                project_id=project_id,
+                authorized_by=authorized_by,
+                apply_target=apply_target,
+            )
+    except AuthorityRefusal as exc:
+        return tuple(
+            ChangeClassification(group, "refused", diagnostics=exc.diagnostics) for group in groups
+        )
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        diagnostic = ValidationMessage(
+            level="reject",
+            code="write-authority-refused",
+            message=str(exc),
+            patch_revision=patch.revision or None,
+        )
+        return tuple(
+            ChangeClassification(group, "refused", diagnostics=(diagnostic,)) for group in groups
+        )
+    # Operation refusals are classified below; any independent admission refusal
+    # (for example lost human membership) can never become a pending Proposal.
+    admission_refusals = tuple(
+        item
+        for item in admission.messages
+        if item.level == "reject" and item.code != "graph-action-refused"
+    )
+    if admission_refusals:
+        return tuple(
+            ChangeClassification(group, "refused", diagnostics=admission_refusals)
+            for group in groups
+        )
+
+    admitted_ops: list[GraphOperation] = []
+    admitted_indices: list[int] = []
+    staged = state
+    results: list[ChangeClassification] = []
+    for group in groups:
+        operations = [patch.ops[index] for index in group]
+        candidate_indices = (*admitted_indices, *group)
+        candidate = patch.model_copy(update={"ops": [*admitted_ops, *operations]})
+        if operation_groups is not None and patch.author == "agent":
+            # Later groups may supply the full Patch's Decision outcome. A
+            # prefix must declare only the outcome actually present in it.
+            candidate = candidate.model_copy(
+                update={"agent_action": derived_agent_action(state, candidate)}
+            )
+        candidate_writer = replace(writer, agent_action=candidate.agent_action)
+        permission = permission_gate.validate_permissions(state, candidate)
+        refused_actions = {
+            action
+            for operation in operations
+            for action in operation_actions(state, candidate, operation)
+            if not permits(candidate, action)
+        }
+        if permission.rejected:
+            diagnostics = _classification_diagnostics(permission.messages, candidate_indices)
+            reviewable = bool(refused_actions) and refused_actions <= _REVIEWABLE_GRAPH_ACTIONS
+        else:
+            report = validate_patch(state, candidate, context, writer=candidate_writer)
+            diagnostics = _classification_diagnostics(report.messages, candidate_indices)
+            if not report.rejected:
+                results.append(ChangeClassification(group, "admitted", diagnostics=diagnostics))
+                admitted_ops.extend(operations)
+                admitted_indices.extend(group)
+                # The prefix is already staged; apply only this admitted group.
+                staged = apply_valid_patch(staged, candidate.model_copy(update={"ops": operations}))
+                continue
+            reviewable = all(
+                item.code in REVIEWABLE_OPERATION_REFUSALS
+                and item.rule_id != PROPOSAL_REPLAY_RULE_ID
+                for item in report.messages
+                if item.level == "reject"
+            )
+        if not reviewable:
+            results.append(
+                ChangeClassification(
+                    group,
+                    "clash" if is_coherence_clash(diagnostics) else "refused",
+                    diagnostics=diagnostics,
+                )
+            )
+            continue
+        try:
+            review_ops = _review_operations(staged, operations)
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            diagnostic = ValidationMessage(
+                level="reject",
+                code="malformed-operation",
+                message=f"Patch operations are malformed: {exc}.",
+                patch_revision=patch.revision or None,
+            )
+            results.append(ChangeClassification(group, "refused", diagnostics=(diagnostic,)))
+            continue
+        if review_ops is None:
+            results.append(ChangeClassification(group, "refused", diagnostics=diagnostics))
+            continue
+        # A stable private probe id avoids collisions with actual pending cards.
+        probe_id = "proposal/core-change-classification"
+        while probe_id in state.proposals:
+            probe_id += "-probe"
+        proposal = Proposal(
+            id=probe_id, title="Review change", card=GatedCard(), ops=list(review_ops)
+        )
+        review_candidate = prepare_patch_bookkeeping(
+            state,
+            patch.model_copy(
+                update={
+                    "ops": [
+                        *admitted_ops,
+                        CreateProposalsOperation(op="create_proposals", proposals=[proposal]),
+                    ]
+                }
+            ),
+        )
+        if patch.author == "agent":
+            review_candidate = review_candidate.model_copy(
+                update={"agent_action": derived_agent_action(state, review_candidate)}
+            )
+        review_report = permission_gate.validate_permissions(state, review_candidate)
+        if not review_report.rejected:
+            review_report = validate_patch(
+                state,
+                review_candidate,
+                context,
+                writer=replace(writer, agent_action=review_candidate.agent_action),
+            )
+        if review_report.rejected:
+            results.append(
+                ChangeClassification(
+                    group,
+                    "refused",
+                    diagnostics=_classification_diagnostics(
+                        review_report.messages, (*admitted_indices, group[0])
+                    ),
+                )
+            )
+        else:
+            results.append(ChangeClassification(group, "reviewable", review_ops, diagnostics))
+    return tuple(results)
+
+
+def _classification_diagnostics(
+    messages: Iterable[ValidationMessage], indices: tuple[int, ...]
+) -> tuple[ValidationMessage, ...]:
+    """Retain original Patch positions when earlier reviews are omitted."""
+    return tuple(
+        message.model_copy(update={"operation_index": indices[message.operation_index]})
+        if message.operation_index is not None and message.operation_index < len(indices)
+        else message
+        for message in messages
+    )
+
+
+def _review_operations(
+    state: GraphState, operations: list[GraphOperation]
+) -> tuple[ProposalOperation, ...] | None:
+    """Encode supported review intents; the Proposal validator owns their legality."""
+    from pydantic import TypeAdapter
+
+    adapter = TypeAdapter(ProposalOperation)
+    values: list[dict[str, object]] = []
+    for operation in operations:
+        raw = operation.model_dump(mode="python", exclude_unset=True)
+        if isinstance(operation, UpdateNodesOperation):
+            for update in operation.nodes:
+                node = state.nodes.get(update.id)
+                changes = dict(update.changes)
+                if (
+                    node is not None
+                    and project_type_of(state).is_belief(node.type)
+                    and "status" in changes
+                ):
+                    status = update.model_dump(mode="python", exclude_unset=True)
+                    status["changes"] = {"status": changes.pop("status")}
+                    values.append(
+                        {"op": "update_nodes", "intent": "status_change", "nodes": [status]}
+                    )
+                    if changes:
+                        values.append(
+                            {
+                                "op": "update_nodes",
+                                "intent": "content_change",
+                                "nodes": [{"id": update.id, "changes": changes}],
+                            }
+                        )
+                else:
+                    values.append(
+                        {
+                            "op": "update_nodes",
+                            "intent": "content_change",
+                            "nodes": [update.model_dump(mode="python", exclude_unset=True)],
+                        }
+                    )
+        elif isinstance(operation, RemoveNodesOperation):
+            values.extend(
+                {"op": "remove_nodes", "intent": "removal", "node_ids": [node_id]}
+                for node_id in operation.node_ids
+            )
+        elif isinstance(operation, SupersedeNodesOperation):
+            values.extend(
+                {"op": "supersede_nodes", "intent": "supersede", "nodes": [item]}
+                for item in raw["nodes"]
+            )
+        elif isinstance(operation, MergeNodesOperation):
+            values.extend(
+                {"op": "merge_nodes", "intent": "merge", "merges": [item]} for item in raw["merges"]
+            )
+        elif isinstance(operation, (CreateEdgesOperation, RemoveEdgesOperation)):
+            field = "edges" if isinstance(operation, CreateEdgesOperation) else "edge_ids"
+            values.extend(
+                {"op": operation.op, "intent": "protected_relation_change", field: [item]}
+                for item in raw[field]
+            )
+        elif isinstance(operation, SetStandingOperation):
+            values.append({**raw, "intent": "standing_change"})
+        else:
+            return None
+    return tuple(adapter.validate_python(value) for value in values)

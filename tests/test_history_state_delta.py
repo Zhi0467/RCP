@@ -111,3 +111,38 @@ def test_memory_accounting_deduplicates_models_and_slotted_dataclasses():
     empty_size = retained_size(report)
     report.flag("test", "A retained report owns its validation messages")
     assert retained_size(report) >= empty_size + retained_size(report.messages[0])
+
+
+def test_semantic_delta_ignores_nested_engine_stamps_but_exact_state_delta_retains_them():
+    from rcp.core.models import Proposal
+    from rcp.history.delta import semantic_delta
+
+    old = Proposal.model_validate(
+        {
+            "id": "prop/old-writer",
+            "title": "Review",
+            "card": {},
+            "ops": [
+                {
+                    "op": "update_nodes",
+                    "intent": "content_change",
+                    "nodes": [
+                        {"id": "rq/question", "changes": {"title": "New"}, "base_updated_rev": 1}
+                    ],
+                }
+            ],
+        }
+    )
+    # A historical writer's dependency rule remains replay data, not content.
+    raw = old.model_dump(mode="json")
+    raw["dependency_rule"] = 3
+    raw["raised_rev"] = 9
+    raw["ops"][0]["nodes"][0]["base_updated_rev"] = 8
+    new = Proposal.model_validate(raw)
+    before = GraphState(proposals={old.id: old})
+    after = GraphState(proposals={new.id: new})
+    assert semantic_delta(before, after).is_empty
+    assert apply_state_delta(before, capture_state_delta(before, after)) == after
+    raw["ops"][0]["nodes"][0]["changes"]["title"] = "Different effect"
+    changed = after.model_copy(update={"proposals": {new.id: Proposal.model_validate(raw)}})
+    assert len(semantic_delta(after, changed).proposals) == 1

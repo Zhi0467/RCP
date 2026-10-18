@@ -29,6 +29,7 @@ from rcp.agents.git_access import provider_git_access
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api.artifacts import router as artifacts_router
+from rcp.api.bulletin import router as bulletin_router
 from rcp.api.chats import router as chats_router
 from rcp.api.consolidation import router as consolidation_router
 from rcp.api.dependencies import (
@@ -136,6 +137,7 @@ from rcp.runs.auto_research_delivery import (
 )
 from rcp.runs.auto_research_effects import auto_research_command_effects
 from rcp.runs.auto_research_experiments import AutoResearchExperimentCoordinator
+from rcp.runs.auto_research_forks import archive_settled_auto_research_forks
 from rcp.runs.auto_research_recovery import reconcile_orphaned_auto_research_failures
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.episodes.reconcile import EpisodeReconciler
@@ -803,21 +805,31 @@ def create_app(
             layout=server_layout,
         )
         if task.graph_target.kind == "branch" and kind != "branch_merge":
-            owner = store.episode(task.graph_target.branch_id or "")
-            if owner is None:
-                raise ValueError("episode_isolation_owner_missing")
-            if owner.mode == "experiment_loop" and task.episode_id == owner.episode_id:
+            branch = store.graph_branch(project_id, task.graph_target.branch_id or "")
+            if branch is None:
+                raise ValueError("graph_branch_missing")
+            owner = store.episode(branch.owner_episode_id) if branch.owner_episode_id else None
+            if (
+                owner is not None
+                and owner.mode == "experiment_loop"
+                and task.episode_id == owner.episode_id
+            ):
                 await asyncio.to_thread(ensure_episode_graph_target, owner)
             service = await asyncio.to_thread(
                 service.for_graph_target,
                 task.graph_target,
-                expected_episode_id=task.graph_target.branch_id,
+                expected_episode_id=store.branch_owner(
+                    task.project_id, task.graph_target.branch_id or ""
+                ),
             )
         if kind == "branch_merge":
             if not isinstance(request, BranchMergeRunRequest):
                 raise TypeError("A branch merge task requires its pinned merge request.")
-            episode = store.episode(request.episode_id)
-            if episode is None or episode.project_id != project_id:
+            episode = store.episode(request.episode_id) if request.episode_id else None
+            if (
+                request.episode_id is not None
+                and (episode is None or episode.project_id != project_id)
+            ) or (episode is None and request.merge_binding is None):
                 raise ValueError("The branch merge task lost its Auto-research episode.")
             async with aclosing(
                 stream_branch_merge_task(
@@ -917,6 +929,27 @@ def create_app(
                     return None, failure.message, failure.correctable
                 return result, None, False
 
+            def merge_owned_branch(context, arguments, command_key):
+                from rcp.runs.branch_merge_admission import start_owned_branch_merge
+
+                try:
+                    result = start_owned_branch_merge(
+                        background_tasks,
+                        service,
+                        episode=context.episode,
+                        dispatcher_operation_id=context.task.operation_id,
+                        branch_id=arguments.branch_id,
+                        command_key=command_key,
+                    )
+                except ValueError as exc:
+                    code = str(exc)
+                    if not code.isascii() or not code.isidentifier():
+                        raise
+                    return AutoResearchCommandEffectResult(
+                        status="invalid", message=code, result={"code": code}
+                    )
+                return AutoResearchCommandEffectResult(result=result)
+
             effects = auto_research_command_effects(
                 store=store,
                 background=background_tasks,
@@ -933,6 +966,7 @@ def create_app(
                 graph_state=service.history.state,
                 execution_host=execution_machine.host,
                 apply_patch=apply_auto_research_patch,
+                merge=merge_owned_branch,
                 on_graph_applied=lambda: evaluate_graph_wake_boundary(
                     project_id,
                     None,
@@ -946,6 +980,7 @@ def create_app(
                     source="Auto-research graph condition",
                 ),
                 experiment_coordinator=auto_research_experiment_coordinator,
+                branch_head=lambda target: service.for_graph_target(target).history.head_ref(),
             )
             dispatcher = AutoResearchCommandDispatcher(store, effects)
             stream_auto_research = (
@@ -1054,7 +1089,9 @@ def create_app(
             service = await asyncio.to_thread(
                 service.for_graph_target,
                 task.graph_target,
-                expected_episode_id=task.graph_target.branch_id,
+                expected_episode_id=store.branch_owner(
+                    task.project_id, task.graph_target.branch_id or ""
+                ),
             )
         async with aclosing(
             finalizer(service, launcher, request, app_data, execution, recorded)
@@ -1072,7 +1109,9 @@ def create_app(
             if task.graph_target.kind == "branch":
                 service = service.for_graph_target(
                     task.graph_target,
-                    expected_episode_id=task.graph_target.branch_id,
+                    expected_episode_id=store.branch_owner(
+                        task.project_id, task.graph_target.branch_id or ""
+                    ),
                 )
             return service
 
@@ -1106,11 +1145,14 @@ def create_app(
         )
 
     def _branch_service(graph_target: GraphTargetRef, project_id: str) -> ProjectService:
-        # The branch is named after the chain root; a continuation episode
-        # shares it, so the expected episode is the branch id, not the member.
+        # Continuations retain the branch's stable lineage owner.
         return catalog.open_execution(project_id).for_graph_target(
             graph_target,
-            expected_episode_id=graph_target.branch_id,
+            expected_episode_id=(
+                store.branch_owner(project_id, graph_target.branch_id or "")
+                if graph_target.kind == "branch"
+                else None
+            ),
         )
 
     auto_research_experiment_coordinator = AutoResearchExperimentCoordinator(
@@ -1129,7 +1171,9 @@ def create_app(
         instruction: str,
         worker_id: str,
     ) -> RunRequest:
-        service = _branch_service(context.episode.graph_target, context.task.project_id)
+        service = _branch_service(
+            context.child_graph_target or context.episode.graph_target, context.task.project_id
+        )
         return _auto_research_worker_request(
             service,
             context,
@@ -1149,7 +1193,9 @@ def create_app(
         service = catalog.open_execution(project_id).for_graph_target(
             episode.graph_target,
             expected_episode_id=(
-                episode.graph_target.branch_id if episode.graph_target.kind == "branch" else None
+                store.branch_owner(project_id, episode.graph_target.branch_id or "")
+                if episode.graph_target.kind == "branch"
+                else None
             ),
         )
         node = service.history.state().nodes.get(node_id)
@@ -1168,6 +1214,7 @@ def create_app(
             auto_research_experiment_coordinator,
             worker_request_factory=restart_child_worker_request,
             seat_node_type=restart_child_seat_node_type,
+            project_service=catalog.open_execution,
             episode_id=episode_id,
         )
         current_deferrals = {
@@ -1207,6 +1254,9 @@ def create_app(
                 deferral.episode_id,
                 deferral.reason,
             )
+        archive_settled_auto_research_forks(
+            store, catalog.open_execution, episode_id=episode_id, logger=logger
+        )
         return reconciliation
 
     episode_reconciler = EpisodeReconciler(store, background_tasks, logger=logger)
@@ -1223,7 +1273,11 @@ def create_app(
             project_id
         ).for_graph_target(
             target,
-            expected_episode_id=(target.branch_id if target.kind == "branch" else None),
+            expected_episode_id=(
+                store.branch_owner(project_id, target.branch_id or "")
+                if target.kind == "branch"
+                else None
+            ),
         ),
         generic_request=_generic_watcher_delivery_request,
         experiment_operation_lock=experiment_operation_lock,
@@ -1314,6 +1368,16 @@ def create_app(
             try:
                 if isinstance(request, AutoResearchRunRequest):
                     episode_reconciler.settle_auto_research_task(request, execution)
+                elif (
+                    isinstance(request, BranchMergeRunRequest) and request.merge_binding is not None
+                ):
+                    owner_id = request.merge_binding.dispatcher_episode_id
+                    if owner_id is not None:
+                        reconcile_auto_research_episode(
+                            owner_id,
+                            source="fork merge settlement",
+                            operation_id=execution.operation_id,
+                        )
             finally:
                 if member_removal_coordinator is not None:
                     member_removal_coordinator.reconcile_pending()
@@ -1794,8 +1858,19 @@ def create_app(
                 await terminals.start()
                 sync_coordinator.start()
                 background_tasks.recover_at_startup()
+                from rcp.runs.branch_merge_admission import recover_branch_merge_task
                 from rcp.runs.episodes.merge import reconcile_episode_merge
 
+                for task in store.recoverable_bound_merge_tasks():
+                    try:
+                        service = await asyncio.to_thread(catalog.open_execution, task.project_id)
+                        await asyncio.to_thread(
+                            recover_branch_merge_task, background_tasks, service, task
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Could not recover fork merge %s: %s", task.operation_id, exc
+                        )
                 for project in store.projects():
                     for episode in store.episodes(project.project_id, limit=None):
                         state = store.episode_isolation_state(
@@ -2376,6 +2451,7 @@ def create_app(
     app.include_router(notifications_router)
     app.include_router(digest_router)
     app.include_router(lessons_router)
+    app.include_router(bulletin_router)
     app.include_router(machine_power_router)
     app.include_router(index_router)
     app.include_router(project_groups_router)
@@ -2504,18 +2580,26 @@ def _auto_research_worker_request(
 ) -> RunRequest:
     """Resolve a spawned child through the node-Work profile and the orchestrator's pick."""
 
+    target = _context.child_graph_target or _context.episode.graph_target
+    service = service.for_graph_target(target)
+    if (
+        arguments.seat_node_id is not None
+        and arguments.seat_node_id not in service.history.state().nodes
+    ):
+        raise ValueError("The worker seat must name an existing node on its target.")
     reasoning = require_auto_research_child_profile_pick(
         service,
         provider=arguments.provider,
         model=arguments.model,
         reasoning=arguments.reasoning,
+        kind="project_chat" if arguments.project else "node_chat",
     )
     return _resolved_graph_request(
         service,
-        "node_chat",
+        "project_chat" if arguments.project else "node_chat",
         RunRequest(
             chat_id=worker_id,
-            chat_scope="node",
+            chat_scope="project" if arguments.project else "node",
             node_id=arguments.seat_node_id,
             message=instruction,
             mode="work",

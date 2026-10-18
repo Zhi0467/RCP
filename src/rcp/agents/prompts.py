@@ -51,14 +51,16 @@ def render_chat_read_context(context: ChatContext) -> str:
             + json.dumps({"loop_status": status}, ensure_ascii=False)
             + "\n```"
         )
-    if context.main_graph_path:
+    if context.parent_graph_path:
         parts.append(
             "Branch read pointers: other code branches are readable through Git. "
             "These pointers grant no additional writes and do not change the graph target.\n"
             + "```json\n"
             + json.dumps(
                 {
-                    "main_graph_path": context.main_graph_path,
+                    "parent_graph_path": context.parent_graph_path,
+                    "branch_name": context.branch_name,
+                    "branch_parent": context.branch_parent,
                     "shared_repositories": [
                         item.model_dump(mode="json") for item in context.shared_repositories
                     ],
@@ -125,11 +127,16 @@ REPLY_STYLE = """Writing the reply:
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
 
-CHAT_MASTER_CONTEXT_VERSION = 19
+CHAT_MASTER_CONTEXT_VERSION = 20
 
 # Staged RCP commands are written against this placeholder; the contract names the current
 # command client once, and a continuation that changes it sends `patch.command_client`.
 COMMAND_CLIENT = "<command client>"
+
+BULLETIN_BODY_RULE = (
+    "Bulletin bodies may hold `#node-id` links and `<@member:USER_ID>` or `<@agent:ACTOR_ID>` "
+    "mention tokens; edit or delete only your own posts."
+)
 
 
 def chat_master_contract_key(*, ontology_extensions: bool, owner: str | None = None) -> str:
@@ -289,8 +296,9 @@ def render_graph_history(scope: GraphReadScope, command_client: str) -> str:
     calls = "\n".join(f"- `{command_client} {verb} {forms[verb]}`" for verb in sorted(scope.verbs))
     return (
         "## Graph history queries\n\n"
-        f"Project: `{scope.project_id}`. Readable targets: main and every branch of this project "
-        "and of each project the current turn's Project group section lists (pass `--project`). "
+        f"Project: `{scope.project_id}`. Readable targets: {scope.readable_targets}; "
+        "also main and every branch of each project the current turn's Project group section "
+        "lists (pass `--project`). "
         f"Unqualified heads use `{scope.target.key}` here, or main in another project. "
         "Reads grant no write authority.\n"
         f"{calls}\n"
@@ -846,9 +854,9 @@ _INLINE_CONTINUATION_RULES = {
 
 
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
-DISCUSS_POLICY_VERSION = "discuss-v5"
+DISCUSS_POLICY_VERSION = "discuss-v6"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v6"
+WORK_POLICY_VERSION = "work-v7"
 
 
 class PromptFactory:
@@ -1092,7 +1100,7 @@ Turn protocol:
         )
 
     # Bumped when the Seed and Refresh task contract's stable policy prose changes.
-    GRAPH_TASK_POLICY_VERSION = "ingestion-v2"
+    GRAPH_TASK_POLICY_VERSION = "ingestion-v3"
 
     @staticmethod
     def graph_task_contract(
@@ -1478,7 +1486,7 @@ Graph Patch (optional):
         )
 
     # Bumped when the paper-coach task contract's stable policy prose changes.
-    PAPER_COACH_POLICY_VERSION = "paper-coach-v2"
+    PAPER_COACH_POLICY_VERSION = "paper-coach-v3"
 
     @staticmethod
     def paper_coach_task_contract(

@@ -59,7 +59,7 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
     )
     with store.connection() as connection:
         connection.execute(
-            "UPDATE episodes SET browser_requested = 1 WHERE episode_id = ?",
+            "UPDATE episodes SET browser_requested = 1, bulletin_enabled = 0 WHERE episode_id = ?",
             (original.episode_id,),
         )
     store.set_browser_turn_status(
@@ -104,6 +104,7 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
         payload = response.json()
         continuation_id = payload["episode_id"]
         assert payload["browser_requested"] is True
+        assert payload["bulletin_enabled"] is False
         continuation_root_id = payload["root_operation_id"]
         assert continuation_id != original.episode_id
         assert continuation_root_id != original_root.operation_id

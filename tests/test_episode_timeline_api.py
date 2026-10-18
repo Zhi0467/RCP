@@ -712,7 +712,7 @@ def test_graph_watcher_names_node_without_inventing_episode(timeline, state, eve
     signal = next(item for item in response.signals if item.item_id == "watcher:graph")
     assert signal.event == event
     assert signal.source_actor_id is None
-    assert signal.source_row_key == "node:exp/timeline"
+    assert signal.source_row_key == f"branch:{prefix}:node:exp/timeline"
     assert signal.armed_span_id == f"span:{prefix}-root"
     assert signal.armed_at == now
     assert signal.landed_span_id == (f"span:{prefix}-wake" if state == "completed" else None)
@@ -740,3 +740,26 @@ def test_recorded_continuation_notice_and_child_stop_issuer_stay_linked(timeline
         if m.actor_id == f"actor:experiment:{child_id}" and m.kind == "stop_requested"
     )
     assert stop.by_span_id == f"span:{prefix}-root"
+
+
+def test_fork_actor_targets_separate_same_node_rows(timeline):
+    store, episode, _ = timeline
+    before = build_episode_timeline(store, episode)
+    original = next(actor for actor in before.actors if actor.kind == "experiment")
+    target = GraphTargetRef(kind="branch", branch_id="fork")
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET graph_target_json=? WHERE episode_id=?",
+            (target.model_dump_json(), original.links.episode_id),
+        )
+        connection.execute(
+            "UPDATE graph_runs SET graph_target_json=? WHERE operation_id=?",
+            (target.model_dump_json(), f"{episode.episode_id}-worker"),
+        )
+    after = build_episode_timeline(store, episode)
+    child = next(actor for actor in after.actors if actor.kind == "experiment")
+    worker = next(actor for actor in after.actors if actor.kind == "worker")
+    assert child.graph_target == worker.graph_target == target
+    assert child.owner_episode_id == worker.owner_episode_id == episode.episode_id
+    assert child.row_key != original.row_key
+    assert child.links.control_node_id == original.links.control_node_id

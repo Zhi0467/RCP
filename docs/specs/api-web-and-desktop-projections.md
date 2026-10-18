@@ -60,19 +60,25 @@ under the writer lock. Display publication failure cannot undo a canonical write
 ## Project graph-ref inventory
 
 `GET /api/projects/{project_id}/graph-refs` returns main first, then one row per
-episode-owned branch, newest chain-member creation first. It reads all episodes,
-including archives, without the recent-50 limit, under project membership.
+published branch record, episode branches and forks alike, archives included,
+newest first (an owned branch by its newest chain member, a member fork by its
+own creation), under project membership. A fork reserved but not yet published
+has no row. `POST .../graph-refs` and `POST .../graph-refs/{branch_id}/merge`
+fork and merge forks as described in
+[Forks](auto-research-and-branch-merge.md#forks).
 
 Rows carry `kind`, `branch_id`, `head`, `base_head`, `episode_id` (chain root),
 `current_episode_id` (newest member), graph-isolation `archived`, and merge fields
 `merge_state`, `merge_eligible`, `merge_blocked_reason`,
 `latest_successful_merge`, `active_merge_task_id`, and `merge_diagnostic`.
-Branches also carry the root's `mode`, `created_at`, resolved `name`, `running`,
-and `needs_you`; there is no `title`. Running means an active task on that target;
-attention means an open Decision/Blocker or answerable question. Names use the
-shared SQLite owner with date fallbacks. `branch_id == episode_id` names the root.
+Rows also carry `parent_head`. Branches also carry the root's `mode` (null for a
+member fork), `created_at`, resolved `name`, `running`, and `needs_you`; there is
+no `title`. Running means an active task on that target; attention means an open
+Decision/Blocker or answerable question. Names use the shared SQLite owner with
+date fallbacks. On an episode branch, `branch_id == episode_id` names the root.
 Main has its exact head, name `main`, false flags, and null branch/episode/base/
-merge details. Merge fields use the episode owner's reservation and writer checks.
+merge details. Merge state reads every merge task out of the branch, whoever
+dispatched it; eligibility uses the isolation reservation and writer checks.
 
 `PUT .../graph-refs/{branch_id}/name` takes `{"name": str}`;
 `PUT .../graph-refs/{branch_id}/archived` takes `{"archived": bool}`.
@@ -271,6 +277,8 @@ items younger than 24 hours. Each item carries its stable notification id and
 only a fixed reason code, project name, and hash-route deep link as content.
 Links use `#/projects/{project_id}/targets/{target}/{kind}/{item_id}`, with
 each value URL-escaped; both episode reasons use `episode` as the link kind.
+Bulletin mentions use the channel query link described in
+[Bulletin channels](#bulletin-channels).
 The same pattern names project references with the kinds `artifact`, `node`,
 and `paper` (item id `introduction`); `target` is the node's source target.
 Graph item age starts at its accepted Patch, and terminal episode age starts
@@ -298,9 +306,9 @@ post as one summary that opens the app; a summary macOS accepts acknowledges
 every item it covers, and a rejected one leaves them for retry.
 
 `GET` and `PATCH /api/projects/{project_id}/notifications` read and update the
-calling member's five toggles: `proposal`, `decision`, `blocker`,
-`episode_needs_action`, and `episode_finished`. All default on except
-`episode_finished`. These routes require project membership. Project Settings
+calling member's toggles: `proposal`, `decision`, `blocker`,
+`episode_needs_action`, `episode_finished`, `consolidation`, and
+`bulletin_mention`. All default on except `episode_finished`. These routes require project membership. Project Settings
 shows them as a **Notifications** card after Machines, which also says the
 project name appears on the lock screen.
 
@@ -471,12 +479,13 @@ remain the independent graph delivery record.
 
 `GET /api/projects/{project_id}/episodes/{episode_id}/merge-preview` accepts an
 optional `target_branch`. It recomputes `MergePreview`; no preview is stored.
-The response contains `delivered_baseline`, graph operation count, residue
-paths with reasons, per-path `paths`, optional code status, and `needs_agent`.
-Each path names its entity, id, and field path, its base, branch, and main
-values, and the builder's `delivered`, `conflict`, `needs_agent`,
-`needs_proposal`, and `residue_reason`, from the same builder call as the
-residue. `needs_agent` also covers a code conflict. Code reports its
+The response contains `delivered_baseline`, the graph counts `direct`,
+`conflicts`, and `reviews` (one per connected review group), per-path `paths`,
+optional code status, and `needs_agent`. Each path names its entity, id, and
+field path (`$` for whole-entity presence), its base, branch, and destination
+(`main`) values, and the plan's `delivered`, `conflict`, `needs_agent`, and
+`needs_proposal`, all from the same merge plan. `needs_agent` is true when the
+plan has a conflict or a review group, or code conflicts. Code reports its
 repository alias, source and target branches, commits ahead, leftovers, and
 conflict files. Its status is `clean`, `conflict`, `already_merged`,
 `target_dirty`, or `target_missing`.
@@ -710,14 +719,15 @@ and requires the exact echoed integer. Missing/mismatched negotiation or changed
 compatible release/update path. Semantic versions and commit order are not the
 protocol. Personal work remains usable; unavailable team cards remain labelled.
 
-Desktop supports `[3, 6]`, server `[1, 6]`. Protocol 1 forbids team deletion;
+Desktop supports `[3, 7]`, server `[1, 7]`. Protocol 1 forbids team deletion;
 2 permits deletion only with negotiated support and the exact confirmation;
 3 adds optional reviewed `source_commit` and `rcp-transfer-v2` Git archives,
 while accepting omitted commits/v1 archives; 4 adds optional
 `record_schema_version=2` for episode archives; 5 also allows 3 (an archived
 graph branch) and 4 (branch names); 6 also allows 5 (a deleted episode
-report). The desktop refuses preparation, before any target mutation, when the
-source needs a record version the negotiated protocol lacks, so a new record
+report); 7 also allows 6 (graph branch records). The desktop refuses preparation,
+before any target mutation, when the source needs a record version the
+negotiated protocol lacks, so a new record
 version needs a new protocol. Archive-free transfers retain prior bytes; incompatible peers refuse preparation before source release.
 Breaking contracts get a new immutable version; retirement is explicit.
 The range governs native bootstrap and relay, not server operations, provider
@@ -1376,14 +1386,20 @@ and task admission refuses a human turn on it with
 An Auto-research continuation chain is one `auto_research` conversation on its
 branch, identified by the chain root's episode id (the branch id) and named by
 the branch. Its transcript is projected from the chain's orchestrator-role
-turns: each turn's starting instruction or the human mail it delivered, then its
-answers; worker turns keep their own cards. Loaded turns supply live status and
-progress, and the episode's `needs_action` health (an open question) files the
-card under needs-you. The card has no chat composer: its composer, with the
-episode's open questions, sends **Message orchestrator** to the newest chain
-member, gated by that member's `can_message`, `message_refusal`, and
+turns and the artifact edits that reply to the chain: each turn's starting
+instruction or the human mail it delivered, then its answers; worker turns keep
+their own cards. An artifact edit with a `chat_id` belongs to that chat's card and
+refreshes its order and status, but never creates a card by itself. Loaded turns
+supply live status and progress, and the episode's `needs_action` health (an open
+question) files the card under needs-you. While the chain runs, the card's
+`human_turn_refusal` is `auto_research_orchestrator_running` and its composer,
+with the episode's open questions, sends **Message orchestrator** to the newest
+chain member, gated by that member's `can_message`, `message_refusal`, and
 `message_requires_continuation` exactly as Runs is. The composer explains
-`episode_merge_reserved` and `episode_isolation_unavailable` refusals.
+`episode_merge_reserved` and `episode_isolation_unavailable` refusals. Once the
+chain ends, the card has the ordinary chat composer and posts project-chat turns
+to its own branch, even when opened from main; those turns join the card and its
+transcript beside the orchestrator turns. Add N turns stays in Runs.
 
 The composer shows **Work in a worktree** before the first Work turn. The backend
 projects eligibility and the reason a zero/multiple-repository or wrong-machine
@@ -1841,3 +1857,47 @@ child Experiment episodes. It includes unexpired or kept artifacts and undeleted
 reports, with the queried episode's report first, then creation order. Worker
 labels use the child Work route's instruction heading, or Worker. Both routes enforce project
 membership, and the inventory rejects an episode from another project.
+
+## Bulletin channels
+
+Each graph target has one Bulletin channel. Member-authenticated reads use
+`GET /api/projects/{project_id}/bulletin?branch_id=&cursor=` and include the
+roster and live project members. Text is limited to 8000 characters; the server
+extracts ordered, deduplicated `#node-id` references and valid
+`<@member:USER_ID>` / `<@agent:ACTOR_ID>` mentions. Requests carry text, never a
+separate references field. Agent tokens must identify an actor in that target's
+roster; unknown tokens remain ordinary text.
+
+A page holds whole threads: up to the page size of top-level posts, newest
+first, each with all of its visible replies. The cursor follows the oldest
+top-level post on the page, so a reply never lands on a different page from its
+parent and `reply_count` matches the replies shown. Every page also carries
+`newest_post_id`, the target's latest post including a reply in an older thread;
+showing the newest page marks the channel read up to it. The Agents view shows the
+channel of the workspace's graph target; picking another channel switches the
+workspace to that target, so `#node` links and suggestions resolve in the
+channel's own graph.
+
+`POST .../bulletin` accepts `{text, key, reply_to}`. `PATCH .../bulletin/{post_id}`
+accepts `{text, key}` and reparses references and mentions. `DELETE` on the same
+path soft-deletes the post. Only its author may edit or delete; another author
+gets `403 bulletin_not_author`, and editing a deleted post gets
+`409 bulletin_post_deleted`. Deleted replies and deleted top-level posts without
+replies are omitted; parents with replies remain empty placeholders. Posts
+include `edited_at`, `deleted_at`, `mentions`, and `reply_count`. Replying to a
+deleted post is refused with `bulletin_reply_invalid`.
+
+`GET .../bulletin/channels` lists main first, then non-archived branches ordered
+by last post descending and name. Each row includes target, branch id, name,
+last post time, and unread count capped at 99. Unread excludes the member's own
+posts. `POST .../bulletin/read` with `{sequence_post_id}` advances that member's
+target-local cursor without moving it backwards or bumping the shared Bulletin
+resource version; the read client refetches channels itself.
+
+A member mention produces at most one `bulletin_mention` notification per post
+and mentioned member, including mentions first added by an edit, excluding
+self-mentions. This preference defaults on. Reconciliation retains durable
+observations across restarts. Deleting a post before reconciliation suppresses
+its notification; editing away a mention preserves the accepted event. Links open
+the channel in the Agents view, `#/projects/{project_id}?view=chats`, with
+`branch_id` for a branch channel. Agent mentions never wake or launch work.

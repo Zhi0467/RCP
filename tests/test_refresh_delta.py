@@ -327,3 +327,34 @@ def test_refresh_delta_is_deterministically_bounded() -> None:
     assert first.omitted_from_revision is not None
     assert first.omitted_through_revision is not None
     assert first.omitted_from_revision <= first.omitted_through_revision
+
+
+def test_refresh_keeps_retirement_operations_as_one_node_update():
+    from rcp.core.materialize import apply_valid_patch
+
+    nodes = {
+        name: ResearchQuestion(id=name, type="research_question", title=name, question="Why?")
+        for name in ("rq/old", "rq/duplicate", "rq/successor")
+    }
+    state = GraphState(revision=1, project_truth_scope=["repo-a"], nodes=nodes)
+    patch = _patch(
+        2,
+        "work",
+        "agent",
+        [
+            {"op": "supersede_nodes", "nodes": [{"id": "rq/old", "superseded_by": "rq/successor"}]},
+            {
+                "op": "merge_nodes",
+                "merges": [{"duplicate": "rq/duplicate", "canonical": "rq/successor"}],
+            },
+        ],
+    )
+    final = apply_valid_patch(state, patch)
+    delta = build_refresh_delta(
+        [_patch(1, "refresh", "agent", []), patch],
+        MaterializationResult(state=final, reports={1: ValidationReport(), 2: ValidationReport()}),
+    )
+    changes = [e for e in delta.entries if e.category == "chat_graph_update"]
+    assert {e.target_id for e in changes} == {"rq/old", "rq/duplicate"}
+    assert len(changes) == 2
+    assert len(final.edges) == 2

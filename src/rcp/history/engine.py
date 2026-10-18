@@ -164,7 +164,7 @@ class _Generation:
     def prefix(self, head: GraphHeadRef) -> str:
         if (
             self.source.metadata is not None
-            and head.revision < self.source.metadata.base_head.revision
+            and head.revision < self.source.metadata.effective_parent_head.revision
         ):
             raise ValueError("history revision is absent or precedes the branch base")
         if self.head(head.revision) != head:
@@ -221,11 +221,8 @@ class ProjectHistoryEngine:
         pending_patch_paths: list[Path] | None = None,
         refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
     ) -> dict[str, _Source]:
-        from rcp.history.branches import (
-            _require_regular_file,
-            _safe_branch_root,
-            canonical_branch_id,
-        )
+        from rcp.history.ancestry import branch_ancestry
+        from rcp.history.branches import read_branch_metadata
 
         parent = self.manager
         if refresh and not parent.workspace.refresh_if_stale(refresh_max_age_seconds):
@@ -311,35 +308,50 @@ class ProjectHistoryEngine:
                 scope_failure=scope_failure,
             )
         }
-        for target in targets:
-            if target.kind == "main" or target.key in sources:
-                continue
-            assert target.branch_id is not None
-            canonical_branch_id(target.branch_id)
-            root = _safe_branch_root(parent.root, target.branch_id, create=False)
-            try:
-                _require_regular_file(root / "branch.json", "graph branch metadata")
-                metadata = GraphBranchMetadata.model_validate_json(
-                    (root / "branch.json").read_bytes()
+        captured: dict[str, _Source] = {}
+
+        def parent_of(branch_id: str) -> str | None:
+            target = GraphTargetRef(kind="branch", branch_id=branch_id)
+            if branch_id not in captured:
+                metadata = read_branch_metadata(parent, branch_id)
+                captured[branch_id] = _Source(
+                    target,
+                    manifest,
+                    key,
+                    scope,
+                    _inventory(
+                        parent.root / "branches" / branch_id / "patches",
+                        inventories.get(target.key, ()),
+                    ),
+                    metadata,
                 )
-            except FileNotFoundError:
-                raise KeyError(target.branch_id) from None
-            if metadata.branch_id != target.branch_id:
-                raise ValueError("branch path and identity disagree")
-            if parent.project_id is not None and metadata.project_id != parent.project_id:
-                raise ValueError("branch belongs to another project")
-            sources[target.key] = _Source(
-                target,
-                manifest,
-                key,
-                scope,
-                _inventory(root / "patches", inventories.get(target.key, ())),
-                metadata,
-            )
+            metadata = captured[branch_id].metadata
+            assert metadata is not None
+            return metadata.effective_parent_head.target.branch_id
+
+        for target in targets:
+            if target.branch_id is None:
+                continue
+            for branch_id in reversed(branch_ancestry(target.branch_id, parent_of)):
+                source = captured[branch_id]
+                metadata = source.metadata
+                assert metadata is not None
+                ancestor = sources[metadata.effective_parent_head.target.key].metadata
+                if ancestor is not None and (
+                    metadata.base_head != ancestor.base_head
+                    or metadata.project_id != ancestor.project_id
+                ):
+                    raise ValueError("graph branch root base or project disagrees with its parent")
+                sources[source.target.key] = source
         return sources
 
     def _build(
-        self, source: _Source, main: _Generation | None, *, use_store: bool = True
+        self,
+        source: _Source,
+        ancestor: _Generation | None,
+        *,
+        root_main: _Generation | None = None,
+        use_store: bool = True,
     ) -> _Generation:
         initial = GraphState(project_truth_scope=source.scope)
         initial_head = GraphHeadRef(target=source.target, revision=0)
@@ -347,19 +359,22 @@ class ProjectHistoryEngine:
         context_key = source.context_key
         base_result = MaterializationResult(state=initial)
         if source.metadata is not None:
-            assert main is not None
+            assert ancestor is not None
             from rcp.history.branches import _require_parent_identity
 
             identity = source.metadata.model_dump_json(exclude={"head"})
             known = self._branch_identities.get(source.target.key)
             if known is not None and known != identity:
                 raise ValueError("graph branch immutable metadata changed")
-            base = source.metadata.base_head
-            if main.source.scope_failure is not None or base.revision > main.result.state.revision:
-                base_result = main.result
-            elif main.head(base.revision) != base:
+            base = source.metadata.effective_parent_head
+            if (
+                ancestor.source.scope_failure is not None
+                or base.revision > ancestor.result.state.revision
+            ):
+                base_result = ancestor.result
+            elif ancestor.head(base.revision) != base:
                 base_result = self._prefix_result(
-                    main, main.head(base.revision), use_store=use_store
+                    ancestor, ancestor.head(base.revision), use_store=use_store
                 )
             else:
                 base_result = None
@@ -375,16 +390,16 @@ class ProjectHistoryEngine:
                                     revision=base.revision,
                                     created_at=source.metadata.created_at,
                                     code="branch-base-mismatch",
-                                    message="Graph branch immutable main base does not match the accepted main prefix.",
+                                    message="Graph branch immutable parent does not match the retained parent prefix.",
                                 ),
                             }
                         ),
                     )
                 initial = base_result.state
-                initial_head = main.head(initial.revision).model_copy(
+                initial_head = ancestor.head(initial.revision).model_copy(
                     update={"target": source.target}
                 )
-                context_key += identity + main.digests[-1]
+                context_key += identity + ancestor.digests[-1]
                 return _Generation(
                     source.target,
                     context_key,
@@ -395,16 +410,16 @@ class ProjectHistoryEngine:
                     (),
                     base_result,
                     source,
-                    inherited=main.index[: initial.revision],
+                    inherited=tuple(self._index(ancestor, ancestor.head(initial.revision), True)),
                 )
             _require_parent_identity(
                 self.manager,
                 source.metadata,
                 allow_historical_home=True,
-                materialization=main.result,
+                materialization=(root_main or ancestor).result,
             )
             initial_head = base.model_copy(update={"target": source.target})
-            context_key += identity + main.prefix(base)
+            context_key += identity + ancestor.prefix(base)
             base_result = MaterializationResult(state=initial)
         with _MEMORY_LOCK:
             old = self._generations.get(source.target.key)
@@ -450,10 +465,12 @@ class ProjectHistoryEngine:
         if reusable and old and len(digests) == len(old.digests) and structural_failure is None:
             return replace(old, source=source, start=len(old.index))
         if source.metadata is not None and not reusable:
-            assert main is not None
-            base_result = self._prefix_result(main, source.metadata.base_head, use_store=use_store)
+            assert ancestor is not None
+            base_result = self._prefix_result(
+                ancestor, source.metadata.effective_parent_head, use_store=use_store
+            )
             initial = base_result.state
-            inherited = main.index[: source.metadata.base_head.revision]
+            inherited = tuple(self._index(ancestor, source.metadata.effective_parent_head, True))
         elif reusable and old:
             initial, inherited = old.initial, old.inherited
         index = list(old.index) if reusable and old else []
@@ -736,14 +753,14 @@ class ProjectHistoryEngine:
         self, sources: dict[str, _Source], *, use_store: bool = True
     ) -> dict[str, _Generation]:
         main = self._build(sources["main"], None, use_store=use_store)
-        return {
-            "main": main,
-            **{
-                key: self._build(source, main, use_store=use_store)
-                for key, source in sources.items()
-                if key != "main"
-            },
-        }
+        generations = {"main": main}
+        # Capture orders ancestors before descendants; every parent digest is
+        # therefore part of its child's replay/cache context.
+        for key, source in sources.items():
+            if source.metadata is not None:
+                parent = generations[source.metadata.effective_parent_head.target.key]
+                generations[key] = self._build(source, parent, root_main=main, use_store=use_store)
+        return generations
 
     def _extends_verified(self, source: _Source) -> bool:
         with _MEMORY_LOCK:
@@ -945,13 +962,22 @@ class ProjectHistoryEngine:
         generation = self._query_generations([head], None)[head.target.key]
         return self._index(generation, head, include_inherited)
 
+    @staticmethod
+    def _inherited_boundaries(
+        generation: _Generation, generations: dict[str, _Generation]
+    ) -> list[tuple[_Generation, GraphHeadRef]]:
+        boundaries: dict[str, GraphHeadRef] = {}
+        for step in generation.inherited:
+            boundaries[step.after_head.target.key] = step.after_head
+        return [(generations[key], head) for key, head in boundaries.items()]
+
     def steps(self, head: GraphHeadRef, *, include_inherited: bool = False) -> list[StepRecord]:
         generations = self._query_generations([head], None)
         generation = generations[head.target.key]
         inherited = []
         if include_inherited and generation.inherited:
-            base = generation.inherited[-1].after_head
-            inherited = [replace(s, inherited=True) for s in self._steps(generations["main"], base)]
+            for source, base in self._inherited_boundaries(generation, generations):
+                inherited.extend(replace(s, inherited=True) for s in self._steps(source, base))
         return inherited + list(self._steps(generation, head))
 
     def snapshot(
@@ -1029,8 +1055,7 @@ class ProjectHistoryEngine:
         generation = generations[target.key]
         if accepted_patch_observer is not None:
             boundaries = []
-            if generation.inherited:
-                boundaries.append((generations["main"], generation.inherited[-1].after_head))
+            boundaries.extend(self._inherited_boundaries(generation, generations))
             if generation.index:
                 boundaries.append((generation, generation.head(generation.result.state.revision)))
             for source, head in boundaries:

@@ -173,6 +173,18 @@ def _setup_parent(tmp_path, *, ceiling: int = 4):
     return store, parent, root
 
 
+def _owned_fork(store: AppStore, parent: EpisodeRecord) -> GraphTargetRef:
+    branch = store.create_graph_branch(
+        project_id=parent.project_id,
+        branch_id=str(uuid.uuid4()),
+        owner_episode_id=parent.episode_id,
+        parent_head=GraphHeadRef(target=parent.graph_target, revision=0),
+        created_by="orchestrator:test",
+        auto_archive=True,
+    )
+    return GraphTargetRef(kind="branch", branch_id=branch.branch_id)
+
+
 def _work_pair(
     store: AppStore,
     episode: EpisodeRecord,
@@ -522,9 +534,12 @@ def test_concurrent_child_work_admission_cannot_overspend_b(tmp_path) -> None:
     assert len(store.auto_research_child_works(episode.episode_id)) == 1
 
 
-def test_exact_child_work_recovery_reuses_allocation_and_binding(tmp_path) -> None:
+@pytest.mark.parametrize("fork", [False, True])
+def test_exact_child_work_recovery_reuses_allocation_and_binding(tmp_path, fork) -> None:
     store, episode, root = _setup_parent(tmp_path, ceiling=3)
     route, task = _work_pair(store, episode, root, worker_id="worker-one")
+    if fork:
+        task = task.model_copy(update={"graph_target": _owned_fork(store, episode)})
     store.create_auto_research_child_work(route, task)
     store.checkpoint_agent_task(
         task.operation_id,
@@ -553,6 +568,7 @@ def test_exact_child_work_recovery_reuses_allocation_and_binding(tmp_path) -> No
         recovery,
     )
 
+    assert recovered.graph_target == task.graph_target
     assert recovered.parent_operation_id == task.operation_id
     assert recovered_route.current_operation_id == recovered.operation_id
     with store.connection() as connection:
@@ -707,11 +723,15 @@ def test_ordinary_child_work_mail_preserves_parent_worker_star_topology(tmp_path
         )
 
 
+@pytest.mark.parametrize("fork", [False, True])
 def test_child_work_mail_wake_spends_b_updates_route_and_claims_exact_prefix(
     tmp_path,
+    fork,
 ) -> None:
     store, parent, root = _setup_parent(tmp_path, ceiling=5)
     route, task = _work_pair(store, parent, root, worker_id="worker-mail")
+    if fork:
+        task = task.model_copy(update={"graph_target": _owned_fork(store, parent)})
     store.create_auto_research_child_work(route, task)
     store.checkpoint_agent_task(
         task.operation_id,
@@ -763,6 +783,7 @@ def test_child_work_mail_wake_spends_b_updates_route_and_claims_exact_prefix(
     )
 
     assert admitted is not None
+    assert admitted.graph_target == task.graph_target
     assert admitted.attempt == current.attempt + 1
     updated_route = store.auto_research_child_work(route.worker_id)
     assert updated_route is not None
@@ -966,10 +987,13 @@ def test_gracefully_stopped_child_work_notifies_the_sleeping_orchestrator(tmp_pa
     assert notice.payload["replacement_command"] == "spawn"
 
 
-def test_exact_experiment_recovery_does_not_spend_e_again(tmp_path) -> None:
+@pytest.mark.parametrize("fork", [False, True])
+def test_exact_experiment_recovery_does_not_spend_e_again(tmp_path, fork) -> None:
     store, parent, root = _setup_parent(tmp_path, ceiling=2)
     child_id = str(uuid.uuid4())
     task = _experiment_task(store, child_id, parent.authorized_by, node_id="exp/one")
+    if fork:
+        task = task.model_copy(update={"graph_target": _owned_fork(store, parent)})
     route = _experiment_route(store, parent, root, task)
     store.create_experiment_episode_with_invocation(task, auto_research_route=route)
     store.checkpoint_agent_task(
@@ -989,7 +1013,8 @@ def test_exact_experiment_recovery_does_not_spend_e_again(tmp_path) -> None:
         stage_root="/tmp/saved-experiment-stage",
     )
 
-    store.create_experiment_recovery_task(recovery)
+    recovered = store.create_experiment_recovery_task(recovery)
+    assert recovered.graph_target == task.graph_target
 
     assert store.auto_research_experiment_allowance(parent.episode_id).used == 1
     assert store.episode(child_id).invocations_used == 1  # type: ignore[union-attr]
@@ -2427,15 +2452,20 @@ def test_human_cannot_admit_a_turn_on_an_auto_research_child(tmp_path, child_kin
 
 
 @pytest.mark.parametrize("child_kind", ["work", "experiment"])
-def test_child_human_ownership_follows_lineage_and_child_ending(tmp_path, child_kind):
+@pytest.mark.parametrize("fork", [False, True])
+def test_child_human_ownership_follows_lineage_and_child_ending(tmp_path, child_kind, fork):
     store, parent, root = _setup_parent(tmp_path)
     chat_id = str(uuid.uuid4())
+    target = _owned_fork(store, parent) if fork else parent.graph_target
     if child_kind == "work":
         route, task = _work_pair(store, parent, root, worker_id=chat_id, chat_id=chat_id)
+        task = task.model_copy(update={"graph_target": target})
         store.create_auto_research_child_work(route, task)
     else:
         task = _experiment_task(store, chat_id, parent.authorized_by, node_id="exp/child")
-        task = task.model_copy(update={"request": {**task.request, "chat_id": chat_id}})
+        task = task.model_copy(
+            update={"graph_target": target, "request": {**task.request, "chat_id": chat_id}}
+        )
         store.create_experiment_episode_with_invocation(
             task, auto_research_route=_experiment_route(store, parent, root, task)
         )
@@ -2444,7 +2474,7 @@ def test_child_human_ownership_follows_lineage_and_child_ending(tmp_path, child_
         operation_id=str(uuid.uuid4()),
         project_id=parent.project_id,
         kind="node_chat",
-        graph_target=parent.graph_target,
+        graph_target=target,
         status="queued",
         request={"chat_id": chat_id},
         created_at=store.now(),
@@ -2721,3 +2751,96 @@ def test_a_child_experiment_continuation_owns_its_child_chat(tmp_path):
     assert refusal is not None and refusal["code"] == "auto_research_child_read_only"
     # While the orchestrator runs, the continuation's turns keep generic recovery.
     assert store.episode_child_recovery_refusal(first_turn) is None
+
+
+def test_fork_child_target_is_owned_and_continuations_cannot_apply_to_parent(tmp_path):
+    store, parent, root = _setup_parent(tmp_path)
+    target = _owned_fork(store, parent)
+    assert target.branch_id is not None
+    route, task = _work_pair(store, parent, root, worker_id="fork-child")
+    task = task.model_copy(update={"graph_target": target})
+    store.create_auto_research_child_work(route, task)
+    assert store.graph_branch_live_child_counts(parent.project_id, target.branch_id) == {
+        "workers": 1,
+        "experiments": 0,
+    }
+    continuation = task.model_copy(
+        update={
+            "operation_id": str(uuid.uuid4()),
+            "parent_operation_id": task.operation_id,
+            "graph_target": parent.graph_target,
+        }
+    )
+    with pytest.raises(ValueError):
+        store.validate_agent_task_graph_target(continuation)
+    other, _ = _auto_parent(store)
+    route2, task2 = _work_pair(store, other, root, worker_id="foreign-child")
+    with pytest.raises(ValueError):
+        store.validate_agent_task_graph_target(task2.model_copy(update={"graph_target": target}))
+    assert store.episode_budget_meter(parent.episode_id).invocations_used == 2
+
+
+def test_empty_fork_archive_waits_for_all_writers_admissions_and_known_commit(tmp_path):
+    store, parent, root = _setup_parent(tmp_path)
+    target = _owned_fork(store, parent)
+    assert target.branch_id is not None
+    head = GraphHeadRef(target=target, revision=0)
+    tasks = []
+    for worker in ("one", "two"):
+        route, task = _work_pair(store, parent, root, worker_id=worker)
+        task = task.model_copy(update={"graph_target": target})
+        store.create_auto_research_child_work(route, task)
+        tasks.append(task)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        settling = pool.submit(
+            store.complete_agent_task, tasks[0].operation_id, applied_revision=None, result={}
+        )
+        archiving = pool.submit(store.archive_empty_auto_research_fork, parent.project_id, head)
+        settling.result()
+        assert not archiving.result()
+    store.complete_agent_task(
+        tasks[1].operation_id,
+        applied_revision=None,
+        result={"graph_update": {"status": "unavailable", "commit_status": "unknown"}},
+    )
+    assert not store.archive_empty_auto_research_fork(parent.project_id, head)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET result_json='{}' WHERE operation_id=?", (tasks[1].operation_id,)
+        )
+    admission = _admission(
+        store, parent, admission_id="pending", child_kind="work", child_id="third"
+    )
+    store.record_auto_research_child_admission(admission)
+    assert not store.archive_empty_auto_research_fork(parent.project_id, head)
+    store.cancel_auto_research_child_admission(admission.admission_id)
+    assert not store.archive_empty_auto_research_fork(
+        parent.project_id, head.model_copy(update={"revision": 1})
+    )
+    # A nested fork with a live worker still merges back into this one.
+    nested = store.create_graph_branch(
+        project_id=parent.project_id,
+        branch_id=str(uuid.uuid4()),
+        owner_episode_id=parent.episode_id,
+        parent_head=head,
+        created_by="orchestrator:test",
+        auto_archive=True,
+    )
+    route, task = _work_pair(store, parent, root, worker_id="nested")
+    task = task.model_copy(
+        update={"graph_target": GraphTargetRef(kind="branch", branch_id=nested.branch_id)}
+    )
+    store.create_auto_research_child_work(route, task)
+    assert not store.archive_empty_auto_research_fork(parent.project_id, head)
+    store.complete_agent_task(task.operation_id, applied_revision=None, result={})
+    # So does a failed worker that can still resume from its session and stage.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET status='failed', native_session_id='s', stage_root='/stage' "
+            "WHERE operation_id=?",
+            (task.operation_id,),
+        )
+    assert not store.archive_empty_auto_research_fork(parent.project_id, head)
+    store.request_auto_research_child_work_stop("nested")
+    assert store.archive_empty_auto_research_fork(parent.project_id, head)
+    assert store.graph_branch(parent.project_id, target.branch_id).archived

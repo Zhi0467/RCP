@@ -168,6 +168,9 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("GET",), "/api/projects/{project_id}/sources"),
     (("GET",), "/api/projects/{project_id}/graph-edit-options"),
     (("GET",), "/api/projects/{project_id}/graph-refs"),
+    (("POST",), "/api/projects/{project_id}/graph-refs"),
+    (("POST",), "/api/projects/{project_id}/graph-refs/{branch_id}/merge"),
+    (("GET",), "/api/projects/{project_id}/graph-refs/{branch_id}/merge-preview"),
     (("PUT",), "/api/projects/{project_id}/graph-refs/{branch_id}/name"),
     (("PUT",), "/api/projects/{project_id}/graph-refs/{branch_id}/archived"),
     (("POST",), "/api/projects/{project_id}/sync"),
@@ -281,6 +284,12 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/notifications/devices/{device_id}/test"),
     (("POST",), "/api/notifications/phone-pairings"),
     (("GET",), "/api/notifications/devices"),
+    (("GET",), "/api/projects/{project_id}/bulletin"),
+    (("POST",), "/api/projects/{project_id}/bulletin"),
+    (("GET",), "/api/projects/{project_id}/bulletin/channels"),
+    (("POST",), "/api/projects/{project_id}/bulletin/read"),
+    (("PATCH",), "/api/projects/{project_id}/bulletin/{post_id}"),
+    (("DELETE",), "/api/projects/{project_id}/bulletin/{post_id}"),
     (("GET",), "/api/projects/{project_id}/lessons"),
     (("POST",), "/api/projects/{project_id}/lessons"),
     (("PATCH",), "/api/projects/{project_id}/lessons/{lesson_id}"),
@@ -313,13 +322,13 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     routes = list(_walk_routes(route_app.routes))
     entries = tuple(_route_entry(route) for route in routes)
 
-    assert len(entries) == 254
-    assert len(_FROZEN_ROUTE_INVENTORY) == 254
+    assert len(entries) == len(_FROZEN_ROUTE_INVENTORY)
+    assert len(_FROZEN_ROUTE_INVENTORY) == 263
     # Registration order is not part of the route contract; membership is.
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
     # The count makes the application/generated split explicit. FastAPI's
     # built-in routes are ordinary Starlette Route objects, while application
     # routes are APIRoute objects (including those nested in the router).
-    assert sum(isinstance(route, APIRoute) for route in routes) == 250
+    assert sum(isinstance(route, APIRoute) for route in routes) == 259
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4

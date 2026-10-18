@@ -69,13 +69,8 @@ from rcp.core.models import (
 )
 from rcp.core.operations import (
     NewEdge,
-    ProposalContentChangeOperation,
-    ProposalMergeOperation,
-    ProposalProtectedRelationOperation,
-    ProposalRemovalOperation,
-    ProposalStandingChangeOperation,
-    ProposalStatusChangeOperation,
-    ProposalSupersedeOperation,
+    ProposalResolution,
+    ResolveProposalsOperation,
     UpdateNodesOperation,
 )
 from rcp.core.project_types import project_type_of
@@ -88,10 +83,12 @@ from rcp.core.transitions import (
 from rcp.core.validation.approval import checked_human_decision_choice, is_decision_choice
 from rcp.core.validation.proposals import (
     normalized_decision_proposal_ops,
+    proposal_approval_operations,
     proposal_is_stale,
     proposal_updates_node,
 )
 from rcp.history import HistoryManager
+from rcp.history.branches import BranchHistoryManager
 from rcp.history.queries import HistoryEngine
 from rcp.limits import (
     ACTIVE_COMPUTE_ID_MAX_COUNT,
@@ -195,36 +192,6 @@ def _proposal_applies_decision_choice(state: GraphState, proposal: Proposal) -> 
     return False
 
 
-def _proposal_approval_standing_targets(proposal: Proposal) -> list[str]:
-    """Return belief nodes whose standing is accepted with this Proposal.
-
-    ``related_node_ids`` is a dependency set, not a review-target set. New
-    protected-change Proposals therefore use their declared intent to name only
-    the belief whose content or lifecycle changed. Historical Proposals did not
-    carry an intent and retain their existing related-node behavior.
-    """
-
-    if any(isinstance(operation, ProposalStandingChangeOperation) for operation in proposal.ops):
-        return []
-    if len(proposal.ops) != 1:
-        return list(proposal.related_node_ids)
-    operation = proposal.ops[0]
-    if operation.intent.startswith("legacy_"):
-        return list(proposal.related_node_ids)
-    if isinstance(operation, (ProposalRemovalOperation, ProposalProtectedRelationOperation)):
-        return []
-    if isinstance(operation, (ProposalContentChangeOperation, ProposalStatusChangeOperation)):
-        return [operation.nodes[0].id]
-    if isinstance(operation, ProposalSupersedeOperation):
-        return [operation.nodes[0].id]
-    if isinstance(operation, ProposalMergeOperation):
-        return [operation.merges[0].duplicate]
-    # Central compatibility decoding assigns synthetic legacy intents to old
-    # scope/ontology proposals. They retain their historical dependency-based
-    # standing behavior rather than being reinterpreted as a current intent.
-    return list(proposal.related_node_ids)
-
-
 def _proposal_judgment_patch(
     state: GraphState,
     proposal: Proposal,
@@ -258,33 +225,23 @@ def _proposal_judgment_patch(
             change_summary=[withdrawal_reason],
         )
 
-    semantic_ops = (
-        normalized_decision_proposal_ops(state, proposal) if decision == "approved" else []
-    )
-    standing_ops = [
-        {"op": "set_standing", "node_id": node_id, "standing": "accepted"}
-        for node_id in (
-            _proposal_approval_standing_targets(proposal) if decision == "approved" else []
-        )
-    ]
     return Patch(
         kind="approval",
         author="human",
+        producer="human",
         summary=f"{decision.title()} proposal “{proposal.title}”.",
-        ops=[
-            *semantic_ops,
-            {
-                "op": "resolve_proposals",
-                "resolutions": [
-                    {
-                        "id": proposal.id,
-                        "status": decision,
-                        "reason": reason,
-                    }
-                ],
-            },
-            *standing_ops,
-        ],
+        ops=(
+            proposal_approval_operations(state, proposal, reason=reason)
+            if decision == "approved"
+            else [
+                ResolveProposalsOperation(
+                    op="resolve_proposals",
+                    resolutions=[
+                        ProposalResolution(id=proposal.id, status=decision, reason=reason)
+                    ],
+                )
+            ]
+        ),
         change_summary=[f"The proposal “{proposal.title}” was {decision}."],
         human_action=(
             "decision_choice"
@@ -1234,18 +1191,24 @@ class ProjectService:
     ) -> ProjectService:
         """Return a service whose graph reads and writes stay on one exact target."""
 
+        main = (
+            self.history.parent if isinstance(self.history, BranchHistoryManager) else self.history
+        )
         if target.kind == "main":
             if expected_episode_id is not None:
                 raise ValueError("an episode-target service requires a graph branch")
-            return self
-        assert target.branch_id is not None
-        history = self.history.branch(
-            target.branch_id,
-            expected_episode_id=expected_episode_id,
-            expected_project_id=self._project_id,
-            initialize=initialize,
-            refresh_max_age_seconds=refresh_max_age_seconds,
-        )
+            if main is self.history:
+                return self
+            history = main
+        else:
+            assert target.branch_id is not None
+            history = main.branch(
+                target.branch_id,
+                expected_episode_id=expected_episode_id,
+                expected_project_id=self._project_id,
+                initialize=initialize,
+                refresh_max_age_seconds=refresh_max_age_seconds,
+            )
         return ProjectService(
             history.manifest,
             history,
@@ -1361,6 +1324,20 @@ class ProjectService:
                         "orchestrator_episode_id": task.orchestrator_episode_id,
                         "human_turn_refusal": task.human_turn_refusal,
                         "graph_title": task.graph_title,
+                        # Human turns after an Auto-research chain ends join its one card.
+                        **(
+                            {
+                                "title": task.title,
+                                "message_count": canonical.message_count + task.message_count,
+                                "updated_at": max(
+                                    canonical.updated_at,
+                                    task.updated_at,
+                                    key=datetime.fromisoformat,
+                                ),
+                            }
+                            if task.conversation_kind == "auto_research"
+                            else {}
+                        ),
                     }
                 )
         chats = sorted(

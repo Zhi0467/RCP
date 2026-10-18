@@ -27,7 +27,7 @@ def branch_services(manifest, tmp_path):
     history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_episode_branch(metadata)
+    branch = history.create_branch(metadata)
     branch.append(_branch_patch("ev/branch-only"))
     history.append(_branch_patch("ev/main-only", "Main-only result"))
     paper = PaperService(manifest, AppStore(tmp_path / "app.sqlite3"))

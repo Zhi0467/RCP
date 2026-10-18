@@ -17,7 +17,7 @@ from rcp.service import (
     ReviewRequest,
 )
 from rcp.storage import AppStore
-from tests.helpers import seed_patch, unchecked_write_authority
+from tests.helpers import fabricated_authorizer, seed_patch, unchecked_write_authority
 
 QUESTION_ID = "rq/learning-after-shift"
 HYPOTHESIS_ID = "hyp/replanning-restores-plasticity"
@@ -530,3 +530,425 @@ def test_lifecycle_proposal_withdraws_if_its_implicit_edge_appears_first(
     assert state.proposals[proposal_id].status == "withdrawn"
     assert state.nodes[HYPOTHESIS_ID].status == "superseded"
     assert edge_id in state.edges
+
+
+def _merge_review_patch(state: GraphState, *operations: dict[str, Any]) -> Patch:
+    """A merge envelope exercises the canonical merge-only review boundary."""
+    branch_id = "0171cb29-ae60-4021-9d8b-9276839048c4"
+    return Patch.model_validate(
+        {
+            "kind": "work",
+            "author": "agent",
+            "profile": "orchestrator",
+            "authorized_by": fabricated_authorizer().model_dump(mode="json"),
+            "task_id": "task/merge-review",
+            "summary": "Review connected branch changes.",
+            "run_truth_scope": ["repo-a"],
+            "repositories_read": ["repo-a"],
+            "branch_merge": {
+                "merge_id": "a" * 64,
+                "branch_id": branch_id,
+                "episode_id": None,
+                "branch_base_head": {"revision": 1},
+                "branch_head": {
+                    "revision": state.revision,
+                    "target": {"kind": "branch", "branch_id": branch_id},
+                },
+                "rebased_main_head": {"revision": state.revision},
+                "merge_task_id": "task/merge-review",
+            },
+            "ops": [
+                {
+                    "op": "create_proposals",
+                    "proposals": [
+                        {
+                            "id": "prop/merge-group",
+                            "title": "Review a connected merge group",
+                            "card": {"decision_needed": "Approve these changes together?"},
+                            "ops": list(operations),
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+
+def test_atomic_protected_edge_replacement_approves_and_preserves_old_dependency_rules(
+    manifest: Manifest,
+    tmp_path,
+) -> None:
+    from rcp.core.materialize import apply_valid_patch, prepare_patch_bookkeeping
+    from rcp.core.operations import CreateProposalsOperation
+    from rcp.core.validation import ValidationContext, validate_patch
+    from rcp.core.validation.proposals import (
+        ProposalResource,
+        proposal_dependencies_and_effects,
+        proposal_is_stale,
+    )
+
+    service = _service(manifest, tmp_path)
+    state = service.history.materialize().state
+    old_edge = state.edges[PROTECTED_EDGE_ID]
+    patch = _merge_review_patch(
+        state,
+        deepcopy(INTENT_OPERATIONS["protected_relation_change"]),
+        {
+            "op": "create_edges",
+            "intent": "protected_relation_change",
+            "edges": [
+                {
+                    "id": PROTECTED_EDGE_ID,
+                    "source": old_edge.source,
+                    "target": old_edge.target,
+                    "relation": old_edge.relation,
+                    "explanation": "Revised relationship explanation.",
+                }
+            ],
+        },
+    )
+    patch = prepare_patch_bookkeeping(state, patch).model_copy(
+        update={"revision": state.revision + 1}
+    )
+    report = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"]))
+    assert not report.rejected, report.messages
+    filed = apply_valid_patch(state, patch)
+    proposal = filed.proposals["prop/merge-group"]
+    assert not proposal_is_stale(filed, proposal)
+    footprint = proposal_dependencies_and_effects(filed, proposal)
+    edge_resource = ProposalResource(kind="edge", id=PROTECTED_EDGE_ID)
+    assert edge_resource in footprint.dependencies & footprint.effects
+    assert PROTECTED_EDGE_ID not in footprint.required_absent_edge_ids
+    # Rule 1 and rule 2 records retain the old required-absence behavior, and
+    # replay leaves their persisted input document and recorded rule untouched.
+    operation = patch.ops[0]
+    assert isinstance(operation, CreateProposalsOperation)
+    for rule in (1, 2):
+        old_document = patch.model_dump(mode="json")
+        old_document["ops"][0]["proposals"][0]["dependency_rule"] = rule
+        if rule == 1:
+            del old_document["ops"][0]["proposals"][0]["dependency_rule"]
+        old_patch = Patch.model_validate(old_document)
+        before_replay = old_patch.model_dump_json()
+        replayed = apply_valid_patch(state, old_patch)
+        old_proposal = replayed.proposals[proposal.id]
+        assert old_proposal.dependency_rule == rule
+        assert proposal_is_stale(replayed, old_proposal)
+        assert old_patch.model_dump_json() == before_replay
+    from rcp.service import _proposal_judgment_patch
+
+    approval = _proposal_judgment_patch(
+        filed, proposal, decision="approved", reason="Reviewed the replacement."
+    ).model_copy(update={"revision": filed.revision + 1})
+    report = validate_patch(filed, approval, ValidationContext(["repo-a", "repo-b"]))
+    assert not report.rejected, report.messages
+    approved = apply_valid_patch(filed, approval)
+    assert approved.edges[PROTECTED_EDGE_ID].explanation == "Revised relationship explanation."
+    assert approved.nodes[QUESTION_ID].standing == "contested"
+    assert approved.nodes[HYPOTHESIS_ID].standing == "contested"
+
+
+def test_review_footprints_separate_shared_reads_from_approval_writes(
+    manifest: Manifest,
+    tmp_path,
+) -> None:
+    from rcp.core.models import CURRENT_PROPOSAL_DEPENDENCY_RULE, Proposal
+    from rcp.core.validation.proposals import ProposalResource, proposal_dependencies_and_effects
+
+    service = _service(manifest, tmp_path)
+    state = service.history.materialize().state
+
+    def footprint(identity, operation):
+        proposal = Proposal.model_validate(
+            {
+                "id": identity,
+                "title": "Review one effect",
+                "card": {"decision_needed": "Approve?"},
+                "dependency_rule": CURRENT_PROPOSAL_DEPENDENCY_RULE,
+                "ops": [operation],
+            }
+        )
+        return proposal_dependencies_and_effects(state, proposal)
+
+    left = footprint(
+        "prop/left",
+        {
+            "op": "supersede_nodes",
+            "intent": "supersede",
+            "nodes": [{"id": HYPOTHESIS_ID, "superseded_by": OTHER_HYPOTHESIS_ID}],
+        },
+    )
+    # Both independent changes read the successor. Reading it cannot accept its
+    # standing or make the other review stale.
+    right = footprint(
+        "prop/right",
+        {
+            "op": "create_edges",
+            "intent": "protected_relation_change",
+            "edges": [
+                {
+                    "source": QUESTION_ID,
+                    "target": OTHER_HYPOTHESIS_ID,
+                    "relation": "has_hypothesis",
+                }
+            ],
+        },
+    )
+    successor = ProposalResource(kind="node", id=OTHER_HYPOTHESIS_ID)
+    assert successor in left.dependencies & right.dependencies
+    assert successor not in left.effects | right.effects
+    assert not (left.effects & right.dependencies or right.effects & left.dependencies)
+    assert ProposalResource(kind="node", id=HYPOTHESIS_ID) in left.effects
+    assert (
+        ProposalResource(kind="edge", id=f"{HYPOTHESIS_ID}::supersedes::{OTHER_HYPOTHESIS_ID}")
+        in left.effects
+    )
+    # Removing either connected endpoint writes the incident edge the other
+    # removal reads, even though neither approval edits the other node.
+    first = footprint(
+        "prop/remove-question",
+        {
+            "op": "remove_nodes",
+            "intent": "removal",
+            "node_ids": [QUESTION_ID],
+        },
+    )
+    second = footprint("prop/remove-hypothesis", deepcopy(INTENT_OPERATIONS["removal"]))
+    assert first.effects & second.dependencies
+    assert second.effects & first.dependencies
+
+
+def test_connected_removal_review_has_current_incident_snapshot(
+    manifest: Manifest,
+    tmp_path,
+) -> None:
+    from rcp.core.materialize import apply_valid_patch, prepare_patch_bookkeeping
+    from rcp.core.validation import ValidationContext, validate_patch
+    from rcp.core.validation.proposals import proposal_is_stale
+
+    service = _service(manifest, tmp_path)
+    state = service.history.materialize().state
+    patch = _merge_review_patch(
+        state,
+        {"op": "remove_nodes", "intent": "removal", "node_ids": [QUESTION_ID]},
+        deepcopy(INTENT_OPERATIONS["removal"]),
+    )
+    patch = prepare_patch_bookkeeping(state, patch).model_copy(
+        update={"revision": state.revision + 1}
+    )
+    report = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"]))
+    assert not report.rejected, report.messages
+    filed = apply_valid_patch(state, patch)
+    assert not proposal_is_stale(filed, filed.proposals["prop/merge-group"])
+
+
+def test_rule_two_approval_preserves_historical_standing(
+    manifest: Manifest,
+    tmp_path,
+) -> None:
+    from rcp.core.operations import CreateProposalsOperation, SetStandingOperation
+    from rcp.core.validation.proposals import proposal_approval_operations
+
+    service = _service(manifest, tmp_path)
+    state = service.history.materialize().state
+    content = {
+        "op": "update_nodes",
+        "intent": "content_change",
+        "nodes": [{"id": HYPOTHESIS_ID, "changes": {"statement": "Updated claim."}}],
+    }
+    patch = _merge_review_patch(state, content, deepcopy(INTENT_OPERATIONS["status_change"]))
+    create = patch.ops[0]
+    assert isinstance(create, CreateProposalsOperation)
+    source = create.proposals[0].model_copy(
+        update={
+            "dependency_rule": 2,
+            "raised_rev": state.revision,
+            "related_node_ids": [HYPOTHESIS_ID, STATUS_EVIDENCE_ID],
+        }
+    )
+    # Old multi-intent reviews accept every recorded related node, not merely
+    # the written subject. The shared constructor must retain that exact rule.
+    accepted = [
+        operation.node_id
+        for operation in proposal_approval_operations(state, source)
+        if isinstance(operation, SetStandingOperation)
+    ]
+    assert accepted == [HYPOTHESIS_ID, STATUS_EVIDENCE_ID]
+
+
+@pytest.mark.parametrize("recorded_rule", [1, 2, 3])
+@pytest.mark.parametrize("grouped", [False, True])
+def test_carried_proposal_receives_destination_filing_rule(
+    manifest: Manifest, tmp_path, recorded_rule: int, grouped: bool
+) -> None:
+    from rcp.core.materialize import prepare_patch_bookkeeping
+    from rcp.core.operations import CreateProposalsOperation
+
+    state = _service(manifest, tmp_path).history.materialize().state
+    operations = [
+        {
+            "op": "update_nodes",
+            "intent": "content_change",
+            "nodes": [{"id": HYPOTHESIS_ID, "changes": {"statement": "Updated claim."}}],
+        }
+    ]
+    if grouped:
+        operations.append(deepcopy(INTENT_OPERATIONS["status_change"]))
+    raw = _merge_review_patch(state, *operations).model_dump(mode="json")
+    raw["ops"][0]["proposals"][0].update(dependency_rule=recorded_rule, base_rev=1, raised_rev=1)
+    carried = Patch.model_validate(raw)
+    before = carried.model_dump_json()
+
+    filed = prepare_patch_bookkeeping(state, carried)
+
+    assert isinstance(filed.ops[0], CreateProposalsOperation)
+    proposal = filed.ops[0].proposals[0]
+    assert proposal.dependency_rule == (3 if grouped else 2)
+    assert proposal.base_rev == state.revision
+    assert proposal.raised_rev == 0
+    assert proposal.id == "prop/merge-group"
+    assert carried.model_dump_json() == before
+
+
+@pytest.mark.parametrize("invalid_changes", [{"statement": 7}, {"predictions": 7}])
+def test_invalid_review_footprints_return_structured_rejection_without_mutation(
+    manifest: Manifest,
+    tmp_path,
+    invalid_changes,
+) -> None:
+    from rcp.core.materialize import prepare_patch_bookkeeping
+    from rcp.core.operations import CreateProposalsOperation
+    from rcp.core.validation import ValidationContext, validate_patch
+    from rcp.core.validation.proposals import (
+        ProposalEffectRejected,
+        proposal_dependencies_and_effects,
+    )
+
+    state = _service(manifest, tmp_path).history.materialize().state
+    patch = _merge_review_patch(
+        state,
+        {
+            "op": "update_nodes",
+            "intent": "content_change",
+            "nodes": [{"id": HYPOTHESIS_ID, "changes": invalid_changes}],
+        },
+        deepcopy(INTENT_OPERATIONS["status_change"]),
+    )
+    patch = prepare_patch_bookkeeping(state, patch)
+    create = patch.ops[0]
+    assert isinstance(create, CreateProposalsOperation)
+    before = state.model_dump_json()
+    with pytest.raises(ProposalEffectRejected) as rejected:
+        proposal_dependencies_and_effects(state, create.proposals[0])
+    assert rejected.value.diagnostics
+    assert all(item.level == "reject" for item in rejected.value.diagnostics)
+    report = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"]))
+    assert report.rejected
+    assert state.model_dump_json() == before
+
+
+def test_connectivity_rechecks_combined_approval_effects(monkeypatch) -> None:
+    from rcp.core.models import Proposal
+    from rcp.core.validation import proposals
+    from rcp.core.validation.proposals import ProposalDependenciesAndEffects, ProposalResource
+
+    proposal = Proposal.model_validate(
+        {
+            "id": "prop/combined-effects",
+            "title": "Review generated effects",
+            "card": {},
+            "ops": [
+                {"op": "remove_nodes", "intent": "removal", "node_ids": [node_id]}
+                for node_id in ("rq/first", "rq/second", "rq/third")
+            ],
+            "dependency_rule": 3,
+        }
+    )
+    first, second, third = (
+        ProposalResource(kind="node", id=node_id)
+        for node_id in ("rq/first", "rq/second", "rq/third")
+    )
+
+    def approval_effects(state, draft, *, validate):
+        subjects = {node_id for operation in draft.ops for node_id in operation.node_ids}
+        dependencies = {resource for resource in (first, second, third) if resource.id in subjects}
+        effects = {second} if first.id in subjects else set()
+        # Model a transition rule whose additional write appears only when both
+        # initiating effects occur together. Connectivity must use that complete
+        # approval effect, just as it uses core's ordinary implicit standing.
+        if {first.id, second.id} <= subjects:
+            effects.add(third)
+        return ProposalDependenciesAndEffects(
+            dependencies=frozenset(dependencies),
+            effects=frozenset(effects),
+            required_absent_edge_ids=frozenset(),
+            incident_snapshots=(),
+        )
+
+    monkeypatch.setattr(proposals, "_proposal_effect_footprint", approval_effects)
+    assert proposals.connected_proposal_operation_groups(GraphState(), proposal) == (
+        tuple(proposal.ops),
+    )
+
+
+def test_repeated_relation_intents_use_their_actual_operation_position(manifest, tmp_path):
+    from rcp.core.authority import Writer
+    from rcp.core.materialize import apply_valid_patch, prepare_patch_bookkeeping
+    from rcp.core.operations import CreateProposalsOperation
+    from rcp.core.validation.proposals import _validate_agent_proposal_boundary
+    from rcp.core.validation.report import ValidationReport
+
+    state = _service(manifest, tmp_path).history.materialize().state
+    state = apply_valid_patch(
+        state,
+        Patch(
+            kind="approval",
+            author="human",
+            summary="Retire the original belief.",
+            ops=[
+                {
+                    "op": "supersede_nodes",
+                    "nodes": [{"id": HYPOTHESIS_ID, "superseded_by": OTHER_HYPOTHESIS_ID}],
+                }
+            ],
+        ),
+    )
+    edge_id = f"{HYPOTHESIS_ID}::supersedes::{OTHER_HYPOTHESIS_ID}"
+    replacement = {
+        "op": "create_edges",
+        "intent": "protected_relation_change",
+        "edges": [
+            {
+                "id": edge_id,
+                "source": HYPOTHESIS_ID,
+                "target": OTHER_HYPOTHESIS_ID,
+                "relation": "supersedes",
+                "explanation": "Clarified retirement.",
+            }
+        ],
+    }
+    patch = prepare_patch_bookkeeping(
+        state,
+        _merge_review_patch(
+            state,
+            replacement,
+            {"op": "remove_edges", "intent": "protected_relation_change", "edge_ids": [edge_id]},
+            replacement,
+        ),
+    )
+    create = patch.ops[0]
+    assert isinstance(create, CreateProposalsOperation)
+    report = ValidationReport()
+    _validate_agent_proposal_boundary(
+        create.proposals[0],
+        state,
+        report,
+        state.revision + 1,
+        context_patch=patch,
+        writer=Writer.from_patch(patch),
+    )
+    # Only the first creation lacks a preceding removal. The equal creation
+    # after the removal is a valid replacement at the intent boundary.
+    assert [message.code for message in report.messages if message.level == "reject"] == [
+        "invalid-agent-proposal-shape",
+    ]

@@ -259,8 +259,9 @@ version in the composer. Admission rejects a moved version. Cancel/Escape/new
 selection or leaving mode closes the window. Version changes also clear old
 staged regions with a notice. Keep follows viewer state.
 
-Composer comments use that chat's Discuss/Work mode and execution profile.
-Read-only Auto-research children compose comments only, in Discuss. Both can
+Composer comments use that chat's Discuss/Work mode and execution profile,
+Experiment chats included. Read-only Auto-research children compose comments
+only, in Discuss. Both can
 publish the same artifact's next version through its tracked file.
 
 `/viewer` is the explicit shell; `/preview` remains its compatibility alias.
@@ -275,13 +276,18 @@ HTML/raster/SVG support gestures (on immediately in panel, opt-in inline).
 Other viewable types accept whole-artifact comments; PDF/download-only refuse.
 Each comment is text plus optional selection. Starting on text highlights it;
 figure/blank-space drags select area. The floating window offers Add comment or
-Edit now, which files and sends all comments. Cancel/Escape discards it. A corner
+Edit now, which sends only the comment being written and leaves the tray as it is.
+Cancel/Escape discards it; a plain click elsewhere in the artifact only closes it,
+and its text returns with the next selection. A corner
 count icon opens the tray with Remove, whole-artifact comment, and Send to original
-chat. These are prompt inputs, never graph annotations.
+chat, which sends every filed comment as a Work turn there. These are prompt inputs,
+never graph annotations.
 
 The shell saves filed comments/unsent text per artifact in the browser profile.
-Both send paths post the same list, with `edit_now` for immediate editing. A 409
-keeps it with the reason; success clears it and reports the operation to the parent.
+Both send paths post a comment list, with `edit_now` for immediate editing. A refusal
+keeps the comments with the reason (a refused Edit now files its comment in the tray,
+or returns it to the comment box when the tray is full);
+success removes only the comments it sent and reports the operation to the parent.
 Explicit fresh-session admission is labelled on both actions. Unavailable origins
 only disable editing. A later edit failure comes from `edit_failure` until replaced.
 Theme follows the containing app, or remembered appearance when standalone.
@@ -301,10 +307,12 @@ place can show it there. All input is bounded/untrusted.
 
 Admission captures artifact/version. A composer comment must belong to that chat
 and follows its ordinary mode, profile, session, graph admission, compute, and
-worktree. A viewer comment resumes the recorded master: chat/child masters get
-Discuss with the origin profile; Experiment/orchestrator masters get a revoking
-scratch-only edit, without graph, watcher, master, or repository authority.
-A Work request for the latter is refused. Admission freezes this choice.
+worktree. A viewer Send is that same composer turn in Work, on the chat's latest
+profile, whenever the artifact's chat takes human turns (ordinary and Experiment
+chats, and an ended chain's orchestrator conversation). Edit now, and a Send whose
+origin is a running orchestrator or a read-only child, resume the recorded master: chat/child masters get Discuss with the origin
+profile; Experiment/orchestrator masters get a revoking scratch-only edit, without
+graph, watcher, master, or repository authority. Admission freezes this choice.
 
 **Why:** The recorded master defines which turns its session understands. A
 revoking edit avoids substituting an incompatible chat contract; the next

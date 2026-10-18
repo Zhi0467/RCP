@@ -335,6 +335,11 @@ def _created_edges(operation: GraphOperation) -> dict[str, tuple[str, str]]:
     return created
 
 
+# The ballot rule checks the combination of queue status and option contents.
+# Its diagnostics retain the node id so callers can reconsider those fields.
+CLASH_PATCH_REFUSALS = frozenset({"incomplete-decision-ballot"})
+
+
 def _validate_queued_decision_options(ctx: OpContext) -> None:
     """Check queued ballots after the Patch's written-order staging has finished."""
 
@@ -524,20 +529,24 @@ def _validate_declared_agent_action(ctx: OpContext) -> None:
 
 
 def _has_declared_decision_outcome(ctx: OpContext) -> bool:
-    project_type = project_type_of(ctx.initial_state)
-    decision_ids = {
-        node.id for node in ctx.initial_state.nodes.values() if project_type.is_chooser(node.type)
-    }
+    return patch_has_decision_outcome(ctx.initial_state, ctx.patch)
+
+
+def patch_has_decision_outcome(state: GraphState, patch: Patch) -> bool:
+    """Whether ``patch`` records a Decision outcome, which requires decision_choice."""
+
+    project_type = project_type_of(state)
+    decision_ids = {node.id for node in state.nodes.values() if project_type.is_chooser(node.type)}
     decision_ids.update(
         raw.id
-        for operation in ctx.patch.ops
+        for operation in patch.ops
         if isinstance(operation, CreateNodesOperation)
         for raw in operation.nodes
         if project_type.is_chooser(raw.type)
     )
     return any(
         update.id in decision_ids and chooses_decision(update.changes)
-        for operation in ctx.patch.ops
+        for operation in patch.ops
         if isinstance(operation, UpdateNodesOperation)
         for update in operation.nodes
     )

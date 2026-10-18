@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Callable
+from typing import Any
 
 from rcp.api.episode_timeline_models import (
     EpisodeTimelineActor,
@@ -20,6 +21,7 @@ from rcp.api.episode_timeline_models import (
 )
 from rcp.api.episodes import episode_chain_records
 from rcp.core.models import AuthorizedHuman
+from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import (
     EPISODE_TIMELINE_ERROR_MAX_LENGTH,
     EPISODE_TIMELINE_EVENT_LIMIT,
@@ -34,6 +36,11 @@ def worker_label(instruction: str) -> str:
     """A worker's display name: its assignment's first Markdown heading."""
     heading = re.search(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", instruction, re.MULTILINE)
     return heading.group(1) if heading else "Worker"
+
+
+def _node_row(node_id: str, target: GraphTargetRef) -> str:
+    prefix = f"branch:{target.branch_id}:" if target.kind == "branch" else ""
+    return f"{prefix}node:{node_id}"
 
 
 def _span(operation_id: str | None) -> str | None:
@@ -154,7 +161,7 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
     children = store.episodes_by_ids(list(routes))
     owners = {member.episode_id: member for member in chain} | children
 
-    def add_actor(actor_id: str, kind: str, label: str, owner: str, **values: object) -> None:
+    def add_actor(actor_id: str, kind: str, label: str, owner: str, **values: Any) -> None:
         actors[actor_id] = EpisodeTimelineActor(
             actor_id=actor_id,
             kind=kind,
@@ -189,6 +196,7 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
         primary_kind,
         "Orchestrator" if auto else "Experiment agent",
         chain[0].episode_id,
+        graph_target=episode.graph_target,
         started_at=chain[0].created_at,
         ended_at=chain[-1].ended_at,
         outcome=chain[-1].ending,
@@ -217,7 +225,8 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
             "Experiment",
             route.auto_research_episode_id,
             subtitle=route.control_node_id,
-            row_key=f"node:{route.control_node_id}",
+            row_key=_node_row(route.control_node_id, child.graph_target),
+            graph_target=child.graph_target,
             started_at=child.created_at,
             ended_at=child.ended_at,
             outcome=child.ending,
@@ -277,6 +286,7 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
                     "Worker",
                     role.episode_id,
                     subtitle=role.control_node_id,
+                    graph_target=task.graph_target,
                     links=EpisodeTimelineLinks(
                         task_id=role.actor_operation_id, control_node_id=role.control_node_id
                     ),
@@ -298,6 +308,7 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
             worker_label(work.instruction),
             work.episode_id,
             subtitle=work.control_node_id,
+            graph_target=current.graph_target if current else None,
             started_at=work.created_at,
             # A worker waiting on its own watcher is still alive after its attempt finishes.
             ended_at=current.finished_at
@@ -477,8 +488,8 @@ def _communications(
             node = watcher.condition.node_id if graph else watcher.node_id
             # A shell-watcher group shares one row, as it does in the Watchers fold.
             row_key = (
-                f"node:{node}"
-                if graph
+                _node_row(watcher.condition.node_id, watcher.graph_target)
+                if isinstance(watcher, GraphWatcherRecord)
                 else f"watchers:{watcher.group_label}"
                 if watcher.group_label
                 else actor_id
@@ -551,7 +562,7 @@ def _communications(
             )
             if isinstance(watcher, GraphWatcherRecord):
                 source = None
-                source_row = f"node:{watcher.condition.node_id}"
+                source_row = _node_row(watcher.condition.node_id, watcher.graph_target)
             landing = (
                 "woke"
                 if notice.delivery_operation_id

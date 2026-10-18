@@ -125,7 +125,7 @@ def branch_changes(
             context_ids.update((edge.source, edge.target))
     return result, GraphBranchChanges(
         branch_id=history.branch_id,
-        base_head=metadata.base_head,
+        base_head=metadata.effective_parent_head,
         head=head,
         nodes=nodes,
         edges=edges,
@@ -170,8 +170,7 @@ def active_merge(store: AppStore, project_id: str, target: GraphTargetRef) -> bo
         task.kind == "branch_merge"
         and task.graph_target == target
         and task.status in ACTIVE_AGENT_TASK_STATUSES
-        for task in store.episode_tasks(target.branch_id)
-        if task.project_id == project_id
+        for task in store.unsettled_graph_target_tasks(project_id, target)
     )
 
 

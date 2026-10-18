@@ -3,7 +3,6 @@ import { useEffect, useState } from "react";
 import { loadMergePreview } from "../core/api";
 import {
   type MergeChoices,
-  mergeDiffCounts,
   mergeRequestBody,
   previewAnswersDraft,
   squashAllowed,
@@ -90,7 +89,6 @@ export function EpisodeMergePanel({
   }, [apiBase, episode.episode_id, refreshKey, open]);
 
   const hasGraphBranch = episode.graph_branch !== null;
-  const counts = preview ? mergeDiffCounts(preview.graph.paths) : null;
   const squash = preview !== null && squashAllowed(preview);
   const historyMode = squash ? choices.historyMode : "merge";
   const previewCurrent =
@@ -118,23 +116,6 @@ export function EpisodeMergePanel({
     }
   };
 
-  const graphChanges = counts ? counts.changed : 0;
-  const summary = [
-    hasGraphBranch &&
-      counts &&
-      `${graphChanges} graph ${graphChanges === 1 ? "change" : "changes"}`,
-    preview?.code &&
-      `${preview.code.commits_ahead} ${preview.code.commits_ahead === 1 ? "commit" : "commits"} in ${preview.code.repo_alias}`,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  const agentReasons = [
-    counts?.conflicts && `${counts.conflicts} ${counts.conflicts === 1 ? "conflict" : "conflicts"}`,
-    counts?.proposals && `${counts.proposals} ${counts.proposals === 1 ? "Proposal" : "Proposals"}`,
-    preview?.code?.status === "conflict" && "code conflicts",
-  ].filter(Boolean);
-  const agentChanges = counts?.needsAgent ?? 0;
-
   return (
     <div className="episode-merge-panel" aria-label="Merge">
       {previewError && (
@@ -143,7 +124,15 @@ export function EpisodeMergePanel({
         </div>
       )}
       <div className="merge-summary-row">
-        <span>{summary}</span>
+        <div className="merge-counts">
+          {hasGraphBranch && preview && <MergeGraphCounts graph={preview.graph} />}
+          {preview?.code && (
+            <span>
+              {preview.code.commits_ahead} {preview.code.commits_ahead === 1 ? "commit" : "commits"}{" "}
+              in {preview.code.repo_alias}
+            </span>
+          )}
+        </div>
         <button
           className="button secondary compact campaign-branch-merge"
           type="button"
@@ -244,14 +233,6 @@ export function EpisodeMergePanel({
               <span>Keep the graph branch for more runs</span>
             </label>
           )}
-          {preview.needs_agent && (
-            <span className="merge-note">
-              {agentChanges > 0
-                ? `${agentChanges} ${agentChanges === 1 ? "change needs" : "changes need"} the merge agent`
-                : "The merge agent resolves the code"}
-              {agentReasons.length > 0 && ` (${agentReasons.join(", ")})`}. The rest merge directly.
-            </span>
-          )}
           <div className="merge-picker-actions">
             <button
               className="button secondary compact"
@@ -307,5 +288,19 @@ export function EpisodeMergePanel({
         </div>
       )}
     </div>
+  );
+}
+
+export function MergeGraphCounts({ graph }: { graph: MergePreview["graph"] }) {
+  return (
+    <>
+      <span className="branch-diff-word diff-changed">{graph.direct} direct</span>
+      <span className="branch-diff-word diff-conflict" title="Agent answers">
+        {graph.conflicts} conflicts
+      </span>
+      <span className="branch-diff-word diff-proposal" title="Pending Proposals">
+        {graph.reviews} reviews
+      </span>
+    </>
   );
 }

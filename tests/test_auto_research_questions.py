@@ -168,6 +168,7 @@ def test_orchestrator_launch_stages_fresh_store_snapshot_and_retains_dismissals(
     from pathlib import Path
     from types import SimpleNamespace
 
+    from rcp.agents.auto_research_commands import auto_research_allowed_verbs
     from rcp.runs.tasks.auto_research_stream import _orchestrator_prompt
 
     from .test_auto_research_stream import _execution
@@ -181,7 +182,9 @@ def test_orchestrator_launch_stages_fresh_store_snapshot_and_retains_dismissals(
         project_name="Example",
         repositories=[],
         graph_path="/state/graph.json",
-        main_graph_path=None,
+        parent_graph_path=None,
+        branch_name=None,
+        branch_parent=None,
         shared_repositories=[],
         research_md_path="/state/research.md",
         ontology_extensions=False,
@@ -206,6 +209,7 @@ def test_orchestrator_launch_stages_fresh_store_snapshot_and_retains_dismissals(
         patch_path="/stage/patch.json",
         schema_path="/stage/schema.json",
         command_client="rcp-client",
+        allowed_verbs=auto_research_allowed_verbs("orchestrator"),
         messages_path=None,
         lifecycle_path=None,
         skill_pointers=[],

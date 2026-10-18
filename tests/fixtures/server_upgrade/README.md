@@ -128,3 +128,12 @@ exact boundary source from the preceding immutable fixture.
 project groups and provisioning group assignments (storage migration 55),
 ending at migration 54. It is built by the exact boundary source from the
 preceding immutable fixture.
+
+`pre-graph-branches-v28-ae89ee3` retains migration 54 before independent branch
+records (migration 56), including a same-id legacy branch, its Evidence patch,
+renamed and retired names, and its archive state. The exact boundary source
+upgrades the preceding fixture and creates that branch through its public APIs.
+
+`pre-graph-branches-v29-daad53e` retains that branch-bearing shape at migration 55,
+after project groups and before independent branch records (migration 56). It is
+built by the exact boundary source from `pre-graph-branches-v28-ae89ee3`.

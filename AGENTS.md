@@ -116,7 +116,7 @@ lives in each owner's docstring, its module spec, and a test that attempts the
 violation.
 
 1. **Canonical Patch logs are append-only; materialized graph files are outputs.** Never edit or delete main or branch Patch history, and never hand-edit `graph.json`, `research.md`, glossary, Proposal, or control projections; replay rebuilds the outputs and would change the past.
-3. **Humans retain protected authority.** Only humans approve Proposals, change project truth membership, authorize episodes, or dispatch branch merges; a member's own page, including an agent the member runs there, counts as that human ([why](docs/specs/conversations-episodes-and-watchers.md#native-chat-context)). The Auto-research orchestrator is the one explicit exception: on its branch it may choose Decisions and set ordinary belief standing, and a human-dispatched branch merge inherits that profile.
+3. **Humans retain protected authority.** Only humans approve Proposals, change project truth membership, authorize episodes, or dispatch branch merges; a member's own page, including an agent the member runs there, counts as that human ([why](docs/specs/conversations-episodes-and-watchers.md#native-chat-context)). The Auto-research orchestrator is the one explicit exception: on its branch and the forks its lineage owns it may choose Decisions, set ordinary belief standing, and merge a fork back into its owned source; a human-dispatched merge into main inherits that profile.
 3b. **Existing ResearchQuestions and Hypotheses are protected beliefs.** Agents may create them; structural or semantic changes to existing ones use a Proposal. Never infer protected intent from operation shape.
 4. **Agent capability is fixed in code.** Configuration cannot widen it. Discuss has no graph/project authority, though every team launch carries its repositories' Git transport ([why](docs/specs/providers-and-containment.md#login-state-and-failure)); Work names exact write roots to provider enforcement, which bounds every file-editing tool and bounds the shell only where a provider can do so without disabling compute ([why](docs/specs/providers-and-containment.md#claude)); ingestion writes only scratch; paper coach is read-only. The per-chat browser grant is human consent to a code-defined tool ([why](docs/specs/providers-and-containment.md#browser-grants)).
 4b. **The task stage is the only graph-change channel.** RCP collects the agent's Patch from its exact RCP-owned stage and nowhere else; `docs/specs/providers-and-containment.md` names the files each run kind collects. Never parse graph authority from answers, traces, artifacts, or repository edits.
@@ -155,6 +155,13 @@ conversations spec; 11 `ProviderStreamEvent`.
   a command string.
 - Prompt prose describing enforcement must render the same resolved object used
   by enforcement. Do not maintain parallel human-written allowlists.
+- Resolve a launch's command verbs and read/write scopes once and pass those
+  objects; prompt call sites never re-derive them or branch on their fields.
+  Command usage belongs to each run family's contract builder, rendered from the
+  handler's verbs; per-launch context lines only point at staged files. Filtering
+  that depends on a scope belongs to the builder of that context, which takes the
+  scope. Usage text shares the parser's option records, and changed stable
+  contract prose bumps its policy version.
 - Kernel code asks `project_type_of(state)` which node types play which part;
   only the listed research layer names research node types, classes, or
   relations. `tests/test_project_types.py` and `web/tests/projectType.test.mjs`

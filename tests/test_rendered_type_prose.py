@@ -12,12 +12,12 @@ from hashlib import sha256
 
 import pytest
 
+from rcp.agents.auto_research_commands import auto_research_allowed_verbs
 from rcp.agents.auto_research_prompt import (
     _decision_disposition,
     auto_research_orchestrator_task_contract,
     orchestrator_graph_authority_contract,
 )
-from rcp.agents.branch_merge_prompt import branch_merge_task_contract
 from rcp.agents.prompts import PromptFactory, ask_contract
 from rcp.core import project_types
 from rcp.core.authority import (
@@ -31,7 +31,6 @@ from rcp.core.models import GraphState
 from rcp.core.operations import ProposalContentChangeOperation
 from rcp.core.research_type import RESEARCH
 from rcp.core.validation import proposals
-from rcp.runs.branch_merge import MERGE_RESIDUE_REASONS
 from tests.helpers import seed_patch
 from tests.test_prompts import _work_write_scope
 
@@ -118,36 +117,13 @@ def test_contract_sentences_follow_the_project_type(renamed: None) -> None:
         patch_path="/stage/patch.json",
         output_schema_path="/stage/schema.json",
         command_client="test-command-client",
+        allowed_verbs=auto_research_allowed_verbs("orchestrator"),
         write_scope=_work_write_scope(),
     )
     assert "without changing an existing Goal or Design" in _flat(orchestrator)
     # The orchestrator holds `apply`, so it is told to refresh guidance its own
     # changes left stale, naming the control node through the project type.
     assert "left a Change's `current_summary_stale`" in _flat(orchestrator)
-
-    merge = _flat(
-        branch_merge_task_contract(
-            context_path="/stage/context.json",
-            context_id="a" * 64,
-            patch_path="/stage/patch.json",
-            validator_command="validate",
-            review_contract_json="{}",
-            plan_path="/stage/plan.json",
-            residue_block="",
-        )
-    )
-    assert "for that same Goal or Design" in merge
-    assert "actually chooses a Choice" in merge
-
-
-def test_merge_residue_reasons_name_the_project_types() -> None:
-    assert (
-        RESEARCH.label_list(RESEARCH.protected_belief_types)
-        in (MERGE_RESIDUE_REASONS["protected_node"])
-    )
-    assert (
-        RESEARCH.label_list(RESEARCH.chooser_types) in (MERGE_RESIDUE_REASONS["decision_outcome"])
-    )
 
 
 def test_proposal_intent_messages_follow_the_project_type(renamed: None) -> None:

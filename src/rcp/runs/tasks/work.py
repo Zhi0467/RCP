@@ -65,6 +65,7 @@ from rcp.limits import (
 )
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.browser_lifecycle import browser_turn
+from rcp.runs.bulletin import bulletin_command_usage
 from rcp.runs.chat import (
     _append_chat_exchange,
     _append_chat_graph_receipt,
@@ -106,7 +107,7 @@ from rcp.runs.experiment_loop import (
     stage_chat_loop_status,
 )
 from rcp.runs.lesson_commands import lesson_command_usage
-from rcp.runs.lessons import stage_lessons_pointer
+from rcp.runs.lessons import stage_operational_context_pointer
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,
@@ -321,7 +322,11 @@ def _prepare_work_chat_prompt(
         human_message=request.message,
         node=node,
         master=master,
-        lessons_pointer=stage_lessons_pointer(execution, local_stage, remote_stage),
+        lessons_pointer=stage_operational_context_pointer(
+            execution,
+            local_stage,
+            remote_stage,
+        ),
         context_delta=context_delta,
         read_context=read_context,
         invoked_skill_pointers=invoked_package_pointers(
@@ -378,6 +383,10 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
                 ),
                 client=client or turn.patch_inputs.validator_staged.client_command(),
             )
+        )
+    if "bulletin" in handler.allowed_verbs:
+        instructions.append(
+            bulletin_command_usage(client or turn.patch_inputs.validator_staged.client_command())
         )
     if "ask" in handler.allowed_verbs:
         instructions.append(live_ask_contract(turn.patch_inputs.validator_staged.ask_wait_seconds))
@@ -746,7 +755,7 @@ async def _stage_work_turn(
         )
 
     async def stage_chat_resources(
-        layout: WorkStageLayout,
+        layout: WorkStageLayout, read_scope: GraphReadScope
     ) -> list[StagedExperimentWatcherResource]:
         layout.context.loop_status = stage_chat_loop_status(
             request,
@@ -755,6 +764,7 @@ async def _stage_work_turn(
             layout.remote_stage,
             state=service.history.state(),
             graph_target=service.history.graph_target,
+            read_scope=read_scope,
         )
         return await stage_chat_experiment_watcher_resources(
             request,
@@ -1006,7 +1016,13 @@ def _work_continuation(
     if browser_grant is not None and browser_grant.status != "not_requested":
         delta = {**(delta or {}), "browser": browser_prompt_line(browser_grant)}
     parts.append(render_chat_read_context(turn.context))
-    parts.append(stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage))
+    parts.append(
+        stage_operational_context_pointer(
+            turn.execution,
+            turn.local_stage,
+            turn.remote_stage,
+        )
+    )
     return compose(node, parts=parts, master=master, delta=delta)
 
 
@@ -1118,7 +1134,11 @@ def _compose_fresh_prompt(
         prompt = (
             PromptFactory.launch_prompt(contract_path)
             + "\n\n"
-            + stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage)
+            + stage_operational_context_pointer(
+                turn.execution,
+                turn.local_stage,
+                turn.remote_stage,
+            )
             + "\n\n"
             + render_chat_read_context(turn.context)
         )
@@ -1227,7 +1247,11 @@ def _compose_retry_prompt(
         role="work_retry",
     )
     prompt += "\n\n" + render_chat_read_context(turn.context)
-    prompt += "\n\n" + stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage)
+    prompt += "\n\n" + stage_operational_context_pointer(
+        turn.execution,
+        turn.local_stage,
+        turn.remote_stage,
+    )
     return _ComposedWorkPrompt(
         contract_path=contract_path,
         prompt=prompt,
@@ -2781,6 +2805,12 @@ async def _stream_work_graph_repair(
                 execution=execution,
                 saved_stage=True,
             )
+        task_record = execution.store.agent_task(execution.operation_id)
+        if task_record is None:
+            raise ValueError("The graph-reading task record is unavailable.")
+        graph_read_scope = GraphReadScope.resolve(
+            task_record.project_id, service.history, context.group_context
+        )
         context = context.model_copy(
             update=stage_branch_read_context(context, service, local_stage, remote_stage)
         )
@@ -2793,6 +2823,7 @@ async def _stream_work_graph_repair(
                     remote_stage,
                     state=service.history.state(),
                     graph_target=service.history.graph_target,
+                    read_scope=graph_read_scope,
                 )
             }
         )
@@ -2811,14 +2842,6 @@ async def _stream_work_graph_repair(
             episode_id=request.control_episode_id,
             ask_wait_seconds=ask_hold_seconds(shell_timeout),
             shell_timeout_seconds=shell_timeout,
-        )
-        task_record = execution.store.agent_task(execution.operation_id)
-        if task_record is None:
-            raise ValueError("The graph-reading task record is unavailable.")
-        graph_read_scope = GraphReadScope.for_launch(
-            project_id=task_record.project_id,
-            target=service.history.graph_target,
-            group_context=context.group_context,
         )
         validator_lifecycle = _start_work_validator_mailbox(
             service,
@@ -3063,6 +3086,7 @@ def _start_work_validator_mailbox(
         execution=execution,
         budget=budget,
         command_handler=command_handler,
+        allowed_verbs=command_handler.allowed_verbs,
         serve=serve_patch_validation_mailbox,
         resume_context=_work_mailbox_context(
             run_truth_scope,

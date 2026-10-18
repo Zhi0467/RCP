@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from rcp.api.dependencies import get_graph_service
 from rcp.runs.chat import _append_chat_exchange
 from rcp.service import ChatSummary, RunRequest
 from rcp.transport import StateUnavailable
@@ -536,16 +537,68 @@ def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
     continuation = store.episode(sent.json()["episode_id"])
     assert continuation is not None and continuation.episode_id != root.episode_id
 
+    # An artifact edit replying to the chain is a turn of its conversation.
+    edit = root_task.model_copy(
+        update={
+            "operation_id": "orchestrator-edit",
+            "kind": "artifact_edit",
+            "episode_id": None,
+            "dispatch_authority": None,
+            "request": {
+                "provider": root_task.request["provider"],
+                "message": "Relabel the axis.",
+                "artifact_edit": {
+                    "reply_episode_id": root.episode_id,
+                    "episode_id": root.episode_id,
+                    "operation_id": "orchestrator-edit",
+                },
+            },
+            "created_at": store.now(),
+        }
+    )
+    store.create_artifact_edit_task(edit)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET result_json = ? WHERE operation_id = ?",
+            (json.dumps({"messages": ["Relabeled."]}), edit.operation_id),
+        )
+    # After the chain ends, an ordinary human turn on its branch joins the same conversation.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET status = 'completed' WHERE episode_id = ?",
+            (continuation.episode_id,),
+        )
+    chat_turn = root_task.model_copy(
+        update={
+            "operation_id": "orchestrator-chat-turn",
+            "kind": "project_chat",
+            "episode_id": None,
+            "dispatch_authority": None,
+            "request": {
+                "provider": root_task.request["provider"],
+                "chat_id": root.episode_id,
+                "message": "Follow up.",
+            },
+            "created_at": store.now(),
+        }
+    )
+    store.create_agent_task(chat_turn)
+    _append_chat_exchange(
+        get_graph_service(app.state.catalog, project_id, root.episode_id, initialize=False),
+        RunRequest(chat_id=root.episode_id, chat_scope="project", message="Follow up."),
+        "Followed up.",
+        None,
+        None,
+    )
+
     url = f"/api/projects/{project_id}/chats"
-    cards = [
-        row
-        for row in client.get(f"{url}?inventory=true").json()["items"]
-        if row["conversation_kind"] == "auto_research"
-    ]
+    inventory = client.get(f"{url}?inventory=true").json()["items"]
+    cards = [row for row in inventory if row["chat_id"] == root.episode_id]
     assert len(cards) == 1
-    assert cards[0]["chat_id"] == root.episode_id
+    assert cards[0]["conversation_kind"] == "auto_research"
+    assert cards[0]["human_turn_refusal"] is None
     assert cards[0]["graph_target"] == root.graph_target.model_dump()
-    assert cards[0]["message_count"] == 3
+    assert cards[0]["message_count"] == 7
 
     branch = client.get(f"{url}/{root.episode_id}?branch_id={root.episode_id}")
     assert branch.status_code == 200, branch.text
@@ -556,7 +609,12 @@ def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
         ("user", root_task.operation_id, "Trace the strongest evidence."),
         ("assistant", root_task.operation_id, "First findings."),
         ("user", continuation.root_operation_id, "Check the control."),
+        ("user", edit.operation_id, "Relabel the axis."),
+        ("assistant", edit.operation_id, "Relabeled."),
+        ("user", None, "Follow up."),
+        ("assistant", None, "Followed up."),
     ]
+    assert branch.json()["conversation_kind"] == "auto_research"
     # A turn's live status reaches the transcript even outside the bounded task list.
     assert [message["agent_status"] for message in branch.json()["messages"]][1][
         "context_tokens"

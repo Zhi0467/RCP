@@ -109,7 +109,7 @@ def test_unresumable_origin_requires_explicit_fresh_session(edit_origin, missing
     assert availability.can_comment and availability.fresh_session_required
     response = signed_in_client(app).post(
         f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments",
-        json={"comments": [{"text": "Update"}]},
+        json={"comments": [{"text": "Update"}], "edit_now": True},
     )
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "fresh_session_required"
@@ -295,7 +295,9 @@ def test_viewer_session_collision_matches_comment_admission(edit_origin):
     assert response.status_code == 200
     state = response.json()
     assert not state["can_comment"] and not state["fresh_session_required"]
-    response = client.post(url + "/comments", json={"comments": [{"text": "Update this"}]})
+    response = client.post(
+        url + "/comments", json={"comments": [{"text": "Update this"}], "edit_now": True}
+    )
     assert response.status_code == 409
 
 
@@ -605,43 +607,67 @@ def test_composer_edit_refuses_a_version_moved_after_admission(edit_origin, monk
     assert response.status_code == 409
 
 
-def test_composer_experiment_edit_rejects_work_and_keeps_discuss_origin(edit_origin, monkeypatch):
+@pytest.mark.parametrize("patch_kind", ["work", "experiment_loop"])
+def test_viewer_send_continues_the_chat_with_a_work_turn(edit_origin, monkeypatch, patch_kind):
     app, store, task = edit_origin
-    artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
     with store.connection() as connection:
         connection.execute(
             "UPDATE graph_runs SET request_json = ? WHERE operation_id = ?",
-            (json.dumps({**task.request, "patch_kind": "experiment_loop"}), task.operation_id),
+            (json.dumps({**task.request, "patch_kind": patch_kind}), task.operation_id),
         )
-    started = []
-
-    def capture(project_id, kind, request, **kwargs):
-        assert kind == "artifact_edit"
-        started.append(request)
-        return task.model_copy(
-            update={
-                "operation_id": kwargs["operation_id"],
-                "request": request.model_dump(mode="json"),
-            }
-        )
-
-    monkeypatch.setattr(app.state.background_tasks, "start", capture)
+    artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
+    monkeypatch.setattr(app.state.background_tasks, "launch_admitted", store.agent_task)
     client = signed_in_client(app)
-    body = {**_request(task, artifact).model_dump(mode="json"), "chat_id": task.request["chat_id"]}
-    url = f"/api/projects/{task.project_id}/tasks/project_chat"
-    response = client.post(url, json={**body, "mode": "work"})
-    assert response.status_code == 422
-    assert "Discuss" in response.json()["detail"]
-    # A stale composer machine must not refuse an edit that runs on the origin's profile.
-    response = client.post(
-        url, json={**body, "mode": "discuss", "reasoning": "high", "run_on": "gone"}
+    url = f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments"
+    response = client.post(url, json={"comments": [{"text": "Rerun with seed 2"}]})
+    assert response.status_code == 202, response.text
+    sent = store.agent_task(response.json()["operation_id"])
+    assert sent.kind == task.kind
+    assert sent.request["mode"] == "work"
+    assert sent.request["chat_id"] == task.request["chat_id"]
+    assert sent.dispatch_authority is not None
+    assert not sent.request["artifact_edit"]["origin_bound"]
+    store.complete_agent_task(sent.operation_id, applied_revision=None, result={})
+    # Edit now keeps the origin-bound edit on the recorded session.
+    response = client.post(url, json={"comments": [{"text": "Fix the typo"}], "edit_now": True})
+    assert response.status_code == 202, response.text
+    edited = store.agent_task(response.json()["operation_id"])
+    assert edited.request["mode"] == "discuss"
+    assert edited.request["artifact_edit"]["origin_bound"]
+
+
+def test_viewer_send_continues_an_ended_orchestrator_chat(manifest, tmp_path, monkeypatch):
+    from rcp.runs.artifact_edit_admission import artifact_send_chat_turn
+    from rcp.service import ArtifactContextRequest
+
+    from .test_branch_chats import _app_branch, _end_orchestrator
+
+    app, _main, episode, root = _app_branch(manifest, tmp_path)
+    store = app.state.catalog.store
+    descriptor = _stored_artifact(
+        app, root.operation_id, "report.md", b"Original", episode_id=episode.episode_id
+    )
+    artifact = store.artifact(descriptor.artifact_id)
+    context = ArtifactContextRequest(
+        operation_id=root.operation_id, artifact_id=artifact.artifact_id, selections=[]
+    )
+    # While the chain runs, Send keeps the origin-bound orchestrator edit.
+    assert artifact_send_chat_turn(store, artifact, context, "Rerun") is None
+    _end_orchestrator(app, root, tmp_path / "stage")
+    monkeypatch.setattr(app.state.background_tasks, "launch_admitted", store.agent_task)
+    response = signed_in_client(app).post(
+        f"/api/projects/{episode.project_id}/artifacts/{artifact.artifact_id}/comments",
+        json={"comments": [{"text": "Rerun with seed 2"}]},
     )
     assert response.status_code == 202, response.text
-    (admitted,) = started
-    assert admitted.artifact_edit.launch_kind == "revoking"
-    assert admitted.run_on == task.request["run_on"]
-    assert admitted.session_id == task.native_session_id
-    assert admitted.reasoning == task.request["reasoning"]
+    sent = store.agent_task(response.json()["operation_id"])
+    assert sent.kind == "project_chat"
+    assert sent.request["mode"] == "work"
+    assert sent.request["chat_id"] == episode.episode_id == episode.graph_target.branch_id
+    assert sent.request["node_id"] is None
+    assert sent.graph_target == episode.graph_target
+    assert sent.native_session_id == "orchestrator-session"
+    assert not sent.request["artifact_edit"]["origin_bound"]
 
 
 @pytest.mark.parametrize("previous_provider", ["codex", "claude"])

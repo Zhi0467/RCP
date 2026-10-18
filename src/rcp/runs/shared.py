@@ -1208,19 +1208,41 @@ def stage_branch_read_context(
     """Read pointers only; callers keep the task's graph target and write scope.
 
     Call after mapping repositories to the execution host. Worktree replacement
-    may happen before or after this call. ``main_graph_path`` is an immutable task input,
+    may happen before or after this call. ``parent_graph_path`` is an immutable task input,
     also available to the Auto-research prompt through RunContext.
     """
 
     if service.history.graph_target.kind != "branch":
-        return {"main_graph_path": None, "shared_repositories": []}
-    content = (service.history.workspace.root / "graph.json").read_text(encoding="utf-8")
+        return {
+            "parent_graph_path": None,
+            "branch_name": None,
+            "branch_parent": None,
+            "shared_repositories": [],
+        }
+    metadata = service.history.history_engine.snapshot(
+        service.history.graph_target, refresh=False
+    ).source.metadata
+    assert metadata is not None
+    names = service.paper.store.branch_names(metadata.project_id)
+    parent = metadata.effective_parent_head
+    parent_ref = (
+        "main"
+        if parent.target.kind == "main"
+        else f"branch:{names.get(parent.target.branch_id or '', parent.target.branch_id)}"
+    )
+    content = (
+        service.history_engine.state_at(parent).model_dump_json(indent=2)
+        if metadata.kind == "fork"
+        else (service.history.workspace.root / "graph.json").read_text(encoding="utf-8")
+    )
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
     path = _stage_or_reuse_task_input(
         local_stage, remote_stage, f"main-graph-{digest}.json", content
     )
     return {
-        "main_graph_path": path,
+        "parent_graph_path": path,
+        "branch_name": names.get(metadata.branch_id, metadata.branch_id),
+        "branch_parent": f"{parent_ref}@{parent.revision}",
         "shared_repositories": [
             item.model_copy(update={"path": service.manifest.repository_map[item.alias].path})
             for item in context.repositories

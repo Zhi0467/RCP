@@ -187,7 +187,17 @@ def resolved_dispatch_authority(
     elif authority is None:
         raise ValueError("Authority refused action 'dispatch': the task has no authority binding.")
     assert authority is not None
-    require_dispatch(authority)
+    require_dispatch(
+        authority,
+        member_merge_source=(
+            request.merge_binding.source
+            if isinstance(request, BranchMergeRunRequest)
+            and request.episode_id is None
+            and request.merge_binding is not None
+            and request.merge_binding.dispatcher_episode_id is None
+            else None
+        ),
+    )
 
     if kind == "auto_research":
         assert isinstance(request, AutoResearchRunRequest)

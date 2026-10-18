@@ -41,6 +41,8 @@ from rcp.artifact_comments import comment_panel, selection_frame_addon
 from rcp.artifact_views import artifact_viewer_document
 from rcp.artifacts import AgentArtifactDescriptor, html_preview_document
 from rcp.background import BackgroundAgentTasks
+from rcp.core.transition_models import GraphTargetRef
+from rcp.history.queries import parse_head
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import (
     REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS,
@@ -58,19 +60,25 @@ from rcp.runs.auto_research_delivery import (
     deliver_pending_auto_research_mail,
     record_auto_research_message,
 )
-from rcp.runs.branch_merge_admission import settle_agentless_merge, start_branch_merge
+from rcp.runs.branch_merge_admission import (
+    settle_agentless_merge,
+    start_branch_merge,
+    start_human_branch_merge,
+)
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.episodes.isolation import auto_research_code_worktree_eligible
 from rcp.runs.episodes.merge import (
     CleanupEpisodeBody,
     MergeEpisodeBody,
     MergePreview,
+    branch_merge_preview,
     cleanup_episode,
     merge_episode,
     merge_owner,
     merge_preview,
     reconcile_episode_merge,
 )
+from rcp.runs.graph_forks import create_graph_fork
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AppStore, AutoResearchMessageRecord, EpisodeNotRunning
 from rcp.storage.branch_names import (
@@ -182,6 +190,132 @@ def graph_refs(
         catalog=catalog,
         refresh_max_age_seconds=REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS,
     )
+
+
+class ForkBranchBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: UUID4
+    at: str
+    name: str | None = None
+
+
+@router.post(
+    "/api/projects/{project_id}/graph-refs",
+    response_model=GraphRefResponse,
+    status_code=201,
+    dependencies=[Depends(require_project_write_admission)],
+)
+def fork_graph_branch(
+    project_id: str,
+    body: ForkBranchBody,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> GraphRefResponse:
+    actor = identity_access.require_patch_capable_identity(request)
+    branch_id = str(body.request_id)
+    try:
+        name = normalize_branch_name(body.name)
+        source = parse_head(body.at)
+        if source.target is None or source.revision == "head":
+            raise ValueError("Fork creation requires an explicit target and numeric revision.")
+        service = get_project_writer(catalog, project_id)
+        parent_head = service.history.history_engine.resolve(
+            source, default_target=GraphTargetRef()
+        )
+        create_graph_fork(
+            service.history,
+            store,
+            project_id=project_id,
+            branch_id=branch_id,
+            parent_head=parent_head,
+            authorized_by=actor,
+            created_by=f"human:{body.request_id}",
+            name=name,
+        )
+        return _branch_ref_for_http(project_id, branch_id, store=store, catalog=catalog)
+    except StateUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except BranchNameInvalid as exc:
+        raise HTTPException(status_code=422, detail={"code": "branch_name_invalid"}) from exc
+    except BranchNameTaken as exc:
+        raise HTTPException(status_code=409, detail={"code": "branch_name_taken"}) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail={"code": "branch_source_not_found"}) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422, detail={"code": "branch_fork_invalid", "message": str(exc)}
+        ) from exc
+
+
+@router.get(
+    "/api/projects/{project_id}/graph-refs/{branch_id}/merge-preview",
+    response_model=MergePreview,
+)
+def graph_branch_merge_preview(
+    project_id: str,
+    branch_id: str,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> MergePreview:
+    actor = identity_access.require_patch_capable_identity(request)
+    try:
+        return branch_merge_preview(
+            get_project_service(catalog, project_id),
+            store,
+            branch_id,
+            authorized_by=actor,
+        )
+    except StateUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail={"code": "branch_source_not_found"}) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=_merge_refusal(exc)) from exc
+
+
+class MergeBranchBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: UUID4
+
+
+@router.post(
+    "/api/projects/{project_id}/graph-refs/{branch_id}/merge",
+    dependencies=[Depends(require_project_write_admission)],
+)
+def merge_graph_branch(
+    project_id: str,
+    branch_id: str,
+    body: MergeBranchBody,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    identity_access: IdentityDependency,
+    background_tasks: BackgroundTasksDependency,
+) -> dict[str, object]:
+    actor = identity_access.require_patch_capable_identity(request)
+    try:
+        service = get_project_writer(catalog, project_id)
+        return start_human_branch_merge(
+            background_tasks,
+            service,
+            branch_id=branch_id,
+            request_id=str(body.request_id),
+            authorized_by=actor,
+        )
+    except StateUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail={"code": "branch_not_found"}) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=_merge_refusal(exc)) from exc
 
 
 class RenameBranchBody(BaseModel):
@@ -1020,6 +1154,7 @@ def _resolved_auto_research_start_request(
     )
     request = AutoResearchStartRequest(
         invocation_ceiling=body.invocation_ceiling,
+        bulletin_enabled=body.bulletin_enabled,
         browser_requested=body.browser_requested,
         code_worktree=body.code_worktree if body.code_worktree is not None else False,
         graph_isolation=body.graph_isolation,

@@ -19,6 +19,7 @@ from rcp.agents.command_mailbox import (
     stage_command_mailbox,
 )
 from rcp.agents.command_protocol import (
+    BulletinCommandRequest,
     CommandRequest,
     CommandResponse,
     CommandVerb,
@@ -52,7 +53,7 @@ from rcp.runs.chat import (
     _clear_stale_turn_handoffs,
     _stage_chat_patch_inputs,
 )
-from rcp.runs.lessons import stage_lessons_pointer
+from rcp.runs.lessons import stage_operational_context_pointer
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,
@@ -246,7 +247,7 @@ def _auto_research_child_work_contract(
     )
     from rcp.runs.lesson_commands import lesson_command_usage
 
-    allowed_verbs = _child_allowed_verbs(turn)
+    allowed_verbs = _child_turn_verbs(turn)
     lesson_usage = (
         lesson_command_usage(edit_authorized=False, client=COMMAND_CLIENT)
         if "lesson" in allowed_verbs
@@ -261,7 +262,7 @@ def _auto_research_child_work_contract(
 
 ## Auto-research child Work boundary
 
-You are the ordinary node Work child `{route.worker_id}` delegated by an Auto-research
+You are the ordinary Work child `{route.worker_id}` delegated by an Auto-research
 orchestrator. Complete only this child assignment, which every later turn in this session
 continues:
 
@@ -290,16 +291,27 @@ source of graph truth. A wake names the newly claimed mail to read before contin
 """.strip()
 
 
-def _child_allowed_verbs(turn: WorkTurn) -> frozenset[str]:
-    return (
-        frozenset({"validate", "message", "lesson"})
-        | (turn.graph_read_scope.verbs if turn.graph_read_scope is not None else frozenset())
-        | (
-            turn.compute_commands.allowed_verbs
-            if turn.compute_commands is not None
-            else frozenset()
-        )
+def _child_allowed_verbs(
+    execution: AgentTaskExecution | None,
+    graph_read_scope: GraphReadScope | None,
+    compute_commands: WorkComputeCommands | None,
+) -> frozenset[str]:
+    """Resolve a child Work launch's command surface from its launch objects."""
+    bulletin = execution is not None and execution.store.bulletin_enabled_for_task(
+        execution.operation_id
     )
+    return (
+        frozenset({"validate", "message", "lesson", *(("bulletin",) if bulletin else ())})
+        | (graph_read_scope.verbs if graph_read_scope is not None else frozenset())
+        | (compute_commands.allowed_verbs if compute_commands is not None else frozenset())
+    )
+
+
+def _child_turn_verbs(turn: WorkTurn) -> frozenset[str]:
+    """The verbs this turn's mailbox enforces, a graph repair's Work mailbox included."""
+    verbs = turn.validator_lifecycle.allowed_verbs
+    assert verbs is not None
+    return verbs
 
 
 def _child_prompt_values(
@@ -315,7 +327,7 @@ def _child_prompt_values(
             "episode_id": route.episode_id,
             "worker_id": route.worker_id,
             "control_node_id": route.control_node_id,
-            "allowed_staged_commands": sorted(_child_allowed_verbs(turn)),
+            "allowed_staged_commands": sorted(_child_turn_verbs(turn)),
         },
     }
 
@@ -383,7 +395,9 @@ def _compose_child_wake_prompt(
         label = "mail"
         role = "auto_research_child_message_wake"
     original_contract_path = _parent_task_contract_path(
-        turn.execution, turn.local_stage, turn.remote_stage
+        turn.execution,
+        turn.local_stage,
+        turn.remote_stage,
     )
     invoked_skills = invoked_package_pointers(
         staged.skill_pointers,
@@ -526,7 +540,11 @@ def _compose_child_fresh_prompt(
             + "\n\n"
             + render_chat_read_context(turn.context)
             + "\n\n"
-            + stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage),
+            + stage_operational_context_pointer(
+                turn.execution,
+                turn.local_stage,
+                turn.remote_stage,
+            ),
             contract_path,
             render,
             values,
@@ -620,7 +638,11 @@ def _compose_child_retry_prompt(
         role="work_retry",
     )
     prompt += "\n\n" + render_chat_read_context(turn.context)
-    prompt += "\n\n" + stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage)
+    prompt += "\n\n" + stage_operational_context_pointer(
+        turn.execution,
+        turn.local_stage,
+        turn.remote_stage,
+    )
     return _ComposedWorkPrompt(
         contract_path=contract_path,
         prompt=prompt,
@@ -662,7 +684,9 @@ def _start_auto_research_child_validator_mailbox(
     run_truth_scope: list[str],
     graph_read_scope: GraphReadScope | None = None,
 ) -> _WorkValidatorMailboxLifecycle:
-    return start_work_validator_mailbox(
+    # Resolved once: the mailbox enforces it and the prompt renders it from the lifecycle.
+    allowed_verbs = _child_allowed_verbs(execution, graph_read_scope, compute_commands)
+    lifecycle = start_work_validator_mailbox(
         staged,
         execution=execution,
         budget=budget,
@@ -678,6 +702,7 @@ def _start_auto_research_child_validator_mailbox(
             service=lambda: service,
             graph_read_scope=graph_read_scope,
             compute_commands=compute_commands,
+            allowed_verbs=allowed_verbs,
         ),
         resume_context=_ChildMailboxContext(
             **_work_mailbox_context(
@@ -686,6 +711,8 @@ def _start_auto_research_child_validator_mailbox(
             route=route,
         ).model_dump(mode="json"),
     )
+    lifecycle.allowed_verbs = allowed_verbs
+    return lifecycle
 
 
 class _ChildMailboxContext(_WorkMailboxContext):
@@ -709,7 +736,8 @@ def resume_child_work_command_mailbox(
     compute_commands = _resume_work_compute_commands(execution, context)
     if compute_commands is None:
         raise ValueError("The retained child Work mailbox has no compute scope.")
-    return restore_work_validator_mailbox(
+    allowed_verbs = _child_allowed_verbs(execution, context.graph_read_scope, compute_commands)
+    lifecycle = restore_work_validator_mailbox(
         execution,
         validate=lambda text: _validate_work_patch_live(
             service(),
@@ -723,8 +751,12 @@ def resume_child_work_command_mailbox(
             service=service,
             graph_read_scope=context.graph_read_scope,
             compute_commands=compute_commands,
+            allowed_verbs=allowed_verbs,
         ),
     )
+    if lifecycle is not None:
+        lifecycle.allowed_verbs = allowed_verbs
+    return lifecycle
 
 
 AUTO_RESEARCH_CHILD_FINALIZATION_CONTEXT_ROLE = "auto_research_child_finalization_context"
@@ -1271,6 +1303,7 @@ async def _serve_auto_research_child_work_mailbox(
     suspend: threading.Event | None = None,
     service: Callable[[], ProjectService] | None = None,
     graph_read_scope: GraphReadScope | None = None,
+    allowed_verbs: frozenset[str],
 ) -> None:
     async def handle(
         request: CommandRequest,
@@ -1281,6 +1314,12 @@ async def _serve_auto_research_child_work_mailbox(
                 request_id=request.request_id,
                 status="invalid",
                 message="This child Work command credential is bound to another turn.",
+            )
+        if request.verb not in allowed_verbs:
+            return CommandResponse(
+                request_id=request.request_id,
+                status="invalid",
+                message="This command is unavailable to this child Work turn.",
             )
         if graph_read_scope is not None and request.verb in graph_read_scope.verbs:
             from rcp.runs.graph_history_queries import handle_graph_history_command
@@ -1333,6 +1372,15 @@ async def _serve_auto_research_child_work_mailbox(
                 if status == "ok"
                 else (diagnostic[:2_000] or f"Patch validation was {result.status}."),
                 result=result.model_dump(mode="json"),
+            )
+        if isinstance(request, BulletinCommandRequest):
+            from rcp.runs.bulletin import handle_bulletin
+
+            return handle_bulletin(
+                execution.store,
+                execution.operation_id,
+                request,
+                post_allowed=identity.authority == "broker",
             )
         if isinstance(request, LessonCommandRequest):
             from rcp.runs.lesson_commands import handle_lesson

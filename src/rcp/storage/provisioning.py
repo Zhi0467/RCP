@@ -452,6 +452,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             2,
             3,
             4,
+            5,
             TRANSFER_RECORD_SCHEMA_VERSION,
         }:
             raise ValueError("target does not support the source transfer record schema")

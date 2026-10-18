@@ -1,4 +1,5 @@
 import { useEvidenceFlags } from "./EvidenceFlagContext";
+import { branchName } from "../core/branchNames";
 import { MAIN_GRAPH } from "../core/graphTarget";
 import { ExperimentLoopMetadata } from "../experiments/ExperimentLoopMetadata";
 import { ComputeRouteNotice } from "../experiments/ComputeRouteNotice";
@@ -22,9 +23,8 @@ const BRANCH_DIFF_WORDS: Record<BranchDiffWord, string> = {
   updated: "Changed",
   removed: "Removed",
   changed: "Changed",
-  delivered: "Already merged",
-  proposal: "Proposal",
-  needs_agent: "Needs agent",
+  delivered: "Delivered",
+  proposal: "Review",
   conflict: "Conflict",
 };
 const BRANCH_DIFF_LEGEND: BranchDiffWord[] = [
@@ -32,8 +32,8 @@ const BRANCH_DIFF_LEGEND: BranchDiffWord[] = [
   "updated",
   "removed",
   "proposal",
-  "needs_agent",
   "conflict",
+  "delivered",
 ];
 import {
   ChevronDown,
@@ -150,6 +150,7 @@ const NO_CHANGED_NODES: ReadonlySet<string> = new Set();
 const dagTypeMeta = TYPE_LENS;
 
 interface DagProps extends Props, GraphEditingProps {
+  graphRefs?: GraphRef[] | null;
   graphTarget?: GraphTargetRef;
   branchChanges?: GraphBranchChanges | null;
   /** The branch's changed fields as the merge builder classifies them, when loaded. */
@@ -177,6 +178,7 @@ export function DagView({
   projectId,
   graphTarget,
   branchChanges,
+  graphRefs,
   mergePaths,
   onInspectTask,
   viewportRef,
@@ -627,6 +629,12 @@ export function DagView({
     <section className="view-panel dag-panel">
       {branchChanges && (
         <div className="branch-graph-controls">
+          <span className="branch-graph-origin">
+            {branchName(graphRefs, branchChanges.base_head.target)}@
+            {branchChanges.base_head.revision}
+            {" → "}
+            {branchName(graphRefs, branchChanges.head.target)}@{branchChanges.head.revision}
+          </span>
           <div className="segmented" role="group" aria-label="Branch graph lens">
             <button
               type="button"
