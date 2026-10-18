@@ -290,12 +290,12 @@ ruleset are independent. When retiring a field, update
 `adapt_persisted_patch_document` and affected replay field rules together, including
 adapter-introduced fields. Historical bytes never change.
 
-`core/models.py` declares, beside `Proposal`, which of its fields RCP owns:
-filing stamps (dependencies, rule version, filer, revisions) and resolution
-fields, which filing resets. The agent Patch schema strips both sets, filing
-writes both, and merge identity excludes the filing stamps plus resolution
-revisions; the `history/delta.py` sets also exclude derived guidance-validity
-node fields. A pending source Proposal is a new filing on the destination with
+Every graph model field in `core/models.py` carries one `GraphField` role:
+`content`, `engine` (recomputed bookkeeping, never compared), or `identity`.
+Proposal fields also name what RCP owns: filing stamps (dependencies, rule
+version, filer, revisions) and resolution fields, which filing resets. The agent
+Patch schema strips both sets, filing writes both, and merge identity excludes the
+filing stamps plus resolution revisions; each set derives from the annotations. A pending source Proposal is a new filing on the destination with
 current filing stamps, including its dependency rule, while retaining its identity
 and authored content. Ordinary destination filings use rule 2. Only connected
 multi-intent merge groups and atomic protected-edge replacements use rule 3,

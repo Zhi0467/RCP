@@ -560,7 +560,7 @@ can ask RCP how the graph changed, through two read-only command verbs:
 `graph_log <id> [--at <head>]`. Heads use the target-qualified grammar in
 [Graph, history, and transitions](graph-history-and-transitions.md#history-reads).
 That covers Discuss, Work, Experiment loops, the Auto-research orchestrator and
-its children, branch merge and its corrections, Seed and Refresh, the paper
+its children, branch merge, Seed and Refresh, the paper
 coach, and nightly consolidation. A run may read main and every branch of its
 project, except that a run on a fork reads only its
 [ancestry](auto-research-and-branch-merge.md#forks). The runs that

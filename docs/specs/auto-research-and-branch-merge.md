@@ -176,8 +176,8 @@ each open, merge-eligible fork. An episode branch refuses
 merge carries no episode attribution, even out of a lineage fork. **Why:** a
 lineage fork of main, or of a branch the lineage does not own, has no owned
 destination, so only a member can deliver it. A member fork has no owner episode,
-so the first Experiment on it creates the isolation binding that later
-Experiments there share.
+so the first Experiment admitted on it becomes the isolation owner that later
+Experiments there share, reserved at admission before any launch binds it.
 
 ## Graph and code isolation
 
@@ -476,7 +476,7 @@ The agent answers only real conflicts and writes card prose for review groups, i
 receipt to the exact answers bytes, plan, and heads; a turn ends only with a passing
 receipt for the collected bytes, or the task fails with the reason. A matching receipt
 takes precedence over refusal or clash diagnostics from other attempted answer files.
-There is no self-check budget and no correction round. Core coherence clashes become
+Core coherence clashes become
 node-level questions during planning or preparation, even when those nodes already
 have ordinary field conflicts. Promotion happens once per node group; repeated clashes
 go back to the agent's check. Answer-dependent construction and review-footprint
@@ -505,7 +505,7 @@ Only main watchers see the successful main transition, exactly once.
 
 The parent has one health/recommendation; child/task states support it. Detail
 shows branch name/base/head, merge state (`unmerged`, `merging`,
-`merged-through-head`, `needs-action`, `failed`), task/correction history, and
+`merged-through-head`, `needs-action`, `failed`), task history, and
 report/error. Paused/interrupted merge tasks retain diagnostics and offer fresh
 Merge when eligible.
 
@@ -534,10 +534,9 @@ controls the shared view target. Reports retain original lifecycle versions;
 artifact edits create later versions without changing graph/lifecycle provenance.
 Root artifact comments stay in its thread without budget spend.
 
-Branches are episode-created and merge only on human dispatch. General branch
-creation, cherry-pick, conflict editing, and repository rollback are not current
-features. A version-control model remains a possible direction, not a permanent
-exclusion or authority exception.
+Every branch is an episode branch or a fork of an exact head, and only a human
+merges into main. Cherry-pick, free-form conflict editing, and repository rollback
+are not current features.
 
 ### Browser preference in Auto-research
 
