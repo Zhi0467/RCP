@@ -536,6 +536,32 @@ def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
     continuation = store.episode(sent.json()["episode_id"])
     assert continuation is not None and continuation.episode_id != root.episode_id
 
+    # An artifact edit replying to the chain is a turn of its conversation.
+    edit = root_task.model_copy(
+        update={
+            "operation_id": "orchestrator-edit",
+            "kind": "artifact_edit",
+            "episode_id": None,
+            "dispatch_authority": None,
+            "request": {
+                "provider": root_task.request["provider"],
+                "message": "Relabel the axis.",
+                "artifact_edit": {
+                    "reply_episode_id": root.episode_id,
+                    "episode_id": root.episode_id,
+                    "operation_id": "orchestrator-edit",
+                },
+            },
+            "created_at": store.now(),
+        }
+    )
+    store.create_artifact_edit_task(edit)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET result_json = ? WHERE operation_id = ?",
+            (json.dumps({"messages": ["Relabeled."]}), edit.operation_id),
+        )
+
     url = f"/api/projects/{project_id}/chats"
     cards = [
         row
@@ -545,7 +571,7 @@ def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
     assert len(cards) == 1
     assert cards[0]["chat_id"] == root.episode_id
     assert cards[0]["graph_target"] == root.graph_target.model_dump()
-    assert cards[0]["message_count"] == 3
+    assert cards[0]["message_count"] == 5
 
     branch = client.get(f"{url}/{root.episode_id}?branch_id={root.episode_id}")
     assert branch.status_code == 200, branch.text
@@ -556,6 +582,8 @@ def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
         ("user", root_task.operation_id, "Trace the strongest evidence."),
         ("assistant", root_task.operation_id, "First findings."),
         ("user", continuation.root_operation_id, "Check the control."),
+        ("user", edit.operation_id, "Relabel the axis."),
+        ("assistant", edit.operation_id, "Relabeled."),
     ]
     # A turn's live status reaches the transcript even outside the bounded task list.
     assert [message["agent_status"] for message in branch.json()["messages"]][1][

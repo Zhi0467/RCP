@@ -47,21 +47,34 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                     JOIN episodes AS episode ON episode.episode_id = run.episode_id
                      AND episode.project_id = run.project_id
                     WHERE run.project_id = ? AND episode.mode = 'experiment_loop'
+                ),
+                edits AS (
+                    SELECT json_extract(request_json, '$.chat_id') AS chat_id,
+                           MAX(updated_at) AS updated_at
+                    FROM graph_runs
+                    WHERE project_id = ? AND visible = 1 AND kind = 'artifact_edit'
+                      AND json_extract(request_json, '$.chat_id') IS NOT NULL
+                      AND (? IS NULL OR json_extract(request_json, '$.chat_id') = ?)
+                    GROUP BY 1
                 )
-                SELECT chats.*, episode_chats.chat_id IS NOT NULL AS is_episode,
+                -- An artifact edit only refreshes a conversation its turns already hold.
+                SELECT chats.chat_id, chats.kind, chats.request_json, chats.graph_target_json,
+                       MAX(chats.updated_at, COALESCE(edits.updated_at, '')) AS updated_at,
+                       episode_chats.chat_id IS NOT NULL AS is_episode,
                        COALESCE(worker.episode_id, child.auto_research_episode_id)
                            AS orchestrator_episode_id
                 FROM chats
                 LEFT JOIN episode_chats
                   ON episode_chats.chat_id = chats.chat_id
                  AND episode_chats.graph_target_json = chats.graph_target_json
+                LEFT JOIN edits ON edits.chat_id = chats.chat_id
                 LEFT JOIN auto_research_child_work AS worker
                   ON worker.worker_id = chats.chat_id AND worker.project_id = chats.project_id
                 LEFT JOIN auto_research_child_experiments AS child
                   ON child.child_episode_id = chats.chat_id AND child.project_id = chats.project_id
                 WHERE chats.position = 1
                 """,
-                (project_id, chat_id, chat_id, project_id),
+                (project_id, chat_id, chat_id, project_id, project_id, chat_id, chat_id),
             ).fetchall()
             summaries = []
             for row in rows:
@@ -151,8 +164,9 @@ class ChatDisplayStoreMixin(StoreMixinBase):
         """The chain's newest turn update, and each orchestrator turn's human input and answers.
 
         Every chain member writes the root's branch, so the branch names the chain.
-        The human input is the starting instruction or the human mail the turn
-        delivered; a wake with neither has no human line.
+        An artifact edit replying to the chain is one of its turns. The human input
+        is the starting instruction or the human mail the turn delivered; a wake with
+        neither has no human line.
         """
         runs = connection.execute(
             "SELECT run.operation_id, run.request_json, run.result_json, run.created_at, "
@@ -162,8 +176,10 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             "JOIN graph_runs AS run ON run.project_id = root.project_id "
             "AND run.graph_target_json = root.graph_target_json "
             "WHERE root.project_id = ? AND root.episode_id = ? AND root.mode = 'auto_research' "
-            "AND run.kind = 'auto_research' AND run.visible = 1 "
-            "AND json_extract(run.request_json, '$.role') = 'orchestrator' "
+            "AND run.visible = 1 AND ((run.kind = 'auto_research' "
+            "AND json_extract(run.request_json, '$.role') = 'orchestrator') "
+            "OR (run.kind = 'artifact_edit' "
+            "AND json_extract(run.request_json, '$.artifact_edit.reply_episode_id') IS NOT NULL)) "
             "ORDER BY run.created_at, run.operation_id",
             (project_id, root_episode_id),
         ).fetchall()

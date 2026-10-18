@@ -166,6 +166,24 @@ def test_experiment_inventory_kind_survives_a_later_human_turn(tmp_path: Path) -
     assert rows[0]["orchestrator_episode_id"] is None
 
 
+def test_an_artifact_edit_refreshes_only_a_conversation_its_turns_hold(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    _chat_turn(store, "turn", "chat", "succeeded", 0)
+    _chat_turn(store, "chat-edit", "chat", "succeeded", 5)
+    _chat_turn(store, "lone-edit", "edit-only", "succeeded", 6)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET kind = 'artifact_edit', "
+            "request_json = json_set(request_json, '$.chat_scope', 'node') "
+            "WHERE operation_id LIKE '%-edit'"
+        )
+    rows = store.chat_inventory("project")
+    assert [(row["chat_id"], row["kind"]) for row in rows] == [("chat", "project_chat")]
+    edit = store.agent_task("chat-edit")
+    assert edit is not None and rows[0]["updated_at"] == edit.updated_at
+
+
 def test_an_orchestrator_turn_stays_listed_and_finishes_its_chain_conversation(
     tmp_path: Path,
 ) -> None:

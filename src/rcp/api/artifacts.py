@@ -10,6 +10,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from rcp.api.dependencies import (
+    get_attachment_store,
     get_background_tasks,
     get_catalog,
     get_graph_service,
@@ -22,7 +23,7 @@ from rcp.api.dependencies import (
 from rcp.api.episode_timeline import worker_label
 from rcp.api.episodes import child_experiment_on_owned_branch
 from rcp.api.identity import IdentityAccess
-from rcp.api.tasks import _agent_artifact_response
+from rcp.api.tasks import _agent_artifact_response, start_ordinary_task
 from rcp.artifact_comments import (
     COMMENTABLE_MEDIA_TYPES,
     comment_panel,
@@ -37,6 +38,7 @@ from rcp.artifact_views import (
     artifact_viewer_document,
 )
 from rcp.artifacts import AgentArtifactDescriptor, ArtifactMediaType, ArtifactView, artifact_view
+from rcp.attachments import ChatAttachmentStore
 from rcp.background import BackgroundAgentTasks
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import ARTIFACT_CONTEXT_MAX_SELECTIONS, STEERING_MESSAGE_MAX_CHARS
@@ -45,6 +47,7 @@ from rcp.runs.artifact_edit_admission import (
     ArtifactFreshSessionRequired,
     admit_artifact_edit,
     artifact_edit_availability,
+    artifact_send_chat_turn,
     start_artifact_edit,
 )
 from rcp.service import ArtifactContextRequest, ArtifactSelection, RunRequest
@@ -821,6 +824,7 @@ def comment_artifact(
     store: Annotated[AppStore, Depends(get_store)],
     identity_access: Annotated[IdentityAccess, Depends(get_identity_access)],
     background_tasks: Annotated[BackgroundAgentTasks, Depends(get_background_tasks)],
+    attachment_store: Annotated[ChatAttachmentStore, Depends(get_attachment_store)],
 ):
     artifact = store.artifact(artifact_id)
     if artifact is None or artifact.project_id != project_id:
@@ -840,21 +844,30 @@ def comment_artifact(
     if origin is None:
         raise HTTPException(status_code=409, detail="The artifact's origin is unavailable.")
     service = get_graph_service(catalog, project_id, origin.graph_target.branch_id, write=True)
+    context = ArtifactContextRequest(
+        operation_id=origin.operation_id,
+        artifact_id=artifact_id,
+        fresh_session=body.fresh_session,
+        edit_now=body.edit_now,
+        selections=selections,
+    )
     try:
+        # Send continues the artifact's chat with a Work turn, exactly as its composer would.
+        turn = None if body.edit_now else artifact_send_chat_turn(store, artifact, context, general)
+        if turn is not None:
+            return start_ordinary_task(
+                project_id,
+                turn[0],
+                turn[1],
+                catalog=catalog,
+                store=store,
+                attachment_store=attachment_store,
+                background_tasks=background_tasks,
+                authorized_by=author,
+                branch_id=origin.graph_target.branch_id,
+            ).model_dump(mode="json")
         admitted = admit_artifact_edit(
-            store,
-            service,
-            project_id,
-            RunRequest(
-                message=general,
-                artifact_context=ArtifactContextRequest(
-                    operation_id=origin.operation_id,
-                    artifact_id=artifact_id,
-                    fresh_session=body.fresh_session,
-                    edit_now=body.edit_now,
-                    selections=selections,
-                ),
-            ),
+            store, service, project_id, RunRequest(message=general, artifact_context=context)
         )
         return start_artifact_edit(
             background_tasks,

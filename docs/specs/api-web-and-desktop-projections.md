@@ -1383,8 +1383,10 @@ and task admission refuses a human turn on it with
 An Auto-research continuation chain is one `auto_research` conversation on its
 branch, identified by the chain root's episode id (the branch id) and named by
 the branch. Its transcript is projected from the chain's orchestrator-role
-turns: each turn's starting instruction or the human mail it delivered, then its
-answers; worker turns keep their own cards. Loaded turns supply live status and
+turns and the artifact edits that reply to the chain: each turn's starting
+instruction or the human mail it delivered, then its answers; worker turns keep
+their own cards. An artifact edit with a `chat_id` belongs to that chat's card and
+refreshes its order and status, but never creates a card by itself. Loaded turns supply live status and
 progress, and the episode's `needs_action` health (an open question) files the
 card under needs-you. The card has no chat composer: its composer, with the
 episode's open questions, sends **Message orchestrator** to the newest chain
