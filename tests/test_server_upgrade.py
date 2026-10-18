@@ -407,7 +407,9 @@ def _assert_old_branch_merge_validates(live, branch_id: str) -> None:
     from rcp.runs.branch_merge_admission import start_branch_merge
     from rcp.runs.branch_merge_context import load_branch_merge_context
     from rcp.runs.branch_merge_request import BranchMergeRunRequest
-    from rcp.runs.merge_contract import MergeAnswers, plan_merge, prepare_merge_candidate
+    from rcp.runs.merge_contract import MergeAnswers
+    from rcp.runs.merge_patch import prepare_merge_candidate
+    from rcp.runs.merge_plan import plan_merge
     from rcp.storage import EpisodeRecord
 
     (card,) = live.state.catalog.cards()

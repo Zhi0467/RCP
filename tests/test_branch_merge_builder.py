@@ -22,8 +22,9 @@ from rcp.runs.branch_merge import (
     merge_planning_context,
     stream_branch_merge_run,
 )
-from rcp.runs.merge_contract import MergeAnswers, plan_merge
+from rcp.runs.merge_contract import MergeAnswers
 from rcp.runs.merge_patch import build_merge_patch, prepare_merge_candidate
+from rcp.runs.merge_plan import plan_merge
 from rcp.runs.patch_validator import MergeAnswersCheck
 from rcp.service import RunRequest
 from tests.helpers import unchecked_write_authority
@@ -319,7 +320,6 @@ async def test_provider_merge_without_session_cannot_restart_after_main_moves(
 async def test_merge_collects_restored_checked_answers_after_failed_alternative(
     merge_history, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_check
 ) -> None:
-    from rcp.runs import merge_contract
     from rcp.runs.merge_contract import (
         MergeDiagnostic,
         MergeHiddenClash,
@@ -342,7 +342,7 @@ async def test_merge_collects_restored_checked_answers_after_failed_alternative(
             NodeGroupPromotion(node_ids=("blk/existing",), diagnostics=diagnostics)
         )
     )
-    prepare = merge_contract.prepare_merge_candidate
+    prepare = prepare_merge_candidate
 
     def prepare_alternative(plan, answers, candidate_history):
         if any(
@@ -352,7 +352,7 @@ async def test_merge_collects_restored_checked_answers_after_failed_alternative(
             raise failure
         return prepare(plan, answers, candidate_history)
 
-    monkeypatch.setattr(merge_contract, "prepare_merge_candidate", prepare_alternative)
+    monkeypatch.setattr("rcp.runs.merge_patch.prepare_merge_candidate", prepare_alternative)
 
     class RestoreCheckedAnswers:
         checks: MergeAnswersCheck

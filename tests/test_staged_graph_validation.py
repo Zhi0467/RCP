@@ -951,7 +951,6 @@ def merge_check(monkeypatch):
     from rcp.agents.command_mailbox import CommandTurnIdentity
     from rcp.agents.command_protocol import MergeAnswersArguments, MergeAnswersCommandRequest
     from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
-    from rcp.runs import merge_contract
     from rcp.runs.merge_contract import MergePlan, MergePreparationContract
     from rcp.runs.patch_validator import MergeAnswersCheck
 
@@ -978,7 +977,7 @@ def merge_check(monkeypatch):
         checked.append((plan, answers, history))
         return object()
 
-    monkeypatch.setattr(merge_contract, "prepare_merge_candidate", prepare)
+    monkeypatch.setattr("rcp.runs.merge_patch.prepare_merge_candidate", prepare)
     checker = MergeAnswersCheck(
         plan=plan, history=history, task_id="merge-task", turn_id="merge-turn"
     )
@@ -1032,7 +1031,6 @@ def test_merge_answers_check_preserves_typed_failures_without_receipt(
     merge_check, monkeypatch, outcome
 ):
     from rcp.history import RevisionConflict
-    from rcp.runs import merge_contract
     from rcp.runs.merge_contract import (
         MergeAnswersRejected,
         MergeDiagnostic,
@@ -1059,7 +1057,7 @@ def test_merge_answers_check_preserves_typed_failures_without_receipt(
     def prepare(*_args):
         raise failures[outcome]
 
-    monkeypatch.setattr(merge_contract, "prepare_merge_candidate", prepare)
+    monkeypatch.setattr("rcp.runs.merge_patch.prepare_merge_candidate", prepare)
     response = checker(request(), identity)
     assert response.status == (
         "unavailable" if outcome in {"timeout", "destination_moved"} else "invalid"
@@ -1100,7 +1098,6 @@ def test_merge_answers_rejects_patch_shape_and_foreign_turn_before_preparation(m
 
 @pytest.mark.parametrize("turn_id", ["merge-turn", "rebased-turn"])
 def test_merge_check_discards_inflight_receipt_when_plan_changes(merge_check, monkeypatch, turn_id):
-    from rcp.runs import merge_contract
 
     checker, identity, request, _ = merge_check
 
@@ -1108,7 +1105,7 @@ def test_merge_check_discards_inflight_receipt_when_plan_changes(merge_check, mo
         checker.set_plan(checker.plan, turn_id=turn_id)
         return object()
 
-    monkeypatch.setattr(merge_contract, "prepare_merge_candidate", prepare)
+    monkeypatch.setattr("rcp.runs.merge_patch.prepare_merge_candidate", prepare)
     assert checker(request(), identity).status == "unavailable"
     assert not checker.receipts
 
@@ -1151,7 +1148,6 @@ def test_merge_check_still_running_at_turn_end_is_unavailable(merge_check, monke
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
 
-    from rcp.runs import merge_contract
     from rcp.transport import StateUnavailable
 
     checker, identity, request, _ = merge_check
@@ -1162,7 +1158,7 @@ def test_merge_check_still_running_at_turn_end_is_unavailable(merge_check, monke
         assert release.wait(5)
         return object()
 
-    monkeypatch.setattr(merge_contract, "prepare_merge_candidate", prepare)
+    monkeypatch.setattr("rcp.runs.merge_patch.prepare_merge_candidate", prepare)
     with ThreadPoolExecutor() as pool:
         result = pool.submit(checker, request(), identity)
         try:
@@ -1182,8 +1178,6 @@ def test_merge_check_internal_error_rejects_previous_receipt_and_clears_pending(
     from types import SimpleNamespace
     from unittest.mock import Mock
 
-    from rcp.runs import merge_contract
-
     checker, identity, request, _ = merge_check
     assert checker(request(), identity).status == "ok"
     snapshot = checker.latest_answers
@@ -1193,7 +1187,7 @@ def test_merge_check_internal_error_rejects_previous_receipt_and_clears_pending(
         raise RuntimeError("Unexpected failure")
 
     if failure_site == "preparation":
-        monkeypatch.setattr(merge_contract, "prepare_merge_candidate", fail)
+        monkeypatch.setattr("rcp.runs.merge_patch.prepare_merge_candidate", fail)
     else:
         store = Mock()
         store.record_agent_task_receipt.side_effect = fail
@@ -1216,7 +1210,6 @@ def test_merge_check_success_clears_refusal_and_retains_only_checked_answers(
     merge_check, monkeypatch
 ):
     from rcp.history import RevisionConflict
-    from rcp.runs import merge_contract
     from rcp.runs.merge_contract import MergeDiagnostic, MergeRefused
 
     checker, identity, request, _ = merge_check
@@ -1224,11 +1217,11 @@ def test_merge_check_success_clears_refusal_and_retains_only_checked_answers(
     def refuse(*_args):
         raise MergeRefused((MergeDiagnostic(code="refused", message="Refused"),))
 
-    monkeypatch.setattr(merge_contract, "prepare_merge_candidate", refuse)
+    monkeypatch.setattr("rcp.runs.merge_patch.prepare_merge_candidate", refuse)
     assert checker(request(), identity).status == "invalid"
     assert checker.refusal is not None
     assert checker._pending_checks == 0
-    monkeypatch.setattr(merge_contract, "prepare_merge_candidate", lambda *_args: object())
+    monkeypatch.setattr("rcp.runs.merge_patch.prepare_merge_candidate", lambda *_args: object())
     assert checker(request(index=1), identity).status == "ok"
     assert checker.refusal is None
     snapshot = checker.latest_answers
@@ -1238,7 +1231,7 @@ def test_merge_check_success_clears_refusal_and_retains_only_checked_answers(
     def moved(*_args):
         raise RevisionConflict("Destination moved")
 
-    monkeypatch.setattr(merge_contract, "prepare_merge_candidate", moved)
+    monkeypatch.setattr("rcp.runs.merge_patch.prepare_merge_candidate", moved)
     changed = b'{"answers": {"new": {"kind": "branch"}}, "cards": {}}'
     assert checker(request(changed, index=2), identity).status == "unavailable"
     assert checker.destination_moved
@@ -1253,7 +1246,6 @@ def test_merge_check_old_generation_completion_cannot_decrement_current_pending(
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
 
-    from rcp.runs import merge_contract
     from rcp.transport import StateUnavailable
 
     checker, identity, request, _ = merge_check
@@ -1270,13 +1262,13 @@ def test_merge_check_old_generation_completion_cannot_decrement_current_pending(
         assert current_release.wait(5)
         return object()
 
-    monkeypatch.setattr(merge_contract, "prepare_merge_candidate", old_prepare)
+    monkeypatch.setattr("rcp.runs.merge_patch.prepare_merge_candidate", old_prepare)
     with ThreadPoolExecutor() as pool:
         old = pool.submit(checker, request(), identity)
         try:
             assert old_entered.wait(5)
             checker.set_plan(checker.plan, turn_id=identity.turn_id)
-            monkeypatch.setattr(merge_contract, "prepare_merge_candidate", current_prepare)
+            monkeypatch.setattr("rcp.runs.merge_patch.prepare_merge_candidate", current_prepare)
             current = pool.submit(checker, request(index=1), identity)
             assert current_entered.wait(5)
             old_release.set()

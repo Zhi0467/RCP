@@ -301,9 +301,9 @@ class _Run:
         self.next_plan = None
         self.before_commit = None
         self.reconcile = None
-        monkeypatch.setattr(merge_contract, "prepare_merge_candidate", self.prepare)
-        monkeypatch.setattr(merge_contract, "build_merge_patch", self.build)
-        monkeypatch.setattr(merge_contract, "plan_merge", lambda context: self.next_plan)
+        monkeypatch.setattr("rcp.runs.merge_patch.prepare_merge_candidate", self.prepare)
+        monkeypatch.setattr("rcp.runs.merge_patch.build_merge_patch", self.build)
+        monkeypatch.setattr("rcp.runs.merge_plan.plan_merge", lambda context: self.next_plan)
         monkeypatch.setattr(merge_module, "merge_planning_context", lambda *args, **kwargs: args[0])
         monkeypatch.setattr(merge_module, "commit_branch_merge_with_history", self.commit)
         monkeypatch.setattr(merge_module, "branch_merge_receipt_from_committed_patch", self.receipt)
@@ -636,7 +636,7 @@ async def test_hidden_clash_promotes_once_and_repeated_answer_error_ends_turn(
             )
         raise MergeAnswersRejected((diagnostic,))
 
-    monkeypatch.setattr(merge_contract, "promote_node_group", promote)
+    monkeypatch.setattr("rcp.runs.merge_plan.promote_node_group", promote)
     run.prepare_behavior = reject
     await run.run()
     assert len(promotions) == 1
@@ -659,17 +659,6 @@ def test_rebase_card_reuse_binds_effect_digest():
         update={"review_groups": (group.model_copy(update={"effect_digest": "b" * 64}),)}
     )
     assert reusable_merge_answers(previous, changed, answers).cards == {}
-
-
-def test_validation_diagnostic_retains_structured_rejections_separate_from_flags():
-    from rcp.core.validation import ValidationReport
-
-    report = ValidationReport()
-    report.reject("invalid-effect", "Rejected", related_node_ids=["rq/merge"], operation_index=2)
-    report.flag("duplicate", "Advisory", related_node_ids=["rq/merge"])
-    _message, _conflicts, diagnostics = merge_module._validation_diagnostic(report)
-    assert diagnostics == (report.messages[0],)
-    assert report.flags == [report.messages[1]]
 
 
 @pytest.mark.asyncio
@@ -927,7 +916,7 @@ async def test_promotion_survives_rebase_and_reasks_only_changed_group(
         if len(run.launches) == 2:
             run.move()
 
-    monkeypatch.setattr(merge_contract, "promote_node_group", promote)
+    monkeypatch.setattr("rcp.runs.merge_plan.promote_node_group", promote)
     monkeypatch.setattr(merge_module, "branch_merge_rebase_parts", parts)
     run.prepare_behavior = prepare
     run.behavior = answer_and_move

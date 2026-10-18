@@ -2843,4 +2843,4 @@ def test_empty_fork_archive_waits_for_all_writers_admissions_and_known_commit(tm
     assert not store.archive_empty_auto_research_fork(parent.project_id, head)
     store.request_auto_research_child_work_stop("nested")
     assert store.archive_empty_auto_research_fork(parent.project_id, head)
-    assert not store.branch_admits_new_work(parent.project_id, target.branch_id)
+    assert store.graph_branch(parent.project_id, target.branch_id).archived

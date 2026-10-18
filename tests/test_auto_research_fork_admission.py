@@ -427,4 +427,4 @@ def test_seed_revision_prevents_autoarchive_after_child_settles(manifest, tmp_pa
     archive_settled_auto_research_forks(
         store, lambda _: service, logger=logging.getLogger(__name__)
     )
-    assert store.branch_admits_new_work(episode.project_id, branch_id)
+    assert not store.graph_branch(episode.project_id, branch_id).archived

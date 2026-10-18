@@ -446,13 +446,9 @@ def test_no_change_dry_preparation_preserves_head_and_checks_live_authority(
         BranchMergeEligibility,
         merge_planning_context,
     )
-    from rcp.runs.merge_contract import (
-        MergeAnswers,
-        MergeRefused,
-        build_merge_patch,
-        plan_merge,
-        prepare_merge_candidate,
-    )
+    from rcp.runs.merge_contract import MergeAnswers, MergeRefused
+    from rcp.runs.merge_patch import build_merge_patch, prepare_merge_candidate
+    from rcp.runs.merge_plan import plan_merge
 
     destination = (
         history.create_branch(fork_metadata(history, history.head_ref()))

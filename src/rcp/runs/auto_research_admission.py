@@ -1399,11 +1399,6 @@ def start_auto_research_child_experiment(
 
     parent = _auto_research_parent_episode(tasks, route.auto_research_episode_id)
     target = graph_target or parent.graph_target
-    if (
-        "resolved_graph_target" in route.request
-        and GraphTargetRef.model_validate(route.request["resolved_graph_target"]) != target
-    ):
-        raise ValueError("The child Experiment changed its admitted target.")
     intent_keys = set(route.request) - set(_CHILD_PROFILE_PICK_FIELDS) - {"resolved_graph_target"}
     if intent_keys != {"goal", "invocation_limit"}:
         raise ValueError("The child Experiment route has an invalid launch intent.")

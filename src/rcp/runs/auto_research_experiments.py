@@ -133,29 +133,27 @@ class AutoResearchExperimentCoordinator:
         intent: dict[str, object] = {
             "goal": goal,
             "invocation_limit": invocation_limit,
-            **(
-                {"resolved_graph_target": target.model_dump(mode="json")}
-                if target != parent.graph_target
-                else {}
-            ),
             **pick,
         }
         if existing is not None:
+            child = self.store.episode(child_episode_id)
             if (
                 existing.auto_research_episode_id != auto_research_episode_id
                 or existing.project_id != parent.project_id
                 or existing.control_node_id != node_id
-                or existing.request != intent
+                or {k: v for k, v in existing.request.items() if k != "resolved_graph_target"}
+                != intent
+                or child is None
+                or child.graph_target != target
                 or existing.goal_sha256 != goal_sha256
                 or existing.parent_operation_id != parent_operation_id
             ):
                 raise ValueError(
                     "The Experiment kickoff identity already names another durable intent."
                 )
-            child = self.store.episode(child_episode_id)
             task = (
                 self.store.agent_task(child.root_operation_id)
-                if child is not None and child.root_operation_id is not None
+                if child.root_operation_id is not None
                 else None
             )
             if existing.state == "running" and task is not None:
@@ -171,11 +169,7 @@ class AutoResearchExperimentCoordinator:
                 episode_id=child_episode_id,
                 operation_id=task.operation_id if task is not None else None,
                 status=(
-                    existing.state
-                    if existing.state in {"cancelled", "terminal"}
-                    else child.status
-                    if child is not None
-                    else existing.state
+                    existing.state if existing.state in {"cancelled", "terminal"} else child.status
                 ),
                 allowance=self.store.auto_research_experiment_allowance(auto_research_episode_id),
                 live_elsewhere=other_branch_loops(

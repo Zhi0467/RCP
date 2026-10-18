@@ -16,7 +16,7 @@ from rcp.core.models import BranchMergeReceipt
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history.branches import BranchHistoryManager
 from rcp.limits import PATCH_SELF_CHECK_TIMEOUT_SECONDS
-from rcp.runs import merge_contract
+from rcp.runs import merge_plan
 from rcp.runs.branch_merge import (
     BranchMergeContext,
     BranchMergeRunOutcome,
@@ -260,7 +260,7 @@ async def stream_branch_merge_task(
             yield _sse(AgentEvent(event="done"))
             return
 
-        plan = merge_contract.plan_merge(
+        plan = merge_plan.plan_merge(
             merge_planning_context(
                 initial_context,
                 destination_history,

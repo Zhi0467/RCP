@@ -33,12 +33,12 @@ def test_autoarchive_uses_exact_canonical_head_and_all_writer_settlement(manifes
     archive_settled_auto_research_forks(
         store, lambda _: service, logger=logging.getLogger(__name__)
     )
-    assert store.branch_admits_new_work(parent.project_id, history.branch_id)
+    assert not store.graph_branch(parent.project_id, history.branch_id).archived
     store.complete_agent_task(task.operation_id, applied_revision=None, result={})
     archive_settled_auto_research_forks(
         store, lambda _: service, logger=logging.getLogger(__name__)
     )
-    assert not store.branch_admits_new_work(parent.project_id, history.branch_id)
+    assert store.graph_branch(parent.project_id, history.branch_id).archived
     assert history.head_ref().revision == source.revision
 
 
@@ -87,7 +87,7 @@ def test_autoarchive_waits_for_incoming_merge(manifest, tmp_path):
     archive_settled_auto_research_forks(
         store, lambda _: harness.service, logger=logging.getLogger(__name__)
     )
-    assert store.branch_admits_new_work(task.project_id, destination.branch_id)
+    assert not store.graph_branch(task.project_id, destination.branch_id).archived
     assert store.agent_task_authority(task.project_id, task.operation_id).apply_target == (
         destination.graph_target
     )
@@ -95,4 +95,4 @@ def test_autoarchive_waits_for_incoming_merge(manifest, tmp_path):
     archive_settled_auto_research_forks(
         store, lambda _: harness.service, logger=logging.getLogger(__name__)
     )
-    assert not store.branch_admits_new_work(task.project_id, destination.branch_id)
+    assert store.graph_branch(task.project_id, destination.branch_id).archived

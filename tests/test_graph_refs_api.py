@@ -446,8 +446,7 @@ def test_human_fork_exact_parent_identity_retry_and_archive(manifest, tmp_path) 
         )
         assert response.status_code == 200, response.text
         assert (
-            harness.store.branch_admits_new_work(harness.project_id, fork["branch_id"])
-            is not archived
+            harness.store.graph_branch(harness.project_id, fork["branch_id"]).archived is archived
         )
     listed = {ref["branch_id"]: ref for ref in harness.client.get(path).json()}
     assert listed[fork["branch_id"]]["name"] == "renamed-fork"

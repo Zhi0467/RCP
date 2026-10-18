@@ -369,10 +369,6 @@ class BranchNameStoreMixin(StoreMixinBase):
             raise KeyError(branch_id)
         return record.owner_episode_id
 
-    def branch_admits_new_work(self, project_id: str, branch_id: str) -> bool:
-        record = self.graph_branch(project_id, branch_id)
-        return record is not None and not record.archived
-
     def branch_names(self, project_id: str) -> dict[str, str]:
         with self.connection() as connection:
             connection.execute("BEGIN")

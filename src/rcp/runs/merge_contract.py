@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from functools import cache
 from typing import TYPE_CHECKING, Annotated, Literal, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
+from rcp.agents.schema import agent_output_schema
 from rcp.core.authority import CapturedChangeAuthority
 from rcp.core.models import (
     AuthorizedHuman,
@@ -23,11 +25,11 @@ from rcp.core.models import (
     Proposal,
 )
 from rcp.core.operations import ProposalStandingChangeOperation, ProposalStatusChangeOperation
-from rcp.core.transition_models import GraphHeadRef
+from rcp.core.transition_models import GraphHeadRef, TransitionTrace
+from rcp.core.transitions import TRANSITION_RULESET_TAG, transition_trigger_manifest
 from rcp.core.validation.proposals import ProposalDependenciesAndEffects
 
 if TYPE_CHECKING:
-    from rcp.core.transitions import PreparedTransition
     from rcp.core.validation import ValidationReport
 
 
@@ -237,6 +239,23 @@ class MergePreparationContract(_MergeModel):
     trigger_manifest: dict[str, JsonValue]
     transition_trace_schema: dict[str, JsonValue]
     orchestrator_patch_schema: dict[str, JsonValue]
+
+    @classmethod
+    def current(cls) -> MergePreparationContract:
+        # Schema construction depends only on code; callers get isolated values.
+        return _current_preparation_contract().model_copy(deep=True)
+
+
+@cache
+def _current_preparation_contract() -> MergePreparationContract:
+    return MergePreparationContract.model_validate(
+        {
+            "ruleset_tag": TRANSITION_RULESET_TAG,
+            "trigger_manifest": transition_trigger_manifest().model_dump(mode="json"),
+            "transition_trace_schema": TransitionTrace.model_json_schema(),
+            "orchestrator_patch_schema": agent_output_schema(profile="orchestrator"),
+        }
+    )
 
 
 class MergePlanningContext(_MergeModel):
@@ -470,81 +489,3 @@ def merge_contract_digest(value: object) -> str:
     """Canonical identity for JSON-valued plan/effect descriptors, not file bytes."""
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-def plan_merge(context: MergePlanningContext) -> MergePlan:
-    """Slice 2: compare immutable source base, delivered baseline and destination.
-
-    Return whole-content-field changes, presence/incident-edge conflicts, core-
-    routed review groups and exact source/prior-review facts. One-sided edits win;
-    equal edits agree. Missing differs from null. Use the previous delivered source
-    snapshot for new work, retaining outstanding pending effects only from scoped
-    canonical earlier reviews. Do not resurrect rejected work or overwrite later
-    destination judgments after approval. Core owns routing/dependencies; hard
-    refusals propagate intact, never becoming review cards. Hidden clashes may
-    promote each diagnostic-named node group once after dry preparation. This
-    function performs no history writes, provider calls, or agent op parsing.
-    """
-    from rcp.runs.merge_plan import plan_merge as implementation
-
-    return implementation(context)
-
-
-def promote_node_group(plan: MergePlan, promotion: NodeGroupPromotion) -> MergePlan:
-    """Slice 2: move named nodes' direct changes and field conflicts into one
-    NodeGroupConflict covering the union of both sides' changed content fields,
-    with codes from promotion.diagnostics, while protected members retain their
-    ReviewGroups, subject keys and card slots and also appear in the node conflict
-    so its answer selects their proposed values (recompute affected effect digests).
-    A node already in a NodeGroupConflict raises MergeRefused; preparation instead
-    routes repeat rejection on such nodes to MergeAnswersRejected.
-    """
-    from rcp.runs.merge_plan import promote_node_group as implementation
-
-    return implementation(plan, promotion)
-
-
-def build_merge_patch(plan: MergePlan, answers: MergeAnswers) -> Patch:
-    """Slice 3: deterministically construct the complete ordered Patch in memory.
-
-    Validate exact answer/card keys, allowed answer kinds and field types. Encode
-    semantic supersede/merge and decided-node creation with core-supported op
-    sequences, then classify coherent groups using classify_graph_changes with
-    plan.captured_authority and its Patch template (including its fixed timestamp). Preserve
-    destination standing through implicit content-reset effects. human_edit is
-    allowed only for an exact SourceHumanFact; any other carried status keeps the
-    cause its source transition recorded. Connected protected effects become one pending Proposal
-    per ReviewGroup; recheck footprints after answers. Carry live source Proposals
-    with identity/content intact and new filing stamps unless they overlap a
-    review group; overlapping filings contribute their operations to that group's
-    Proposal. Keep source resolutions on source. Withdraw scoped pending predecessors and file replacements in the
-    same Patch. No timestamps/random ids may make identical inputs differ. Return
-    operations only through Patch; no runtime graph-equivalence proof or IO.
-    """
-    from rcp.runs.merge_patch import build_merge_patch as implementation
-
-    return implementation(plan, answers)
-
-
-def prepare_merge_candidate(
-    plan: MergePlan, answers: MergeAnswers, history: MergeHistory
-) -> PreparedTransition:
-    """Slice 3 adapter, used identically by slice 4 check and locked commit.
-
-    Recheck plan identity, build the Patch and use authoritative history dry preparation with exact heads,
-    live membership/task authority and the bound preparation contract. Return the
-    PreparedTransition including generated effects; flags alone pass. Preserve
-    structured rejection codes and related ids separately from advisories. Never
-    append, consume publication receipts, or route a hard refusal into a Proposal.
-    A moved destination requires a new plan and revalidation; it is not an answer
-    error. Outcomes: success returns the PreparedTransition; answer problems raise
-    MergeAnswersRejected with conflict ids. A core coherence clash on nodes not
-    yet in a NodeGroupConflict raises MergeHiddenClash; a repeat clash on a
-    promoted group raises MergeAnswersRejected. Independent hard refusals from
-    core classification raise MergeRefused. build_merge_patch raises the same
-    types. Caller compares the exact task/turn/file digest check receipt before
-    commit and retains canonical receipt reconciliation for uncertain publication.
-    """
-    from rcp.runs.merge_patch import prepare_merge_candidate as implementation
-
-    return implementation(plan, answers, history)
