@@ -3361,6 +3361,7 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
             patch_path=str(stage_path / "patch.json"),
             schema_path=str(stage_path / "schema.json"),
             command_client="/stage/rcp-agent",
+            allowed_verbs=auto_research_allowed_verbs("orchestrator"),
             messages_path=None,
             lifecycle_path=None,
             skill_pointers=[],

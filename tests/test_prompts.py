@@ -954,7 +954,7 @@ def test_auto_research_ask_contract_is_only_in_orchestrator_bootstraps(monkeypat
     assert ("<shared-ask-contract>" in contract) == (actor != "worker")
 
 
-def test_auto_research_ask_rendering_follows_resolved_verbs(monkeypatch):
+def test_auto_research_ask_rendering_follows_resolved_verbs():
     from rcp.agents import auto_research_prompt as auto
     from rcp.agents.auto_research_commands import auto_research_allowed_verbs
 
@@ -967,10 +967,10 @@ def test_auto_research_ask_rendering_follows_resolved_verbs(monkeypatch):
         assert "bulletin --read" in auto._command_invocations(
             "client", auto_research_allowed_verbs(role), role
         )
-    monkeypatch.setattr(auto, "auto_research_allowed_verbs", lambda _role: ("validate",))
     assert "validate patch.json" in auto._command_invocations("test-command-client", ("validate",))
     assert "ask --key" not in auto._command_invocations("test-command-client", ("validate",))
-    assert auto._orchestrator_ask_contract() == ""
+    assert auto._orchestrator_ask_contract(("validate",)) == ""
+    assert auto._orchestrator_ask_contract(auto_research_allowed_verbs("orchestrator"))
 
 
 @pytest.mark.parametrize("actor", ["orchestrator", "worker"])
