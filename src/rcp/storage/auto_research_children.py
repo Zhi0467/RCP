@@ -9,7 +9,7 @@ import uuid
 from typing import TYPE_CHECKING, Literal, cast
 
 from rcp.core.graph_targets import graph_target_json
-from rcp.core.transition_models import GraphHeadRef
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import (
     AGENT_COMMAND_EVENT_MAX_BYTES,
     AUTO_RESEARCH_CHILD_EXPERIMENTS_PER_INVOCATION,
@@ -264,16 +264,18 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
             ):
                 return False
             target_json = graph_target_json(head.target)
-            # An open nested fork still merges back into this one.
-            if (
-                connection.execute(
-                    "SELECT 1 FROM graph_branches WHERE project_id=? AND archived=0 "
-                    "AND json_extract(parent_target_json, '$.branch_id')=? LIMIT 1",
-                    (project_id, head.target.branch_id),
-                ).fetchone()
-                is not None
-            ):
-                return False
+            # A nested fork with live work still merges back into this one.
+            for nested in connection.execute(
+                "SELECT branch_id FROM graph_branches WHERE project_id=? AND archived=0 "
+                "AND json_extract(parent_target_json, '$.branch_id')=?",
+                (project_id, head.target.branch_id),
+            ).fetchall():
+                if cast("AppStore", self)._unsettled_graph_target_tasks_in_connection(
+                    connection,
+                    project_id,
+                    GraphTargetRef(kind="branch", branch_id=nested["branch_id"]),
+                ):
+                    return False
             # A failed publication may have landed remotely despite an unchanged
             # local snapshot. It is never evidence that the fork stayed empty.
             if (

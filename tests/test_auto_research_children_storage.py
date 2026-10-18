@@ -2817,7 +2817,7 @@ def test_empty_fork_archive_waits_for_all_writers_admissions_and_known_commit(tm
     assert not store.archive_empty_auto_research_fork(
         parent.project_id, head.model_copy(update={"revision": 1})
     )
-    # An open nested fork still merges back into this one.
+    # A nested fork with a live worker still merges back into this one.
     nested = store.create_graph_branch(
         project_id=parent.project_id,
         branch_id=str(uuid.uuid4()),
@@ -2826,7 +2826,12 @@ def test_empty_fork_archive_waits_for_all_writers_admissions_and_known_commit(tm
         created_by="orchestrator:test",
         auto_archive=True,
     )
+    route, task = _work_pair(store, parent, root, worker_id="nested")
+    task = task.model_copy(
+        update={"graph_target": GraphTargetRef(kind="branch", branch_id=nested.branch_id)}
+    )
+    store.create_auto_research_child_work(route, task)
     assert not store.archive_empty_auto_research_fork(parent.project_id, head)
-    store.set_branch_archived(parent.project_id, nested.branch_id, archived=True)
+    store.complete_agent_task(task.operation_id, applied_revision=None, result={})
     assert store.archive_empty_auto_research_fork(parent.project_id, head)
     assert not store.branch_admits_new_work(parent.project_id, target.branch_id)

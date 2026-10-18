@@ -6188,6 +6188,8 @@ def _require_merge_destination_open(
         connection.execute(
             "SELECT 1 FROM graph_runs WHERE project_id=? AND kind='branch_merge' "
             "AND status IN ('queued','running','pausing') AND operation_id != ? "
+            # A second merge of the same source is the source's own refusal.
+            "AND graph_target_json != ? "
             "AND (graph_target_json=? "
             "OR (json_extract(request_json, '$.merge_binding.destination.kind')=? "
             "AND json_extract(request_json, '$.merge_binding.destination.branch_id') IS ?) "
@@ -6196,6 +6198,7 @@ def _require_merge_destination_open(
             (
                 record.project_id,
                 record.operation_id,
+                graph_target_json(record.graph_target),
                 graph_target_json(destination),
                 destination.kind,
                 destination.branch_id,
