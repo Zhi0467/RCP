@@ -518,16 +518,14 @@ def test_human_fork_unavailable_state_is_retryable(manifest, tmp_path, monkeypat
     assert len(app.state.background_tasks.store.graph_branches(project_id)) == 1
 
 
-def test_human_fork_experiment_records_its_branch_isolation(manifest, tmp_path) -> None:
-    from rcp.service import RunRequest
-    from rcp.storage import AgentTaskRecord
-
+def test_human_fork_experiments_record_and_share_branch_isolation(manifest, tmp_path) -> None:
     from .test_episode_lifecycle_acceptance import _add_worker_seat
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
-    _add_worker_seat(app, node_id="exp/fork", title="Fork run", objective="Run on a human fork.")
+    for node_id in ("exp/fork", "exp/fork-2"):
+        _add_worker_seat(app, node_id=node_id, title=node_id, objective="Run on a human fork.")
     head = app.state.catalog.open(project_id).history.head_ref()
     with signed_in_client(app) as client:
         fork = client.post(
@@ -536,19 +534,43 @@ def test_human_fork_experiment_records_its_branch_isolation(manifest, tmp_path) 
         )
         assert fork.status_code == 201, fork.text
     target = GraphTargetRef(kind="branch", branch_id=fork.json()["branch_id"])
+
+    def admit(node_id: str):
+        return _admit_fork_experiment(app, store, project_id, target, node_id)
+
+    first = admit("exp/fork")
+    episode = store.episode(first.episode_id)
+    assert episode is not None and episode.graph_isolation is True
+    assert first.request["graph_isolation"] is episode.graph_isolation
+    assert first.request["isolation_owner_episode_id"] == episode.isolation_owner_episode_id
+    # The first launch binds the fork; a later Run shares that binding.
+    store.create_episode_isolation(
+        project_id,
+        EpisodeIsolation(owner_episode_id=first.episode_id, graph_branch_id=target.branch_id),
+    )
+    second = admit("exp/fork-2")
+    assert second.request["isolation_owner_episode_id"] == first.episode_id
+
+
+def _admit_fork_experiment(app, store, project_id, target, node_id):
+    from rcp.service import RunRequest
+    from rcp.storage import AgentTaskRecord
+
     episode_id = str(uuid.uuid4())
+    head = app.state.catalog.open(project_id).history.head_ref()
+
     request = RunRequest(
         provider="codex",
         run_on="laptop",
         run_truth_scope=["repo-a"],
         chat_scope="node",
         chat_id=episode_id,
-        node_id="exp/fork",
+        node_id=node_id,
         message="Run it.",
         mode="work",
         trigger="experiment_run",
         patch_kind="experiment_loop",
-        control_node_id="exp/fork",
+        control_node_id=node_id,
         control_revision=head.revision,
         control_episode_id=episode_id,
         control_invocation=1,
@@ -557,7 +579,7 @@ def test_human_fork_experiment_records_its_branch_isolation(manifest, tmp_path) 
     )
     assert request.graph_isolation is False
     now = store.now()
-    task = store.create_experiment_episode_with_invocation(
+    return store.create_experiment_episode_with_invocation(
         AgentTaskRecord(
             operation_id=str(uuid.uuid4()),
             project_id=project_id,
@@ -572,7 +594,3 @@ def test_human_fork_experiment_records_its_branch_isolation(manifest, tmp_path) 
             authorized_by=authorized_human(app),
         )
     )
-    episode = store.episode(episode_id)
-    assert episode is not None and episode.graph_isolation is True
-    assert task.request["graph_isolation"] is episode.graph_isolation
-    assert task.request["isolation_owner_episode_id"] == episode.isolation_owner_episode_id

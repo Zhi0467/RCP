@@ -330,10 +330,24 @@ class ExperimentStoreMixin(StoreMixinBase):
             continuation_request_id=continuation_request_id,
         )
         source = self.episode(continues_episode_id) if continues_episode_id else None
-        branch_owner = (
-            cast("AppStore", self).episode(graph_branch.owner_episode_id)
-            if graph_branch is not None and graph_branch.owner_episode_id is not None
+        # A human-owned fork has no owner episode; an earlier Experiment's
+        # launch binding on it is the isolation owner later Runs share.
+        branch_binding = (
+            cast("AppStore", self).episode_isolation_for_branch(
+                record.project_id, graph_branch.branch_id
+            )
+            if graph_branch is not None and graph_branch.owner_episode_id is None
             else None
+        )
+        owner_episode_id = (
+            graph_branch.owner_episode_id
+            if graph_branch is not None and graph_branch.owner_episode_id is not None
+            else branch_binding.owner_episode_id
+            if branch_binding is not None
+            else None
+        )
+        branch_owner = (
+            cast("AppStore", self).episode(owner_episode_id) if owner_episode_id else None
         )
         isolation_parent = source or parent_episode or branch_owner
         if isolation_parent is not None:

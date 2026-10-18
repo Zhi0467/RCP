@@ -395,7 +395,7 @@ export function AutoResearchDialog({
               compact
             >
               <p className="agent-config-note">
-                Experiments it spawns use the Settings Node chat profile.
+                Experiments it spawns default to the Settings Node chat profile.
               </p>
               <div className="agent-config-options" role="group" aria-label="Launch options">
                 <label>
