@@ -734,11 +734,6 @@ details[open] > .view-disclosure-summary > svg:last-child {
   margin: 6px -10px -6px;
   padding: 9px 10px;
 }
-.agent-config-note {
-  color: var(--muted);
-  font-size: var(--type-2xs);
-  margin: 8px 0 0;
-}
 /* Launch options sit under the agent fields; a host form must not stretch them. */
 .agent-config-options {
   border-top: 1px solid var(--line);

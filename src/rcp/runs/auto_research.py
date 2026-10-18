@@ -63,7 +63,9 @@ from rcp.storage import (
     AppStore,
     AutoResearchChildAdmissionRecord,
     AutoResearchCommandFileRecord,
+    AutoResearchExperimentAllowanceReached,
     AutoResearchMessageRecord,
+    EpisodeInvocationCeilingReached,
     EpisodeNotRunning,
     EpisodeRecord,
     GraphBranchRecord,
@@ -1320,22 +1322,42 @@ class AutoResearchCommandDispatcher:
                 created_at=admitted_at,
                 command_file_error=command_file_error,
             )
+            budget_refusal: AutoResearchCommandEffectResult | None = None
             try:
-                invocation = self.store.start_agent_command(
-                    operation_id=operation_id,
-                    command_id=command_id,
-                    episode_id=context.episode.episode_id,
-                    verb=request.verb,
-                    idempotency_key=request.idempotency_key,
-                    payload=start_payload,
-                    file_snapshot=file_snapshot,
-                    child_admission=child_admission,
-                    fork_reservation=fork_reservation if child_admission is not None else None,
-                    seed_snapshot=seed_snapshot if child_admission is not None else None,
-                    apply_admission_limit=(
-                        AUTO_RESEARCH_APPLY_MAX_PER_TURN if keyed_apply else None
-                    ),
-                )
+                try:
+                    invocation = self.store.start_agent_command(
+                        operation_id=operation_id,
+                        command_id=command_id,
+                        episode_id=context.episode.episode_id,
+                        verb=request.verb,
+                        idempotency_key=request.idempotency_key,
+                        payload=start_payload,
+                        file_snapshot=file_snapshot,
+                        child_admission=child_admission,
+                        fork_reservation=fork_reservation if child_admission is not None else None,
+                        seed_snapshot=seed_snapshot if child_admission is not None else None,
+                        apply_admission_limit=(
+                            AUTO_RESEARCH_APPLY_MAX_PER_TURN if keyed_apply else None
+                        ),
+                    )
+                except (
+                    EpisodeInvocationCeilingReached,
+                    AutoResearchExperimentAllowanceReached,
+                ) as exc:
+                    # The admission insert reserves budget; a refusal still
+                    # leaves the keyed receipt, so a retry replays it.
+                    if child_admission is None:
+                        raise
+                    budget_refusal = _child_budget_refusal(exc)
+                    invocation = self.store.start_agent_command(
+                        operation_id=operation_id,
+                        command_id=command_id,
+                        episode_id=context.episode.episode_id,
+                        verb=request.verb,
+                        idempotency_key=request.idempotency_key,
+                        payload=start_payload,
+                        file_snapshot=file_snapshot,
+                    )
             except ValueError as exc:
                 # Another client may have won the auto_research-wide key between the
                 # read above and this insert. Preserve that invocation as the
@@ -1368,6 +1390,8 @@ class AutoResearchCommandDispatcher:
             # a race without inserting this call. Record this call separately.
             attempt = self._start_retry_attempt(context, request, start_payload, invocation)
             return self._dispatch_retry(context, request, invocation, attempt)
+        if budget_refusal is not None:
+            return self._finish(invocation.command_id, request.request_id, budget_refusal)
 
         if (
             isinstance(request, ApplyCommandRequest)
@@ -2531,3 +2555,21 @@ def recorded_child_graph_target(
     """Pre-target writers used their parent; newer commands retain the resolved identity."""
     target = command.start_payload.get("resolved_graph_target")
     return episode.graph_target if target is None else GraphTargetRef.model_validate(target)
+
+
+def _child_budget_refusal(
+    exc: EpisodeInvocationCeilingReached | AutoResearchExperimentAllowanceReached,
+) -> AutoResearchCommandEffectResult:
+    if isinstance(exc, AutoResearchExperimentAllowanceReached):
+        return AutoResearchCommandEffectResult(
+            status="invalid",
+            message=(
+                "The Auto-research child Experiment allowance is exhausted; "
+                "no Experiment was started."
+            ),
+            result={
+                "disposition": "allowance_exhausted",
+                "experiment_allowance": exc.allowance.model_dump(mode="json"),
+            },
+        )
+    return AutoResearchCommandEffectResult(status="invalid", message=str(exc))
