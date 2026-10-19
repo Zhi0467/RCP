@@ -1114,6 +1114,13 @@ identity:
   that keeps a `chat_id` was reopened by a failed turn, and a new request id
   starts another. Addressing an open flag whose Evidence is absent or retired on
   main, or a dismissed flag, returns 409; unknown flags return 404.
+- `POST .../consolidation/evidence-flags/address` takes
+  `{"request_id": string, "flag_ids": [string]}` with 1 to 10 unique ids and
+  returns `{"flags": [EvidenceFlag], "chat_id": string, "operation_id": string}`.
+  One id admits the same node Work chat as the single route; two or more admit
+  one project Work chat on main bound to every flag. Every flag must be open, so
+  an addressing flag returns 409 here. The request key is bound to the exact id
+  set, and a replay returns that request's own turn.
 
 The [consolidation spec](graph-consolidation-and-lessons.md#evidence-to-check)
 owns fact-check behavior, flag lifecycle, and the Evidence to check Inbox rows.

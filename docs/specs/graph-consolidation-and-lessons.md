@@ -164,6 +164,18 @@ when unsure. The flag grants no authority. Replaying the request or addressing a
 already-addressing flag returns the existing chat without another turn. Address
 leaves the member in the Inbox; the chat opens only from **Open chat**.
 
+When at least two findings offer Address, the header offers **Address all**.
+It sends one request for the ten oldest addressable findings, ordered by creation
+time. The server caps each batch at ten and refuses empty or duplicate ids,
+non-open flags, notices, and absent or retired Evidence on main. One finding uses
+the same node Work path as Address; two or more start one ordinary project Work
+turn on main in one new chat. Its message labels every finding as context.
+Sorted flag locks serialize admission, and every flag binds to that turn and
+chat in the task's transaction or none do. Each addressing strip opens the shared
+chat. The request key and exact ids survive a failed Web attempt; replay returns
+that request's own turn even after settlement or a later attempt. Batch settlement
+and Resume/Retry takeover apply to all flags still bound to the operation.
+
 The Address turn's end settles the flag in the same transition that records it:
 a turn that succeeds, reports its Work outcome as `done`, and has no rejected or
 unavailable graph update closes the flag, so a member need not remember to

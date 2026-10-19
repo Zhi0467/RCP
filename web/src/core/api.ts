@@ -1146,3 +1146,14 @@ export function addressEvidenceFlag(
     body: JSON.stringify({ request_id: requestId }),
   });
 }
+
+export function addressEvidenceFlags(
+  apiBase: string,
+  flagIds: string[],
+  requestId: string,
+): Promise<{ flags: EvidenceFlag[]; chat_id: string; operation_id: string }> {
+  return api(`${apiBase}/consolidation/evidence-flags/address`, {
+    method: "POST",
+    body: JSON.stringify({ request_id: requestId, flag_ids: flagIds }),
+  });
+}

@@ -1,9 +1,18 @@
 import { ExternalLink, LoaderCircle, MessageSquare, RotateCw, X } from "lucide-react";
 import { useRef, useState } from "react";
 import type { EvidenceFlag, GraphNode } from "../core/types";
-import { addressEvidenceFlag, dismissEvidenceFlag } from "../core/api";
+import {
+  ApiError,
+  addressEvidenceFlag,
+  addressEvidenceFlags,
+  dismissEvidenceFlag,
+} from "../core/api";
 import { openRepositoryFile } from "../artifacts/artifactViewerModel";
-import type { EvidenceFlagAction, EvidenceFlagRow } from "./evidenceFlags";
+import {
+  evidenceFlagsToAddress,
+  type EvidenceFlagAction,
+  type EvidenceFlagRow,
+} from "./evidenceFlags";
 
 interface Props {
   apiBase: string;
@@ -25,16 +34,78 @@ const KIND_LABELS: Record<EvidenceFlag["kind"], string> = {
 
 export function EvidenceFlagInbox(props: Props) {
   if (!props.rows.length) return null;
+  const addressable = evidenceFlagsToAddress(props.rows);
   return (
     <section className="consolidation-inbox" aria-label="Evidence to check">
-      <header className="rail-heading proposal-section-heading">
+      <header className="rail-heading proposal-section-heading evidence-flag-heading">
         <h2>Evidence to check</h2>
         <span className="count-badge">{props.rows.length}</span>
+        {addressable.length > 1 && <AddressAll {...props} flags={addressable} />}
       </header>
       {props.rows.map((row) => (
         <FlagRow key={row.flag.flag_id} {...props} row={row} />
       ))}
     </section>
+  );
+}
+
+/** One batch retains both its ids and request key across an ambiguous failure. */
+function AddressAll({
+  apiBase,
+  flags,
+  writesDisabled,
+  onChanged,
+}: Props & { flags: EvidenceFlag[] }) {
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const pending = useRef<{ id: string; flagIds: string[] } | null>(null);
+  const inFlight = useRef(false);
+  const run = async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
+    setFailure(null);
+    pending.current ??= { id: crypto.randomUUID(), flagIds: flags.map((flag) => flag.flag_id) };
+    try {
+      const result = await addressEvidenceFlags(
+        apiBase,
+        pending.current.flagIds,
+        pending.current.id,
+      );
+      result.flags.forEach(onChanged);
+      pending.current = null;
+    } catch (error) {
+      // A refusal started nothing, so Retry picks a fresh batch; only an ambiguous failure replays.
+      if (error instanceof ApiError && error.status < 500) pending.current = null;
+      setFailure(error instanceof Error ? error.message : String(error));
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  };
+  if (failure)
+    return (
+      <button
+        type="button"
+        className="icon-button evidence-flag-address-all has-error"
+        aria-label="Retry Address all"
+        title={failure}
+        disabled={busy || writesDisabled}
+        onClick={() => void run()}
+      >
+        <RotateCw size={16} />
+      </button>
+    );
+  return (
+    <button
+      type="button"
+      className="button secondary evidence-flag-address-all"
+      disabled={busy || writesDisabled}
+      onClick={() => void run()}
+    >
+      {busy ? <LoaderCircle size={14} className="spin" aria-hidden /> : <MessageSquare size={14} />}
+      Address all
+    </button>
   );
 }
 

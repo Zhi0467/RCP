@@ -8,7 +8,7 @@ import re
 import sqlite3
 import uuid
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, cast
 
@@ -57,7 +57,7 @@ _FIELDS = (
     "created_at",
 )
 _LOCKS = KeyedLocks()
-_ADMISSION: ContextVar[tuple[object, str, str, str] | None] = ContextVar(
+_ADMISSION: ContextVar[tuple[object, str, tuple[str, ...], str] | None] = ContextVar(
     "evidence_flag_admission", default=None
 )
 
@@ -108,7 +108,7 @@ def _flag(connection: sqlite3.Connection, project_id: str, flag_id: str) -> sqli
 def record_evidence_flag_address(
     store: object, connection: sqlite3.Connection, task: AgentTaskRecord
 ) -> None:
-    """Bind the flag in the same transaction that admits its ordinary node turn.
+    """Bind all flags in the transaction that admits their ordinary Work turn.
 
     A Resume or Retry of the flag's failed turn takes over the binding, unless the
     flag was since dismissed or bound to another attempt.
@@ -122,14 +122,14 @@ def record_evidence_flag_address(
     admission = _ADMISSION.get()
     if admission is None or admission[0] is not store:
         return
-    _, project_id, flag_id, user_id = admission
-    flag = _flag(connection, project_id, flag_id)
+    _, project_id, flag_ids, user_id = admission
+    flags = [_flag(connection, project_id, flag_id) for flag_id in flag_ids]
     chat_id = task.request.get("chat_id")
     if (
         task.project_id != project_id
-        or task.kind != "node_chat"
+        or task.kind != ("node_chat" if len(flags) == 1 else "project_chat")
         or task.request.get("mode") != "work"
-        or task.request.get("node_id") != flag["evidence_id"]
+        or (len(flags) == 1 and task.request.get("node_id") != flags[0]["evidence_id"])
         or task.graph_target.kind != "main"
         or task.authorized_by is None
         or task.authorized_by.user_id != user_id
@@ -139,13 +139,14 @@ def record_evidence_flag_address(
         raise EvidenceFlagError("flag_address_conflict")
     _member(connection, project_id, user_id)
     # The request receipt is the admitted task's client request row.
-    changed = connection.execute(
-        "UPDATE evidence_flags SET state='addressing',chat_id=?,operation_id=? "
-        "WHERE project_id=? AND flag_id=? AND state='open'",
-        (chat_id, task.operation_id, project_id, flag_id),
-    ).rowcount
-    if changed != 1:
-        raise EvidenceFlagError("flag_address_conflict")
+    for flag_id in flag_ids:
+        changed = connection.execute(
+            "UPDATE evidence_flags SET state='addressing',chat_id=?,operation_id=? "
+            "WHERE project_id=? AND flag_id=? AND state='open'",
+            (chat_id, task.operation_id, project_id, flag_id),
+        ).rowcount
+        if changed != 1:
+            raise EvidenceFlagError("flag_address_conflict")
 
 
 _ENDED_TASK_STATUSES = frozenset({"succeeded", "failed", "interrupted", "paused"})
@@ -298,20 +299,30 @@ class EvidenceFlagStoreMixin(StoreMixinBase):
 
     @contextmanager
     def evidence_flag_admission(
-        self, project_id: str, flag_id: str, *, user_id: str
-    ) -> Iterator[dict[str, Any]]:
-        with _LOCKS(f"{self.path.resolve()}:{project_id}:{flag_id}"):
+        self,
+        project_id: str,
+        flag_ids: list[str],
+        *,
+        user_id: str,
+        require_open: bool = True,
+    ) -> Iterator[list[dict[str, Any]]]:
+        with ExitStack() as locks:
+            for flag_id in sorted(flag_ids):
+                locks.enter_context(_LOCKS(f"{self.path.resolve()}:{project_id}:{flag_id}"))
             with self.connection() as connection:
                 _member(connection, project_id, user_id)
                 cast("AppStore", self)._require_project_accepts_new_work(connection, project_id)
-                row = _flag(connection, project_id, flag_id)
-                if row["state"] == "dismissed":
-                    raise EvidenceFlagError("flag_dismissed")
-                if row["kind"] in NOTICE_FLAG_KINDS:
-                    raise EvidenceFlagError("flag_not_addressable")
-            token = _ADMISSION.set((self, project_id, flag_id, user_id))
+                rows = [_flag(connection, project_id, flag_id) for flag_id in flag_ids]
+                for row in rows:
+                    if row["state"] == "dismissed":
+                        raise EvidenceFlagError("flag_dismissed")
+                    if require_open and row["state"] != "open":
+                        raise EvidenceFlagError("flag_address_conflict")
+                    if row["kind"] in NOTICE_FLAG_KINDS:
+                        raise EvidenceFlagError("flag_not_addressable")
+            token = _ADMISSION.set((self, project_id, tuple(flag_ids), user_id))
             try:
-                yield _record(row)
+                yield [_record(row) for row in rows]
             finally:
                 _ADMISSION.reset(token)
 

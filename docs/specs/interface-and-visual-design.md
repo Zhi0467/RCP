@@ -156,7 +156,10 @@ on the existing draft path.
 The Inbox uses the consolidation load for an **Evidence to check** section and
 includes its rows in the open total. Each row shows the kind, night, current
 Evidence title, and finding. **Address** starts the backend-authorized node Work
-chat and keeps the member where they are. While the turn runs the row collapses to
+chat and keeps the member where they are. When two or more findings offer Address,
+the header's **Address all** starts one shared Work chat for the ten oldest.
+A failed batch marks that control with a red edge and one icon-only retry.
+While the turn runs each row collapses to
 one strip: a spinner, the kind, the title, and an icon-only **Open chat**. A
 turn that finishes the work removes the row. Any other end brings the full row back
 with a red edge, an icon-only retry in place of Address, and **Open chat**.

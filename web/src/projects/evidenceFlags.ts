@@ -68,3 +68,17 @@ function flagSourceTarget(
   const resolution = resolveRepositoryFileHref(href, repositories);
   return resolution.kind === "resolved" ? { kind: "file", target: resolution.target } : null;
 }
+
+// Mirrored from rcp.limits; evidenceFlags.test.mjs checks parity.
+export const EVIDENCE_FLAG_ADDRESS_BATCH_MAX = 10;
+
+export function evidenceFlagsToAddress(rows: readonly EvidenceFlagRow[]): EvidenceFlag[] {
+  return rows
+    .filter((row) => row.actions.includes("address"))
+    .map((row) => row.flag)
+    .sort(
+      (a, b) =>
+        Date.parse(a.created_at) - Date.parse(b.created_at) || a.flag_id.localeCompare(b.flag_id),
+    )
+    .slice(0, EVIDENCE_FLAG_ADDRESS_BATCH_MAX);
+}

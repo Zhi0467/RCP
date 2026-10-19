@@ -74,7 +74,7 @@ def test_flag_admission_binding_rolls_back_with_task_transaction(store):
         }
     )
     with store.evidence_flag_admission(
-        "project", original["flag_id"], user_id=store.local_owner.user_id
+        "project", [original["flag_id"]], user_id=store.local_owner.user_id
     ):
         with pytest.raises(RuntimeError), store.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -127,3 +127,41 @@ def test_flag_fields_are_single_line_and_sources_are_paths(store, field, value, 
     with pytest.raises(EvidenceFlagError, check=lambda exc: exc.code == code):
         flag(store, **{field: value})
     assert store.list_evidence_flags("project") == []
+
+
+def test_batch_binding_conflict_rolls_back_every_flag_and_receipt(store):
+    from rcp.storage.client_requests import record_client_request
+    from rcp.storage.evidence_flags import record_evidence_flag_address
+
+    consolidate(store)
+    first = flag(store)["flag"]
+    second = store.execute_evidence_flag_command(
+        "project",
+        "turn",
+        key="second",
+        evidence_id="second",
+        kind="unverified",
+        finding="Check source.",
+        validate_evidence=lambda: 4,
+    )["flag"]
+    ids = [first["flag_id"], second["flag_id"]]
+    task = store.agent_task("turn").model_copy(
+        update={
+            "kind": "project_chat",
+            "request": {"chat_id": "batch-chat", "mode": "work"},
+        }
+    )
+    with (
+        store.client_request_admission("project", store.local_owner.user_id, "batch", "batch"),
+        store.evidence_flag_admission("project", ids, user_id=store.local_owner.user_id),
+        pytest.raises(EvidenceFlagError, match="flag_address_conflict"),
+        store.connection() as connection,
+    ):
+        connection.execute("BEGIN IMMEDIATE")
+        record_client_request(store, connection, task)
+        # Force the second compare-and-set to fail after the first update.
+        connection.execute("UPDATE evidence_flags SET state='dismissed' WHERE flag_id=?", (ids[1],))
+        record_evidence_flag_address(store, connection, task)
+    assert store.evidence_flag("project", ids[0]) == first
+    assert store.evidence_flag("project", ids[1]) == second
+    assert store.client_request("project", "batch") is None

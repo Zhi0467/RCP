@@ -1347,6 +1347,18 @@
 .evidence-flag-row.has-error {
   border-left: 3px solid var(--red);
 }
+.evidence-flag-heading {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-start;
+}
+.evidence-flag-heading > .evidence-flag-address-all {
+  margin-left: auto;
+}
+.evidence-flag-address-all.has-error {
+  border-color: var(--red);
+}
 .evidence-flag-row.addressing {
   align-items: center;
   display: flex;
@@ -1373,6 +1385,7 @@
   flex-wrap: wrap;
 }
 @media (max-width: 560px) {
+  .evidence-flag-address-all,
   .evidence-flag-row .card-actions > button,
   .evidence-flag-row.addressing > button {
     min-height: 44px;
