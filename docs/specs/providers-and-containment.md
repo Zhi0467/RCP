@@ -1045,6 +1045,11 @@ prompt byte reaches the provider. Host acceptance, not a controller receipt,
 proves work may have begun. The supervisor detects turn end but assigns no
 semantic verdict; the live decoder also reads recorded bytes.
 
+Recorded decoding uses the owner's original capability and retained Work write
+scope. Codex app-server rechecks the actual journalled thread response against
+that contract, including its active permission profile; recovery does not
+substitute a read-only capability or waive enforcement.
+
 At turn end it snapshots Patch, watcher handoff and maintenance files under
 digests. Before reading deliverables, finalizers restore that exact set, removing
 later maintenance files. Per-file and aggregate limits apply: overflow makes the

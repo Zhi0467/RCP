@@ -18,12 +18,13 @@ from typing import TYPE_CHECKING
 
 from rcp.agents import AgentEvent
 from rcp.agents.provider_environment import unhidden_read_scope
-from rcp.providers import ProviderTurnRequest
+from rcp.providers import AgentCapability, ProviderTurnRequest
 from rcp.runs.experiment_loop import _experiment_watcher_output_names
 from rcp.runs.shared import _ProviderOutcome, _sse
 from rcp.transport import RemoteRunStage, StateUnavailable
 
 if TYPE_CHECKING:
+    from rcp.agents.write_scope import ProjectWriteScope
     from rcp.background import AgentTaskExecution
     from rcp.runs.recorded_turn import RecordedProviderTurn, RecordedVerdict
 
@@ -31,8 +32,16 @@ if TYPE_CHECKING:
 def provider_turn_request(
     workspace: Path,
     recorded: RecordedProviderTurn,
+    *,
+    capability: AgentCapability,
+    write_scope: ProjectWriteScope | None = None,
 ) -> ProviderTurnRequest:
-    """The request shape the decoder needs, from what the pass already knows."""
+    """Rebuild the decoder with its owner's capability and retained write scope.
+
+    Replay launches nothing, but its decoder still checks the provider's actual
+    permission response. A synthetic read-only capability would ask that check
+    to validate a different contract from the one the live turn enforced.
+    """
 
     return ProviderTurnRequest(
         prompt="",
@@ -42,13 +51,10 @@ def provider_turn_request(
         reasoning=None,
         session_id=recorded.session_id,
         read_dirs=[],
-        write_dirs=[],
-        write_scope=None,
+        write_dirs=[Path(root) for root in write_scope.repository_roots] if write_scope else [],
+        write_scope=write_scope,
         hidden_read_scope=unhidden_read_scope(execution_machine="recorded", host=""),
-        # Nothing launches from this request; it exists so the decoder can build
-        # the runtime that reads the wire. Naming the turn's real capability here
-        # would ask for a write scope no reader needs and no recovery has.
-        capability="paper_readonly",
+        capability=capability,
         provider_version=recorded.provider_version,
     )
 
