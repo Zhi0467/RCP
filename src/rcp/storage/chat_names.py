@@ -59,7 +59,9 @@ def initialize_task_chat_name(
         message = request.get("message") or ""
         if not message.strip():
             message = request.get("node_id") or "Chat"
-        if "graph-consolidation" in (request.get("workflow_ids") or []):
+        # Only the nightly scheduler launches with this trigger; ordinary chats may
+        # merely have the consolidation workflow enabled.
+        if request.get("trigger") == "schedule":
             message = "Graph consolidation"
         initialize_chat_name(connection, project_id, request["chat_id"], message)
 

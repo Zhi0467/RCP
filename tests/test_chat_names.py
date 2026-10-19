@@ -180,6 +180,33 @@ def test_empty_node_message_uses_node_id_then_chat(tmp_path, node_id, expected, 
     assert store.agent_name_state("project", "empty")["name"] == expected
 
 
+@pytest.mark.parametrize(
+    "trigger, expected", [("schedule", "Graph consolidation"), ("human", "Probe the floor")]
+)
+def test_only_the_scheduled_run_is_named_graph_consolidation(tmp_path, trigger, expected):
+    store = AppStore(tmp_path / "store.sqlite")
+    _project(store)
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id=str(uuid.uuid4()),
+            project_id="project",
+            kind="project_chat",
+            status="succeeded",
+            request={
+                "chat_id": "c",
+                "message": "Probe the floor",
+                "trigger": trigger,
+                "workflow_ids": ["research-graph-audit", "graph-consolidation"],
+            },
+            created_at=store.now(),
+            updated_at=store.now(),
+            status_message="",
+            authorized_by=_identity(store),
+        )
+    )
+    assert store.agent_name_state("project", "c")["name"] == expected
+
+
 def test_transcript_only_name_is_persisted_and_rename_is_read(tmp_path):
     store = AppStore(tmp_path / "store.sqlite")
     _project(store)
