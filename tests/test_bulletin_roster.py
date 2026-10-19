@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from unittest.mock import Mock
 from uuid import uuid4
 
@@ -220,3 +221,36 @@ def test_seated_workers_are_not_roster_conversations(tmp_path) -> None:
     assert [row["id"] for row in bulletin_roster(store, episode.project_id)] == [
         f"episode:{episode.episode_id}"
     ]
+
+
+def test_upgrade_moves_experiment_posts_to_their_conversation_identity(tmp_path) -> None:
+    from rcp.storage.bulletin import migrate_bulletin_actor_ids
+    from tests.test_auto_research_children_storage import _experiment_task, _setup_parent
+
+    store, parent, _root = _setup_parent(tmp_path)
+    task = _experiment_task(
+        store, str(uuid4()), parent.authorized_by, node_id="exp/one", trigger="experiment_run"
+    )
+    task.request["chat_id"] = "loop-chat"
+    store.create_experiment_episode_with_invocation(task)
+    old = f"episode:{task.episode_id}"
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO bulletin_posts(post_id,project_id,target_key,author_kind,operation_id,"
+            "actor_label,text,refs_json,created_at,author_actor_id,mentions_json) "
+            "VALUES('p',?,?,'agent',?,'Experiment',?,'[]',?,?,?)",
+            (
+                parent.project_id,
+                task.graph_target.key,
+                task.operation_id,
+                f"see <@agent:{old}>",
+                store.now(),
+                old,
+                json.dumps([{"kind": "agent", "id": old}]),
+            ),
+        )
+        migrate_bulletin_actor_ids(connection)
+        row = connection.execute("SELECT * FROM bulletin_posts WHERE post_id='p'").fetchone()
+    assert row["author_actor_id"] == "chat:loop-chat"
+    assert row["text"] == "see <@agent:chat:loop-chat>"
+    assert json.loads(row["mentions_json"]) == [{"kind": "agent", "id": "chat:loop-chat"}]

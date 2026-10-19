@@ -932,6 +932,7 @@ class AppStoreBase:
         return bootstrap_code
 
     def _migrate_conversation_names(self, connection: sqlite3.Connection) -> None:
+        from rcp.storage.bulletin import migrate_bulletin_actor_ids
         from rcp.storage.chat_names import backfill_chat_names
         from rcp.storage.resource_versions import (
             install_bulletin_resource_versions,
@@ -941,6 +942,7 @@ class AppStoreBase:
         self._ensure_column(connection, "chat_display", "self_named", "INTEGER NOT NULL DEFAULT 0")
         migrate_chat_name_versions(connection)
         backfill_chat_names(connection)
+        migrate_bulletin_actor_ids(connection)
         for row in connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'trigger' "
             "AND (name GLOB 'resource_*_bulletin_*' OR name GLOB 'resource_bulletin_posts_*')"

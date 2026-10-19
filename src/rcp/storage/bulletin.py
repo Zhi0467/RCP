@@ -103,6 +103,55 @@ def _members(connection: sqlite3.Connection, project_id: str) -> list[dict[str, 
     ]
 
 
+def migrate_bulletin_actor_ids(connection: sqlite3.Connection) -> None:
+    """Experiment agents were `episode:<chain root>`; their conversation now names them.
+
+    Rewrites stored authors, recorded mentions, and mention tokens so pre-upgrade
+    posts stay editable by their agent and mentions still reach it.
+    """
+    from rcp.bulletin import bulletin_actor_id
+
+    renames: dict[tuple[str, str], str] = {}
+    for row in connection.execute(
+        "SELECT r.* FROM graph_runs AS r JOIN episodes AS e "
+        "ON e.episode_id = r.episode_id AND e.project_id = r.project_id "
+        "WHERE e.mode = 'experiment_loop'"
+    ).fetchall():
+        new = bulletin_actor_id(connection, row)
+        if new is None or not new.startswith("chat:"):
+            continue
+        root, seen = row["episode_id"], set()
+        while root not in seen:
+            seen.add(root)
+            parent = connection.execute(
+                "SELECT continues_episode_id FROM episodes WHERE episode_id = ? AND project_id = ?",
+                (root, row["project_id"]),
+            ).fetchone()
+            if parent is None or not parent["continues_episode_id"]:
+                break
+            root = parent["continues_episode_id"]
+        renames[(row["project_id"], f"episode:{root}")] = new
+    for (project_id, old), new in renames.items():
+        connection.execute(
+            "UPDATE bulletin_posts SET author_actor_id = ? "
+            "WHERE project_id = ? AND author_actor_id = ?",
+            (new, project_id, old),
+        )
+        connection.execute(
+            "UPDATE bulletin_posts SET text = replace(text, ?, ?), "
+            "mentions_json = replace(mentions_json, ?, ?) "
+            "WHERE project_id = ? AND instr(mentions_json, ?) > 0",
+            (
+                f"<@agent:{old}>",
+                f"<@agent:{new}>",
+                json.dumps(old),
+                json.dumps(new),
+                project_id,
+                json.dumps(old),
+            ),
+        )
+
+
 def _parse(
     connection: sqlite3.Connection, project_id: str, target_key: str, text: str
 ) -> tuple[list[str], list[dict[str, str]]]:

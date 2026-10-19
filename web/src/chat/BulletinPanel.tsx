@@ -34,6 +34,7 @@ import {
   bulletinKeyTarget,
   bulletinLabelMap,
   bulletinMentionCandidates,
+  bulletinMoveDraft,
   bulletinPostState,
   bulletinSegments,
   bulletinTargetKey,
@@ -206,8 +207,10 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
 
   const trigger = canPost && focused ? bulletinTrigger(draft, caret) : null;
   const shownTrigger = trigger && trigger.start !== dismissedAt ? trigger : null;
-  const nodeList = useMemo(() => Object.values(nodes), [nodes]);
-  const nodeIds = useMemo(() => new Set(Object.keys(nodes)), [nodes]);
+  // Node links open the workspace's graph, so another channel's posts show ids as text.
+  const channelNodes = sameGraphTarget(channel, target) ? nodes : NO_NODES;
+  const nodeList = useMemo(() => Object.values(channelNodes), [channelNodes]);
+  const nodeIds = useMemo(() => new Set(Object.keys(channelNodes)), [channelNodes]);
   const channelName = (targetKey: string) =>
     channels.find((item) => item.target_key === targetKey)?.name ??
     (targetKey === "main" ? "main" : targetKey.slice("branch:".length));
@@ -322,10 +325,12 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
       reload();
     });
   };
-  const selectChannel = (next: GraphTargetRef) => {
-    setPickerOpen(false);
-    // A post in flight settles against the channel it was sent to.
-    if (busy || sameGraphTarget(next, channel)) return;
+  const channelCandidates = (targetKey: string) =>
+    bulletinMentionCandidates(
+      members,
+      roster.filter((actor) => actor.target_key === targetKey),
+    );
+  const switchChannel = (next: GraphTargetRef) => {
     setChannel(next);
     setCursor(null);
     setReply(null);
@@ -333,6 +338,13 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
     setConfirmDelete(null);
     setFailure(null);
     setKey(crypto.randomUUID());
+  };
+  const selectChannel = (next: GraphTargetRef) => {
+    setPickerOpen(false);
+    // A post in flight settles against the channel it was sent to.
+    if (busy || sameGraphTarget(next, channel)) return;
+    setDraft(bulletinMoveDraft(draft, candidates, channelCandidates(bulletinTargetKey(next))));
+    switchChannel(next);
   };
   const startReply = (item: BulletinPost) => {
     setReply(item);
@@ -349,10 +361,21 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
   };
   const pick = (suggestion: Suggestion) => {
     if (!shownTrigger) return;
-    // A mention counts only in the agent's own channel, so the draft moves there.
-    if (suggestion.targetKey && suggestion.targetKey !== channelKey)
-      selectChannel(bulletinKeyTarget(suggestion.targetKey));
-    const next = bulletinInsert(draft, shownTrigger, caret, suggestion.insert);
+    const nextKey = suggestion.targetKey;
+    let next = bulletinInsert(draft, shownTrigger, caret, suggestion.insert);
+    // A mention counts only in the agent's own channel, so the draft moves there
+    // with the picked agent's token, and every earlier mention keeps its recipient.
+    if (nextKey && nextKey !== channelKey) {
+      if (busy) return;
+      const to = channelCandidates(nextKey);
+      const inserted = bulletinInsert(draft, shownTrigger, caret, suggestion.key);
+      const move = (text: string) => bulletinMoveDraft(text, candidates, to);
+      next = {
+        text: move(inserted.text),
+        caret: move(inserted.text.slice(0, inserted.caret)).length,
+      };
+      switchChannel(bulletinKeyTarget(nextKey));
+    }
     pendingCaret.current = next.caret;
     setDraft(next.text);
     setCaret(next.caret);
@@ -628,11 +651,14 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
                   {bulletinActorLabel(actor)}
                 </span>
                 <span className="bulletin-roster-kind">{bulletinActorKind(actor)}</span>
-                {actor.seat_node_id && (
-                  <button type="button" onClick={() => onOpenNode?.(actor.seat_node_id!)}>
-                    {actor.seat_node_id}
-                  </button>
-                )}
+                {actor.seat_node_id &&
+                  (channelNodes === nodes ? (
+                    <button type="button" onClick={() => onOpenNode?.(actor.seat_node_id!)}>
+                      {actor.seat_node_id}
+                    </button>
+                  ) : (
+                    <span className="bulletin-roster-kind">{actor.seat_node_id}</span>
+                  ))}
               </li>
             ))}
           </ul>

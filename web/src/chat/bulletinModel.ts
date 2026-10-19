@@ -298,6 +298,15 @@ export function bulletinDecodeMentions(
   });
 }
 
+/** Carries a draft to another channel: each mention keeps its recipient, shown by name where that channel knows it. */
+export function bulletinMoveDraft(
+  text: string,
+  from: readonly BulletinMentionCandidate[],
+  to: readonly BulletinMentionCandidate[],
+): string {
+  return bulletinDecodeMentions(bulletinEncodeMentions(text, from), to);
+}
+
 // ---- Autocomplete ----
 
 export interface BulletinTrigger {

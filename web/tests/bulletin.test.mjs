@@ -16,6 +16,7 @@ import {
   bulletinTargetKey,
   bulletinKeyTarget,
   bulletinAgentChoices,
+  bulletinMoveDraft,
 } from "../src/chat/bulletinModel.ts";
 
 test("threads group replies under parents and retain server author snapshots", () => {
@@ -148,4 +149,13 @@ test("agent choices span every channel, shown channel first, labels unique per c
   const channel = roster.filter((actor) => actor.target_key === "branch:x");
   const candidates = bulletinMentionCandidates([], channel);
   assert.equal(bulletinEncodeMentions(`@${choices[1].label}`, candidates), choices[1].token);
+});
+
+test("a draft moved to another channel keeps each mention's recipient", () => {
+  const agent = (id, target_key, name) => ({ id, target_key, name, kind: "human_chat_work" });
+  const roster = [agent("chat:a", "main", "Helper"), agent("chat:b", "branch:x", "Helper")];
+  const main = bulletinMentionCandidates([], roster.slice(0, 1));
+  const branch = bulletinMentionCandidates([], roster.slice(1));
+  const moved = bulletinMoveDraft("ask @Helper", main, branch);
+  assert.equal(bulletinEncodeMentions(moved, branch), "ask <@agent:chat:a>");
 });
