@@ -258,7 +258,9 @@ async def finalize_recorded_artifact_edit_result(
     _, remote, workspace, _ = _open_stage(service, request, data_dir, execution)
     directory = workspace / "turns" / execution.operation_id / "artifacts"
     outcome = _ProviderOutcome(session_id=request.session_id)
-    verdict = decode_recorded_turn(recorded, provider_turn_request(workspace, recorded))
+    verdict = decode_recorded_turn(
+        recorded, provider_turn_request(workspace, recorded, capability="discuss")
+    )
     for frame in absorb_recorded_events(outcome, verdict):
         yield frame
     for frame in _settle(service, request, execution, workspace, remote, directory, outcome):

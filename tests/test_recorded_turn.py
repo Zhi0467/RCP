@@ -7,13 +7,18 @@ and asks RCP what the turn was worth. The host never says; that is the point.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from rcp.providers import ProviderTurnRequest
+from rcp.providers.codex.app_server import CodexAppServerRuntime
+from rcp.runs.recorded_settlement import provider_turn_request
 from rcp.runs.recorded_turn import decode_recorded_turn, recorded_provider_turn
+from rcp.transport.remote_turn_journal import read_journal
 
+from .test_codex_app_server import _work_scope
 from .test_remote_turn_supervisor import _supervise
 
 
@@ -72,6 +77,96 @@ def test_a_completed_turn_reads_back_as_complete(tmp_path) -> None:
     assert any(event.text == "the answer" for event in verdict.events)
     assert any(event.usage is not None for event in verdict.events)
     assert not [event for event in verdict.events if event.event == "error"]
+
+
+@pytest.mark.parametrize(
+    "capability,profile", [("work_auto", "rcp_project"), ("discuss", "rcp_discuss")]
+)
+@pytest.mark.parametrize("resumed", [False, True])
+@pytest.mark.parametrize("response_profile", ["expected", "rcp_stage", None])
+def test_app_server_recovery_checks_the_original_permission_contract(
+    tmp_path, capability, profile, resumed, response_profile
+) -> None:
+    """Replay must judge the response against the owner's launch, not a paper turn."""
+
+    thread_result = {"thread": {"id": "recorded-thread"}, "approvalPolicy": "never"}
+    if response_profile is not None:
+        thread_result["activePermissionProfile"] = {
+            "id": profile if response_profile == "expected" else response_profile
+        }
+    messages = [
+        {"id": 1, "result": {}},
+        {"id": 2, "result": {"config": {}}},
+        {"id": 3, "result": thread_result},
+        {"id": 4, "result": {"turn": {"id": "recorded-turn"}}},
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "recorded-thread",
+                "item": {"type": "agentMessage", "text": "recovered answer"},
+            },
+        },
+        {
+            "method": "turn/completed",
+            "params": {
+                "threadId": "recorded-thread",
+                "turn": {"id": "recorded-turn", "status": "completed"},
+            },
+        },
+    ]
+    # The link's stdin ends after prompt delivery. The actual supervisor keeps
+    # recording the provider, and the real journal reader verifies its bytes.
+    inputs = [
+        {
+            "id": 3,
+            "method": "thread/resume" if resumed else "thread/start",
+            "params": {
+                "permissions": profile,
+                **({"threadId": "recorded-thread"} if resumed else {}),
+            },
+        },
+        {"id": 4, "method": "turn/start", "emit": messages, "exit": 0},
+    ]
+    _, directory = _supervise(
+        tmp_path,
+        "".join(json.dumps(item) + "\n" for item in inputs),
+        runtime_id="codex.app-server-stdio.v1",
+        close_input_after_initial=False,
+    )
+    pid_file = str(directory)[: -len(".turn")]
+    recorded = recorded_provider_turn(pid_file, read_journal(pid_file, 1_000_000))
+    assert recorded.accepted and recorded.intact
+    assert [json.loads(line) for line in recorded.observed_lines] == messages
+    request = provider_turn_request(
+        tmp_path,
+        recorded,
+        capability=capability,
+        write_scope=_work_scope(tmp_path) if capability == "work_auto" else None,
+    )
+    live_request = replace(
+        request,
+        session_id="recorded-thread" if resumed else None,
+    )
+    live_turn = CodexAppServerRuntime().turn(live_request)
+    live_turn.initial_input()
+    live_events = []
+    for message in messages:
+        step = live_turn.receive_line(json.dumps(message))
+        live_events.extend(step.events)
+        if step.explicit_terminal:
+            break
+    recovered = decode_recorded_turn(recorded, request)
+    if response_profile == "expected":
+        assert not [event for event in live_events if event.event == "error"]
+        assert not [event for event in recovered.events if event.event == "error"]
+        assert recovered.complete
+        assert [event.text for event in recovered.events if event.event == "answer"] == [
+            "recovered answer"
+        ]
+    else:
+        assert any(event.event == "error" for event in live_events)
+        assert any(event.event == "error" for event in recovered.events)
+        assert not any(event.event == "answer" for event in recovered.events)
 
 
 def test_a_failed_turn_reads_back_in_the_provider_s_own_words(tmp_path) -> None:

@@ -3469,7 +3469,12 @@ def open_recorded_work_turn(
             write_scope_fingerprint=turn.write_scope.fingerprint,
         )
         turn.required_session_id = question.origin.native_session_id
-    verdict = decode_recorded_turn(recorded, provider_turn_request(turn.workspace, recorded))
+    verdict = decode_recorded_turn(
+        recorded,
+        provider_turn_request(
+            turn.workspace, recorded, capability="work_auto", write_scope=turn.write_scope
+        ),
+    )
     refusal = refuse_recorded_session_mismatch(
         execution, turn.outcome, verdict, turn.required_session_id
     )

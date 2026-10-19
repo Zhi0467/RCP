@@ -563,7 +563,9 @@ async def finalize_recorded_discuss_result(
 
     del launcher, data_dir  # Recovery launches nothing and stages nothing.
     context = _load_discuss_finalization_context(service, request, execution)
-    verdict = decode_recorded_turn(recorded, provider_turn_request(context.workspace, recorded))
+    verdict = decode_recorded_turn(
+        recorded, provider_turn_request(context.workspace, recorded, capability="discuss")
+    )
     question = execution.store.question_for_followup(execution.operation_id)
     required_session = None
     if question is not None:
