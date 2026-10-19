@@ -400,6 +400,157 @@ def test_release_update_from_every_published_release_validates(
     _assert_old_branch_merge_validates(live, str(merge_branch_id))
 
 
+@pytest.mark.parametrize("stale_cache", [False, True], ids=["current-cache", "stale-cache"])
+def test_old_writer_link_rules_survive_upgrade_and_merge(manifest, tmp_path, stale_cache):
+    """Frozen v3 bytes retain legacy links through replay, cache restart and merge."""
+    from rcp.core.materialize import materialize_patches_from_state
+    from rcp.core.models import Patch, upgrade_graph_projection
+    from rcp.core.transition_models import GraphHeadRef
+    from rcp.core.validation import ValidationContext
+    from rcp.history.delta import semantic_delta
+    from rcp.history.manager import PatchRejected
+    from rcp.runs.merge_contract import MergeAnswers, MergePlanningContext, MergeRefused
+    from rcp.runs.merge_patch import prepare_merge_candidate
+    from rcp.runs.merge_plan import plan_merge
+    from tests.helpers import unchecked_write_authority
+    from tests.test_merge_patch import plan_from_context
+
+    # Captured using cc9ca220's actual models and HistoryManager before narrowing
+    # the relation rules. Never regenerate this bundle with the candidate writer.
+    payload = (Path(__file__).parent / "fixtures/ontology_links_v3.json.gz").read_bytes()
+    assert hashlib.sha256(payload).hexdigest() == (
+        "1a762af908739cec6509bdec5b19c209a874a3014d96e8a0094a6799d92f69a8"
+    )
+    bundle = json.loads(gzip.decompress(payload))
+    for relative, content in bundle["files"].items():
+        path = manifest.research_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    canonical = {
+        path: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in manifest.research_dir.rglob("*.json")
+        if "patches" in path.parts or path.name == "scope-base.json"
+    }
+    expected_document = json.loads(bundle["files"]["graph.json"])
+    upgrade_graph_projection(expected_document)
+    if stale_cache:
+        (manifest.research_dir / "graph.json").write_text(json.dumps(bundle["stale_cache"]))
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
+    patches = history.load_patches()
+    assert patches[0].transition is None
+    assert all(p.transition.ruleset_tag == "rcp.lifecycle.v3" for p in patches[1:])
+    assert any(
+        event.node_id == "ev/old" and event.after == "superseded"
+        for patch in patches[1:]
+        for event in patch.transition.lifecycle_events
+    )
+    expected = history.materialize().state
+    assert expected.model_dump(mode="json") == expected_document
+    assert json.loads((manifest.research_dir / "graph.json").read_text()) == expected_document
+    engine = history.history_engine
+    engine.configure_store(tmp_path / "history-cache", "project")
+    main_head = history.head_ref()
+    assert engine.state_at(main_head) == expected
+    assert (
+        engine.state_at(GraphHeadRef(revision=1)).model_dump(mode="json") == bundle["stale_cache"]
+    )
+    restarted = HistoryManager(manifest, write_authority=unchecked_write_authority())
+    restarted.history_engine.configure_store(tmp_path / "history-cache", "project")
+    assert restarted.history_engine.state_at(main_head) == expected
+
+    def context(branch_id):
+        metadata = history.branch_metadata(branch_id)
+        source = engine.state_at(metadata.head)
+        base = engine.state_at(metadata.base_head)
+        plan = plan_from_context(
+            SimpleNamespace(
+                metadata=metadata,
+                merge_task_id="merge-old-links",
+                authorized_by=metadata.authorized_by,
+                main_head=main_head,
+                base_graph=base,
+                branch_graph=source,
+                main_graph=expected,
+                run_truth_scope=["repo-a"],
+            )
+        )
+        return MergePlanningContext.model_validate(
+            {
+                key: value
+                for key, value in plan.model_dump().items()
+                if key in MergePlanningContext.model_fields
+            }
+        )
+
+    inherited = context(bundle["branches"]["inherited"])
+    plan = plan_merge(inherited)
+    assert not plan.conflicts and not plan.review_groups
+    prepared = prepare_merge_candidate(plan, MergeAnswers(answers={}, cards={}), history)
+    merged = prepared.projection.graph
+    assert merged.edges == expected.edges
+    assert "ev/branch" in merged.nodes
+    assert merged.proposals["prop/pending"] == expected.proposals["prop/pending"]
+    source_proposal = inherited.source_graph.proposals["prop/branch"]
+    carried = merged.proposals[source_proposal.id]
+    assert carried.ops == source_proposal.ops and carried.card == source_proposal.card
+    assert carried.base_rev == expected.revision and carried.raised_rev == merged.revision
+    assert carried.created_by_operation_id == plan.merge_task_id
+    replayed = materialize_patches_from_state(
+        [prepared.patch],
+        initial_state=expected,
+        context=ValidationContext(project_truth_scope=expected.project_truth_scope),
+    )
+    assert semantic_delta(replayed.state, merged).is_empty
+    for index in range(4):
+        with pytest.raises(MergeRefused) as refused:
+            plan_merge(context(bundle["branches"][f"legacy-{index}"]))
+        assert any(
+            f"edge/branch/{index}" in diagnostic.message for diagnostic in refused.value.diagnostics
+        )
+    legacy = [edge for edge in expected.edges.values() if edge.id.startswith("edge/plain/")]
+    removal = {"op": "remove_edges", "edge_ids": [edge.id for edge in legacy]}
+    edit = {
+        "kind": "work",
+        "author": "agent",
+        "summary": "Clean up old links.",
+        "run_truth_scope": ["repo-a"],
+    }
+    replacement = {
+        "op": "create_edges",
+        "edges": [edge.model_dump(exclude={"layer", "created_rev"}) for edge in legacy],
+    }
+    with pytest.raises(PatchRejected) as rejected:
+        history.append(
+            Patch.model_validate({**edit, "ops": [removal, replacement]}),
+            discard_on_reject=True,
+        )
+    assert {edge.id for edge in legacy} <= {
+        edge_id
+        for message in rejected.value.report.messages
+        for edge_id in message.related_edge_ids
+    }
+    assert history.head_ref() == main_head
+    _, cleaned = history.append(
+        Patch.model_validate(
+            {
+                **edit,
+                "ops": [
+                    removal,
+                    {
+                        "op": "upsert_glossary",
+                        "terms": [{"term": "Trial", "plain_definition": "A bounded measurement."}],
+                    },
+                ],
+            }
+        )
+    )
+    assert cleaned.state.edges == {
+        key: edge for key, edge in expected.edges.items() if edge not in legacy
+    }
+    assert "Trial" in cleaned.state.glossary
+    assert {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in canonical} == canonical
+
+
 def _assert_old_branch_merge_validates(live, branch_id: str) -> None:
     """The candidate's merge self-check accepts a branch the old release populated."""
     from rcp.core.transition_models import GraphTargetRef

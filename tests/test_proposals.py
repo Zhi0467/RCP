@@ -888,7 +888,7 @@ def test_agent_edge_touching_accepted_node_applies_directly(manifest, tmp_path) 
         PaperService(manifest, AppStore(tmp_path / "app.sqlite3")),
     )
     service.review_node(
-        "rq/learning-after-shift",
+        "hyp/replanning-restores-plasticity",
         ReviewRequest(standing="accepted"),
     )
     patch = Patch(
@@ -914,7 +914,7 @@ def test_agent_edge_touching_accepted_node_applies_directly(manifest, tmp_path) 
                 "op": "create_edges",
                 "edges": [
                     {
-                        "source": "rq/learning-after-shift",
+                        "source": "hyp/replanning-restores-plasticity",
                         "target": "dec/evaluation-shape",
                         "relation": "has_decision",
                     }
@@ -926,8 +926,8 @@ def test_agent_edge_touching_accepted_node_applies_directly(manifest, tmp_path) 
     history.append(patch)
 
     state = history.state()
-    assert "rq/learning-after-shift::has_decision::dec/evaluation-shape" in state.edges
-    assert state.nodes["rq/learning-after-shift"].standing == "accepted"
+    assert "hyp/replanning-restores-plasticity::has_decision::dec/evaluation-shape" in state.edges
+    assert state.nodes["hyp/replanning-restores-plasticity"].standing == "accepted"
 
 
 def test_proposal_with_unknown_repository_machine_is_rejected_at_creation(manifest) -> None:

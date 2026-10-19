@@ -147,7 +147,7 @@ def _graph_fields() -> str:
     lines += ["", "Every edge has:"]
     lines += _field_lines(Edge.model_fields)
     lines += ["", "Relations, as source -> target (layer):"]
-    lines += [_relation_line(name) for name in RELATION_SPEC]
+    lines += [_relation_line(name) for name, spec in RELATION_SPEC.items() if spec.authorable]
     lines += [
         "",
         "An edge accepts an `assessment` or an `expectation` only where the relation above says so.",

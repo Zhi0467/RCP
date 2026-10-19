@@ -870,7 +870,7 @@ class Evidence(BaseNode):
 class Blocker(BaseNode):
     type: Annotated[Literal["blocker"], GraphField("identity", node_update="immutable")]
     description: Annotated[str, GraphField("content")] = Field(
-        description="The concrete impediment and what it stops."
+        description="The observable impediment that prevents an Experiment from starting."
     )
     blocker_type: Annotated[
         Literal["scientific", "design", "data", "implementation", "infrastructure", "unknown"],
@@ -1022,6 +1022,7 @@ class RelationSpec:
     layer: RelationLayer
     same_type: bool = False
     description: str = ""
+    authorable: bool = True
 
 
 RELATION_SPEC: dict[BaseRelation, RelationSpec] = {
@@ -1029,7 +1030,7 @@ RELATION_SPEC: dict[BaseRelation, RelationSpec] = {
         frozenset({"research_question"}),
         frozenset({"research_question"}),
         "epistemic",
-        description="The target question is part of answering the source question. Split a question when its parts can be pursued separately; Hypotheses and Decisions then hang off the narrowest question they serve.",
+        description="The target question is part of answering the source question. Split a question when its parts can be pursued separately; Hypotheses then hang off the narrowest question they serve.",
     ),
     "has_hypothesis": RelationSpec(
         frozenset({"research_question"}),
@@ -1092,10 +1093,10 @@ RELATION_SPEC: dict[BaseRelation, RelationSpec] = {
         description="The Evidence bears on whether the Blocker is cleared, kept, or narrowed. It does not change the Blocker's status.",
     ),
     "has_decision": RelationSpec(
-        frozenset({"research_question"}),
+        frozenset({"hypothesis"}),
         frozenset({"decision"}),
         "action",
-        description="The choice belongs to the question: answering the question depends on making it. A Decision that matters only as an Experiment's input may connect through `governed_by` alone.",
+        description="The choice serves the Hypothesis. This association does not gate an Experiment. A Decision that matters only as an Experiment's input may connect through `governed_by` alone.",
     ),
     "governed_by": RelationSpec(
         frozenset({"experiment"}),
@@ -1104,16 +1105,17 @@ RELATION_SPEC: dict[BaseRelation, RelationSpec] = {
         description="The Decision is a genuine input to the Experiment. A Decision the Experiment's results are meant to settle is downstream, not an input.",
     ),
     "blocked_by": RelationSpec(
-        frozenset({"experiment", "decision", "research_question"}),
+        frozenset({"experiment"}),
         frozenset({"blocker"}),
         "action",
-        description="The open Blocker keeps the source from proceeding; a blocked Experiment cannot start. Connect the Blocker to each question, Decision, or Experiment it actually stops; a Blocker that stops nothing is a note, not a Blocker.",
+        description="The open Blocker prevents the Experiment from starting. Connect it to each Experiment it actually stops. Resolution requires an explicit authorized status update; Evidence through `addresses` does not resolve it automatically.",
     ),
     "requires_decision": RelationSpec(
         frozenset({"blocker"}),
         frozenset({"decision"}),
         "action",
-        description="Clearing the Blocker needs this choice rather than an observation. A Blocker that an observation can clear receives that Evidence through `addresses` instead.",
+        description="Historical link recording that clearing the Blocker needs a choice. Retained for replay and inspection only; new Experiment input choices use `governed_by`.",
+        authorable=False,
     ),
     "supersedes": RelationSpec(
         ALL_NODE_TYPES,

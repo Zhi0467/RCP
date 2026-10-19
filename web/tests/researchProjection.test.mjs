@@ -174,7 +174,15 @@ test("question pages share Hypotheses and keep work that tests none", () => {
     [1, 0, 0, 0],
   );
   const subCard = drilldown.questions.get("q/root").subquestions[0];
-  assert.deepEqual([subCard.subquestionCount, subCard.hypothesisCount], [0, 1]);
+  assert.deepEqual(
+    [
+      subCard.subquestionCount,
+      subCard.hypothesisCount,
+      subCard.openDecisions,
+      subCard.openBlockers,
+    ],
+    [0, 1, 0, 1],
+  );
   const shared = sub.hypotheses[0];
   assert.deepEqual(
     [shared.openDecisions, shared.openBlockers, shared.activeExperiments],
@@ -182,6 +190,39 @@ test("question pages share Hypotheses and keep work that tests none", () => {
   );
   assert.deepEqual(ids(drilldown.unplaced), ["orphan"]);
 });
+
+for (const attachment of ["hypothesis", "experiment", "both"]) {
+  test(`Decision attachment via ${attachment} stays visible once without blocking Experiments`, () => {
+    const drilldown = buildResearchDrilldown(
+      [
+        node("q", "research_question"),
+        node("h", "hypothesis"),
+        node("x", "experiment", { status: "designing" }),
+        node("d", "decision", { status: "open" }),
+        node("e", "evidence"),
+        node("precursor", "experiment", { status: "completed" }),
+      ],
+      [
+        edge("q", "has_hypothesis", "h"),
+        edge("x", "tests", "h"),
+        edge("e", "informs", "d"),
+        edge("precursor", "governed_by", "d"),
+        ...(attachment !== "experiment" ? [edge("h", "has_decision", "d")] : []),
+        ...(attachment !== "hypothesis" ? [edge("x", "governed_by", "d")] : []),
+      ],
+    );
+    const page = drilldown.hypotheses.get("h");
+    assert.deepEqual(ids(page.inputs.nodes), ["d"]);
+    assert.deepEqual(ids(page.inputs.evidence), ["e"]);
+    assert.equal(page.inputs.openDecisions, 1);
+    assert.equal(page.inputs.openBlockers, 0);
+    assert.equal(page.experiments[0].blocked, false);
+    assert.equal(drilldown.questions.get("q").hypotheses[0].openDecisions, 1);
+    assert.equal(drilldown.roots[0].openDecisions, 0);
+    assert.deepEqual(ids(drilldown.questions.get("q").loose), ["precursor", "d", "e"]);
+    assert.deepEqual(drilldown.unplaced, []);
+  });
+}
 
 test("a question cycle with no root still gets a card", () => {
   const drilldown = buildResearchDrilldown(

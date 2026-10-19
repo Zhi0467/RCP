@@ -298,7 +298,16 @@ def test_log_keeps_creation_and_removal_when_net_diff_is_empty(history):
     ]
 
 
-def test_cached_snapshots_preserve_derived_edge_layers(tmp_path):
+@pytest.mark.parametrize(
+    ("source", "relation", "target", "layer"),
+    [
+        ("rq/item", "has_decision", "dec/item", "seam"),
+        ("rq/item", "blocked_by", "blk/item", "seam"),
+        ("dec/item", "blocked_by", "blk/item", "action"),
+        ("blk/item", "requires_decision", "dec/item", "action"),
+    ],
+)
+def test_cached_snapshots_preserve_derived_edge_layers(tmp_path, source, relation, target, layer):
     from rcp.core.materialize import MaterializationResult
     from rcp.core.models import Edge, GraphState
     from rcp.core.transition_models import GraphHeadRef
@@ -307,12 +316,12 @@ def test_cached_snapshots_preserve_derived_edge_layers(tmp_path):
     from rcp.history.store import GraphHistoryStore, IndexedStep
 
     edge = Edge(
-        id="rq/item::blocked_by::exp/item",
-        source="rq/item",
-        target="exp/item",
-        relation="blocked_by",
-        layer="seam",
-    ).model_copy(update={"layer": "seam"})
+        id=f"{source}::{relation}::{target}",
+        source=source,
+        target=target,
+        relation=relation,
+        layer=layer,
+    ).model_copy(update={"layer": layer})
     before = GraphState()
     after = GraphState(revision=1, edges={edge.id: edge})
     before_head, after_head = GraphHeadRef(revision=0), GraphHeadRef(revision=1)

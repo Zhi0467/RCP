@@ -186,6 +186,22 @@ def test_readiness_is_derived_from_decisions_proposals_blockers_and_ceiling() ->
     assert gated.invocation_ceiling == 1
 
 
+@pytest.mark.parametrize("source", ["hyp/target", EXPERIMENT_ID])
+def test_only_experiment_input_decisions_gate_readiness(source) -> None:
+    state = _state()
+    state.nodes[DECISION_ID] = state.nodes[DECISION_ID].model_copy(
+        update={"status": "open", "selected_option": None}
+    )
+    state.edges["governed"] = Edge(
+        id="governed",
+        source=source,
+        target=DECISION_ID,
+        relation="has_decision" if source == "hyp/target" else "governed_by",
+    )
+    control = derive_experiment_control_state(state, EXPERIMENT_ID)
+    assert control.ready == (source == "hyp/target")
+
+
 def test_closed_experiment_blocks_only_a_fresh_episode_until_the_human_reopens_it() -> None:
     state = _state(status="completed")
 

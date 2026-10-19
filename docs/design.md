@@ -6,10 +6,12 @@ operational conversations and bounded episodes, append-only provenance, and a
 human-authored paper introduction with a read-only writing coach.
 
 The graph is both a research record and a control input. Epistemic structure
-records what is believed and why; action structure records the Decisions and
-Blockers that govern Experiments. RCP may dispatch and observe work, but it
-never silently converts an operational observation into canonical truth or an
-agent's scientific judgment into human approval.
+records what is believed and why; Hypotheses may connect to the Decisions their
+work needs, and action structure records the Decisions governing Experiments
+and observable Blockers preventing them from starting. A Decision may be purely
+an Experiment input, without a Hypothesis attachment. RCP may dispatch and
+observe work, but it never silently converts an operational observation into
+canonical truth or an agent's scientific judgment into human approval.
 
 ## Product boundary
 

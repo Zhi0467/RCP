@@ -625,9 +625,11 @@ the run's own graph only (invariant 4b).
 Every contract that reads or writes the research graph includes one rendered
 graph-rules block, and no contract restates field or relation meaning in its own
 prose. The block renders from code: node field descriptions, base relation
-descriptions and endpoints from `RELATION_SPEC`, which relations carry an
-Evidence assessment, id prefixes, and value vocabularies. A read-only contract
-(Discuss, chat) receives the definitions and the method for searching
+descriptions and authorable endpoints from `RELATION_SPEC`, which relations
+carry an Evidence assessment, id prefixes, and value vocabularies. Retired
+relations remain available to historical readers but are not offered as new
+links; the authoring choices and validation use the same specs. A read-only
+contract (Discuss, chat) receives the definitions and the method for searching
 `graph.json`. A graph-writing contract also receives the hand-written method
 that spans several nodes: the Experiment input-versus-result causal check and a
 short list of cross-cutting write habits. Ontology extension rules are added

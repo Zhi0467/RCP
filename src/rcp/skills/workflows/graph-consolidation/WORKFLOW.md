@@ -2,10 +2,10 @@
 id: graph-consolidation
 kind: workflow
 label: Graph consolidation
-version: 1.6.0
+version: 1.7.0
 description: Consolidate a project's main research graph and operational lessons while nobody is watching, apply the result inside the turn, and leave one short visual report of every change for the human to read in the morning.
 dependencies:
-- graph-audit@3.4.0
+- graph-audit@3.5.0
 - experiment-causality@1.4.0
 - evidence-triage@3.4.0
 ---
@@ -85,14 +85,15 @@ new is a valid result; report it. If search or source access fails, report that
 gap rather than claiming there was nothing new.
 
 Prefer improving existing records. An edge's assessment cannot be edited in
-place, and replacing an edge to an existing ResearchQuestion or Hypothesis is a
-protected change. So when a paper limits what an existing Evidence edge shows,
-raise one protected-relation Proposal that replaces the edge with the added
-qualification. Otherwise tidy within the rules below, or leave a Suggestion in
-the report. When a paper
-undermines a protected belief, propose the needed change rather than editing
-the ResearchQuestion or Hypothesis directly. The authority rules in Pass 3
-and the accepted-node rule in Pass 4 still apply.
+place. For an ordinary Evidence edge, use `remove_edges` and `create_edges` in
+one Patch to carry the corrected assessment, preserving its identity and other
+content. A protected relation instead needs a Proposal for each authorized
+step; ordinary consolidation cannot bundle an atomic protected-edge replacement
+using merge-only dependency rule 3. If safe separate steps cannot express the
+repair, leave a Suggestion. When a paper undermines a protected belief, propose
+the needed change rather than editing the ResearchQuestion or Hypothesis
+directly. The authority rules in Pass 3 and the accepted-node rule in Pass 4
+still apply.
 
 Apply Evidence triage to each literature change. You may add Evidence with
 `origin: external_publication`, linked with assessed edges where required by
@@ -135,6 +136,36 @@ A change to an existing ResearchQuestion or Hypothesis is a Proposal; raise one
 only when the audit or a paper you read shows a reader would otherwise be
 misled. Prefer one clear Proposal to many small ones. When in doubt, leave the
 graph alone and put the idea under Suggestions in the report.
+
+### Re-home historical links
+
+Use existing `create_edges`, `remove_edges`, `create_proposals`, and lifecycle
+updates only. Keep canonical history and the Decision's ballot unchanged.
+
+- For Question→Decision, inspect the Question's Hypotheses, the Decision's
+  rationale, and governing Experiments' `tests` links. Attach only to existing
+  Hypotheses the choice actually serves; several genuine associations are
+  allowed. `has_decision` is ordinary, so add the supported links and remove
+  the obsolete edge in the same Patch. A pure Experiment input can instead
+  remain connected only through genuine `governed_by` links. If neither fits,
+  retain the old edge and report its id under Suggestions; never invent a
+  Hypothesis to absorb it.
+- For Question→Blocker or Decision→Blocker, identify the existing Experiments
+  actually prevented from starting. Add their `blocked_by` links and remove
+  the obsolete ones. If none fits, retain and report the old edge; never create
+  an Experiment merely to absorb a Blocker.
+- For `requires_decision`, identify the Experiment whose input choice the
+  Decision represents and connect it through `governed_by`. Keep a Blocker for
+  any distinct observable impediment. Retire a redundant choice-wrapper
+  Blocker only when justified and authorized; otherwise retain and report it.
+  Evidence may link through `addresses`, but resolution needs an authorized
+  update. Never infer a choice or fabricate clearing Evidence.
+
+Remove an obsolete link only when its meaning has a supported replacement.
+Validate the shared Patch and use keyed `apply` as in Pass 4, then report both
+completed re-homing and every retained unmapped edge. Protected node changes
+still need Proposals. Upgrading RCP alone triggers no cleanup: consolidation
+skips when there is no new non-consolidation revision since its covered head.
 
 ## Pass 4: readability and glossary
 
