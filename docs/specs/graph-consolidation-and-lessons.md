@@ -153,10 +153,11 @@ the main revision, consolidation run and occurrence, and creation time.
 
 Inbox's **Evidence to check** section lists open and addressing flags with kind,
 Evidence title, and one-line finding. A `consolidation_added` flag is a notice,
-not a finding: its row has no **Address**, and the endpoint refuses it with
-`flag_not_addressable`, because there is nothing for an agent to correct.
-**Address** on any other kind starts an ordinary
-member-authorized node Work chat on that Evidence, with the default node-chat
+not a finding, and an `unverified` flag names a source no agent could read, so
+both are flagged only: their rows have no **Address**, **Address all** skips
+them, and the endpoint refuses them with `flag_not_addressable`. **Address** on
+any other kind, `no_source` included, starts an ordinary member-authorized node
+Work chat on that Evidence, with the default node-chat
 provider profile and ordinary admission and prompt construction. Its first human
 message combines the flag context with backend-authored instructions to read the
 source, correct the Evidence only as far as the source supports, and use `ask`
@@ -167,7 +168,7 @@ leaves the member in the Inbox; the chat opens only from **Open chat**.
 When at least two findings offer Address, the header offers **Address all**.
 It sends one request for the ten oldest addressable findings, ordered by creation
 time. The server caps each batch at ten and refuses empty or duplicate ids,
-non-open flags, notices, and absent or retired Evidence on main. One finding uses
+non-open flags, flag-only kinds, and absent or retired Evidence on main. One finding uses
 the same node Work path as Address; two or more start one ordinary project Work
 turn on main in one new chat. Its message labels every finding as context.
 Sorted flag locks serialize admission, and every flag binds to that turn and

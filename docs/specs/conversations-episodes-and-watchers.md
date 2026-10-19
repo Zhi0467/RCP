@@ -11,21 +11,23 @@ One agent is one Agents-board conversation (`chat_id`). Its name is the stored
 `chat_display.title` for that project and conversation, shared by the board,
 transcript responses, and Bulletin. Creation uses the first Markdown heading
 in the first message when present, otherwise the whole message, with whitespace
-collapsed and truncated to `CHAT_TITLE_MAX_CHARS`. An empty node-chat message
-uses the node id, then "Chat". An
-Auto-research chain starts with its branch name. Graph consolidation starts as
+collapsed, cut to `AGENT_NAME_MAX_CHARS` (25), and trailing spaces trimmed. An
+empty node-chat message uses the node id, then "Chat". An Auto-research chain
+starts with its branch name, cut the same way. Graph consolidation starts as
 "Graph consolidation", explicitly seeded by its admission owner, and cannot
 self-name. Later turns and branch renames do not regenerate names.
 Existing conversations receive the same initial name during migration; human
-renames are preserved. Transcript-only legacy conversations are seeded through
+renames are preserved, and every stored name longer than the cap, human renames
+included, is cut the same way. Transcript-only legacy conversations are seeded through
 the same storage owner when first read; cached summaries refresh their stored
 name independently of task target matching.
 
 A member rename overwrites that field and records the member in
-`titled_user_id`. Empty names are refused; there is no reset to a derived name.
+`titled_user_id`. Empty or over-cap names are refused, and the rename input
+stops at the cap; there is no reset to a derived name.
 An agent may choose one short name for its own conversation, only before either
 an agent or human has named it. Storage enforces this once-only choice and the
-name length limit. Archiving or unarchiving keeps the name.
+same cap. Archiving or unarchiving keeps the name.
 
 **Why:** a researcher should find the same agent by the same name in every view,
 and separate Experiment episodes must not create separate agent identities.

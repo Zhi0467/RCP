@@ -137,7 +137,7 @@ COMMAND_CLIENT = "<command client>"
 AGENT_NAME_INSTRUCTION = (
     "Read your agent-name.json snapshot for your current name and can_self_name. "
     "On your first turn, if can_self_name is true, use name to choose a short "
-    f"3–6 word name (at most {AGENT_NAME_MAX_CHARS} characters) describing your task. "
+    f"2–4 word name (at most {AGENT_NAME_MAX_CHARS} characters) describing your task. "
     "You can name yourself once, before a human renames you."
 )
 

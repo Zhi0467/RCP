@@ -2,8 +2,11 @@ import type { EvidenceFlag, GraphNode, Repository } from "../core/types";
 import { resolveRepositoryFileHref, type RepositoryFileTarget } from "../core/repositoryFileLinks";
 import { isOutcome, lifecycleField, projectType } from "../graph/researchType";
 
-/** Kinds that only bring Evidence to a human's attention; there is nothing to Address. */
-const NOTICE_FLAG_KINDS: ReadonlySet<EvidenceFlag["kind"]> = new Set(["consolidation_added"]);
+/** Kinds that are flagged only: a notice, or a named source no one could read. Never Addressed. */
+const NOTICE_FLAG_KINDS: ReadonlySet<EvidenceFlag["kind"]> = new Set([
+  "consolidation_added",
+  "unverified",
+]);
 
 export type EvidenceFlagSource =
   { kind: "file"; target: RepositoryFileTarget } | { kind: "url"; href: string };

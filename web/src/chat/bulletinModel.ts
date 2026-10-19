@@ -80,6 +80,11 @@ export function bulletinActorKind(actor: Pick<BulletinActor, "kind">): string {
   return ACTOR_KINDS[actor.kind] || actor.kind;
 }
 
+/** A mention row names the kind only for autonomous agents; a conversation needs no Work/Discuss tag. */
+export function bulletinMentionKind(actor: Pick<BulletinActor, "kind">): string | null {
+  return actor.kind.startsWith("human_chat_") ? null : bulletinActorKind(actor);
+}
+
 export function bulletinActorLabel(actor: Pick<BulletinActor, "kind" | "name">) {
   return actor.name || bulletinActorKind(actor);
 }
@@ -276,13 +281,13 @@ export function bulletinEncodeMentions(
   if (candidates.length === 0) return draft;
   const ordered = [...candidates].sort((left, right) => right.label.length - left.label.length);
   const byLabel = new Map(ordered.map((candidate) => [candidate.label, candidate.token]));
+  // A stored token is matched first and kept whole, so a label like `agent` never rewrites its inside.
   const pattern = new RegExp(
-    `(^|[^\\w@])@(${ordered.map((candidate) => escapeRegExp(candidate.label)).join("|")})(?!\\w)`,
+    `(<@(?:member|agent):[^>\\s]+>)|(^|[^\\w@])@(${ordered.map((candidate) => escapeRegExp(candidate.label)).join("|")})(?!\\w)`,
     "g",
   );
-  return draft.replace(
-    pattern,
-    (_whole, lead: string, label: string) => `${lead}${byLabel.get(label)}`,
+  return draft.replace(pattern, (whole, token: string | undefined, lead: string, label: string) =>
+    token ? whole : `${lead}${byLabel.get(label)}`,
   );
 }
 

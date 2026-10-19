@@ -140,7 +140,7 @@ def test_batch_binding_conflict_rolls_back_every_flag_and_receipt(store):
         "turn",
         key="second",
         evidence_id="second",
-        kind="unverified",
+        kind="underclaim",
         finding="Check source.",
         validate_evidence=lambda: 4,
     )["flag"]

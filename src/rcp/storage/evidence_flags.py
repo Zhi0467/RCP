@@ -26,9 +26,9 @@ if TYPE_CHECKING:
 EVIDENCE_FLAG_KINDS = frozenset(
     {"overclaim", "underclaim", "no_source", "unverified", "consolidation_added"}
 )
-# Kinds that bring Evidence to a human's attention without reporting a problem, so
-# there is nothing for an Address Work turn to correct.
-NOTICE_FLAG_KINDS = frozenset({"consolidation_added"})
+# Kinds a human checks rather than an Address Work turn: a consolidation notice reports
+# no problem, and an unread source is not something an agent can correct.
+NOTICE_FLAG_KINDS = frozenset({"consolidation_added", "unverified"})
 
 # An absolute execution-host path or `<alias>/<relative path>` with an optional `:LINE`,
 # or an external http(s) URL.

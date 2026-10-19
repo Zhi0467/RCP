@@ -7,7 +7,7 @@ import re
 import sqlite3
 from typing import Any
 
-from rcp.limits import CHAT_TITLE_MAX_CHARS
+from rcp.limits import AGENT_NAME_MAX_CHARS
 
 
 class ChatNameError(ValueError):
@@ -16,11 +16,11 @@ class ChatNameError(ValueError):
         super().__init__(code)
 
 
-def normalize_chat_name(name: str | None, max_chars: int) -> str:
+def normalize_chat_name(name: str | None) -> str:
     name = " ".join((name or "").split())
     if not name:
         raise ChatNameError("chat_name_empty")
-    if len(name) > max_chars:
+    if len(name) > AGENT_NAME_MAX_CHARS:
         raise ChatNameError("chat_name_too_long")
     return name
 
@@ -31,7 +31,7 @@ def initialize_chat_name(
     # A Markdown heading names the task better than the prose under it.
     heading = re.search(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", message, re.MULTILINE)
     text = heading.group(1) if heading else message
-    name = " ".join(text.split())[:CHAT_TITLE_MAX_CHARS] or "Chat"
+    name = " ".join(text.split())[:AGENT_NAME_MAX_CHARS].rstrip() or "Chat"
     connection.execute(
         "INSERT INTO chat_display (project_id, chat_id, title) VALUES (?, ?, ?) "
         "ON CONFLICT(project_id, chat_id) DO UPDATE SET title = excluded.title "
@@ -65,6 +65,12 @@ def initialize_task_chat_name(
 
 
 def backfill_chat_names(connection: sqlite3.Connection, project_id: str | None = None) -> None:
+    # Names stored under the earlier, longer caps are cut to the one agent-name cap.
+    connection.execute(
+        "UPDATE chat_display SET title = rtrim(substr(title, 1, ?)) "
+        "WHERE length(title) > ? AND (? IS NULL OR project_id = ?)",
+        (AGENT_NAME_MAX_CHARS, AGENT_NAME_MAX_CHARS, project_id, project_id),
+    )
     for row in connection.execute(
         "SELECT b.project_id, b.owner_episode_id, b.name FROM graph_branches b "
         "JOIN episodes e ON e.episode_id = b.owner_episode_id "

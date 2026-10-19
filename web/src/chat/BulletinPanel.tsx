@@ -34,6 +34,7 @@ import {
   bulletinKeyTarget,
   bulletinLabelMap,
   bulletinMentionCandidates,
+  bulletinMentionKind,
   bulletinMoveDraft,
   bulletinPostState,
   bulletinSegments,
@@ -246,7 +247,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
       key: token,
       label,
       detail: [
-        bulletinActorKind(actor),
+        bulletinMentionKind(actor),
         actor.seat_node_id,
         bulletinDate(actor.started_at),
         actor.target_key === channelKey ? null : channelName(actor.target_key),
@@ -255,7 +256,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
         .join(" · "),
       icon: "agent" as const,
       insert: `@${label}`,
-      match: [label, actor.name, actor.seat_node_id ?? "", bulletinActorKind(actor)],
+      match: [label, actor.name, actor.seat_node_id ?? "", bulletinMentionKind(actor) ?? ""],
       targetKey: actor.target_key,
     })),
   ];

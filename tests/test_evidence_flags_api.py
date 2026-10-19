@@ -291,7 +291,8 @@ def test_startup_adopts_an_address_request_an_older_release_kept_on_the_flag(fla
     assert len(launches) == 1
 
 
-def test_address_refuses_a_consolidation_notice(flagged):
+@pytest.mark.parametrize("kind", ["consolidation_added", "unverified"])
+def test_address_refuses_a_flag_only_kind(flagged, kind):
     app, client, store, project, flag = flagged
     launches = []
 
@@ -302,8 +303,8 @@ def test_address_refuses_a_consolidation_notice(flagged):
     app.state.background_tasks.stream = stream
     with store.connection() as connection:
         connection.execute(
-            "UPDATE evidence_flags SET kind='consolidation_added' WHERE flag_id=?",
-            (flag["flag_id"],),
+            "UPDATE evidence_flags SET kind=? WHERE flag_id=?",
+            (kind, flag["flag_id"]),
         )
     url = f"/api/projects/{project}/consolidation/evidence-flags/{flag['flag_id']}/address"
     response = client.post(url, json={"request_id": str(uuid.uuid4())})
@@ -403,7 +404,7 @@ def _batch_flags(flagged):
         key="second",
         evidence_id=first["evidence_id"],
         validate_evidence=lambda: app.state.service.history.state().revision,
-        kind="unverified",
+        kind="underclaim",
         finding="Check the source measurement.",
     )["flag"]
     return [first, second]

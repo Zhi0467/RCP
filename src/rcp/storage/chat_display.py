@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 from rcp.core.graph_targets import graph_target_json
 from rcp.core.transition_models import GraphTargetRef
-from rcp.limits import AGENT_NAME_MAX_CHARS, CHAT_TITLE_MAX_CHARS
 from rcp.providers.browser_grant import BrowserOwnerKey, BrowserTurnStatus
 from rcp.storage.chat_names import ChatNameError, initialize_chat_name, normalize_chat_name
 from rcp.storage.mixin_base import StoreMixinBase
@@ -381,7 +380,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
         self, project_id: str, chat_id: str, user_id: str, title: str | None
     ) -> None:
         """Replace the canonical name and retain human ownership of it."""
-        title = normalize_chat_name(title, CHAT_TITLE_MAX_CHARS)
+        title = normalize_chat_name(title)
         self._set_chat_display(
             project_id,
             chat_id,
@@ -433,7 +432,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
     def _self_name_chat(
         self, connection: Any, project_id: str, chat_id: str, name: str
     ) -> dict[str, Any]:
-        name = normalize_chat_name(name, AGENT_NAME_MAX_CHARS)
+        name = normalize_chat_name(name)
         result = connection.execute(
             "UPDATE chat_display SET title = ?, self_named = 1 "
             "WHERE project_id = ? AND chat_id = ? AND title IS NOT NULL "

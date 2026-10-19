@@ -17,6 +17,8 @@ import {
   bulletinKeyTarget,
   bulletinAgentChoices,
   bulletinMoveDraft,
+  bulletinMentionKind,
+  bulletinActorKind,
 } from "../src/chat/bulletinModel.ts";
 
 test("threads group replies under parents and retain server author snapshots", () => {
@@ -151,6 +153,13 @@ test("agent choices span every channel, shown channel first, labels unique per c
   assert.equal(bulletinEncodeMentions(`@${choices[1].label}`, candidates), choices[1].token);
 });
 
+test("mention rows tag only autonomous agents with their kind", () => {
+  for (const kind of ["human_chat_work", "human_chat_discuss"])
+    assert.equal(bulletinMentionKind({ kind }), null);
+  for (const kind of ["auto_research_root", "worker_node", "worker_project", "experiment_loop"])
+    assert.equal(bulletinMentionKind({ kind }), bulletinActorKind({ kind }));
+});
+
 test("a draft moved to another channel keeps each mention's recipient", () => {
   const agent = (id, target_key, name) => ({ id, target_key, name, kind: "human_chat_work" });
   const roster = [agent("chat:a", "main", "Helper"), agent("chat:b", "branch:x", "Helper")];
@@ -170,4 +179,12 @@ test("a draft rebased across a rename keeps each mention's recipient", () => {
   assert.equal(bulletinEncodeMentions(draft, after), "ask <@agent:chat:b>");
   const rebased = bulletinMoveDraft(draft, before, after);
   assert.equal(bulletinEncodeMentions(rebased, after), "ask <@agent:chat:a>");
+});
+
+test("encoding keeps stored tokens whole even when a label matches inside them", () => {
+  const candidates = bulletinMentionCandidates([{ user_id: "u1", display_name: "agent" }], []);
+  assert.equal(
+    bulletinEncodeMentions("ask <@agent:chat:b> and @agent", candidates),
+    "ask <@agent:chat:b> and <@member:u1>",
+  );
 });

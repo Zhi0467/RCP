@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from rcp.limits import AGENT_NAME_MAX_CHARS
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.chat_names import ChatNameError
 from tests.test_auto_research_children_storage import _identity, _project
@@ -65,7 +66,10 @@ def test_self_name_is_once_and_cannot_replace_human_name(tmp_path):
         if human:
             store.set_chat_title("project", chat, "human", "Chosen name")
         else:
-            for name, code in ((" ", "chat_name_empty"), ("x" * 61, "chat_name_too_long")):
+            for name, code in (
+                (" ", "chat_name_empty"),
+                ("x" * (AGENT_NAME_MAX_CHARS + 1), "chat_name_too_long"),
+            ):
                 with pytest.raises(ChatNameError, match=code):
                     store.self_name_chat_for_task(task.operation_id, name)
             assert store.self_name_chat_for_task(task.operation_id, " Task  focused name ") == {
@@ -76,6 +80,29 @@ def test_self_name_is_once_and_cannot_replace_human_name(tmp_path):
             store.self_name_chat_for_task(task.operation_id, "Replacement")
 
 
+def test_agent_name_cap_cuts_starting_names_and_refuses_longer_names(tmp_path):
+    store = AppStore(tmp_path / "store.sqlite")
+    _project(store)
+    chat = str(uuid.uuid4())
+    # The cut lands just after a word, so the trailing space is trimmed too.
+    words = "w" * (AGENT_NAME_MAX_CHARS - 1) + " tail"
+    task = _turn(store, chat, words, store.now())
+    assert store.agent_name_state("project", chat)["name"] == "w" * (AGENT_NAME_MAX_CHARS - 1)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET status='running' WHERE operation_id=?", (task.operation_id,)
+        )
+    longest = "n" * AGENT_NAME_MAX_CHARS
+    for name_it in (
+        lambda name: store.self_name_chat_for_task(task.operation_id, name),
+        lambda name: store.set_chat_title("project", chat, "human", name),
+    ):
+        with pytest.raises(ChatNameError, match="chat_name_too_long"):
+            name_it(longest + "n")
+        name_it(longest)
+        assert store.agent_name_state("project", chat)["name"] == longest
+
+
 def test_old_database_backfills_first_turn_and_preserves_human_name(tmp_path):
     # A released old writer produced this database, before conversation names.
     fixture = Path(__file__).parent / "fixtures/server_upgrade/pre-graph-branches-v29-daad53e"
@@ -83,14 +110,15 @@ def test_old_database_backfills_first_turn_and_preserves_human_name(tmp_path):
     path = tmp_path / "store.sqlite"
     path.write_bytes(gzip.decompress((fixture / "data/rcp.sqlite3.gz").read_bytes()))
     project_id = metadata["project_id"]
-    first, renamed = str(uuid.uuid4()), str(uuid.uuid4())
+    first, renamed, long_human = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    long_name = "h" * (AGENT_NAME_MAX_CHARS - 1) + " " + "h" * 60
     with sqlite3.connect(path) as connection:
         assert "self_named" not in {
             row[1] for row in connection.execute("PRAGMA table_info(chat_display)")
         }
-        for chat in (first, renamed):
+        for chat in (first, renamed, long_human):
             for message, at in (
-                (" Original  task ", "2026-01-01T00:00:00+00:00"),
+                (" Original  task " + "o" * 120, "2026-01-01T00:00:00+00:00"),
                 ("Newer turn", "2026-01-02T00:00:00+00:00"),
             ):
                 connection.execute(
@@ -110,10 +138,17 @@ def test_old_database_backfills_first_turn_and_preserves_human_name(tmp_path):
             "VALUES (?, ?, 'Human choice', ?)",
             (project_id, renamed, metadata["user_id"]),
         )
+        # Names stored under the earlier, longer caps, human renames included.
+        connection.execute(
+            "INSERT INTO chat_display (project_id, chat_id, title, titled_user_id) "
+            "VALUES (?, ?, ?, ?)",
+            (project_id, long_human, long_name, metadata["user_id"]),
+        )
     store = AppStore(path)
     titles = store.chat_display(project_id, metadata["user_id"])["titles"]
-    assert titles[first] == "Original task"
+    assert titles[first] == ("Original task " + "o" * 120)[:AGENT_NAME_MAX_CHARS]
     assert titles[renamed] == "Human choice"
+    assert titles[long_human] == "h" * (AGENT_NAME_MAX_CHARS - 1)
     root = metadata["legacy_branch_id"]
     assert titles[root] == metadata["legacy_branch_name"]
     store.close()

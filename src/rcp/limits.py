@@ -68,8 +68,8 @@ MEMBER_REMOVAL_PREVIEW_MAX_ITEMS = 32
 # Durable canonical chat history queries and summary labels.
 CHAT_PAGE_DEFAULT_LIMIT = 50
 CHAT_PAGE_MAX_LIMIT = 200
-CHAT_TITLE_MAX_CHARS = 120
-AGENT_NAME_MAX_CHARS = 60
+# One cap for a conversation's stored agent name: starting names, self-names, renames.
+AGENT_NAME_MAX_CHARS = 25
 CHAT_PREVIEW_MAX_CHARS = 240
 STEERING_MESSAGE_MAX_CHARS = 32_000
 # One provider startup at a time per credential; see agents/credential_gate.py.

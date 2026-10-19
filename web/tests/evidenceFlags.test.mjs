@@ -39,7 +39,8 @@ test("flag rows keep open records, mark only current Evidence, and offer resolva
       rows.map(({ flag, node, actions }) => [flag.flag_id, node?.id ?? null, actions]),
       [
         ["open", "e1", ["address", "open_evidence", "dismiss"]],
-        ["paper", "e1", ["address", "open_evidence", "open_source", "dismiss"]],
+        // An unread source is flagged only; no agent turn can read it for the human.
+        ["paper", "e1", ["open_evidence", "open_source", "dismiss"]],
         ["addressing", "e1", ["open_chat"]],
         // A consolidation notice reports no problem, so there is nothing to Address.
         ["added", "e1", ["open_evidence", "dismiss"]],
@@ -82,6 +83,7 @@ test("Address all selects the oldest eligible findings and shares the server cap
     }));
     const excluded = [
       { ...flags[0], flag_id: "notice", kind: "consolidation_added" },
+      { ...flags[0], flag_id: "unread-source", kind: "unverified" },
       { ...flags[0], flag_id: "busy", state: "addressing" },
       { ...flags[0], flag_id: "missing", evidence_id: "gone" },
       { ...flags[0], flag_id: "retired", evidence_id: "old" },

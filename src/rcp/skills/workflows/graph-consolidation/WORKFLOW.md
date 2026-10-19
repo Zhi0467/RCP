@@ -2,7 +2,7 @@
 id: graph-consolidation
 kind: workflow
 label: Graph consolidation
-version: 1.6.0
+version: 1.6.1
 description: Consolidate a project's main research graph and operational lessons while nobody is watching, apply the result inside the turn, and leave one short visual report of every change for the human to read in the morning.
 dependencies:
 - graph-audit@3.4.0
@@ -72,9 +72,9 @@ Give a one-line finding and, when available, the source: an absolute
 execution-host path or a repository alias followed by its relative path, with
 an optional line number, or an `http(s)` URL. Do not edit the flagged claim,
 validity, or standing to resolve the finding, including in later passes. A
-human addresses it from Inbox. Do not treat inability to read a source as proof
-the claim is false; state what you could not verify in the finding and use
-`unverified`, not `no_source`.
+human reviews it from Inbox; only a human checks an `unverified` source. Do
+not treat inability to read a source as proof the claim is false; state what
+you could not verify in the finding and use `unverified`, not `no_source`.
 
 Then use the turn's web search to find recent work bearing on open ResearchQuestions
 and Hypotheses. For each search, record the query, date, each source and its version (preprint or published),

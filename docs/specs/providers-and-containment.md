@@ -1310,7 +1310,7 @@ storage's resolved launch state permits their first self-name, independently of
 the Bulletin toggle. Seated Auto-research workers have no board conversation;
 they and Graph consolidation never hold `name`. The same resolved state supplies
 the grant and staged naming snapshot, and the granted verbs render the prompt
-usage. Eligible agents are asked to choose a short 3–6 word task name within
+usage. Eligible agents are asked to choose a short 2–4 word task name within
 `AGENT_NAME_MAX_CHARS`. The task binding fixes the caller's conversation:
 commands cannot name another agent. Storage refuses a second self-name or any
 self-name after a human rename, collapses whitespace, and rejects empty or

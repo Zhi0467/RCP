@@ -13,6 +13,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_LIST_SECTIONS,
+  AGENT_NAME_MAX_CHARS,
   CONVERSATION_AGENT_GROUPS,
   conversationAgentStatus,
   listedAgentConversations,
@@ -261,6 +262,7 @@ function AgentRename({ title, onDone }: { title: string; onDone: (title: string 
         name="title"
         aria-label="Agent name"
         autoFocus
+        maxLength={AGENT_NAME_MAX_CHARS}
         defaultValue={title}
         onFocus={(event) => event.currentTarget.select()}
         onBlur={(event) => event.currentTarget.form?.requestSubmit()}

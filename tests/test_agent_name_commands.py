@@ -93,10 +93,10 @@ def test_orchestrator_names_its_conversation_once(tmp_path):
         connection.execute(
             "UPDATE graph_runs SET status='running' WHERE operation_id=?", (root.operation_id,)
         )
-    response = dispatcher.dispatch(root.operation_id, name_request("Reference probe coordination"))
+    response = dispatcher.dispatch(root.operation_id, name_request("Reference probe sweep"))
     assert response.status == "ok", response
     assert store.agent_name_state(root.project_id, episode.episode_id) == {
-        "name": "Reference probe coordination",
+        "name": "Reference probe sweep",
         "can_self_name": False,
     }
 
