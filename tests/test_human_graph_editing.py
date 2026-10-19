@@ -162,7 +162,9 @@ def test_graph_edit_options_are_backend_owned(manifest, tmp_path, monkeypatch):
     )
     response = client.get(f"/api/projects/{app.state.default_project_id}/graph-edit-options")
     assert response.status_code == 200
-    assert {item["name"] for item in response.json()["relations"]} == set(RELATION_SPEC)
+    assert {item["name"] for item in response.json()["relations"]} == {
+        name for name, spec in RELATION_SPEC.items() if spec.authorable
+    }
     assert response.json()["node_prefixes"] == NODE_PREFIXES
     for item in response.json()["relations"]:
         assert set(item) == {

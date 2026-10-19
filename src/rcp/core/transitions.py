@@ -43,11 +43,11 @@ from rcp.core.transition_models import (
     TransitionTriggerManifest,
 )
 
-TRANSITION_RULESET_TAG = "rcp.lifecycle.v3"
+TRANSITION_RULESET_TAG = "rcp.lifecycle.v4"
 # Rulesets whose lifecycle events follow each node's lifecycle field (Evidence
 # retires through ``validity``). Every earlier ruleset recorded only ``status``
 # changes, and replay recomputes events under the ruleset a trace names.
-_LIFECYCLE_FIELD_RULESETS = frozenset({TRANSITION_RULESET_TAG})
+_LIFECYCLE_FIELD_RULESETS = frozenset({"rcp.lifecycle.v3", TRANSITION_RULESET_TAG})
 STATUS_EVENT_RULE_ID = "lifecycle.status-events.v1"
 DEFAULT_MAX_RULE_FIRINGS = 128
 

@@ -67,7 +67,7 @@ export interface ExperimentLane {
 }
 
 export interface HypothesisInputs {
-  /** Decisions governing, and Blockers stopping, the Hypothesis's Experiments. */
+  /** The Hypothesis's Decisions, plus Decisions and Blockers governing its Experiments. */
   nodes: GraphNode[];
   /** Evidence informing those Decisions or addressing those Blockers. */
   evidence: GraphNode[];
@@ -130,8 +130,8 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
   const incoming = (id: string, relation: string) => incomingIndex.get(`${id}\0${relation}`) ?? [];
   const verdictOn = (evidenceId: string, hypothesisId: string): Verdict | null =>
     verdicts.get(`${evidenceId}\0${hypothesisId}`) ?? null;
-  // What must clear first, to the end of the chain: each Decision's Blockers and
-  // each Blocker's required Decisions.
+  // Preserve historical prerequisite chains: each Decision's Blockers and
+  // each Blocker's required Decisions remain visible until explicitly re-homed.
   const withPrerequisites = (start: GraphNode[]): GraphNode[] => {
     const result = uniqueNodes(start);
     const seen = new Set(result.map((node) => node.id));
@@ -174,12 +174,13 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
             tally: tallyOf(evidence),
           };
         });
-      const inputNodes = withPrerequisites(
-        experiments.flatMap((lane) => [
+      const inputNodes = withPrerequisites([
+        ...outgoing(hypothesis.id, "has_decision"),
+        ...experiments.flatMap((lane) => [
           ...outgoing(lane.node.id, "governed_by"),
           ...outgoing(lane.node.id, "blocked_by"),
         ]),
-      );
+      ]);
       const evidence = Object.keys(VERDICT_BY_RELATION)
         .flatMap((relation) => incoming(hypothesis.id, relation))
         .filter((node) => node.type === "evidence")
@@ -229,6 +230,7 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
       touched.forEach((id) => append(freeExperimentsByAnchor, id, experiment));
     });
   const looseOf = (question: GraphNode): GraphNode[] => {
+    // Legacy question attachments stay reachable while consolidation re-homes them.
     const decisions = outgoing(question.id, "has_decision");
     const blockers = [question, ...decisions].flatMap((node) => outgoing(node.id, "blocked_by"));
     const freeWork = (node: GraphNode) => sortNodes(freeExperimentsByAnchor.get(node.id) ?? []);
@@ -290,6 +292,7 @@ export function buildResearchDrilldown(nodes: GraphNode[], edges: Edge[]): Resea
     hypothesisCount: outgoing(question.id, "has_hypothesis").filter((node) =>
       hypotheses.has(node.id),
     ).length,
+    // Historical direct attachments remain one-hop counts, not Hypothesis totals.
     openDecisions: outgoing(question.id, "has_decision").filter(isOpenDecision).length,
     openBlockers: outgoing(question.id, "blocked_by").filter(isOpenBlocker).length,
   });

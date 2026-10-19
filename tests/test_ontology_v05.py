@@ -970,3 +970,87 @@ def test_proposal_dependencies_rejects_operations_outside_the_typed_contract() -
         ["edge/informs"],
         [],
     )
+
+
+@pytest.mark.parametrize(
+    ("relation", "target", "allowed_source"),
+    [
+        ("has_decision", _DEC, "hypothesis"),
+        ("blocked_by", _BLK, "experiment"),
+        ("requires_decision", _DEC, None),
+    ],
+)
+@pytest.mark.parametrize(
+    "source",
+    [_RQ, _EXP, _EV | {"origin": "analytic"}, _BLK, _DEC, _hypothesis().model_dump(mode="json")],
+)
+def test_link_rule_admission_matrix_and_locked_apply(
+    manifest, relation, target, allowed_source, source
+) -> None:
+    from rcp.history import HistoryManager, PatchRejected
+    from tests.helpers import unchecked_write_authority
+
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
+    nodes = {node["id"]: node for node in [source, target]}
+    seed = _patch(1, [{"op": "create_nodes", "nodes": list(nodes.values())}])
+    seed = seed.model_copy(update={"run_truth_scope": ["repo-a"], "repositories_read": ["repo-a"]})
+    history.append(seed)
+    before = history.state()
+    edge = {
+        "id": "edge/admission",
+        "source": source["id"],
+        "target": target["id"],
+        "relation": relation,
+    }
+    patch = seed.model_copy(
+        update={"revision": 2, "ops": _patch(2, [{"op": "create_edges", "edges": [edge]}]).ops}
+    )
+    report = validate_patch(before, patch, ValidationContext(["repo-a", "repo-b"]))
+    allowed = source["type"] == allowed_source
+    assert report.rejected != allowed
+    if allowed:
+        _, result = history.append(patch)
+        assert result.state.edges["edge/admission"].relation == relation
+    else:
+        assert any("edge/admission" in message.related_edge_ids for message in report.messages)
+        with pytest.raises(PatchRejected):
+            history.append(patch)
+        after = history.state()
+        assert after.nodes == before.nodes
+        assert after.edges == before.edges
+        assert after.proposals == before.proposals
+
+
+@pytest.mark.parametrize("profile", ["ordinary", "orchestrator"])
+def test_hypothesis_decision_attachment_and_removal_are_ordinary(profile) -> None:
+    from rcp.core.materialize import apply_valid_patch
+
+    hypothesis = _hypothesis()
+    decision = Decision.model_validate(_DEC)
+    state = GraphState(
+        revision=1,
+        project_truth_scope=["repo"],
+        nodes={hypothesis.id: hypothesis, decision.id: decision},
+    )
+    edge = {
+        "id": "edge/choice",
+        "source": hypothesis.id,
+        "target": decision.id,
+        "relation": "has_decision",
+    }
+    create = _patch(2, [{"op": "create_edges", "edges": [edge]}])
+    assert not validate_patch(state, create, ValidationContext(["repo"])).rejected
+    assert (
+        not WriteAuthority()
+        .validate_permissions(state, create.model_copy(update={"profile": profile}))
+        .rejected
+    )
+    attached = apply_valid_patch(state, create)
+    remove = _patch(3, [{"op": "remove_edges", "edge_ids": ["edge/choice"]}])
+    assert not validate_patch(attached, remove, ValidationContext(["repo"])).rejected
+    assert (
+        not WriteAuthority()
+        .validate_permissions(attached, remove.model_copy(update={"profile": profile}))
+        .rejected
+    )
+    assert not apply_valid_patch(attached, remove).edges

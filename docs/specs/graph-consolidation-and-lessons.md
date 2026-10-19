@@ -59,6 +59,18 @@ a reader could not tell what it runs, since the rewrite returns it to asserted
 for another review; for other accepted nodes it only suggests rewrites. Existing protected beliefs still
 require [Proposals](authority-and-proposals.md#protected-belief-proposals).
 
+The workflow re-homes historical links using ordinary Patch verbs. It maps a
+Question's Decision only to existing Hypotheses the choice serves, or keeps a
+pure Experiment input connected through `governed_by`; it never invents a
+Hypothesis for topology. It maps Question/Decision Blockers to the existing
+Experiments they prevent from starting, and replaces a `requires_decision`
+choice wrapper with a genuine Experiment input when supported. Ordinary edge
+replacements can share a Patch; protected node changes still use Proposals.
+If no supported replacement fits, it retains the old edge and reports its id
+under Suggestions. Blocker resolution remains explicit and authorized, and
+Decision ballots stay unchanged. Upgrade alone starts no cleanup: the schedule
+still requires a new non-consolidation revision since the covered head.
+
 Its charter is "Tidy and check sources; do not run experiments." After the
 audit, a fact-check reads Evidence created or changed since the covered head
 against the sources themselves: cited artifacts, producing Experiment job logs,
@@ -79,9 +91,11 @@ claim, validity, or standing to resolve such a finding.
 The same pass then uses the turn's web search for recent work bearing on open
 ResearchQuestions and Hypotheses, recording each query, date, source, and
 whether the full text or only the abstract was read. It prefers changes to
-existing records and Suggestions over new nodes; qualifying an existing
-Evidence edge to a protected belief, or undermining that belief, goes through
-a Proposal. It may add Evidence for a result a source it read states, including
+existing records and Suggestions over new nodes. Qualifying an ordinary
+Evidence edge uses removal and recreation; changing the protected belief itself
+uses a Proposal. Ordinary consolidation cannot author a merge-only atomic
+protected-edge replacement: it uses safe separately approved steps or leaves a
+Suggestion. It may add Evidence for a result a source it read states, including
 `external_publication` Evidence with assessed edges, and fact-checks the
 Evidence it added after applying. Its authority is otherwise unchanged.
 

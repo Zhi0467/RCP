@@ -48,10 +48,10 @@ def test_rendered_rules_name_every_field_and_relation() -> None:
         assert f"(`type: {get_args(model.model_fields['type'].annotation)[0]}`" in rendered
         for name in model.model_fields.keys() - {"type"}:
             assert f"- `{name}`" in rendered, f"{model.__name__}.{name}"
-    for name in RELATION_SPEC:
-        assert f"- `{name}`:" in rendered
+    for name, spec in RELATION_SPEC.items():
+        assert (f"- `{name}`:" in rendered) == spec.authorable
     # Layers are derived per endpoint pair, so one relation can span two layers.
-    assert "ResearchQuestion -> Blocker (seam)" in rendered
+    assert "Hypothesis -> Decision (seam)" in rendered
 
 
 def test_read_only_rules_omit_authoring_method() -> None:

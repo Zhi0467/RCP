@@ -1169,14 +1169,22 @@ Historical Ambiguities never render or count.
 Research presents a question drill-down and a bounded DAG. The drill-down
 follows relations, not nearest-question assignment, so a shared Hypothesis,
 Experiment, or Evidence appears under every question that reaches it, and a
-Hypothesis page links its other questions. Inputs are the Decisions governing
-and the Blockers stopping its Experiments (and those Decisions); Decisions and
-Blockers attach to questions and Experiments, never to Hypotheses. Each
-Experiment's Evidence carries its verdict on that Hypothesis; the Hypothesis
-tally also counts Evidence no listed Experiment produced. An Experiment that
-tests no Hypothesis belongs to the question whose Decision or Blocker it, or
-its Evidence, touches. The trail is session-scoped per project and graph
-target.
+Hypothesis page links its other questions. Inputs include Decisions attached
+by `has_decision`, Decisions governing its Experiments, and Blockers stopping
+those Experiments, with shared Decisions deduplicated. A Hypothesis attachment
+alone never gates an Experiment. A pure Experiment input Decision needs no
+Hypothesis attachment. Each Experiment's Evidence carries its verdict on that
+Hypothesis; the Hypothesis tally also counts Evidence no listed Experiment
+produced. Historical Question→Decision, Question/Decision→Blocker, and
+`requires_decision` paths remain visible, including their one-hop question
+counts. An Experiment that tests no Hypothesis remains reachable through the
+question's attached Hypotheses' inputs or historical Decision/Blocker paths
+that it or its Evidence touches. The trail is session-scoped per project and
+graph target.
+
+Relation choices offer only authorable relations and legal endpoint types.
+Existing legacy edges still support inspection and removal; history readers do
+not require their relations to appear in the current authoring choices.
 
 The DAG's Research flow uses one column per node type, ordered ResearchQuestion, Hypothesis, Decision, Blocker,
 Experiment, then Evidence. All question depths share the ResearchQuestion column;

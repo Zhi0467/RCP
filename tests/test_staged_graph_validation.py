@@ -918,21 +918,26 @@ def test_forward_edge_layer_is_derived_after_later_endpoints_materialize() -> No
             "op": "create_edges",
             "edges": [
                 {
-                    "source": "rq/forward-blocked",
-                    "target": "blk/forward-blocker",
-                    "relation": "blocked_by",
+                    "source": "hyp/forward-choice",
+                    "target": "dec/forward-choice",
+                    "relation": "has_decision",
                 }
             ],
         },
         {
             "op": "create_nodes",
             "nodes": [
-                _research_question("rq/forward-blocked"),
                 {
-                    "id": "blk/forward-blocker",
-                    "type": "blocker",
-                    "title": "Forward blocker",
-                    "description": "The blocker is created after its edge.",
+                    "id": "hyp/forward-choice",
+                    "type": "hypothesis",
+                    "title": "Claim",
+                    "statement": "Claim.",
+                },
+                {
+                    "id": "dec/forward-choice",
+                    "type": "decision",
+                    "title": "Forward choice",
+                    "question": "Which input?",
                 },
             ],
         },
@@ -943,7 +948,9 @@ def test_forward_edge_layer_is_derived_after_later_endpoints_materialize() -> No
 
     assert not report.rejected
     materialized = apply_valid_patch(state, patch)
-    assert materialized.edges["rq/forward-blocked::blocked_by::blk/forward-blocker"].layer == "seam"
+    assert (
+        materialized.edges["hyp/forward-choice::has_decision::dec/forward-choice"].layer == "seam"
+    )
 
 
 @pytest.fixture

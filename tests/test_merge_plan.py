@@ -922,24 +922,27 @@ def test_direct_incident_edge_replaces_pending_removal_on_other_subject(monkeypa
     import sys
     from types import SimpleNamespace
 
-    from rcp.core.models import Blocker
+    from rcp.core.models import Decision, Hypothesis
     from rcp.core.operations import CreateEdgesOperation, NewEdge
     from rcp.core.validation.proposals import ProposalResource
 
     base = _state()
-    blocker = Blocker(id="blk/one", type="blocker", title="Blocker", description="Blocked")
-    base.nodes[blocker.id] = blocker
+    base.nodes["hyp/claim"] = Hypothesis(
+        id="hyp/claim", type="hypothesis", title="Claim", statement="Claim."
+    )
+    decision = Decision(id="dec/one", type="decision", title="Choice", question="Which?")
+    base.nodes[decision.id] = decision
     previous = base.model_copy(update={"revision": 2})
     edge = Edge(
-        id="rq/question::blocked_by::blk/one",
-        source="rq/question",
-        target=blocker.id,
-        relation="blocked_by",
+        id="hyp/claim::has_decision::dec/one",
+        source="hyp/claim",
+        target=decision.id,
+        relation="has_decision",
     )
     source = previous.model_copy(update={"revision": 3, "edges": {edge.id: edge}})
     context = _with_prior(
         _context(base, source, base.model_copy(update={"revision": 4}), previous=previous),
-        [{"op": "remove_nodes", "intent": "removal", "node_ids": ["rq/question"]}],
+        [{"op": "remove_nodes", "intent": "removal", "node_ids": ["hyp/claim"]}],
     )
 
     def encode(plan, selected):
@@ -965,7 +968,7 @@ def test_direct_incident_edge_replaces_pending_removal_on_other_subject(monkeypa
     assert [c.entity_id for c in plan.direct_changes] == [edge.id]
     (group,) = plan.review_groups
     assert group.replaces_proposal_ids == ("prop/earlier",)
-    assert [c.entity_id for c in group.changes] == ["rq/question"]
+    assert [c.entity_id for c in group.changes] == ["hyp/claim"]
     assert ProposalResource(kind="edge", id=edge.id) in group.footprint.effects
     assert ProposalResource(kind="edge", id=edge.id) in group.footprint.dependencies
 

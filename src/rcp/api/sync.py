@@ -55,6 +55,7 @@ def graph_edit_options(
                 "accepts_expectation": name in EXPECTATION_RELATIONS,
             }
             for name, spec in RELATION_SPEC.items()
+            if spec.authorable
         ],
     }
 

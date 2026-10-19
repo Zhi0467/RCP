@@ -76,9 +76,12 @@ boundaries follow [revision observation](api-web-and-desktop-projections.md#revi
 Research is a drill-down, one level per screen, with a trail back up. Question
 cards show the question and its motivation (text that only restates the title
 is skipped), and count only what is one relation
-away: sub-questions, Hypotheses, undecided Decisions, open Blockers. Hypothesis
-cards show the statement, then three rows in page order: inputs (with undecided Decisions and open
-Blockers), Experiments (with active ones), and Evidence (with the verdict tally). A question page lists sub-questions, Hypotheses, and work
+away: sub-questions and Hypotheses, plus undecided Decisions and open Blockers
+on retained legacy question links. Transitive work does not inflate these
+one-hop counts. Hypothesis cards show the statement, then three rows in page
+order: inputs (with attached or Experiment-governing undecided Decisions and
+open Experiment Blockers), Experiments (with active ones), and Evidence (with
+the verdict tally). A question page lists sub-questions, Hypotheses, and work
 that tests no Hypothesis. A Hypothesis page puts its Experiments in the middle, one collapsed
 Inputs box before them, and one Evidence box after each; boxes and the verdict
 tally open as their own trail step, never a box stacked under the row. At phone
