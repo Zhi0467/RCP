@@ -137,3 +137,8 @@ upgrades the preceding fixture and creates that branch through its public APIs.
 `pre-graph-branches-v29-daad53e` retains that branch-bearing shape at migration 55,
 after project groups and before independent branch records (migration 56). It is
 built by the exact boundary source from `pre-graph-branches-v28-ae89ee3`.
+
+`pre-conversation-names-v30-51f290d` retains the last shape before chats gained
+durable names and the self-named marker (storage migration 59), ending at
+migration 58 after Bulletin channels and project worker seats. It is built by
+the exact boundary source from `pre-graph-branches-v29-daad53e`.
