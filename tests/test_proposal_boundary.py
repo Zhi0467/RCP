@@ -1214,13 +1214,13 @@ def test_agent_proposal_rejects_a_third_shape(manifest) -> None:
                 "card": {"decision_needed": "Approve the edge?"},
                 "ops": [
                     _create_edge(
-                        "rq/learning-after-shift",
+                        "hyp/replanning-restores-plasticity",
                         "dec/evaluation-rule",
                         "has_decision",
                         intent="protected_relation_change",
                     )
                 ],
-                "related_node_ids": ["rq/learning-after-shift", "dec/evaluation-rule"],
+                "related_node_ids": ["hyp/replanning-restores-plasticity", "dec/evaluation-rule"],
                 "base_rev": 2,
             }
         ],

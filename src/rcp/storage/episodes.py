@@ -12,6 +12,7 @@ from rcp.core.models import AuthorizedHuman, EpisodeIsolation
 from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import GraphTargetRef
 from rcp.storage.branch_names import reserve_branch_name
+from rcp.storage.chat_names import initialize_task_chat_name
 from rcp.storage.digest import (
     append_digest_event,
     append_episode_ended,
@@ -2412,6 +2413,14 @@ class EpisodeStoreMixin(StoreMixinBase):
             ),
         )
 
+        if record.mode == "auto_research" and record.continues_episode_id is None:
+            initialize_task_chat_name(
+                connection,
+                record.project_id,
+                "auto_research",
+                {"role": "orchestrator"},
+                record.graph_target.branch_id,
+            )
         if record.continues_episode_id is not None:
             self.set_episode_chain_questions_withdrawn_in_connection(
                 connection, record.episode_id, withdrawn=False

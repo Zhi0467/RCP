@@ -317,9 +317,9 @@ def _prepare_data(
                             "assessment": {"relevance": "direct", "weight": "moderate"},
                         },
                         {
-                            "source": "rq/recovery",
+                            "source": "exp/recovery",
                             "target": "dec/recovery",
-                            "relation": "has_decision",
+                            "relation": "governed_by",
                         },
                         {
                             "source": "exp/recovery",

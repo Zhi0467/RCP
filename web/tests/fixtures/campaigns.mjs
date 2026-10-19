@@ -96,6 +96,7 @@ export function withGraphBranch(overrides = {}) {
     ...episode,
     graph_target: { kind: "branch", branch_id: branchId },
     graph_base_head: baseHead,
+    can_merge: overrides.merge_eligible ?? true,
     graph_branch: {
       branch_id: branchId,
       episode_id: episode.episode_id,

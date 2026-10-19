@@ -248,6 +248,7 @@ class EpisodeResponse(EpisodeLoopMetadata):
     graph_isolation: bool
     isolation_owner_episode_id: str | None
     isolation_state: EpisodeIsolationState | None = None
+    can_merge: bool = False
     control_node_id: str | None
     graph_target: GraphTargetRef
     graph_base_head: GraphHeadRef | None
@@ -322,6 +323,31 @@ def _episode_for_http(
         return episode_for_project(store, project_id, episode_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Episode not found") from exc
+
+
+def _episode_merge_offer(
+    store: AppStore,
+    project_id: str,
+    owner_id: str,
+    branch: GraphBranchSummary | None,
+    state: EpisodeIsolationState | None,
+) -> bool:
+    """Offer graph delivery, independent code delivery, or retained-attempt recovery.
+
+    List reads do not probe Git. A retained worktree may have new code or cleanup
+    to perform; the endpoint rechecks it. A settled reservation needs a click to
+    reconcile, so it must not trap a failed merge behind its own reservation.
+    """
+    if state and state.merge_reservation and state.merge_attempt:
+        attempt = state.merge_attempt
+        task = store.agent_task(attempt.graph_task_id or attempt.attempt_id)
+        return task is None or task.status not in {"queued", "running", "pausing"}
+    if branch and branch.active_merge_task_id:
+        return False
+    if branch and branch.merge_eligible:
+        return True
+    binding = store.episode_isolation(project_id, owner_id)
+    return bool(binding and binding.worktree and state and state.status == "ready")
 
 
 def serialize_episode(
@@ -429,6 +455,21 @@ def serialize_episode(
     message_refusal = (
         auto_research_message_refusal(store, episode) if episode.mode == "auto_research" else None
     )
+    graph_branch = (
+        branch_summary(episode)
+        if has_graph_branch and include_graph_branch and branch_summary is not None
+        else None
+    )
+    owner_id = (
+        episode.isolation_owner_episode_id
+        or (
+            store.branch_owner(project_id, episode.graph_target.branch_id or "")
+            if has_graph_branch
+            else None
+        )
+        or episode.episode_id
+    )
+    isolation_state = store.episode_isolation_state(project_id, owner_id)
     return EpisodeResponse(
         **episode_loop_metadata(store, episode, tasks=task_records).model_dump(),
         episode_id=episode.episode_id,
@@ -439,24 +480,12 @@ def serialize_episode(
         code_worktree=episode.code_worktree,
         graph_isolation=episode.graph_isolation,
         isolation_owner_episode_id=episode.isolation_owner_episode_id,
-        isolation_state=store.episode_isolation_state(
-            project_id,
-            episode.isolation_owner_episode_id
-            or (
-                store.branch_owner(project_id, episode.graph_target.branch_id or "")
-                if has_graph_branch
-                else None
-            )
-            or episode.episode_id,
-        ),
+        isolation_state=isolation_state,
+        can_merge=_episode_merge_offer(store, project_id, owner_id, graph_branch, isolation_state),
         control_node_id=episode.control_node_id,
         graph_target=episode.graph_target,
         graph_base_head=episode.graph_base_head,
-        graph_branch=(
-            branch_summary(episode)
-            if has_graph_branch and include_graph_branch and branch_summary is not None
-            else None
-        ),
+        graph_branch=graph_branch,
         root_operation_id=episode.root_operation_id,
         current_operation_id=current_operation_id,
         current_orchestrator_task_id=current_orchestrator_task_id,

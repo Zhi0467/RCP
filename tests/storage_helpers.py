@@ -14,6 +14,8 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
     ).fetchall()
     for (name,) in triggers:
         connection.execute(f'DROP TRIGGER "{name}"')
+    if any(row[1] == "self_named" for row in connection.execute("PRAGMA table_info(chat_display)")):
+        connection.execute("ALTER TABLE chat_display DROP COLUMN self_named")
     connection.execute("DROP TABLE IF EXISTS research_view_pins")
     connection.execute("DROP TABLE IF EXISTS graph_branches")
     connection.execute("DROP TABLE IF EXISTS bulletin_posts")

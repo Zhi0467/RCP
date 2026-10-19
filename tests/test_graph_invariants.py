@@ -145,7 +145,9 @@ class _Generator:
         return node
 
     def edge(self, state: GraphState) -> dict[str, Any]:
-        relation = self.rng.choice(sorted(RELATION_SPEC))
+        relation = self.rng.choice(
+            sorted(name for name, spec in RELATION_SPEC.items() if spec.authorable)
+        )
         spec = RELATION_SPEC[relation]
         fit = self.rng.random() < 0.7
         source = self.node_id(state, self.rng.choice(sorted(spec.source_types)) if fit else None)
@@ -167,6 +169,8 @@ class _Generator:
         nodes = [self.new_node(kind, f"base{i}") for kind in sorted(REQUIRED) for i in range(2)]
         edges = []
         for relation, spec in sorted(RELATION_SPEC.items()):
+            if not spec.authorable:
+                continue
             source_type = self.rng.choice(sorted(spec.source_types))
             target_type = (
                 source_type if spec.same_type else self.rng.choice(sorted(spec.target_types))
@@ -316,7 +320,9 @@ def test_random_accepted_patches_keep_the_graph_well_formed() -> None:
         node_types.update(nodes)
         relation_types.update(relations)
     assert set(node_types) == set(REQUIRED), node_types
-    assert set(relation_types) == set(RELATION_SPEC), relation_types
+    assert set(relation_types) == {
+        name for name, spec in RELATION_SPEC.items() if spec.authorable
+    }, relation_types
 
 
 def _side_values(mode: int, label: str) -> tuple[str | None, str | None]:
@@ -453,7 +459,9 @@ def test_generated_three_way_merge_preserves_content_through_approval(manifest, 
             _append(owner, {"op": "set_standing", "node_id": node["id"], "standing": standing})
     source, destination = branch.state(), history.state()
     assert set(node_coverage) == set(REQUIRED)
-    assert set(relation_coverage) == set(RELATION_SPEC)
+    assert set(relation_coverage) == {
+        name for name, spec in RELATION_SPEC.items() if spec.authorable
+    }
     plan = _plan(history, branch)
     selected = _answers(plan)
     choices = {}

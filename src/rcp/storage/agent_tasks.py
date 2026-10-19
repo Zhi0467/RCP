@@ -57,6 +57,7 @@ from rcp.limits import (
 from rcp.providers import ProviderUsage, classify_terminal_error, require_runtime_id
 from rcp.providers.live_status import AgentStatus
 from rcp.storage.branch_names import _chain_root
+from rcp.storage.chat_names import initialize_task_chat_name
 from rcp.storage.client_requests import record_client_request
 from rcp.storage.digest import append_task_failed
 from rcp.storage.evidence_flags import (
@@ -1286,6 +1287,13 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 int(record.visible),
                 record.failure_kind,
             ),
+        )
+        initialize_task_chat_name(
+            connection,
+            record.project_id,
+            record.kind,
+            record.request,
+            record.graph_target.branch_id,
         )
         record_client_request(self, connection, record)
         record_evidence_flag_address(self, connection, record)

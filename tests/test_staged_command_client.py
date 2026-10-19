@@ -1040,6 +1040,7 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         ("inbox", "--clear", "--key", "k-inbox-clear"),
         ("finish", "--key", "k-finish"),
         ("lesson", "add", "--key", "k-lesson", "--text", "Use the environment"),
+        ("name", "Theta0 reference probes"),
         (
             "flag",
             "--key",
@@ -1089,6 +1090,7 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         "inbox",
         "finish",
         "lesson",
+        "name",
         "flag",
     ]
     applied = next(arguments for verb, arguments in seen if verb == "apply")

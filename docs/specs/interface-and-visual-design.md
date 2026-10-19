@@ -76,9 +76,12 @@ boundaries follow [revision observation](api-web-and-desktop-projections.md#revi
 Research is a drill-down, one level per screen, with a trail back up. Question
 cards show the question and its motivation (text that only restates the title
 is skipped), and count only what is one relation
-away: sub-questions, Hypotheses, undecided Decisions, open Blockers. Hypothesis
-cards show the statement, then three rows in page order: inputs (with undecided Decisions and open
-Blockers), Experiments (with active ones), and Evidence (with the verdict tally). A question page lists sub-questions, Hypotheses, and work
+away: sub-questions and Hypotheses, plus undecided Decisions and open Blockers
+on retained legacy question links. Transitive work does not inflate these
+one-hop counts. Hypothesis cards show the statement, then three rows in page
+order: inputs (with attached or Experiment-governing undecided Decisions and
+open Experiment Blockers), Experiments (with active ones), and Evidence (with
+the verdict tally). A question page lists sub-questions, Hypotheses, and work
 that tests no Hypothesis. A Hypothesis page puts its Experiments in the middle, one collapsed
 Inputs box before them, and one Evidence box after each; boxes and the verdict
 tally open as their own trail step, never a box stacked under the row. At phone
@@ -156,7 +159,10 @@ on the existing draft path.
 The Inbox uses the consolidation load for an **Evidence to check** section and
 includes its rows in the open total. Each row shows the kind, night, current
 Evidence title, and finding. **Address** starts the backend-authorized node Work
-chat and keeps the member where they are. While the turn runs the row collapses to
+chat and keeps the member where they are. When two or more findings offer Address,
+the header's **Address all** starts one shared Work chat for the ten oldest.
+A failed batch marks that control with a red edge and one icon-only retry.
+While the turn runs each row collapses to
 one strip: a spinner, the kind, the title, and an icon-only **Open chat**. A
 turn that finishes the work removes the row. Any other end brings the full row back
 with a red edge, an icon-only retry in place of Address, and **Open chat**.

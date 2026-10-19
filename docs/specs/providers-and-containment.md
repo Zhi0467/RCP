@@ -625,9 +625,11 @@ the run's own graph only (invariant 4b).
 Every contract that reads or writes the research graph includes one rendered
 graph-rules block, and no contract restates field or relation meaning in its own
 prose. The block renders from code: node field descriptions, base relation
-descriptions and endpoints from `RELATION_SPEC`, which relations carry an
-Evidence assessment, id prefixes, and value vocabularies. A read-only contract
-(Discuss, chat) receives the definitions and the method for searching
+descriptions and authorable endpoints from `RELATION_SPEC`, which relations
+carry an Evidence assessment, id prefixes, and value vocabularies. Retired
+relations remain available to historical readers but are not offered as new
+links; the authoring choices and validation use the same specs. A read-only
+contract (Discuss, chat) receives the definitions and the method for searching
 `graph.json`. A graph-writing contract also receives the hand-written method
 that spans several nodes: the Experiment input-versus-result causal check and a
 short list of cross-cutting write habits. Ontology extension rules are added
@@ -1045,6 +1047,11 @@ prompt byte reaches the provider. Host acceptance, not a controller receipt,
 proves work may have begun. The supervisor detects turn end but assigns no
 semantic verdict; the live decoder also reads recorded bytes.
 
+Recorded decoding uses the owner's original capability and retained Work write
+scope. Codex app-server rechecks the actual journalled thread response against
+that contract, including its active permission profile; recovery does not
+substitute a read-only capability or waive enforcement.
+
 At turn end it snapshots Patch, watcher handoff and maintenance files under
 digests. Before reading deliverables, finalizers restore that exact set, removing
 later maintenance files. Per-file and aggregate limits apply: overflow makes the
@@ -1296,9 +1303,21 @@ with no episode always holds it. Holding it means `bulletin --read [--cursor C]`
 `bulletin --post --key K [--reply-to P] <body-file>`,
 `bulletin --edit P --key K <body-file>`, and `bulletin --delete P --key K`;
 references come from inline `#node-id` text. That one resolved verb set drives
-both the contract's usage lines and command admission. Discuss holds no verb and
-sees only the launch snapshot. The per-launch prompt line names only the snapshot
-file, beside the lessons pointer.
+both the contract's usage lines and command admission. Discuss sees the Bulletin
+launch snapshot without holding the `bulletin` verb.
+
+Ordinary Discuss and Work chats, Experiment conversations, child Work chats,
+and Auto-research orchestrator chains hold `name "short task name"` only when
+storage's resolved launch state permits their first self-name, independently of
+the Bulletin toggle. Seated Auto-research workers have no board conversation;
+they and Graph consolidation never hold `name`. The same resolved state supplies
+the grant and staged naming snapshot, and the granted verbs render the prompt
+usage. Eligible agents are asked to choose a short 2–4 word task name within
+`AGENT_NAME_MAX_CHARS`. The task binding fixes the caller's conversation:
+commands cannot name another agent. Storage refuses a second self-name or any
+self-name after a human rename, collapses whitespace, and rejects empty or
+over-limit names with structured refusal codes. The name is operational
+metadata and grants no graph authority.
 
 Editing and deleting require the stored roster actor identity, allowing later
 turns of the same actor to manage their own posts. Receipts make all three

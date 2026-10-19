@@ -135,7 +135,7 @@ def test_old_transition_hash_replays_without_the_new_optional_field(manifest) ->
     assert appended.transition is not None
     assert (
         appended.transition.transition_id
-        == "5b36bab6e4ff2c7a66c2b4ab52fa21cf138469aac7596fd87740d17a28c8cc37"
+        == "aca0d3a9f52d5afc2f52bf470dede297d0a2a34c69490ea22f6102fd5a477309"
     )
 
     path = manifest.research_dir / "patches" / "000001.json"

@@ -1,5 +1,6 @@
 import { useId, useState } from "react";
 import { answerQuestion, dismissQuestion } from "../core/api";
+import { MarkdownAnswer } from "../core/chatMarkdown";
 import { canSubmitQuestion, questionIsOpen, toggleQuestionChoice } from "./questions";
 import type { AgentQuestion } from "../core/types";
 
@@ -67,9 +68,9 @@ export function QuestionCard({
           </button>
         )}
       </header>
-      <strong id={labelId} className="question-text">
-        {question.question}
-      </strong>
+      <div id={labelId} className="question-text chat-markdown">
+        <MarkdownAnswer text={question.question} />
+      </div>
       {open ? (
         <form
           onSubmit={(event) => {

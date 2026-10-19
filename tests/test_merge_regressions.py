@@ -274,7 +274,14 @@ def _commit(history, branch, plan, answers):
         prepared.projection.graph.model_dump(exclude={"validation_messages"})
     )
     receipt = branch.write_merge_receipt(branch_merge_receipt_from_committed_patch(committed.patch))
-    assert branch.validated_merge_receipts()[-1] == receipt
+    assert (
+        next(
+            item
+            for item in branch.validated_merge_receipts()
+            if item.provenance.merge_id == receipt.provenance.merge_id
+        )
+        == receipt
+    )
     assert history.materialize(write_outputs=False).state == history.state()
     return committed
 

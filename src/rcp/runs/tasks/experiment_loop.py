@@ -2762,7 +2762,12 @@ async def finalize_recorded_experiment_loop_result(
         owner="Experiment loop",
     )
     episode = _load_experiment_loop_episode_context(execution)
-    verdict = decode_recorded_turn(recorded, provider_turn_request(turn.workspace, recorded))
+    verdict = decode_recorded_turn(
+        recorded,
+        provider_turn_request(
+            turn.workspace, recorded, capability="work_auto", write_scope=turn.write_scope
+        ),
+    )
     refusal = refuse_recorded_session_mismatch(
         execution, turn.outcome, verdict, turn.required_session_id
     )

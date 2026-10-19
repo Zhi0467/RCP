@@ -351,10 +351,10 @@ def edge_layer(
 ) -> str:
     """Resolve the layer of one edge from the nodes it actually connects.
 
-    A layer describes an edge, not a relation name. `blocked_by` is the proof:
-    from an experiment or a decision it stays inside the action layer, but from
-    a research question it crosses into it, and a single declared value on the
-    relation cannot be right for both. So the layer is derived per edge — same
+    A layer describes an edge, not a relation name. `has_decision` crosses from
+    a hypothesis into the action layer. Historical `blocked_by` edges from a
+    research question likewise remain seams, while experiment sources stay in
+    the action layer. The layer is derived per edge — same
     layer at both ends keeps that layer, different ends are a `seam`.
 
     `meta` is the exception. `supersedes` and `duplicate_of` are meta because of

@@ -13,6 +13,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_LIST_SECTIONS,
+  AGENT_NAME_MAX_CHARS,
   CONVERSATION_AGENT_GROUPS,
   conversationAgentStatus,
   listedAgentConversations,
@@ -208,7 +209,10 @@ const NO_GLOSSARY = buildGlossaryIndex({});
 /** The orchestrator card's episode comes from the server's projection, not its tasks. */
 function agentTypeLabel(conversation: ChatConversation): string {
   if (conversation.conversationKind === "auto_research") return "Orchestrator";
-  return conversation.kind === "project_chat" ? "Project chat" : "Node chat";
+  // The node tells apart agents that share a name pattern.
+  return conversation.kind === "project_chat"
+    ? "Project chat"
+    : (conversation.nodeId ?? "Node chat");
 }
 
 /** A board card's provider line: provider, model, effort, task type. */
@@ -249,14 +253,16 @@ function AgentRename({ title, onDone }: { title: string; onDone: (title: string 
       onSubmit={(event) => {
         event.preventDefault();
         const value = new FormData(event.currentTarget).get("title");
-        onDone(typeof value === "string" ? value.trim() : "");
+        const title = typeof value === "string" ? value.trim() : "";
+        // The agent has one stored name; a blank entry keeps it.
+        onDone(title || null);
       }}
     >
-      {/* Blank returns the chat to its derived name. */}
       <input
         name="title"
         aria-label="Agent name"
         autoFocus
+        maxLength={AGENT_NAME_MAX_CHARS}
         defaultValue={title}
         onFocus={(event) => event.currentTarget.select()}
         onBlur={(event) => event.currentTarget.form?.requestSubmit()}
@@ -404,18 +410,24 @@ export function ChatsWorkspace({
     setDisplayState(next);
   };
   const archivedChatIds = useMemo(() => new Set(display.archived), [display.archived]);
-  // A human-given name replaces the derived one everywhere in this workspace.
+  // Summaries carry each agent's stored name, self-names included. A rename made
+  // here shows at once, until the summaries' names next change to whatever name won.
+  const [renamed, setRenamed] = useState<Record<string, string>>({});
+  const summaryNames = storedConversations
+    .map((conversation) => `${conversation.chatId}\u0000${conversation.title}`)
+    .join("\u0001");
+  useEffect(() => setRenamed({}), [summaryNames]);
   const conversations = useMemo(
     () =>
       withEpisodeAttention(
         storedConversations.map((conversation) =>
-          display.titles[conversation.chatId]
-            ? { ...conversation, title: display.titles[conversation.chatId] }
+          renamed[conversation.chatId]
+            ? { ...conversation, title: renamed[conversation.chatId] }
             : conversation,
         ),
         orchestratorEpisodes,
       ),
-    [storedConversations, display.titles, orchestratorEpisodes],
+    [storedConversations, renamed, orchestratorEpisodes],
   );
   const filteredConversations = listedAgentConversations(
     conversations,
@@ -516,7 +528,11 @@ export function ChatsWorkspace({
     updateDisplay(() => setChatPinned(apiBase, chatId, pinned));
   const rename = (chatId: string, title: string) => {
     setRenamingChatId(null);
-    return updateDisplay(() => setChatTitle(apiBase, chatId, title));
+    return updateDisplay(async () => {
+      const response = await setChatTitle(apiBase, chatId, title);
+      setRenamed((current) => ({ ...current, [chatId]: response.titles[chatId] ?? title }));
+      return response;
+    });
   };
   const finishRename = (conversation: ChatConversation, title: string | null) => {
     if (title === null || title === conversation.title) setRenamingChatId(null);

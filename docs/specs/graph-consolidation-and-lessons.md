@@ -59,6 +59,18 @@ a reader could not tell what it runs, since the rewrite returns it to asserted
 for another review; for other accepted nodes it only suggests rewrites. Existing protected beliefs still
 require [Proposals](authority-and-proposals.md#protected-belief-proposals).
 
+The workflow re-homes historical links using ordinary Patch verbs. It maps a
+Question's Decision only to existing Hypotheses the choice serves, or keeps a
+pure Experiment input connected through `governed_by`; it never invents a
+Hypothesis for topology. It maps Question/Decision Blockers to the existing
+Experiments they prevent from starting, and replaces a `requires_decision`
+choice wrapper with a genuine Experiment input when supported. Ordinary edge
+replacements can share a Patch; protected node changes still use Proposals.
+If no supported replacement fits, it retains the old edge and reports its id
+under Suggestions. Blocker resolution remains explicit and authorized, and
+Decision ballots stay unchanged. Upgrade alone starts no cleanup: the schedule
+still requires a new non-consolidation revision since the covered head.
+
 Its charter is "Tidy and check sources; do not run experiments." After the
 audit, a fact-check reads Evidence created or changed since the covered head
 against the sources themselves: cited artifacts, producing Experiment job logs,
@@ -79,9 +91,11 @@ claim, validity, or standing to resolve such a finding.
 The same pass then uses the turn's web search for recent work bearing on open
 ResearchQuestions and Hypotheses, recording each query, date, source, and
 whether the full text or only the abstract was read. It prefers changes to
-existing records and Suggestions over new nodes; qualifying an existing
-Evidence edge to a protected belief, or undermining that belief, goes through
-a Proposal. It may add Evidence for a result a source it read states, including
+existing records and Suggestions over new nodes. Qualifying an ordinary
+Evidence edge uses removal and recreation; changing the protected belief itself
+uses a Proposal. Ordinary consolidation cannot author a merge-only atomic
+protected-edge replacement: it uses safe separately approved steps or leaves a
+Suggestion. It may add Evidence for a result a source it read states, including
 `external_publication` Evidence with assessed edges, and fact-checks the
 Evidence it added after applying. Its authority is otherwise unchanged.
 
@@ -153,16 +167,29 @@ the main revision, consolidation run and occurrence, and creation time.
 
 Inbox's **Evidence to check** section lists open and addressing flags with kind,
 Evidence title, and one-line finding. A `consolidation_added` flag is a notice,
-not a finding: its row has no **Address**, and the endpoint refuses it with
-`flag_not_addressable`, because there is nothing for an agent to correct.
-**Address** on any other kind starts an ordinary
-member-authorized node Work chat on that Evidence, with the default node-chat
+not a finding, and an `unverified` flag names a source no agent could read, so
+both are flagged only: their rows have no **Address**, **Address all** skips
+them, and the endpoint refuses them with `flag_not_addressable`. **Address** on
+any other kind, `no_source` included, starts an ordinary member-authorized node
+Work chat on that Evidence, with the default node-chat
 provider profile and ordinary admission and prompt construction. Its first human
 message combines the flag context with backend-authored instructions to read the
 source, correct the Evidence only as far as the source supports, and use `ask`
 when unsure. The flag grants no authority. Replaying the request or addressing an
 already-addressing flag returns the existing chat without another turn. Address
 leaves the member in the Inbox; the chat opens only from **Open chat**.
+
+When at least two findings offer Address, the header offers **Address all**.
+It sends one request for the ten oldest addressable findings, ordered by creation
+time. The server caps each batch at ten and refuses empty or duplicate ids,
+non-open flags, flag-only kinds, and absent or retired Evidence on main. One finding uses
+the same node Work path as Address; two or more start one ordinary project Work
+turn on main in one new chat. Its message labels every finding as context.
+Sorted flag locks serialize admission, and every flag binds to that turn and
+chat in the task's transaction or none do. Each addressing strip opens the shared
+chat. The request key and exact ids survive a failed Web attempt; replay returns
+that request's own turn even after settlement or a later attempt. Batch settlement
+and Resume/Retry takeover apply to all flags still bound to the operation.
 
 The Address turn's end settles the flag in the same transition that records it:
 a turn that succeeds, reports its Work outcome as `done`, and has no rejected or

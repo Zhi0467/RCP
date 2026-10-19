@@ -6015,19 +6015,19 @@ async def test_work_lock_ownership_loss_preserves_the_answer_and_skips_graph_app
 
 
 @pytest.mark.asyncio
-async def test_work_patch_adds_decision_edges_to_an_accepted_question_without_correction(
+async def test_work_patch_adds_decision_edges_to_an_accepted_hypothesis_without_correction(
     manifest, tmp_path
 ) -> None:
     app, service = _seeded_project(manifest, tmp_path)
     service.review_node(
-        "rq/learning-after-shift",
+        "hyp/replanning-restores-plasticity",
         ReviewRequest(standing="accepted"),
         authorized_by=_named_test_authorizer(app.state.background_tasks.store),
     )
     patch = Patch(
         kind="work",
         author="agent",
-        summary="Added the decisions that operationalize the accepted question.",
+        summary="Added the decisions that operationalize the accepted Hypothesis.",
         run_truth_scope=["repo-a"],
         repositories_read=["repo-a"],
         ops=[
@@ -6054,12 +6054,12 @@ async def test_work_patch_adds_decision_edges_to_an_accepted_question_without_co
                 "op": "create_edges",
                 "edges": [
                     {
-                        "source": "rq/learning-after-shift",
+                        "source": "hyp/replanning-restores-plasticity",
                         "target": "dec/evaluation-rule",
                         "relation": "has_decision",
                     },
                     {
-                        "source": "rq/learning-after-shift",
+                        "source": "hyp/replanning-restores-plasticity",
                         "target": "dec/intervention-budget",
                         "relation": "has_decision",
                     },
@@ -6072,7 +6072,7 @@ async def test_work_patch_adds_decision_edges_to_an_accepted_question_without_co
         message="I added the experiment decisions.",
     )
     request = _project_work_request("Add the decision structure.")
-    execution = _chat_task_execution(app, request, "accepted-question-decisions")
+    execution = _chat_task_execution(app, request, "accepted-hypothesis-decisions")
 
     frames = [
         frame
@@ -6091,9 +6091,11 @@ async def test_work_patch_adds_decision_edges_to_an_accepted_question_without_co
     assert graph_update["correction_rounds"] == 0
     assert launcher.calls == 1
     state = service.history.state()
-    assert "rq/learning-after-shift::has_decision::dec/evaluation-rule" in state.edges
-    assert "rq/learning-after-shift::has_decision::dec/intervention-budget" in state.edges
-    assert state.nodes["rq/learning-after-shift"].standing == "accepted"
+    assert "hyp/replanning-restores-plasticity::has_decision::dec/evaluation-rule" in state.edges
+    assert (
+        "hyp/replanning-restores-plasticity::has_decision::dec/intervention-budget" in state.edges
+    )
+    assert state.nodes["hyp/replanning-restores-plasticity"].standing == "accepted"
 
 
 @pytest.mark.asyncio

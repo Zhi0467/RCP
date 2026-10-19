@@ -10,8 +10,8 @@ node's own content says it belongs in one of these structures.
 ResearchQuestion -has_subquestion-> ResearchQuestion
 ```
 
-A broad question splits into parts that can be pursued separately. Hypotheses and Decisions hang
-off the narrowest question they serve.
+A broad question splits into parts that can be pursued separately. Hypotheses hang off the
+narrowest question they serve; Decisions may attach to the Hypotheses whose work they guide.
 
 Flag:
 - a sub-question that restates its parent instead of narrowing it;
@@ -74,31 +74,41 @@ Flag:
 ## A choice gated by a measurement
 
 ```text
-ResearchQuestion -has_decision-> Decision
+Hypothesis -has_decision-> Decision
 main Experiment -governed_by-> Decision
 precursor Experiment -produces-> Evidence -informs-> Decision
 ```
 
-A Decision is an input to the main Experiment, and a precursor measurement informs it.
+A Decision is an input to the main Experiment, and a precursor measurement informs it. The
+Hypothesis attachment records which claim the choice serves; it does not gate an Experiment. A
+pure Experiment input may connect only through `governed_by`; no Hypothesis is required.
 
 Flag:
-- a Decision with neither a question it belongs to nor an Experiment it governs;
+- a Decision whose stated role serves a Hypothesis or governs an Experiment but lacks that link;
 - the Decision governing the precursor that exists to inform it (reversed);
 - Evidence that bears on a choice but connects only to its producing Experiment.
 
 ## A blocked path
 
 ```text
-Experiment|Decision|ResearchQuestion -blocked_by-> Blocker
-Blocker -requires_decision-> Decision            (a choice clears it)
-precursor Experiment -produces-> Evidence -addresses-> Blocker   (an observation clears it)
+Experiment -blocked_by-> Blocker
+precursor Experiment -produces-> Evidence -addresses-> Blocker
 ```
 
+A Blocker names an observable impediment to starting an Experiment. Evidence may address the
+condition; resolution still requires an authorized lifecycle update. An input choice belongs on
+an Experiment's `governed_by` Decision, without a Blocker wrapping that choice.
+
 Flag:
-- a Blocker that blocks nothing;
-- a Blocker whose `resolution_condition` is a choice but which has no `requires_decision` edge, or is
-  an observation but which no Evidence `addresses` once that Evidence exists;
+- a Blocker whose stated impediment stops no Experiment;
+- a choice represented only as a Blocker instead of a governing Decision;
+- a Blocker with relevant existing Evidence but no `addresses` link;
 - an Experiment blocked by the very condition its own Evidence is meant to address.
+
+Historical Question→Decision, Question→Blocker, Decision→Blocker, and `requires_decision` edges
+remain readable. Report their ids and the supported current links, without treating their mere
+presence as invalid history. When no current mapping fits, retain them and report the uncertainty;
+never invent a Hypothesis or Experiment to satisfy topology.
 
 ## External and analytic support
 

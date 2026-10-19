@@ -103,6 +103,55 @@ def _members(connection: sqlite3.Connection, project_id: str) -> list[dict[str, 
     ]
 
 
+def migrate_bulletin_actor_ids(connection: sqlite3.Connection) -> None:
+    """Experiment agents were `episode:<chain root>`; their conversation now names them.
+
+    Rewrites stored authors, recorded mentions, and mention tokens so pre-upgrade
+    posts stay editable by their agent and mentions still reach it.
+    """
+    from rcp.bulletin import bulletin_actor_id
+
+    renames: dict[tuple[str, str], str] = {}
+    for row in connection.execute(
+        "SELECT r.* FROM graph_runs AS r JOIN episodes AS e "
+        "ON e.episode_id = r.episode_id AND e.project_id = r.project_id "
+        "WHERE e.mode = 'experiment_loop'"
+    ).fetchall():
+        new = bulletin_actor_id(connection, row)
+        if new is None or not new.startswith("chat:"):
+            continue
+        root, seen = row["episode_id"], set()
+        while root not in seen:
+            seen.add(root)
+            parent = connection.execute(
+                "SELECT continues_episode_id FROM episodes WHERE episode_id = ? AND project_id = ?",
+                (root, row["project_id"]),
+            ).fetchone()
+            if parent is None or not parent["continues_episode_id"]:
+                break
+            root = parent["continues_episode_id"]
+        renames[(row["project_id"], f"episode:{root}")] = new
+    for (project_id, old), new in renames.items():
+        connection.execute(
+            "UPDATE bulletin_posts SET author_actor_id = ? "
+            "WHERE project_id = ? AND author_actor_id = ?",
+            (new, project_id, old),
+        )
+        connection.execute(
+            "UPDATE bulletin_posts SET text = replace(text, ?, ?), "
+            "mentions_json = replace(mentions_json, ?, ?) "
+            "WHERE project_id = ? AND instr(mentions_json, ?) > 0",
+            (
+                f"<@agent:{old}>",
+                f"<@agent:{new}>",
+                json.dumps(old),
+                json.dumps(new),
+                project_id,
+                json.dumps(old),
+            ),
+        )
+
+
 def _parse(
     connection: sqlite3.Connection, project_id: str, target_key: str, text: str
 ) -> tuple[list[str], list[dict[str, str]]]:
@@ -592,7 +641,7 @@ class BulletinStoreMixin(StoreMixinBase):
                     "actor_id": actor_id,
                     "kind": "agent",
                     "operation_id": operation_id,
-                    "actor_label": _agent_label(task),
+                    "actor_label": _agent_label(connection, task, actor_id),
                 },
                 key=key,
                 text=text,
@@ -603,10 +652,24 @@ class BulletinStoreMixin(StoreMixinBase):
         return _result(outcome)
 
 
-def _agent_label(task: sqlite3.Row) -> str:
-    """The author name a member reads: the agent's part, then its seat node."""
+def _agent_label(connection: sqlite3.Connection, task: sqlite3.Row, actor_id: str) -> str:
+    """The author name a member reads once the agent leaves the roster.
+
+    A conversation's stored name comes first, so an archived agent's posts keep it;
+    otherwise the agent's part, then its seat node.
+    """
 
     request = json.loads(task["request_json"] or "{}")
+    # An orchestrator's turns carry no chat_id; its conversation is its chain root.
+    chat_id = request.get("chat_id") or (
+        actor_id.removeprefix("episode:") if actor_id.startswith("episode:") else None
+    )
+    named = connection.execute(
+        "SELECT title FROM chat_display WHERE project_id=? AND chat_id=?",
+        (task["project_id"], chat_id),
+    ).fetchone()
+    if named and named["title"]:
+        return named["title"]
     part = (
         "Worker"
         if request.get("role") == "worker"

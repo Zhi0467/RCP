@@ -19,7 +19,6 @@ from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import (
     BULLETIN_KEY_MAX_CHARS,
     BULLETIN_REPLY_MAX_CHARS,
-    BULLETIN_ROSTER_MAX_COUNT,
     BULLETIN_TEXT_MAX_CHARS,
 )
 from rcp.storage import AppStore
@@ -73,7 +72,7 @@ def list_bulletin(
     cursor: str | None = None,
 ) -> dict[str, object]:
     target = _target(store, project, branch_id)
-    roster = bulletin_roster(store, project, target)
+    roster = bulletin_roster(store, project)
     try:
         store.require_project_accepts_new_work(project)
         can_post = True
@@ -83,8 +82,7 @@ def list_bulletin(
         return {
             "can_post": can_post,
             "members": store.bulletin_members(project),
-            "roster": roster[-BULLETIN_ROSTER_MAX_COUNT:],
-            "roster_omitted": max(0, len(roster) - BULLETIN_ROSTER_MAX_COUNT),
+            "roster": roster,
             **store.list_bulletin(project, target.key, cursor=cursor),
         }
     except BulletinError as exc:

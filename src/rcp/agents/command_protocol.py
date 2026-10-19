@@ -56,6 +56,7 @@ CommandVerb = Literal[
     "ask",
     "lesson",
     "bulletin",
+    "name",
     "flag",
 ]
 CommandStatus = Literal["ok", "invalid", "unavailable"]
@@ -76,6 +77,7 @@ MutatingCommandVerb = Literal[
     "ask",
     "lesson",
     "bulletin",
+    "name",
     "flag",
 ]
 
@@ -97,6 +99,7 @@ MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
         "ask",
         "lesson",
         "bulletin",
+        "name",
         "flag",
     }
 )
@@ -456,6 +459,12 @@ class FlagArguments(BaseModel):
         return value
 
 
+class NameArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    name: str
+
+
 class BulletinArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -664,6 +673,11 @@ class FlagCommandRequest(_CommandRequest):
         return self
 
 
+class NameCommandRequest(_CommandRequest):
+    verb: Literal["name"]
+    arguments: NameArguments
+
+
 class BulletinCommandRequest(_CommandRequest):
     idempotency_key: str | None = Field(
         default=None, min_length=1, max_length=BULLETIN_KEY_MAX_CHARS
@@ -710,6 +724,7 @@ CommandRequest: TypeAlias = Annotated[
     | FinishCommandRequest
     | LaunchCommandRequest
     | AskCommandRequest
+    | NameCommandRequest
     | BulletinCommandRequest
     | LessonCommandRequest
     | FlagCommandRequest,

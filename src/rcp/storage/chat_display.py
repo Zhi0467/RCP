@@ -1,6 +1,6 @@
 """Display choices for conversations: archived or renamed per project, pinned per user.
 
-No choice touches a transcript or task; a row goes away once it holds none.
+Names persist independently of archive and pin choices.
 Pins and read markers are per user; a marker records the newest turn end seen.
 """
 
@@ -12,9 +12,8 @@ from typing import TYPE_CHECKING, Any, cast
 
 from rcp.core.graph_targets import graph_target_json
 from rcp.core.transition_models import GraphTargetRef
-from rcp.limits import CHAT_TITLE_MAX_CHARS
 from rcp.providers.browser_grant import BrowserOwnerKey, BrowserTurnStatus
-from rcp.storage.branch_names import resolve_branch_names
+from rcp.storage.chat_names import ChatNameError, initialize_chat_name, normalize_chat_name
 from rcp.storage.mixin_base import StoreMixinBase
 
 if TYPE_CHECKING:
@@ -58,12 +57,14 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                     GROUP BY 1
                 )
                 -- An artifact edit only refreshes a conversation its turns already hold.
-                SELECT chats.chat_id, chats.kind, chats.request_json, chats.graph_target_json,
+                SELECT display.title, chats.chat_id, chats.kind, chats.request_json, chats.graph_target_json,
                        MAX(chats.updated_at, COALESCE(edits.updated_at, '')) AS updated_at,
                        episode_chats.chat_id IS NOT NULL AS is_episode,
                        COALESCE(worker.episode_id, child.auto_research_episode_id)
                            AS orchestrator_episode_id
                 FROM chats
+                JOIN chat_display AS display ON display.project_id = chats.project_id
+                  AND display.chat_id = chats.chat_id
                 LEFT JOIN episode_chats
                   ON episode_chats.chat_id = chats.chat_id
                  AND episode_chats.graph_target_json = chats.graph_target_json
@@ -100,9 +101,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                         else target["branch_id"][:8],
                         "kind": row["kind"],
                         "node_id": request.get("node_id") or request.get("control_node_id"),
-                        "title": " ".join(
-                            (request.get("message") or request.get("node_id") or "Chat").split()
-                        )[:CHAT_TITLE_MAX_CHARS],
+                        "title": row["title"],
                         "updated_at": row["updated_at"],
                         "message_count": 0,
                         "last_message_preview": "",
@@ -125,16 +124,17 @@ class ChatDisplayStoreMixin(StoreMixinBase):
     def _orchestrator_chat_summaries(
         self, connection: Any, project_id: str, chat_id: str | None
     ) -> list[dict[str, Any]]:
-        """One conversation per Auto-research chain, named by its owning branch."""
+        """One conversation per Auto-research chain, with its stored name."""
         roots = connection.execute(
-            "SELECT e.episode_id, e.graph_target_json FROM episodes e "
+            "SELECT e.episode_id, e.graph_target_json, display.title FROM episodes e "
+            "JOIN chat_display display ON display.project_id=e.project_id "
+            "AND display.chat_id=e.episode_id "
             "JOIN graph_branches b ON b.project_id=e.project_id AND b.owner_episode_id=e.episode_id "
             "AND b.branch_id=json_extract(e.graph_target_json, '$.branch_id') "
             "WHERE e.project_id = ? AND e.mode = 'auto_research' "
             "AND (? IS NULL OR e.episode_id = ?)",
             (project_id, chat_id, chat_id),
         ).fetchall()
-        names = resolve_branch_names(connection, project_id) if roots else {}
         summaries = []
         for root in roots:
             updated_at, messages = self._orchestrator_chat_turns(
@@ -150,7 +150,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                     "graph_title": target["branch_id"][:8],
                     "kind": "project_chat",
                     "node_id": None,
-                    "title": names.get(target["branch_id"]) or "Orchestrator",
+                    "title": root["title"],
                     "updated_at": updated_at,
                     "message_count": len(messages),
                     "last_message_preview": "",
@@ -175,7 +175,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
     ) -> tuple[str | None, list[dict[str, Any]]]:
         """The chain's newest turn update, and each orchestrator turn's human input and answers.
 
-        Every chain member writes the root's branch, so the branch names the chain.
+        Every chain member writes the root's branch and shares its conversation.
         An artifact edit replying to the chain is one of its turns. The human input
         is the starting instruction or the human mail the turn delivered; a wake with
         neither has no human line.
@@ -379,13 +379,69 @@ class ChatDisplayStoreMixin(StoreMixinBase):
     def set_chat_title(
         self, project_id: str, chat_id: str, user_id: str, title: str | None
     ) -> None:
-        """A None title returns the conversation to its derived name."""
+        """Replace the canonical name and retain human ownership of it."""
+        title = normalize_chat_name(title)
         self._set_chat_display(
             project_id,
             chat_id,
             "title = ?, titled_user_id = ?",
-            (title, user_id if title is not None else None),
+            (title, user_id),
         )
+
+    def chat_name(self, project_id: str, chat_id: str, message: str) -> str:
+        """Read the canonical name, seeding transcript-only conversations once."""
+        with self.connection() as connection:
+            query = "SELECT title FROM chat_display WHERE project_id = ? AND chat_id = ?"
+            row = connection.execute(query, (project_id, chat_id)).fetchone()
+            if row is None or row["title"] is None:
+                initialize_chat_name(connection, project_id, chat_id, message)
+                row = connection.execute(query, (project_id, chat_id)).fetchone()
+        return row["title"]
+
+    def agent_name_state(self, project_id: str, chat_id: str) -> dict[str, Any]:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT title, titled_user_id, self_named FROM chat_display "
+                "WHERE project_id = ? AND chat_id = ?",
+                (project_id, chat_id),
+            ).fetchone()
+        if row is None or row["title"] is None:
+            raise ChatNameError("chat_name_not_found")
+        return {
+            "name": row["title"],
+            "can_self_name": row["titled_user_id"] is None and not row["self_named"],
+        }
+
+    def self_name_chat_for_task(self, operation_id: str, name: str) -> dict[str, Any]:
+        from rcp.bulletin import bulletin_actor_id
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            task = connection.execute(
+                "SELECT * FROM graph_runs WHERE operation_id = ?", (operation_id,)
+            ).fetchone()
+            if task is None or task["status"] != "running":
+                raise ChatNameError("chat_name_forbidden")
+            actor = bulletin_actor_id(connection, task)
+            if actor is None:
+                raise ChatNameError("chat_name_forbidden")
+            return self._self_name_chat(
+                connection, task["project_id"], actor.split(":", 1)[1], name
+            )
+
+    def _self_name_chat(
+        self, connection: Any, project_id: str, chat_id: str, name: str
+    ) -> dict[str, Any]:
+        name = normalize_chat_name(name)
+        result = connection.execute(
+            "UPDATE chat_display SET title = ?, self_named = 1 "
+            "WHERE project_id = ? AND chat_id = ? AND title IS NOT NULL "
+            "AND titled_user_id IS NULL AND self_named = 0",
+            (name, project_id, chat_id),
+        )
+        if result.rowcount != 1:
+            raise ChatNameError("chat_name_not_available")
+        return {"name": name, "can_self_name": False}
 
     def chat_reads(
         self, project_id: str, user_id: str, graph_target: GraphTargetRef | None
@@ -404,7 +460,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             # Finished turns as `AgentTaskRecord.finished` defines them; the task
             # list is bounded, so an old reply is found only here.
             # An orchestrator turn belongs to its chain's conversation, which
-            # its branch names.
+            # its branch identifies.
             finished = connection.execute(
                 """
                 SELECT turns.chat_id, MAX(turns.finished_at) AS finished_at

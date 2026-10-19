@@ -9,7 +9,7 @@ from rcp.core.models import EpisodeIsolation, EpisodeWorktreeBinding
 from rcp.transport import conversation_worktree
 
 from .helpers import append_fixture_patch, wait_for_task
-from .test_branch_merge_api import _branch_patch, _create_branch_harness
+from .test_branch_merge_api import _branch_patch, _create_branch_harness, _episode_payload
 from .test_conversation_worktree_git import git
 
 
@@ -63,6 +63,7 @@ def test_merge_lands_code_and_graph_without_provider(manifest, tmp_path, monkeyp
         json={"keep_branch_open": True},
     )
     assert response.status_code == 202, response.text
+    assert response.json()["can_merge"] is True  # Retained code and cleanup are independent.
     assert (shared / "file").read_text() == "episode"
     assert len(harness.branch.merge_receipts()) == 1
     state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
@@ -908,10 +909,12 @@ def test_merge_task_failing_after_its_receipt_completes_on_the_next_merge(
     wait_for_task(harness.store, state.merge_attempt.graph_task_id, expect="failed")
     assert len(harness.branch.merge_receipts()) == 1
 
+    assert _episode_payload(harness)["can_merge"] is True
     # The next Merge finishes the delivered attempt instead of dropping its cleanup.
     assert harness.client.post(url, json={}).status_code == 202
     state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
     assert (state.merge_attempt.phase, state.merge_reservation) == ("done", None)
+    assert _episode_payload(harness)["can_merge"] is False
     assert not Path(binding.worktree_path).exists()
     assert len(harness.branch.merge_receipts()) == 1
 

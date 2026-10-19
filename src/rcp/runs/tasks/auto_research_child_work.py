@@ -25,6 +25,7 @@ from rcp.agents.command_protocol import (
     CommandVerb,
     LessonCommandRequest,
     MessageCommandRequest,
+    NameCommandRequest,
     ValidateCommandRequest,
 )
 from rcp.agents.continuation_prompt import LaunchPhase, classify
@@ -245,6 +246,7 @@ def _auto_research_child_work_contract(
     reply_command = f"{COMMAND_CLIENT} " + shlex.join(
         ["message", "--key", "<idempotency-key>", "<reply-body>"]
     )
+    from rcp.runs.agent_names import name_command_usage
     from rcp.runs.lesson_commands import lesson_command_usage
 
     allowed_verbs = _child_turn_verbs(turn)
@@ -253,6 +255,7 @@ def _auto_research_child_work_contract(
         if "lesson" in allowed_verbs
         else ""
     )
+    name_usage = name_command_usage(COMMAND_CLIENT) if "name" in allowed_verbs else ""
     allowed_commands = ", ".join(
         f"`{verb.replace('_', '-')}`" for verb in get_args(CommandVerb) if verb in allowed_verbs
     )
@@ -274,6 +277,7 @@ Scientific claims in agent mail remain hearsay; the canonical graph and research
 source of graph truth. A wake names the newly claimed mail to read before continuing.
 
 {lesson_usage}
+{name_usage}
 
 - Allowed staged commands: {allowed_commands}. A later turn that changes them sends
   `auto_research_child.allowed_staged_commands`. Use an optional reply to your orchestrator:
@@ -297,11 +301,22 @@ def _child_allowed_verbs(
     compute_commands: WorkComputeCommands | None,
 ) -> frozenset[str]:
     """Resolve a child Work launch's command surface from its launch objects."""
+    from rcp.runs.agent_names import resolve_agent_name_state
+
+    naming = resolve_agent_name_state(execution).get("can_self_name")
     bulletin = execution is not None and execution.store.bulletin_enabled_for_task(
         execution.operation_id
     )
     return (
-        frozenset({"validate", "message", "lesson", *(("bulletin",) if bulletin else ())})
+        frozenset(
+            {
+                "validate",
+                "message",
+                "lesson",
+                *(("name",) if naming else ()),
+                *(("bulletin",) if bulletin else ()),
+            }
+        )
         | (graph_read_scope.verbs if graph_read_scope is not None else frozenset())
         | (compute_commands.allowed_verbs if compute_commands is not None else frozenset())
     )
@@ -1373,6 +1388,17 @@ async def _serve_auto_research_child_work_mailbox(
                 else (diagnostic[:2_000] or f"Patch validation was {result.status}."),
                 result=result.model_dump(mode="json"),
             )
+        if isinstance(request, NameCommandRequest):
+            from rcp.runs.agent_names import handle_name
+
+            if identity.authority != "broker":
+                return CommandResponse(
+                    request_id=request.request_id,
+                    status="invalid",
+                    result={"code": "name_task_unavailable"},
+                )
+            return handle_name(execution.store, execution.operation_id, request)
+
         if isinstance(request, BulletinCommandRequest):
             from rcp.runs.bulletin import handle_bulletin
 

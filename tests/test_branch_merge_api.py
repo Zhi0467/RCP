@@ -805,6 +805,7 @@ def test_episode_projection_and_merge_admission_are_exact_and_recover_by_fresh_d
     assert len(held) == 1
 
     harness.store.fail_agent_task(first.operation_id, "The merge provider exited early.")
+    assert _episode_payload(harness)["can_merge"] is True
     for action in ("resume", "retry"):
         recovery = harness.client.post(
             f"/api/projects/{harness.project_id}/tasks/{first.operation_id}/{action}", json={}
@@ -866,6 +867,41 @@ def test_merge_refuses_an_active_or_unchanged_branch(
     assert not any(
         task.kind == "branch_merge" for task in harness.store.agent_tasks(harness.project_id)
     )
+
+
+@pytest.mark.parametrize("keep_branch_open", [False, True])
+@pytest.mark.parametrize("change", ["evidence", "bookkeeping"])
+def test_delivered_head_has_no_merge_offer_until_branch_advances(
+    manifest, tmp_path, keep_branch_open, change
+):
+    harness = _create_branch_harness(manifest, tmp_path, change=change)
+    assert _episode_payload(harness)["can_merge"] is True
+    route = f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+    merged = harness.client.post(route, json={"keep_branch_open": keep_branch_open})
+    assert merged.status_code == 202, merged.text
+    delivered = merged.json()
+    assert delivered["graph_branch"]["merge_state"] == "merged"
+    assert delivered["can_merge"] is False
+    assert delivered["isolation_state"]["graph_archived"] is not keep_branch_open
+    before = harness.service.history.head_ref()
+    receipts = harness.branch.merge_receipts()
+    refused = harness.client.post(route, json={})
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"]["code"] == "no_undelivered_work"
+    assert harness.service.history.head_ref() == before
+    assert harness.branch.merge_receipts() == receipts
+    if keep_branch_open:
+        harness.branch.append(
+            _branch_patch(harness.root.operation_id, "evidence", suffix="-later"),
+            expected_revision=harness.branch.head_ref().revision,
+        )
+        advanced = _episode_payload(harness)
+        assert advanced["graph_branch"]["merge_state"] == "unmerged"
+        assert advanced["can_merge"] is True
+        assert (
+            advanced["graph_branch"]["latest_successful_merge"]
+            == delivered["graph_branch"]["latest_successful_merge"]
+        )
 
 
 @pytest.mark.parametrize("ending", ["stopped", "human_pause", "completed", "exhausted", "failed"])

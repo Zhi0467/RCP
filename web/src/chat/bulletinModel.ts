@@ -27,11 +27,18 @@ export interface BulletinPost {
   reply_count?: number;
 }
 
+/** A roster entry; the roster lists every agent in the project, each in its own channel. */
 export interface BulletinActor {
+  /** The mention id used in `<@agent:ID>` tokens. */
   id: string;
+  chat_id: string;
+  /** The agent's channel: "main" or "branch:<branch_id>". */
+  target_key: string;
+  /** The agent's name, the same one its Agents board card shows. */
+  name: string;
   kind: string;
   seat_node_id: string | null;
-  instruction_title: string;
+  started_at: string;
   state: "working" | "waiting" | "needs_you" | "done";
   last_post_at: string | null;
 }
@@ -43,7 +50,6 @@ export interface BulletinMember {
 
 export interface BulletinPage {
   roster: BulletinActor[];
-  roster_omitted: number;
   can_post: boolean;
   posts: BulletinPost[];
   /** The channel's latest post anywhere, a reply in an older thread included. */
@@ -74,8 +80,13 @@ export function bulletinActorKind(actor: Pick<BulletinActor, "kind">): string {
   return ACTOR_KINDS[actor.kind] || actor.kind;
 }
 
-export function bulletinActorLabel(actor: Pick<BulletinActor, "kind" | "instruction_title">) {
-  return actor.instruction_title || bulletinActorKind(actor);
+/** A mention row names the kind only for autonomous agents; a conversation needs no Work/Discuss tag. */
+export function bulletinMentionKind(actor: Pick<BulletinActor, "kind">): string | null {
+  return actor.kind.startsWith("human_chat_") ? null : bulletinActorKind(actor);
+}
+
+export function bulletinActorLabel(actor: Pick<BulletinActor, "kind" | "name">) {
+  return actor.name || bulletinActorKind(actor);
 }
 
 export function bulletinThreads(posts: readonly BulletinPost[]) {
@@ -87,10 +98,19 @@ export function bulletinThreads(posts: readonly BulletinPost[]) {
     }));
 }
 
-export function bulletinAuthor(post: Pick<BulletinPost, "author">): string {
-  return post.author.kind === "member"
-    ? (post.author.display_name ?? post.author.user_id ?? "Member")
-    : (post.author.actor_label ?? post.author.operation_id ?? "Agent");
+/** An agent author shows its current name; the label stored with the post covers agents no longer listed. */
+export function bulletinAuthor(
+  post: Pick<BulletinPost, "author">,
+  names: ReadonlyMap<string, string> = new Map(),
+): string {
+  if (post.author.kind === "member")
+    return post.author.display_name ?? post.author.user_id ?? "Member";
+  const current = post.author.actor_id ? names.get(post.author.actor_id) : undefined;
+  return current ?? post.author.actor_label ?? post.author.operation_id ?? "Agent";
+}
+
+export function bulletinDate(iso: string): string {
+  return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 /** Clock time for today's posts, a short date for older ones. */
@@ -98,7 +118,7 @@ export function bulletinTime(iso: string, now: Date = new Date()): string {
   const at = new Date(iso);
   return at.toDateString() === now.toDateString()
     ? at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-    : at.toLocaleDateString([], { month: "short", day: "numeric" });
+    : bulletinDate(iso);
 }
 
 export function bulletinPostState(
@@ -121,6 +141,12 @@ export function bulletinChannelTarget(channel: Pick<BulletinChannel, "branch_id"
 
 export function bulletinTargetKey(target: GraphTargetRef): string {
   return target.kind === "main" ? "main" : `branch:${target.branch_id}`;
+}
+
+export function bulletinKeyTarget(targetKey: string): GraphTargetRef {
+  return targetKey.startsWith("branch:")
+    ? { kind: "branch", branch_id: targetKey.slice("branch:".length) }
+    : { kind: "main" };
 }
 
 // ---- Text segments ----
@@ -210,6 +236,35 @@ export function bulletinMentionCandidates(
   });
 }
 
+export interface BulletinAgentChoice {
+  actor: BulletinActor;
+  /** The agent's `@` label among the members and agents of its own channel. */
+  label: string;
+  token: string;
+}
+
+/**
+ * Every agent with the label it takes in its own channel, the shown channel's
+ * agents first. Mentions count only in the agent's channel, so labels are made
+ * unique per channel, exactly as that channel's composer encodes them.
+ */
+export function bulletinAgentChoices(
+  members: readonly BulletinMember[],
+  roster: readonly BulletinActor[],
+  channelKey: string,
+): BulletinAgentChoice[] {
+  const keys = [channelKey, ...new Set(roster.map((actor) => actor.target_key))];
+  return [...new Set(keys)].flatMap((key) => {
+    const actors = roster.filter((actor) => actor.target_key === key);
+    const candidates = bulletinMentionCandidates(members, actors).slice(members.length);
+    return actors.map((actor, index) => ({
+      actor,
+      label: candidates[index].label,
+      token: candidates[index].token,
+    }));
+  });
+}
+
 export function bulletinLabelMap(
   candidates: readonly BulletinMentionCandidate[],
 ): Map<string, string> {
@@ -226,13 +281,13 @@ export function bulletinEncodeMentions(
   if (candidates.length === 0) return draft;
   const ordered = [...candidates].sort((left, right) => right.label.length - left.label.length);
   const byLabel = new Map(ordered.map((candidate) => [candidate.label, candidate.token]));
+  // A stored token is matched first and kept whole, so a label like `agent` never rewrites its inside.
   const pattern = new RegExp(
-    `(^|[^\\w@])@(${ordered.map((candidate) => escapeRegExp(candidate.label)).join("|")})(?!\\w)`,
+    `(<@(?:member|agent):[^>\\s]+>)|(^|[^\\w@])@(${ordered.map((candidate) => escapeRegExp(candidate.label)).join("|")})(?!\\w)`,
     "g",
   );
-  return draft.replace(
-    pattern,
-    (_whole, lead: string, label: string) => `${lead}${byLabel.get(label)}`,
+  return draft.replace(pattern, (whole, token: string | undefined, lead: string, label: string) =>
+    token ? whole : `${lead}${byLabel.get(label)}`,
   );
 }
 
@@ -246,6 +301,15 @@ export function bulletinDecodeMentions(
     const label = labels.get(token);
     return label === undefined ? token : `@${label}`;
   });
+}
+
+/** Carries a draft to another channel: each mention keeps its recipient, shown by name where that channel knows it. */
+export function bulletinMoveDraft(
+  text: string,
+  from: readonly BulletinMentionCandidate[],
+  to: readonly BulletinMentionCandidate[],
+): string {
+  return bulletinDecodeMentions(bulletinEncodeMentions(text, from), to);
 }
 
 // ---- Autocomplete ----

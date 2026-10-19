@@ -16,7 +16,7 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict
 
 from rcp.api.dependencies import (
     get_attachment_store,
@@ -37,12 +37,13 @@ from rcp.conversation_worktrees import (
     project_conversation_worktree,
     remove_conversation_worktree,
 )
-from rcp.limits import CHAT_PAGE_DEFAULT_LIMIT, CHAT_PAGE_MAX_LIMIT, CHAT_TITLE_MAX_CHARS
+from rcp.limits import CHAT_PAGE_DEFAULT_LIMIT, CHAT_PAGE_MAX_LIMIT
 from rcp.projects import ProjectCatalog
 from rcp.runs.browser_lifecycle import close_chat_browser_owners
 from rcp.runs.chat_admission import require_chat_graph_target
 from rcp.service import ChatMessage, ChatSummary, ChatSummaryPage, ChatTranscript, RunRequest
 from rcp.storage import AppStore
+from rcp.storage.chat_names import ChatNameError
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
 
@@ -73,8 +74,7 @@ class ChatPinBody(BaseModel):
 class ChatTitleBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    # None or blank returns the conversation to its derived name.
-    title: str | None = Field(default=None, max_length=CHAT_TITLE_MAX_CHARS)
+    title: str
 
 
 class ChatDisplay(BaseModel):
@@ -245,8 +245,10 @@ def rename_chat(
     chat_id = _canonical_chat_id(chat_id)
     project_id = catalog.resolve_project_id(project_id)
     user = identity_access.acting_user(request)
-    title = " ".join((body.title or "").split()) or None
-    store.set_chat_title(project_id, chat_id, user.user_id, title)
+    try:
+        store.set_chat_title(project_id, chat_id, user.user_id, body.title)
+    except ChatNameError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
     return ChatDisplay(**store.chat_display(project_id, user.user_id))
 
 

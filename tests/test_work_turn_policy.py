@@ -100,7 +100,7 @@ def test_resumed_mailbox_preserves_validation_policy_without_opening_graph(
     )
     resume(open_service, execution)
     assert opened == []
-    assert restored["command_handler"].allowed_verbs == {"validate", "lesson", "bulletin"}
+    assert restored["command_handler"].allowed_verbs == {"validate", "lesson", "bulletin", "name"}
     assert restored["validate"]("candidate").status == "valid"
     assert opened == [True]
     expected = {"run_truth_scope": ["rq-launch"], "source_operation_id": "accepted-turn"}
@@ -208,13 +208,18 @@ def test_resumed_mailbox_retains_ask_without_compute_and_rechecks_authority(
     if ask_allowed and mode == "work":
         assert restored is not None and "ask" in restored.allowed_verbs
     elif mode == "work":
-        assert restored is not None and restored.allowed_verbs == {"validate", "lesson", "bulletin"}
+        assert restored is not None and restored.allowed_verbs == {
+            "validate",
+            "lesson",
+            "bulletin",
+            "name",
+        }
     else:
-        assert restored is None
+        assert restored is not None and restored.allowed_verbs == {"validate", "name"}
 
 
 @pytest.mark.parametrize("ask_allowed", [True, False])
-def test_discuss_mailbox_restore_preserves_only_its_resolved_ask_offer(
+def test_discuss_mailbox_restore_preserves_naming_and_resolved_ask_offer(
     tmp_path, monkeypatch, ask_allowed
 ):
     from rcp.runs.tasks import discuss
@@ -232,6 +237,8 @@ def test_discuss_mailbox_restore_preserves_only_its_resolved_ask_offer(
     discuss.resume_discuss_command_mailbox(
         lambda: pytest.fail("Discuss must not open the graph"), execution
     )
-    assert captured["command_handler"].allowed_verbs == ({"ask"} if ask_allowed else set())
+    assert captured["command_handler"].allowed_verbs == (
+        {"ask", "name"} if ask_allowed else {"name"}
+    )
     assert captured["validate"] is None
     assert "serve" not in captured

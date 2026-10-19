@@ -408,6 +408,16 @@ def author_create_edges(op: CreateEdgesOperation, ctx: OpContext) -> Any:
             continue
         source_id = edge.source
         target_id = edge.target
+        edge_id = edge.id or f"{source_id}::{relation}::{target_id}"
+        if not spec.authorable:
+            ctx.report.reject(
+                "retired-relation",
+                f"Edge {edge_id!r} uses retired relation {relation!r}; it cannot author new edges.",
+                ctx.revision,
+                related_node_ids=[source_id, target_id],
+                related_edge_ids=[edge_id],
+            )
+            continue
         source_type = _node_type(ctx, source_id)
         target_type = _node_type(ctx, target_id)
         if source_type is None or target_type is None:
@@ -416,7 +426,6 @@ def author_create_edges(op: CreateEdgesOperation, ctx: OpContext) -> Any:
         same_type_mismatch = spec.same_type and source_type != target_type
         if not type_mismatch and not same_type_mismatch:
             continue
-        edge_id = edge.id or f"{source_id}::{relation}::{target_id}"
         allowed_sources = ", ".join(sorted(spec.source_types))
         allowed_targets = ", ".join(sorted(spec.target_types))
         same_type = "; source and target must have the same type" if spec.same_type else ""

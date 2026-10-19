@@ -19,6 +19,7 @@ from rcp.agents.command_protocol import (
     GraphDiffCommandRequest,
     GraphLogCommandRequest,
     LessonCommandRequest,
+    NameCommandRequest,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.limits import ASK_MAX_ATTEMPTS
@@ -167,6 +168,10 @@ def discuss_command_handler(
 ) -> WorkCommandHandler:
     """Discuss resolves questions and explicitly granted history reads."""
     verbs = {"ask"} if discuss_ask_authorized(execution) else set()
+    from rcp.runs.agent_names import resolve_agent_name_state
+
+    if resolve_agent_name_state(execution).get("can_self_name"):
+        verbs.add("name")
     if graph_read_scope is not None:
         verbs.update(graph_read_scope.verbs)
     return WorkCommandHandler(
@@ -337,6 +342,20 @@ class WorkCommandHandler:
             ):
                 return refuse("Evidence flags require this consolidation turn's broker authority.")
             return handle_flag(self.service, execution.store, execution.operation_id, request)
+        if isinstance(request, NameCommandRequest):
+            from rcp.runs.agent_names import handle_name
+
+            execution = self.execution
+            if (
+                execution is None
+                or identity.task_id != execution.operation_id
+                or identity.authority != "broker"
+            ):
+                return refuse(
+                    "Naming requires this turn's broker authority.", "name_task_unavailable"
+                )
+            return handle_name(execution.store, execution.operation_id, request)
+
         if isinstance(request, BulletinCommandRequest):
             from rcp.runs.bulletin import handle_bulletin
 
@@ -513,7 +532,11 @@ def work_command_handler(
             service,
             graph_read_scope,
         )
+    from rcp.runs.agent_names import resolve_agent_name_state
+
     verbs = {"validate"}
+    if resolve_agent_name_state(execution).get("can_self_name"):
+        verbs.add("name")
     if graph_read_scope is not None:
         verbs.update(graph_read_scope.verbs)
     if compute_commands is not None:

@@ -2683,6 +2683,7 @@ export interface ExperimentStartResponse extends AgentTask {
 }
 
 export interface Episode extends EpisodeLoopMetadata {
+  can_merge: boolean;
   bulletin_enabled: boolean;
   browser_requested: boolean;
   code_worktree: boolean;

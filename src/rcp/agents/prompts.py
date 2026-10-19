@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.core.project_types import project_type_of
 from rcp.limits import (
+    AGENT_NAME_MAX_CHARS,
     ASK_CHOICE_MAX_COUNT,
     ASK_CHOICE_MAX_LENGTH,
     ASK_MAX_ATTEMPTS,
@@ -127,11 +128,18 @@ REPLY_STYLE = """Writing the reply:
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
 
-CHAT_MASTER_CONTEXT_VERSION = 20
+CHAT_MASTER_CONTEXT_VERSION = 22
 
 # Staged RCP commands are written against this placeholder; the contract names the current
 # command client once, and a continuation that changes it sends `patch.command_client`.
 COMMAND_CLIENT = "<command client>"
+
+AGENT_NAME_INSTRUCTION = (
+    "Read your agent-name.json snapshot for your current name and can_self_name. "
+    "On your first turn, if can_self_name is true, use name to choose a short "
+    f"2–4 word name (at most {AGENT_NAME_MAX_CHARS} characters) describing your task. "
+    "You can name yourself once, before a human renames you."
+)
 
 BULLETIN_BODY_RULE = (
     "Bulletin bodies may hold `#node-id` links and `<@member:USER_ID>` or `<@agent:ACTOR_ID>` "
@@ -854,9 +862,9 @@ _INLINE_CONTINUATION_RULES = {
 
 
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
-DISCUSS_POLICY_VERSION = "discuss-v6"
+DISCUSS_POLICY_VERSION = "discuss-v7"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v7"
+WORK_POLICY_VERSION = "work-v8"
 
 
 class PromptFactory:

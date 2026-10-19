@@ -18,6 +18,9 @@ import type {
   WorktreeIntegrationOption,
 } from "../core/types";
 
+/** Mirrors rcp.limits.AGENT_NAME_MAX_CHARS: one cap for a conversation's stored agent name. */
+export const AGENT_NAME_MAX_CHARS = 25;
+
 export type ChatKind = "node_chat" | "project_chat";
 
 export interface ChatConversation {
@@ -276,17 +279,12 @@ export function groupChatConversations(
 ): ChatConversation[] {
   const grouped = new Map<string, ChatConversation>();
   for (const summary of summaries) {
-    const title =
-      sameGraphTarget(summary.graph_target, viewedTarget) &&
-      summary.kind === "node_chat" &&
-      summary.node_id
-        ? (nodeTitles[summary.node_id] ?? summary.node_id)
-        : summary.title;
+    // The agent's one stored name; several agents can share a node.
     grouped.set(summary.chat_id, {
       chatId: summary.chat_id,
       kind: summary.kind,
       nodeId: summary.node_id,
-      title,
+      title: summary.title,
       tasks: [],
       updatedAt: summary.updated_at,
       preview: summary.last_message_preview,

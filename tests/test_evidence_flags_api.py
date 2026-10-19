@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -8,7 +9,6 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from rcp.agents import AgentEvent
-from rcp.api.consolidation import evidence_flag_message
 from rcp.core.models import Patch
 from rcp.turn_outcomes import TurnOutcome
 from tests.helpers import append_fixture_patch, create_named_app, signed_in_client, wait_for_task
@@ -103,7 +103,10 @@ def test_address_admits_one_ordinary_work_turn_and_replays(flagged):
     assert task.kind == "node_chat"
     assert task.request["mode"] == "work"
     assert task.request["node_id"] == flag["evidence_id"]
-    assert task.request["message"] == evidence_flag_message(flag)
+    message = task.request["message"]
+    contexts, _ = json.JSONDecoder().raw_decode(message[message.index("[") :])
+    assert contexts[0]["flag_id"] == flag["flag_id"]
+    assert contexts[0]["finding"] == flag["finding"]
     assert task.request["chat_id"] == result["chat_id"]
     assert task.authorized_by.user_id == store.local_owner.user_id
     assert task.dispatch_authority.task_contract == "work_auto"
@@ -288,7 +291,8 @@ def test_startup_adopts_an_address_request_an_older_release_kept_on_the_flag(fla
     assert len(launches) == 1
 
 
-def test_address_refuses_a_consolidation_notice(flagged):
+@pytest.mark.parametrize("kind", ["consolidation_added", "unverified"])
+def test_address_refuses_a_flag_only_kind(flagged, kind):
     app, client, store, project, flag = flagged
     launches = []
 
@@ -299,8 +303,8 @@ def test_address_refuses_a_consolidation_notice(flagged):
     app.state.background_tasks.stream = stream
     with store.connection() as connection:
         connection.execute(
-            "UPDATE evidence_flags SET kind='consolidation_added' WHERE flag_id=?",
-            (flag["flag_id"],),
+            "UPDATE evidence_flags SET kind=? WHERE flag_id=?",
+            (kind, flag["flag_id"]),
         )
     url = f"/api/projects/{project}/consolidation/evidence-flags/{flag['flag_id']}/address"
     response = client.post(url, json={"request_id": str(uuid.uuid4())})
@@ -386,3 +390,161 @@ def test_flag_actions_use_human_write_guards(flagged, monkeypatch, action, guard
     )
     assert response.status_code == status
     assert store.evidence_flag(project, flag["flag_id"])["state"] == "open"
+
+
+def _batch_flags(flagged):
+    app, _, store, project, first = flagged
+    with store.connection() as connection:
+        operation_id = connection.execute(
+            "SELECT operation_id FROM consolidation_runs WHERE run_id=?", (first["run_id"],)
+        ).fetchone()[0]
+    second = store.execute_evidence_flag_command(
+        project,
+        operation_id,
+        key="second",
+        evidence_id=first["evidence_id"],
+        validate_evidence=lambda: app.state.service.history.state().revision,
+        kind="underclaim",
+        finding="Check the source measurement.",
+    )["flag"]
+    return [first, second]
+
+
+@pytest.mark.parametrize("outcome", ["done", "error"])
+def test_batch_one_turn_atomic_binding_settlement_and_replay(flagged, outcome):
+    app, client, store, project, _ = flagged
+    flags = _batch_flags(flagged)
+    ids = [flag["flag_id"] for flag in flags]
+    launches = []
+    release = threading.Event()
+
+    async def stream(project_id, kind, request, execution):
+        launches.append(execution)
+        await asyncio.to_thread(release.wait, 10)
+        yield _turn(execution, outcome)
+
+    app.state.background_tasks.stream = stream
+    url = f"/api/projects/{project}/consolidation/evidence-flags/address"
+    body = {"request_id": "batch", "flag_ids": ids}
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(lambda _: client.post(url, json=body), range(2)))
+        assert [r.status_code for r in responses] == [200, 200]
+        result = responses[0].json()
+        assert responses[1].json() == result
+        assert {flag["flag_id"] for flag in result["flags"]} == set(ids)
+        assert {flag["state"] for flag in result["flags"]} == {"addressing"}
+        assert {flag["chat_id"] for flag in result["flags"]} == {result["chat_id"]}
+        task = store.agent_task(result["operation_id"])
+        assert task.kind == "project_chat"
+        assert task.request["mode"] == "work"
+        assert task.graph_target.kind == "main"
+        assert not task.request.get("node_id")
+        assert task.request["chat_id"] == result["chat_id"]
+        assert task.authorized_by.user_id == store.local_owner.user_id
+        assert task.dispatch_authority.task_contract == "work_auto"
+        message = task.request["message"]
+        contexts, _ = json.JSONDecoder().raw_decode(message[message.index("[") :])
+        assert [context["flag_id"] for context in contexts] == ids
+        assert [context["finding"] for context in contexts] == [f["finding"] for f in flags]
+        with store.connection() as connection:
+            bound = connection.execute(
+                "SELECT operation_id FROM evidence_flags WHERE project_id=?", (project,)
+            ).fetchall()
+        assert {row[0] for row in bound} == {task.operation_id}
+        conflict = client.post(url, json={**body, "request_id": "other"})
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"]["code"] == "flag_address_conflict"
+    finally:
+        release.set()
+    wait_for_task(
+        store, result["operation_id"], expect="succeeded" if outcome == "done" else "failed"
+    )
+    for flag_id in ids:
+        flag = store.evidence_flag(project, flag_id)
+        assert flag["state"] == ("dismissed" if outcome == "done" else "open")
+        assert flag["chat_id"] == result["chat_id"]
+    assert client.post(url, json=body).json()["operation_id"] == result["operation_id"]
+    assert len(launches) == 1
+    changed = client.post(url, json={**body, "flag_ids": ids[:1]})
+    assert changed.status_code == 409
+    if outcome == "error":
+        retried = client.post(f"/api/projects/{project}/tasks/{task.operation_id}/retry", json={})
+        assert retried.status_code == 202
+        new_id = retried.json()["operation_id"]
+        wait_for_task(store, new_id, expect="failed")
+        with store.connection() as connection:
+            assert {
+                row[0]
+                for row in connection.execute(
+                    "SELECT operation_id FROM evidence_flags WHERE project_id=?", (project,)
+                )
+            } == {new_id}
+        # A later attempt never changes the original request's replay target.
+        assert client.post(url, json=body).json()["operation_id"] == task.operation_id
+
+
+@pytest.mark.parametrize(
+    "invalid", ["empty", "duplicate", "over_cap", "dismissed", "notice", "missing", "retired"]
+)
+def test_batch_refuses_invalid_selection_without_partial_admission(flagged, invalid):
+    from rcp.limits import EVIDENCE_FLAG_ADDRESS_BATCH_MAX
+
+    app, client, store, project, _ = flagged
+    flags = _batch_flags(flagged)
+    ids = [flag["flag_id"] for flag in flags]
+    if invalid == "empty":
+        ids = []
+    elif invalid == "duplicate":
+        ids = [ids[0], ids[0]]
+    elif invalid == "over_cap":
+        ids = [str(i) for i in range(EVIDENCE_FLAG_ADDRESS_BATCH_MAX + 1)]
+    else:
+        with store.connection() as connection:
+            if invalid == "dismissed":
+                connection.execute(
+                    "UPDATE evidence_flags SET state='dismissed' WHERE flag_id=?", (ids[1],)
+                )
+            elif invalid == "notice":
+                connection.execute(
+                    "UPDATE evidence_flags SET kind='consolidation_added' WHERE flag_id=?",
+                    (ids[1],),
+                )
+            else:
+                connection.execute(
+                    "UPDATE evidence_flags SET evidence_id='ev/unavailable' WHERE flag_id=?",
+                    (ids[1],),
+                )
+        if invalid == "retired":
+            append_fixture_patch(
+                app.state.service,
+                Patch(
+                    kind="seed",
+                    author="agent",
+                    summary="Retired result",
+                    run_truth_scope=["repo-a"],
+                    repositories_read=["repo-a"],
+                    ops=[
+                        {
+                            "op": "create_nodes",
+                            "nodes": [
+                                {
+                                    "id": "ev/unavailable",
+                                    "type": "evidence",
+                                    "title": "Old result",
+                                    "observation": "Old result",
+                                    "origin": "analytic",
+                                    "validity": "superseded",
+                                }
+                            ],
+                        }
+                    ],
+                ),
+            )
+    response = client.post(
+        f"/api/projects/{project}/consolidation/evidence-flags/address",
+        json={"request_id": "invalid", "flag_ids": ids},
+    )
+    assert response.status_code == (422 if invalid in {"empty", "duplicate", "over_cap"} else 409)
+    assert store.evidence_flag(project, flags[0]["flag_id"]) == flags[0]
+    assert store.client_request(project, "invalid") is None

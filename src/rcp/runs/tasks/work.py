@@ -384,6 +384,12 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
                 client=client or turn.patch_inputs.validator_staged.client_command(),
             )
         )
+    if "name" in handler.allowed_verbs:
+        from rcp.runs.agent_names import name_command_usage
+
+        instructions.append(
+            name_command_usage(client or turn.patch_inputs.validator_staged.client_command())
+        )
     if "bulletin" in handler.allowed_verbs:
         instructions.append(
             bulletin_command_usage(client or turn.patch_inputs.validator_staged.client_command())
@@ -3463,7 +3469,12 @@ def open_recorded_work_turn(
             write_scope_fingerprint=turn.write_scope.fingerprint,
         )
         turn.required_session_id = question.origin.native_session_id
-    verdict = decode_recorded_turn(recorded, provider_turn_request(turn.workspace, recorded))
+    verdict = decode_recorded_turn(
+        recorded,
+        provider_turn_request(
+            turn.workspace, recorded, capability="work_auto", write_scope=turn.write_scope
+        ),
+    )
     refusal = refuse_recorded_session_mismatch(
         execution, turn.outcome, verdict, turn.required_session_id
     )

@@ -9,7 +9,7 @@ import { mockEpisodeArtifacts } from "./fixtures/episodeArtifacts.mjs";
 import { chromium } from "playwright";
 import { rootTask, episode, withGraphBranch } from "./fixtures/campaigns.mjs";
 
-test("a stopped ineligible branch submits a deliberate merge and shows the server refusal beside it", async () => {
+test("a failed merge retries a failed preview and dispatches a fresh merge at phone width", async () => {
   const liveServer = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "error",
@@ -19,64 +19,70 @@ test("a stopped ineligible branch submits a deliberate merge and shows the serve
   try {
     await liveServer.listen();
     browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage();
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    page.setDefaultTimeout(5000);
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("requestfailed", (request) => errors.push(request.failure()?.errorText));
     page.on("console", (message) => {
-      if (message.type() === "error" && !message.text().includes("409 (Conflict)")) {
+      if (message.type() === "error" && !message.text().includes("409 (Conflict)"))
         errors.push(message.text());
-      }
     });
-    const stopped = {
-      ...withGraphBranch({ merge_eligible: false }),
-      status: "stopped",
-      ending: "stopped",
-      health: "stopped",
-      recommendation: "none",
+    const failure = "Stored merge diagnostic";
+    const failed = {
+      ...withGraphBranch({ merge_state: "failed", merge_diagnostic: failure }),
+      can_merge: true,
+      status: "completed",
+      live: false,
       can_stop: false,
       can_message: false,
       task_control: null,
       tasks: [],
     };
-    const reason = "Branch writers must settle before merging: auto_research paused-turn (paused).";
-    let polledEpisode = stopped;
+    let polledEpisode = failed;
     await mockEpisodeArtifacts(page);
     await mockEpisodeReads(page);
     await page.route("**/api/projects/*/episodes/*/questions", (route) =>
       route.fulfill({ json: [] }),
     );
     await page.route("**/api/projects/**/timeline", (route) =>
-      route.fulfill({
-        json: timelineFixture(episode.episode_id, episode.mode),
-      }),
+      route.fulfill({ json: timelineFixture(episode.episode_id, episode.mode) }),
     );
     await page.route("**/fixture/episode", (route) => route.fulfill({ json: polledEpisode }));
-    await page.route("**/api/projects/**/merge-preview*", (route) =>
-      route.fulfill({
-        json: {
-          delivered_baseline: null,
-          graph: { direct: 1, conflicts: 0, reviews: 0, paths: [] },
-          code: null,
-          needs_agent: false,
-        },
-      }),
-    );
-    let requests = 0;
+    let previews = 0;
+    const previewFailure = "Preview unavailable";
+    await page.route("**/api/projects/**/merge-preview*", (route) => {
+      previews += 1;
+      return route.fulfill(
+        previews === 1
+          ? { status: 409, json: { detail: previewFailure } }
+          : {
+              json: {
+                delivered_baseline: null,
+                graph: { direct: 1, conflicts: 0, reviews: 0, paths: [] },
+                code: null,
+                needs_agent: false,
+              },
+            },
+      );
+    });
+    const requests = [];
+    const refusal = "Merge admission refused";
     await page.route("**/api/projects/**/merge", async (route) => {
-      assert.equal(route.request().method(), "POST");
-      requests += 1;
+      requests.push(route.request().postDataJSON());
       await route.fulfill(
-        requests === 1
-          ? { status: 409, json: { detail: reason } }
+        requests.length === 1
+          ? { status: 409, json: { detail: refusal } }
           : {
               status: 202,
               json: {
-                ...stopped,
+                ...failed,
+                can_merge: false,
                 graph_branch: {
-                  ...stopped.graph_branch,
+                  ...failed.graph_branch,
                   merge_state: "running",
-                  active_merge_task_id: "merge-task",
+                  merge_diagnostic: null,
+                  active_merge_task_id: "fresh-merge-task",
                 },
               },
             },
@@ -85,35 +91,58 @@ test("a stopped ineligible branch submits a deliberate merge and shows the serve
     await page.goto(
       `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/branchMerge.html`,
     );
-    await page.getByRole("button", { name: "Merge", exact: true, expanded: false }).click();
-    const merge = page
+    const branch = page.getByRole("region", { name: "Episode graph branch" });
+    const retry = branch.getByRole("button", { name: "Retry merge", exact: true });
+    await retry.waitFor();
+    assert.equal(await retry.getAttribute("title"), failure);
+    assert.equal(await branch.getByText(failure, { exact: true }).count(), 0);
+    await retry.click();
+    await page.waitForFunction(
+      (reason) => document.querySelector('[aria-label="Retry merge"]')?.title === reason,
+      previewFailure,
+    );
+    await retry.click();
+    const merge = branch
       .getByRole("group", { name: "Merge options" })
       .getByRole("button", { name: "Merge", exact: true });
     await merge.click();
-    const branch = page.getByRole("region", { name: "Episode graph branch" });
-    await branch.getByRole("alert").waitFor();
-    assert.equal(await branch.getByRole("alert").textContent(), reason);
-    assert.equal(requests, 1);
-    assert.equal(await merge.isEnabled(), true);
-    // Polling identical state retains the refusal, but a newly eligible snapshot retires it.
+    await page.waitForFunction(
+      (reason) => document.querySelector('[aria-label="Retry merge"]')?.title === reason,
+      refusal,
+    );
     await page.evaluate(() => window.refreshMergeEpisode());
-    assert.equal(await branch.getByRole("alert").textContent(), reason);
+    assert.equal(await retry.getAttribute("title"), refusal);
+    assert.equal(await branch.getByText(refusal, { exact: true }).count(), 0);
+    assert.equal(await retry.textContent(), "");
+    const box = await branch.boundingBox();
+    assert.ok(box.x >= 0 && box.x + box.width <= 390);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= 390));
+    await retry.click();
+    await merge.click();
+    await branch.locator(".branch-running").waitFor();
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].keep_branch_open, false);
+    assert.deepEqual(requests[1], requests[0]);
+    assert.equal(await retry.count(), 0);
     polledEpisode = {
-      ...stopped,
-      graph_branch: { ...stopped.graph_branch, merge_eligible: true },
+      ...failed,
+      can_merge: false,
+      graph_branch: {
+        ...failed.graph_branch,
+        merge_state: "merged",
+        merge_eligible: false,
+        merge_diagnostic: null,
+      },
     };
     await page.evaluate(() => window.refreshMergeEpisode());
-    await branch.getByRole("alert").waitFor({ state: "detached" });
-    assert.equal(requests, 1);
-    // Returning to the earlier snapshot must not resurrect an obsolete refusal.
-    polledEpisode = stopped;
+    await branch.locator(".branch-merged").waitFor();
+    assert.equal(await branch.getByRole("button", { name: "Merge", exact: true }).count(), 0);
+    polledEpisode = {
+      ...failed,
+      graph_branch: { ...failed.graph_branch, merge_state: "unmerged", merge_diagnostic: null },
+    };
     await page.evaluate(() => window.refreshMergeEpisode());
-    assert.equal(await branch.getByRole("alert").count(), 0);
-    // Eligibility can change after the last snapshot; the second click must reach the server.
-    await merge.click();
-    await branch.getByText("Merge running", { exact: true }).waitFor();
-    assert.equal(await branch.getByRole("alert").count(), 0);
-    assert.equal(requests, 2);
+    await branch.getByRole("button", { name: "Merge", exact: true }).waitFor();
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

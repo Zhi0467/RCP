@@ -98,7 +98,6 @@ from rcp.limits import (
     CHAT_PAGE_DEFAULT_LIMIT,
     CHAT_PAGE_MAX_LIMIT,
     CHAT_PREVIEW_MAX_CHARS,
-    CHAT_TITLE_MAX_CHARS,
     COMPUTE_CONNECTION_MAX_COUNT,
     REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 )
@@ -1327,7 +1326,6 @@ class ProjectService:
                         # Human turns after an Auto-research chain ends join its one card.
                         **(
                             {
-                                "title": task.title,
                                 "message_count": canonical.message_count + task.message_count,
                                 "updated_at": max(
                                     canonical.updated_at,
@@ -1389,6 +1387,12 @@ class ProjectService:
         # The same UUID under two canonical node/project paths is ambiguous.
         return {chat_id: transcript for chat_id, transcript in transcripts.items() if transcript}
 
+    def _chat_project_id(self) -> str:
+        """Conversation names are project-scoped; only a bound project has chats."""
+        if self._project_id is None:
+            raise ValueError("Chat names require a bound project.")
+        return self._project_id
+
     def _canonical_chat_summaries(self) -> list[ChatSummary]:
         with self.history.workspace.read_snapshot() as root:
             files = self._canonical_chat_files(root)
@@ -1419,7 +1423,17 @@ class ProjectService:
                         summaries[chat_id] = None
                     else:
                         summaries[chat_id] = cached.summary
-            return [summary for summary in summaries.values() if summary is not None]
+            return [
+                summary.model_copy(
+                    update={
+                        "title": self.paper.store.chat_name(
+                            self._chat_project_id(), summary.chat_id, summary.title
+                        )
+                    }
+                )
+                for summary in summaries.values()
+                if summary is not None
+            ]
 
     def _canonical_chat_files(
         self,
@@ -1557,10 +1571,7 @@ class ProjectService:
                     active_compute_ids=record.active_compute_ids,
                 )
             )
-        first_user = next((message.text for message in messages if message.role == "user"), "")
-        title = " ".join(first_user.split())[:CHAT_TITLE_MAX_CHARS]
-        if not title:
-            title = first.node_id or "Project chat"
+        first_message = next((message.text for message in messages if message.role == "user"), "")
         preview_source = next(
             (message.text for message in reversed(messages) if message.text.strip()),
             "",
@@ -1572,7 +1583,12 @@ class ProjectService:
             graph_target=graph_target,
             kind=kind,
             node_id=first.node_id,
-            title=title,
+            # Names belong to operational storage, never immutable transcript text.
+            title=self.paper.store.chat_name(
+                self._chat_project_id(),
+                chat_id,
+                first_message if first_message.strip() else first.node_id or "Chat",
+            ),
             updated_at=updated_at,
             message_count=len(messages),
             last_message_preview=preview,

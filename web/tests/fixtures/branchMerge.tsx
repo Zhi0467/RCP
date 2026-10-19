@@ -27,10 +27,12 @@ function Fixture() {
         onInspectTask={idle}
         onLoadMessages={idle}
         onStop={idle}
-        onMerge={async (episodeId) => {
+        onMerge={async (episodeId, body) => {
           setBusyAction(`merge:${episodeId}`);
           try {
-            setEpisode(await mergeEpisodeToMain(`/api/projects/${episode.project_id}`, episodeId));
+            setEpisode(
+              await mergeEpisodeToMain(`/api/projects/${episode.project_id}`, episodeId, body),
+            );
           } finally {
             setBusyAction(null);
           }

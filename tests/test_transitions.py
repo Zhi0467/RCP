@@ -714,7 +714,7 @@ def test_transition_identity_has_a_golden_provenance_digest() -> None:
     assert patch.transition is not None
     assert (
         patch.transition.transition_id
-        == "96c3b5c3fa7a9655beda9a013c9dfe077ea7b704620e4d10c63beadf5e1846da"
+        == "8025d97cde5c4162d77b52203b60a7c714dc7c9dda4d59c6f317b530a1506dd8"
     )
 
 

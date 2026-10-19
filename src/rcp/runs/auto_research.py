@@ -36,6 +36,7 @@ from rcp.agents.command_protocol import (
     MergeCommandRequest,
     MessageArguments,
     MessageCommandRequest,
+    NameCommandRequest,
     PauseCommandRequest,
     ResumeCommandRequest,
     SpawnArguments,
@@ -996,6 +997,21 @@ class AutoResearchCommandDispatcher:
                 request,
                 resolve_project=self.service.resolve_project_service,
             )
+
+        if isinstance(request, NameCommandRequest):
+            from rcp.runs.agent_names import handle_name
+
+            try:
+                self._check_admission(context, request)
+                self._canonical_command_actor(context)
+            except (AutoResearchCommandInvalid, AutoResearchCommandUnavailable) as exc:
+                return CommandResponse(
+                    request_id=request.request_id,
+                    status="invalid",
+                    message=str(exc),
+                    result={"code": "chat_name_forbidden"},
+                )
+            return handle_name(self.store, operation_id, request)
 
         if isinstance(request, BulletinCommandRequest):
             from rcp.runs.bulletin import handle_bulletin
@@ -2139,6 +2155,8 @@ class AutoResearchCommandDispatcher:
     def _check_admission(
         self, context: AutoResearchCommandContext, request: CommandRequest
     ) -> None:
+        from rcp.runs.agent_names import task_agent_name_state
+
         # A launch binds the surface its prompt rendered; recovery of a recorded call
         # outside any launch resolves the role's surface.
         allowed = (
@@ -2146,6 +2164,14 @@ class AutoResearchCommandDispatcher:
             if self.allowed_verbs is not None
             else auto_research_allowed_verbs(
                 context.request.role,
+                can_self_name=(
+                    context.request.role == "orchestrator"
+                    and bool(
+                        task_agent_name_state(self.store, context.task.operation_id).get(
+                            "can_self_name"
+                        )
+                    )
+                ),
                 graph_read_scope=self.graph_read_scope,
                 bulletin=self.store.bulletin_enabled_for_task(context.task.operation_id),
             )

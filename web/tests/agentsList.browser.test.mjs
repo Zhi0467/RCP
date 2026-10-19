@@ -20,8 +20,11 @@ test("Agents keeps archived chats hidden across revisits and shows provider logo
       route.fulfill({ json: { show_chooser: false, binding: null, integration_options: [] } }),
     );
     await page.route("**/api/projects/*/chats/*/questions", (route) => route.fulfill({ json: [] }));
+    // The display snapshot's titles may lag the summaries (an agent named itself since).
     await page.route("**/api/projects/*/chat-display", (route) =>
-      route.fulfill({ json: { archived: ["Archived chat"], titles: {}, pinned: [] } }),
+      route.fulfill({
+        json: { archived: ["Archived chat"], titles: { "Codex chat": "Stale name" }, pinned: [] },
+      }),
     );
     const port = server.httpServer.address().port;
     await page.goto(`http://127.0.0.1:${port}/tests/fixtures/agentsList.html`);
@@ -29,6 +32,8 @@ test("Agents keeps archived chats hidden across revisits and shows provider logo
     const row = (title) => list.getByRole("option").filter({ hasText: title });
     await page.getByRole("button", { name: /^Archived/ }).waitFor();
     assert.equal(await row("Archived chat").count(), 0);
+    assert.equal(await row("Stale name").count(), 0);
+    assert.equal(await row("Codex chat").count(), 1);
 
     // A known provider renders its logo at text size; an unknown one keeps its label.
     const logo = row("Claude chat").getByRole("img", { name: "Claude", exact: true });

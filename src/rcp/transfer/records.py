@@ -82,7 +82,7 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "artifact_revision_candidates",
         "chat_session_contexts",
         # Archive and rename are local display choices; a moved project shows
-        # every chat under its derived name.
+        # every chat with a stored initial name rebuilt from its first turn.
         "chat_display",
         # Browser consent and runtime ownership stay on the source installation.
         "chat_browser_preferences",

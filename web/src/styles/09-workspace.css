@@ -418,6 +418,24 @@
   position: sticky;
   right: 0;
 }
+/* View sits beside the branch picker here, so it takes the same trigger style. */
+.project-tabs-trailing .view-picker {
+  display: flex;
+}
+.project-tabs-trailing .view-picker > button {
+  border: 0;
+  color: var(--muted);
+  font-size: var(--type-md);
+  font-weight: 650;
+  gap: 6px;
+  min-height: 0;
+  padding: 0 14px;
+}
+.project-tabs-trailing .view-picker > button:hover,
+.project-tabs-trailing .view-picker > button[aria-expanded="true"] {
+  background: transparent;
+  color: var(--ink);
+}
 .project-tabs-toggle {
   align-items: center;
   background: transparent;

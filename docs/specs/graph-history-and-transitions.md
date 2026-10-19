@@ -15,7 +15,7 @@ Current authoring uses these node types:
 | Decision | A choice governing research execution |
 | Experiment | A bounded test, optional completion criteria, and attempt ledger |
 | Evidence | An observation with provenance |
-| Blocker | A concrete impediment |
+| Blocker | An observable impediment to starting an Experiment |
 
 Each has an id, title, content, provenance standing, and type-specific fields.
 Standing is `asserted`, `contested`, or `accepted` on nodes only; there is no
@@ -73,10 +73,23 @@ Hypothesis and the Evidence are accepted and the Evidence is not invalid.
 ## Relations and control structure
 
 Relations have a closed vocabulary and legal endpoint types. ResearchQuestion
-`has_subquestion` ResearchQuestion forms question trees; questions also frame work.
-Experiment `tests` Hypothesis, is `governed_by` Decision and `blocked_by` Blocker,
-and `produces` Evidence. Evidence `informs` Decision and `addresses` Blocker,
-besides its epistemic relations.
+`has_subquestion` ResearchQuestion forms question trees, and `has_hypothesis`
+connects a question to its claims. New `has_decision` edges connect only
+Hypothesis to Decision; that ordinary association does not gate an Experiment.
+Experiment `tests` Hypothesis, is `governed_by` Decision and `blocked_by` Blocker, and
+`produces` Evidence. New `blocked_by` edges connect only Experiment to Blocker.
+A Decision may be purely an Experiment input through `governed_by`, with no
+Hypothesis attachment.
+Evidence `informs` Decision and `addresses` Blocker, besides its epistemic
+relations. `addresses` does not resolve a Blocker; resolution is an authorized
+lifecycle update.
+
+`requires_decision` is retired from authoring. Its historical spec and layer,
+legacy Question→Decision and Question/Decision→Blocker edges, and their ids
+remain readable and replay unchanged. Admission checks new edges only; unrelated
+writes can retain legacy edges, and removal does not revalidate old endpoints.
+Removing and recreating an edge is a new write, even for an explanation edit.
+Retired names remain reserved against reuse as custom relations.
 
 Only Experiment `produces` Evidence accepts `expectation`: `matched`, `diverged`,
 or `no_expectation`, with `explanation` naming the relevant `expected_outcomes`.
@@ -282,6 +295,16 @@ operations in order without rerunning rules. Accepted heads must form one exact
 target chain. Divergent/wrong-target transitions or structurally invalid accepted
 revisions halt at the last coherent state, exposed read-only; they are not skipped.
 Rejected candidates remain chronological receipts without semantics.
+
+Link-rule retirement changes admission, not historical meaning. Old plain
+Patches, expanded transitions, and cached projections retain their recorded
+edges and layers. Recorded v3 lifecycle traces retain their interpretation
+under the v4 ruleset; schema generation and Proposal dependency rules do not
+change. Pending Proposals that would create an illegal edge remain inspectable
+and withdrawable, but cannot be approved or refiled with that effect. An old
+branch retaining inherited legacy edges can merge unrelated work. A branch-only
+legacy edge addition or edit refuses merge with the offending edge identified;
+repair it on the source branch with current operations before retrying.
 
 Supported older Patch, operation, Evidence, Experiment, and transition shapes adapt
 in memory. Later ordinary writes may stamp current schema generation; unsupported

@@ -472,7 +472,9 @@ body names `target_branch`, `history_mode` (`merge` or `squash`),
 `keep_branch_open`. Cleanup defaults to all three steps. Squash disallows Keep
 branch open. Deleting the code branch requires worktree removal and delivery.
 Merge stays human-dispatched. A clean merge runs without a provider turn.
-Episode responses include the owner's nullable `isolation_state`. It carries
+Episode responses include the server-owned `can_merge` offer (see
+[Runs projection](auto-research-and-branch-merge.md#runs-projection)) and the
+owner's nullable `isolation_state`. The state carries
 the reservation, attempt phase, recorded cleanup steps and errors, delivered
 code commit and target, squash commit, and graph archive flag. Graph receipts
 remain the independent graph delivery record.
@@ -1114,6 +1116,13 @@ identity:
   that keeps a `chat_id` was reopened by a failed turn, and a new request id
   starts another. Addressing an open flag whose Evidence is absent or retired on
   main, or a dismissed flag, returns 409; unknown flags return 404.
+- `POST .../consolidation/evidence-flags/address` takes
+  `{"request_id": string, "flag_ids": [string]}` with 1 to 10 unique ids and
+  returns `{"flags": [EvidenceFlag], "chat_id": string, "operation_id": string}`.
+  One id admits the same node Work chat as the single route; two or more admit
+  one project Work chat on main bound to every flag. Every flag must be open, so
+  an addressing flag returns 409 here. The request key is bound to the exact id
+  set, and a replay returns that request's own turn.
 
 The [consolidation spec](graph-consolidation-and-lessons.md#evidence-to-check)
 owns fact-check behavior, flag lifecycle, and the Evidence to check Inbox rows.
@@ -1160,14 +1169,22 @@ Historical Ambiguities never render or count.
 Research presents a question drill-down and a bounded DAG. The drill-down
 follows relations, not nearest-question assignment, so a shared Hypothesis,
 Experiment, or Evidence appears under every question that reaches it, and a
-Hypothesis page links its other questions. Inputs are the Decisions governing
-and the Blockers stopping its Experiments (and those Decisions); Decisions and
-Blockers attach to questions and Experiments, never to Hypotheses. Each
-Experiment's Evidence carries its verdict on that Hypothesis; the Hypothesis
-tally also counts Evidence no listed Experiment produced. An Experiment that
-tests no Hypothesis belongs to the question whose Decision or Blocker it, or
-its Evidence, touches. The trail is session-scoped per project and graph
-target.
+Hypothesis page links its other questions. Inputs include Decisions attached
+by `has_decision`, Decisions governing its Experiments, and Blockers stopping
+those Experiments, with shared Decisions deduplicated. A Hypothesis attachment
+alone never gates an Experiment. A pure Experiment input Decision needs no
+Hypothesis attachment. Each Experiment's Evidence carries its verdict on that
+Hypothesis; the Hypothesis tally also counts Evidence no listed Experiment
+produced. Historical Question→Decision, Question/Decision→Blocker, and
+`requires_decision` paths remain visible, including their one-hop question
+counts. An Experiment that tests no Hypothesis remains reachable through the
+question's attached Hypotheses' inputs or historical Decision/Blocker paths
+that it or its Evidence touches. The trail is session-scoped per project and
+graph target.
+
+Relation choices offer only authorable relations and legal endpoint types.
+Existing legacy edges still support inspection and removal; history readers do
+not require their relations to appear in the current authoring choices.
 
 The DAG's Research flow uses one column per node type, ordered ResearchQuestion, Hypothesis, Decision, Blocker,
 Experiment, then Evidence. All question depths share the ResearchQuestion column;
@@ -1322,8 +1339,8 @@ showing watcher/session/host continuity. An explicit main route must match both
 episode and target; an advanced control shows a History handoff, never the newer
 episode's controls/transcript.
 
-Isolation-owning cards show branch base/head, merge state, and persistent Merge.
-A click checks current eligibility; [merge projection](auto-research-and-branch-merge.md#runs-projection)
+Isolation-owning cards show branch base/head, merge state, and the server-offered Merge.
+Submission rechecks current eligibility; [merge projection](auto-research-and-branch-merge.md#runs-projection)
 owns admission. Run offers On a new branch and Code worktree, off by default;
 existing branches hide the former. Shared Branch name accepts blank for the
 server date name. Auto-research on main uses the same name plus server-eligible
@@ -1384,8 +1401,10 @@ and task admission refuses a human turn on it with
 `auto_research_child_read_only`.
 
 An Auto-research continuation chain is one `auto_research` conversation on its
-branch, identified by the chain root's episode id (the branch id) and named by
-the branch. Its transcript is projected from the chain's orchestrator-role
+branch, identified by the chain root's episode id (the branch id). Its stored
+agent name starts as the branch name; subsequent naming follows
+[agent names](conversations-episodes-and-watchers.md#agent-names). Its transcript
+is projected from the chain's orchestrator-role
 turns and the artifact edits that reply to the chain: each turn's starting
 instruction or the human mail it delivered, then its answers; worker turns keep
 their own cards. An artifact edit with a `chat_id` belongs to that chat's card and
@@ -1862,7 +1881,11 @@ membership, and the inventory rejects an episode from another project.
 
 Each graph target has one Bulletin channel. Member-authenticated reads use
 `GET /api/projects/{project_id}/bulletin?branch_id=&cursor=` and include the
-roster and live project members. Text is limited to 8000 characters; the server
+project-wide roster of every non-archived Agents-board conversation and live project
+members. Each roster row carries `id`, `chat_id`, `target_key`, `name`, `kind`,
+`seat_node_id`, `started_at`, `state`, and `last_post_at`. The stored conversation
+name matches its Agents card; `started_at` is its first turn time. Agent snapshots
+and command reads keep their own channel's roster. Text is limited to 8000 characters; the server
 extracts ordered, deduplicated `#node-id` references and valid
 `<@member:USER_ID>` / `<@agent:ACTOR_ID>` mentions. Requests carry text, never a
 separate references field. Agent tokens must identify an actor in that target's

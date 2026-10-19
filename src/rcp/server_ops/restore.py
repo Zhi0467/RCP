@@ -46,6 +46,19 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Conversation names (v59) after project worker seats: fresh, immutable
+        # fixture upgrades, and in-place upgrades.
+        "2b2019b71037bd625ad8f0efd44bb436e9a9fc9eef87fe6543bbe773553b37ad",
+        "38bb839392578a3eaeb1f451e1288bec661b15d939a69cb89d7cb1125e587a07",
+        "420cd3b00d4037a86d12438b9c0d757a8e09039cc1915cecb83dc2f10b252afd",
+        "6038865d5bfec31d40a77be5cd7a039f8e39ccb29eca76cfc522150bb728b077",
+        "7d5de0c60b64aa4d1e43b12238669ac76bbc9bccbf4274fb53f5516088ad9cda",
+        "a227ed02ef4c9df0c7d5ae6cefe70a25ea7067387278ea9fb57bba0c3d8dc673",
+        "a4bf3d1fd3ee0dab47d83b04da6182638fa21f10317d8fd09b9d42e501985406",
+        "d1c9e1ea0a0196be38389f17f87e146d77a819064d01c11cba83485cc7c42e7f",
+        "d6a222335fc3f1f84d8f8e727c1aed2c507f6ed693b31c82b0ebb64174f109f1",
+        "ed134ed71614c41da2f0cf2f6841476774c8c78e5731a851181cd48b9120614b",
+        "ffcaf3b6a5077ec277c87a7283b644948b742febe0c7ffc03f97e171495e8568",
         # Graph branches (v56), Bulletin channels (v57), and project worker seats
         # (v58) after project groups: fresh, immutable fixture upgrades, and in-place
         # upgrades.

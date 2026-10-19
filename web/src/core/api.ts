@@ -803,7 +803,7 @@ export function setChatPinned(
   });
 }
 
-/** A blank title returns the chat to its derived name. */
+/** Renames the agent; the server refuses a blank title. */
 export function setChatTitle(apiBase: string, chatId: string, title: string): Promise<ChatDisplay> {
   return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/title`, {
     method: "POST",
@@ -1144,5 +1144,16 @@ export function addressEvidenceFlag(
   return api(`${apiBase}/consolidation/evidence-flags/${encodeURIComponent(flagId)}/address`, {
     method: "POST",
     body: JSON.stringify({ request_id: requestId }),
+  });
+}
+
+export function addressEvidenceFlags(
+  apiBase: string,
+  flagIds: string[],
+  requestId: string,
+): Promise<{ flags: EvidenceFlag[]; chat_id: string; operation_id: string }> {
+  return api(`${apiBase}/consolidation/evidence-flags/address`, {
+    method: "POST",
+    body: JSON.stringify({ request_id: requestId, flag_ids: flagIds }),
   });
 }

@@ -2,8 +2,11 @@ import type { EvidenceFlag, GraphNode, Repository } from "../core/types";
 import { resolveRepositoryFileHref, type RepositoryFileTarget } from "../core/repositoryFileLinks";
 import { isOutcome, lifecycleField, projectType } from "../graph/researchType";
 
-/** Kinds that only bring Evidence to a human's attention; there is nothing to Address. */
-const NOTICE_FLAG_KINDS: ReadonlySet<EvidenceFlag["kind"]> = new Set(["consolidation_added"]);
+/** Kinds that are flagged only: a notice, or a named source no one could read. Never Addressed. */
+const NOTICE_FLAG_KINDS: ReadonlySet<EvidenceFlag["kind"]> = new Set([
+  "consolidation_added",
+  "unverified",
+]);
 
 export type EvidenceFlagSource =
   { kind: "file"; target: RepositoryFileTarget } | { kind: "url"; href: string };
@@ -67,4 +70,18 @@ function flagSourceTarget(
       : source;
   const resolution = resolveRepositoryFileHref(href, repositories);
   return resolution.kind === "resolved" ? { kind: "file", target: resolution.target } : null;
+}
+
+// Mirrored from rcp.limits; evidenceFlags.test.mjs checks parity.
+export const EVIDENCE_FLAG_ADDRESS_BATCH_MAX = 10;
+
+export function evidenceFlagsToAddress(rows: readonly EvidenceFlagRow[]): EvidenceFlag[] {
+  return rows
+    .filter((row) => row.actions.includes("address"))
+    .map((row) => row.flag)
+    .sort(
+      (a, b) =>
+        Date.parse(a.created_at) - Date.parse(b.created_at) || a.flag_id.localeCompare(b.flag_id),
+    )
+    .slice(0, EVIDENCE_FLAG_ADDRESS_BATCH_MAX);
 }
