@@ -563,6 +563,13 @@
 .chat-markdown ol {
   padding-left: 20px;
 }
+/* Tailwind's base reset removes list markers; Markdown lists need them back. */
+.chat-markdown ul {
+  list-style: disc;
+}
+.chat-markdown ol {
+  list-style: decimal;
+}
 .chat-markdown :not(pre) > code {
   background: color-mix(in srgb, var(--walnut) 8%, transparent);
   border-radius: 3px;
