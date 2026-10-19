@@ -641,7 +641,7 @@ class BulletinStoreMixin(StoreMixinBase):
                     "actor_id": actor_id,
                     "kind": "agent",
                     "operation_id": operation_id,
-                    "actor_label": _agent_label(task),
+                    "actor_label": _agent_label(connection, task),
                 },
                 key=key,
                 text=text,
@@ -652,10 +652,20 @@ class BulletinStoreMixin(StoreMixinBase):
         return _result(outcome)
 
 
-def _agent_label(task: sqlite3.Row) -> str:
-    """The author name a member reads: the agent's part, then its seat node."""
+def _agent_label(connection: sqlite3.Connection, task: sqlite3.Row) -> str:
+    """The author name a member reads once the agent leaves the roster.
+
+    A conversation's stored name comes first, so an archived agent's posts keep it;
+    otherwise the agent's part, then its seat node.
+    """
 
     request = json.loads(task["request_json"] or "{}")
+    named = connection.execute(
+        "SELECT title FROM chat_display WHERE project_id=? AND chat_id=?",
+        (task["project_id"], request.get("chat_id")),
+    ).fetchone()
+    if named and named["title"]:
+        return named["title"]
     part = (
         "Worker"
         if request.get("role") == "worker"

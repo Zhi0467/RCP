@@ -63,11 +63,21 @@ def test_target_and_project_isolation_and_reply_depth(store):
 def test_agent_author_names_its_seat_not_its_task_kind(store):
     with store.connection() as connection:
         connection.execute(
-            "UPDATE graph_runs SET request_json=json_set(request_json, '$.role', 'worker', "
-            "'$.node_id', 'exp/seat') WHERE operation_id='turn'"
+            "UPDATE graph_runs SET request_json=json_remove(json_set(request_json, "
+            "'$.role', 'worker', '$.node_id', 'exp/seat'), '$.chat_id') WHERE operation_id='turn'"
         )
     author = post(store, "a")["author"]
     assert author["kind"] == "agent" and "exp/seat" in author["actor_label"]
+
+
+def test_agent_author_keeps_its_conversation_name(store):
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=json_set(request_json, '$.chat_id', 'c1') "
+            "WHERE operation_id='turn'"
+        )
+    store.set_chat_title("project", "c1", store.local_owner.user_id, "Probe sweep")
+    assert post(store, "a")["author"]["actor_label"] == "Probe sweep"
 
 
 def test_discuss_reads_but_cannot_post(store):
