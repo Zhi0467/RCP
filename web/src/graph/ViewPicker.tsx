@@ -70,7 +70,7 @@ export function ViewPicker({ inline = false, ...choice }: ViewChoice & { inline?
   return (
     <div className="view-picker" ref={ref}>
       <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}>
-        <Eye size={14} />
+        <Eye size={15} />
         <span>View</span>
         <ChevronDown size={13} />
       </button>
