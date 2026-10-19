@@ -410,18 +410,29 @@ export function ChatsWorkspace({
     setDisplayState(next);
   };
   const archivedChatIds = useMemo(() => new Set(display.archived), [display.archived]);
-  // A human-given name replaces the derived one everywhere in this workspace.
+  // Summaries carry each agent's stored name, self-names included. A rename made
+  // here shows at once and yields to the summaries once they report it.
+  const [renamed, setRenamed] = useState<Record<string, string>>({});
+  useEffect(() => {
+    setRenamed((current) => {
+      const pending = Object.entries(current).filter(
+        ([chatId, title]) =>
+          storedConversations.find((item) => item.chatId === chatId)?.title !== title,
+      );
+      return pending.length === Object.keys(current).length ? current : Object.fromEntries(pending);
+    });
+  }, [storedConversations]);
   const conversations = useMemo(
     () =>
       withEpisodeAttention(
         storedConversations.map((conversation) =>
-          display.titles[conversation.chatId]
-            ? { ...conversation, title: display.titles[conversation.chatId] }
+          renamed[conversation.chatId]
+            ? { ...conversation, title: renamed[conversation.chatId] }
             : conversation,
         ),
         orchestratorEpisodes,
       ),
-    [storedConversations, display.titles, orchestratorEpisodes],
+    [storedConversations, renamed, orchestratorEpisodes],
   );
   const filteredConversations = listedAgentConversations(
     conversations,
@@ -522,7 +533,11 @@ export function ChatsWorkspace({
     updateDisplay(() => setChatPinned(apiBase, chatId, pinned));
   const rename = (chatId: string, title: string) => {
     setRenamingChatId(null);
-    return updateDisplay(() => setChatTitle(apiBase, chatId, title));
+    return updateDisplay(async () => {
+      const response = await setChatTitle(apiBase, chatId, title);
+      setRenamed((current) => ({ ...current, [chatId]: response.titles[chatId] ?? title }));
+      return response;
+    });
   };
   const finishRename = (conversation: ChatConversation, title: string | null) => {
     if (title === null || title === conversation.title) setRenamingChatId(null);
