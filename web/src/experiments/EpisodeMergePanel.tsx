@@ -1,4 +1,4 @@
-import { ChevronDown, LoaderCircle, Network } from "lucide-react";
+import { ChevronDown, LoaderCircle, Network, RotateCcw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { loadMergePreview } from "../core/api";
 import {
@@ -40,6 +40,7 @@ export function EpisodeMergePanel({
   // Merge paused on these jobs; the human can merge anyway and the agent stops them.
   const [pausedJobs, setPausedJobs] = useState<EpisodeUnfinishedJob[] | null>(null);
   const [open, setOpen] = useState(false);
+  const [previewAttempt, setPreviewAttempt] = useState(0);
   const [targetDraft, setTargetDraft] = useState("");
   const [target, setTarget] = useState<string | null>(null);
   const [choices, setChoices] = useState<MergeChoices>({
@@ -57,16 +58,22 @@ export function EpisodeMergePanel({
     episode.isolation_state?.merge_attempt?.attempt_id,
     episode.isolation_state?.status,
     target,
+    previewAttempt,
   ]);
 
   // A refusal belongs to the branch state it answered; a new snapshot retires it.
   const branchSnapshot = JSON.stringify(episode.graph_branch);
   useEffect(() => {
     setMergeError(null);
+    setPreviewError(null);
   }, [branchSnapshot]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!episode.can_merge) setOpen(false);
+  }, [episode.can_merge]);
+
+  useEffect(() => {
+    if (!open || !episode.can_merge) return;
     let current = true;
     setPreviewError(null);
     // The old preview no longer answers this key; Merge waits for the new one.
@@ -80,22 +87,26 @@ export function EpisodeMergePanel({
         if (next.code && !target) setTargetDraft(next.code.target_branch);
       })
       .catch((error) => {
-        if (current) setPreviewError(error instanceof Error ? error.message : String(error));
+        if (current) {
+          setPreview(null);
+          setPreviewError(error instanceof Error ? error.message : String(error));
+        }
       });
     return () => {
       current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- refreshKey already carries target and the episode fields that need a new preview
-  }, [apiBase, episode.episode_id, refreshKey, open]);
+  }, [apiBase, episode.episode_id, episode.can_merge, refreshKey, open]);
 
   const hasGraphBranch = episode.graph_branch !== null;
   const squash = preview !== null && squashAllowed(preview);
   const historyMode = squash ? choices.historyMode : "merge";
   const previewCurrent =
     previewKey === refreshKey && previewAnswersDraft(preview, previewTarget, target, targetDraft);
+  const previewLoading = open && previewKey !== refreshKey && !previewError;
 
   const merge = async (confirmUnfinishedJobs = false) => {
-    if (!preview || !previewCurrent || disabled) return;
+    if (!preview || !previewCurrent || disabled || !episode.can_merge) return;
     setMergeError(null);
     setPausedJobs(null);
     const body = mergeRequestBody(
@@ -116,13 +127,11 @@ export function EpisodeMergePanel({
     }
   };
 
+  const diagnostic = mergeError ?? previewError ?? episode.graph_branch?.merge_diagnostic;
+  if (!episode.can_merge && !diagnostic) return null;
+
   return (
-    <div className="episode-merge-panel" aria-label="Merge">
-      {previewError && (
-        <div className="campaign-branch-diagnostic" role="alert">
-          {previewError}
-        </div>
-      )}
+    <div className={`episode-merge-panel${diagnostic ? " has-error" : ""}`} aria-label="Merge">
       <div className="merge-summary-row">
         <div className="merge-counts">
           {hasGraphBranch && preview && <MergeGraphCounts graph={preview.graph} />}
@@ -134,15 +143,37 @@ export function EpisodeMergePanel({
           )}
         </div>
         <button
-          className="button secondary compact campaign-branch-merge"
+          className={`button secondary compact campaign-branch-merge${diagnostic ? " icon-button" : ""}`}
           type="button"
           aria-expanded={open}
-          disabled={disabled}
-          onClick={() => setOpen(!open)}
+          aria-busy={busy || previewLoading}
+          aria-label={diagnostic ? "Retry merge" : undefined}
+          title={
+            diagnostic
+              ? [diagnostic, !episode.can_merge && episode.graph_branch?.merge_blocked_reason]
+                  .filter(Boolean)
+                  .join("\n")
+              : undefined
+          }
+          disabled={disabled || !episode.can_merge}
+          onClick={() => {
+            if (diagnostic) {
+              setMergeError(null);
+              setOpen(true);
+              setPreviewAttempt((value) => value + 1);
+            } else setOpen(!open);
+          }}
         >
-          {busy ? <LoaderCircle className="spin" size={12} /> : <Network size={12} />}
-          {busy ? "Starting merge…" : "Merge"}
-          {!busy && <ChevronDown size={12} />}
+          {busy || previewLoading ? (
+            <LoaderCircle className="spin" size={12} />
+          ) : diagnostic ? (
+            <RotateCcw size={12} />
+          ) : (
+            <Network size={12} />
+          )}
+          {!diagnostic &&
+            (busy ? "Starting merge…" : previewLoading ? "Loading preview…" : "Merge")}
+          {!busy && !diagnostic && <ChevronDown size={12} />}
         </button>
       </div>
       {episode.isolation_state?.merge_attempt?.worktree_kept && (
@@ -151,7 +182,7 @@ export function EpisodeMergePanel({
           remove it.
         </span>
       )}
-      {open && preview && (
+      {episode.can_merge && open && preview && (
         <fieldset className="merge-pickers" aria-label="Merge options" disabled={disabled}>
           {preview.code && (
             <>
@@ -280,11 +311,6 @@ export function EpisodeMergePanel({
               Cancel
             </button>
           </div>
-        </div>
-      )}
-      {mergeError && (
-        <div className="campaign-branch-diagnostic" role="alert">
-          {mergeError}
         </div>
       )}
     </div>

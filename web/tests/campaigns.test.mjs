@@ -589,10 +589,11 @@ test("merged and failed branch summaries stay visible without branch-management 
   assert.match(merged, />r11</);
 
   assert.match(merged, /class="status-pill branch-merged"/);
-  assert.match(merged, /campaign-branch-merge/);
+  assert.doesNotMatch(merged, /campaign-branch-merge/);
   assert.match(failed, /class="status-pill branch-failed"/);
   assert.match(failed, /The branch delta could not be rebased onto current main\./);
-  assert.match(failed, /campaign-branch-merge/);
+  assert.match(failed, /aria-label="Retry merge"/);
+  assert.doesNotMatch(failed, /campaign-branch-diagnostic/);
 });
 
 test("a paused or interrupted merge asks for action without presenting a failure", () => {
@@ -605,7 +606,8 @@ test("a paused or interrupted merge asks for action without presenting a failure
 
   assert.match(needsAction, /campaign-graph-branch needs_action/);
 
-  assert.match(needsAction, /campaign-branch-diagnostic needs_action/);
+  assert.match(needsAction, /aria-label="Retry merge"/);
+  assert.doesNotMatch(needsAction, /campaign-branch-diagnostic/);
 
   assert.match(needsAction, /The merge was interrupted before it could finish\./);
   assert.match(needsAction, /campaign-branch-merge/);
@@ -842,7 +844,7 @@ test("the login notice names each signed-out account once and offers verificatio
   assert.match(html, /Already signed in\? Check again/);
 });
 
-test("ineligible and running branches retain merge controls; an in-flight action disables them", () => {
+test("merge controls render the server offer; an in-flight action disables them", () => {
   const ineligible = renderEpisodes([withGraphBranch({ merge_eligible: false })]);
   const running = renderEpisodes([
     withGraphBranch({
@@ -856,8 +858,8 @@ test("ineligible and running branches retain merge controls; an in-flight action
   });
 
   assert.match(running, /class="status-pill branch-running"/);
-  assert.match(ineligible, /campaign-branch-merge/);
-  assert.match(running, /campaign-branch-merge/);
+  assert.doesNotMatch(ineligible, /campaign-branch-merge/);
+  assert.doesNotMatch(running, /campaign-branch-merge/);
   assert.match(disabled, /campaign-branch-merge"[^>]*disabled=""/);
 });
 

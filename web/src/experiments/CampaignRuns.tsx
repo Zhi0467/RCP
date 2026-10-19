@@ -436,16 +436,6 @@ export function AutoResearchEpisodeCard({
                   />
                 )}
               </div>
-              {(episode.graph_branch.merge_state === "needs_action" ||
-                episode.graph_branch.merge_state === "failed") &&
-                episode.graph_branch.merge_diagnostic && (
-                  <div
-                    className={`campaign-branch-diagnostic ${episode.graph_branch.merge_state}`}
-                    role={episode.graph_branch.merge_state === "failed" ? "alert" : "status"}
-                  >
-                    {episode.graph_branch.merge_diagnostic}
-                  </div>
-                )}
               <EpisodeMergePanel
                 apiBase={apiBase}
                 episode={episode}

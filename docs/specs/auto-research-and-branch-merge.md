@@ -509,12 +509,24 @@ shows branch name/base/head, merge state (`unmerged`, `merging`,
 report/error. Paused/interrupted merge tasks retain diagnostics and offer fresh
 Merge when eligible.
 
-Merge remains visible when ineligible. Preview counts graph changes, commits,
-conflicts, and Proposals. Its pickers choose target, merge/squash when eligible,
+The episode's server-owned `can_merge` offers graph delivery, retained code
+worktree delivery/cleanup, or reconciliation of a settled reserved attempt. An
+exactly delivered graph head alone offers no Merge, whether kept open or archived;
+a newer branch head returns to `unmerged`. Zero preview counts alone do not mean
+an exact head was delivered: a new head with no semantic change still gets a
+no-change receipt. The endpoint independently refuses an already delivered or
+unchanged graph-only request with `no_undelivered_work`.
+
+Preview counts graph changes, commits, conflicts, and Proposals. Its pickers
+choose target, merge/squash when eligible,
 worktree/code-branch removal, and Keep branch open (not with squash). Submission
 rechecks server state and presents the specific refusal using the
-[visual rules](interface-and-visual-design.md). Only an in-flight action or missing
-preview disables it.
+[visual rules](interface-and-visual-design.md). A failed preview or merge shows
+a red edge and one icon-only Retry merge action,
+with its diagnostic in the tooltip. Retry reloads the preview even when the
+options are already open; it never resubmits before human confirmation. An
+unavailable offer disables retry and includes the refusal in its tooltip. An
+in-flight action or missing current preview disables submission.
 
 **Open graph** opens the persistent branch. Changes compares base to head with
 neighboring context, create/update/remove markers, before/after content, provenance,

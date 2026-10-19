@@ -472,7 +472,9 @@ body names `target_branch`, `history_mode` (`merge` or `squash`),
 `keep_branch_open`. Cleanup defaults to all three steps. Squash disallows Keep
 branch open. Deleting the code branch requires worktree removal and delivery.
 Merge stays human-dispatched. A clean merge runs without a provider turn.
-Episode responses include the owner's nullable `isolation_state`. It carries
+Episode responses include the server-owned `can_merge` offer (see
+[Runs projection](auto-research-and-branch-merge.md#runs-projection)) and the
+owner's nullable `isolation_state`. The state carries
 the reservation, attempt phase, recorded cleanup steps and errors, delivered
 code commit and target, squash commit, and graph archive flag. Graph receipts
 remain the independent graph delivery record.
@@ -1329,8 +1331,8 @@ showing watcher/session/host continuity. An explicit main route must match both
 episode and target; an advanced control shows a History handoff, never the newer
 episode's controls/transcript.
 
-Isolation-owning cards show branch base/head, merge state, and persistent Merge.
-A click checks current eligibility; [merge projection](auto-research-and-branch-merge.md#runs-projection)
+Isolation-owning cards show branch base/head, merge state, and the server-offered Merge.
+Submission rechecks current eligibility; [merge projection](auto-research-and-branch-merge.md#runs-projection)
 owns admission. Run offers On a new branch and Code worktree, off by default;
 existing branches hide the former. Shared Branch name accepts blank for the
 server date name. Auto-research on main uses the same name plus server-eligible

@@ -1024,14 +1024,11 @@
   grid-column: 1 / -1;
   padding-top: 8px;
 }
-.campaign-branch-diagnostic {
-  font-size: var(--type-2xs);
-  line-height: 1.4;
+.campaign-graph-branch:has(.episode-merge-panel.has-error) {
+  --branch-tone: var(--red);
 }
-.campaign-branch-diagnostic.needs_action {
-  color: var(--amber);
-}
-.campaign-branch-diagnostic.failed {
+.episode-merge-panel.has-error .campaign-branch-merge {
+  border-color: var(--red);
   color: var(--red);
 }
 .campaign-branch-merge {
