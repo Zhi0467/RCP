@@ -408,6 +408,16 @@
   overflow-x: auto;
   padding: 0 24px;
 }
+.project-tabs-trailing {
+  align-items: stretch;
+  background: inherit;
+  display: flex;
+  flex: none;
+  margin-left: auto;
+  padding-left: 8px;
+  position: sticky;
+  right: 0;
+}
 .project-tabs-toggle {
   align-items: center;
   background: transparent;

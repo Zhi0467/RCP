@@ -52,7 +52,9 @@ Sync/Ask together and icon-only History/Refresh together. Agent tasks are
 icon-only and accessible. Inbox carries a colored count; DAG is under Research. Research has no page
 heading: one View picker at the end of the tab strip switches between the
 drill-down and the DAG and sets which records show; on phones it sits in the ⋯
-menu. The DAG toolbar's type and layer filter is its Lens menu.
+menu. The DAG toolbar's type and layer filter is its Lens menu. View and the
+branch picker stay pinned to the strip's right edge; tabs that overflow scroll
+under them.
 Paper is under Artifacts' Files | Paper switch, retaining route `paper` and an
 unsynced badge on Artifacts. The member's pinned pages follow Paper in that
 switch; on phones it scrolls within its own width, pin titles truncate, and
