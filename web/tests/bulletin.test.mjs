@@ -159,3 +159,15 @@ test("a draft moved to another channel keeps each mention's recipient", () => {
   const moved = bulletinMoveDraft("ask @Helper", main, branch);
   assert.equal(bulletinEncodeMentions(moved, branch), "ask <@agent:chat:a>");
 });
+
+test("a draft rebased across a rename keeps each mention's recipient", () => {
+  const agent = (id, name) => ({ id, target_key: "main", name, kind: "human_chat_work" });
+  const before = bulletinMentionCandidates([], [agent("chat:a", "Twin"), agent("chat:b", "Twin")]);
+  const after = bulletinMentionCandidates([], [agent("chat:a", "Solo"), agent("chat:b", "Twin")]);
+  const first = before.find((item) => item.token === "<@agent:chat:a>");
+  const draft = `ask @${first.label}`;
+  // Without the rebase the renamed agent's old label now names the other agent.
+  assert.equal(bulletinEncodeMentions(draft, after), "ask <@agent:chat:b>");
+  const rebased = bulletinMoveDraft(draft, before, after);
+  assert.equal(bulletinEncodeMentions(rebased, after), "ask <@agent:chat:a>");
+});

@@ -146,6 +146,26 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
     [members, channelRoster],
   );
   const labels = useMemo(() => bulletinLabelMap(candidates), [candidates]);
+  // A roster refresh can shift labels (a renamed agent frees its name for a
+  // same-named one), so open text is rebased to keep each mention's recipient.
+  // A channel switch moves the draft itself.
+  const shownCandidates = useRef({ channelKey, candidates });
+  useEffect(() => {
+    const previous = shownCandidates.current;
+    shownCandidates.current = { channelKey, candidates };
+    if (
+      previous.channelKey !== channelKey ||
+      (previous.candidates.length === candidates.length &&
+        previous.candidates.every(
+          (item, index) =>
+            item.token === candidates[index].token && item.label === candidates[index].label,
+        ))
+    )
+      return;
+    const rebase = (text: string) => bulletinMoveDraft(text, previous.candidates, candidates);
+    setDraft(rebase);
+    setEditing((current) => current && { ...current, text: rebase(current.text) });
+  }, [channelKey, candidates]);
   const agentNames = useMemo(
     () => new Map(roster.map((actor) => [actor.id, actor.name])),
     [roster],
