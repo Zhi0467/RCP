@@ -411,17 +411,12 @@ export function ChatsWorkspace({
   };
   const archivedChatIds = useMemo(() => new Set(display.archived), [display.archived]);
   // Summaries carry each agent's stored name, self-names included. A rename made
-  // here shows at once and yields to the summaries once they report it.
+  // here shows at once, until the summaries' names next change to whatever name won.
   const [renamed, setRenamed] = useState<Record<string, string>>({});
-  useEffect(() => {
-    setRenamed((current) => {
-      const pending = Object.entries(current).filter(
-        ([chatId, title]) =>
-          storedConversations.find((item) => item.chatId === chatId)?.title !== title,
-      );
-      return pending.length === Object.keys(current).length ? current : Object.fromEntries(pending);
-    });
-  }, [storedConversations]);
+  const summaryNames = storedConversations
+    .map((conversation) => `${conversation.chatId}\u0000${conversation.title}`)
+    .join("\u0001");
+  useEffect(() => setRenamed({}), [summaryNames]);
   const conversations = useMemo(
     () =>
       withEpisodeAttention(

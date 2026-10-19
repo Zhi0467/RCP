@@ -254,3 +254,24 @@ def test_upgrade_moves_experiment_posts_to_their_conversation_identity(tmp_path)
     assert row["author_actor_id"] == "chat:loop-chat"
     assert row["text"] == "see <@agent:chat:loop-chat>"
     assert json.loads(row["mentions_json"]) == [{"kind": "agent", "id": "chat:loop-chat"}]
+
+
+def test_orchestrator_posts_keep_its_conversation_name(tmp_path) -> None:
+    from tests.test_auto_research_children_storage import _setup_parent
+
+    store, episode, root = _setup_parent(tmp_path)
+    owner = store.local_owner.user_id
+    store.seat_project_member(episode.project_id, owner)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET authorized_user_id=?, "
+            "dispatch_authority_json=json_set(COALESCE(dispatch_authority_json,'{}'),"
+            "'$.task_contract','orchestrate') WHERE operation_id=?",
+            (owner, root.operation_id),
+        )
+    store.set_chat_title(episode.project_id, episode.episode_id, owner, "Sweep lead")
+    post = store.execute_bulletin_command(
+        episode.project_id, root.operation_id, "post", key="k", text="hello"
+    )["post"]
+    assert post["author"]["actor_id"] == f"episode:{episode.episode_id}"
+    assert post["author"]["actor_label"] == "Sweep lead"

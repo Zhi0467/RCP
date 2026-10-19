@@ -641,7 +641,7 @@ class BulletinStoreMixin(StoreMixinBase):
                     "actor_id": actor_id,
                     "kind": "agent",
                     "operation_id": operation_id,
-                    "actor_label": _agent_label(connection, task),
+                    "actor_label": _agent_label(connection, task, actor_id),
                 },
                 key=key,
                 text=text,
@@ -652,7 +652,7 @@ class BulletinStoreMixin(StoreMixinBase):
         return _result(outcome)
 
 
-def _agent_label(connection: sqlite3.Connection, task: sqlite3.Row) -> str:
+def _agent_label(connection: sqlite3.Connection, task: sqlite3.Row, actor_id: str) -> str:
     """The author name a member reads once the agent leaves the roster.
 
     A conversation's stored name comes first, so an archived agent's posts keep it;
@@ -660,9 +660,13 @@ def _agent_label(connection: sqlite3.Connection, task: sqlite3.Row) -> str:
     """
 
     request = json.loads(task["request_json"] or "{}")
+    # An orchestrator's turns carry no chat_id; its conversation is its chain root.
+    chat_id = request.get("chat_id") or (
+        actor_id.removeprefix("episode:") if actor_id.startswith("episode:") else None
+    )
     named = connection.execute(
         "SELECT title FROM chat_display WHERE project_id=? AND chat_id=?",
-        (task["project_id"], request.get("chat_id")),
+        (task["project_id"], chat_id),
     ).fetchone()
     if named and named["title"]:
         return named["title"]
