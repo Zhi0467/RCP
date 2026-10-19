@@ -43,6 +43,20 @@ test("the tab strip keeps View and the branch picker inside its visible width", 
         { overflows: true, picker: true, view: true },
         `${width}px`,
       );
+      // The open View menu paints above positioned workspace layers.
+      await strip.evaluate((nav) => (nav.scrollLeft = 0));
+      await page.locator(".view-picker > button").click();
+      const menu = page.locator(".view-picker-menu");
+      const box = await menu.boundingBox();
+      assert.ok(
+        await menu.evaluate(
+          (element, [x, y]) => element.contains(document.elementFromPoint(x, y)),
+          [box.x + box.width / 2, box.y + box.height / 2],
+        ),
+        `${width}px`,
+      );
+      await menu.locator("button").last().click();
+      assert.equal(await menu.count(), 0);
       assert.deepEqual(errors, []);
       await page.close();
     }

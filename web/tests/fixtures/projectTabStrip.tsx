@@ -66,5 +66,7 @@ createRoot(document.getElementById("root")!).render(
         />
       </div>
     </nav>
+    {/* A positioned workspace layer, like the DAG toolbar, under the strip. */}
+    <div style={{ position: "relative", zIndex: 15, height: 400, background: "gray" }} />
   </div>,
 );
