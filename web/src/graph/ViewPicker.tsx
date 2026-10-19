@@ -1,5 +1,6 @@
 import { ChevronDown, Eye, GitBranch, Network } from "lucide-react";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
 
 import type { TrustView } from "../core/types";
 
@@ -24,7 +25,8 @@ interface ViewChoice {
  * records to show. On phones it renders inline in the project menu.
  */
 export function ViewPicker({ inline = false, ...choice }: ViewChoice & { inline?: boolean }) {
-  // The tab strip scrolls, so the open menu is placed against the window.
+  // The tab strip scrolls and pins this picker in its own stacking context, so
+  // the open menu is portaled and placed against the window.
   const [menuPosition, setMenuPosition] = useState<CSSProperties | null>(null);
   const open = menuPosition !== null;
   const setOpen = (next: boolean) => {
@@ -34,10 +36,12 @@ export function ViewPicker({ inline = false, ...choice }: ViewChoice & { inline?
     );
   };
   const ref = useRef<HTMLDivElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
-      if (!ref.current?.contains(event.target as Node)) setMenuPosition(null);
+      const target = event.target as Node;
+      if (!ref.current?.contains(target) && !menu.current?.contains(target)) setMenuPosition(null);
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") setMenuPosition(null);
@@ -70,20 +74,23 @@ export function ViewPicker({ inline = false, ...choice }: ViewChoice & { inline?
         <span>View</span>
         <ChevronDown size={13} />
       </button>
-      {open && (
-        <div
-          className="view-picker-menu"
-          role="group"
-          aria-label="View options"
-          style={menuPosition ?? undefined}
-        >
-          <ViewOptions
-            {...choice}
-            onLayout={close(choice.onLayout)}
-            onTrustView={close(choice.onTrustView)}
-          />
-        </div>
-      )}
+      {open &&
+        createPortal(
+          <div
+            ref={menu}
+            className="view-picker-menu"
+            role="group"
+            aria-label="View options"
+            style={menuPosition ?? undefined}
+          >
+            <ViewOptions
+              {...choice}
+              onLayout={close(choice.onLayout)}
+              onTrustView={close(choice.onTrustView)}
+            />
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

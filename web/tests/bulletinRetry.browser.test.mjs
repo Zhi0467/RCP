@@ -131,6 +131,15 @@ test("retrying a failed edit keeps a revision made after the failure", async () 
     await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/bulletinRetry.html`);
     await page.getByRole("button", { name: "Edit post", exact: true }).click();
     const box = page.getByRole("textbox", { name: "Edit post", exact: true });
+    // Opening an edit focuses the box with the caret after the existing text.
+    assert.deepEqual(
+      await box.evaluate((element) => [
+        document.activeElement === element,
+        element.selectionStart,
+        element.selectionEnd,
+      ]),
+      [true, post.text.length, post.text.length],
+    );
     await box.fill("First edit");
     await box.press("Enter");
     const retry = page.getByRole("button", { name: "Retry", exact: true });

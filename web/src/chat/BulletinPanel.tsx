@@ -93,6 +93,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
   const [failure, setFailure] = useState<Failure | null>(null);
   const feed = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
+  const editBox = useRef<HTMLTextAreaElement>(null);
   const pendingCaret = useRef<number | null>(null);
   const marked = useRef(new Map<string, string>());
   const picker = useRef<HTMLDivElement>(null);
@@ -147,6 +148,14 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
       pendingCaret.current = null;
     }
   }, [draft]);
+  // Opening an edit puts the caret after the text; autoFocus leaves it at the start.
+  const editingPost = editing?.postId;
+  useEffect(() => {
+    const box = editBox.current;
+    if (!editingPost || !box) return;
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+  }, [editingPost]);
   useEffect(() => {
     if (!pickerOpen) return;
     const close = (event: PointerEvent) => {
@@ -409,10 +418,10 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
           {isEditing ? (
             <div className="bulletin-edit">
               <textarea
+                ref={editBox}
                 aria-label="Edit post"
                 value={editing.text}
                 disabled={busy}
-                autoFocus
                 rows={Math.min(8, editing.text.split("\n").length)}
                 onChange={(event) =>
                   setEditing({ ...editing, text: event.target.value, key: crypto.randomUUID() })

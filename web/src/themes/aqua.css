@@ -170,6 +170,13 @@
   padding-bottom: 6px;
 }
 
+/* The pinned group spans the padded strip so its inherited gradient lines up. */
+:root[data-theme="aqua"] .project-tabs-trailing {
+  box-shadow: inset 0 1px 0 var(--aqua-highlight);
+  margin-block: -6px;
+  padding-block: 6px;
+}
+
 :root[data-theme="aqua"] .project-tabs > button:not(.project-tabs-toggle, .project-tabs-back) {
   background: var(--aqua-surface);
   border: 1px solid var(--rule);

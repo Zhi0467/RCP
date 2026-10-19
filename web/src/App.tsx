@@ -4788,8 +4788,11 @@ function MemberApp({
             />
           )}
           {navItems.map(renderNavItem)}
-          {showTrustFilter && <ViewPicker {...viewChoice} />}
-          {branchPicker}
+          {/* Pinned to the strip's right edge so a long tab row scrolls under it. */}
+          <div className="project-tabs-trailing">
+            {showTrustFilter && <ViewPicker {...viewChoice} />}
+            {branchPicker}
+          </div>
         </nav>
       )}
 
