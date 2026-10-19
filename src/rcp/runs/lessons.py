@@ -69,12 +69,14 @@ def stage_operational_context_pointer(
     remote_stage: RemoteRunStage | None,
 ) -> str:
     """Per-turn snapshot pointers only; command usage belongs to each contract builder."""
+    from rcp.runs.agent_names import stage_agent_name_pointer
     from rcp.runs.bulletin import stage_bulletin_pointer
 
     return "\n".join(
         filter(
             None,
             (
+                stage_agent_name_pointer(execution, local_stage, remote_stage),
                 stage_lessons_pointer(execution, local_stage, remote_stage),
                 stage_bulletin_pointer(execution, local_stage, remote_stage),
             ),

@@ -40,6 +40,7 @@ _MUTATING = frozenset(
         "ask",
         "lesson",
         "bulletin",
+        "name",
         "flag",
         "apply",
         "spawn",
@@ -78,6 +79,7 @@ BULLETIN_DELETE = ("delete", "--delete", "<post-id>")
 BULLETIN_REPLY_TO = ("reply_to", "--reply-to", "<post-id>")
 BULLETIN_CURSOR = ("cursor", "--cursor", "<cursor>")
 BULLETIN_BODY = ("body_file", "<body-file>")
+NAME_VALUE = ("name", "<name>")
 
 
 def _option_usage(option):
@@ -91,6 +93,10 @@ def merge_usage():
 
 def branch_usage():
     return f"branch {_option_usage(BRANCH_ARCHIVE)}"
+
+
+def name_usage():
+    return f"name {NAME_VALUE[1]}"
 
 
 def bulletin_usages():
@@ -273,6 +279,9 @@ def _parser():
     flag.add_argument("--finding", required=True)
     flag.add_argument("--source")
 
+    name = subparsers.add_parser("name")
+    name.add_argument(NAME_VALUE[0], metavar=NAME_VALUE[1])
+
     bulletin = subparsers.add_parser("bulletin")
     bulletin_actions = bulletin.add_mutually_exclusive_group(required=True)
     for dest, option, value in (BULLETIN_POST, BULLETIN_READ, BULLETIN_EDIT, BULLETIN_DELETE):
@@ -421,6 +430,8 @@ def _request_arguments(namespace, workspace):
             return verb, None, arguments
         except (OSError, UnicodeError) as exc:
             raise ClientInputError(f"{label} could not be read: {exc}") from exc
+    if verb == "name":
+        return verb, None, {"name": namespace.name}
     if verb == "status":
         worker_id = namespace.worker_id
         if worker_id is not None:
@@ -1097,6 +1108,7 @@ def _requested_verb(argv):
             "ask",
             "lesson",
             "bulletin",
+            "name",
             "flag",
             "validate",
             "merge-answers",

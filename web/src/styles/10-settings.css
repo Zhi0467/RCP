@@ -1434,6 +1434,8 @@ button.agent-provider-label {
   display: grid;
   flex: 1 1 auto;
   gap: 2px;
+  /* A bare grid column grows to its text, which then clips without an ellipsis. */
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
 }
 .conversation-header > .chat-context-controls {
@@ -1441,7 +1443,7 @@ button.agent-provider-label {
   padding: 0;
 }
 .conversation-heading > strong {
-  font-size: var(--type-base);
+  font-size: var(--type-md);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

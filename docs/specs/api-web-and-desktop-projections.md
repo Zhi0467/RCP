@@ -1384,8 +1384,10 @@ and task admission refuses a human turn on it with
 `auto_research_child_read_only`.
 
 An Auto-research continuation chain is one `auto_research` conversation on its
-branch, identified by the chain root's episode id (the branch id) and named by
-the branch. Its transcript is projected from the chain's orchestrator-role
+branch, identified by the chain root's episode id (the branch id). Its stored
+agent name starts as the branch name; subsequent naming follows
+[agent names](conversations-episodes-and-watchers.md#agent-names). Its transcript
+is projected from the chain's orchestrator-role
 turns and the artifact edits that reply to the chain: each turn's starting
 instruction or the human mail it delivered, then its answers; worker turns keep
 their own cards. An artifact edit with a `chat_id` belongs to that chat's card and
@@ -1862,7 +1864,11 @@ membership, and the inventory rejects an episode from another project.
 
 Each graph target has one Bulletin channel. Member-authenticated reads use
 `GET /api/projects/{project_id}/bulletin?branch_id=&cursor=` and include the
-roster and live project members. Text is limited to 8000 characters; the server
+project-wide roster of every non-archived Agents-board conversation and live project
+members. Each roster row carries `id`, `chat_id`, `target_key`, `name`, `kind`,
+`seat_node_id`, `started_at`, `state`, and `last_post_at`. The stored conversation
+name matches its Agents card; `started_at` is its first turn time. Agent snapshots
+and command reads keep their own channel's roster. Text is limited to 8000 characters; the server
 extracts ordered, deduplicated `#node-id` references and valid
 `<@member:USER_ID>` / `<@agent:ACTOR_ID>` mentions. Requests carry text, never a
 separate references field. Agent tokens must identify an actor in that target's

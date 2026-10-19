@@ -426,6 +426,7 @@ def migrate_episode_report_deletion(connection: sqlite3.Connection) -> None:
 def install_bulletin_resource_versions(connection: sqlite3.Connection) -> None:
     """Posts and their live roster refresh through the existing project polling loop."""
     roster_columns = {
+        "chat_display": ("project_id", "chat_id", "title", "archived_at"),
         "bulletin_posts": (
             "project_id",
             "target_key",
@@ -495,4 +496,18 @@ def install_bulletin_resource_versions(connection: sqlite3.Connection) -> None:
         ],
         columns=("user_id", "display_name", "removal_started_at"),
         suffix="_bulletin",
+    )
+
+
+def migrate_chat_name_versions(connection: sqlite3.Connection) -> None:
+    """Reinstall the chat owner after adding persistent self-name state."""
+    for event in ("insert", "update", "delete"):
+        connection.execute(f"DROP TRIGGER resource_chat_display_{event}")
+    _install(
+        connection,
+        "chat_display",
+        [
+            _bump("ROW.project_id", "chats"),
+            _bump("ROW.project_id", "chat", "ROW.chat_id", "ROW.chat_id IS NOT NULL"),
+        ],
     )

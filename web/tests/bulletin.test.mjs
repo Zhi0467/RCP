@@ -14,6 +14,8 @@ import {
   bulletinIsOwnPost,
   bulletinChannelTarget,
   bulletinTargetKey,
+  bulletinKeyTarget,
+  bulletinAgentChoices,
 } from "../src/chat/bulletinModel.ts";
 
 test("threads group replies under parents and retain server author snapshots", () => {
@@ -37,6 +39,8 @@ test("threads group replies under parents and retain server author snapshots", (
     bulletinAuthor({ author: { kind: "agent", actor_label: "Worker", operation_id: "op" } }),
     "Worker",
   );
+  const named = { author: { kind: "agent", actor_id: "chat:c", actor_label: "Old" } };
+  assert.equal(bulletinAuthor(named, new Map([["chat:c", "Renamed"]])), "Renamed");
 });
 
 test("text splits into prose, node links, and known or recorded mentions", () => {
@@ -65,7 +69,7 @@ test("composer names round-trip to stored tokens with unique labels", () => {
       { user_id: "u1", display_name: "Ada" },
       { user_id: "u2", display_name: "Ada" },
     ],
-    [{ id: "worker:1", kind: "worker_node", instruction_title: "", state: "working" }],
+    [{ id: "worker:1", kind: "worker_node", name: "", target_key: "main", state: "working" }],
   );
   assert.equal(new Set(candidates.map((item) => item.label)).size, candidates.length);
   const agent = candidates[2];
@@ -113,4 +117,35 @@ test("post state and authorship gate edit and delete", () => {
 test("channels map to graph targets", () => {
   assert.deepEqual(bulletinChannelTarget({ branch_id: "c" }), { kind: "branch", branch_id: "c" });
   assert.equal(bulletinTargetKey(bulletinChannelTarget({ branch_id: null })), "main");
+  for (const target of [{ kind: "main" }, { kind: "branch", branch_id: "fork:a" }])
+    assert.deepEqual(bulletinKeyTarget(bulletinTargetKey(target)), target);
+});
+
+test("agent choices span every channel, shown channel first, labels unique per channel", () => {
+  const agent = (id, target_key, name) => ({ id, target_key, name, kind: "human_chat_work" });
+  const roster = [
+    agent("chat:a", "main", "running-the"),
+    agent("chat:b", "branch:x", "running-the"),
+    agent("chat:c", "branch:x", "running-the"),
+  ];
+  const choices = bulletinAgentChoices(
+    [{ user_id: "u1", display_name: "Ada" }],
+    roster,
+    "branch:x",
+  );
+  assert.deepEqual(
+    choices.map((choice) => choice.actor.id),
+    ["chat:b", "chat:c", "chat:a"],
+  );
+  assert.deepEqual(
+    choices.map((choice) => choice.token),
+    ["<@agent:chat:b>", "<@agent:chat:c>", "<@agent:chat:a>"],
+  );
+  // Within one channel two same-named agents take distinct labels; across channels the name stays as is.
+  assert.notEqual(choices[0].label, choices[1].label);
+  assert.equal(choices[2].label, roster[0].name);
+  // A choice's label encodes to its token with that channel's own candidates.
+  const channel = roster.filter((actor) => actor.target_key === "branch:x");
+  const candidates = bulletinMentionCandidates([], channel);
+  assert.equal(bulletinEncodeMentions(`@${choices[1].label}`, candidates), choices[1].token);
 });

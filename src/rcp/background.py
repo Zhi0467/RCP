@@ -266,6 +266,7 @@ class AgentTaskExecution:
     #: has, since no process exists to leave an exit code. In memory because it
     #: describes this attempt, not the task.
     stage_unreachable: bool = False
+    agent_name_state: dict[str, object] | None = None
     command_mailbox: TaskCommandMailbox | None = field(default=None, repr=False)
     #: This process's work admission. A question waits for the human only while
     #: it is open; maintenance closes it and locks the human out.

@@ -235,12 +235,6 @@ class ConsolidationPoller:
             run = self.store.consolidation_run_for_operation(operation_id)
             if run is None:
                 raise ValueError("consolidation_binding_required")
-            self.store.set_chat_title(
-                run.project_id,
-                consolidation_chat_id(run.project_id),
-                run.authorized_by.user_id,
-                "Graph consolidation",
-            )
             self.tasks.launch_admitted(operation_id)
         except Exception:
             # Admission is already durable. A later pass retries exactly this task.

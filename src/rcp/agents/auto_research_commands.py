@@ -13,6 +13,7 @@ def auto_research_allowed_verbs(
     *,
     graph_read_scope: GraphReadScope | None = None,
     bulletin: bool = True,
+    can_self_name: bool = False,
 ) -> tuple[CommandVerb, ...]:
     history_verbs = tuple(sorted(graph_read_scope.verbs)) if graph_read_scope else ()
     bulletin_verbs: tuple[CommandVerb, ...] = ("bulletin",) if bulletin else ()
@@ -35,6 +36,7 @@ def auto_research_allowed_verbs(
         "finish",
         "ask",
         "lesson",
+        *(("name",) if can_self_name else ()),
         *bulletin_verbs,
         *history_verbs,
     )

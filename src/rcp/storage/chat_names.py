@@ -1,0 +1,87 @@
+"""Canonical conversation names, initialized once by task admission and migration."""
+
+from __future__ import annotations
+
+import json
+import re
+import sqlite3
+from typing import Any
+
+from rcp.limits import CHAT_TITLE_MAX_CHARS
+
+
+class ChatNameError(ValueError):
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+def normalize_chat_name(name: str | None, max_chars: int) -> str:
+    name = " ".join((name or "").split())
+    if not name:
+        raise ChatNameError("chat_name_empty")
+    if len(name) > max_chars:
+        raise ChatNameError("chat_name_too_long")
+    return name
+
+
+def initialize_chat_name(
+    connection: sqlite3.Connection, project_id: str, chat_id: str, message: str
+) -> None:
+    # A Markdown heading names the task better than the prose under it.
+    heading = re.search(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", message, re.MULTILINE)
+    text = heading.group(1) if heading else message
+    name = " ".join(text.split())[:CHAT_TITLE_MAX_CHARS] or "Chat"
+    connection.execute(
+        "INSERT INTO chat_display (project_id, chat_id, title) VALUES (?, ?, ?) "
+        "ON CONFLICT(project_id, chat_id) DO UPDATE SET title = excluded.title "
+        "WHERE chat_display.title IS NULL",
+        (project_id, chat_id, name),
+    )
+
+
+def initialize_task_chat_name(
+    connection: sqlite3.Connection,
+    project_id: str,
+    kind: str,
+    request: dict[str, Any],
+    branch_id: str | None,
+) -> None:
+    if kind == "auto_research" and request.get("role") == "orchestrator":
+        row = connection.execute(
+            "SELECT owner_episode_id, name FROM graph_branches "
+            "WHERE project_id = ? AND branch_id = ?",
+            (project_id, branch_id),
+        ).fetchone()
+        if row is not None and row["owner_episode_id"]:
+            initialize_chat_name(connection, project_id, row["owner_episode_id"], row["name"])
+    elif kind in {"node_chat", "project_chat"} and request.get("chat_id"):
+        message = request.get("message") or ""
+        if not message.strip():
+            message = request.get("node_id") or "Chat"
+        if "graph-consolidation" in (request.get("workflow_ids") or []):
+            message = "Graph consolidation"
+        initialize_chat_name(connection, project_id, request["chat_id"], message)
+
+
+def backfill_chat_names(connection: sqlite3.Connection, project_id: str | None = None) -> None:
+    for row in connection.execute(
+        "SELECT b.project_id, b.owner_episode_id, b.name FROM graph_branches b "
+        "JOIN episodes e ON e.episode_id = b.owner_episode_id "
+        "WHERE e.mode = 'auto_research' AND (? IS NULL OR b.project_id = ?)",
+        (project_id, project_id),
+    ).fetchall():
+        initialize_chat_name(connection, row["project_id"], row["owner_episode_id"], row["name"])
+    for row in connection.execute(
+        "SELECT project_id, kind, request_json, graph_target_json FROM graph_runs "
+        "WHERE kind IN ('node_chat', 'project_chat', 'auto_research') "
+        "AND (? IS NULL OR project_id = ?) ORDER BY created_at, operation_id",
+        (project_id, project_id),
+    ).fetchall():
+        initialize_task_chat_name(
+            connection,
+            row["project_id"],
+            row["kind"],
+            json.loads(row["request_json"]),
+            json.loads(row["graph_target_json"]).get("branch_id"),
+        )

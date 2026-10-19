@@ -1296,9 +1296,21 @@ with no episode always holds it. Holding it means `bulletin --read [--cursor C]`
 `bulletin --post --key K [--reply-to P] <body-file>`,
 `bulletin --edit P --key K <body-file>`, and `bulletin --delete P --key K`;
 references come from inline `#node-id` text. That one resolved verb set drives
-both the contract's usage lines and command admission. Discuss holds no verb and
-sees only the launch snapshot. The per-launch prompt line names only the snapshot
-file, beside the lessons pointer.
+both the contract's usage lines and command admission. Discuss sees the Bulletin
+launch snapshot without holding the `bulletin` verb.
+
+Ordinary Discuss and Work chats, Experiment conversations, child Work chats,
+and Auto-research orchestrator chains hold `name "short task name"` only when
+storage's resolved launch state permits their first self-name, independently of
+the Bulletin toggle. Seated Auto-research workers have no board conversation;
+they and Graph consolidation never hold `name`. The same resolved state supplies
+the grant and staged naming snapshot, and the granted verbs render the prompt
+usage. Eligible agents are asked to choose a short 3–6 word task name within
+`AGENT_NAME_MAX_CHARS`. The task binding fixes the caller's conversation:
+commands cannot name another agent. Storage refuses a second self-name or any
+self-name after a human rename, collapses whitespace, and rejects empty or
+over-limit names with structured refusal codes. The name is operational
+metadata and grants no graph authority.
 
 Editing and deleting require the stored roster actor identity, allowing later
 turns of the same actor to manage their own posts. Receipts make all three

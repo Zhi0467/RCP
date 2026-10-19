@@ -23,7 +23,14 @@ _CASES = [
             "status_message": "",
         },
     ),
-    ("chat_display", "chats", "title", {"chat_id": "chat"}),
+    *[
+        ("chat_display", resource, column, {"chat_id": "chat"})
+        for resource, column in (
+            ("chats", "title"),
+            ("bulletin", "title"),
+            ("bulletin", "archived_at"),
+        )
+    ],
     ("provider_login_states", "settings", "detail", {"state": "signed_in"}),
     ("chat_reads", "chats", "read_through", {"user_id": "member"}),
     ("chat_reads", "digest", "read_through", {"user_id": "member"}),
@@ -418,6 +425,12 @@ def test_orchestrator_chat_invalidates_chain_root(tmp_path, owner):
                 "episode_id": "continuation",
                 "sender_role": "human",
             },
+            store.now(),
+        )
+        _insert(
+            connection,
+            "chat_display",
+            {"chat_id": "root", "title": "Stored root name"},
             store.now(),
         )
         assert store._orchestrator_chat_summaries(connection, "p", None)[0]["chat_id"] == "root"

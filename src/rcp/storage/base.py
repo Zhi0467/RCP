@@ -129,6 +129,7 @@ class AppStoreBase:
         (56, "graph_branches_v1"),
         (57, "graph_bulletin_v1"),
         (58, "project_worker_seats_v1"),
+        (59, "conversation_names_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -918,11 +919,34 @@ class AppStoreBase:
             name="project_worker_seats_v1",
             migration=self._migrate_project_worker_seats,
         )
+        self._run_storage_schema_migration(
+            connection,
+            version=59,
+            name="conversation_names_v1",
+            migration=self._migrate_conversation_names,
+        )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
         if not schema_template:
             self._validate_storage_schema(connection)
         return bootstrap_code
+
+    def _migrate_conversation_names(self, connection: sqlite3.Connection) -> None:
+        from rcp.storage.chat_names import backfill_chat_names
+        from rcp.storage.resource_versions import (
+            install_bulletin_resource_versions,
+            migrate_chat_name_versions,
+        )
+
+        self._ensure_column(connection, "chat_display", "self_named", "INTEGER NOT NULL DEFAULT 0")
+        migrate_chat_name_versions(connection)
+        backfill_chat_names(connection)
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+            "AND (name GLOB 'resource_*_bulletin_*' OR name GLOB 'resource_bulletin_posts_*')"
+        ).fetchall():
+            connection.execute(f'DROP TRIGGER "{row[0]}"')
+        install_bulletin_resource_versions(connection)
 
     def _migrate_project_worker_seats(self, connection: sqlite3.Connection) -> None:
         """Project workers have no node seat; retain old worker/attempt identities."""

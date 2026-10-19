@@ -384,6 +384,12 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
                 client=client or turn.patch_inputs.validator_staged.client_command(),
             )
         )
+    if "name" in handler.allowed_verbs:
+        from rcp.runs.agent_names import name_command_usage
+
+        instructions.append(
+            name_command_usage(client or turn.patch_inputs.validator_staged.client_command())
+        )
     if "bulletin" in handler.allowed_verbs:
         instructions.append(
             bulletin_command_usage(client or turn.patch_inputs.validator_staged.client_command())

@@ -130,9 +130,15 @@ from rcp.transport import RemoteRunStage, StateUnavailable
 def _discuss_execution_instructions(
     handler: WorkCommandHandler, wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS
 ) -> str:
-    if "ask" not in handler.allowed_verbs:
-        return ""
-    return live_ask_contract(wait_seconds)
+    from rcp.agents.prompts import COMMAND_CLIENT
+    from rcp.runs.agent_names import name_command_usage
+
+    instructions = []
+    if "name" in handler.allowed_verbs:
+        instructions.append(name_command_usage(COMMAND_CLIENT))
+    if "ask" in handler.allowed_verbs:
+        instructions.append(live_ask_contract(wait_seconds))
+    return "\n\n".join(instructions)
 
 
 def resume_discuss_command_mailbox(

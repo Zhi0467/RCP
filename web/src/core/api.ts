@@ -803,7 +803,7 @@ export function setChatPinned(
   });
 }
 
-/** A blank title returns the chat to its derived name. */
+/** Renames the agent; the server refuses a blank title. */
 export function setChatTitle(apiBase: string, chatId: string, title: string): Promise<ChatDisplay> {
   return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/title`, {
     method: "POST",

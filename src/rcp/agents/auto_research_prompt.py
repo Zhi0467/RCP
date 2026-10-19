@@ -10,6 +10,7 @@ from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
 from rcp.agents.group_context import GroupContext, group_prompt_value
 from rcp.agents.loop_overlap import render_loop_interference_rule
 from rcp.agents.prompts import (
+    AGENT_NAME_INSTRUCTION,
     BULLETIN_BODY_RULE,
     PROVIDER_NATIVE_SUBAGENT_LIFETIME,
     REPLY_STYLE,
@@ -24,6 +25,7 @@ from rcp.agents.staged_command_client import (
     bulletin_usages,
     child_target_usage,
     merge_usage,
+    name_usage,
     spawn_seat_usage,
 )
 from rcp.agents.write_scope import ProjectWriteScope
@@ -38,7 +40,7 @@ from rcp.limits import (
 )
 
 # Bumped when the stable policy prose of either Auto-research actor contract changes.
-AUTO_RESEARCH_POLICY_VERSION = "auto-research-v7"
+AUTO_RESEARCH_POLICY_VERSION = "auto-research-v9"
 
 
 def _repositories(repositories: list[dict[str, str]]) -> str:
@@ -146,6 +148,7 @@ def _command_invocations(
         "ask": ("ask --key <key> --question <text> [--choice <text> ...] [--multiple]",),
         "lesson": ("lesson add --key <key> --text <text>",),
         "bulletin": bulletin_usages(),
+        "name": (name_usage(),),
     }
     commands = "\n".join(
         f"  - `{invocation}`"
@@ -153,6 +156,8 @@ def _command_invocations(
         if verb not in GRAPH_HISTORY_VERBS
         for invocation in invocations[verb]
     )
+    if "name" in allowed_verbs:
+        commands += f"\n  {AGENT_NAME_INSTRUCTION}"
     if "bulletin" in allowed_verbs:
         commands += f"\n  {BULLETIN_BODY_RULE}"
     return f"""Staged command client:

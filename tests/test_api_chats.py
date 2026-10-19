@@ -84,6 +84,7 @@ def test_chat_history_is_paginated_from_full_canonical_transcripts(
     chat_ids: list[str] = []
     long_answer = "full-answer-" + ("x" * 20_000)
 
+    store = app.state.background_tasks.store
     for index in range(23):
         chat_id = str(uuid.uuid4())
         chat_ids.append(chat_id)
@@ -171,6 +172,37 @@ def test_chat_history_is_paginated_from_full_canonical_transcripts(
     assert len(transcript.json()["messages"][-1]["text"]) > 16_000
     assert parsed_paths == [chat_dir / f"project-{chat_ids[0]}.jsonl"]
 
+    store.set_chat_title(project_id, chat_ids[0], store.local_owner.user_id, "Stored name")
+    assert (
+        client.get(f"/api/projects/{project_id}/chats/{chat_ids[0]}").json()["title"]
+        == "Stored name"
+    )
+    assert (
+        next(
+            row
+            for row in client.get(f"/api/projects/{project_id}/chats?inventory=true").json()[
+                "items"
+            ]
+            if row["chat_id"] == chat_ids[0]
+        )["title"]
+        == "Stored name"
+    )
+
+    from rcp.core.transition_models import GraphTargetRef
+
+    # Task metadata from another target cannot hide the stored canonical name.
+    canonical = next(
+        row for row in service.chat_summaries(inventory=True).items if row.chat_id == chat_ids[0]
+    )
+    other_target = canonical.model_copy(
+        update={
+            "graph_target": GraphTargetRef(kind="branch", branch_id=str(uuid.uuid4())),
+            "title": "Stale task title",
+        }
+    )
+    merged = service.chat_summaries(inventory=True, task_summaries=[other_target])
+    assert next(row.title for row in merged.items if row.chat_id == chat_ids[0]) == "Stored name"
+
     assert client.get(f"/api/projects/{project_id}/chats/not-a-uuid").status_code == 422
     assert client.get(f"/api/projects/{project_id}/chats/{uuid.uuid4()}").status_code == 404
 
@@ -235,7 +267,7 @@ def test_chat_archive_and_title_are_project_display_choices(manifest, tmp_path) 
     assert set(client.get(f"{url}/chat-display").json()["archived"]) == {first, second}
     assert archive(first, False).json()["archived"] == [second]
     assert archive("not-a-uuid", True).status_code == 422
-    # A title survives an archive round trip and clears back to the derived name.
+    # A canonical name survives archive changes and cannot be cleared.
     assert rename(second, "  Loss   sweep ").json() == {
         "archived": [second],
         "titles": {second: "Loss sweep"},
@@ -247,13 +279,25 @@ def test_chat_archive_and_title_are_project_display_choices(manifest, tmp_path) 
         "pinned": [],
     }
     assert rename(second, "x" * 121).status_code == 422
-    assert rename(second, " ").json() == {"archived": [], "titles": {}, "pinned": []}
+    assert rename(second, " ").status_code == 422
+    assert rename(second, None).status_code == 422
+    assert client.post(f"{url}/chats/{second}/title", json={}).status_code == 422
+    # Validation follows storage normalization, not raw request length.
+    assert rename(second, " " * 121 + "Loss sweep").status_code == 200
     # Pins list newest first, and an unpinned chat with no other choice leaves no row.
     assert pin(first, True).json()["pinned"] == [first]
     assert pin(second, True).json()["pinned"] == [second, first]
     assert pin(first, False).json()["pinned"] == [second]
-    assert pin(second, False).json() == {"archived": [], "titles": {}, "pinned": []}
-    assert client.get(f"{url}/chat-display").json() == {"archived": [], "titles": {}, "pinned": []}
+    assert pin(second, False).json() == {
+        "archived": [],
+        "titles": {second: "Loss sweep"},
+        "pinned": [],
+    }
+    assert client.get(f"{url}/chat-display").json() == {
+        "archived": [],
+        "titles": {second: "Loss sweep"},
+        "pinned": [],
+    }
 
 
 def test_chat_read_marker_only_moves_forward(manifest, tmp_path) -> None:

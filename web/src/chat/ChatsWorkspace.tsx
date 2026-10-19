@@ -208,7 +208,10 @@ const NO_GLOSSARY = buildGlossaryIndex({});
 /** The orchestrator card's episode comes from the server's projection, not its tasks. */
 function agentTypeLabel(conversation: ChatConversation): string {
   if (conversation.conversationKind === "auto_research") return "Orchestrator";
-  return conversation.kind === "project_chat" ? "Project chat" : "Node chat";
+  // The node tells apart agents that share a name pattern.
+  return conversation.kind === "project_chat"
+    ? "Project chat"
+    : (conversation.nodeId ?? "Node chat");
 }
 
 /** A board card's provider line: provider, model, effort, task type. */
@@ -249,10 +252,11 @@ function AgentRename({ title, onDone }: { title: string; onDone: (title: string 
       onSubmit={(event) => {
         event.preventDefault();
         const value = new FormData(event.currentTarget).get("title");
-        onDone(typeof value === "string" ? value.trim() : "");
+        const title = typeof value === "string" ? value.trim() : "";
+        // The agent has one stored name; a blank entry keeps it.
+        onDone(title || null);
       }}
     >
-      {/* Blank returns the chat to its derived name. */}
       <input
         name="title"
         aria-label="Agent name"

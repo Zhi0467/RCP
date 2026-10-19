@@ -92,7 +92,7 @@ test("conversations group by chat id rather than latest node", () => {
     conversations.map((item) => item.chatId),
     ["chat-p", "chat-b", "chat-a"],
   );
-  assert.equal(conversations.find((item) => item.chatId === "chat-a")?.title, "Node A");
+  assert.equal(conversations.find((item) => item.chatId === "chat-a")?.title, "Node question");
   assert.equal(latestConversation(conversations, "node_chat", "node/a")?.chatId, "chat-b");
   assert.equal(chatIdForTask(tasks[2]), "chat-p");
 });

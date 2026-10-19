@@ -23,7 +23,7 @@ def test_bulletin_member_identity_and_auth(manifest, tmp_path) -> None:
     assert client.post(url, json={"text": "No", "key": "post-2"}).status_code == 404
 
 
-def test_bulletin_roster_cap_and_post_admission(manifest, tmp_path, monkeypatch) -> None:
+def test_bulletin_complete_roster_and_post_admission(manifest, tmp_path, monkeypatch) -> None:
     from rcp.limits import BULLETIN_ROSTER_MAX_COUNT
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -35,8 +35,8 @@ def test_bulletin_roster_cap_and_post_admission(manifest, tmp_path, monkeypatch)
         lambda *_: [{"id": str(i)} for i in range(BULLETIN_ROSTER_MAX_COUNT + 1)],
     )
     page = client.get(url).json()
-    assert len(page["roster"]) == BULLETIN_ROSTER_MAX_COUNT
-    assert page["roster_omitted"] == 1
+    assert len(page["roster"]) == BULLETIN_ROSTER_MAX_COUNT + 1
+    assert "roster_omitted" not in page
     assert page["can_post"] is True
 
     def refuse(_project):

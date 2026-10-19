@@ -62,6 +62,18 @@ def test_due_admission_is_atomic_and_catchup_collapses_missed_days(runtime):
     runs = runtime.store.consolidation_runs()
     assert len(runs) == len(runtime.dispatched) == 1
     task = runtime.store.agent_task(runs[0].operation_id)
+    assert (
+        runtime.store.agent_name_state(task.project_id, task.request["chat_id"])["name"]
+        == "Graph consolidation"
+    )
+    runtime.store.set_chat_title(
+        task.project_id, task.request["chat_id"], "human", "My graph review"
+    )
+    runtime.poller._launch(task.operation_id)
+    assert (
+        runtime.store.agent_name_state(task.project_id, task.request["chat_id"])["name"]
+        == "My graph review"
+    )
     assert task.request["trigger"] == "schedule"
     assert task.request["workflow_ids"] == ["graph-consolidation"]
     assert task.request["session_id"] is None

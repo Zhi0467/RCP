@@ -215,7 +215,7 @@ def _work_pair(
             "trigger": "orchestrator",
             "patch_kind": "work",
             "node_id": "exp/seat",
-            "chat_id": chat_id or f"chat-{worker_id}",
+            "chat_id": chat_id or worker_id,
             "message": instruction,
             "session_id": None,
             "watcher_ids": [],

@@ -63,6 +63,7 @@ from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
 from rcp.loop_status import other_branch_auto_research, other_branch_loops
 from rcp.providers import classify_terminal_error
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
+from rcp.runs.agent_names import resolve_agent_name_state
 from rcp.runs.auto_research import (
     AutoResearchCommandContext,
     AutoResearchCommandDispatcher,
@@ -271,6 +272,7 @@ async def stream_auto_research_orchestrator_run(
         # The one command surface this turn's prompt renders and its dispatcher enforces.
         allowed_verbs = auto_research_allowed_verbs(
             "orchestrator",
+            can_self_name=bool(resolve_agent_name_state(execution).get("can_self_name")),
             graph_read_scope=graph_read_scope,
             bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
         )

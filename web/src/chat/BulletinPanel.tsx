@@ -14,7 +14,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "../core/api";
-import { graphTargetUrl, projectViewHash, sameGraphTarget } from "../core/graphTarget";
+import { graphTargetUrl, sameGraphTarget } from "../core/graphTarget";
 import { resourceKeyId, type ResourceProfile } from "../core/resourceStore";
 import { useRefreshRuntime } from "../core/useResource";
 import type { GraphNode, GraphTargetRef } from "../core/types";
@@ -22,13 +22,16 @@ import { projectResourceKey, useProjectResource } from "../projects/projectResou
 import {
   bulletinActorKind,
   bulletinActorLabel,
+  bulletinAgentChoices,
   bulletinAuthor,
   bulletinChannelTarget,
+  bulletinDate,
   bulletinDecodeMentions,
   bulletinEncodeMentions,
   bulletinFilter,
   bulletinInsert,
   bulletinIsOwnPost,
+  bulletinKeyTarget,
   bulletinLabelMap,
   bulletinMentionCandidates,
   bulletinPostState,
@@ -45,7 +48,7 @@ import "./bulletin.css";
 
 interface Props {
   projectId: string;
-  /** The workspace's graph target, which is the channel shown; picking another channel switches it. */
+  /** The workspace's graph target, the channel shown first; picking another channel never changes it. */
   target: GraphTargetRef;
   /** The signed-in member; null when no verified session exists. */
   actorId: string | null;
@@ -59,6 +62,10 @@ interface Suggestion {
   detail?: string;
   icon: "member" | "agent" | "node";
   insert: string;
+  /** Values the typed query matches. */
+  match: readonly string[];
+  /** An agent's channel; picking an agent from another channel shows that channel. */
+  targetKey?: string;
 }
 
 interface Failure {
@@ -71,9 +78,9 @@ const NO_NODES: Record<string, Pick<GraphNode, "id" | "title">> = {};
 export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, onOpenNode }: Props) {
   const { store } = useRefreshRuntime();
   const isMember = actorId !== null;
-  // The channel is the workspace's graph target, so node links and suggestions
-  // resolve in the graph the channel belongs to.
-  const channel = target;
+  // The Bulletin's own channel: it starts at the workspace's graph target and
+  // switches without moving the workspace to another branch.
+  const [channel, setChannel] = useState<GraphTargetRef>(target);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [cursor, setCursor] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -119,12 +126,29 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
   const channels = channelList.value ?? [];
   const current = channels.find((item) => item.target_key === channelKey);
   const otherUnread = channels.some((item) => item.target_key !== channelKey && item.unread > 0);
-  const canPost = isMember && page.value?.can_post === true;
-  const roster = useMemo(() => page.value?.roster ?? [], [page.value]);
+  // Roster and members are project-wide, so while another channel loads the last
+  // page's stay in use and the composer, with its draft and focus, stays put.
+  const [lastPage, setLastPage] = useState(page.value);
+  if (page.value && page.value !== lastPage) setLastPage(page.value);
+  const known = page.value ?? lastPage;
+  const canPost = isMember && known?.can_post === true;
+  // The roster holds every agent in the project; the shown channel's are the ones it mentions.
+  const roster = useMemo(() => known?.roster ?? [], [known]);
+  const channelRoster = useMemo(
+    () => roster.filter((actor) => actor.target_key === channelKey),
+    [roster, channelKey],
+  );
   const posts = useMemo(() => page.value?.posts ?? [], [page.value]);
-  const members = useMemo(() => page.value?.members ?? [], [page.value]);
-  const candidates = useMemo(() => bulletinMentionCandidates(members, roster), [members, roster]);
+  const members = useMemo(() => known?.members ?? [], [known]);
+  const candidates = useMemo(
+    () => bulletinMentionCandidates(members, channelRoster),
+    [members, channelRoster],
+  );
   const labels = useMemo(() => bulletinLabelMap(candidates), [candidates]);
+  const agentNames = useMemo(
+    () => new Map(roster.map((actor) => [actor.id, actor.name])),
+    [roster],
+  );
   const resourceId = resourceKeyId(profile.key);
   const channelsId = resourceKeyId(channelsProfile.key);
   const reload = () => {
@@ -184,24 +208,50 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
   const shownTrigger = trigger && trigger.start !== dismissedAt ? trigger : null;
   const nodeList = useMemo(() => Object.values(nodes), [nodes]);
   const nodeIds = useMemo(() => new Set(Object.keys(nodes)), [nodes]);
+  const channelName = (targetKey: string) =>
+    channels.find((item) => item.target_key === targetKey)?.name ??
+    (targetKey === "main" ? "main" : targetKey.slice("branch:".length));
+  const mentionOptions = (): Suggestion[] => [
+    ...candidates.slice(0, members.length).map((item) => ({
+      key: item.token,
+      label: item.label,
+      icon: "member" as const,
+      insert: `@${item.label}`,
+      match: [item.label],
+    })),
+    ...bulletinAgentChoices(members, roster, channelKey).map(({ actor, label, token }) => ({
+      key: token,
+      label,
+      detail: [
+        bulletinActorKind(actor),
+        actor.seat_node_id,
+        bulletinDate(actor.started_at),
+        actor.target_key === channelKey ? null : channelName(actor.target_key),
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      icon: "agent" as const,
+      insert: `@${label}`,
+      match: [label, actor.name, actor.seat_node_id ?? "", bulletinActorKind(actor)],
+      targetKey: actor.target_key,
+    })),
+  ];
   const suggestions: Suggestion[] = !shownTrigger
     ? []
-    : shownTrigger.char === "@"
-      ? bulletinFilter(candidates, shownTrigger.query, (item) => [item.label]).map((item) => ({
-          key: item.token,
-          label: item.label,
-          icon: item.mention.kind,
-          insert: `@${item.label}`,
-        }))
-      : bulletinFilter(nodeList, shownTrigger.query, (node) => [node.id, node.title]).map(
-          (node) => ({
-            key: node.id,
-            label: node.id,
-            detail: node.title,
-            icon: "node" as const,
-            insert: `#${node.id}`,
-          }),
-        );
+    : bulletinFilter(
+        shownTrigger.char === "@"
+          ? mentionOptions()
+          : nodeList.map((node) => ({
+              key: node.id,
+              label: node.id,
+              detail: node.title,
+              icon: "node" as const,
+              insert: `#${node.id}`,
+              match: [node.id, node.title],
+            })),
+        shownTrigger.query,
+        (item) => item.match,
+      );
   const activeIndex = Math.min(active, Math.max(suggestions.length - 1, 0));
 
   const run = async (action: () => Promise<void>) => {
@@ -274,8 +324,15 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
   };
   const selectChannel = (next: GraphTargetRef) => {
     setPickerOpen(false);
-    if (sameGraphTarget(next, channel)) return;
-    window.location.hash = projectViewHash(projectId, next, "chats");
+    // A post in flight settles against the channel it was sent to.
+    if (busy || sameGraphTarget(next, channel)) return;
+    setChannel(next);
+    setCursor(null);
+    setReply(null);
+    setEditing(null);
+    setConfirmDelete(null);
+    setFailure(null);
+    setKey(crypto.randomUUID());
   };
   const startReply = (item: BulletinPost) => {
     setReply(item);
@@ -292,6 +349,9 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
   };
   const pick = (suggestion: Suggestion) => {
     if (!shownTrigger) return;
+    // A mention counts only in the agent's own channel, so the draft moves there.
+    if (suggestion.targetKey && suggestion.targetKey !== channelKey)
+      selectChannel(bulletinKeyTarget(suggestion.targetKey));
     const next = bulletinInsert(draft, shownTrigger, caret, suggestion.insert);
     pendingCaret.current = next.caret;
     setDraft(next.text);
@@ -389,7 +449,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
         </article>
       );
     const agent = item.author.kind === "agent";
-    const author = bulletinAuthor(item);
+    const author = bulletinAuthor(item, agentNames);
     const own = canPost && bulletinIsOwnPost(item, actorId);
     const isEditing = editing?.postId === item.post_id;
     const confirming = confirmDelete === item.post_id;
@@ -550,18 +610,18 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
           <button
             type="button"
             className="bulletin-members"
-            aria-expanded={rosterOpen && roster.length > 0}
-            aria-label={`${roster.length} agents`}
-            disabled={roster.length === 0}
+            aria-expanded={rosterOpen && channelRoster.length > 0}
+            aria-label={`${channelRoster.length} agents`}
+            disabled={channelRoster.length === 0}
             onClick={() => setRosterOpen((value) => !value)}
           >
             <Users size={14} />
-            {roster.length + (page.value?.roster_omitted ?? 0)}
+            {channelRoster.length}
           </button>
         </header>
-        {rosterOpen && roster.length > 0 && (
+        {rosterOpen && channelRoster.length > 0 && (
           <ul className="bulletin-roster">
-            {roster.map((actor) => (
+            {channelRoster.map((actor) => (
               <li key={actor.id} data-state={actor.state}>
                 <span className="bulletin-state-dot" title={actor.state.replaceAll("_", " ")} />
                 <span className="bulletin-roster-name" title={actor.id}>
@@ -637,7 +697,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
             {reply && (
               <div className="bulletin-replying">
                 <CornerUpLeft size={13} />
-                <span>{bulletinAuthor(reply)}</span>
+                <span>{bulletinAuthor(reply, agentNames)}</span>
                 <span className="bulletin-replying-text">
                   {bulletinDecodeMentions(reply.text, candidates)}
                 </span>
