@@ -527,8 +527,8 @@ rechecks server state and presents the specific refusal using the
 [visual rules](interface-and-visual-design.md). There is no retry: a failed merge
 task leaves the ordinary Merge action, and clicking it plans against the current
 heads again. A failed task's diagnostic, or a refused preview or submission, shows
-as a red edge with the reason in the tooltip; a refusal labels the action Merge
-blocked, and clicking it loads a fresh preview. Without a `can_merge` offer there
+as a red edge on the same Merge action with the reason in the tooltip; after a
+refusal, clicking it loads a fresh preview. Without a `can_merge` offer there
 is no Merge action. An in-flight action or missing current preview disables
 submission.
 

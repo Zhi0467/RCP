@@ -9,7 +9,7 @@ import { mockEpisodeArtifacts } from "./fixtures/episodeArtifacts.mjs";
 import { chromium } from "playwright";
 import { rootTask, episode, withGraphBranch } from "./fixtures/campaigns.mjs";
 
-test("a failed merge stays Merge, and a refused click shows a blocked Merge at phone width", async () => {
+test("a failed merge stays Merge, and a refused click marks it at phone width", async () => {
   const liveServer = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "error",

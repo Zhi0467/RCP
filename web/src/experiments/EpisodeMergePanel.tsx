@@ -168,13 +168,7 @@ export function EpisodeMergePanel({
           ) : (
             <Network size={12} />
           )}
-          {busy
-            ? "Starting merge…"
-            : previewLoading
-              ? "Loading preview…"
-              : refusal
-                ? "Merge blocked"
-                : "Merge"}
+          {busy ? "Starting merge…" : previewLoading ? "Loading preview…" : "Merge"}
           {!busy && !previewLoading && !refusal && <ChevronDown size={12} />}
         </button>
       </div>
