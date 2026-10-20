@@ -7,12 +7,12 @@ pairs them up — see :mod:`rcp.core.validation.registry`.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from pydantic import ValidationError
 
 from rcp.core.authority import DECIDE_DECISION
-from rcp.core.models import RELATION_SPEC, Edge, GraphState, Standing
+from rcp.core.models import RELATION_SPEC, BaseRelation, Edge, GraphState, Standing
 from rcp.core.ontology import (
     custom_relation,
     edge_matches_relation,
@@ -396,6 +396,7 @@ def validate_create_edges(op: CreateEdgesOperation, ctx: OpContext) -> Any:
 def author_create_edges(op: CreateEdgesOperation, ctx: OpContext) -> Any:
     # A branch merge carries edges its branch already admitted under the rules of
     # their day, as main keeps its own; consolidation re-homes retired shapes on both.
+    # The merge builder holds a shape no side admitted to `edge_shape_refusals`.
     if (
         ctx.patch.branch_merge is not None
         and ctx.writer.author == "agent"
@@ -403,50 +404,77 @@ def author_create_edges(op: CreateEdgesOperation, ctx: OpContext) -> Any:
     ):
         return None
     for edge in op.edges:
-        relation = edge.relation
-        custom = custom_relation(ctx.state.ontology, relation)
-        if custom is not None and custom.deprecated:
+        edge_id = edge.id or f"{edge.source}::{edge.relation}::{edge.target}"
+        for code, message, related in edge_shape_refusals(
+            ctx.state.ontology,
+            edge_id,
+            edge.relation,
+            edge.source,
+            edge.target,
+            _node_type(ctx, edge.source),
+            _node_type(ctx, edge.target),
+        ):
             ctx.report.reject(
+                code,
+                message,
+                ctx.revision,
+                related_node_ids=[edge.source, edge.target] if related else None,
+                related_edge_ids=[edge_id] if related else None,
+            )
+    return None
+
+
+def edge_shape_refusals(
+    ontology: Any,
+    edge_id: str,
+    relation: str,
+    source_id: str,
+    target_id: str,
+    source_type: str | None,
+    target_type: str | None,
+) -> list[tuple[str, str, bool]]:
+    """Current authoring rules for a new edge's shape: (code, message, names endpoints)."""
+    refusals: list[tuple[str, str, bool]] = []
+    custom = custom_relation(ontology, relation)
+    if custom is not None and custom.deprecated:
+        refusals.append(
+            (
                 "deprecated-custom-relation",
                 f"Custom relation {custom.name!r} is deprecated and cannot author new edges.",
-                ctx.revision,
+                False,
             )
-        spec = RELATION_SPEC.get(relation)
-        if spec is None:
-            continue
-        source_id = edge.source
-        target_id = edge.target
-        edge_id = edge.id or f"{source_id}::{relation}::{target_id}"
-        if not spec.authorable:
-            ctx.report.reject(
+        )
+    spec = RELATION_SPEC.get(cast(BaseRelation, relation))
+    if spec is None:
+        return refusals
+    if not spec.authorable:
+        refusals.append(
+            (
                 "retired-relation",
                 f"Edge {edge_id!r} uses retired relation {relation!r}; it cannot author new edges.",
-                ctx.revision,
-                related_node_ids=[source_id, target_id],
-                related_edge_ids=[edge_id],
+                True,
             )
-            continue
-        source_type = _node_type(ctx, source_id)
-        target_type = _node_type(ctx, target_id)
-        if source_type is None or target_type is None:
-            continue
-        type_mismatch = source_type not in spec.source_types or target_type not in spec.target_types
-        same_type_mismatch = spec.same_type and source_type != target_type
-        if not type_mismatch and not same_type_mismatch:
-            continue
-        allowed_sources = ", ".join(sorted(spec.source_types))
-        allowed_targets = ", ".join(sorted(spec.target_types))
-        same_type = "; source and target must have the same type" if spec.same_type else ""
-        ctx.report.reject(
+        )
+        return refusals
+    if source_type is None or target_type is None:
+        return refusals
+    type_mismatch = source_type not in spec.source_types or target_type not in spec.target_types
+    same_type_mismatch = spec.same_type and source_type != target_type
+    if not type_mismatch and not same_type_mismatch:
+        return refusals
+    allowed_sources = ", ".join(sorted(spec.source_types))
+    allowed_targets = ", ".join(sorted(spec.target_types))
+    same_type = "; source and target must have the same type" if spec.same_type else ""
+    refusals.append(
+        (
             "relation-type-mismatch",
             f"Edge {edge_id!r} uses {relation!r} from {source_type} to {target_type}; "
             f"allowed source types are [{allowed_sources}] and target types are "
             f"[{allowed_targets}]{same_type}.",
-            ctx.revision,
-            related_node_ids=[source_id, target_id],
-            related_edge_ids=[edge_id],
+            True,
         )
-    return None
+    )
+    return refusals
 
 
 def depends_create_edges(

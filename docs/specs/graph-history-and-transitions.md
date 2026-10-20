@@ -306,6 +306,8 @@ merge carries the branch's edges as admitted, including a branch-only edge of a
 since-retired shape: the branch judged it under the rules of its day, so main
 keeps it as it keeps its own legacy edges, and consolidation re-homes both. A
 merge that stopped on such an edge would leave its branch with no way to merge.
+An edge shape neither side admitted, assembled by a merge answer, meets the current
+rules, and a violation returns the answer for revision.
 
 Supported older Patch, operation, Evidence, Experiment, and transition shapes adapt
 in memory. Later ordinary writes may stamp current schema generation; unsupported

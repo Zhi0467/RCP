@@ -45,6 +45,7 @@ from rcp.core.transitions import (
     project_transition_projection,
 )
 from rcp.core.validation import ValidationContext, is_coherence_clash
+from rcp.core.validation.ops import edge_shape_refusals
 from rcp.core.validation.proposals import (
     ProposalEffectRejected,
     connected_proposal_operation_groups,
@@ -357,6 +358,42 @@ def _carried(
     return identity in getattr(plan.destination_graph, collection)
 
 
+def _check_answered_edge_shape(
+    plan: MergePlan,
+    documents: dict[tuple[str, str | None], tuple[Any, set[Coordinate]]],
+    identity: str,
+    raw: dict[str, Any],
+) -> None:
+    """A shape either side admitted is carried; one an answer assembled meets today's rules."""
+    shape = (raw["source"], raw["relation"], raw["target"])
+    for graph in (plan.source_graph, plan.destination_graph):
+        admitted = graph.edges.get(identity)
+        if admitted is not None and (admitted.source, admitted.relation, admitted.target) == shape:
+            return
+
+    def node_type(node_id: str) -> str | None:
+        document = documents.get(("nodes", node_id))
+        if document is not None:
+            return document[0]["type"] if document[0] is not None else None
+        node = plan.destination_graph.nodes.get(node_id)
+        return node.type if node is not None else None
+
+    refusals = edge_shape_refusals(
+        plan.destination_graph.ontology,
+        identity,
+        raw["relation"],
+        raw["source"],
+        raw["target"],
+        node_type(raw["source"]),
+        node_type(raw["target"]),
+    )
+    if refusals:
+        _reject_answer_effect(
+            plan,
+            tuple(_diagnostic(code, message, identity) for code, message, _ in refusals),
+        )
+
+
 def _evidence_edges(graph: GraphState, hypothesis_id: str) -> list[str]:
     """Edges that can cause this Hypothesis's status, oldest first."""
     project_type = project_type_of(graph)
@@ -567,6 +604,7 @@ def construct_effects(
                 operations.append({"op": "remove_edges", "edge_ids": [identity]})
             if raw is not None:
                 raw = {key: value for key, value in raw.items() if key in NewEdge.model_fields}
+                _check_answered_edge_shape(plan, documents, identity, raw)
                 operations.append({"op": "create_edges", "edges": [raw]})
             if operations:
                 edges.append(_Effect(_ops(operations), coordinates))
