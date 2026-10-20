@@ -638,30 +638,17 @@ def construct_effects(
                         )
                     )
                     continue
-                operation = {
-                    "op": "create_proposals",
-                    "proposals": [
-                        source.model_dump(
-                            mode="json",
-                            exclude=set(graph_fields(Proposal, proposal_owner="filing")),
-                        )
-                    ],
-                }
-                try:
-                    _OPERATION.validate_python(operation)
-                except ValidationError:
-                    # History keeps a retired Proposal form that filing no longer
-                    # accepts; the merge reports it rather than refusing the branch.
-                    flags.append(
-                        ValidationMessage(
-                            level="flag",
-                            code="retired-source-proposal",
-                            message=f"Source Proposal {identity} uses a retired form and was not carried",
-                            related_node_ids=[identity],
-                        )
-                    )
-                    continue
-                operations = [operation]
+                operations = [
+                    {
+                        "op": "create_proposals",
+                        "proposals": [
+                            source.model_dump(
+                                mode="json",
+                                exclude=set(graph_fields(Proposal, proposal_owner="filing")),
+                            )
+                        ],
+                    }
+                ]
         elif collection == "glossary":
             if raw is None:
                 _refuse("unsupported-merge-effect", "Glossary removal has no graph operation")

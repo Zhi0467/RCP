@@ -240,7 +240,10 @@ def author_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> Any:
                 isinstance(operation, ResolveProposalsOperation) for operation in ctx.patch.ops
             )
         )
-        if not is_direct_human_edit and not carries_update(ctx, update.id, changes):
+        # The grounded-scope rule judges the new scope against the node's source_refs.
+        if not is_direct_human_edit and not carries_update(
+            ctx, update.id, changes, reads=("source_refs",)
+        ):
             validate_updated_node_authoring(node, changes, ctx.report, ctx.revision)
         validate_extension_update(
             ctx.state,

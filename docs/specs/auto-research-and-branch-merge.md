@@ -464,14 +464,13 @@ combined approval footprints until stable. The builder
 and edge replacement with the operation sequences core accepts; a carried status keeps the
 cause its source transition recorded, and only an exact canonical human source fact keeps
 `human_edit`. When a later branch edit relabeled or removed the recorded evidence edge
-while the status stood, the status carries the newest evidence edge the branch head still
-has into that Hypothesis; with none left the merge refuses that status, and a branch edit
+while the status stood, the status carries the newest evidence edge the merge still
+carries into that Hypothesis; with none left the merge refuses that status, and a branch edit
 repairs it. Creation keeps every writable content field, including explicit default
 values, and restores a Decision's selected lifecycle after reconstructing its choice.
 Live source Proposals that overlap a review join its connected group: their operations
 are filed in that group's Proposal. Independent source Proposals retain identity and
-content with destination filing stamps; one in a retired form that filing no longer
-accepts is reported with `retired-source-proposal` and not carried.
+content with destination filing stamps.
 
 The agent answers only real conflicts and writes card prose for review groups, in
 `answers.json`: `branch`, `destination`, or a `merged` value (node `status` and

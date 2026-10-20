@@ -1335,3 +1335,33 @@ def _renamed(operations: list[dict]) -> list[dict]:
     for old in ("hyp/scoped", "hyp/assessed", "ev/assessed", "dec/queued"):
         text = text.replace(f'"{old}"', f'"{old}-again"')
     return json.loads(text)
+
+
+def test_only_what_the_source_head_holds_skips_todays_rules():
+    from types import SimpleNamespace
+
+    from rcp.core.models import Edge, GraphState, Hypothesis, SourceRef
+    from rcp.core.validation.carried import carries_edge, carries_new_node, carries_update
+
+    ref = SourceRef.model_validate(_branch_source_ref())
+    claim = Hypothesis(id="hyp/a", type="hypothesis", title="A", statement="A.", scope="Held out")
+    held = claim.model_copy(update={"source_refs": [ref], "status": "supported"})
+    link = Edge(id="edge/a", source="ev/a", target=claim.id, relation="supports")
+    merge = SimpleNamespace(branch_merge=object(), author="agent", profile="orchestrator")
+    ctx = SimpleNamespace(
+        patch=merge,
+        reference_patch=None,
+        merge_source=GraphState(nodes={claim.id: held}, edges={link.id: link}),
+        state=GraphState(nodes={claim.id: claim}),
+    )
+    assert carries_edge(ctx, link)
+    assert not carries_edge(ctx, link.model_copy(update={"target": "hyp/b"}))
+    # The builder resets a created node's status; any other default is new content.
+    created = held.model_copy(update={"status": "proposed"})
+    assert carries_new_node(ctx, created)
+    assert not carries_new_node(ctx, created.model_copy(update={"source_refs": []}))
+    # The source's scope beside the destination's citations is a pairing no side held.
+    assert not carries_update(ctx, claim.id, {"scope": "Held out"}, reads=("source_refs",))
+    assert carries_update(ctx, claim.id, {"scope": "Held out", "source_refs": [ref]})
+    ctx.patch = SimpleNamespace(branch_merge=None, author="agent", profile="orchestrator")
+    assert not carries_edge(ctx, link)

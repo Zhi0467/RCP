@@ -441,45 +441,6 @@ def test_a_merged_edge_answer_meets_current_shape_rules():
     assert build_merge_patch(plan, answers(plan)).ops
 
 
-def test_a_retired_source_proposal_form_is_reported_not_refused():
-    from rcp.core.models import Proposal
-    from rcp.runs.merge_patch import build_merge_patch
-
-    initial = make_plan()
-    source = initial.source_graph.model_copy(deep=True)
-    # A generation-1 Proposal: history adapts it, but filing no longer accepts it.
-    legacy = Proposal.model_validate(
-        {
-            "id": "prop/legacy",
-            "title": "Legacy",
-            "card": {},
-            "base_rev": source.revision,
-            "ops": [
-                {
-                    "op": "update_nodes",
-                    "intent": "legacy_content_change",
-                    "nodes": [{"id": "blk/one", "changes": {"description": "Old wording"}}],
-                }
-            ],
-        }
-    )
-    source.proposals[legacy.id] = legacy
-    source.nodes["blk/one"] = source.nodes["blk/one"].model_copy(update={"title": "Branch"})
-    plan = make_plan(
-        source=source,
-        direct_changes=(
-            change("proposals", legacy.id, None, MISSING, legacy, MISSING),
-            change("nodes", "blk/one", "title", "Base", "Branch", "Base"),
-        ),
-    )
-    patch = build_merge_patch(plan, answers(plan))
-    assert [(item.code, item.related_node_ids) for item in patch.admission_messages] == [
-        ("retired-source-proposal", ["prop/legacy"])
-    ]
-    assert not any(operation.op == "create_proposals" for operation in patch.ops)
-    assert any(operation.op == "update_nodes" for operation in patch.ops)
-
-
 @pytest.mark.parametrize("mutation", ["missing", "unknown", "extra-card"])
 def test_answers_bind_exact_conflict_and_review_subject_keys(mutation):
     from rcp.runs.merge_patch import build_merge_patch

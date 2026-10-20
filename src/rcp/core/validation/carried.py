@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from pydantic_core import to_jsonable_python
 
 from rcp.core.models import graph_fields
+from rcp.core.project_types import project_type_of
 
 if TYPE_CHECKING:
     from rcp.core.models import GraphState
@@ -43,7 +44,9 @@ def _json(value: Any) -> Any:
     return to_jsonable_python(value)
 
 
-def _matches(payload: dict[str, Any], admitted: BaseModel, *, defaults_ok: bool) -> bool:
+def _matches(
+    payload: dict[str, Any], admitted: BaseModel, *, resettable: frozenset[str] = frozenset()
+) -> bool:
     document = admitted.model_dump(mode="json")
     fields = type(admitted).model_fields
     for key, value in payload.items():
@@ -52,11 +55,10 @@ def _matches(payload: dict[str, Any], admitted: BaseModel, *, defaults_ok: bool)
         value = _json(value)
         if key in document and document[key] == value:
             continue
-        # A merge resets lifecycle fields of what it creates to their defaults.
+        # A merge resets the lifecycle fields of what it creates to their defaults.
         if (
-            defaults_ok
+            key in resettable
             and key in fields
-            and not fields[key].is_required()
             and _json(fields[key].get_default(call_default_factory=True)) == value
         ):
             continue
@@ -73,7 +75,7 @@ def carries_edge(ctx: OpContext, edge: BaseModel) -> bool:
         payload.get("id") or f"{payload['source']}::{payload['relation']}::{payload['target']}"
     )
     admitted = source.edges.get(edge_id)
-    return admitted is not None and _matches(payload, admitted, defaults_ok=False)
+    return admitted is not None and _matches(payload, admitted)
 
 
 def carries_new_node(ctx: OpContext, node: BaseModel) -> bool:
@@ -85,16 +87,28 @@ def carries_new_node(ctx: OpContext, node: BaseModel) -> bool:
     return (
         admitted is not None
         and admitted.type == payload.get("type")
-        and _matches(payload, admitted, defaults_ok=True)
+        and _matches(
+            payload,
+            admitted,
+            resettable=frozenset(
+                {"status", project_type_of(ctx.state).lifecycle_field(admitted.type)}
+            ),
+        )
     )
 
 
-def carries_update(ctx: OpContext, node_id: str, changes: dict[str, Any]) -> bool:
+def carries_update(
+    ctx: OpContext, node_id: str, changes: dict[str, Any], *, reads: tuple[str, ...] = ()
+) -> bool:
+    """The change, and the fields ``reads`` names that its rule judges it with, are the source's."""
     source = _source(ctx)
-    if source is None:
+    admitted = source.nodes.get(node_id) if source is not None else None
+    node = ctx.state.nodes.get(node_id)
+    if admitted is None or node is None:
         return False
-    admitted = source.nodes.get(node_id)
-    return admitted is not None and _matches(changes, admitted, defaults_ok=False)
+    current = node.model_dump(mode="python")
+    judged = {key: current[key] for key in reads if key in current}
+    return _matches({**judged, **changes}, admitted)
 
 
 def carries_staged_node(ctx: OpContext, node_id: str) -> bool:
