@@ -470,7 +470,8 @@ repairs it. Creation keeps every writable content field, including explicit defa
 values, and restores a Decision's selected lifecycle after reconstructing its choice.
 Live source Proposals that overlap a review join its connected group: their operations
 are filed in that group's Proposal. Independent source Proposals retain identity and
-content with destination filing stamps.
+content with destination filing stamps; one in a retired form that filing no longer
+accepts is reported with `retired-source-proposal` and not carried.
 
 The agent answers only real conflicts and writes card prose for review groups, in
 `answers.json`: `branch`, `destination`, or a `merged` value (node `status` and

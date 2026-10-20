@@ -37,6 +37,7 @@ class OpContext:
     mode: Literal["admission", "replay"]
     experiment_control_node_id: str | None = None
     reference_patch: Patch | None = None
+    merge_source: GraphState | None = None
 
 
 #: Validates one operation, reporting into ``ctx.report``.

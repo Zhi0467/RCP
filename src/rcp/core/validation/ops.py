@@ -59,6 +59,11 @@ from rcp.core.research_rules import (
     reject_live_legacy_new_node,
     reject_live_legacy_update,
 )
+from rcp.core.validation.carried import (
+    carries_edge,
+    carries_new_node,
+    carries_update,
+)
 from rcp.core.validation.constants import (
     IMMUTABLE_NODE_UPDATE_FIELDS,
     LEGACY_COMPATIBILITY_UPDATE_FIELDS,
@@ -103,9 +108,13 @@ def validate_create_nodes(op: CreateNodesOperation, ctx: OpContext) -> None:
 
 def author_create_nodes(op: CreateNodesOperation, ctx: OpContext) -> Any:
     for node in op.nodes:
-        reject_live_legacy_new_node(node, ctx.report, ctx.revision)
+        carried = carries_new_node(ctx, node)
+        if not carried:
+            reject_live_legacy_new_node(node, ctx.report, ctx.revision)
         raw = node.model_dump(mode="python", exclude_unset=True)
-        validate_new_node_authoring(ctx.state, ctx.patch, raw, ctx.report, writer=ctx.writer)
+        validate_new_node_authoring(
+            ctx.state, ctx.patch, raw, ctx.report, writer=ctx.writer, carried=carried
+        )
     return None
 
 
@@ -126,7 +135,11 @@ def validate_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> None:
             continue
         changes = update.changes
         live_legacy_phase, live_legacy_strength = reject_live_legacy_update(
-            node, changes, ctx.report, ctx.revision, admission=ctx.mode == "admission"
+            node,
+            changes,
+            ctx.report,
+            ctx.revision,
+            admission=ctx.mode == "admission" and not carries_update(ctx, node_id, changes),
         )
         immutable_fields = set(changes) & IMMUTABLE_NODE_UPDATE_FIELDS
         if ctx.mode == "replay" and ctx.patch.schema_generation == 1:
@@ -227,7 +240,7 @@ def author_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> Any:
                 isinstance(operation, ResolveProposalsOperation) for operation in ctx.patch.ops
             )
         )
-        if not is_direct_human_edit:
+        if not is_direct_human_edit and not carries_update(ctx, update.id, changes):
             validate_updated_node_authoring(node, changes, ctx.report, ctx.revision)
         validate_extension_update(
             ctx.state,
@@ -285,8 +298,9 @@ def validate_create_edges(op: CreateEdgesOperation, ctx: OpContext) -> Any:
         target_type = _node_type(ctx, target_id)
         assessment_applies = (source_type, target_type) in ASSESSMENT_REQUIRED_FOR.get(relation, ())
         edge_id = edge.id or f"{source_id}::{relation}::{target_id}"
+        authored = ctx.mode == "admission" and not carries_edge(ctx, edge)
         if (
-            ctx.mode == "admission"
+            authored
             and relation in project_type_of(ctx.state).belief_outcome_relations
             and source_type is not None
             and target_type is not None
@@ -332,7 +346,7 @@ def validate_create_edges(op: CreateEdgesOperation, ctx: OpContext) -> Any:
                 related_node_ids=[source_id, target_id],
                 related_edge_ids=[edge_id],
             )
-        elif ctx.mode == "admission" and assessment_applies and edge.assessment is None:
+        elif authored and assessment_applies and edge.assessment is None:
             ctx.report.reject(
                 "missing-evidence-assessment",
                 f"New Evidence-to-Hypothesis edge {edge_id!r} requires a claim-relative "
@@ -394,16 +408,8 @@ def validate_create_edges(op: CreateEdgesOperation, ctx: OpContext) -> Any:
 
 
 def author_create_edges(op: CreateEdgesOperation, ctx: OpContext) -> Any:
-    # A branch merge carries edges its branch already admitted under the rules of
-    # their day, as main keeps its own; consolidation re-homes retired shapes on both.
-    # The merge builder holds a shape no side admitted to `edge_shape_refusals`.
-    if (
-        ctx.patch.branch_merge is not None
-        and ctx.writer.author == "agent"
-        and ctx.writer.profile == "orchestrator"
-    ):
-        return None
     for edge in op.edges:
+        carried = carries_edge(ctx, edge)
         edge_id = edge.id or f"{edge.source}::{edge.relation}::{edge.target}"
         for code, message, related in edge_shape_refusals(
             ctx.state.ontology,
@@ -414,6 +420,9 @@ def author_create_edges(op: CreateEdgesOperation, ctx: OpContext) -> Any:
             _node_type(ctx, edge.source),
             _node_type(ctx, edge.target),
         ):
+            # A human's deprecation binds carried edges too; shape rules of a later day do not.
+            if carried and code != "deprecated-custom-relation":
+                continue
             ctx.report.reject(
                 code,
                 message,

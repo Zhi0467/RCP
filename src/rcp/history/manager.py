@@ -11,7 +11,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -1300,15 +1300,15 @@ class HistoryManager:
             apply_target=apply_target,
         )
         patch = prepare_patch_bookkeeping(state, patch)
+        context = build_validation_context(self.manifest, state)
+        if patch.branch_merge is not None and patch.ops:
+            # Content the merge carries verbatim from its source head keeps that
+            # head's admission; see `rcp.core.validation.carried`.
+            context = replace(
+                context, merge_source=self.history_engine.state_at(patch.branch_merge.branch_head)
+            )
         # Gate 2 still reports malformed data after a permission refusal.
-        report.messages.extend(
-            validate_patch(
-                state,
-                patch,
-                build_validation_context(self.manifest, state),
-                writer=writer,
-            ).messages
-        )
+        report.messages.extend(validate_patch(state, patch, context, writer=writer).messages)
         return patch, report
 
     def _prepare_transition_locked(

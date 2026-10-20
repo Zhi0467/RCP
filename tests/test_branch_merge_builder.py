@@ -13,7 +13,7 @@ from rcp.agents.command_protocol import MergeAnswersCommandRequest
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.core.models import GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
-from rcp.history import HistoryManager
+from rcp.history import HistoryManager, PatchRejected
 from rcp.runs.branch_merge import (
     BranchMergeContext,
     BranchMergeEligibility,
@@ -1240,3 +1240,98 @@ def test_status_whose_recorded_evidence_edge_was_relabeled_still_merges(manifest
     (pending,) = graph.proposals.values()
     (update,) = (u for op in pending.ops if op.op == "update_nodes" for u in op.nodes)
     assert (update.changes, update.cause.ref_id) == ({"status": "supported"}, "edge/inconclusive")
+
+
+def _rule_off(mp: pytest.MonkeyPatch, rule: str) -> None:
+    """The branch writes before this rule existed; it is restored for the merge."""
+    from rcp.core.validation import nodes, ops, patch
+
+    if rule == "scope":
+        mp.setattr(nodes, "_validate_grounded_scope", lambda *_args: None)
+    elif rule == "assessment":
+        mp.setattr(ops, "ASSESSMENT_REQUIRED_FOR", {})
+    else:
+        mp.setattr(patch, "reject_incomplete_decision_ballot", lambda *_args: None)
+
+
+_LATER_RULE_CONTENT = {
+    "scope": [
+        {
+            "op": "create_nodes",
+            "nodes": [
+                {
+                    "id": "hyp/scoped",
+                    "type": "hypothesis",
+                    "title": "Scoped claim",
+                    "statement": "A claim.",
+                    "scope": "Only on held-out tasks.",
+                }
+            ],
+        }
+    ],
+    "assessment": [
+        {
+            "op": "create_nodes",
+            "nodes": [
+                {"id": "hyp/assessed", "type": "hypothesis", "title": "C", "statement": "C."},
+                {
+                    "id": "ev/assessed",
+                    "type": "evidence",
+                    "title": "R",
+                    "observation": "R.",
+                    "origin": "analytic",
+                },
+            ],
+        },
+        {
+            "op": "create_edges",
+            "edges": [{"source": "ev/assessed", "target": "hyp/assessed", "relation": "supports"}],
+        },
+    ],
+    "ballot": [
+        {
+            "op": "create_nodes",
+            "nodes": [
+                {
+                    "id": "dec/queued",
+                    "type": "decision",
+                    "title": "Pick",
+                    "question": "Which?",
+                    "options": ["Only one"],
+                    "status": "ready",
+                }
+            ],
+        }
+    ],
+}
+
+
+@pytest.mark.parametrize("rule", sorted(_LATER_RULE_CONTENT))
+def test_content_a_branch_admitted_before_a_rule_existed_still_merges(manifest, rule):
+    from tests.test_merge_patch import answers
+
+    history, branch, load_context = _forked(manifest, _new_blocker())
+    with pytest.MonkeyPatch.context() as mp:
+        _rule_off(mp, rule)
+        _append(branch, *_LATER_RULE_CONTENT[rule])
+    created = {
+        node["id"]
+        for operation in _LATER_RULE_CONTENT[rule]
+        if operation["op"] == "create_nodes"
+        for node in operation["nodes"]
+    }
+
+    plan = plan_merge(merge_planning_context(load_context(), history, created_at=datetime.now(UTC)))
+    prepared = prepare_merge_candidate(plan, answers(plan), history)
+
+    assert created <= set(prepared.projection.graph.nodes)
+    # An ordinary agent write of the same content still meets today's rule.
+    with pytest.raises(PatchRejected):
+        _append(branch, *_renamed(_LATER_RULE_CONTENT[rule]))
+
+
+def _renamed(operations: list[dict]) -> list[dict]:
+    text = json.dumps(operations)
+    for old in ("hyp/scoped", "hyp/assessed", "ev/assessed", "dec/queued"):
+        text = text.replace(f'"{old}"', f'"{old}-again"')
+    return json.loads(text)
