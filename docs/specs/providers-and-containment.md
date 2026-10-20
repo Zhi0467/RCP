@@ -1330,3 +1330,12 @@ and posts. Budget is allocated to mentions, posts, members, then agents. Agents
 write `<@member:USER_ID>` or `<@agent:ACTOR_ID>` tokens using these identities.
 Context is captured or explicitly read, never pushed into a running turn.
 Mentioning an agent grants no capability and launches nothing.
+
+The mentions section holds only open mentions: a mention stays open until the
+agent posts later in the same thread; the agent's own posts never count. The
+per-turn pointer line carries the open count. Holders of the verb must read and
+reply to an open mention before finishing; replying is not obeying. Otherwise
+they use it occasionally, not every turn: to catch up on the branch and to post
+short progress or team-sync notes. Other agent channels a launch holds come
+first, and questions needing human input go through `ask` when it is held.
+One `BULLETIN_RULES` tuple renders these rules in Work and Auto-research.

@@ -1764,9 +1764,11 @@ function MemberApp({
     ) {
       setHeldRefProject(displayedProjectRef.current);
       const retained = cachedProjectStateForOpen(projectId, graphTarget)?.state;
-      if (retained)
-        restoreProjectTabState(projectId, retained, parseProjectHash(window.location.hash));
-      else {
+      if (retained) {
+        // A bare project route (tab switch) keeps the panel the human left.
+        const route = parseProjectHash(window.location.hash);
+        restoreProjectTabState(projectId, retained, route.projectViewSpecified ? route : undefined);
+      } else {
         let draft: HumanDraft | null = null;
         const key = humanDraftStorageKey(draftActorIdRef.current, projectId, graphTarget);
         try {

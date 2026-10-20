@@ -236,10 +236,50 @@ def test_agent_mentions_are_first_in_snapshot_and_read(store, tmp_path):  # noqa
     rendered = (tmp_path / "workspace" / "bulletin.md").read_text()
     first_record = json.loads(rendered.split("```json\n")[1].split("\n```", 1)[0])
     assert first_record["post_id"] == post["post_id"]
-    read = work_command_handler(execution, None)(request("read"), identity()).result
+    handler = work_command_handler(execution, None)
+    read = handler(request("read"), identity()).result
     assert next(iter(read)) == "mentions"
     assert read["mentions"] == [post]
+    assert read["open_mentions"] == 1
     assert store.local_owner.user_id in {member["user_id"] for member in read["members"]}
+    # Its own reply in the mention's thread answers it; nothing else does.
+    handler(request("post", key="aside", text="unrelated"), identity())
+    assert handler(request("read"), identity()).result["open_mentions"] == 1
+    handler(request("post", key="reply", text="on it", reply_to=post["post_id"]), identity())
+    assert handler(request("read"), identity()).result["mentions"] == []
+    # An edit after that reply asks again.
+    store.mutate_bulletin_post(
+        "project",
+        "main",
+        action="edit",
+        post_id=post["post_id"],
+        text=f"Also <@agent:{actor_id}>",
+        key="edit",
+        user_id=store.local_owner.user_id,
+    )
+    assert handler(request("read"), identity()).result["open_mentions"] == 1
+    # A mention under a deleted root cannot be answered, so it is not open.
+    root = store.mutate_bulletin_post(
+        "project", "main", text="root", key="root", user_id=store.local_owner.user_id
+    )
+    store.mutate_bulletin_post(
+        "project",
+        "main",
+        text=f"<@agent:{actor_id}> in a thread",
+        reply_to=root["post_id"],
+        key="threaded",
+        user_id=store.local_owner.user_id,
+    )
+    assert handler(request("read"), identity()).result["open_mentions"] == 2
+    store.mutate_bulletin_post(
+        "project",
+        "main",
+        action="delete",
+        post_id=root["post_id"],
+        key="drop-root",
+        user_id=store.local_owner.user_id,
+    )
+    assert handler(request("read"), identity()).result["open_mentions"] == 1
 
 
 def test_agent_edits_and_deletes_across_turns_of_same_actor(store):  # noqa: F811
