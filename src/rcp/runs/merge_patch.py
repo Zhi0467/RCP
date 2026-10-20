@@ -334,8 +334,7 @@ def _status_cause(
             live = [
                 edge_id
                 for edge_id in _evidence_edges(graph, identity)
-                if _carried(plan, documents, "edges", edge_id)
-                and _carried(plan, documents, "nodes", graph.edges[edge_id].source)
+                if _merged_evidence_edge(plan, documents, edge_id, identity)
             ]
             if transition.cause.get("ref_id") not in live and live:
                 return {"kind": "evidence_edge", "ref_id": live[-1]}
@@ -345,17 +344,33 @@ def _status_cause(
     )
 
 
-def _carried(
+def _merged_evidence_edge(
     plan: MergePlan,
     documents: dict[tuple[str, str | None], tuple[Any, set[Coordinate]]],
-    collection: str,
-    identity: str,
+    edge_id: str,
+    hypothesis_id: str,
 ) -> bool:
-    """Whether the merged destination holds this entity."""
-    document = documents.get((collection, identity))
+    """Whether the merged destination holds this edge as evidence for the Hypothesis."""
+    document = documents.get(("edges", edge_id))
     if document is not None:
-        return document[0] is not None
-    return identity in getattr(plan.destination_graph, collection)
+        edge = document[0]
+    else:
+        current = plan.destination_graph.edges.get(edge_id)
+        edge = current.model_dump(mode="json") if current is not None else None
+    if edge is None or edge["target"] != hypothesis_id:
+        return False
+    node = documents.get(("nodes", edge["source"]))
+    if node is not None:
+        source_type = node[0]["type"] if node[0] is not None else None
+    else:
+        current_node = plan.destination_graph.nodes.get(edge["source"])
+        source_type = current_node.type if current_node is not None else None
+    project_type = project_type_of(plan.destination_graph)
+    return (
+        source_type is not None
+        and edge["relation"] in project_type.belief_outcome_relations
+        and project_type.is_outcome(source_type)
+    )
 
 
 def _check_answered_edge_shape(
