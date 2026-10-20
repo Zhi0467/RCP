@@ -247,6 +247,17 @@ def test_agent_mentions_are_first_in_snapshot_and_read(store, tmp_path):  # noqa
     assert handler(request("read"), identity()).result["open_mentions"] == 1
     handler(request("post", key="reply", text="on it", reply_to=post["post_id"]), identity())
     assert handler(request("read"), identity()).result["mentions"] == []
+    # An edit after that reply asks again.
+    store.mutate_bulletin_post(
+        "project",
+        "main",
+        action="edit",
+        post_id=post["post_id"],
+        text=f"Also <@agent:{actor_id}>",
+        key="edit",
+        user_id=store.local_owner.user_id,
+    )
+    assert handler(request("read"), identity()).result["open_mentions"] == 1
 
 
 def test_agent_edits_and_deletes_across_turns_of_same_actor(store):  # noqa: F811

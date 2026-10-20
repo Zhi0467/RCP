@@ -461,7 +461,10 @@ class BulletinStoreMixin(StoreMixinBase):
     def open_bulletin_mentions(
         self, project_id: str, target_key: str, actor_id: str
     ) -> list[dict[str, Any]]:
-        """Mentions of the agent awaiting its reply: a later post of its own in the thread answers one."""
+        """Mentions of the agent awaiting its reply: its own later post in the thread answers one.
+
+        An edit can add a mention, so only a reply after the post's last edit counts.
+        """
         with self.connection() as connection:
             return [
                 _record(row)
@@ -470,7 +473,8 @@ class BulletinStoreMixin(StoreMixinBase):
                     "AND p.author_actor_id IS NOT ? "
                     "AND EXISTS(SELECT 1 FROM json_each(p.mentions_json) m WHERE json_extract(m.value,'$.kind')='agent' AND json_extract(m.value,'$.id')=?) "
                     "AND NOT EXISTS(SELECT 1 FROM bulletin_posts r WHERE r.project_id=p.project_id AND r.target_key=p.target_key AND r.author_actor_id=? "
-                    "AND r.deleted_at IS NULL AND r.sequence>p.sequence AND COALESCE(r.reply_to,r.post_id)=COALESCE(p.reply_to,p.post_id)) "
+                    "AND r.deleted_at IS NULL AND r.sequence>p.sequence AND (p.edited_at IS NULL OR r.created_at>p.edited_at) "
+                    "AND COALESCE(r.reply_to,r.post_id)=COALESCE(p.reply_to,p.post_id)) "
                     "ORDER BY sequence DESC",
                     (project_id, target_key, actor_id, actor_id, actor_id),
                 )
