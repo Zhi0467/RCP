@@ -38,6 +38,7 @@ export function useDesktopShell(desktop: boolean) {
   }, [desktop]);
   const [reconnecting, setReconnecting] = useState(false);
   const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdate | null>(null);
+  const [updaterEnabled, setUpdaterEnabled] = useState<boolean | null>(null);
   const [updateExpanded, setUpdateExpanded] = useState(false);
   const [updateApplying, setUpdateApplying] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
@@ -52,6 +53,7 @@ export function useDesktopShell(desktop: boolean) {
       const result = await checkDesktopUpdate();
       setDesktopUpdate(result?.available ? result : null);
       // Disabled updater builds use the release notice instead.
+      setUpdaterEnabled(result?.enabled ?? false);
       setUpdateError(null);
     } catch (error) {
       setUpdateError(error instanceof Error ? error.message : String(error));
@@ -160,6 +162,7 @@ export function useDesktopShell(desktop: boolean) {
     buildIdentity,
     reconnecting,
     desktopUpdate,
+    updaterEnabled,
     updateExpanded,
     updateApplying,
     updateError,

@@ -1759,11 +1759,13 @@ a team space shows `sudo rcp server update`, preceded by
 `sudo rcp server supervisor update &&` when the release's supervisor wheel is
 newer than the installed receipt's supervisor version; a source checkout shows
 `scripts/update-from-source vX.Y.Z` (with `--desktop` from a source app); a
-prebuilt app shows a Download button only once the companion is confirmed.
-A published prebuilt app has the Tauri updater enabled and checks it at launch
-and whenever its window is shown; while that check reports a newer release, the
-surface shows the native **Update** button instead, which replaces and
-relaunches the app and asks before interrupting running agent tasks.
+prebuilt app without an updater shows a Download button only once the companion
+is confirmed. A published prebuilt app has the Tauri updater enabled and checks it
+at launch, whenever its window is shown, and whenever the release check first
+reports a newer release with a confirmed companion. Its own release is offered
+only by that check: the surface shows the native **Update** button, which
+replaces and relaunches the app and asks before interrupting running agent
+tasks, and never the Download fallback.
 The native shell reports its build kind, version, and checkout through
 `desktop_build_identity`, because a desktop may reuse a backend of the other
 kind. A source app compares its own version even when the backend
