@@ -765,7 +765,8 @@ def classify_candidates(
             apply_target=context.destination_head.target,
             authorized_by=context.authorized_by,
             context=ValidationContext(
-                project_truth_scope=context.destination_graph.project_truth_scope
+                project_truth_scope=context.destination_graph.project_truth_scope,
+                merge_source=context.source_graph,
             ),
             operation_groups=operation_groups,
         )

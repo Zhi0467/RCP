@@ -588,6 +588,36 @@ test("switching project tabs returns to the panel each project was left on", asy
   );
 });
 
+test(
+  "a tab keeps its page after a backend restart drops the retained tab data",
+  { timeout: 20000 },
+  async (t) => {
+    const { page, state } = await openedShell(t);
+    const current = (name) =>
+      page.getByRole("button", { name, exact: true }).getAttribute("aria-current");
+    const activeTab = (id) =>
+      page
+        .locator(".project-dock-tab.active .project-dock-select")
+        .filter({ hasText: `(${id})` })
+        .waitFor();
+    await page.getByRole("button", { name: "Agents", exact: true }).click();
+    await page.evaluate(() => {
+      window.location.hash = "/projects/second";
+    });
+    await activeTab("second");
+    state.health = { ...HEALTH, instance_id: "restarted" };
+    await reverify(page);
+    await page
+      .getByRole("alertdialog")
+      .getByRole("button", { name: "Reconnect", exact: true })
+      .click();
+    await page.getByRole("alertdialog").waitFor({ state: "detached" });
+    await page.locator(".project-dock-select").filter({ hasText: "(demo)" }).click();
+    await activeTab("demo");
+    assert.equal(await current("Agents"), "page");
+  },
+);
+
 test("browser reload restores the route through fresh admission", { timeout: 20000 }, async (t) => {
   const { page, state } = await openedShell(t);
   state.requests = [];

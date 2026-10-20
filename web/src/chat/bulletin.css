@@ -291,7 +291,8 @@
   gap: 8px;
   min-width: 0;
 }
-.bulletin-message-main > header strong {
+.bulletin-message-main > header strong,
+.bulletin-author {
   font-size: var(--type-md);
   font-weight: 650;
   min-width: 0;
@@ -310,6 +311,24 @@
   margin-top: 1px;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+button.bulletin-author,
+button.bulletin-roster-name,
+button.bulletin-avatar {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-align: start;
+}
+button.bulletin-avatar {
+  background: var(--cobalt-soft);
+  color: var(--cobalt);
+}
+button.bulletin-author:hover,
+button.bulletin-roster-name:hover {
+  text-decoration: underline;
 }
 .bulletin-node {
   background: transparent;
@@ -440,6 +459,10 @@
   position: absolute;
   right: 0;
   z-index: 5;
+}
+.bulletin-suggest.below {
+  bottom: auto;
+  top: calc(100% + 4px);
 }
 .bulletin-suggest li {
   align-items: center;

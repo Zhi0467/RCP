@@ -861,8 +861,10 @@ or reordering. Inactive tabs shrink within the capped dock while the active one
 retains more width. Tabs cannot be reordered.
 
 Each tab retains bounded in-session view, panel, scroll, selection, draft, and
-exact Runs-route state. Activating a tab is cache-only and never blocks on remote
-I/O. Closing a tab changes no canonical state, task, draft, conversation, or
+exact Runs-route state. Every project view writes its route, and leaving a tab
+remembers the exact route it left, so returning lands on that page even when the
+tab's snapshot is gone (for example after a backend restart). Activating a tab is
+cache-only and never blocks on remote I/O. Closing a tab changes no canonical state, task, draft, conversation, or
 project data. Closing the active tab selects the right neighbor, otherwise the
 left, and the last close returns to the index.
 
@@ -1151,7 +1153,8 @@ truthful operation fallbacks without inventing causality.
 
 Inbox contains pending protected-belief Proposals, Decisions in `ready` or
 `revisit`, and asserted open Blockers. A Proposal keeps inline judgment because
-it is not a node. A stale Proposal card has a red edge and replaces Approve with
+it is not a node. Its proposed action links each existing node the Proposal
+changes, both ends of a relation included. A stale Proposal card has a red edge and replaces Approve with
 one icon-only Refresh, which then opens the refresh chat; a failed Refresh turns
 the icon red and stays the retry. A form ordinary Work cannot file, one whose
 nodes are all gone, a branch target, or a staleness only a staged draft
@@ -1890,18 +1893,25 @@ name matches its Agents card; `started_at` is its first turn time. Agent snapsho
 and command reads keep their own channel's roster. Text is limited to 8000 characters; the server
 extracts ordered, deduplicated `#node-id` references and valid
 `<@member:USER_ID>` / `<@agent:ACTOR_ID>` mentions. Requests carry text, never a
-separate references field. Agent tokens must identify an actor in that target's
-roster; unknown tokens remain ordinary text.
+separate references field. Agent tokens must identify an agent of the project in
+any channel, because the mention list offers every channel's agents; unknown tokens
+remain ordinary text. The composer's `@` labels are unique across the project, the
+shown channel's agents keeping bare names, and picking an agent from another channel
+keeps the draft in the shown channel. The list opens above the composer, or below it
+when the scroll area and the phone's pinned bars leave more room there.
 
 A page holds whole threads: up to the page size of top-level posts, newest
 first, each with all of its visible replies. The cursor follows the oldest
 top-level post on the page, so a reply never lands on a different page from its
 parent and `reply_count` matches the replies shown. Every page also carries
 `newest_post_id`, the target's latest post including a reply in an older thread;
-showing the newest page marks the channel read up to it. The Agents view shows the
-channel of the workspace's graph target; picking another channel switches the
-workspace to that target, so `#node` links and suggestions resolve in the
-channel's own graph.
+showing the newest page marks the channel read up to it. The Agents view opens on
+the channel of the workspace's graph target, and picking another channel leaves
+the workspace where it is. In the workspace's channel `#node` links and
+suggestions use the loaded graph; in another channel a post's own references are
+links that open the node on that channel's target. An agent's name or avatar opens
+its chat. A sent post shows from the accepted response at once, before the
+confirming read.
 
 `POST .../bulletin` accepts `{text, key, reply_to}`. `PATCH .../bulletin/{post_id}`
 accepts `{text, key}` and reparses references and mentions. `DELETE` on the same

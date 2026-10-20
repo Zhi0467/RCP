@@ -239,7 +239,7 @@ def test_agent_mentions_are_first_in_snapshot_and_read(store, tmp_path):  # noqa
     handler = work_command_handler(execution, None)
     read = handler(request("read"), identity()).result
     assert next(iter(read)) == "mentions"
-    assert read["mentions"] == [post]
+    assert read["mentions"] == [{**post, "target_key": "main"}]
     assert read["open_mentions"] == 1
     assert store.local_owner.user_id in {member["user_id"] for member in read["members"]}
     # Its own reply in the mention's thread answers it; nothing else does.
@@ -280,6 +280,36 @@ def test_agent_mentions_are_first_in_snapshot_and_read(store, tmp_path):  # noqa
         user_id=store.local_owner.user_id,
     )
     assert handler(request("read"), identity()).result["open_mentions"] == 1
+
+
+def test_a_mention_from_another_channel_reaches_the_agent_and_takes_its_reply(store):  # noqa: F811
+    from rcp.bulletin import bulletin_actor_id
+
+    with store.connection() as connection:
+        task = connection.execute("SELECT * FROM graph_runs WHERE operation_id='turn'").fetchone()
+        actor_id = bulletin_actor_id(connection, task)
+    elsewhere = "branch:other"
+    post = store.mutate_bulletin_post(
+        "project",
+        elsewhere,
+        text=f"For <@agent:{actor_id}>",
+        key="mention",
+        user_id=store.local_owner.user_id,
+    )
+    handler = work_command_handler(
+        AgentTaskExecution(operation_id="turn", store=store, control=AgentProcessControl()), None
+    )
+    read = handler(request("read"), identity()).result
+    assert [(item["post_id"], item["target_key"]) for item in read["mentions"]] == [
+        (post["post_id"], elsewhere)
+    ]
+    handler(request("post", key="reply", text="on it", reply_to=post["post_id"]), identity())
+    assert handler(request("read"), identity()).result["open_mentions"] == 0
+    (thread,) = [
+        item for item in store.list_bulletin("project", elsewhere)["posts"] if item["reply_to"]
+    ]
+    assert thread["reply_to"] == post["post_id"]
+    assert store.list_bulletin("project", "main")["posts"] == []
 
 
 def test_agent_edits_and_deletes_across_turns_of_same_actor(store):  # noqa: F811

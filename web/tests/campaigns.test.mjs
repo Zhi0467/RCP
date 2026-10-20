@@ -592,7 +592,7 @@ test("merged and failed branch summaries stay visible without branch-management 
   assert.doesNotMatch(merged, /campaign-branch-merge/);
   assert.match(failed, /class="status-pill branch-failed"/);
   assert.match(failed, /The branch delta could not be rebased onto current main\./);
-  assert.match(failed, /aria-label="Retry merge"/);
+  assert.match(failed, /class="button secondary compact campaign-branch-merge"/);
   assert.doesNotMatch(failed, /campaign-branch-diagnostic/);
 });
 
@@ -606,7 +606,6 @@ test("a paused or interrupted merge asks for action without presenting a failure
 
   assert.match(needsAction, /campaign-graph-branch needs_action/);
 
-  assert.match(needsAction, /aria-label="Retry merge"/);
   assert.doesNotMatch(needsAction, /campaign-branch-diagnostic/);
 
   assert.match(needsAction, /The merge was interrupted before it could finish\./);

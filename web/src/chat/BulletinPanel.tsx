@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Bot,
   Check,
@@ -14,7 +14,8 @@ import {
   X,
 } from "lucide-react";
 import { api } from "../core/api";
-import { graphTargetUrl, sameGraphTarget } from "../core/graphTarget";
+import { graphTargetUrl, projectViewHash, sameGraphTarget } from "../core/graphTarget";
+import { buildNotificationLink } from "../core/notificationLinks";
 import { resourceKeyId, type ResourceProfile } from "../core/resourceStore";
 import { useRefreshRuntime } from "../core/useResource";
 import type { GraphNode, GraphTargetRef } from "../core/types";
@@ -33,15 +34,17 @@ import {
   bulletinIsOwnPost,
   bulletinKeyTarget,
   bulletinLabelMap,
-  bulletinMentionCandidates,
+  bulletinChannelCandidates,
   bulletinMentionKind,
   bulletinMoveDraft,
   bulletinPostState,
   bulletinSegments,
+  bulletinSuggestPlacement,
   bulletinTargetKey,
   bulletinThreads,
   bulletinTime,
   bulletinTrigger,
+  type BulletinActor,
   type BulletinChannel,
   type BulletinPage,
   type BulletinPost,
@@ -66,8 +69,6 @@ interface Suggestion {
   insert: string;
   /** Values the typed query matches. */
   match: readonly string[];
-  /** An agent's channel; picking an agent from another channel shows that channel. */
-  targetKey?: string;
 }
 
 interface Failure {
@@ -76,6 +77,8 @@ interface Failure {
 }
 
 const NO_NODES: Record<string, Pick<GraphNode, "id" | "title">> = {};
+// The phone shell pins these above the scrolling page.
+const PINNED_BARS = ".phone-project-bar, .phone-tab-bar";
 
 export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, onOpenNode }: Props) {
   const { store } = useRefreshRuntime();
@@ -106,6 +109,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
   const pendingCaret = useRef<number | null>(null);
   const marked = useRef(new Map<string, string>());
   const picker = useRef<HTMLDivElement>(null);
+  const composer = useRef<HTMLFormElement>(null);
 
   const base = `/api/projects/${encodeURIComponent(projectId)}/bulletin`;
   const url = graphTargetUrl(base, channel);
@@ -143,8 +147,8 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
   const posts = useMemo(() => page.value?.posts ?? [], [page.value]);
   const members = useMemo(() => known?.members ?? [], [known]);
   const candidates = useMemo(
-    () => bulletinMentionCandidates(members, channelRoster),
-    [members, channelRoster],
+    () => bulletinChannelCandidates(members, roster, channelKey),
+    [members, roster, channelKey],
   );
   const labels = useMemo(() => bulletinLabelMap(candidates), [candidates]);
   // A roster refresh can shift labels (a renamed agent frees its name for a
@@ -229,7 +233,8 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
   const trigger = canPost && focused ? bulletinTrigger(draft, caret) : null;
   const shownTrigger = trigger && trigger.start !== dismissedAt ? trigger : null;
   // Node links open the workspace's graph, so another channel's posts show ids as text.
-  const channelNodes = sameGraphTarget(channel, target) ? nodes : NO_NODES;
+  const workspaceChannel = sameGraphTarget(channel, target);
+  const channelNodes = workspaceChannel ? nodes : NO_NODES;
   const nodeList = useMemo(() => Object.values(channelNodes), [channelNodes]);
   const nodeIds = useMemo(() => new Set(Object.keys(channelNodes)), [channelNodes]);
   const channelName = (targetKey: string) =>
@@ -257,7 +262,6 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
       icon: "agent" as const,
       insert: `@${label}`,
       match: [label, actor.name, actor.seat_node_id ?? "", bulletinMentionKind(actor) ?? ""],
-      targetKey: actor.target_key,
     })),
   ];
   const suggestions: Suggestion[] = !shownTrigger
@@ -276,6 +280,40 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
         shownTrigger.query,
         (item) => item.match,
       );
+  const suggestOpen = suggestions.length > 0;
+  const [suggestPlace, setSuggestPlace] = useState<ReturnType<typeof bulletinSuggestPlacement>>();
+  // Measured before paint, and again on scroll or resize, so the list never runs
+  // past the scroll area's edge or under the phone's pinned bars.
+  useLayoutEffect(() => {
+    const form = composer.current;
+    if (!suggestOpen || !form) return;
+    const measure = () => {
+      let area: Element | null = form.parentElement;
+      while (area && !/(auto|scroll)/.test(getComputedStyle(area).overflowY))
+        area = area.parentElement;
+      const box = form.getBoundingClientRect();
+      const bounds = area?.getBoundingClientRect() ?? { top: 0, bottom: window.innerHeight };
+      let top = Math.max(0, bounds.top);
+      let bottom = Math.min(window.innerHeight, bounds.bottom);
+      for (const bar of document.querySelectorAll(PINNED_BARS)) {
+        const edge = bar.getBoundingClientRect();
+        if (edge.height === 0) continue;
+        if (edge.bottom <= box.top) top = Math.max(top, edge.bottom);
+        else if (edge.top >= box.bottom) bottom = Math.min(bottom, edge.top);
+      }
+      const next = bulletinSuggestPlacement(box, { top, bottom });
+      setSuggestPlace((shown) =>
+        shown?.side === next.side && shown.maxHeight === next.maxHeight ? shown : next,
+      );
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    document.addEventListener("scroll", measure, true);
+    return () => {
+      window.removeEventListener("resize", measure);
+      document.removeEventListener("scroll", measure, true);
+    };
+  }, [suggestOpen, suggestions.length]);
   const activeIndex = Math.min(active, Math.max(suggestions.length - 1, 0));
 
   const run = async (action: () => Promise<void>) => {
@@ -303,7 +341,27 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
     const parent = reply?.post_id ?? null;
     const submitted = draft;
     void run(async () => {
-      await api(url, { method: "POST", body });
+      const saved = await api<{ post: BulletinPost }>(url, { method: "POST", body });
+      // The accepted post shows at once; the confirming read follows over the network.
+      const shown = store.committedValue<BulletinPage>(resourceId);
+      if (shown && (parent || !cursor)) {
+        const fresh = !shown.posts.some((item) => item.post_id === saved.post.post_id);
+        store.write(resourceId, {
+          ...shown,
+          posts: [
+            saved.post,
+            ...shown.posts
+              .filter((item) => item.post_id !== saved.post.post_id)
+              .map((item) =>
+                fresh && item.post_id === parent
+                  ? { ...item, reply_count: (item.reply_count ?? 0) + 1 }
+                  : item,
+              ),
+          ],
+          newest_post_id: saved.post.post_id,
+          total: fresh && !parent ? shown.total + 1 : shown.total,
+        });
+      }
       if (parent) setOpenThreads((open) => new Set(open).add(parent));
       // A retry after the member revised the draft keeps the newer text unsent.
       if ((input.current?.value ?? submitted) === submitted) {
@@ -347,10 +405,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
     });
   };
   const channelCandidates = (targetKey: string) =>
-    bulletinMentionCandidates(
-      members,
-      roster.filter((actor) => actor.target_key === targetKey),
-    );
+    bulletinChannelCandidates(members, roster, targetKey);
   const switchChannel = (next: GraphTargetRef) => {
     setChannel(next);
     setCursor(null);
@@ -382,21 +437,8 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
   };
   const pick = (suggestion: Suggestion) => {
     if (!shownTrigger) return;
-    const nextKey = suggestion.targetKey;
-    let next = bulletinInsert(draft, shownTrigger, caret, suggestion.insert);
-    // A mention counts only in the agent's own channel, so the draft moves there
-    // with the picked agent's token, and every earlier mention keeps its recipient.
-    if (nextKey && nextKey !== channelKey) {
-      if (busy) return;
-      const to = channelCandidates(nextKey);
-      const inserted = bulletinInsert(draft, shownTrigger, caret, suggestion.key);
-      const move = (text: string) => bulletinMoveDraft(text, candidates, to);
-      next = {
-        text: move(inserted.text),
-        caret: move(inserted.text.slice(0, inserted.caret)).length,
-      };
-      switchChannel(bulletinKeyTarget(nextKey));
-    }
+    // A mention reaches its agent from any channel, so the draft stays here.
+    const next = bulletinInsert(draft, shownTrigger, caret, suggestion.insert);
     pendingCaret.current = next.caret;
     setDraft(next.text);
     setCaret(next.caret);
@@ -410,8 +452,36 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
       return next;
     });
 
+  // Another channel's graph is not loaded here; its server-read references open the
+  // node on that channel's branch, as a notification link does.
+  const openNode = (nodeId: string) => {
+    if (workspaceChannel) onOpenNode?.(nodeId);
+    else
+      window.location.hash = buildNotificationLink({
+        projectId,
+        target: channel.kind === "branch" ? channel.branch_id : "main",
+        kind: "node",
+        itemId: nodeId,
+      });
+  };
+  const openAgent = (actor: BulletinActor) => {
+    window.location.hash = projectViewHash(
+      projectId,
+      bulletinKeyTarget(actor.target_key),
+      "chats",
+      {
+        chatId: actor.chat_id,
+      },
+    );
+  };
+  const rosterById = useMemo(() => new Map(roster.map((actor) => [actor.id, actor])), [roster]);
   const renderText = (item: BulletinPost) =>
-    bulletinSegments(item.text, labels, nodeIds, item.mentions).map((segment, index) => {
+    bulletinSegments(
+      item.text,
+      labels,
+      workspaceChannel ? nodeIds : new Set(item.refs),
+      item.mentions,
+    ).map((segment, index) => {
       if (segment.kind === "text") return segment.text;
       if (segment.kind === "node")
         return (
@@ -419,7 +489,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
             key={index}
             type="button"
             className="bulletin-node"
-            onClick={() => onOpenNode?.(segment.id)}
+            onClick={() => openNode(segment.id)}
           >
             #{segment.id}
           </button>
@@ -494,6 +564,8 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
       );
     const agent = item.author.kind === "agent";
     const author = bulletinAuthor(item, agentNames);
+    // An agent still on the roster opens its conversation from its name or avatar.
+    const authorActor = agent ? rosterById.get(item.author.actor_id ?? "") : undefined;
     const own = canPost && bulletinIsOwnPost(item, actorId);
     const isEditing = editing?.postId === item.post_id;
     const confirming = confirmDelete === item.post_id;
@@ -504,12 +576,34 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
         id={`bulletin-${item.post_id}`}
         onMouseLeave={confirming ? () => setConfirmDelete(null) : undefined}
       >
-        <span className={`bulletin-avatar${agent ? " is-agent" : ""}`} aria-hidden>
-          {agent ? <Bot size={16} /> : author.trim().charAt(0).toUpperCase() || "?"}
-        </span>
+        {authorActor ? (
+          <button
+            type="button"
+            className="bulletin-avatar is-agent"
+            aria-hidden
+            tabIndex={-1}
+            onClick={() => openAgent(authorActor)}
+          >
+            <Bot size={16} />
+          </button>
+        ) : (
+          <span className={`bulletin-avatar${agent ? " is-agent" : ""}`} aria-hidden>
+            {agent ? <Bot size={16} /> : author.trim().charAt(0).toUpperCase() || "?"}
+          </span>
+        )}
         <div className="bulletin-message-main">
           <header>
-            <strong>{author}</strong>
+            {authorActor ? (
+              <button
+                type="button"
+                className="bulletin-author"
+                onClick={() => openAgent(authorActor)}
+              >
+                {author}
+              </button>
+            ) : (
+              <strong>{author}</strong>
+            )}
             <time dateTime={item.created_at} title={new Date(item.created_at).toLocaleString()}>
               {bulletinTime(item.created_at)}
             </time>
@@ -668,18 +762,20 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
             {channelRoster.map((actor) => (
               <li key={actor.id} data-state={actor.state}>
                 <span className="bulletin-state-dot" title={actor.state.replaceAll("_", " ")} />
-                <span className="bulletin-roster-name" title={actor.id}>
+                <button
+                  type="button"
+                  className="bulletin-roster-name"
+                  title={actor.id}
+                  onClick={() => openAgent(actor)}
+                >
                   {bulletinActorLabel(actor)}
-                </span>
+                </button>
                 <span className="bulletin-roster-kind">{bulletinActorKind(actor)}</span>
-                {actor.seat_node_id &&
-                  (channelNodes === nodes ? (
-                    <button type="button" onClick={() => onOpenNode?.(actor.seat_node_id!)}>
-                      {actor.seat_node_id}
-                    </button>
-                  ) : (
-                    <span className="bulletin-roster-kind">{actor.seat_node_id}</span>
-                  ))}
+                {actor.seat_node_id && (
+                  <button type="button" onClick={() => openNode(actor.seat_node_id!)}>
+                    {actor.seat_node_id}
+                  </button>
+                )}
               </li>
             ))}
           </ul>
@@ -703,6 +799,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
         </div>
         {canPost && (
           <form
+            ref={composer}
             className="bulletin-composer"
             onSubmit={(event) => {
               event.preventDefault();
@@ -710,7 +807,12 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
             }}
           >
             {suggestions.length > 0 && (
-              <ul className="bulletin-suggest" role="listbox" aria-label="Suggestions">
+              <ul
+                className={`bulletin-suggest${suggestPlace?.side === "below" ? " below" : ""}`}
+                style={suggestPlace ? { maxHeight: suggestPlace.maxHeight } : undefined}
+                role="listbox"
+                aria-label="Suggestions"
+              >
                 {suggestions.map((suggestion, index) => (
                   <li
                     key={suggestion.key}

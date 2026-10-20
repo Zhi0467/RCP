@@ -301,10 +301,20 @@ Patches, expanded transitions, and cached projections retain their recorded
 edges and layers. Recorded v3 lifecycle traces retain their interpretation
 under the v4 ruleset; schema generation and Proposal dependency rules do not
 change. Pending Proposals that would create an illegal edge remain inspectable
-and withdrawable, but cannot be approved or refiled with that effect. An old
-branch retaining inherited legacy edges can merge unrelated work. A branch-only
-legacy edge addition or edit refuses merge with the offending edge identified;
-repair it on the source branch with current operations before retrying.
+and withdrawable, but cannot be approved or refiled with that effect.
+
+A branch merge carries what its branch admitted under the rules of their day,
+as main keeps its own history, and consolidation re-homes retired shapes on
+both. Admission of the orchestrator's merge Patch receives the source head's
+state (`ValidationContext.merge_source`), and content rules skip an edge, created
+node, or update only when the merge writes it exactly as that head holds it
+(`core/validation/carried.py`): edge shape and evidence endpoint or assessment
+rules, legacy shapes, Evidence origin, grounded Hypothesis scope, and queued
+ballots. Identity, authority, human-only fields, a human's deprecation, belief
+causes, source scope, and Proposals are checked on everything. Content a merge
+answer assembles meets today's rules, and a violated edge shape returns the
+answer for revision. A merge that stopped on carried content would leave its
+branch with no way to merge.
 
 Supported older Patch, operation, Evidence, Experiment, and transition shapes adapt
 in memory. Later ordinary writes may stamp current schema generation; unsupported

@@ -28,6 +28,7 @@ from rcp.core.operations import (
 from rcp.core.project_types import project_type_of
 from rcp.core.research_rules import chooses_decision, reject_incomplete_decision_ballot
 from rcp.core.validation.approval import validate_approval_shape
+from rcp.core.validation.carried import carries_staged_node
 from rcp.core.validation.context import OpContext
 from rcp.core.validation.experiment_loop import validate_experiment_loop_authority
 from rcp.core.validation.proposals import proposal_cause_evidence_sources, proposal_is_stale
@@ -138,6 +139,7 @@ def _validate_patch(
         state_repository=context.state_repository,
         mode=context.mode,
         experiment_control_node_id=control_node_id,
+        merge_source=context.merge_source,
     )
 
     if context.mode == "admission" and patch.schema_generation != 2:
@@ -365,6 +367,8 @@ def _validate_queued_decision_options(ctx: OpContext) -> None:
         if isinstance(operation, SetStandingOperation)
     )
     for node_id in sorted(touched_ids):
+        if carries_staged_node(ctx, node_id):
+            continue
         reject_incomplete_decision_ballot(ctx.state.nodes.get(node_id), ctx.report, ctx.revision)
 
 

@@ -404,6 +404,43 @@ def test_answer_that_connects_separate_reviews_is_correctable():
     assert len(next(op for op in patch.ops if op.op == "create_proposals").proposals) == 2
 
 
+def test_a_merged_edge_answer_meets_current_shape_rules():
+    from rcp.core.models import Blocker, Edge, Evidence, Hypothesis
+    from rcp.runs.merge_patch import build_merge_patch
+    from rcp.runs.merge_plan import plan_merge
+    from tests.test_merge_plan import _context
+
+    evidence = Evidence(
+        id="ev/one", type="evidence", title="Result", observation="Seen.", origin="analytic"
+    )
+    blockers = [
+        Blocker(id=f"blk/{index}", type="blocker", title="Blocker", description="Open.")
+        for index in range(3)
+    ]
+    claim = Hypothesis(id="hyp/one", type="hypothesis", title="Claim", statement="A claim")
+    edge = Edge(id="edge/one", source=evidence.id, target=blockers[0].id, relation="addresses")
+    base = GraphState(
+        revision=1,
+        project_truth_scope=["repo-a"],
+        nodes={node.id: node for node in [evidence, claim, *blockers]},
+        edges={edge.id: edge},
+    )
+    source = base.model_copy(deep=True, update={"revision": 2})
+    source.edges[edge.id] = edge.model_copy(update={"target": blockers[1].id})
+    destination = base.model_copy(deep=True, update={"revision": 2})
+    destination.edges[edge.id] = edge.model_copy(update={"target": blockers[2].id})
+    plan = plan_merge(_context(base, source, destination))
+    (conflict,) = plan.conflicts
+    # Neither side admitted Evidence `addresses` a Hypothesis; the answer goes back.
+    selected = answers(plan, {conflict.conflict_id: {"kind": "merged", "value": claim.id}})
+    with pytest.raises(MergeAnswersRejected) as rejected:
+        build_merge_patch(plan, selected)
+    assert [(item.code, item.conflict_ids) for item in rejected.value.diagnostics] == [
+        ("relation-type-mismatch", (conflict.conflict_id,))
+    ]
+    assert build_merge_patch(plan, answers(plan)).ops
+
+
 @pytest.mark.parametrize("mutation", ["missing", "unknown", "extra-card"])
 def test_answers_bind_exact_conflict_and_review_subject_keys(mutation):
     from rcp.runs.merge_patch import build_merge_patch

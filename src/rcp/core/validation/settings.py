@@ -17,6 +17,8 @@ class ValidationContext:
     default_run_truth_scope: Iterable[str] | None = None
     state_repository: str | None = None
     mode: Literal["admission", "replay"] = "admission"
+    # A branch merge's source head; content it carries verbatim skips content rules.
+    merge_source: GraphState | None = None
 
 
 def build_validation_context(

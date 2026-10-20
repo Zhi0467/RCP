@@ -1,6 +1,5 @@
 import {
   graphTargetFromHash,
-  graphViewHash,
   projectViewHash,
   MAIN_GRAPH,
   sameGraphTarget,
@@ -292,17 +291,18 @@ export function parseProjectHash(hash: string): ProjectHashRoute {
   };
 }
 
+/** Every panel names itself in the route, so a project tab returns to it from the URL alone. */
 export function projectHashAfterViewChange(hash: string, nextView: AppView): string | null {
   const route = parseProjectHash(hash);
-  const target = graphTargetFromHash(hash);
-  if (target.kind === "branch" && route.projectId)
-    return graphViewHash(route.projectId, target, nextView);
-  if ((nextView === "artifacts" || nextView === "terminals") && route.projectId)
-    return projectViewHash(route.projectId, target, nextView);
-  if ((route.view === "artifacts" || route.view === "terminals") && route.projectId)
-    return projectViewHash(route.projectId, target, null);
-  if (nextView === "execution" || route.view !== "execution" || !route.projectId) return null;
-  return projectViewHash(route.projectId, target, null);
+  if (!route.projectId) return null;
+  // A Runs route already names Runs and keeps its experiment selection.
+  if (nextView === "execution" && route.view === "execution") return null;
+  const next = projectViewHash(
+    route.projectId,
+    graphTargetFromHash(hash),
+    nextView === "overview" ? null : nextView,
+  );
+  return next === hash ? null : next;
 }
 
 export function experimentIndexEntryForRoute(

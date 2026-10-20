@@ -2,11 +2,11 @@ import { projectCreateSetupHash } from "./projectSetupModel";
 import { useRefreshRuntime, useResource } from "../core/useResource";
 import { resourceKeyId } from "../core/resourceStore";
 import { experimentIndexProfile } from "../experiments/episodeResources";
-import { graphSessionKey, graphTargetUrl, MAIN_GRAPH } from "../core/graphTarget";
+import { graphSessionKey, MAIN_GRAPH } from "../core/graphTarget";
 import type { GraphTargetRef } from "../core/types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, loadSpaceRuns } from "../core/api";
-import { experimentBoardHref } from "../experiments/experimentBoardModel";
+import { experimentBoardHref, parseProjectHash } from "../experiments/experimentBoardModel";
 import {
   adjacentProjectTabId,
   closeProjectTab,
@@ -38,15 +38,22 @@ export function cacheProjectTabState<T>(cache: Map<string, T>, projectId: string
   cache.set(projectId, state);
 }
 
-/** The route that reopens a project on the graph target its human last left it on. */
+/** The exact route its human last left a project on: page, graph target, and chat. */
 export function projectReturnHash(
-  leftGraphTargets: ReadonlyMap<string, GraphTargetRef>,
+  leftRoutes: ReadonlyMap<string, string>,
   projectId: string,
 ): string {
-  return graphTargetUrl(
-    `/projects/${encodeURIComponent(projectId)}`,
-    leftGraphTargets.get(projectId) ?? MAIN_GRAPH,
-  );
+  return leftRoutes.get(projectId) ?? `/projects/${encodeURIComponent(projectId)}`;
+}
+
+/** Remember a left route only when it is that project's own route. */
+export function rememberProjectRoute(
+  leftRoutes: Map<string, string>,
+  projectId: string,
+  hash: string,
+): void {
+  if (parseProjectHash(hash).projectId === projectId)
+    leftRoutes.set(projectId, hash.replace(/^#/, ""));
 }
 
 export function mergeProjectExperimentLoops(
@@ -116,8 +123,9 @@ export function useProjectTabs<
   const activeProjectId = useRef(projectId);
   const openProjectTabsRef = useRef(openProjectTabs);
   const projectTabStatesRef = useRef(new Map<string, { state: T }>());
-  // Where the human left each project; background cache writes never change it.
-  const leftGraphTargetsRef = useRef(new Map<string, GraphTargetRef>());
+  // The route the human left each project on; background cache writes never change it,
+  // so returning never depends on whether that project's data was still cached.
+  const leftRoutesRef = useRef(new Map<string, string>());
   const spaceRunRefreshGeneration = useRef(0);
   activeProjectId.current = projectId;
   openProjectTabsRef.current = openProjectTabs;
@@ -226,7 +234,7 @@ export function useProjectTabs<
       setSetupOpen(false);
       window.location.hash = experimentRoute
         ? experimentBoardHref(id, experimentRoute).slice(1)
-        : projectReturnHash(leftGraphTargetsRef.current, id);
+        : projectReturnHash(leftRoutesRef.current, id);
     },
     [setTabs, tabForProject],
   );
@@ -244,15 +252,12 @@ export function useProjectTabs<
       for (const [key, state] of projectTabStatesRef.current) {
         if (state.state.projectId === id) projectTabStatesRef.current.delete(key);
       }
-      leftGraphTargetsRef.current.delete(id);
+      leftRoutesRef.current.delete(id);
       setTabs(result.tabs);
       if (id !== activeProjectId.current) return true;
       if (result.activeProjectId) {
         setSetupOpen(false);
-        window.location.hash = projectReturnHash(
-          leftGraphTargetsRef.current,
-          result.activeProjectId,
-        );
+        window.location.hash = projectReturnHash(leftRoutesRef.current, result.activeProjectId);
       } else {
         setSetupOpen(false);
         setProjectId(null);
@@ -269,7 +274,7 @@ export function useProjectTabs<
       for (const [key, state] of projectTabStatesRef.current) {
         if (state.state.projectId === id) projectTabStatesRef.current.delete(key);
       }
-      leftGraphTargetsRef.current.delete(id);
+      leftRoutesRef.current.delete(id);
       setTabs(closeProjectTab(openProjectTabsRef.current, activeProjectId.current, id).tabs);
     },
     [setTabs],
@@ -289,8 +294,8 @@ export function useProjectTabs<
     projectTabStatesRef.current.set(graphSessionKey(id, state.graphTarget), { state });
   }, []);
   const clearProjectCache = useCallback(() => projectTabStatesRef.current.clear(), []);
-  const rememberLeftGraphTarget = useCallback((id: string, target: GraphTargetRef) => {
-    leftGraphTargetsRef.current.set(id, target);
+  const rememberLeftRoute = useCallback((id: string, hash: string) => {
+    rememberProjectRoute(leftRoutesRef.current, id, hash);
   }, []);
   const cachedProjectStateForOpen = useCallback(
     (id: string, graphTarget: GraphTargetRef = MAIN_GRAPH) => {
@@ -412,7 +417,7 @@ export function useProjectTabs<
     toggleProjectHeader,
     cacheProjectState,
     clearProjectCache,
-    rememberLeftGraphTarget,
+    rememberLeftRoute,
     cachedProjectStateForOpen,
     inactiveCachedProjectState,
     isProjectTabOpen,

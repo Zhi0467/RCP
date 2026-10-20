@@ -68,8 +68,8 @@ test("open tab UI has no retention count cap", () => {
   for (let i = 0; i < 20; i++) cacheProjectTabState(cache, String(i), { selected: i });
   assert.equal(cache.size, 20);
   assert.equal(
-    projectReturnHash(new Map([["p", { kind: "branch", branch_id: "b" }]]), "p"),
-    "/projects/p?branch_id=b",
+    projectReturnHash(new Map([["p", "/projects/p/agents?branch_id=b"]]), "p"),
+    "/projects/p/agents?branch_id=b",
   );
 });
 

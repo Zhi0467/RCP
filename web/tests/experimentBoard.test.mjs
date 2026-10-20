@@ -201,7 +201,11 @@ test("experiment links round-trip through the project hash parser", () => {
   });
   assert.equal(projectHashAfterViewChange(href, "overview"), "#/projects/remote%20project%2Fone");
   assert.equal(projectHashAfterViewChange(href, "execution"), null);
-  assert.equal(projectHashAfterViewChange("#/projects/project-one", "attention"), null);
+  assert.equal(
+    parseProjectHash(projectHashAfterViewChange("#/projects/project-one", "attention")).view,
+    "attention",
+  );
+  assert.equal(projectHashAfterViewChange("#/projects/project-one", "overview"), null);
 });
 
 test("a pin link opens Artifacts on the pin's own target", async () => {

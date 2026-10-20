@@ -834,7 +834,7 @@ function MemberApp({
     toggleProjectHeader,
     cacheProjectState,
     clearProjectCache,
-    rememberLeftGraphTarget,
+    rememberLeftRoute,
     cachedProjectStateForOpen,
     adjacentProjectId,
   } = useProjectTabs<ProjectTabUiState>({
@@ -1403,10 +1403,10 @@ function MemberApp({
     : null;
 
   const rememberProjectState = useCallback(
-    (id: string | null) => {
+    (id: string | null, leftHash: string = window.location.hash) => {
       if (!id) return;
-      // The routed target, so a branch still loading is remembered too.
-      rememberLeftGraphTarget(id, activeGraphTargetRef.current);
+      // The routed page and target, so a project still loading is remembered too.
+      rememberLeftRoute(id, leftHash);
       const current = currentProjectStateRef.current;
       if (!current || current.projectId !== id) return;
       const selection = captureProjectSelection(id, current.graphTarget);
@@ -1418,7 +1418,7 @@ function MemberApp({
         ...cloneProjectHistorySnapshot(current),
       });
     },
-    [cacheProjectState, captureProjectSelection, rememberLeftGraphTarget],
+    [cacheProjectState, captureProjectSelection, rememberLeftRoute],
   );
 
   useEffect(() => {
@@ -1696,10 +1696,13 @@ function MemberApp({
   }, [dispatchProjectSession, project?.id, view]);
 
   useEffect(() => {
-    const handleHashChange = () => {
+    const handleHashChange = (event: HashChangeEvent) => {
       // A notification link is not a project route; the resolver below replaces it
       // with one, so the open project stays mounted meanwhile.
-      if (isNotificationLinkHash(window.location.hash)) return;
+      if (isNotificationLinkHash(window.location.hash)) {
+        rememberProjectState(getActiveProjectId(), new URL(event.oldURL).hash);
+        return;
+      }
       const route = parseProjectHash(window.location.hash);
       const activeId = getActiveProjectId();
       const nextTarget = graphTargetFromHash(window.location.hash);
@@ -1716,7 +1719,8 @@ function MemberApp({
         route.projectId !== activeId ||
         !sameGraphTarget(nextTarget, activeGraphTargetRef.current)
       ) {
-        rememberProjectState(activeId);
+        // The hash already names the next route; the project was left on the old one.
+        rememberProjectState(activeId, new URL(event.oldURL).hash);
       }
       activeGraphTargetRef.current = nextTarget;
       setGraphTarget((current) => (sameGraphTarget(current, nextTarget) ? current : nextTarget));
@@ -2405,6 +2409,21 @@ function MemberApp({
   useEffect(() => {
     if (view !== "chats") setAgentsBoard(true);
   }, [view]);
+
+  // The route names the open chat, so a project tab returns to the chat it left.
+  const openChatId = view === "chats" && !agentsBoard ? (selectedChatId ?? undefined) : undefined;
+  const pendingChatId = requestedChat.chatId;
+  useEffect(() => {
+    if (view !== "chats" || !project?.id || pendingChatId) return;
+    const hash = window.location.hash;
+    const route = parseProjectHash(hash);
+    if (route.projectId !== project.id || (route.chatId ?? undefined) === openChatId) return;
+    const [path, query = ""] = hash.split("?");
+    const params = new URLSearchParams(query);
+    if (openChatId) params.set("chat", openChatId);
+    else params.delete("chat");
+    window.history.replaceState(window.history.state, "", `${path}?${params}`);
+  }, [view, project?.id, openChatId, pendingChatId]);
 
   useEffect(() => {
     if (
@@ -4992,6 +5011,7 @@ function MemberApp({
                     (await refreshProposal(apiBase, proposal.id)).chat_id
                   }
                   onOpenChat={openChats}
+                  onOpenNode={openNodeById}
                   glossaryIndex={glossaryIndex}
                   draft={mutationsDisabled ? null : humanDraft}
                   mutationsDisabled={mutationsDisabled}

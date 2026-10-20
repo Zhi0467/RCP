@@ -45,6 +45,7 @@ from rcp.core.transitions import (
     project_transition_projection,
 )
 from rcp.core.validation import ValidationContext, is_coherence_clash
+from rcp.core.validation.ops import edge_shape_refusals
 from rcp.core.validation.proposals import (
     ProposalEffectRejected,
     connected_proposal_operation_groups,
@@ -292,7 +293,12 @@ def _documents(
     return documents
 
 
-def _status_cause(plan: MergePlan, identity: str, status: Any) -> dict[str, Any]:
+def _status_cause(
+    plan: MergePlan,
+    identity: str,
+    status: Any,
+    documents: dict[tuple[str, str | None], tuple[Any, set[Coordinate]]],
+) -> dict[str, Any]:
     source = plan.source_graph.nodes.get(identity)
     graph = (
         plan.source_graph
@@ -322,10 +328,98 @@ def _status_cause(plan: MergePlan, identity: str, status: Any) -> dict[str, Any]
                     "No exact source human fact proves this status",
                     identity,
                 )
+        if graph is plan.source_graph and transition.cause.get("kind") == "evidence_edge":
+            # A later branch edit may relabel or remove the recorded evidence edge while
+            # the status stands; the merge carries the evidence it still delivers.
+            live = [
+                edge_id
+                for edge_id in _evidence_edges(graph, identity)
+                if _merged_evidence_edge(plan, documents, edge_id, identity)
+            ]
+            if transition.cause.get("ref_id") not in live and live:
+                return {"kind": "evidence_edge", "ref_id": live[-1]}
         return deepcopy(transition.cause)
     _refuse(
         "missing-status-cause", "No recorded transition proves the carried status cause", identity
     )
+
+
+def _merged_evidence_edge(
+    plan: MergePlan,
+    documents: dict[tuple[str, str | None], tuple[Any, set[Coordinate]]],
+    edge_id: str,
+    hypothesis_id: str,
+) -> bool:
+    """Whether the merged destination holds this edge as evidence for the Hypothesis."""
+    document = documents.get(("edges", edge_id))
+    if document is not None:
+        edge = document[0]
+    else:
+        current = plan.destination_graph.edges.get(edge_id)
+        edge = current.model_dump(mode="json") if current is not None else None
+    if edge is None or edge["target"] != hypothesis_id:
+        return False
+    node = documents.get(("nodes", edge["source"]))
+    if node is not None:
+        source_type = node[0]["type"] if node[0] is not None else None
+    else:
+        current_node = plan.destination_graph.nodes.get(edge["source"])
+        source_type = current_node.type if current_node is not None else None
+    project_type = project_type_of(plan.destination_graph)
+    return (
+        source_type is not None
+        and edge["relation"] in project_type.belief_outcome_relations
+        and project_type.is_outcome(source_type)
+    )
+
+
+def _check_answered_edge_shape(
+    plan: MergePlan,
+    documents: dict[tuple[str, str | None], tuple[Any, set[Coordinate]]],
+    identity: str,
+    raw: dict[str, Any],
+) -> None:
+    """A shape either side admitted is carried; one an answer assembled meets today's rules."""
+    shape = (raw["source"], raw["relation"], raw["target"])
+    for graph in (plan.source_graph, plan.destination_graph):
+        admitted = graph.edges.get(identity)
+        if admitted is not None and (admitted.source, admitted.relation, admitted.target) == shape:
+            return
+
+    def node_type(node_id: str) -> str | None:
+        document = documents.get(("nodes", node_id))
+        if document is not None:
+            return document[0]["type"] if document[0] is not None else None
+        node = plan.destination_graph.nodes.get(node_id)
+        return node.type if node is not None else None
+
+    refusals = edge_shape_refusals(
+        plan.destination_graph.ontology,
+        identity,
+        raw["relation"],
+        raw["source"],
+        raw["target"],
+        node_type(raw["source"]),
+        node_type(raw["target"]),
+    )
+    if refusals:
+        _reject_answer_effect(
+            plan,
+            tuple(_diagnostic(code, message, identity) for code, message, _ in refusals),
+        )
+
+
+def _evidence_edges(graph: GraphState, hypothesis_id: str) -> list[str]:
+    """Edges that can cause this Hypothesis's status, oldest first."""
+    project_type = project_type_of(graph)
+    return [
+        edge.id
+        for edge in sorted(graph.edges.values(), key=lambda item: (item.created_rev, item.id))
+        if edge.target == hypothesis_id
+        and edge.relation in project_type.belief_outcome_relations
+        and edge.source in graph.nodes
+        and project_type.is_outcome(graph.nodes[edge.source].type)
+    ]
 
 
 def _ops(raw: list[dict[str, Any]]) -> list[GraphOperation]:
@@ -472,7 +566,7 @@ def construct_effects(
                                 {
                                     "id": identity,
                                     "changes": {"status": status},
-                                    "cause": _status_cause(plan, identity, status),
+                                    "cause": _status_cause(plan, identity, status, documents),
                                 }
                             ],
                         }
@@ -503,7 +597,7 @@ def construct_effects(
             if changes:
                 update: dict[str, Any] = {"id": identity, "changes": changes}
                 if project_type.is_belief(current.type) and "status" in changes:
-                    update["cause"] = _status_cause(plan, identity, changes["status"])
+                    update["cause"] = _status_cause(plan, identity, changes["status"], documents)
                 operations.append({"op": "update_nodes", "nodes": [update]})
             standing = raw["standing"]
             restoration = None
@@ -525,6 +619,7 @@ def construct_effects(
                 operations.append({"op": "remove_edges", "edge_ids": [identity]})
             if raw is not None:
                 raw = {key: value for key, value in raw.items() if key in NewEdge.model_fields}
+                _check_answered_edge_shape(plan, documents, identity, raw)
                 operations.append({"op": "create_edges", "edges": [raw]})
             if operations:
                 edges.append(_Effect(_ops(operations), coordinates))
@@ -613,7 +708,9 @@ def _classify(
         authority=plan.captured_authority,
         project_id=plan.captured_authority.project_id,
         apply_target=plan.destination_head.target,
-        context=ValidationContext(project_truth_scope=state.project_truth_scope),
+        context=ValidationContext(
+            project_truth_scope=state.project_truth_scope, merge_source=plan.source_graph
+        ),
         operation_groups=tuple(indices),
     )
 

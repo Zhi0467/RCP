@@ -77,7 +77,10 @@ def validate_new_node_authoring(
     report: ValidationReport,
     *,
     writer: Writer,
+    carried: bool = False,
 ) -> None:
+    """``carried``: a branch merge writes this node as its source admitted it,
+    so content rules of a later day do not apply; authority checks still do."""
     revision = patch.revision or None
     node_id = raw.get("id", "")
     node_type = raw.get("type")
@@ -89,14 +92,14 @@ def validate_new_node_authoring(
         authoring=True,
         agent_authored=writer.author == "agent",
     )
-    if node_type == "evidence" and "origin" not in raw:
+    if not carried and node_type == "evidence" and "origin" not in raw:
         report.reject(
             "missing-evidence-origin",
             f"New Evidence node {node_id!r} must explicitly supply origin.",
             revision,
             related_node_ids=[node_id] if isinstance(node_id, str) else [],
         )
-    if node_type == "hypothesis" and raw.get("scope"):
+    if not carried and node_type == "hypothesis" and raw.get("scope"):
         _validate_grounded_scope(raw, report, revision)
     if (
         writer.author == "agent"

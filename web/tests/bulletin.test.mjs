@@ -16,9 +16,12 @@ import {
   bulletinTargetKey,
   bulletinKeyTarget,
   bulletinAgentChoices,
+  bulletinChannelCandidates,
   bulletinMoveDraft,
   bulletinMentionKind,
   bulletinActorKind,
+  bulletinSuggestPlacement,
+  BULLETIN_SUGGEST_MAX_HEIGHT,
 } from "../src/chat/bulletinModel.ts";
 
 test("threads group replies under parents and retain server author snapshots", () => {
@@ -124,33 +127,26 @@ test("channels map to graph targets", () => {
     assert.deepEqual(bulletinKeyTarget(bulletinTargetKey(target)), target);
 });
 
-test("agent choices span every channel, shown channel first, labels unique per channel", () => {
+test("agent choices span every channel, shown channel first, labels unique project-wide", () => {
   const agent = (id, target_key, name) => ({ id, target_key, name, kind: "human_chat_work" });
   const roster = [
     agent("chat:a", "main", "running-the"),
     agent("chat:b", "branch:x", "running-the"),
     agent("chat:c", "branch:x", "running-the"),
   ];
-  const choices = bulletinAgentChoices(
-    [{ user_id: "u1", display_name: "Ada" }],
-    roster,
-    "branch:x",
-  );
+  const members = [{ user_id: "u1", display_name: "Ada" }];
+  const choices = bulletinAgentChoices(members, roster, "branch:x");
   assert.deepEqual(
     choices.map((choice) => choice.actor.id),
     ["chat:b", "chat:c", "chat:a"],
   );
-  assert.deepEqual(
-    choices.map((choice) => choice.token),
-    ["<@agent:chat:b>", "<@agent:chat:c>", "<@agent:chat:a>"],
-  );
-  // Within one channel two same-named agents take distinct labels; across channels the name stays as is.
-  assert.notEqual(choices[0].label, choices[1].label);
-  assert.equal(choices[2].label, roster[0].name);
-  // A choice's label encodes to its token with that channel's own candidates.
-  const channel = roster.filter((actor) => actor.target_key === "branch:x");
-  const candidates = bulletinMentionCandidates([], channel);
-  assert.equal(bulletinEncodeMentions(`@${choices[1].label}`, candidates), choices[1].token);
+  // The shown channel's first agent keeps its bare name; every label is distinct.
+  assert.equal(choices[0].label, roster[1].name);
+  assert.equal(new Set(choices.map((choice) => choice.label)).size, 3);
+  // Each label encodes to its own agent from this channel's composer, another channel's included.
+  const candidates = bulletinChannelCandidates(members, roster, "branch:x");
+  for (const choice of choices)
+    assert.equal(bulletinEncodeMentions(`@${choice.label}`, candidates), choice.token);
 });
 
 test("mention rows tag only autonomous agents with their kind", () => {
@@ -187,4 +183,20 @@ test("encoding keeps stored tokens whole even when a label matches inside them",
     bulletinEncodeMentions("ask <@agent:chat:b> and @agent", candidates),
     "ask <@agent:chat:b> and <@member:u1>",
   );
+});
+
+test("suggestions open where the scroll area has room and never past its edge", () => {
+  const area = { top: 100, bottom: 900 };
+  // A composer just under the area's top opens downward, capped to the room below.
+  const nearTop = bulletinSuggestPlacement({ top: 150, bottom: 190 }, area);
+  assert.equal(nearTop.side, "below");
+  assert.ok(nearTop.maxHeight <= area.bottom - 190);
+  // Full room above keeps the usual upward list at its full height.
+  assert.deepEqual(bulletinSuggestPlacement({ top: 800, bottom: 840 }, area), {
+    side: "above",
+    maxHeight: BULLETIN_SUGGEST_MAX_HEIGHT,
+  });
+  // Cramped on both sides: the larger side wins and the list fits inside it.
+  const cramped = bulletinSuggestPlacement({ top: 160, bottom: 200 }, { top: 100, bottom: 240 });
+  assert.ok(cramped.maxHeight <= 60 && cramped.maxHeight > 0);
 });
