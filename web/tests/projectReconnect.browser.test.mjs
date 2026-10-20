@@ -560,6 +560,34 @@ test(
   },
 );
 
+test("switching project tabs returns to the panel each project was left on", async (t) => {
+  const { page, errors } = await openedShell(t);
+  const current = (name) =>
+    page.getByRole("button", { name, exact: true }).getAttribute("aria-current");
+  const activeTab = (id) =>
+    page
+      .locator(".project-dock-tab.active .project-dock-select")
+      .filter({ hasText: `(${id})` })
+      .waitFor();
+  await page.getByRole("button", { name: "Agents", exact: true }).click();
+  // A project opened without a remembered panel starts on Overview.
+  await page.evaluate(() => {
+    window.location.hash = "/projects/second";
+  });
+  await activeTab("second");
+  assert.equal(await current("Overview"), "page");
+  await page.locator(".project-dock-select").filter({ hasText: "(demo)" }).click();
+  await activeTab("demo");
+  assert.equal(await current("Agents"), "page");
+  await page.locator(".project-dock-select").filter({ hasText: "(second)" }).click();
+  await activeTab("second");
+  assert.equal(await current("Overview"), "page");
+  assert.deepEqual(
+    errors.filter((message) => !message.includes("Failed to load resource")),
+    [],
+  );
+});
+
 test("browser reload restores the route through fresh admission", { timeout: 20000 }, async (t) => {
   const { page, state } = await openedShell(t);
   state.requests = [];
