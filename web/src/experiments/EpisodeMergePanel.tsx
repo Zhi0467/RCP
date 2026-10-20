@@ -1,4 +1,4 @@
-import { ChevronDown, LoaderCircle, Network, RotateCcw } from "lucide-react";
+import { ChevronDown, LoaderCircle, Network } from "lucide-react";
 import { useEffect, useState } from "react";
 import { loadMergePreview } from "../core/api";
 import {
@@ -127,11 +127,13 @@ export function EpisodeMergePanel({
     }
   };
 
-  const diagnostic = mergeError ?? previewError ?? episode.graph_branch?.merge_diagnostic;
-  if (!episode.can_merge && !diagnostic) return null;
+  // This click's refusal blocks the button; an earlier attempt's failure only marks it.
+  const refusal = mergeError ?? previewError;
+  const failure = refusal ?? episode.graph_branch?.merge_diagnostic;
+  if (!episode.can_merge) return null;
 
   return (
-    <div className={`episode-merge-panel${diagnostic ? " has-error" : ""}`} aria-label="Merge">
+    <div className={`episode-merge-panel${failure ? " has-error" : ""}`} aria-label="Merge">
       <div className="merge-summary-row">
         <div className="merge-counts">
           {hasGraphBranch && preview && <MergeGraphCounts graph={preview.graph} />}
@@ -143,22 +145,17 @@ export function EpisodeMergePanel({
           )}
         </div>
         <button
-          className={`button secondary compact campaign-branch-merge${diagnostic ? " icon-button" : ""}`}
+          className="button secondary compact campaign-branch-merge"
           type="button"
           aria-expanded={open}
           aria-busy={busy || previewLoading}
-          aria-label={diagnostic ? "Retry merge" : undefined}
-          title={
-            diagnostic
-              ? [diagnostic, !episode.can_merge && episode.graph_branch?.merge_blocked_reason]
-                  .filter(Boolean)
-                  .join("\n")
-              : undefined
-          }
-          disabled={disabled || !episode.can_merge}
+          title={failure ?? undefined}
+          disabled={disabled}
           onClick={() => {
-            if (diagnostic) {
+            // Merge always plans against both heads as they are now.
+            if (refusal) {
               setMergeError(null);
+              setPreviewError(null);
               setOpen(true);
               setPreviewAttempt((value) => value + 1);
             } else setOpen(!open);
@@ -166,14 +163,17 @@ export function EpisodeMergePanel({
         >
           {busy || previewLoading ? (
             <LoaderCircle className="spin" size={12} />
-          ) : diagnostic ? (
-            <RotateCcw size={12} />
           ) : (
             <Network size={12} />
           )}
-          {!diagnostic &&
-            (busy ? "Starting merge…" : previewLoading ? "Loading preview…" : "Merge")}
-          {!busy && !diagnostic && <ChevronDown size={12} />}
+          {busy
+            ? "Starting merge…"
+            : previewLoading
+              ? "Loading preview…"
+              : refusal
+                ? "Merge blocked"
+                : "Merge"}
+          {!busy && !previewLoading && !refusal && <ChevronDown size={12} />}
         </button>
       </div>
       {episode.isolation_state?.merge_attempt?.worktree_kept && (

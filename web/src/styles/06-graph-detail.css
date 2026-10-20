@@ -19,6 +19,29 @@
   line-height: 1.42;
   margin: 0;
 }
+.proposal-subjects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-bottom: 4px;
+}
+.proposal-subject {
+  background: transparent;
+  border: 0;
+  color: var(--cobalt);
+  cursor: pointer;
+  font: var(--type-sm) var(--mono);
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 0;
+  text-align: start;
+}
+.proposal-subject:hover {
+  text-decoration: underline;
+}
+.proposal-subjects:empty {
+  display: none;
+}
 .proposal-action-node {
   color: var(--muted);
   font-size: var(--type-2xs);

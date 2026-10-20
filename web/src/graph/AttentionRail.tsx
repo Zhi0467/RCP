@@ -3,6 +3,7 @@ import { TriangleAlert, ArrowRight, Check, RotateCw, X } from "lucide-react";
 import type { GlossaryIndex } from "./glossary";
 import { proposalApprovalConflict, type HumanDraft, type ProposalDecision } from "./humanDraft";
 import {
+  decodeProposal,
   type GraphNode,
   type GraphState,
   type Proposal,
@@ -27,6 +28,8 @@ interface ProposalJudgmentSectionProps {
   /** Starts (or returns) the light refresh chat. */
   onRefresh?: (proposal: Proposal) => Promise<string>;
   onOpenChat?: (chatId: string) => void;
+  /** Opens a node the Proposal changes, so the card says what it edits. */
+  onOpenNode?: (nodeId: string) => void;
   onDecision: (proposal: Proposal, decision: ProposalDecision | null) => void;
 }
 
@@ -47,6 +50,7 @@ export function ProposalJudgmentSection({
   refreshableProposalIds = [],
   onRefresh,
   onOpenChat,
+  onOpenNode,
   onDecision,
 }: ProposalJudgmentSectionProps) {
   if (proposals.length === 0) return null;
@@ -128,6 +132,19 @@ export function ProposalJudgmentSection({
               <div>
                 <dt>Proposed action</dt>
                 <dd>
+                  <span className="proposal-subjects">
+                    {proposalSubjectNodeIds(proposal, graph).map((nodeId) => (
+                      <button
+                        key={nodeId}
+                        type="button"
+                        className="proposal-subject"
+                        title={graph.nodes[nodeId]?.title}
+                        onClick={() => onOpenNode?.(nodeId)}
+                      >
+                        {nodeId}
+                      </button>
+                    ))}
+                  </span>
                   <ProposedAction lines={proposedAction} glossaryIndex={glossaryIndex} />
                 </dd>
               </div>
@@ -178,6 +195,33 @@ export function ProposalJudgmentSection({
       })}
     </section>
   );
+}
+
+/** The graph's nodes a Proposal changes, in operation order; a relation names both ends. */
+export function proposalSubjectNodeIds(raw: Proposal, graph: GraphState): string[] {
+  const proposal = raw.semantics ? raw : decodeProposal(raw);
+  const ids: string[] = [];
+  const edgeEnds = (edgeId: string) => {
+    const edge = graph.edges[edgeId];
+    return edge ? [edge.source, edge.target] : [];
+  };
+  if (proposal.semantics !== "canonical") {
+    ids.push(...proposal.related_node_ids, ...proposal.related_edge_ids.flatMap(edgeEnds));
+  } else {
+    for (const operation of proposal.ops) {
+      if (operation.op === "update_nodes") ids.push(...operation.nodes.map((node) => node.id));
+      else if (operation.op === "set_standing") ids.push(operation.node_id);
+      else if (operation.op === "remove_nodes") ids.push(...operation.node_ids);
+      else if (operation.op === "supersede_nodes")
+        ids.push(...operation.nodes.flatMap((item) => [item.id, item.superseded_by]));
+      else if (operation.op === "merge_nodes")
+        ids.push(...operation.merges.flatMap((item) => [item.duplicate, item.canonical]));
+      else if (operation.op === "create_edges")
+        ids.push(...operation.edges.flatMap((edge) => [edge.source, edge.target]));
+      else ids.push(...operation.edge_ids.flatMap(edgeEnds));
+    }
+  }
+  return [...new Set(ids)].filter((nodeId) => nodeId in graph.nodes);
 }
 
 /**

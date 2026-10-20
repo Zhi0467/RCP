@@ -153,7 +153,7 @@ def migrate_bulletin_actor_ids(connection: sqlite3.Connection) -> None:
 
 
 def _parse(
-    connection: sqlite3.Connection, project_id: str, target_key: str, text: str
+    connection: sqlite3.Connection, project_id: str, text: str
 ) -> tuple[list[str], list[dict[str, str]]]:
     from rcp.bulletin import bulletin_actor_id
 
@@ -170,16 +170,12 @@ def _parse(
     ]
     if "<@agent:" not in text:
         return refs, mentions
-    target = (
-        GraphTargetRef(kind="main")
-        if target_key == "main"
-        else GraphTargetRef(kind="branch", branch_id=target_key.removeprefix("branch:"))
-    )
+    # The mention list offers the project's agents in every channel, so any of them counts;
+    # the agent reads the mention wherever it works and answers in this channel's thread.
     agents = {
         bulletin_actor_id(connection, row)
         for row in connection.execute(
-            "SELECT * FROM graph_runs WHERE project_id=? AND graph_target_json=? AND visible=1",
-            (project_id, graph_target_json(target)),
+            "SELECT * FROM graph_runs WHERE project_id=? AND visible=1", (project_id,)
         )
     }
     return refs, [m for m in mentions if m["kind"] == "member" or m["id"] in agents]
@@ -372,9 +368,7 @@ def _post(
         outcome = {"error": error}
     else:
         refs, mentions = (
-            ([], [])
-            if action == "delete"
-            else _parse(connection, project_id, target_key, text or "")
+            ([], []) if action == "delete" else _parse(connection, project_id, text or "")
         )
         if action == "edit":
             connection.execute(
@@ -458,19 +452,19 @@ class BulletinStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             return _members(connection, project_id)
 
-    def open_bulletin_mentions(
-        self, project_id: str, target_key: str, actor_id: str
-    ) -> list[dict[str, Any]]:
+    def open_bulletin_mentions(self, project_id: str, actor_id: str) -> list[dict[str, Any]]:
         """Mentions of the agent awaiting its reply: its own later post in the thread answers one.
 
-        An edit can add a mention, so only a reply after the post's last edit counts. A deleted
-        thread root refuses replies, so mentions under it are not open.
+        A member may mention an agent from any channel, so every channel counts; each mention
+        names its channel, where the agent's reply lands. An edit can add a mention, so only a
+        reply after the post's last edit counts. A deleted thread root refuses replies, so
+        mentions under it are not open.
         """
         with self.connection() as connection:
             return [
-                _record(row)
+                {**_record(row), "target_key": row["target_key"]}
                 for row in connection.execute(
-                    f"SELECT p.*, {_REPLY_COUNT} AS reply_count FROM bulletin_posts p WHERE project_id=? AND target_key=? AND deleted_at IS NULL "
+                    f"SELECT p.*, {_REPLY_COUNT} AS reply_count FROM bulletin_posts p WHERE project_id=? AND deleted_at IS NULL "
                     "AND p.author_actor_id IS NOT ? "
                     "AND NOT EXISTS(SELECT 1 FROM bulletin_posts t WHERE t.post_id=p.reply_to AND t.deleted_at IS NOT NULL) "
                     "AND EXISTS(SELECT 1 FROM json_each(p.mentions_json) m WHERE json_extract(m.value,'$.kind')='agent' AND json_extract(m.value,'$.id')=?) "
@@ -478,7 +472,7 @@ class BulletinStoreMixin(StoreMixinBase):
                     "AND r.deleted_at IS NULL AND r.sequence>p.sequence AND (p.edited_at IS NULL OR r.created_at>p.edited_at) "
                     "AND COALESCE(r.reply_to,r.post_id)=COALESCE(p.reply_to,p.post_id)) "
                     "ORDER BY sequence DESC",
-                    (project_id, target_key, actor_id, actor_id, actor_id),
+                    (project_id, actor_id, actor_id, actor_id),
                 )
             ]
 
@@ -632,6 +626,18 @@ class BulletinStoreMixin(StoreMixinBase):
             target_key = GraphTargetRef.model_validate_json(task["graph_target_json"]).key
             if subcommand == "read":
                 return _list(connection, project_id, target_key, cursor)
+            # A reply, edit, or delete lands in the channel of the post it names, where
+            # a member may have mentioned this agent; a new post stays in its own channel.
+            named = reply_to if subcommand == "post" else post_id
+            channel = (
+                named
+                and connection.execute(
+                    "SELECT target_key FROM bulletin_posts WHERE project_id=? AND post_id=?",
+                    (project_id, named),
+                ).fetchone()
+            )
+            if channel:
+                target_key = channel["target_key"]
             authority = json.loads(task["dispatch_authority_json"] or "{}")
             if authority.get("task_contract") not in {
                 "work_auto",

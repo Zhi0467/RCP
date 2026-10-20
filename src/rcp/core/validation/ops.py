@@ -394,6 +394,14 @@ def validate_create_edges(op: CreateEdgesOperation, ctx: OpContext) -> Any:
 
 
 def author_create_edges(op: CreateEdgesOperation, ctx: OpContext) -> Any:
+    # A branch merge carries edges its branch already admitted under the rules of
+    # their day, as main keeps its own; consolidation re-homes retired shapes on both.
+    if (
+        ctx.patch.branch_merge is not None
+        and ctx.writer.author == "agent"
+        and ctx.writer.profile == "orchestrator"
+    ):
+        return None
     for edge in op.edges:
         relation = edge.relation
         custom = custom_relation(ctx.state.ontology, relation)

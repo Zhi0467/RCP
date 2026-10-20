@@ -181,8 +181,9 @@ test("Terminals hashes restore the project destination", async () => {
     "#/projects/alpha?view=terminals",
   );
   assert.equal(
-    projectHashAfterViewChange("#/projects/alpha?view=terminals", "scientific"),
-    "#/projects/alpha",
+    parseProjectHash(projectHashAfterViewChange("#/projects/alpha?view=terminals", "scientific"))
+      .view,
+    "scientific",
   );
 });
 

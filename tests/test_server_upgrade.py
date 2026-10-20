@@ -410,7 +410,7 @@ def test_old_writer_link_rules_survive_upgrade_and_merge(manifest, tmp_path, sta
     from rcp.core.validation import ValidationContext
     from rcp.history.delta import semantic_delta
     from rcp.history.manager import PatchRejected
-    from rcp.runs.merge_contract import MergeAnswers, MergePlanningContext, MergeRefused
+    from rcp.runs.merge_contract import MergeAnswers, MergePlanningContext
     from rcp.runs.merge_patch import prepare_merge_candidate
     from rcp.runs.merge_plan import plan_merge
     from tests.helpers import unchecked_write_authority
@@ -502,12 +502,16 @@ def test_old_writer_link_rules_survive_upgrade_and_merge(manifest, tmp_path, sta
         context=ValidationContext(project_truth_scope=expected.project_truth_scope),
     )
     assert semantic_delta(replayed.state, merged).is_empty
+    # A branch link of a since-retired shape merges as main's own legacy links do.
     for index in range(4):
-        with pytest.raises(MergeRefused) as refused:
-            plan_merge(context(bundle["branches"][f"legacy-{index}"]))
-        assert any(
-            f"edge/branch/{index}" in diagnostic.message for diagnostic in refused.value.diagnostics
-        )
+        legacy_plan = plan_merge(context(bundle["branches"][f"legacy-{index}"]))
+        assert not legacy_plan.conflicts and not legacy_plan.review_groups
+        carried_edges = prepare_merge_candidate(
+            legacy_plan, MergeAnswers(answers={}, cards={}), history
+        ).projection.graph.edges
+        source_edges = legacy_plan.source_graph.edges
+        (branch_edge,) = [edge for edge in source_edges if edge.startswith(f"edge/branch/{index}")]
+        assert carried_edges[branch_edge].relation == source_edges[branch_edge].relation
     legacy = [edge for edge in expected.edges.values() if edge.id.startswith("edge/plain/")]
     removal = {"op": "remove_edges", "edge_ids": [edge.id for edge in legacy]}
     edit = {

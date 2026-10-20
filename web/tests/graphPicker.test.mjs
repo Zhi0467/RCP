@@ -50,14 +50,24 @@ test("project hashes encode refs and optional selections with existing wire valu
   assert.equal(conversationHref("p", { chatId: "c" }), "#/projects/p?view=chats&chat=c");
 });
 
-test("view-change delegation preserves bare main routes and branch routes", () => {
-  assert.equal(projectHashAfterViewChange("#/projects/p?view=runs", "dag"), "#/projects/p");
+test("view-change delegation names every view and keeps branch routes", () => {
+  assert.equal(
+    projectHashAfterViewChange("#/projects/p?view=runs", "dag"),
+    "#/projects/p?view=dag",
+  );
   assert.equal(
     projectHashAfterViewChange("#/projects/p?view=paper", "terminals"),
     "#/projects/p?view=terminals",
   );
-  assert.equal(projectHashAfterViewChange("#/projects/p?view=artifacts", "chats"), "#/projects/p");
-  assert.equal(projectHashAfterViewChange("#/projects/p?view=chats", "dag"), null);
+  assert.equal(
+    projectHashAfterViewChange("#/projects/p?view=artifacts", "chats"),
+    "#/projects/p?view=chats",
+  );
+  assert.equal(
+    projectHashAfterViewChange("#/projects/p?view=chats&chat=c", "overview"),
+    "#/projects/p",
+  );
+  assert.equal(projectHashAfterViewChange("#/projects/p", "overview"), null);
   assert.equal(
     projectHashAfterViewChange("#/projects/p?view=chats&branch_id=b", "execution"),
     "#/projects/p?view=runs&branch_id=b",

@@ -1162,3 +1162,81 @@ def test_empty_answers_prepare_and_commit_preserve_postfork_destination_standing
     assert history.state().nodes["blk/existing"].standing == "accepted"
     assert not history.state().proposals
     assert history.materialize(write_outputs=False).state == history.state()
+
+
+def test_status_whose_recorded_evidence_edge_was_relabeled_still_merges(manifest):
+    from rcp.core.validation.proposals import proposal_approval_operations
+    from tests.test_merge_patch import answers
+
+    history, branch, load_context = _forked(manifest, _new_blocker())
+    supports = {
+        "id": "edge/supports",
+        "source": "ev/branch",
+        "target": "hyp/branch",
+        "relation": "supports",
+        "assessment": {"relevance": "direct", "weight": "moderate", "scope": "First run."},
+    }
+    _append(
+        branch,
+        {
+            "op": "create_nodes",
+            "nodes": [
+                {
+                    "id": "hyp/branch",
+                    "type": "hypothesis",
+                    "title": "Claim",
+                    "statement": "A branch claim.",
+                },
+                {
+                    "id": "ev/branch",
+                    "type": "evidence",
+                    "title": "Result",
+                    "observation": "A branch result.",
+                    "origin": "analytic",
+                },
+            ],
+        },
+        {"op": "create_edges", "edges": [supports]},
+    )
+    status = {
+        "op": "update_nodes",
+        "intent": "status_change",
+        "nodes": [
+            {
+                "id": "hyp/branch",
+                "changes": {"status": "supported"},
+                "cause": {"kind": "evidence_edge", "ref_id": "edge/supports"},
+            }
+        ],
+    }
+    card = dict.fromkeys(
+        ("situation_cold", "why_human_now", "consequences", "decision_needed"), "Judge it."
+    )
+    proposal = {"id": "prop/status", "title": "Support", "card": card, "ops": [status]}
+    _append(branch, {"op": "create_proposals", "proposals": [proposal]})
+    state = branch.state()
+    branch.append(
+        Patch(
+            kind="approval",
+            author="human",
+            summary="Approve the status.",
+            ops=proposal_approval_operations(state, state.proposals["prop/status"]),
+        )
+    )
+    # A later run reads the same result as inconclusive; the status stands.
+    _append(
+        branch,
+        *_replace_edge(
+            branch.state().edges["edge/supports"], id="edge/inconclusive", relation="inconclusive"
+        ),
+    )
+    assert branch.state().nodes["hyp/branch"].status == "supported"
+
+    plan = plan_merge(merge_planning_context(load_context(), history, created_at=datetime.now(UTC)))
+    prepared = prepare_merge_candidate(plan, answers(plan), history)
+
+    graph = prepared.projection.graph
+    assert "edge/inconclusive" in graph.edges
+    (pending,) = graph.proposals.values()
+    (update,) = (u for op in pending.ops if op.op == "update_nodes" for u in op.nodes)
+    assert (update.changes, update.cause.ref_id) == ({"status": "supported"}, "edge/inconclusive")

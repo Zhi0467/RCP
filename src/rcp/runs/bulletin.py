@@ -74,11 +74,7 @@ def _add_context(store: AppStore, operation_id: str, snapshot: dict[str, Any]) -
             "SELECT * FROM graph_runs WHERE operation_id=?", (operation_id,)
         ).fetchone()
         actor_id = bulletin_actor_id(connection, row)
-    mentions = (
-        store.open_bulletin_mentions(task.project_id, task.graph_target.key, actor_id)
-        if actor_id
-        else []
-    )
+    mentions = store.open_bulletin_mentions(task.project_id, actor_id) if actor_id else []
     snapshot["open_mentions"] = len(mentions)
     snapshot["mentions"] = []
     remaining = BULLETIN_RENDER_MAX_BYTES

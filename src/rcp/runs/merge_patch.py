@@ -322,10 +322,29 @@ def _status_cause(plan: MergePlan, identity: str, status: Any) -> dict[str, Any]
                     "No exact source human fact proves this status",
                     identity,
                 )
+        if graph is plan.source_graph and transition.cause.get("kind") == "evidence_edge":
+            # A later branch edit may relabel or remove the recorded evidence edge while
+            # the status stands; the merge carries the evidence the branch head still has.
+            live = _evidence_edges(graph, identity)
+            if transition.cause.get("ref_id") not in live and live:
+                return {"kind": "evidence_edge", "ref_id": live[-1]}
         return deepcopy(transition.cause)
     _refuse(
         "missing-status-cause", "No recorded transition proves the carried status cause", identity
     )
+
+
+def _evidence_edges(graph: GraphState, hypothesis_id: str) -> list[str]:
+    """Edges that can cause this Hypothesis's status, oldest first."""
+    project_type = project_type_of(graph)
+    return [
+        edge.id
+        for edge in sorted(graph.edges.values(), key=lambda item: (item.created_rev, item.id))
+        if edge.target == hypothesis_id
+        and edge.relation in project_type.belief_outcome_relations
+        and edge.source in graph.nodes
+        and project_type.is_outcome(graph.nodes[edge.source].type)
+    ]
 
 
 def _ops(raw: list[dict[str, Any]]) -> list[GraphOperation]:

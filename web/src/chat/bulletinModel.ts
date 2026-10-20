@@ -366,3 +366,18 @@ export function bulletinInsert(
   const head = `${text.slice(0, trigger.start)}${insertion} `;
   return { text: `${head}${text.slice(caret).replace(/^ /, "")}`, caret: head.length };
 }
+
+export const BULLETIN_SUGGEST_MAX_HEIGHT = 260;
+const BULLETIN_SUGGEST_GUTTER = 8;
+
+/** Open the suggestions on the composer's side with room, never past the visible scroll area. */
+export function bulletinSuggestPlacement(
+  composer: { top: number; bottom: number },
+  area: { top: number; bottom: number },
+): { side: "above" | "below"; maxHeight: number } {
+  const above = composer.top - area.top - BULLETIN_SUGGEST_GUTTER;
+  const below = area.bottom - composer.bottom - BULLETIN_SUGGEST_GUTTER;
+  const side = above >= Math.min(BULLETIN_SUGGEST_MAX_HEIGHT, below) ? "above" : "below";
+  const room = side === "above" ? above : below;
+  return { side, maxHeight: Math.max(0, Math.min(BULLETIN_SUGGEST_MAX_HEIGHT, room)) };
+}

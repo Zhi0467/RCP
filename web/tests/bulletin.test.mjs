@@ -19,6 +19,8 @@ import {
   bulletinMoveDraft,
   bulletinMentionKind,
   bulletinActorKind,
+  bulletinSuggestPlacement,
+  BULLETIN_SUGGEST_MAX_HEIGHT,
 } from "../src/chat/bulletinModel.ts";
 
 test("threads group replies under parents and retain server author snapshots", () => {
@@ -187,4 +189,20 @@ test("encoding keeps stored tokens whole even when a label matches inside them",
     bulletinEncodeMentions("ask <@agent:chat:b> and @agent", candidates),
     "ask <@agent:chat:b> and <@member:u1>",
   );
+});
+
+test("suggestions open where the scroll area has room and never past its edge", () => {
+  const area = { top: 100, bottom: 900 };
+  // A composer just under the area's top opens downward, capped to the room below.
+  const nearTop = bulletinSuggestPlacement({ top: 150, bottom: 190 }, area);
+  assert.equal(nearTop.side, "below");
+  assert.ok(nearTop.maxHeight <= area.bottom - 190);
+  // Full room above keeps the usual upward list at its full height.
+  assert.deepEqual(bulletinSuggestPlacement({ top: 800, bottom: 840 }, area), {
+    side: "above",
+    maxHeight: BULLETIN_SUGGEST_MAX_HEIGHT,
+  });
+  // Cramped on both sides: the larger side wins and the list fits inside it.
+  const cramped = bulletinSuggestPlacement({ top: 160, bottom: 200 }, { top: 100, bottom: 240 });
+  assert.ok(cramped.maxHeight <= 60 && cramped.maxHeight > 0);
 });

@@ -463,7 +463,10 @@ combined approval footprints until stable. The builder
 (`runs/merge_patch.py`) encodes Decision outcomes, decided creation, supersede and merge,
 and edge replacement with the operation sequences core accepts; a carried status keeps the
 cause its source transition recorded, and only an exact canonical human source fact keeps
-`human_edit`. Creation keeps every writable content field, including explicit default
+`human_edit`. When a later branch edit relabeled or removed the recorded evidence edge
+while the status stood, the status carries the newest evidence edge the branch head still
+has into that Hypothesis; with none left the merge refuses that status, and a branch edit
+repairs it. Creation keeps every writable content field, including explicit default
 values, and restores a Decision's selected lifecycle after reconstructing its choice.
 Live source Proposals that overlap a review join its connected group: their operations
 are filed in that group's Proposal. Independent source Proposals retain identity and
@@ -521,12 +524,13 @@ Preview counts graph changes, commits, conflicts, and Proposals. Its pickers
 choose target, merge/squash when eligible,
 worktree/code-branch removal, and Keep branch open (not with squash). Submission
 rechecks server state and presents the specific refusal using the
-[visual rules](interface-and-visual-design.md). A failed preview or merge shows
-a red edge and one icon-only Retry merge action,
-with its diagnostic in the tooltip. Retry reloads the preview even when the
-options are already open; it never resubmits before human confirmation. An
-unavailable offer disables retry and includes the refusal in its tooltip. An
-in-flight action or missing current preview disables submission.
+[visual rules](interface-and-visual-design.md). There is no retry: a failed merge
+task leaves the ordinary Merge action, and clicking it plans against the current
+heads again. A failed task's diagnostic, or a refused preview or submission, shows
+as a red edge with the reason in the tooltip; a refusal labels the action Merge
+blocked, and clicking it loads a fresh preview. Without a `can_merge` offer there
+is no Merge action. An in-flight action or missing current preview disables
+submission.
 
 **Open graph** opens the persistent branch. Changes compares base to head with
 neighboring context, create/update/remove markers, before/after content, provenance,

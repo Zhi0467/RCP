@@ -133,7 +133,11 @@ test("graph navigation retains the branch through ordinary views and main is exp
     const hash = graphViewHash("project", branch, view);
     assert.deepEqual(graphTargetFromHash(hash), branch);
     assert.equal(parseProjectHash(hash).view, view);
-    assert.deepEqual(graphTargetFromHash(projectHashAfterViewChange(hash, "chats")), branch);
+    // null means the route already names that panel.
+    assert.deepEqual(
+      graphTargetFromHash(projectHashAfterViewChange(hash, "chats") ?? hash),
+      branch,
+    );
   }
   assert.deepEqual(graphTargetFromHash(graphViewHash("project", main)), main);
   assert.deepEqual(graphTargetFromHash("#/projects/project?branch_id="), {

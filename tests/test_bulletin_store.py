@@ -366,9 +366,7 @@ def test_agent_receipts_are_per_turn_but_authorship_spans_turns(store):
     )["post"]["deleted_at"]
 
 
-def test_agent_mention_resolution_is_target_local_and_delete_skips_parsing(store, monkeypatch):
-    import sqlite3
-
+def test_agent_mention_resolves_across_channels_and_delete_skips_parsing(store, monkeypatch):
     from rcp.core.transition_models import GraphTargetRef
     from rcp.storage.bulletin import _parse
 
@@ -389,17 +387,10 @@ def test_agent_mention_resolution_is_target_local_and_delete_skips_parsing(store
             }
         )
     )
-
-    def target_rows_only(cursor, values):
-        row = sqlite3.Row(cursor, values)
-        if "operation_id" in row.keys():  # noqa: SIM118 - sqlite rows iterate values
-            assert row["operation_id"] != "other-target"
-        return row
-
+    # A main post may mention the agent working on another branch; an unknown id drops.
     with store.connection() as connection:
-        connection.row_factory = target_rows_only
-        _, mentions = _parse(connection, "project", "main", "<@agent:chat:chat>")
-    assert mentions == [{"kind": "agent", "id": "chat:chat"}]
+        _, mentions = _parse(connection, "project", "<@agent:chat:other-chat> <@agent:chat:nobody>")
+    assert mentions == [{"kind": "agent", "id": "chat:other-chat"}]
     first = post(store, "mention", text="<@agent:chat:chat>")
 
     def refuse_parse(*args):

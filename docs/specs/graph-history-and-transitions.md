@@ -301,10 +301,11 @@ Patches, expanded transitions, and cached projections retain their recorded
 edges and layers. Recorded v3 lifecycle traces retain their interpretation
 under the v4 ruleset; schema generation and Proposal dependency rules do not
 change. Pending Proposals that would create an illegal edge remain inspectable
-and withdrawable, but cannot be approved or refiled with that effect. An old
-branch retaining inherited legacy edges can merge unrelated work. A branch-only
-legacy edge addition or edit refuses merge with the offending edge identified;
-repair it on the source branch with current operations before retrying.
+and withdrawable, but cannot be approved or refiled with that effect. A branch
+merge carries the branch's edges as admitted, including a branch-only edge of a
+since-retired shape: the branch judged it under the rules of its day, so main
+keeps it as it keeps its own legacy edges, and consolidation re-homes both. A
+merge that stopped on such an edge would leave its branch with no way to merge.
 
 Supported older Patch, operation, Evidence, Experiment, and transition shapes adapt
 in memory. Later ordinary writes may stamp current schema generation; unsupported

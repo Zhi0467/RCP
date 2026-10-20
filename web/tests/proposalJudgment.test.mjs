@@ -286,6 +286,23 @@ test("protected relation proposals show the compact relation and both endpoints"
   assert.match(removal, /<\/strong>Plasticity after shifts[^]*Replanning preserves plasticity/);
 });
 
+test("a proposal card links each node it changes, both ends of a relation included", () => {
+  const subjects = (html) =>
+    [...html.matchAll(/class="proposal-subject"[^>]*>([^<]+)</g)].map((match) => match[1]);
+  const relation = renderProposal({
+    op: "remove_edges",
+    intent: "protected_relation_change",
+    edge_ids: ["edge/question-hypothesis"],
+  });
+  assert.deepEqual(subjects(relation), ["rq/plasticity", "hyp/replanning"]);
+  const content = renderProposal({
+    op: "update_nodes",
+    intent: "content_change",
+    nodes: [{ id: "hyp/replanning", changes: { statement: "Replanning keeps plasticity." } }],
+  });
+  assert.deepEqual(subjects(content), ["hyp/replanning"]);
+});
+
 test("status-change proposals show a clear current-to-proposed transition", () => {
   const html = renderProposal({
     op: "update_nodes",

@@ -9,7 +9,7 @@ import { mockEpisodeArtifacts } from "./fixtures/episodeArtifacts.mjs";
 import { chromium } from "playwright";
 import { rootTask, episode, withGraphBranch } from "./fixtures/campaigns.mjs";
 
-test("a failed merge retries a failed preview and dispatches a fresh merge at phone width", async () => {
+test("a failed merge stays Merge, and a refused click shows a blocked Merge at phone width", async () => {
   const liveServer = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "error",
@@ -92,38 +92,39 @@ test("a failed merge retries a failed preview and dispatches a fresh merge at ph
       `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/branchMerge.html`,
     );
     const branch = page.getByRole("region", { name: "Episode graph branch" });
-    const retry = branch.getByRole("button", { name: "Retry merge", exact: true });
-    await retry.waitFor();
-    assert.equal(await retry.getAttribute("title"), failure);
+    const button = branch.locator(".campaign-branch-merge");
+    const titled = (reason) =>
+      page.waitForFunction(
+        (expected) => document.querySelector(".campaign-branch-merge")?.title === expected,
+        reason,
+      );
+    await button.waitFor();
+    // An earlier attempt's failure marks Merge without a caption.
+    assert.equal(await button.getAttribute("title"), failure);
     assert.equal(await branch.getByText(failure, { exact: true }).count(), 0);
-    await retry.click();
-    await page.waitForFunction(
-      (reason) => document.querySelector('[aria-label="Retry merge"]')?.title === reason,
-      previewFailure,
-    );
-    await retry.click();
+    await button.click();
+    await titled(previewFailure);
+    assert.equal(await branch.getByRole("group", { name: "Merge options" }).count(), 0);
+    await button.click();
     const merge = branch
       .getByRole("group", { name: "Merge options" })
       .getByRole("button", { name: "Merge", exact: true });
     await merge.click();
-    await page.waitForFunction(
-      (reason) => document.querySelector('[aria-label="Retry merge"]')?.title === reason,
-      refusal,
-    );
+    await titled(refusal);
     await page.evaluate(() => window.refreshMergeEpisode());
-    assert.equal(await retry.getAttribute("title"), refusal);
+    assert.equal(await button.getAttribute("title"), refusal);
     assert.equal(await branch.getByText(refusal, { exact: true }).count(), 0);
-    assert.equal(await retry.textContent(), "");
     const box = await branch.boundingBox();
     assert.ok(box.x >= 0 && box.x + box.width <= 390);
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= 390));
-    await retry.click();
+    await button.click();
     await merge.click();
     await branch.locator(".branch-running").waitFor();
+    assert.equal(previews, 3);
     assert.equal(requests.length, 2);
     assert.equal(requests[0].keep_branch_open, false);
     assert.deepEqual(requests[1], requests[0]);
-    assert.equal(await retry.count(), 0);
+    assert.equal(await button.count(), 0);
     polledEpisode = {
       ...failed,
       can_merge: false,
@@ -136,13 +137,14 @@ test("a failed merge retries a failed preview and dispatches a fresh merge at ph
     };
     await page.evaluate(() => window.refreshMergeEpisode());
     await branch.locator(".branch-merged").waitFor();
-    assert.equal(await branch.getByRole("button", { name: "Merge", exact: true }).count(), 0);
+    assert.equal(await button.count(), 0);
     polledEpisode = {
       ...failed,
       graph_branch: { ...failed.graph_branch, merge_state: "unmerged", merge_diagnostic: null },
     };
     await page.evaluate(() => window.refreshMergeEpisode());
-    await branch.getByRole("button", { name: "Merge", exact: true }).waitFor();
+    await button.waitFor();
+    assert.equal(await button.getAttribute("title"), null);
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();
