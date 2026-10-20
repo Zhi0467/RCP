@@ -34,7 +34,7 @@ import {
   bulletinIsOwnPost,
   bulletinKeyTarget,
   bulletinLabelMap,
-  bulletinMentionCandidates,
+  bulletinChannelCandidates,
   bulletinMentionKind,
   bulletinMoveDraft,
   bulletinPostState,
@@ -69,8 +69,6 @@ interface Suggestion {
   insert: string;
   /** Values the typed query matches. */
   match: readonly string[];
-  /** An agent's channel; picking an agent from another channel shows that channel. */
-  targetKey?: string;
 }
 
 interface Failure {
@@ -79,6 +77,8 @@ interface Failure {
 }
 
 const NO_NODES: Record<string, Pick<GraphNode, "id" | "title">> = {};
+// The phone shell pins these above the scrolling page.
+const PINNED_BARS = ".phone-project-bar, .phone-tab-bar";
 
 export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, onOpenNode }: Props) {
   const { store } = useRefreshRuntime();
@@ -147,8 +147,8 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
   const posts = useMemo(() => page.value?.posts ?? [], [page.value]);
   const members = useMemo(() => known?.members ?? [], [known]);
   const candidates = useMemo(
-    () => bulletinMentionCandidates(members, channelRoster),
-    [members, channelRoster],
+    () => bulletinChannelCandidates(members, roster, channelKey),
+    [members, roster, channelKey],
   );
   const labels = useMemo(() => bulletinLabelMap(candidates), [candidates]);
   // A roster refresh can shift labels (a renamed agent frees its name for a
@@ -262,7 +262,6 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
       icon: "agent" as const,
       insert: `@${label}`,
       match: [label, actor.name, actor.seat_node_id ?? "", bulletinMentionKind(actor) ?? ""],
-      targetKey: actor.target_key,
     })),
   ];
   const suggestions: Suggestion[] = !shownTrigger
@@ -283,20 +282,37 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
       );
   const suggestOpen = suggestions.length > 0;
   const [suggestPlace, setSuggestPlace] = useState<ReturnType<typeof bulletinSuggestPlacement>>();
-  // Measured before paint, so the list never flashes past the scroll area's edge.
+  // Measured before paint, and again on scroll or resize, so the list never runs
+  // past the scroll area's edge or under the phone's pinned bars.
   useLayoutEffect(() => {
     const form = composer.current;
     if (!suggestOpen || !form) return;
-    let area: Element | null = form.parentElement;
-    while (area && !/(auto|scroll)/.test(getComputedStyle(area).overflowY))
-      area = area.parentElement;
-    const bounds = area?.getBoundingClientRect() ?? { top: 0, bottom: window.innerHeight };
-    setSuggestPlace(
-      bulletinSuggestPlacement(form.getBoundingClientRect(), {
-        top: Math.max(0, bounds.top),
-        bottom: Math.min(window.innerHeight, bounds.bottom),
-      }),
-    );
+    const measure = () => {
+      let area: Element | null = form.parentElement;
+      while (area && !/(auto|scroll)/.test(getComputedStyle(area).overflowY))
+        area = area.parentElement;
+      const box = form.getBoundingClientRect();
+      const bounds = area?.getBoundingClientRect() ?? { top: 0, bottom: window.innerHeight };
+      let top = Math.max(0, bounds.top);
+      let bottom = Math.min(window.innerHeight, bounds.bottom);
+      for (const bar of document.querySelectorAll(PINNED_BARS)) {
+        const edge = bar.getBoundingClientRect();
+        if (edge.height === 0) continue;
+        if (edge.bottom <= box.top) top = Math.max(top, edge.bottom);
+        else if (edge.top >= box.bottom) bottom = Math.min(bottom, edge.top);
+      }
+      const next = bulletinSuggestPlacement(box, { top, bottom });
+      setSuggestPlace((shown) =>
+        shown?.side === next.side && shown.maxHeight === next.maxHeight ? shown : next,
+      );
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    document.addEventListener("scroll", measure, true);
+    return () => {
+      window.removeEventListener("resize", measure);
+      document.removeEventListener("scroll", measure, true);
+    };
   }, [suggestOpen, suggestions.length]);
   const activeIndex = Math.min(active, Math.max(suggestions.length - 1, 0));
 
@@ -389,10 +405,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
     });
   };
   const channelCandidates = (targetKey: string) =>
-    bulletinMentionCandidates(
-      members,
-      roster.filter((actor) => actor.target_key === targetKey),
-    );
+    bulletinChannelCandidates(members, roster, targetKey);
   const switchChannel = (next: GraphTargetRef) => {
     setChannel(next);
     setCursor(null);
@@ -424,21 +437,8 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
   };
   const pick = (suggestion: Suggestion) => {
     if (!shownTrigger) return;
-    const nextKey = suggestion.targetKey;
-    let next = bulletinInsert(draft, shownTrigger, caret, suggestion.insert);
-    // A mention counts only in the agent's own channel, so the draft moves there
-    // with the picked agent's token, and every earlier mention keeps its recipient.
-    if (nextKey && nextKey !== channelKey) {
-      if (busy) return;
-      const to = channelCandidates(nextKey);
-      const inserted = bulletinInsert(draft, shownTrigger, caret, suggestion.key);
-      const move = (text: string) => bulletinMoveDraft(text, candidates, to);
-      next = {
-        text: move(inserted.text),
-        caret: move(inserted.text.slice(0, inserted.caret)).length,
-      };
-      switchChannel(bulletinKeyTarget(nextKey));
-    }
+    // A mention reaches its agent from any channel, so the draft stays here.
+    const next = bulletinInsert(draft, shownTrigger, caret, suggestion.insert);
     pendingCaret.current = next.caret;
     setDraft(next.text);
     setCaret(next.caret);

@@ -1895,7 +1895,10 @@ extracts ordered, deduplicated `#node-id` references and valid
 `<@member:USER_ID>` / `<@agent:ACTOR_ID>` mentions. Requests carry text, never a
 separate references field. Agent tokens must identify an agent of the project in
 any channel, because the mention list offers every channel's agents; unknown tokens
-remain ordinary text.
+remain ordinary text. The composer's `@` labels are unique across the project, the
+shown channel's agents keeping bare names, and picking an agent from another channel
+keeps the draft in the shown channel. The list opens above the composer, or below it
+when the scroll area and the phone's pinned bars leave more room there.
 
 A page holds whole threads: up to the page size of top-level posts, newest
 first, each with all of its visible replies. The cursor follows the oldest

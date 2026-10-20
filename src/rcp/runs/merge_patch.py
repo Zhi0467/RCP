@@ -292,7 +292,12 @@ def _documents(
     return documents
 
 
-def _status_cause(plan: MergePlan, identity: str, status: Any) -> dict[str, Any]:
+def _status_cause(
+    plan: MergePlan,
+    identity: str,
+    status: Any,
+    documents: dict[tuple[str, str | None], tuple[Any, set[Coordinate]]],
+) -> dict[str, Any]:
     source = plan.source_graph.nodes.get(identity)
     graph = (
         plan.source_graph
@@ -324,14 +329,32 @@ def _status_cause(plan: MergePlan, identity: str, status: Any) -> dict[str, Any]
                 )
         if graph is plan.source_graph and transition.cause.get("kind") == "evidence_edge":
             # A later branch edit may relabel or remove the recorded evidence edge while
-            # the status stands; the merge carries the evidence the branch head still has.
-            live = _evidence_edges(graph, identity)
+            # the status stands; the merge carries the evidence it still delivers.
+            live = [
+                edge_id
+                for edge_id in _evidence_edges(graph, identity)
+                if _carried(plan, documents, "edges", edge_id)
+                and _carried(plan, documents, "nodes", graph.edges[edge_id].source)
+            ]
             if transition.cause.get("ref_id") not in live and live:
                 return {"kind": "evidence_edge", "ref_id": live[-1]}
         return deepcopy(transition.cause)
     _refuse(
         "missing-status-cause", "No recorded transition proves the carried status cause", identity
     )
+
+
+def _carried(
+    plan: MergePlan,
+    documents: dict[tuple[str, str | None], tuple[Any, set[Coordinate]]],
+    collection: str,
+    identity: str,
+) -> bool:
+    """Whether the merged destination holds this entity."""
+    document = documents.get((collection, identity))
+    if document is not None:
+        return document[0] is not None
+    return identity in getattr(plan.destination_graph, collection)
 
 
 def _evidence_edges(graph: GraphState, hypothesis_id: str) -> list[str]:
@@ -491,7 +514,7 @@ def construct_effects(
                                 {
                                     "id": identity,
                                     "changes": {"status": status},
-                                    "cause": _status_cause(plan, identity, status),
+                                    "cause": _status_cause(plan, identity, status, documents),
                                 }
                             ],
                         }
@@ -522,7 +545,7 @@ def construct_effects(
             if changes:
                 update: dict[str, Any] = {"id": identity, "changes": changes}
                 if project_type.is_belief(current.type) and "status" in changes:
-                    update["cause"] = _status_cause(plan, identity, changes["status"])
+                    update["cause"] = _status_cause(plan, identity, changes["status"], documents)
                 operations.append({"op": "update_nodes", "nodes": [update]})
             standing = raw["standing"]
             restoration = None

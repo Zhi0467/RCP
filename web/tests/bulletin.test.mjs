@@ -16,6 +16,7 @@ import {
   bulletinTargetKey,
   bulletinKeyTarget,
   bulletinAgentChoices,
+  bulletinChannelCandidates,
   bulletinMoveDraft,
   bulletinMentionKind,
   bulletinActorKind,
@@ -126,33 +127,26 @@ test("channels map to graph targets", () => {
     assert.deepEqual(bulletinKeyTarget(bulletinTargetKey(target)), target);
 });
 
-test("agent choices span every channel, shown channel first, labels unique per channel", () => {
+test("agent choices span every channel, shown channel first, labels unique project-wide", () => {
   const agent = (id, target_key, name) => ({ id, target_key, name, kind: "human_chat_work" });
   const roster = [
     agent("chat:a", "main", "running-the"),
     agent("chat:b", "branch:x", "running-the"),
     agent("chat:c", "branch:x", "running-the"),
   ];
-  const choices = bulletinAgentChoices(
-    [{ user_id: "u1", display_name: "Ada" }],
-    roster,
-    "branch:x",
-  );
+  const members = [{ user_id: "u1", display_name: "Ada" }];
+  const choices = bulletinAgentChoices(members, roster, "branch:x");
   assert.deepEqual(
     choices.map((choice) => choice.actor.id),
     ["chat:b", "chat:c", "chat:a"],
   );
-  assert.deepEqual(
-    choices.map((choice) => choice.token),
-    ["<@agent:chat:b>", "<@agent:chat:c>", "<@agent:chat:a>"],
-  );
-  // Within one channel two same-named agents take distinct labels; across channels the name stays as is.
-  assert.notEqual(choices[0].label, choices[1].label);
-  assert.equal(choices[2].label, roster[0].name);
-  // A choice's label encodes to its token with that channel's own candidates.
-  const channel = roster.filter((actor) => actor.target_key === "branch:x");
-  const candidates = bulletinMentionCandidates([], channel);
-  assert.equal(bulletinEncodeMentions(`@${choices[1].label}`, candidates), choices[1].token);
+  // The shown channel's first agent keeps its bare name; every label is distinct.
+  assert.equal(choices[0].label, roster[1].name);
+  assert.equal(new Set(choices.map((choice) => choice.label)).size, 3);
+  // Each label encodes to its own agent from this channel's composer, another channel's included.
+  const candidates = bulletinChannelCandidates(members, roster, "branch:x");
+  for (const choice of choices)
+    assert.equal(bulletinEncodeMentions(`@${choice.label}`, candidates), choice.token);
 });
 
 test("mention rows tag only autonomous agents with their kind", () => {

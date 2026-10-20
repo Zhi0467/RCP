@@ -127,9 +127,11 @@ export function EpisodeMergePanel({
     }
   };
 
-  // This click's refusal blocks the button; an earlier attempt's failure only marks it.
+  // This click's refusal blocks the button; an earlier attempt's failure only marks
+  // it until a current preview shows the merge can go ahead.
   const refusal = mergeError ?? previewError;
-  const failure = refusal ?? episode.graph_branch?.merge_diagnostic;
+  const failure =
+    refusal ?? (open && previewCurrent ? null : episode.graph_branch?.merge_diagnostic);
   if (!episode.can_merge) return null;
 
   return (

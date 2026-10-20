@@ -238,31 +238,42 @@ export function bulletinMentionCandidates(
 
 export interface BulletinAgentChoice {
   actor: BulletinActor;
-  /** The agent's `@` label among the members and agents of its own channel. */
+  /** The agent's `@` label, unique across the project's members and agents. */
   label: string;
   token: string;
 }
 
 /**
- * Every agent with the label it takes in its own channel, the shown channel's
- * agents first. Mentions count only in the agent's channel, so labels are made
- * unique per channel, exactly as that channel's composer encodes them.
+ * The composer's mention candidates: members, then every agent in the project
+ * with the shown channel's agents first, so their labels stay bare. A mention
+ * reaches an agent from any channel, so labels are unique project-wide.
  */
+export function bulletinChannelCandidates(
+  members: readonly BulletinMember[],
+  roster: readonly BulletinActor[],
+  channelKey: string,
+): BulletinMentionCandidate[] {
+  return bulletinMentionCandidates(members, bulletinChannelOrder(roster, channelKey));
+}
+
+const bulletinChannelOrder = (roster: readonly BulletinActor[], channelKey: string) => [
+  ...roster.filter((actor) => actor.target_key === channelKey),
+  ...roster.filter((actor) => actor.target_key !== channelKey),
+];
+
+/** Every agent with its label among `bulletinChannelCandidates`, in the same order. */
 export function bulletinAgentChoices(
   members: readonly BulletinMember[],
   roster: readonly BulletinActor[],
   channelKey: string,
 ): BulletinAgentChoice[] {
-  const keys = [channelKey, ...new Set(roster.map((actor) => actor.target_key))];
-  return [...new Set(keys)].flatMap((key) => {
-    const actors = roster.filter((actor) => actor.target_key === key);
-    const candidates = bulletinMentionCandidates(members, actors).slice(members.length);
-    return actors.map((actor, index) => ({
-      actor,
-      label: candidates[index].label,
-      token: candidates[index].token,
-    }));
-  });
+  const ordered = bulletinChannelOrder(roster, channelKey);
+  const candidates = bulletinMentionCandidates(members, ordered).slice(members.length);
+  return ordered.map((actor, index) => ({
+    actor,
+    label: candidates[index].label,
+    token: candidates[index].token,
+  }));
 }
 
 export function bulletinLabelMap(

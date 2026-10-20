@@ -174,7 +174,7 @@ test("retrying a failed edit keeps a revision made after the failure", async () 
   }
 });
 
-test("an agent from another channel moves only the Bulletin there, keeping the draft", async () => {
+test("an agent from another channel is mentioned from the shown channel", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "silent",
@@ -248,18 +248,33 @@ test("an agent from another channel moves only the Bulletin there, keeping the d
       "none",
     );
 
+    // A pinned phone bar over the room below the composer sends the list above it.
+    await page.evaluate(() => {
+      const form = document.querySelector(".bulletin-composer").getBoundingClientRect();
+      const bar = document.createElement("div");
+      bar.className = "phone-tab-bar";
+      bar.style.cssText = `position:fixed;left:0;right:0;bottom:0;top:${form.bottom + 4}px`;
+      document.body.append(bar);
+    });
     await composer.fill("ping @runn");
     const options = page.getByRole("option");
     assert.equal(await options.count(), 1);
+    const [list, form] = await page.evaluate(() =>
+      [".bulletin-suggest", ".bulletin-composer"].map((selector) => {
+        const box = document.querySelector(selector).getBoundingClientRect();
+        return { top: box.top, bottom: box.bottom };
+      }),
+    );
+    assert.ok(list.bottom <= form.top, JSON.stringify({ list, form }));
     await composer.press("Enter");
-    await page.locator(".bulletin-members").filter({ hasText: /^1$/ }).waitFor();
     assert.equal(await composer.inputValue(), "ping @running-the ");
     assert.equal(await page.evaluate(() => window.location.hash), "#start");
 
     await composer.press("Enter");
     await page.waitForFunction(() => !document.querySelector(".bulletin-composer textarea")?.value);
     assert.equal(posted.length, 1);
-    assert.equal(posted[0].branch, "x");
+    // The post stays in main and still names the branch agent, which reads mentions everywhere.
+    assert.equal(posted[0].branch, null);
     assert.equal(posted[0].text, "ping <@agent:chat:b>");
     await page.locator(".bulletin-feed .bulletin-message").waitFor();
     held.resolve();

@@ -138,10 +138,11 @@ export function ProposalJudgmentSection({
                         key={nodeId}
                         type="button"
                         className="proposal-subject"
-                        title={graph.nodes[nodeId]?.title}
+                        data-node-id={nodeId}
+                        title={nodeId}
                         onClick={() => onOpenNode?.(nodeId)}
                       >
-                        {nodeId}
+                        {graph.nodes[nodeId]?.title || nodeId}
                       </button>
                     ))}
                   </span>

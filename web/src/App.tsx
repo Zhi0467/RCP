@@ -1699,7 +1699,10 @@ function MemberApp({
     const handleHashChange = (event: HashChangeEvent) => {
       // A notification link is not a project route; the resolver below replaces it
       // with one, so the open project stays mounted meanwhile.
-      if (isNotificationLinkHash(window.location.hash)) return;
+      if (isNotificationLinkHash(window.location.hash)) {
+        rememberProjectState(getActiveProjectId(), new URL(event.oldURL).hash);
+        return;
+      }
       const route = parseProjectHash(window.location.hash);
       const activeId = getActiveProjectId();
       const nextTarget = graphTargetFromHash(window.location.hash);
@@ -2406,6 +2409,21 @@ function MemberApp({
   useEffect(() => {
     if (view !== "chats") setAgentsBoard(true);
   }, [view]);
+
+  // The route names the open chat, so a project tab returns to the chat it left.
+  const openChatId = view === "chats" && !agentsBoard ? (selectedChatId ?? undefined) : undefined;
+  const pendingChatId = requestedChat.chatId;
+  useEffect(() => {
+    if (view !== "chats" || !project?.id || pendingChatId) return;
+    const hash = window.location.hash;
+    const route = parseProjectHash(hash);
+    if (route.projectId !== project.id || (route.chatId ?? undefined) === openChatId) return;
+    const [path, query = ""] = hash.split("?");
+    const params = new URLSearchParams(query);
+    if (openChatId) params.set("chat", openChatId);
+    else params.delete("chat");
+    window.history.replaceState(window.history.state, "", `${path}?${params}`);
+  }, [view, project?.id, openChatId, pendingChatId]);
 
   useEffect(() => {
     if (

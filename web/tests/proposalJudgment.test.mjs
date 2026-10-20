@@ -288,7 +288,7 @@ test("protected relation proposals show the compact relation and both endpoints"
 
 test("a proposal card links each node it changes, both ends of a relation included", () => {
   const subjects = (html) =>
-    [...html.matchAll(/class="proposal-subject"[^>]*>([^<]+)</g)].map((match) => match[1]);
+    [...html.matchAll(/class="proposal-subject" data-node-id="([^"]+)"/g)].map((match) => match[1]);
   const relation = renderProposal({
     op: "remove_edges",
     intent: "protected_relation_change",
