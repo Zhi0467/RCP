@@ -8,19 +8,23 @@ export function UpdateNotice({
   notice,
   identity,
   desktop,
+  updaterEnabled,
   ...updater
 }: DesktopUpdateNoticeProps & {
   notice: NoticeData | null;
   identity: DesktopBuildIdentity | null;
   desktop: boolean;
+  /** Unknown (null) until the app's first update check answers. */
+  updaterEnabled: boolean | null;
 }) {
   const [, rerender] = useState(0);
   const [copied, setCopied] = useState<string | null>(null);
   const [copyError, setCopyError] = useState(false);
   const release = releaseNotice(notice, identity);
   if (desktop && (updater.update || updater.error)) return <DesktopUpdateNotice {...updater} />;
+  // This app's own release is the updater's to offer, in place.
   if (
-    (desktop && !identity && notice?.space !== "team") ||
+    (desktop && notice?.space !== "team" && (!identity || updaterEnabled !== false)) ||
     !release ||
     isReleaseDismissed(release.dismissKey)
   )

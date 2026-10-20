@@ -99,3 +99,12 @@ export function useUpdateNotice(
   // The setter lets a fresher read elsewhere (Settings refresh) reach the notice.
   return [notice, setNotice] as const;
 }
+
+/** The server's release check polls; the app's own updater checks only when asked. */
+export function useRecheckOnRelease(notice: UpdateNotice | null, recheck: () => unknown) {
+  const published =
+    notice?.status === "update_available" && notice.companion_ready ? notice.latest_version : null;
+  useEffect(() => {
+    if (published) void recheck();
+  }, [published, recheck]);
+}

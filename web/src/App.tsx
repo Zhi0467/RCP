@@ -54,7 +54,7 @@ import { canStartExperiment } from "./experiments/experimentStart";
 import { ExperimentStartOverlap } from "./experiments/ExperimentStartOverlap";
 import { UpdateNotice } from "./desktop/UpdateNotice";
 import { ReconnectOverlay } from "./desktop/ReconnectOverlay";
-import { useUpdateNotice } from "./desktop/useUpdateNotice";
+import { useRecheckOnRelease, useUpdateNotice } from "./desktop/useUpdateNotice";
 import { TerminalTab } from "./terminals/TerminalTab";
 import { GraphPicker } from "./graph/GraphPicker";
 import { ViewPicker, type ResearchLayout } from "./graph/ViewPicker";
@@ -716,6 +716,7 @@ function MemberApp({
     buildIdentity,
     reconnecting,
     desktopUpdate,
+    updaterEnabled,
     updateExpanded,
     updateApplying,
     updateError,
@@ -731,6 +732,7 @@ function MemberApp({
     expandUpdate,
     dismissUpdate,
   } = useDesktopShell(desktop);
+  useRecheckOnRelease(releaseUpdate, refreshDesktopUpdate);
   const [experimentStartOverlap, setExperimentStartOverlap] = useState<{
     projectId: string;
     loops: LoopOverlap;
@@ -3890,6 +3892,7 @@ function MemberApp({
       notice={releaseUpdate}
       identity={buildIdentity}
       desktop={desktop}
+      updaterEnabled={updaterEnabled}
       update={desktopUpdate}
       activeWork={updateHasActiveWork}
       expanded={updateExpanded}

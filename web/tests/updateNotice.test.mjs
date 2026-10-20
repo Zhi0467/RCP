@@ -116,6 +116,29 @@ test("release notice transitions, actions, visibility, and storage through a ser
         assert.equal(native.identity.kind, "source");
       },
     );
+    await t.test("an app with an updater rechecks it instead of offering a download", async () => {
+      await page.evaluate(() => {
+        window.updaterEnabled = true;
+        window.rechecks = [];
+      });
+      data = { ...fixture, latest_version: "0.4.9" };
+      await refresh({ kind: "prebuilt", version: "0.4.2", checkout: null });
+      assert.equal(await page.locator("[data-kind]").count(), 0);
+      assert.equal(await page.evaluate(() => window.rechecks.length), 0);
+      data = { ...data, companion_ready: true, download_url: "https://example.invalid/d" };
+      await refresh();
+      await refresh();
+      assert.equal(await page.locator("[data-kind]").count(), 0);
+      assert.equal(await page.evaluate(() => window.rechecks.length), 1);
+      // A team server's own update is still a command for its operator.
+      data = { ...data, space: "team", update_command: "sudo rcp server update" };
+      await refresh();
+      await page.locator('[data-kind="team"]').waitFor();
+      await page.evaluate(() => {
+        window.updaterEnabled = false;
+      });
+      await refresh(null);
+    });
     await t.test("non-update statuses remain inspectable without a notice", async () => {
       for (const status of ["current", "pinned", "unchecked", "failed", "off", "unknown"]) {
         data = { ...fixture, status };
