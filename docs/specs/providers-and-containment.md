@@ -1334,6 +1334,7 @@ Mentioning an agent grants no capability and launches nothing.
 The mentions section holds only open mentions: a mention stays open until the
 agent posts later in the same thread; the agent's own posts never count. The
 per-turn pointer line carries the open count. Holders of the verb must read and
-reply to an open mention before finishing, and may read or post whenever they
-need to catch up or tell humans or agents something; replying is not obeying.
+reply to an open mention before finishing; replying is not obeying. They read
+to catch up on the branch and post short progress or team-sync notes; questions
+needing human input go through `ask` when the launch holds it.
 One `BULLETIN_RULES` tuple renders these rules in Work and Auto-research.

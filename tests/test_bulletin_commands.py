@@ -258,6 +258,28 @@ def test_agent_mentions_are_first_in_snapshot_and_read(store, tmp_path):  # noqa
         user_id=store.local_owner.user_id,
     )
     assert handler(request("read"), identity()).result["open_mentions"] == 1
+    # A mention under a deleted root cannot be answered, so it is not open.
+    root = store.mutate_bulletin_post(
+        "project", "main", text="root", key="root", user_id=store.local_owner.user_id
+    )
+    store.mutate_bulletin_post(
+        "project",
+        "main",
+        text=f"<@agent:{actor_id}> in a thread",
+        reply_to=root["post_id"],
+        key="threaded",
+        user_id=store.local_owner.user_id,
+    )
+    assert handler(request("read"), identity()).result["open_mentions"] == 2
+    store.mutate_bulletin_post(
+        "project",
+        "main",
+        action="delete",
+        post_id=root["post_id"],
+        key="drop-root",
+        user_id=store.local_owner.user_id,
+    )
+    assert handler(request("read"), identity()).result["open_mentions"] == 1
 
 
 def test_agent_edits_and_deletes_across_turns_of_same_actor(store):  # noqa: F811

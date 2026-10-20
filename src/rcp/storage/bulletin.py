@@ -463,7 +463,8 @@ class BulletinStoreMixin(StoreMixinBase):
     ) -> list[dict[str, Any]]:
         """Mentions of the agent awaiting its reply: its own later post in the thread answers one.
 
-        An edit can add a mention, so only a reply after the post's last edit counts.
+        An edit can add a mention, so only a reply after the post's last edit counts. A deleted
+        thread root refuses replies, so mentions under it are not open.
         """
         with self.connection() as connection:
             return [
@@ -471,6 +472,7 @@ class BulletinStoreMixin(StoreMixinBase):
                 for row in connection.execute(
                     f"SELECT p.*, {_REPLY_COUNT} AS reply_count FROM bulletin_posts p WHERE project_id=? AND target_key=? AND deleted_at IS NULL "
                     "AND p.author_actor_id IS NOT ? "
+                    "AND NOT EXISTS(SELECT 1 FROM bulletin_posts t WHERE t.post_id=p.reply_to AND t.deleted_at IS NOT NULL) "
                     "AND EXISTS(SELECT 1 FROM json_each(p.mentions_json) m WHERE json_extract(m.value,'$.kind')='agent' AND json_extract(m.value,'$.id')=?) "
                     "AND NOT EXISTS(SELECT 1 FROM bulletin_posts r WHERE r.project_id=p.project_id AND r.target_key=p.target_key AND r.author_actor_id=? "
                     "AND r.deleted_at IS NULL AND r.sequence>p.sequence AND (p.edited_at IS NULL OR r.created_at>p.edited_at) "
