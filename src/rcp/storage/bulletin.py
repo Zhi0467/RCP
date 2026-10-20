@@ -458,15 +458,21 @@ class BulletinStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             return _members(connection, project_id)
 
-    def list_bulletin_mentions(
+    def open_bulletin_mentions(
         self, project_id: str, target_key: str, actor_id: str
     ) -> list[dict[str, Any]]:
+        """Mentions of the agent awaiting its reply: a later post of its own in the thread answers one."""
         with self.connection() as connection:
             return [
                 _record(row)
                 for row in connection.execute(
-                    f"SELECT p.*, {_REPLY_COUNT} AS reply_count FROM bulletin_posts p WHERE project_id=? AND target_key=? AND deleted_at IS NULL AND EXISTS(SELECT 1 FROM json_each(p.mentions_json) m WHERE json_extract(m.value,'$.kind')='agent' AND json_extract(m.value,'$.id')=?) ORDER BY sequence DESC",
-                    (project_id, target_key, actor_id),
+                    f"SELECT p.*, {_REPLY_COUNT} AS reply_count FROM bulletin_posts p WHERE project_id=? AND target_key=? AND deleted_at IS NULL "
+                    "AND p.author_actor_id IS NOT ? "
+                    "AND EXISTS(SELECT 1 FROM json_each(p.mentions_json) m WHERE json_extract(m.value,'$.kind')='agent' AND json_extract(m.value,'$.id')=?) "
+                    "AND NOT EXISTS(SELECT 1 FROM bulletin_posts r WHERE r.project_id=p.project_id AND r.target_key=p.target_key AND r.author_actor_id=? "
+                    "AND r.deleted_at IS NULL AND r.sequence>p.sequence AND COALESCE(r.reply_to,r.post_id)=COALESCE(p.reply_to,p.post_id)) "
+                    "ORDER BY sequence DESC",
+                    (project_id, target_key, actor_id, actor_id, actor_id),
                 )
             ]
 

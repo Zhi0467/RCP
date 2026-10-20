@@ -11,7 +11,7 @@ from rcp.agents.group_context import GroupContext, group_prompt_value
 from rcp.agents.loop_overlap import render_loop_interference_rule
 from rcp.agents.prompts import (
     AGENT_NAME_INSTRUCTION,
-    BULLETIN_BODY_RULE,
+    BULLETIN_RULES,
     PROVIDER_NATIVE_SUBAGENT_LIFETIME,
     REPLY_STYLE,
     ask_contract,
@@ -40,7 +40,7 @@ from rcp.limits import (
 )
 
 # Bumped when the stable policy prose of either Auto-research actor contract changes.
-AUTO_RESEARCH_POLICY_VERSION = "auto-research-v9"
+AUTO_RESEARCH_POLICY_VERSION = "auto-research-v10"
 
 
 def _repositories(repositories: list[dict[str, str]]) -> str:
@@ -159,7 +159,7 @@ def _command_invocations(
     if "name" in allowed_verbs:
         commands += f"\n  {AGENT_NAME_INSTRUCTION}"
     if "bulletin" in allowed_verbs:
-        commands += f"\n  {BULLETIN_BODY_RULE}"
+        commands += "".join(f"\n  {rule}" for rule in BULLETIN_RULES)
     return f"""Staged command client:
 - Command prefix: `{command_client}`
 - Exact invocations, all prefixed by that command:

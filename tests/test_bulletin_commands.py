@@ -236,10 +236,17 @@ def test_agent_mentions_are_first_in_snapshot_and_read(store, tmp_path):  # noqa
     rendered = (tmp_path / "workspace" / "bulletin.md").read_text()
     first_record = json.loads(rendered.split("```json\n")[1].split("\n```", 1)[0])
     assert first_record["post_id"] == post["post_id"]
-    read = work_command_handler(execution, None)(request("read"), identity()).result
+    handler = work_command_handler(execution, None)
+    read = handler(request("read"), identity()).result
     assert next(iter(read)) == "mentions"
     assert read["mentions"] == [post]
+    assert read["open_mentions"] == 1
     assert store.local_owner.user_id in {member["user_id"] for member in read["members"]}
+    # Its own reply in the mention's thread answers it; nothing else does.
+    handler(request("post", key="aside", text="unrelated"), identity())
+    assert handler(request("read"), identity()).result["open_mentions"] == 1
+    handler(request("post", key="reply", text="on it", reply_to=post["post_id"]), identity())
+    assert handler(request("read"), identity()).result["mentions"] == []
 
 
 def test_agent_edits_and_deletes_across_turns_of_same_actor(store):  # noqa: F811
