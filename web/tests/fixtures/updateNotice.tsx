@@ -17,7 +17,7 @@ Object.defineProperty(navigator, "clipboard", {
 window.readIdentity = desktopBuildIdentity;
 function App() {
   const [notice] = useUpdateNotice(true, undefined, window.visibility);
-  useRecheckOnRelease(notice, recheck);
+  useRecheckOnRelease(notice, window.offered, recheck);
   return (
     <>
       <UpdateNotice

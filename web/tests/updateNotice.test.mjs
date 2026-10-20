@@ -125,11 +125,23 @@ test("release notice transitions, actions, visibility, and storage through a ser
       await refresh({ kind: "prebuilt", version: "0.4.2", checkout: null });
       assert.equal(await page.locator("[data-kind]").count(), 0);
       assert.equal(await page.evaluate(() => window.rechecks.length), 0);
+      // Its manifest can trail the companion: each poll asks until it offers the release.
       data = { ...data, companion_ready: true, download_url: "https://example.invalid/d" };
       await refresh();
       await refresh();
       assert.equal(await page.locator("[data-kind]").count(), 0);
-      assert.equal(await page.evaluate(() => window.rechecks.length), 1);
+      assert.equal(await page.evaluate(() => window.rechecks.length), 2);
+      await page.evaluate(() => {
+        window.offered = "0.4.9";
+      });
+      await refresh();
+      const offered = await page.evaluate(() => window.rechecks.length);
+      // Once offered, a dismissed Update stays dismissed.
+      await page.evaluate(() => {
+        window.offered = undefined;
+      });
+      await refresh();
+      assert.equal(await page.evaluate(() => window.rechecks.length), offered);
       // A team server's own update is still a command for its operator.
       data = { ...data, space: "team", update_command: "sudo rcp server update" };
       await refresh();

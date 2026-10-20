@@ -732,7 +732,7 @@ function MemberApp({
     expandUpdate,
     dismissUpdate,
   } = useDesktopShell(desktop);
-  useRecheckOnRelease(releaseUpdate, refreshDesktopUpdate);
+  useRecheckOnRelease(releaseUpdate, desktopUpdate?.version, refreshDesktopUpdate);
   const [experimentStartOverlap, setExperimentStartOverlap] = useState<{
     projectId: string;
     loops: LoopOverlap;

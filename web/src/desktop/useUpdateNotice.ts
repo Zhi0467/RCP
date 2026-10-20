@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { loadUpdateNotice } from "../core/api";
 import type { UpdateNotice } from "../core/types";
 
@@ -100,11 +100,21 @@ export function useUpdateNotice(
   return [notice, setNotice] as const;
 }
 
-/** The server's release check polls; the app's own updater checks only when asked. */
-export function useRecheckOnRelease(notice: UpdateNotice | null, recheck: () => unknown) {
+/**
+ * The server's release check polls; the app's own updater checks only when asked.
+ * Each poll asks again until the updater has offered that release once, since its
+ * manifest can trail the companion; after that a dismissal stands.
+ */
+export function useRecheckOnRelease(
+  notice: UpdateNotice | null,
+  offered: string | undefined,
+  recheck: () => unknown,
+) {
+  const seen = useRef<string | null>(null);
+  if (offered) seen.current = offered;
   const published =
     notice?.status === "update_available" && notice.companion_ready ? notice.latest_version : null;
   useEffect(() => {
-    if (published) void recheck();
-  }, [published, recheck]);
+    if (published && seen.current !== published) void recheck();
+  }, [notice, published, recheck]);
 }
