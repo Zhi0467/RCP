@@ -2573,6 +2573,11 @@ class BackgroundAgentTasks:
                         )
                         continue
                     except Exception as exc:
+                        if isinstance(exc, StateUnavailable) and not isinstance(exc, StateMissing):
+                            # An unreachable host says nothing about the binding,
+                            # so it never spends an attempt.
+                            pending = True
+                            continue
                         # Unreadable here, not invalid: retry on a later pass, boundedly.
                         attempts = self._mailbox_resume_failures.get(operation_id, 0) + 1
                         self._mailbox_resume_failures[operation_id] = attempts

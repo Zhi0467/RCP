@@ -362,6 +362,36 @@ def test_one_invalid_mailbox_checkpoint_does_not_block_other_detached_turns(tmp_
     assert restored == ["first", "second", "second"]
 
 
+def test_an_unreachable_host_never_spends_a_mailbox_restore_attempt(tmp_path, monkeypatch):
+    from rcp.background import BackgroundAgentTasks
+    from rcp.limits import COMMAND_MAILBOX_RESUME_MAX_ATTEMPTS
+    from rcp.runs.remote_finalization import WaitingTask
+    from rcp.runs.remote_reconciliation import Reconciliation
+    from rcp.transport import StateUnavailable
+
+    store = _store(tmp_path)
+    _awaiting(store, "first")
+    outages = COMMAND_MAILBOX_RESUME_MAX_ATTEMPTS + 1
+    calls = []
+
+    def restore(_execution):
+        calls.append(None)
+        if len(calls) <= outages:
+            raise StateUnavailable("ssh exited 255")
+        return None
+
+    manager = BackgroundAgentTasks(store, None, resume_command_mailbox=restore)
+    monkeypatch.setattr(
+        "rcp.runs.remote_finalization.plan_remote_reconciliation",
+        lambda _: [WaitingTask(store.agent_task("first"), Reconciliation("wait", "Live"), None)],
+    )
+    for _ in range(outages + 1):
+        assert manager._reconcile_remote_results()
+
+    assert len(calls) == outages + 1
+    assert "first" not in manager._mailbox_resume_refusals
+
+
 def _awaiting(store, operation_id):
     store.mark_agent_task_running(operation_id)
     store.begin_remote_provider_pass(
