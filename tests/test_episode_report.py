@@ -1123,3 +1123,45 @@ def test_report_offer_falls_back_after_delete(manifest, tmp_path) -> None:
     assert response.episode.report is None and response.episode.recommendation == "none"
     store.delete_artifact("project", older.artifact_id)
     assert projected().can_open_report is False
+
+
+@pytest.mark.asyncio
+async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
+    manifest, tmp_path
+) -> None:
+    """A dropped link leaves the attempt running; the recorded pass then finishes it."""
+
+    from rcp.runs.remote_finalization import recorded_finalizer
+    from rcp.runs.tasks.episode_report import finalize_recorded_episode_report_result
+
+    from .test_work_agent_io import _recorded_pass
+
+    service, store, request, execution, _stage = _setup_report(manifest, tmp_path)
+
+    class LinkLost(_ReportLauncher):
+        async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
+            self.calls += 1
+            Path(kwargs["cwd"]).joinpath("episode-report.html").write_text(
+                "<html><body><figure>Written offline</figure></body></html>", encoding="utf-8"
+            )
+            yield AgentEvent(event="session", session_id="native-session")
+            yield AgentEvent(event="remote_result_pending")
+
+    launcher = LinkLost([])
+    live = await _events(stream_episode_report_run(service, launcher, request, execution))
+    assert not [event for event in live if event.event in {"message", "error", "done"}]
+    assert store.episode_report("episode") is None
+
+    assert (
+        recorded_finalizer(store, execution.operation_id) is finalize_recorded_episode_report_result
+    )
+    recorded = _recorded_pass("", "Report written.", thread_id="native-session")
+    settled = await _events(
+        finalize_recorded_episode_report_result(
+            service, launcher, request, tmp_path / "unused", execution, recorded
+        )
+    )
+
+    assert [event.event for event in settled] == ["message", "done"]
+    assert store.episode_report("episode") is not None
+    assert launcher.calls == 1

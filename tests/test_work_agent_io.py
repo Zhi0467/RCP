@@ -820,6 +820,7 @@ def _recorded_pass(
     answer: str,
     watch_text: str | None = None,
     experiment_watch: dict[str, str] | None = None,
+    thread_id: str = "recorded-thread",
 ):
     """One completed Codex pass, as a host would have recorded it."""
 
@@ -828,7 +829,7 @@ def _recorded_pass(
     events = "".join(
         json.dumps(item) + "\n"
         for item in (
-            {"type": "thread.started", "thread_id": "recorded-thread"},
+            {"type": "thread.started", "thread_id": thread_id},
             {"type": "item.completed", "item": {"type": "agent_message", "text": answer}},
             {"type": "turn.completed", "usage": {"input_tokens": 3, "output_tokens": 4}},
         )
@@ -858,7 +859,7 @@ def _recorded_pass(
             name: hashlib.sha256(text.encode("utf-8")).hexdigest()
             for name, text in (experiment_watch or {}).items()
         },
-        "root_thread_id": "recorded-thread",
+        "root_thread_id": thread_id,
         "input_message_ids": [],
         "steer_requests": {},
     }

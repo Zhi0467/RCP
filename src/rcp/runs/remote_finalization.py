@@ -36,6 +36,10 @@ from rcp.runs.tasks.discuss import (
     finalize_recorded_discuss_result,
     resume_discuss_command_mailbox,
 )
+from rcp.runs.tasks.episode_report import (
+    EPISODE_REPORT_FINALIZATION_ROLE,
+    finalize_recorded_episode_report_result,
+)
 from rcp.runs.tasks.experiment_loop import (
     EXPERIMENT_LOOP_FINALIZATION_CONTEXT_ROLE,
     finalize_recorded_experiment_loop_result,
@@ -89,6 +93,7 @@ RECORDED_FINALIZERS: dict[str, RecordedFinalizer] = {
     EXPERIMENT_LOOP_FINALIZATION_CONTEXT_ROLE: finalize_recorded_experiment_loop_result,
     AUTO_RESEARCH_FINALIZATION_ROLE: finalize_recorded_auto_research_result,
     GRAPH_FINALIZATION_ROLE: finalize_recorded_graph_result,
+    EPISODE_REPORT_FINALIZATION_ROLE: finalize_recorded_episode_report_result,
 }
 
 
