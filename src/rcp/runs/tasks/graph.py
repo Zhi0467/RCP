@@ -1089,6 +1089,18 @@ async def stream_graph_run(
                 if reuses_native_checkpoint or rounds
                 else None
             )
+            if execution is not None:
+                # Written before the pass starts, so a recorded pass settles
+                # against the freshness baseline of its own launch.
+                execution.store.record_agent_task_receipt(
+                    execution.operation_id,
+                    _GRAPH_PASS_BASELINE,
+                    {
+                        "pre_launch_patch_digest": pre_launch_patch_digest,
+                        "requires_new_patch": requires_new_patch,
+                    },
+                    tier="diagnostic",
+                )
             if (
                 remote_stage is not None
                 and imported_source_inventory is not None
@@ -1134,8 +1146,6 @@ async def stream_graph_run(
                     stage_root=execution.stage_root,
                     workspace=str(workspace),
                     run_truth_scope=context.run_truth_scope,
-                    pre_launch_patch_digest=pre_launch_patch_digest,
-                    requires_new_patch=requires_new_patch,
                 ).model_dump_json()
                 execution.store.record_agent_task_contract(
                     execution.operation_id,
@@ -1335,6 +1345,7 @@ async def stream_graph_run(
 
 
 GRAPH_FINALIZATION_ROLE = "graph_finalization"
+_GRAPH_PASS_BASELINE = "graph_pass_baseline"
 
 
 class _GraphFinalization(BaseModel):
@@ -1345,8 +1356,6 @@ class _GraphFinalization(BaseModel):
     stage_root: str
     workspace: str
     run_truth_scope: list[str]
-    pre_launch_patch_digest: str | None
-    requires_new_patch: bool
 
 
 @dataclass
@@ -1549,6 +1558,20 @@ async def finalize_recorded_graph_result(
         execution.operation_id, "remote_provider_started"
     )
     correction = bool(starts) and starts[0].payload.get("pid_file") != recorded.pid_file
+    # The freshness baseline is the last one written before this pass started.
+    start = next(
+        (item for item in starts if item.payload.get("pid_file") == recorded.pid_file), None
+    )
+    baselines = [
+        item.payload
+        for item in execution.store.agent_task_receipts_by_category(
+            execution.operation_id, _GRAPH_PASS_BASELINE
+        )
+        if start is None or item.receipt_id < start.receipt_id
+    ]
+    if not baselines:
+        raise ValueError("The recorded graph pass has no launch baseline.")
+    baseline = baselines[-1]
     settled = _GraphPass(last_problem=None)
     with service.history.workspace.run_lock() as lease:
         for frame in _settle_graph_pass(
@@ -1562,8 +1585,8 @@ async def finalize_recorded_graph_result(
             workspace=workspace,
             remote_stage=remote_stage,
             rounds=int(correction),
-            pre_launch_patch_digest=None if correction else retained.pre_launch_patch_digest,
-            requires_new_patch=retained.requires_new_patch,
+            pre_launch_patch_digest=cast(str | None, baseline["pre_launch_patch_digest"]),
+            requires_new_patch=bool(baseline["requires_new_patch"]),
             lease=lease,
         ):
             yield frame

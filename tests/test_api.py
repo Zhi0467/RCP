@@ -8543,6 +8543,70 @@ def test_a_succeeding_chat_turn_records_the_usage_its_result_reported(app, tmp_p
     assert counted[0]["generated_tokens"] == 7
 
 
+def test_a_recorded_correction_that_kept_the_inherited_patch_applies_nothing(app, tmp_path) -> None:
+    """A correction settles against its own launch's baseline, as it would live."""
+
+    import dataclasses
+
+    from rcp.runs.tasks.graph import finalize_recorded_graph_result
+
+    from .test_work_agent_io import _recorded_pass
+
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    store = app.state.background_tasks.store
+    execution = _agent_task_execution(store, "refresh-correction-unchanged")
+    request = RunRequest(provider="codex", run_truth_scope=["repo-a"], run_on="laptop")
+
+    class LinkLost:
+        async def stream(self, *_args, **_kwargs):
+            yield AgentEvent(event="error", text="link lost")
+
+    async def events(stream) -> list[AgentEvent]:
+        return [
+            AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
+            async for frame in stream
+        ]
+
+    asyncio.run(
+        events(
+            stream_graph_run(
+                service, LinkLost(), "refresh", request, tmp_path / "data", execution=execution
+            )
+        )
+    )
+    # The primary pass ran; its correction launched over the Patch it had left.
+    patch_text = agent_patch_json(refresh_patch())
+    store.begin_remote_provider_pass(
+        execution.operation_id, "host", "/stage", "/stage/primary.pid", supervised=True
+    )
+    store.finish_remote_provider_pass(execution.operation_id, "/stage/primary.pid")
+    store.record_agent_task_receipt(
+        execution.operation_id,
+        "graph_pass_baseline",
+        {
+            "pre_launch_patch_digest": hashlib.sha256(patch_text.encode("utf-8")).hexdigest(),
+            "requires_new_patch": True,
+        },
+    )
+    store.begin_remote_provider_pass(
+        execution.operation_id, "host", "/stage", "/stage/correction.pid", supervised=True
+    )
+    recorded = dataclasses.replace(
+        _recorded_pass(patch_text, "Kept it."), pid_file="/stage/correction.pid"
+    )
+    settled = asyncio.run(
+        events(
+            finalize_recorded_graph_result(
+                service, ScriptedLauncher([{}]), request, tmp_path / "data", execution, recorded
+            )
+        )
+    )
+
+    assert settled[-1].event == "error"
+    assert "rq/transfer-after-shift" not in service.history.state().nodes
+
+
 def test_a_refresh_that_outlives_its_link_settles_from_its_recorded_pass(
     app, tmp_path, monkeypatch
 ) -> None:
