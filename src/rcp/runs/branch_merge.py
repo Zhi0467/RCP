@@ -706,12 +706,15 @@ async def stream_branch_merge_run(
     code_landed: bool = False,
     hidden_read_scope: HiddenReadScope | None = None,
     recorded_answers: merge_contract.MergeAnswers | None = None,
+    recorded_promotions: tuple[merge_contract.NodeGroupPromotion, ...] = (),
 ) -> AsyncGenerator[str, None]:
     """Collect checked answers, rebase unchanged decisions, and publish once.
 
     `recorded_answers` settles a turn its host finished while RCP was away: the
     answers it left are prepared and committed like checked ones, and nothing
-    is launched again.
+    is launched again. `checks` then holds the plan that turn answered, and
+    `recorded_promotions` the node groups promoted into it, so a destination
+    that moved since rebases those answers as a live turn's would be.
 
     The check and commit use the same preparation contract. Only destination
     movement and newly promoted hidden clashes can require continuation; an
@@ -728,6 +731,10 @@ async def stream_branch_merge_run(
     require_graph_only_merge_scope(write_scope, context=context, stage=stage, code_roots=code_roots)
     plan = checks.plan
     created_at = plan.captured_authority.patch_template.created_at
+    answers = recorded_answers or merge_contract.MergeAnswers(answers={}, cards={})
+    promotions: list[tuple[merge_contract.NodeGroupPromotion, merge_contract.MergePlan]] = [
+        (promotion, plan) for promotion in recorded_promotions
+    ]
     if plan.context_id != context.context_id:
         if (
             plan.source_head != context.metadata.head
@@ -740,14 +747,18 @@ async def stream_branch_merge_run(
             or plan.destination_head == context.main_head
         ):
             raise BranchMergeSourceChanged("The staged merge plan lost its exact source context.")
-        plan = merge_plan.plan_merge(
+        new_plan = merge_plan.plan_merge(
             merge_planning_context(context, main_history, created_at=created_at)
         )
+        for promotion, promoted_plan in promotions:
+            if _promotion_still_applies(promoted_plan, new_plan, promotion):
+                new_plan = merge_plan.promote_node_group(new_plan, promotion)
+        answers = reusable_merge_answers(plan, new_plan, answers)
+        plan = new_plan
         checks.set_plan(plan, turn_id=checks.turn_id)
     outcome.merge_id = plan.provenance.merge_id
     outcome.source_branch_head = plan.source_head
     outcome.rebased_main_head = plan.destination_head
-    answers = recorded_answers or merge_contract.MergeAnswers(answers={}, cards={})
     token = _task_token(execution)
     session_id: str | None = None
     session_master: tuple[str, str, bool] | None = None
@@ -756,7 +767,6 @@ async def stream_branch_merge_run(
     previous_plan_id = plan.plan_id
     launch_number = 0
     continuation_cause: Literal["promotion", "destination_moved"] = "destination_moved"
-    promotions: list[tuple[merge_contract.NodeGroupPromotion, merge_contract.MergePlan]] = []
     needs_code = bool(code_block) and not code_landed
 
     while True:
@@ -862,6 +872,19 @@ async def stream_branch_merge_run(
                     continuation=continuation,
                     round_number=launch_number,
                 )
+                if execution is not None:
+                    # What this turn answers, for settling it if its link drops.
+                    execution.store.record_agent_task_receipt(
+                        execution.operation_id,
+                        _TURN_PLAN_RECEIPT,
+                        {
+                            "plan_id": plan.plan_id,
+                            "promotions": [
+                                promotion.model_dump(mode="json") for promotion, _ in promotions
+                            ],
+                        },
+                        tier="diagnostic",
+                    )
                 provider, events = _provider_turn(
                     launcher,
                     request,
@@ -1197,6 +1220,35 @@ def _answers_mailbox(stage: BranchMergeStage) -> RunStageMailbox:
         local_stage=stage.workspace if stage.remote_stage is None else None,
         remote_stage=stage.remote_stage,
     )
+
+
+_TURN_PLAN_RECEIPT = "branch_merge_turn_plan"
+
+
+def recorded_turn_plan(
+    execution: Any, stage: BranchMergeStage
+) -> tuple[merge_contract.MergePlan, tuple[merge_contract.NodeGroupPromotion, ...]] | None:
+    """The plan the last launched merge turn answered, as its launch staged it."""
+
+    receipts = execution.store.agent_task_receipts_by_category(
+        execution.operation_id, _TURN_PLAN_RECEIPT
+    )
+    if not receipts:
+        return None
+    payload = receipts[-1].payload
+    label = f"task-{_task_token(execution)}-merge-plan-{payload['plan_id']}.json"
+    raw = (
+        stage.remote_stage.read_input_text(label)
+        if stage.remote_stage is not None
+        else (stage.local_stage / "inputs" / label).read_text(encoding="utf-8")  # type: ignore[operator]
+    )
+    plan = merge_contract.MergePlan.model_validate_json(raw)
+    if plan.plan_id != payload["plan_id"]:
+        raise ValueError("The staged merge plan changed after its turn launched.")
+    promotions = tuple(
+        merge_contract.NodeGroupPromotion.model_validate(item) for item in payload["promotions"]
+    )
+    return plan, promotions
 
 
 def _stage_answers_plan(

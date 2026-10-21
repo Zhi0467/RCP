@@ -933,6 +933,42 @@ async def test_promotion_survives_rebase_and_reasks_only_changed_group(
     assert run.preparations[-1][1].answers["group"].kind == "branch"
 
 
+@pytest.mark.asyncio
+async def test_a_recorded_promoted_turn_rebases_onto_a_moved_destination(tmp_path, monkeypatch):
+    run = _Run(tmp_path, monkeypatch, conflicts=(_field(),))
+    diagnostic = MergeDiagnostic(code="coupled", message="coupled", related_node_ids=("rq/merge",))
+    promotion = NodeGroupPromotion(node_ids=("rq/merge",), diagnostics=(diagnostic,))
+    group = NodeGroupConflict(
+        conflict_id="group",
+        node_ids=promotion.node_ids,
+        fields=(_field(),),
+        base={"rq/merge": PresentValue(value={})},
+        branch={"rq/merge": PresentValue(value={})},
+        destination={"rq/merge": PresentValue(value={})},
+        diagnostic_codes=("coupled",),
+    )
+    # The recorded turn answered the promoted plan; its answers name only that group.
+    run.checks.set_plan(_plan(run.context, conflicts=(group,)), turn_id="recorded")
+    run.move()
+    monkeypatch.setattr(
+        "rcp.runs.merge_plan.promote_node_group",
+        lambda plan, _promotion: _plan(
+            run.context,
+            conflicts=(group,),
+            created_at=plan.captured_authority.patch_template.created_at,
+        ),
+    )
+
+    await run.run(
+        recorded_answers=MergeAnswers(answers={"group": {"kind": "branch"}}, cards={}),
+        recorded_promotions=(promotion,),
+    )
+
+    assert run.outcome.status == "committed", run.outcome.diagnostic
+    assert not run.launches
+    assert run.preparations[-1][1].answers["group"].kind == "branch"
+
+
 def test_obsolete_promotion_is_not_reapplied_when_nodes_or_changes_disappear():
     context = _context()
     diagnostic = MergeDiagnostic(code="coupled", message="coupled")

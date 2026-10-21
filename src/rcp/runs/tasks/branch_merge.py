@@ -25,6 +25,7 @@ from rcp.runs.branch_merge import (
     _answers_mailbox,
     branch_merge_id,
     merge_planning_context,
+    recorded_turn_plan,
     stream_branch_merge_run,
     stream_code_merge_run,
 )
@@ -36,7 +37,7 @@ from rcp.runs.episodes.merge import (
     verify_episode_merge_code,
 )
 from rcp.runs.graph_history_queries import handle_graph_history_command
-from rcp.runs.merge_contract import MergeAnswers, MergePlan
+from rcp.runs.merge_contract import MergeAnswers, MergePlan, NodeGroupPromotion
 from rcp.runs.patch_validator import (
     MergeAnswersCheck,
     cleanup_patch_validation_mailbox,
@@ -345,6 +346,10 @@ async def stream_branch_merge_task(
             code_block = code.landed_section(write_scope)
             code_landed = True
 
+        recorded_promotions: tuple[NodeGroupPromotion, ...] = ()
+        if recorded is not None and (turn_plan := recorded_turn_plan(execution, stage)):
+            # The answers left on the stage belong to the plan that turn was given.
+            plan, recorded_promotions = turn_plan
         graph_read_scope = GraphReadScope.resolve(task.project_id, destination_history)
         staged_validator = stage_patch_validation_mailbox(
             local_stage=workspace if remote_stage is None else None,
@@ -433,6 +438,7 @@ async def stream_branch_merge_task(
                     code_landed=code_landed or recorded is not None,
                     hidden_read_scope=hidden_read_scope,
                     recorded_answers=_left_answers(stage) if recorded is not None else None,
+                    recorded_promotions=recorded_promotions,
                 )
             ) as stream:
                 async for frame in stream:

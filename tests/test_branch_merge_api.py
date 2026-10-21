@@ -1604,6 +1604,7 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
 
     import threading
 
+    from rcp.runs.branch_merge import BranchMergeStage, recorded_turn_plan
     from rcp.runs.branch_merge_request import BranchMergeRunRequest
     from rcp.runs.remote_finalization import resume_recorded_command_mailbox
     from rcp.runs.tasks import branch_merge as merge_task
@@ -1673,6 +1674,17 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
         )
     )
     assert harness.branch.merge_receipts() == []
+    # Recovery reads back the exact plan this turn was given.
+    stage_root = Path(record.stage_root or "")
+    turn_plan = recorded_turn_plan(
+        AgentTaskExecution(
+            operation_id=operation_id, store=harness.store, control=AgentProcessControl()
+        ),
+        BranchMergeStage(
+            local_stage=stage_root, remote_stage=None, workspace=stage_root / "workspace"
+        ),
+    )
+    assert turn_plan is not None and turn_plan[1] == ()
     # The host's turn can still check its answers while RCP is away.
     assert [mailbox.detached for mailbox in mailboxes] == [True]
 
