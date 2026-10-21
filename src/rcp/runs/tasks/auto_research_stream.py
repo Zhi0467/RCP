@@ -144,7 +144,13 @@ from rcp.runs.tasks.work import (
     _record_work_graph_rejection,
     _WorkPatchFailure,
 )
-from rcp.runs.tasks.work_turn_runtime import failed_graph_update, start_work_validator_mailbox
+from rcp.runs.tasks.work_turn_runtime import (
+    WorkValidatorMailboxLifecycle,
+    failed_graph_update,
+    load_work_mailbox_context,
+    restore_work_validator_mailbox,
+    start_work_validator_mailbox,
+)
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.storage import (
@@ -304,10 +310,6 @@ async def stream_auto_research_orchestrator_run(
                 hidden_read_scope=hidden_read_scope,
             )
         )
-        command_files = RunStageMailbox.for_stage(
-            local_stage=stage.local,
-            remote_stage=stage.remote,
-        )
         context = _orchestrator_launch_context(service, turn.request, stage)
         context.group_context = build_group_context(
             service, execution.store, turn.request.run_on or ""
@@ -322,17 +324,8 @@ async def stream_auto_research_orchestrator_run(
             graph_read_scope=graph_read_scope,
             bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
         )
-        command_dispatcher = command_dispatcher.with_command_files(
-            service=service,
-            graph_read_scope=graph_read_scope,
-            allowed_verbs=allowed_verbs,
-            reader=lambda name, max_bytes: command_files.read_text(name, max_bytes=max_bytes),
-            consumer=command_files.remove_if_sha256,
-            refresher=lambda: _refreshed_orchestrator_state_paths(
-                service,
-                turn.request,
-                stage,
-            ),
+        command_dispatcher = _bind_actor_dispatcher(
+            command_dispatcher, service, turn.request, stage, graph_read_scope, allowed_verbs
         )
         _prepare_turn_handoffs(execution, turn, stage)
 
@@ -391,11 +384,14 @@ async def stream_auto_research_orchestrator_run(
                 _serve_auto_research_commands,
                 staged_commands,
                 execution=execution,
-                turn=turn,
+                episode_id=turn.request.episode_id,
                 dispatcher=command_dispatcher,
                 service=service,
                 graph_read_scope=graph_read_scope,
                 expected_turn_id=expected_turn_id,
+            ),
+            resume_context=_actor_mailbox_context(
+                expected_turn_id, graph_read_scope, allowed_verbs
             ),
         ):
             write_scope = _project_write_scope(
@@ -612,7 +608,9 @@ async def stream_auto_research_worker_run(
             graph_read_scope=graph_read_scope,
             bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
         )
-        command_dispatcher = command_dispatcher.with_allowed_verbs(allowed_verbs)
+        command_dispatcher = _bind_actor_dispatcher(
+            command_dispatcher, service, turn.request, stage, graph_read_scope, allowed_verbs
+        )
         staged_head = prepare_graph_observation(
             execution,
             service,
@@ -638,11 +636,14 @@ async def stream_auto_research_worker_run(
                 _serve_auto_research_commands,
                 staged_commands,
                 execution=execution,
-                turn=turn,
+                episode_id=turn.request.episode_id,
                 dispatcher=command_dispatcher,
                 service=service,
                 graph_read_scope=graph_read_scope,
                 expected_turn_id=f"{execution.operation_id}:worker",
+            ),
+            resume_context=_actor_mailbox_context(
+                f"{execution.operation_id}:worker", graph_read_scope, allowed_verbs
             ),
         ):
             write_scope = _project_write_scope(
@@ -1863,7 +1864,7 @@ async def _serve_auto_research_commands(
     staged: StagedCommandMailbox,
     *,
     execution: AgentTaskExecution,
-    turn: _CanonicalWorkerTurn | _CanonicalOrchestratorTurn,
+    episode_id: str,
     dispatcher: AutoResearchCommandDispatcher,
     stop: asyncio.Event | threading.Event,
     expected_turn_id: str,
@@ -1876,7 +1877,7 @@ async def _serve_auto_research_commands(
         identity: CommandTurnIdentity,
     ) -> CommandResponse:
         if (
-            identity.episode_id != turn.request.episode_id
+            identity.episode_id != episode_id
             or identity.task_id != execution.operation_id
             or identity.turn_id != expected_turn_id
         ):
@@ -2244,7 +2245,7 @@ async def _settle_worker_patch(
                 _serve_auto_research_commands(
                     mailbox,
                     execution=execution,
-                    turn=turn,
+                    episode_id=turn.request.episode_id,
                     dispatcher=_ValidateOnlyAutoResearchCommandDispatcher(
                         correction.command_dispatcher.store,
                         correction.command_dispatcher.effects,
@@ -2258,6 +2259,11 @@ async def _settle_worker_patch(
                     ),
                     **state,
                 )
+            ),
+            resume_context=_actor_mailbox_context(
+                f"{execution.operation_id}:{_actor_role}-patch-correction:{correction_rounds}",
+                graph_read_scope,
+                None,
             ),
         ):
             # This operation's own launch staged or restored the session's master moments ago,
@@ -2477,6 +2483,7 @@ async def _actor_mailbox(
     execution: AgentTaskExecution,
     outcome: _ProviderOutcome,
     serve: Callable[..., Awaitable[None]],
+    resume_context: dict[str, object],
 ) -> AsyncIterator[None]:
     """Serve one actor pass's commands; a remote pass keeps serving if its link drops."""
 
@@ -2498,6 +2505,7 @@ async def _actor_mailbox(
             terminal=terminal,
             checkpoint=checkpoint,
         ),
+        resume_context=resume_context,
     )
     try:
         yield
@@ -2508,6 +2516,113 @@ async def _actor_mailbox(
         lifecycle.detach()
     else:
         await lifecycle.close()
+
+
+def _actor_mailbox_context(
+    turn_id: str,
+    graph_read_scope: GraphReadScope,
+    allowed_verbs: tuple[CommandVerb, ...] | None,
+) -> dict[str, object]:
+    """What a relaunched RCP needs to serve this pass's mailbox again; no verbs is a correction."""
+
+    return {
+        "turn_id": turn_id,
+        "graph_read_scope": graph_read_scope.model_dump(mode="json"),
+        "allowed_verbs": list(allowed_verbs) if allowed_verbs is not None else None,
+    }
+
+
+def _bind_actor_dispatcher(
+    dispatcher: AutoResearchCommandDispatcher,
+    service: ProjectService,
+    request: AutoResearchRunRequest,
+    stage: _WorkerStage,
+    graph_read_scope: GraphReadScope,
+    allowed_verbs: tuple[CommandVerb, ...],
+) -> AutoResearchCommandDispatcher:
+    """Bind one actor pass's command surface, at launch and again after a relaunch."""
+
+    if request.role != "orchestrator":
+        return dispatcher.with_allowed_verbs(allowed_verbs)
+    command_files = RunStageMailbox.for_stage(local_stage=stage.local, remote_stage=stage.remote)
+    return dispatcher.with_command_files(
+        service=service,
+        graph_read_scope=graph_read_scope,
+        allowed_verbs=allowed_verbs,
+        reader=lambda name, max_bytes: command_files.read_text(name, max_bytes=max_bytes),
+        consumer=command_files.remove_if_sha256,
+        refresher=lambda: _refreshed_orchestrator_state_paths(service, request, stage),
+    )
+
+
+def resume_auto_research_command_mailbox(
+    service: Callable[[], ProjectService],
+    execution: AgentTaskExecution,
+    request: AutoResearchRunRequest,
+    dispatcher: Callable[[ProjectService], AutoResearchCommandDispatcher],
+) -> WorkValidatorMailboxLifecycle | None:
+    """Serve a detached actor pass's mailbox again after RCP relaunches."""
+
+    saved = load_work_mailbox_context(execution)
+    if saved is None:
+        return None
+    retained, stage = _retained_stage(execution)
+    turn_request = (
+        _canonical_orchestrator_turn(execution, request)
+        if request.role == "orchestrator"
+        else _canonical_worker_turn(execution, request)
+    ).request
+    project = service()
+    scope = GraphReadScope.model_validate(saved["graph_read_scope"])
+    allowed_verbs = saved["allowed_verbs"]
+    unbound = dispatcher(project)
+    bound = (
+        _ValidateOnlyAutoResearchCommandDispatcher(
+            unbound.store, unbound.effects, service=project, graph_read_scope=scope
+        )
+        if allowed_verbs is None
+        else _bind_actor_dispatcher(
+            unbound, project, turn_request, stage, scope, tuple(cast(list, allowed_verbs))
+        )
+    )
+
+    def serve(*, staged, stop, suspend, responses, terminal, checkpoint, **_):
+        return _serve_auto_research_commands(
+            staged,
+            execution=execution,
+            episode_id=turn_request.episode_id,
+            dispatcher=bound,
+            service=project,
+            graph_read_scope=scope,
+            expected_turn_id=str(saved["turn_id"]),
+            stop=stop,
+            suspend=suspend,
+            responses=responses,
+            terminal=terminal,
+            checkpoint=checkpoint,
+        )
+
+    return restore_work_validator_mailbox(execution, validate=None, serve=serve)
+
+
+def _retained_stage(
+    execution: AgentTaskExecution,
+) -> tuple[_AutoResearchFinalization, _WorkerStage]:
+    content = execution.store.agent_task_contract(
+        execution.operation_id, AUTO_RESEARCH_FINALIZATION_ROLE
+    )
+    if content is None:
+        raise ValueError("The Auto-research finalization context is unavailable.")
+    retained = _AutoResearchFinalization.model_validate_json(content)
+    local, remote, workspace = attach_retained_stage(
+        execution,
+        owner="Auto-research",
+        stage_host=retained.stage_host,
+        stage_root=retained.stage_root,
+        workspace=retained.workspace,
+    )
+    stage = _WorkerStage(local, remote, workspace, retained.stage_host, None)
+    return retained, stage
 
 
 async def _settle_actor_turn(
@@ -2632,25 +2747,12 @@ async def finalize_recorded_auto_research_result(
         if supplied.role == "orchestrator"
         else _canonical_worker_turn(execution, supplied)
     )
-    content = execution.store.agent_task_contract(
-        execution.operation_id, AUTO_RESEARCH_FINALIZATION_ROLE
-    )
-    if content is None:
-        raise ValueError("The Auto-research finalization context is unavailable.")
-    retained = _AutoResearchFinalization.model_validate_json(content)
-    local, remote, workspace = attach_retained_stage(
-        execution,
-        owner="Auto-research",
-        stage_host=retained.stage_host,
-        stage_root=retained.stage_root,
-        workspace=retained.workspace,
-    )
-    stage = _WorkerStage(local, remote, workspace, retained.stage_host, None)
+    retained, stage = _retained_stage(execution)
     outcome = _ProviderOutcome(session_id=turn.binding.native_session_id)
     verdict = decode_recorded_turn(
         recorded,
         provider_turn_request(
-            workspace,
+            stage.workspace,
             recorded,
             capability="orchestrate" if supplied.role == "orchestrator" else "work_auto",
             write_scope=retained.write_scope,
@@ -2663,7 +2765,7 @@ async def finalize_recorded_auto_research_result(
         yield frame
     if refused:
         return
-    write_recorded_patch(workspace, remote, recorded)
+    write_recorded_patch(stage.workspace, stage.remote, recorded)
     for frame in absorb_recorded_events(outcome, verdict):
         yield frame
     primary_answer = execution.store.agent_task_contract(
@@ -2678,7 +2780,7 @@ async def finalize_recorded_auto_research_result(
         write_scope=retained.write_scope,
         retry_patch_digest=None if primary_answer is not None else retained.retry_patch_digest,
         command_file_consumer=RunStageMailbox.for_stage(
-            local_stage=local, remote_stage=remote
+            local_stage=stage.local, remote_stage=stage.remote
         ).remove_if_sha256,
         correction=None,
         answer=primary_answer,

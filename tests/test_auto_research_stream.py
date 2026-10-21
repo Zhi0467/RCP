@@ -3519,3 +3519,75 @@ async def test_a_worker_that_outlives_its_link_settles_from_its_recorded_pass(
     assert settled[-1].event == "done"
     assert "blk/recorded" in service.history.state().nodes
     assert launcher.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_a_relaunch_serves_a_detached_actor_mailbox_as_its_launch_did(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    """What a launch saves for its mailbox is enough to serve that pass again after a relaunch."""
+
+    service = _service(manifest, tmp_path)
+    service, store, _auto_research, _root, worker = _setup_branch_auto_research(service, tmp_path)
+    execution = _execution(store, worker)
+    request = AutoResearchRunRequest.model_validate(worker.request)
+    launched: dict[str, Any] = {}
+    actor_mailbox = auto_research_stream_module._actor_mailbox
+
+    def record_the_mailbox(staged, *, serve, resume_context, **kwargs):
+        launched.update(serve.keywords, context=resume_context)
+        return actor_mailbox(staged, serve=serve, resume_context=resume_context, **kwargs)
+
+    monkeypatch.setattr(auto_research_stream_module, "_actor_mailbox", record_the_mailbox)
+
+    class _LinkLost(_WorkerLauncher):
+        async def stream(self, _provider, prompt, **kwargs):
+            yield AgentEvent(event="session", session_id=self.session_id)
+            yield AgentEvent(event="remote_result_pending")
+
+    await _events(
+        stream_auto_research_worker_run(
+            service,
+            cast(Any, _LinkLost()),
+            request,
+            tmp_path / "data",
+            execution,
+            command_dispatcher=_dispatcher(store),
+        )
+    )
+
+    restored: dict[str, Any] = {}
+    monkeypatch.setattr(
+        auto_research_stream_module, "load_work_mailbox_context", lambda _: launched["context"]
+    )
+    monkeypatch.setattr(
+        auto_research_stream_module,
+        "restore_work_validator_mailbox",
+        lambda _execution, **kwargs: restored.update(kwargs),
+    )
+    served: dict[str, Any] = {}
+
+    async def record_the_serve(staged, **kwargs):
+        served.update(kwargs)
+
+    monkeypatch.setattr(
+        auto_research_stream_module, "_serve_auto_research_commands", record_the_serve
+    )
+    auto_research_stream_module.resume_auto_research_command_mailbox(
+        lambda: service, execution, request, lambda _service: _dispatcher(store)
+    )
+    await restored["serve"](
+        staged=object(),
+        stop=None,
+        suspend=None,
+        responses={},
+        terminal={},
+        checkpoint=None,
+        execution=execution,
+        validate=None,
+        budget=None,
+    )
+
+    for key in ("episode_id", "expected_turn_id", "graph_read_scope"):
+        assert served[key] == launched[key]
+    assert served["dispatcher"].allowed_verbs == launched["dispatcher"].allowed_verbs
