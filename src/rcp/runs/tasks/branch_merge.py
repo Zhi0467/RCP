@@ -46,6 +46,7 @@ from rcp.runs.patch_validator import (
 from rcp.runs.recorded_settlement import (
     absorb_recorded_events,
     attach_retained_stage,
+    note_stage_unreachable,
     provider_turn_request,
     refuse_recorded_session_mismatch,
 )
@@ -484,6 +485,8 @@ async def stream_branch_merge_task(
             yield _applied_revision_event(receipt.result_main_head.revision)
         yield held_done or _sse(AgentEvent(event="done"))
     except (OSError, StateUnavailable, ValueError) as exc:
+        # A host that went away is an outage, not a verdict on a recorded turn.
+        note_stage_unreachable(execution, exc)
         yield _sse(AgentEvent(event="error", text=str(exc)))
     finally:
         if (

@@ -1609,6 +1609,7 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
     from rcp.runs.remote_finalization import resume_recorded_command_mailbox
     from rcp.runs.tasks import branch_merge as merge_task
     from rcp.runs.tasks.branch_merge import finalize_recorded_branch_merge_result
+    from rcp.transport import StateUnavailable
 
     from .test_work_agent_io import _recorded_pass
 
@@ -1718,7 +1719,16 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
         == "ok"
     )
 
-    async def settle(recorded) -> list[AgentEvent]:
+    def recorded_execution() -> AgentTaskExecution:
+        return AgentTaskExecution(
+            operation_id=operation_id,
+            store=harness.store,
+            control=AgentProcessControl(),
+            stage_host=record.stage_host,
+            stage_root=record.stage_root,
+        )
+
+    async def settle(recorded, execution=None) -> list[AgentEvent]:
         return [
             AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
             async for frame in finalize_recorded_branch_merge_result(
@@ -1726,19 +1736,23 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
                 harness.app.state.launcher,
                 BranchMergeRunRequest.model_validate(record.request),
                 tmp_path / "data",
-                AgentTaskExecution(
-                    operation_id=operation_id,
-                    store=harness.store,
-                    control=AgentProcessControl(),
-                    stage_host=record.stage_host,
-                    stage_root=record.stage_root,
-                ),
+                execution or recorded_execution(),
                 recorded,
             )
         ]
 
-    # A turn its host recorded as failed commits nothing it left behind.
     recorded = _recorded_pass("", "Merged.")
+    # A host that drops while its stage reattaches is an outage, not a verdict.
+    with monkeypatch.context() as outage:
+
+        def unreachable(*_args, **_kwargs):
+            raise StateUnavailable("ssh exited 255")
+
+        outage.setattr(merge_task, "attach_retained_stage", unreachable)
+        execution = recorded_execution()
+        assert asyncio.run(settle(recorded, execution))[-1].event == "error"
+        assert execution.stage_unreachable
+    # A turn its host recorded as failed commits nothing it left behind.
     failed = dataclasses.replace(
         recorded,
         events=recorded.events.replace(

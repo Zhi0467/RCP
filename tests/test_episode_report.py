@@ -1183,6 +1183,8 @@ async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
         )
     )
 
-    assert [event.event for event in settled] == ["message", "done"]
+    assert [event.event for event in settled if event.event != "raw"] == ["message", "done"]
+    # Usage the host recorded after the link dropped is still accounted.
+    assert any(event.usage for event in settled)
     assert store.episode_report("episode") is not None
     assert launcher.calls == 2

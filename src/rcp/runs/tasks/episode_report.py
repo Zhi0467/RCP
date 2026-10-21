@@ -449,7 +449,10 @@ async def finalize_recorded_episode_report_result(
         yield frame
     if refused:
         return
-    absorb_recorded_events(outcome, verdict)
+    for frame in absorb_recorded_events(outcome, verdict):
+        # As live, only accounting reaches the task; provider errors stay internal.
+        if _event_from_frame(frame).event == "raw":
+            yield frame
     if not outcome.completed and attempt is not None:
         # As live: a call that failed publishes nothing it left, and its retry,
         # if any remain, runs when the report run re-enters below.
