@@ -455,7 +455,7 @@ class ArtifactViewerState(BaseModel):
     pin_branch_id: str | None
     pin_branch_name: str
     can_pin: bool
-    pinned: bool
+    pinned_branch_ids: list[str]
 
 
 class RunArtifactEntry(BaseModel):
@@ -518,7 +518,7 @@ def stored_artifact_state(
         if pin_branch
         else "main",
         can_pin=offers.can_pin,
-        pinned=offers.pinned,
+        pinned_branch_ids=offers.pinned_branch_ids,
         artifact_id=artifact_id,
         name=artifact.display_title or artifact.source_name,
         media_type=artifact.media_type,

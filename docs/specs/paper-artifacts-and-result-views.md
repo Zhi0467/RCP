@@ -154,16 +154,17 @@ graph. A pinned view opens RCP's own node panel; elsewhere it is ignored. The
 page never receives a reply.
 
 A member may pin an HTML artifact into the Artifacts switch, after Files | Paper,
-for its own bound graph target. Pins are personal, shown only while that target
-is selected, bounded by
-`RESEARCH_VIEW_PIN_LIMIT`, and always show the current version. Pinning keeps
+for main or an existing branch in the project. Pins are personal, shown only
+while that target is selected, bounded by `RESEARCH_VIEW_PIN_LIMIT` per target,
+and always show the current version. Pinning keeps
 the artifact in the same transaction; unpinning deletes only the pin. Pins are
-not carried by cross-space transfer. While another project or graph target is in
-view, the viewer's pin control carries the bound target's branch tag. Once
-pinned, the control stays enabled and opens that pin on its own target.
+not carried by cross-space transfer. The viewer's compact branch picker defaults
+to the origin task's bound target; choosing a target does not pin until Pin is
+clicked. If already pinned on the selected target, the control opens that pin.
+The artifact's live-data binding remains unchanged.
 
-**Why:** a pin bound to a branch is invisible from main; without the tag and the
-way back, a successful pin read as a dead button.
+**Why:** members can keep a useful branch artifact accessible after merging its
+branch, while personal pins and their limits remain separate for each target.
 
 **Why:** RCP owns every graph read, so a custom view gains no data path the
 member lacks and no new request channel. Opening a node uses trusted UI, so the

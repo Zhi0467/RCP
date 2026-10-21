@@ -62,6 +62,7 @@ test("served viewer observes watermark changes and Undo, deletes, retries errors
             ? { detail: "Unavailable" }
             : {
                 artifact_id: "a",
+                pinned_branch_ids: [],
                 name: "Test artifact",
                 view: "html",
                 media_type: "text/html",
