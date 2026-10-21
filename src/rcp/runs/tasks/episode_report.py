@@ -270,6 +270,9 @@ async def stream_episode_report_run(
                         event = _event_from_frame(frame)
                         if event.event == "error" and event.text.strip():
                             provider_errors.append(" ".join(event.text.split())[:1000])
+                        if event.event == "remote_result_pending":
+                            # The task waits on this frame for its recorded pass.
+                            yield frame
                         if event.usage is not None or event.status is not None:
                             # Usage is still real accounting, and status still feeds the
                             # live panel, even though intermediate report failures and

@@ -1149,7 +1149,7 @@ async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
 
     launcher = LinkLost([])
     live = await _events(stream_episode_report_run(service, launcher, request, execution))
-    assert not [event for event in live if event.event in {"message", "error", "done"}]
+    assert [event.event for event in live if event.event != "raw"] == ["remote_result_pending"]
     assert store.episode_report("episode") is None
 
     assert (

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import threading
@@ -1492,7 +1493,14 @@ def test_merge_history_client_and_main_observation(manifest, tmp_path, monkeypat
         serving.set()
         await kwargs["stop"].wait()
 
-    monkeypatch.setattr("rcp.runs.tasks.branch_merge.serve_patch_validation_mailbox", serve)
+    from rcp.runs.tasks import branch_merge as merge_task
+
+    start = merge_task.start_work_validator_mailbox
+    monkeypatch.setattr(
+        merge_task,
+        "start_work_validator_mailbox",
+        lambda staged, **kwargs: start(staged, serve=serve, **kwargs),
+    )
     calls = []
 
     async def launch(_provider, _prompt, *, cwd, invocation_gate, **_kwargs):
@@ -1594,7 +1602,10 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
 ):
     """A dropped link leaves the merge to its host; the recorded pass then commits."""
 
+    import threading
+
     from rcp.runs.branch_merge_request import BranchMergeRunRequest
+    from rcp.runs.tasks import branch_merge as merge_task
     from rcp.runs.tasks.branch_merge import finalize_recorded_branch_merge_result
 
     from .test_work_agent_io import _recorded_pass
@@ -1629,6 +1640,17 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
         yield AgentEvent(event="session", session_id="merge-session")
         yield AgentEvent(event="remote_result_pending")
 
+    mailboxes = []
+    start = merge_task.start_work_validator_mailbox
+
+    def remote_mailbox(staged, **kwargs):
+        # A remote stage serves its mailbox on a thread; only that kind can detach.
+        mailbox = start(staged, **kwargs)
+        mailbox.thread = threading.Thread(target=lambda: None)
+        mailboxes.append(mailbox)
+        return mailbox
+
+    monkeypatch.setattr(merge_task, "start_work_validator_mailbox", remote_mailbox)
     monkeypatch.setattr(harness.app.state.launcher, "stream", launch)
     response = harness.client.post(
         f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge", json={}
@@ -1647,8 +1669,10 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
         )
     )
     assert harness.branch.merge_receipts() == []
+    # The host's turn can still check its answers while RCP is away.
+    assert [mailbox.detached for mailbox in mailboxes] == [True]
 
-    async def settle() -> list[AgentEvent]:
+    async def settle(recorded) -> list[AgentEvent]:
         return [
             AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
             async for frame in finalize_recorded_branch_merge_result(
@@ -1663,11 +1687,22 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
                     stage_host=record.stage_host,
                     stage_root=record.stage_root,
                 ),
-                _recorded_pass("", "Merged."),
+                recorded,
             )
         ]
 
-    settled = asyncio.run(settle())
+    # A turn its host recorded as failed commits nothing it left behind.
+    recorded = _recorded_pass("", "Merged.")
+    failed = dataclasses.replace(
+        recorded,
+        events=recorded.events.replace(
+            '{"type": "turn.completed"', '{"type": "turn.failed", "error": {"message": "x"}'
+        ),
+    )
+    assert asyncio.run(settle(failed))[-1].event == "error"
+    assert harness.branch.merge_receipts() == []
+
+    settled = asyncio.run(settle(recorded))
     assert settled[-1].event == "done"
     assert [receipt.outcome for receipt in harness.branch.merge_receipts()] == ["committed"]
     assert harness.service.history.state().nodes["blk/merge-ready"].title == "Branch title"

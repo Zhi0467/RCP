@@ -109,6 +109,7 @@ from rcp.runs.shared import (
     _stream_agent_events,
     _task_token,
 )
+from rcp.runs.tasks.work_turn_runtime import checkpoint_required_session
 from rcp.service import ProjectService, RunRequest
 from rcp.transport import RemoteRunStage, RunStageMailbox, StateUnavailable
 
@@ -1289,6 +1290,8 @@ def _provider_turn(
     hidden_read_scope: HiddenReadScope | None,
     invocation_gate: ProviderInvocationGate | None = None,
 ) -> tuple[_ProviderOutcome, AsyncGenerator[str, None]]:
+    # A recorded continuation is held to this pin after its stream is gone.
+    checkpoint_required_session(execution, required_session_id)
     provider_outcome = _ProviderOutcome(session_id=session_id)
     inputs = (
         Path(str(stage.remote_stage.root / "inputs"))

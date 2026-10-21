@@ -213,7 +213,12 @@ test("content-change proposals compare every changed field with current graph wo
         `<span>Now</span> <s>${before}</s></p><p class="branch-change-value branch">` +
         `<span>Proposed</span> ${after}</p>`,
     );
-  assert.match(html, /<div class="proposal-action-node">Plasticity after shifts<\/div>/);
+  // A sole subject is named once, by its link, not again above its fields.
+  assert.match(
+    html,
+    /<button type="button" class="proposal-subject" data-node-id="rq\/plasticity"/,
+  );
+  assert.doesNotMatch(html, /proposal-action-node/);
   assert.match(
     html,
     field(
