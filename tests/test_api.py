@@ -2421,7 +2421,8 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
         instances = []
         finalize_error = False
 
-        def __init__(self, _host):
+        def __init__(self, host):
+            self.host = host
             self.root = None
             self.closed = False
             self.finalized = 0
@@ -2445,6 +2446,9 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
             assert self.root is not None
             assert reuse is False
             return str(self.root / "inputs" / label)
+
+        def read_input_text(self, label):
+            raise ValueError(label)
 
         def finalize_inputs(self):
             self.finalized += 1
@@ -8537,3 +8541,53 @@ def test_a_succeeding_chat_turn_records_the_usage_its_result_reported(app, tmp_p
     assert len(counted) == 1
     assert counted[0]["processed_input_tokens"] == 11
     assert counted[0]["generated_tokens"] == 7
+
+
+def test_a_refresh_that_outlives_its_link_settles_from_its_recorded_pass(app, tmp_path) -> None:
+    """A dropped link leaves the pass to its host; the recorded pass then applies."""
+
+    from rcp.runs.remote_finalization import recorded_finalizer
+    from rcp.runs.tasks.graph import finalize_recorded_graph_result
+
+    from .test_work_agent_io import _recorded_pass
+
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    store = app.state.background_tasks.store
+    execution = _agent_task_execution(store, "refresh-link-lost")
+    request = RunRequest(provider="codex", run_truth_scope=["repo-a"], run_on="laptop")
+
+    class LinkLost:
+        async def stream(self, *_args, **_kwargs):
+            yield AgentEvent(event="session", session_id="recorded-thread")
+            yield AgentEvent(event="error", text="link lost")
+
+    async def events(stream) -> list[AgentEvent]:
+        return [
+            AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
+            async for frame in stream
+        ]
+
+    # The launch retains what a recorded pass needs before the provider starts.
+    asyncio.run(
+        events(
+            stream_graph_run(
+                service, LinkLost(), "refresh", request, tmp_path / "data", execution=execution
+            )
+        )
+    )
+    assert recorded_finalizer(store, execution.operation_id) is finalize_recorded_graph_result
+    launcher = ScriptedLauncher([{}], message="must not launch")
+    recorded = _recorded_pass(agent_patch_json(refresh_patch()), "Refreshed offline.")
+    settled = asyncio.run(
+        events(
+            finalize_recorded_graph_result(
+                service, launcher, request, tmp_path / "data", execution, recorded
+            )
+        )
+    )
+
+    assert [event.text for event in settled if event.event == "answer"] == ["Refreshed offline."]
+    assert settled[-1].event == "done"
+    assert "rq/transfer-after-shift" in service.history.state().nodes
+    assert launcher.calls == 0
