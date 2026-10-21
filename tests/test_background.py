@@ -3437,6 +3437,34 @@ def test_a_real_failure_stands_even_if_the_host_leaves_right_afterwards(
     assert "refused" in (task.error or "")
 
 
+def test_a_settlement_that_launches_a_pass_which_also_drops_keeps_waiting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recorded pass can settle into a retry whose own link drops; that is not a failure."""
+
+    store = _store(tmp_path)
+    waiting = _waiting_remote_work(store, "retry-drops-too")
+    _finished_remote_pass(monkeypatch, waiting)
+
+    async def retry_that_drops(_project_id, _kind, _request, execution, recorded):
+        # An owner that retries consumes the pass it settled before relaunching.
+        store.finish_remote_provider_pass(execution.operation_id, recorded.pid_file)
+        store.begin_remote_provider_pass(
+            execution.operation_id, "remote", "/stage", "/stage/retry.pid", supervised=True
+        )
+        yield _sse(AgentEvent(event="remote_result_pending", text="Connection lost."))
+
+    tasks = BackgroundAgentTasks(store, _done_stream, recorded_stream=retry_that_drops)
+    tasks._reconcile_remote_results()
+
+    task = store.agent_task(waiting.operation_id)
+    assert task is not None and task.status == "running"
+    assert task.phase == "awaiting_remote_result"
+    assert store.unresolved_remote_provider_passes("remote", "/stage") == [
+        (waiting.operation_id, "/stage/retry.pid")
+    ]
+
+
 def test_a_pass_the_live_stream_already_consumed_is_not_owed_reconciliation(
     tmp_path: Path,
 ) -> None:

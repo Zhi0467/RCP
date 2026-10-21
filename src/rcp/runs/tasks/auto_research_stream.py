@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, aclosing, asynccontextmanager, suppress
 from dataclasses import dataclass, replace
 from functools import partial
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict
@@ -2566,7 +2566,20 @@ def resume_auto_research_command_mailbox(
     saved = load_work_mailbox_context(execution)
     if saved is None:
         return None
-    retained, stage = _retained_stage(execution)
+    retained = _retained_finalization(execution)
+    if not retained.stage_host:
+        _retained, stage = _retained_stage(execution)
+    elif (execution.stage_host, execution.stage_root) != (
+        retained.stage_host,
+        retained.stage_root,
+    ):
+        raise ValueError("The detached Auto-research mailbox belongs to another stage.")
+    else:
+        # Rebuilt from the binding alone: the host may be unreachable, and the
+        # restored mailbox waits out an outage with its own backoff.
+        remote = RemoteRunStage(retained.stage_host)
+        remote.root = PurePosixPath(retained.stage_root)
+        stage = _WorkerStage(None, remote, Path(retained.workspace), retained.stage_host, None)
     turn_request = (
         _canonical_orchestrator_turn(execution, request)
         if request.role == "orchestrator"
@@ -2605,15 +2618,19 @@ def resume_auto_research_command_mailbox(
     return restore_work_validator_mailbox(execution, validate=None, serve=serve)
 
 
-def _retained_stage(
-    execution: AgentTaskExecution,
-) -> tuple[_AutoResearchFinalization, _WorkerStage]:
+def _retained_finalization(execution: AgentTaskExecution) -> _AutoResearchFinalization:
     content = execution.store.agent_task_contract(
         execution.operation_id, AUTO_RESEARCH_FINALIZATION_ROLE
     )
     if content is None:
         raise ValueError("The Auto-research finalization context is unavailable.")
-    retained = _AutoResearchFinalization.model_validate_json(content)
+    return _AutoResearchFinalization.model_validate_json(content)
+
+
+def _retained_stage(
+    execution: AgentTaskExecution,
+) -> tuple[_AutoResearchFinalization, _WorkerStage]:
+    retained = _retained_finalization(execution)
     local, remote, workspace = attach_retained_stage(
         execution,
         owner="Auto-research",

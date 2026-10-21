@@ -2677,6 +2677,24 @@ class BackgroundAgentTasks:
                 self.store.release_recorded_finalization(record.operation_id)
                 retry = True
                 continue
+            except TaskAwaitingRemoteResult as exc:
+                # Settling this pass launched another that also outlived its
+                # link: this one is consumed, and the task waits on the next.
+                with self._remote_result_lock:
+                    self.store.finish_remote_provider_pass(record.operation_id, pid_file)
+                    if execution.command_mailbox is not None:
+                        execution.command_mailbox.detach()
+                        self._register_detached_mailbox(
+                            record.operation_id, execution.command_mailbox
+                        )
+                    self.store.update_agent_task_message(
+                        record.operation_id,
+                        str(exc),
+                        phase="awaiting_remote_result",
+                        event=True,
+                    )
+                retry = True
+                continue
             except StateMissing as exc:
                 # The host answered: this stage is gone, replaced, or not ours.
                 # Waiting for it to answer differently is waiting forever, so

@@ -466,6 +466,9 @@ async def finalize_recorded_episode_report_result(
             yield _terminal_report_error(episode)
             return
         _record_retryable_error(execution, attempt, diagnostic)
+        # The failure is recorded, so this pass is consumed; its stage may now
+        # take the retry, which can itself outlive its link and wait in turn.
+        execution.store.finish_remote_provider_pass(execution.operation_id, recorded.pid_file)
     async with aclosing(
         stream_episode_report_run(service, launcher, report_request, execution)
     ) as stream:

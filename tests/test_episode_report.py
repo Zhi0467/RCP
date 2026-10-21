@@ -1157,6 +1157,10 @@ async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
         recorded_finalizer(store, execution.operation_id) is finalize_recorded_episode_report_result
     )
     recorded = _recorded_pass("", "Report written.", thread_id="native-session")
+    # Reconciliation only settles a pass whose start was recorded.
+    store.begin_remote_provider_pass(
+        execution.operation_id, "report-host", "/stage", recorded.pid_file, supervised=True
+    )
     # A call its host recorded as failed publishes nothing; its retry launches.
     failed = dataclasses.replace(
         recorded,
@@ -1171,6 +1175,7 @@ async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
     )
     assert store.episode_report("episode") is None
     assert launcher.calls == 2
+    assert store.unresolved_remote_provider_passes("report-host", "/stage") == []
 
     settled = await _events(
         finalize_recorded_episode_report_result(

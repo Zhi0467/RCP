@@ -3591,3 +3591,59 @@ async def test_a_relaunch_serves_a_detached_actor_mailbox_as_its_launch_did(
     for key in ("episode_id", "expected_turn_id", "graph_read_scope"):
         assert served[key] == launched[key]
     assert served["dispatcher"].allowed_verbs == launched["dispatcher"].allowed_verbs
+
+
+def test_a_relaunch_restores_a_remote_actor_mailbox_without_reaching_its_host(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    """An unreachable host must not cost a detached pass its mailbox owner."""
+
+    from rcp.transport import RemoteRunStage
+
+    service = _service(manifest, tmp_path)
+    service, store, _auto_research, _root, worker = _setup_branch_auto_research(service, tmp_path)
+    execution = _execution(store, worker)
+    execution.stage_host, execution.stage_root = "gpu", "/stage"
+    request = AutoResearchRunRequest.model_validate(worker.request)
+    monkeypatch.setattr(
+        auto_research_stream_module,
+        "_retained_finalization",
+        lambda _execution: SimpleNamespace(
+            stage_host="gpu", stage_root="/stage", workspace="/stage/workspace"
+        ),
+    )
+
+    # The actor binding is not under test; this one was launched locally.
+    monkeypatch.setattr(
+        auto_research_stream_module,
+        "_canonical_worker_turn",
+        lambda _execution, supplied: SimpleNamespace(request=supplied),
+    )
+
+    def unreachable(*_args, **_kwargs):
+        raise AssertionError("restoring a mailbox must not probe its host")
+
+    monkeypatch.setattr(RemoteRunStage, "attach", unreachable)
+    monkeypatch.setattr(
+        auto_research_stream_module,
+        "load_work_mailbox_context",
+        lambda _execution: {
+            "turn_id": f"{worker.operation_id}:worker",
+            "graph_read_scope": GraphReadScope(
+                project_id=worker.project_id, target=GraphTargetRef()
+            ).model_dump(mode="json"),
+            "allowed_verbs": [],
+        },
+    )
+    restored: dict[str, Any] = {}
+    monkeypatch.setattr(
+        auto_research_stream_module,
+        "restore_work_validator_mailbox",
+        lambda _execution, **kwargs: restored.update(kwargs),
+    )
+
+    auto_research_stream_module.resume_auto_research_command_mailbox(
+        lambda: service, execution, request, lambda _service: _dispatcher(store)
+    )
+
+    assert callable(restored["serve"])
