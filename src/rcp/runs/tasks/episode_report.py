@@ -88,11 +88,14 @@ async def stream_episode_report_run(
     execution: AgentTaskExecution,
     *,
     recorded: bool = False,
+    consumed_pass: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Run at most three hidden report calls inside one exact episode continuation.
 
     `recorded` settles a call its host finished while RCP was away; an outage
     then propagates so reconciliation retries rather than ending the wrap-up.
+    `consumed_pass` is that call's pass: it stays open, and so recoverable,
+    until a retry is about to take its place.
 
     Operational context is deliberately absent. The native provider session supplies its retained
     context; RCP adds only the immutable compact receipt, the official report skill, and an optional
@@ -223,6 +226,10 @@ async def stream_episode_report_run(
                 attempt = execution.store.allocate_episode_report_attempt(turn.episode.episode_id)
                 if attempt.attempt_number != attempt_number:
                     raise RuntimeError("Episode report attempt allocation changed under launch.")
+            if consumed_pass is not None:
+                # Every preflight passed, so the retry takes over from here.
+                execution.store.finish_remote_provider_pass(execution.operation_id, consumed_pass)
+                consumed_pass = None
             execution.store.mark_episode_report_attempt_running(attempt.attempt_id)
             _record_agent_launch_receipt(
                 execution,
@@ -436,9 +443,11 @@ async def finalize_recorded_episode_report_result(
         # As live, only accounting reaches the task; provider errors stay internal.
         if _event_from_frame(frame).event == "raw":
             yield frame
-    if not outcome.completed and attempt is not None:
+    if not outcome.completed and attempt is not None and attempt.status == "running":
         # As live: a call that failed publishes nothing it left, and its retry,
-        # if any remain, runs when the report run re-enters below.
+        # if any remain, runs when the report run re-enters below. A replay of
+        # this pass finds its attempt already counted, or a queued retry that
+        # is not its own, and only re-enters.
         errors = [
             " ".join(event.text.split())[:1000]
             for event in verdict.events
@@ -462,11 +471,15 @@ async def finalize_recorded_episode_report_result(
             yield _terminal_report_error(episode)
             return
         _record_retryable_error(execution, attempt, diagnostic)
-        # The failure is recorded, so this pass is consumed; its stage may now
-        # take the retry, which can itself outlive its link and wait in turn.
-        execution.store.finish_remote_provider_pass(execution.operation_id, recorded.pid_file)
     async with aclosing(
-        stream_episode_report_run(service, launcher, report_request, execution, recorded=True)
+        stream_episode_report_run(
+            service,
+            launcher,
+            report_request,
+            execution,
+            recorded=True,
+            consumed_pass=recorded.pid_file,
+        )
     ) as stream:
         async for frame in stream:
             yield frame

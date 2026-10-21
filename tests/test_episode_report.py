@@ -1168,6 +1168,24 @@ async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
             '{"type": "turn.completed"', '{"type": "turn.failed", "error": {"message": "x"}'
         ),
     )
+    import rcp.runs.tasks.episode_report as report_module
+    from rcp.transport import StateUnavailable
+
+    def unreachable(*_args, **_kwargs):
+        raise StateUnavailable("ssh exited 255")
+
+    # A host that drops before the retry launches keeps the failed pass open,
+    # so reconciliation settles it again rather than waiting on nothing.
+    with pytest.MonkeyPatch.context() as outage:
+        outage.setattr(report_module, "_stage_and_verify_receipt", unreachable)
+        with pytest.raises(StateUnavailable):
+            await _events(
+                finalize_recorded_episode_report_result(
+                    service, launcher, request, tmp_path / "unused", execution, failed
+                )
+            )
+    assert launcher.calls == 1
+    assert store.unresolved_remote_provider_passes("report-host", "/stage") != []
     await _events(
         finalize_recorded_episode_report_result(
             service, launcher, request, tmp_path / "unused", execution, failed
@@ -1175,17 +1193,13 @@ async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
     )
     assert store.episode_report("episode") is None
     assert launcher.calls == 2
+    # The replayed failure counted once.
+    assert store.current_episode_report_attempt("episode").attempt_number == 2
     assert store.unresolved_remote_provider_passes("report-host", "/stage") == []
 
     # A host that drops while the retained report is read is waited out.
-    import rcp.runs.tasks.episode_report as report_module
-    from rcp.transport import StateUnavailable
 
     with pytest.MonkeyPatch.context() as outage:
-
-        def unreachable(*_args, **_kwargs):
-            raise StateUnavailable("ssh exited 255")
-
         outage.setattr(report_module, "_read_valid_report", unreachable)
         with pytest.raises(StateUnavailable):
             await _events(
