@@ -86,8 +86,13 @@ async def stream_episode_report_run(
     launcher: AgentLauncher,
     request: EpisodeReportRunRequest,
     execution: AgentTaskExecution,
+    *,
+    recorded: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Run at most three hidden report calls inside one exact episode continuation.
+
+    `recorded` settles a call its host finished while RCP was away; an outage
+    then propagates so reconciliation retries rather than ending the wrap-up.
 
     Operational context is deliberately absent. The native provider session supplies its retained
     context; RCP adds only the immutable compact receipt, the official report skill, and an optional
@@ -363,6 +368,8 @@ async def stream_episode_report_run(
             yield _sse(AgentEvent(event="done"))
             return
     except (KeyError, OSError, StateUnavailable, ValueError) as exc:
+        if recorded and isinstance(exc, StateUnavailable):
+            raise
         diagnostic = " ".join(str(exc).split()) or "Episode report generation failed."
         _settle_unlaunchable_existing_wrapup(execution, request.episode_id, diagnostic)
         yield _sse(AgentEvent(event="error", text=diagnostic))
@@ -459,7 +466,7 @@ async def finalize_recorded_episode_report_result(
         # take the retry, which can itself outlive its link and wait in turn.
         execution.store.finish_remote_provider_pass(execution.operation_id, recorded.pid_file)
     async with aclosing(
-        stream_episode_report_run(service, launcher, report_request, execution)
+        stream_episode_report_run(service, launcher, report_request, execution, recorded=True)
     ) as stream:
         async for frame in stream:
             yield frame
