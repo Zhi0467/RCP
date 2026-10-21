@@ -1605,6 +1605,7 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
     import threading
 
     from rcp.runs.branch_merge_request import BranchMergeRunRequest
+    from rcp.runs.remote_finalization import resume_recorded_command_mailbox
     from rcp.runs.tasks import branch_merge as merge_task
     from rcp.runs.tasks.branch_merge import finalize_recorded_branch_merge_result
 
@@ -1643,8 +1644,11 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
     mailboxes = []
     start = merge_task.start_work_validator_mailbox
 
+    saved = {}
+
     def remote_mailbox(staged, **kwargs):
         # A remote stage serves its mailbox on a thread; only that kind can detach.
+        saved.update(kwargs["resume_context"])
         mailbox = start(staged, **kwargs)
         mailbox.thread = threading.Thread(target=lambda: None)
         mailboxes.append(mailbox)
@@ -1671,6 +1675,36 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
     assert harness.branch.merge_receipts() == []
     # The host's turn can still check its answers while RCP is away.
     assert [mailbox.detached for mailbox in mailboxes] == [True]
+
+    # A relaunch serves that turn's checks and graph reads from what it saved.
+    restored = {}
+    monkeypatch.setattr(merge_task, "load_work_mailbox_context", lambda _execution: saved)
+    monkeypatch.setattr(
+        merge_task,
+        "restore_work_validator_mailbox",
+        lambda _execution, **kwargs: restored.update(kwargs),
+    )
+    resume_recorded_command_mailbox(
+        lambda: harness.service,
+        AgentTaskExecution(
+            operation_id=operation_id, store=harness.store, control=AgentProcessControl()
+        ),
+    )
+    assert (
+        restored["command_handler"](
+            GraphDiffCommandRequest.model_validate(
+                {
+                    "mailbox_id": "0" * 32,
+                    "request_id": uuid.uuid4().hex,
+                    "credential": "0" * 64,
+                    "verb": "graph_diff",
+                    "arguments": {"from": "main@0", "to": "main@head"},
+                }
+            ),
+            None,
+        ).status
+        == "ok"
+    )
 
     async def settle(recorded) -> list[AgentEvent]:
         return [

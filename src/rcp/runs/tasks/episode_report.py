@@ -411,6 +411,7 @@ async def finalize_recorded_episode_report_result(
 
     # Settlement helpers import the task engine, which imports this module.
     from rcp.runs.recorded_settlement import (
+        absorb_recorded_events,
         provider_turn_request,
         refuse_recorded_session_mismatch,
     )
@@ -448,6 +449,23 @@ async def finalize_recorded_episode_report_result(
         yield frame
     if refused:
         return
+    absorb_recorded_events(outcome, verdict)
+    if not outcome.completed and attempt is not None:
+        # As live: a call that failed publishes nothing it left, and its retry,
+        # if any remain, runs when the report run re-enters below.
+        errors = [event.text for event in verdict.events if event.event == "error"]
+        diagnostic = (
+            " ".join(errors[-1].split())[:1000]
+            if errors
+            else f"{request.provider} produced no completed episode report result."
+        )
+        episode, _failed = execution.store.record_episode_report_attempt_error(
+            attempt.attempt_id, diagnostic
+        )
+        if episode.wrapup_state == "failed":
+            yield _terminal_report_error(episode)
+            return
+        _record_retryable_error(execution, attempt, diagnostic)
     async with aclosing(
         stream_episode_report_run(service, launcher, report_request, execution)
     ) as stream:

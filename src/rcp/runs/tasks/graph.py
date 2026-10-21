@@ -5,11 +5,11 @@ import hashlib
 import json
 import logging
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Final, Literal
+from typing import Final, Literal, cast
 
 from pydantic import BaseModel
 
@@ -87,7 +87,12 @@ from rcp.runs.shared import (
     _swept_stage_root,
     _task_token,
 )
-from rcp.runs.tasks.work_turn_runtime import start_work_validator_mailbox
+from rcp.runs.tasks.work_turn_runtime import (
+    WorkValidatorMailboxLifecycle,
+    load_work_mailbox_context,
+    restore_work_validator_mailbox,
+    start_work_validator_mailbox,
+)
 from rcp.service import ProjectService, RunRequest
 from rcp.skills.staging import stage_skill_selection
 from rcp.sources import ImportedProviderSourceInventory
@@ -1624,6 +1629,11 @@ async def _stream_graph_agent_events(
         command_handler=lambda request, _identity: handle_graph_history_command(
             service, graph_read_scope, request
         ),
+        resume_context={
+            "kind": kind,
+            "run_truth_scope": run_truth_scope,
+            "graph_read_scope": graph_read_scope.model_dump(mode="json"),
+        },
     )
     try:
         async with aclosing(
@@ -1656,6 +1666,35 @@ async def _stream_graph_agent_events(
         lifecycle.detach()
     else:
         await lifecycle.close()
+
+
+def resume_graph_command_mailbox(
+    service: Callable[[], ProjectService], execution: AgentTaskExecution
+) -> WorkValidatorMailboxLifecycle | None:
+    """Serve a detached Seed/Refresh pass's Patch checks and graph reads after a relaunch."""
+
+    from rcp.runs.graph_history_queries import handle_graph_history_command
+
+    saved = load_work_mailbox_context(execution)
+    if saved is None:
+        return None
+    project = service()
+    kind = str(saved["kind"])
+    run_truth_scope = [str(item) for item in cast(list, saved["run_truth_scope"])]
+    scope = GraphReadScope.model_validate(saved["graph_read_scope"])
+    return restore_work_validator_mailbox(
+        execution,
+        validate=lambda text: _validate_graph_patch_live(
+            project,
+            text,
+            kind=kind,
+            run_truth_scope=run_truth_scope,
+            source_operation_id=execution.operation_id,
+        ),
+        command_handler=lambda request, _identity: handle_graph_history_command(
+            project, scope, request
+        ),
+    )
 
 
 def _prepare_graph_patch_candidate(

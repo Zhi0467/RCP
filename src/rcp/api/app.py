@@ -1120,7 +1120,8 @@ def create_app(
 
         def service_for_validation() -> ProjectService:
             service = catalog.open_execution(task.project_id)
-            if task.graph_target.kind == "branch":
+            # A merge reads its source and destination itself, as its launch does.
+            if task.graph_target.kind == "branch" and task.kind != "branch_merge":
                 service = service.for_graph_target(
                     task.graph_target,
                     expected_episode_id=store.branch_owner(

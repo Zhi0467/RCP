@@ -8543,10 +8543,14 @@ def test_a_succeeding_chat_turn_records_the_usage_its_result_reported(app, tmp_p
     assert counted[0]["generated_tokens"] == 7
 
 
-def test_a_refresh_that_outlives_its_link_settles_from_its_recorded_pass(app, tmp_path) -> None:
+def test_a_refresh_that_outlives_its_link_settles_from_its_recorded_pass(
+    app, tmp_path, monkeypatch
+) -> None:
     """A dropped link leaves the pass to its host; the recorded pass then applies."""
 
-    from rcp.runs.remote_finalization import recorded_finalizer
+    from rcp.agents.command_protocol import GraphDiffCommandRequest
+    from rcp.runs.remote_finalization import recorded_finalizer, resume_recorded_command_mailbox
+    from rcp.runs.tasks import graph as graph_module
     from rcp.runs.tasks.graph import finalize_recorded_graph_result
 
     from .test_work_agent_io import _recorded_pass
@@ -8568,6 +8572,14 @@ def test_a_refresh_that_outlives_its_link_settles_from_its_recorded_pass(app, tm
             async for frame in stream
         ]
 
+    saved = {}
+    start = graph_module.start_work_validator_mailbox
+
+    def record_the_mailbox(staged, **kwargs):
+        saved.update(kwargs["resume_context"])
+        return start(staged, **kwargs)
+
+    monkeypatch.setattr(graph_module, "start_work_validator_mailbox", record_the_mailbox)
     # The launch retains what a recorded pass needs before the provider starts.
     asyncio.run(
         events(
@@ -8577,6 +8589,33 @@ def test_a_refresh_that_outlives_its_link_settles_from_its_recorded_pass(app, tm
         )
     )
     assert recorded_finalizer(store, execution.operation_id) is finalize_recorded_graph_result
+
+    # A relaunch serves that pass's Patch checks and graph reads from what it saved.
+    restored = {}
+    monkeypatch.setattr(graph_module, "load_work_mailbox_context", lambda _execution: saved)
+    monkeypatch.setattr(
+        graph_module,
+        "restore_work_validator_mailbox",
+        lambda _execution, **kwargs: restored.update(kwargs),
+    )
+    resume_recorded_command_mailbox(lambda: service, execution)
+    assert restored["validate"](agent_patch_json(refresh_patch())).status == "valid"
+    assert (
+        restored["command_handler"](
+            GraphDiffCommandRequest.model_validate(
+                {
+                    "mailbox_id": "0" * 32,
+                    "request_id": uuid.uuid4().hex,
+                    "credential": "0" * 64,
+                    "verb": "graph_diff",
+                    "arguments": {"from": "main@0", "to": "main@head"},
+                }
+            ),
+            None,
+        ).status
+        == "ok"
+    )
+
     launcher = ScriptedLauncher([{}], message="must not launch")
     recorded = _recorded_pass(agent_patch_json(refresh_patch()), "Refreshed offline.")
     settled = asyncio.run(

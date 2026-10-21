@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 from pathlib import Path
 from types import SimpleNamespace
@@ -1156,6 +1157,21 @@ async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
         recorded_finalizer(store, execution.operation_id) is finalize_recorded_episode_report_result
     )
     recorded = _recorded_pass("", "Report written.", thread_id="native-session")
+    # A call its host recorded as failed publishes nothing; its retry launches.
+    failed = dataclasses.replace(
+        recorded,
+        events=recorded.events.replace(
+            '{"type": "turn.completed"', '{"type": "turn.failed", "error": {"message": "x"}'
+        ),
+    )
+    await _events(
+        finalize_recorded_episode_report_result(
+            service, launcher, request, tmp_path / "unused", execution, failed
+        )
+    )
+    assert store.episode_report("episode") is None
+    assert launcher.calls == 2
+
     settled = await _events(
         finalize_recorded_episode_report_result(
             service, launcher, request, tmp_path / "unused", execution, recorded
@@ -1164,4 +1180,4 @@ async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
 
     assert [event.event for event in settled] == ["message", "done"]
     assert store.episode_report("episode") is not None
-    assert launcher.calls == 1
+    assert launcher.calls == 2

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import aclosing, suppress
 from datetime import datetime
 from pathlib import Path
@@ -36,7 +36,7 @@ from rcp.runs.episodes.merge import (
     verify_episode_merge_code,
 )
 from rcp.runs.graph_history_queries import handle_graph_history_command
-from rcp.runs.merge_contract import MergeAnswers
+from rcp.runs.merge_contract import MergeAnswers, MergePlan
 from rcp.runs.patch_validator import (
     MergeAnswersCheck,
     cleanup_patch_validation_mailbox,
@@ -59,9 +59,12 @@ from rcp.runs.shared import (
     _sse,
     _swept_stage_root,
 )
+from rcp.runs.task_policy import load_stored_request
 from rcp.runs.tasks.work_turn_runtime import (
     WORK_CORRECTION_SESSION_ROLE,
     WorkValidatorMailboxLifecycle,
+    load_work_mailbox_context,
+    restore_work_validator_mailbox,
     start_work_validator_mailbox,
 )
 from rcp.service import ProjectService, RunRequest
@@ -359,11 +362,7 @@ async def stream_branch_merge_task(
             execution=execution,
         )
 
-        def handle_command(command, identity):
-            if isinstance(command, MergeAnswersCommandRequest):
-                return checks(command, identity)
-            return handle_graph_history_command(service, graph_read_scope, command)
-
+        handle_command = _merge_command_handler(checks, service, graph_read_scope)
         turn_number = 0
 
         async def start_check_turn(current_plan):
@@ -387,6 +386,10 @@ async def stream_branch_merge_task(
                 budget=None,
                 validate=None,
                 command_handler=handle_command,
+                resume_context={
+                    "plan": current_plan.model_dump(mode="json"),
+                    "turn_id": staged_validator.credential.identity.turn_id,
+                },
             )
             return (
                 staged_validator.client_command(
@@ -497,6 +500,50 @@ async def stream_branch_merge_task(
 
 
 BRANCH_MERGE_FINALIZATION_ROLE = "branch_merge_finalization"
+
+
+def _merge_command_handler(
+    checks: MergeAnswersCheck, service: ProjectService, graph_read_scope: GraphReadScope
+):
+    def handle_command(command, identity):
+        if isinstance(command, MergeAnswersCommandRequest):
+            return checks(command, identity)
+        return handle_graph_history_command(service, graph_read_scope, command)
+
+    return handle_command
+
+
+def resume_branch_merge_command_mailbox(
+    service: Callable[[], ProjectService], execution: AgentTaskExecution
+) -> WorkValidatorMailboxLifecycle | None:
+    """Serve a detached merge turn's answer checks and graph reads after a relaunch."""
+
+    saved = load_work_mailbox_context(execution)
+    if saved is None:
+        return None
+    task = execution.store.agent_task(execution.operation_id)
+    if task is None:
+        raise ValueError("The detached branch merge lost its task.")
+    request = load_stored_request(
+        BranchMergeRunRequest, task.request, operation_id=task.operation_id
+    )
+    destination = request.merge_binding.destination if request.merge_binding else GraphTargetRef()
+    project = service()
+    history = merge_history(project, destination)
+    checks = MergeAnswersCheck(
+        plan=MergePlan.model_validate(saved["plan"]),
+        history=history,
+        task_id=task.operation_id,
+        turn_id=str(saved["turn_id"]),
+        execution=execution,
+    )
+    return restore_work_validator_mailbox(
+        execution,
+        validate=None,
+        command_handler=_merge_command_handler(
+            checks, project, GraphReadScope.resolve(task.project_id, history)
+        ),
+    )
 
 
 def _admit_recorded_turn(
