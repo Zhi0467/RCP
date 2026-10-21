@@ -2097,10 +2097,20 @@ async def _settle_worker_patch(
     retry_patch_digest: str | None,
     command_file_consumer: Callable[[str, str], bool] | None,
     correction: _Correction | None,
+    failed_correction: str | None = None,
     _actor_role: Literal["worker", "orchestrator"] = "worker",
     _profile: Literal["ordinary", "orchestrator"] = "ordinary",
     _capability: Literal["work_auto", "orchestrate"] = "work_auto",
 ) -> _PatchSettlement:
+    if failed_correction is not None:
+        # A recorded correction that failed ends the rounds as a live one does.
+        rejected = failed_graph_update(
+            _WorkPatchFailure(failed_correction, correctable=True),
+            bounded_messages=_bounded_graph_messages,
+            correction_rounds=PATCH_CORRECTION_MAX_ROUNDS,
+        )
+        _record_work_graph_rejection(execution, rejected)
+        return _PatchSettlement(rejected, (), had_patch=True)
     try:
         patch_text = _read_chat_patch(stage.workspace, stage.remote)
     except (OSError, StateUnavailable, ValueError) as exc:
@@ -2662,6 +2672,7 @@ async def _settle_actor_turn(
     command_file_consumer: Callable[[str, str], bool] | None,
     correction: _Correction | None,
     answer: str | None = None,
+    failed_correction: str | None = None,
 ) -> AsyncIterator[str]:
     """Settle one finished actor pass, watched live or read back from its host."""
 
@@ -2705,6 +2716,7 @@ async def _settle_actor_turn(
         retry_patch_digest=retry_patch_digest,
         command_file_consumer=command_file_consumer,
         correction=correction,
+        failed_correction=failed_correction,
         _actor_role=role,
         _profile="orchestrator" if orchestrator else "ordinary",
         _capability="orchestrate" if orchestrator else "work_auto",
@@ -2791,8 +2803,6 @@ async def finalize_recorded_auto_research_result(
     if refused:
         return
     write_recorded_patch(stage.workspace, stage.remote, recorded)
-    for frame in absorb_recorded_events(outcome, verdict):
-        yield frame
     primary_answer = execution.store.agent_task_contract(
         execution.operation_id, _AUTO_RESEARCH_PRIMARY_ANSWER_ROLE
     )
@@ -2802,6 +2812,21 @@ async def finalize_recorded_auto_research_result(
         execution.operation_id, "remote_provider_started"
     )
     correction = bool(starts) and starts[0].payload.get("pid_file") != recorded.pid_file
+    failed_correction: str | None = None
+    for frame in absorb_recorded_events(outcome, verdict):
+        event = AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
+        if correction and primary_answer is not None and event.event == "error":
+            # As live: a failed correction rejects the graph update, not the
+            # operational work the primary pass already finished.
+            failed_correction = failed_correction or event.text
+            continue
+        yield frame
+    if correction and primary_answer is not None and not outcome.completed:
+        failed_correction = (
+            failed_correction or f"AutoResearch {supplied.role} Patch correction failed."
+        )
+        outcome.failed = False
+        outcome.completed = True
     async for frame in _settle_actor_turn(
         service,
         execution,
@@ -2815,5 +2840,6 @@ async def finalize_recorded_auto_research_result(
         ).remove_if_sha256,
         correction=None,
         answer=primary_answer,
+        failed_correction=failed_correction,
     ):
         yield frame

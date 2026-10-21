@@ -3629,6 +3629,70 @@ async def test_a_recorded_retry_ignores_its_inherited_patch_after_an_outage(
 
 
 @pytest.mark.asyncio
+async def test_a_recorded_correction_that_failed_keeps_the_primary_answer(
+    manifest, tmp_path
+) -> None:
+    """As live, a failed correction rejects the graph update, not the finished work."""
+
+    from .test_work_agent_io import _recorded_failed_correction
+
+    service = _service(manifest, tmp_path)
+    service, store, _auto_research, _root, worker = _setup_branch_auto_research(service, tmp_path)
+    execution = _execution(store, worker)
+    request = AutoResearchRunRequest.model_validate(worker.request)
+
+    class _LinkLost(_WorkerLauncher):
+        async def stream(self, _provider, prompt, **kwargs):
+            yield AgentEvent(event="session", session_id=self.session_id)
+            yield AgentEvent(event="remote_result_pending")
+
+    await _events(
+        stream_auto_research_worker_run(
+            service,
+            cast(Any, _LinkLost()),
+            request,
+            tmp_path / "data",
+            execution,
+            command_dispatcher=_dispatcher(store),
+        )
+    )
+    # The primary pass answered and its Patch was sent back for correction.
+    for pid_file in ("/stage/primary.pid", "/stage/one.pid"):
+        store.begin_remote_provider_pass(
+            execution.operation_id, "gpu", "/stage", pid_file, supervised=True
+        )
+        if pid_file == "/stage/primary.pid":
+            store.finish_remote_provider_pass(execution.operation_id, pid_file)
+    answer = "The worker finished its research."
+    store.record_agent_task_contract(
+        execution.operation_id,
+        auto_research_stream_module._AUTO_RESEARCH_PRIMARY_ANSWER_ROLE,
+        answer,
+        hashlib.sha256(answer.encode("utf-8")).hexdigest(),
+    )
+
+    settled = await _events(
+        auto_research_stream_module.finalize_recorded_auto_research_result(
+            service,
+            cast(Any, _WorkerLauncher()),
+            cast(Any, request),
+            tmp_path / "data",
+            execution,
+            _recorded_failed_correction("correction crashed"),
+        )
+    )
+
+    assert [event.event for event in settled if event.event not in {"raw", "session"}] == [
+        "answer",
+        "message",
+        "done",
+    ]
+    assert settled[[event.event for event in settled].index("answer")].text == answer
+    message = next(event for event in settled if event.event == "message")
+    assert json.loads(message.text)["graph_update"]["status"] == "rejected"
+
+
+@pytest.mark.asyncio
 async def test_a_relaunch_serves_a_detached_actor_mailbox_as_its_launch_did(
     manifest, tmp_path, monkeypatch
 ) -> None:
