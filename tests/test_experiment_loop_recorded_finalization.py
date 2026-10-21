@@ -459,74 +459,6 @@ async def test_a_resettled_watcher_handoff_keeps_its_own_limit(
 
 
 @pytest.mark.asyncio
-async def test_a_supervised_loop_correction_is_itself_supervised(
-    manifest, tmp_path: Path, monkeypatch
-) -> None:
-    """A correction of a recoverable pass has to be recoverable too.
-
-    Otherwise a link lost during the correction leaves no journal for
-    reconciliation, and the operational invocation this turn already spent gets
-    reattempted from the beginning.
-    """
-
-    from .test_experiment_loop_agent_io import _LoopLauncher
-
-    data_dir = tmp_path / "data"
-    app = create_app(str(manifest.path), data_dir=data_dir)
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    append_fixture_patch(service, _experiment_patch())
-    project_id = app.state.default_project_id
-    assert project_id is not None
-    store: AppStore = app.state.background_tasks.store
-    request = _loop_request(
-        _EPISODE_ID,
-        "chat-loop-supervised-correction",
-        invocation=1,
-        control_revision=service.history.state().revision,
-    )
-    execution = _execution(store, project_id, "loop-supervised-correction", request)
-
-    stage = loop_module._stage_work_turn
-
-    async def remote_stage_work_turn(*args, **kwargs):
-        turn, staged = await stage(*args, **kwargs)
-        turn.execution_host = "recorded-host"
-        return turn, staged
-
-    corrections: list[dict] = []
-    stream = loop_module._stream_turn_agent_events
-
-    def record_the_launch(turn, launcher, prompt, **kwargs):
-        corrections.append(kwargs)
-        return stream(turn, launcher, prompt, **kwargs)
-
-    monkeypatch.setattr(loop_module, "_stage_work_turn", remote_stage_work_turn)
-    monkeypatch.setattr(loop_module, "_stream_turn_agent_events", record_the_launch)
-
-    launcher = _LoopLauncher("provider-session-supervised", tmp_path, write_handoff=False)
-
-    async def invalid_then_nothing(_provider, prompt, **kwargs):
-        # An observer the loop cannot validate is what sends a live turn back
-        # for exactly one correction round.
-        Path(kwargs["cwd"]).joinpath("watch.json").write_text(
-            json.dumps({"external": [{"check_command": ""}], "graph": []}), encoding="utf-8"
-        )
-        async for event in _LoopLauncher.stream(launcher, _provider, prompt, **kwargs):
-            yield event
-
-    launcher.stream = invalid_then_nothing  # type: ignore[assignment]
-
-    async for _frame in loop_module.stream_experiment_loop_task(
-        service, launcher, request, data_dir, execution=execution
-    ):
-        pass
-
-    assert corrections, "the invalid handoff should have asked for a correction"
-    assert all(item["supervise_remote"] is True for item in corrections)
-
-
-@pytest.mark.asyncio
 async def test_a_recovered_loop_correction_does_not_replace_the_reply(
     manifest, tmp_path: Path
 ) -> None:
@@ -635,14 +567,6 @@ async def test_a_correction_that_goes_pending_leaves_the_turn_for_its_own_task(
         return turn, staged
 
     stream = loop_module._stream_turn_agent_events
-
-    async def pending_correction(turn, launcher, prompt, **kwargs):
-        if kwargs.get("supervise_remote"):
-            kwargs["outcome"].remote_result_pending = True
-            yield _sse(AgentEvent(event="remote_result_pending", text="Connection lost."))
-            return
-        async for frame in stream(turn, launcher, prompt, **kwargs):
-            yield frame
 
     monkeypatch.setattr(loop_module, "_stage_work_turn", remote_stage_work_turn)
 

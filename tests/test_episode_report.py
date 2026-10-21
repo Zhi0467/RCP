@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 from pathlib import Path
 from types import SimpleNamespace
@@ -1123,3 +1124,137 @@ def test_report_offer_falls_back_after_delete(manifest, tmp_path) -> None:
     assert response.episode.report is None and response.episode.recommendation == "none"
     store.delete_artifact("project", older.artifact_id)
     assert projected().can_open_report is False
+
+
+@pytest.mark.asyncio
+async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
+    manifest, tmp_path
+) -> None:
+    """A dropped link leaves the attempt running; the recorded pass then finishes it."""
+
+    from rcp.runs.remote_finalization import recorded_finalizer
+    from rcp.runs.tasks.episode_report import finalize_recorded_episode_report_result
+
+    from .test_work_agent_io import _recorded_pass
+
+    service, store, request, execution, _stage = _setup_report(manifest, tmp_path)
+
+    class LinkLost(_ReportLauncher):
+        async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
+            self.calls += 1
+            Path(kwargs["cwd"]).joinpath("episode-report.html").write_text(
+                "<html><body><figure>Written offline</figure></body></html>", encoding="utf-8"
+            )
+            yield AgentEvent(event="session", session_id="native-session")
+            yield AgentEvent(event="remote_result_pending")
+
+    launcher = LinkLost([])
+    live = await _events(stream_episode_report_run(service, launcher, request, execution))
+    assert [event.event for event in live if event.event != "raw"] == ["remote_result_pending"]
+    assert store.episode_report("episode") is None
+
+    assert (
+        recorded_finalizer(store, execution.operation_id) is finalize_recorded_episode_report_result
+    )
+    recorded = _recorded_pass("", "Report written.", thread_id="native-session")
+    # Reconciliation only settles a pass whose start was recorded.
+    store.begin_remote_provider_pass(
+        execution.operation_id, "report-host", "/stage", recorded.pid_file, supervised=True
+    )
+    # A call its host recorded as failed publishes nothing; its retry launches.
+    failed = dataclasses.replace(
+        recorded,
+        events=recorded.events.replace(
+            '{"type": "turn.completed"', '{"type": "turn.failed", "error": {"message": "x"}'
+        ),
+    )
+    import rcp.runs.tasks.episode_report as report_module
+    from rcp.transport import StateUnavailable
+
+    def unreachable(*_args, **_kwargs):
+        raise StateUnavailable("ssh exited 255")
+
+    # A host that drops before the retry launches keeps the failed pass open,
+    # so reconciliation settles it again rather than waiting on nothing.
+    with pytest.MonkeyPatch.context() as outage:
+        outage.setattr(report_module, "_stage_and_verify_receipt", unreachable)
+        with pytest.raises(StateUnavailable):
+            await _events(
+                finalize_recorded_episode_report_result(
+                    service, launcher, request, tmp_path / "unused", execution, failed
+                )
+            )
+    assert launcher.calls == 1
+    assert store.unresolved_remote_provider_passes("report-host", "/stage") != []
+    await _events(
+        finalize_recorded_episode_report_result(
+            service, launcher, request, tmp_path / "unused", execution, failed
+        )
+    )
+    assert store.episode_report("episode") is None
+    assert launcher.calls == 2
+    # The replayed failure counted once.
+    assert store.current_episode_report_attempt("episode").attempt_number == 2
+    assert store.unresolved_remote_provider_passes("report-host", "/stage") == []
+
+    # A host that drops while the retained report is read is waited out.
+
+    with pytest.MonkeyPatch.context() as outage:
+        outage.setattr(report_module, "_read_valid_report", unreachable)
+        with pytest.raises(StateUnavailable):
+            await _events(
+                finalize_recorded_episode_report_result(
+                    service, launcher, request, tmp_path / "unused", execution, recorded
+                )
+            )
+    assert store.episode_report("episode") is None
+
+    settled = await _events(
+        finalize_recorded_episode_report_result(
+            service, launcher, request, tmp_path / "unused", execution, recorded
+        )
+    )
+
+    assert [event.event for event in settled if event.event != "raw"] == ["message", "done"]
+    # Usage the host recorded after the link dropped is still accounted.
+    assert any(event.usage for event in settled)
+    assert store.episode_report("episode") is not None
+    assert launcher.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_report_call_that_lost_its_sign_in_waits_for_verify(
+    manifest, tmp_path
+) -> None:
+    """A recorded sign-in failure parks the report as a live one does; nothing retries."""
+
+    from rcp.runs.tasks.episode_report import finalize_recorded_episode_report_result
+
+    from .test_work_agent_io import _recorded_pass
+
+    service, store, request, execution, _stage = _setup_report(manifest, tmp_path)
+
+    class LinkLost(_ReportLauncher):
+        async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
+            self.calls += 1
+            yield AgentEvent(event="session", session_id="native-session")
+            yield AgentEvent(event="remote_result_pending")
+
+    launcher = LinkLost([])
+    await _events(stream_episode_report_run(service, launcher, request, execution))
+    recorded = _recorded_pass("", "unused", thread_id="native-session")
+    signed_out = dataclasses.replace(
+        recorded,
+        events=recorded.events.replace(
+            '{"type": "turn.completed"',
+            '{"type": "turn.failed", "error": {"message": "refresh_token_reused"}',
+        ),
+    )
+    await _events(
+        finalize_recorded_episode_report_result(
+            service, launcher, request, tmp_path / "unused", execution, signed_out
+        )
+    )
+
+    assert launcher.calls == 1
+    assert store.agent_task(execution.operation_id).failure_kind == "provider_auth"

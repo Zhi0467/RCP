@@ -227,6 +227,9 @@ def test_only_one_caller_can_claim_a_recorded_finalization(tmp_path) -> None:
     assert store.claim_recorded_finalization("first") is False
     assert store.operation_ids_awaiting_remote_result() == []
 
+    # Settling moved on before an outage stopped it; the release still returns it.
+    with store.connection() as connection:
+        connection.execute("UPDATE graph_runs SET phase = 'applying' WHERE operation_id = 'first'")
     store.release_recorded_finalization("first")
 
     assert store.operation_ids_awaiting_remote_result() == ["first"]
@@ -357,6 +360,36 @@ def test_one_invalid_mailbox_checkpoint_does_not_block_other_detached_turns(tmp_
     assert manager._reconcile_remote_results()
     assert manager._reconcile_remote_results()
     assert restored == ["first", "second", "second"]
+
+
+def test_an_unreachable_host_never_spends_a_mailbox_restore_attempt(tmp_path, monkeypatch):
+    from rcp.background import BackgroundAgentTasks
+    from rcp.limits import COMMAND_MAILBOX_RESUME_MAX_ATTEMPTS
+    from rcp.runs.remote_finalization import WaitingTask
+    from rcp.runs.remote_reconciliation import Reconciliation
+    from rcp.transport import StateUnavailable
+
+    store = _store(tmp_path)
+    _awaiting(store, "first")
+    outages = COMMAND_MAILBOX_RESUME_MAX_ATTEMPTS + 1
+    calls = []
+
+    def restore(_execution):
+        calls.append(None)
+        if len(calls) <= outages:
+            raise StateUnavailable("ssh exited 255")
+        return None
+
+    manager = BackgroundAgentTasks(store, None, resume_command_mailbox=restore)
+    monkeypatch.setattr(
+        "rcp.runs.remote_finalization.plan_remote_reconciliation",
+        lambda _: [WaitingTask(store.agent_task("first"), Reconciliation("wait", "Live"), None)],
+    )
+    for _ in range(outages + 1):
+        assert manager._reconcile_remote_results()
+
+    assert len(calls) == outages + 1
+    assert "first" not in manager._mailbox_resume_refusals
 
 
 def _awaiting(store, operation_id):

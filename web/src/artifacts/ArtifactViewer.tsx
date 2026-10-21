@@ -1,8 +1,10 @@
 import { researchViewsProfile } from "../graph/researchViewResources";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
-import { graphTargetFromHash, projectViewHash, sameGraphTarget } from "../core/graphTarget";
+import { graphTargetFromHash, projectViewHash } from "../core/graphTarget";
 import type { GraphTargetRef } from "../core/types";
-import { BranchTag } from "../core/BranchTag";
+import { branchName } from "../core/branchNames";
+import { GraphPicker } from "../graph/GraphPicker";
+import { refsProfile } from "../graph/graphResources";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MessageCircle, PanelRight, Pin, RefreshCw, X } from "lucide-react";
 import { api } from "../core/api";
@@ -61,6 +63,11 @@ export function ArtifactViewer() {
     target?.kind === "artifact" ? artifactStateProfile(target.projectId, target.artifactId) : null;
   const resource = useResource("artifact-viewer", profile);
   const state = resource.value;
+  const refs = useResource(
+    "artifact-pin-refs",
+    target?.kind === "artifact" ? refsProfile(target.projectId) : null,
+  );
+  const [selectedPinTarget, setSelectedPinTarget] = useState<GraphTargetRef | null>(null);
   const [error, setError] = useState("");
   const [pinFailed, setPinFailed] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -69,8 +76,6 @@ export function ArtifactViewer() {
   const [keeping, setKeeping] = useState(false);
   const [keepFailure, setKeepFailure] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
-  // The pin control names its target only while another target is in view.
-  const [hash, setHash] = useState(window.location.hash);
   const iframe = useRef<HTMLIFrameElement>(null);
   const refresh = () => {
     if (profile) store.invalidate(resourceKeyId(profile.key));
@@ -98,14 +103,9 @@ export function ArtifactViewer() {
     setKeepFailure(null);
     setPinning(false);
     setPinFailed(false);
+    setSelectedPinTarget(null);
     if (target) setPlacement((current) => collapseViewer(current, false));
   }, [target]);
-
-  useEffect(() => {
-    const follow = () => setHash(window.location.hash);
-    window.addEventListener("hashchange", follow);
-    return () => window.removeEventListener("hashchange", follow);
-  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -213,22 +213,16 @@ export function ArtifactViewer() {
       if (generation === requestGeneration.current) setKeeping(false);
     }
   };
-  const pinTarget: GraphTargetRef | null = state
-    ? state.pin_branch_id
-      ? { kind: "branch", branch_id: state.pin_branch_id }
-      : { kind: "main" }
-    : null;
-  const pinElsewhere =
-    pinTarget !== null &&
-    target?.kind === "artifact" &&
-    (parseProjectHash(hash).projectId !== target.projectId ||
-      !sameGraphTarget(pinTarget, graphTargetFromHash(hash)));
-  const pinLabel = state?.pinned
-    ? `Open pin on ${state.pin_branch_name}`
-    : `Pin in Artifacts on ${state?.pin_branch_name}`;
+  const pinTarget: GraphTargetRef =
+    selectedPinTarget ??
+    (state?.pin_branch_id ? { kind: "branch", branch_id: state.pin_branch_id } : { kind: "main" });
+  const pinBranchId = pinTarget.kind === "branch" ? pinTarget.branch_id : null;
+  const pinned = state?.pinned_branch_ids.includes(pinBranchId ?? "") ?? false;
+  const pinName = branchName(refs.value, pinTarget);
+  const pinLabel = pinned ? `Open pin on ${pinName}` : `Pin in Artifacts on ${pinName}`;
   const pin = async () => {
     if (target.kind !== "artifact" || !state?.can_pin || pinning) return;
-    if (state.pinned && pinTarget) {
+    if (pinned) {
       const pinHash = projectViewHash(target.projectId, pinTarget, "artifacts", {
         pinId: target.artifactId,
       });
@@ -243,11 +237,9 @@ export function ArtifactViewer() {
     try {
       await api(`/api/projects/${encodeURIComponent(target.projectId)}/research-views`, {
         method: "POST",
-        body: JSON.stringify({ artifact_id: target.artifactId, branch_id: state.pin_branch_id }),
+        body: JSON.stringify({ artifact_id: target.artifactId, branch_id: pinBranchId }),
       });
-      store.invalidate(
-        resourceKeyId(researchViewsProfile(target.projectId, state.pin_branch_id).key),
-      );
+      store.invalidate(resourceKeyId(researchViewsProfile(target.projectId, pinBranchId).key));
       store.invalidate(
         resourceKeyId(artifactStateProfile(target.projectId, target.artifactId).key),
       );
@@ -312,22 +304,33 @@ export function ArtifactViewer() {
           />
         )}
         {state?.can_pin && (
-          <button
-            className="artifact-viewer-control pin-view-action"
-            aria-label={pinLabel}
-            title={pinLabel}
-            aria-pressed={state.pinned}
-            style={
-              pinFailed && !state.pinned ? { borderColor: "var(--danger, #b42318)" } : undefined
-            }
-            disabled={pinning}
-            onClick={() => void pin()}
-          >
-            <Pin size={16} />
-            {pinElsewhere && pinTarget && (
-              <BranchTag refs={null} target={pinTarget} name={state.pin_branch_name} />
-            )}
-          </button>
+          <>
+            <button
+              className="artifact-viewer-control pin-view-action"
+              aria-label={pinLabel}
+              title={pinLabel}
+              aria-pressed={pinned}
+              style={pinFailed && !pinned ? { borderColor: "var(--danger, #b42318)" } : undefined}
+              disabled={pinning}
+              onClick={() => void pin()}
+            >
+              <Pin size={16} />
+            </button>
+            <GraphPicker
+              compact
+              projectId={target.projectId}
+              refs={refs.value ?? (refs.error ? null : undefined)}
+              activeRef={pinTarget}
+              unavailable={Boolean(refs.error) || pinning}
+              onSelect={(next) => {
+                setSelectedPinTarget(next);
+                setPinFailed(false);
+              }}
+              onRefUpdated={() =>
+                store.invalidate(resourceKeyId(refsProfile(target.projectId).key))
+              }
+            />
+          </>
         )}
         {editing && <span role="status">Editing</span>}
         {state?.can_keep && (

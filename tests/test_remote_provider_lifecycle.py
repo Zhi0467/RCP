@@ -364,6 +364,66 @@ async def test_supervised_transport_loss_leaves_the_remote_pass_for_reconciliati
 
 
 @pytest.mark.asyncio
+async def test_pause_of_supervised_remote_turn_does_not_wait_for_reconciliation(
+    tmp_path, monkeypatch, transported_launcher
+):
+    from rcp.agents import AgentProcessControl
+    from rcp.agents import launcher as launcher_module
+
+    # Stand in for the local SSH client: deliver a provider event, then remain
+    # connected until Pause signals it. The remote stop is observed separately.
+    monkeypatch.setattr(
+        launcher_module, "_supervised_remote_turn_command", lambda command, **kwargs: command
+    )
+    monkeypatch.setattr(
+        transported_launcher,
+        "_command",
+        lambda *args, **kwargs: [
+            sys.executable,
+            "-c",
+            "import sys, time; sys.stdin.read(); "
+            'print(\'{"type":"thread.started","thread_id":"paused-session"}\', flush=True); '
+            "time.sleep(30)",
+        ],
+    )
+    stops = []
+    monkeypatch.setattr(
+        AgentProcessControl,
+        "_terminate_remote_after_hold",
+        lambda *args, **kwargs: stops.append(args[:2]) or True,
+    )
+    monkeypatch.setattr(AgentProcessControl, "_confirm_remote_stopped", lambda *a, **kw: True)
+    control = AgentProcessControl()
+
+    async def collect():
+        events = []
+        async for event in transported_launcher.stream(
+            "codex",
+            "prompt",
+            cwd=tmp_path,
+            capability="scratch_patch",
+            host="test-host",
+            remote_pid_file=str(tmp_path / "agent.pid"),
+            runtime_id="exec",
+            supervise_remote=True,
+            supervisor_path="/stage/supervisor.py",
+            control=control,
+        ):
+            events.append(event)
+            if event.event == "session":
+                control.request_pause()
+        return events
+
+    events = await asyncio.wait_for(collect(), timeout=10)
+    evidence = json.loads(next(event.text for event in events if event.event == "provider_exit"))
+    assert evidence["return_code"] < 0
+    assert stops
+    assert events[-1].event == "paused"
+    assert evidence["remote_process_stopped"] is True
+    assert not any(event.event in {"remote_result_pending", "error"} for event in events)
+
+
+@pytest.mark.asyncio
 async def test_provider_turn_rides_the_master_of_its_own_run(
     tmp_path, monkeypatch, transported_launcher
 ):
@@ -401,3 +461,123 @@ async def test_provider_turn_rides_the_master_of_its_own_run(
     # it deliberately stays on the shared one.
     assert partitions[0] == "test-host:/tmp/rcp-run.op-one"
     assert set(partitions[1:]) <= {None}
+
+
+@pytest.mark.parametrize(
+    "delivered",
+    [True, False],
+)
+def test_shutdown_and_pause_settle_the_right_pass(
+    tmp_path, monkeypatch, transported_launcher, delivered
+):
+    import hashlib
+    from unittest.mock import Mock
+
+    from rcp.agents import AgentProcessControl
+    from rcp.background import BackgroundAgentTasks
+    from rcp.runs import shared
+    from rcp.runs.tasks.work import WORK_FINALIZATION_CONTEXT_ROLE
+    from rcp.transport import RemoteRunStage
+
+    from .helpers import wait_until
+    from .test_background import _admitted_launch_task, _store
+
+    store = _store(tmp_path)
+    pause = Mock(wraps=store.request_agent_task_pause)
+    monkeypatch.setattr(store, "request_agent_task_pause", pause)
+    monkeypatch.setattr(
+        transported_launcher,
+        "readiness",
+        lambda *a, **kw: ProviderReadiness(
+            provider="codex", installed=True, authenticated=True, version="0.153.4"
+        ),
+    )
+    stage = Mock(spec=RemoteRunStage, root=tmp_path)
+    stage.list_workspace_files.return_value = []
+    monkeypatch.setattr(shared, "_stage_or_reuse_task_input", lambda *a: "/stage/supervisor.py")
+    monkeypatch.setattr(shared, "require_remote_provider_quiescence", lambda *a: None)
+    # A real local process stands in for SSH; host stop and journal reads are
+    # independent inputs, so killing the client cannot imply provider death.
+    ready = tmp_path / "client-ready"
+    spawn = asyncio.create_subprocess_exec
+
+    async def spawn_client(*args, **kwargs):
+        return await spawn(
+            sys.executable,
+            "-c",
+            "import sys, time; from pathlib import Path; sys.stdin.buffer.readline(); "
+            f"Path({str(ready)!r}).touch(); "
+            'print(\'{"type":"thread.started","thread_id":"kept-session"}\', flush=True); '
+            "time.sleep(30)",
+            **kwargs,
+        )
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn_client)
+    stop = Mock(return_value=True)
+    confirm = Mock(return_value=True)
+    monkeypatch.setattr(AgentProcessControl, "_terminate_remote_after_hold", stop)
+    monkeypatch.setattr(AgentProcessControl, "_confirm_remote_stopped", confirm)
+    mailbox = Mock()
+
+    async def stream(_project_id, _kind, request, execution):
+        execution.checkpoint_stage("test-host", str(tmp_path))
+        execution.command_mailbox = mailbox
+        mailbox.execution = execution
+        async for frame in shared._stream_agent_events(
+            transported_launcher,
+            request,
+            "prompt",
+            workspace=tmp_path,
+            session_id=None,
+            read_dirs=[],
+            write_dirs=[],
+            write_scope=None,
+            execution_host="test-host",
+            execution=execution,
+            remote_stage=stage,
+            capability="scratch_patch",
+            outcome=shared._ProviderOutcome(),
+            binary=None,
+        ):
+            yield frame
+
+    tasks = BackgroundAgentTasks(store, stream)
+    task = _admitted_launch_task(
+        store,
+        operation_id="quit-turn",
+        record_updates={
+            "runtime_id": "codex.exec-json.v1" if delivered else "codex.app-server-stdio.v1"
+        },
+    )
+    store.record_agent_task_contract(
+        task.operation_id, WORK_FINALIZATION_CONTEXT_ROLE, "{}", hashlib.sha256(b"{}").hexdigest()
+    )
+    tasks.launch_admitted(task.operation_id)
+    try:
+        wait_until(
+            lambda: (
+                (current := store.agent_task(task.operation_id)) is not None
+                and current.native_session_id == "kept-session"
+                if delivered
+                else ready.exists()
+            )
+        )
+        tasks.shutdown()
+        assert tasks.runtime_is_idle()
+        record = store.agent_task(task.operation_id)
+        assert record is not None
+        passes = store.unresolved_remote_provider_passes("test-host", str(tmp_path))
+        if not delivered:
+            assert record.status == "paused"
+            assert stop.called
+            assert passes == []
+            return
+
+        assert record.status == "running"
+        assert record.phase == "awaiting_remote_result"
+        stop.assert_not_called()
+        mailbox.detach.assert_called_once()
+        assert [operation_id for operation_id, _pid_file in passes] == [task.operation_id]
+        pause.assert_not_called()
+    finally:
+        tasks.shutdown()

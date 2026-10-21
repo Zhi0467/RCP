@@ -1324,6 +1324,8 @@ def _read_initial_patch_deliverable(
     try:
         text = _read_chat_patch(turn.workspace, turn.remote_stage)
     except (OSError, StateUnavailable, ValueError) as exc:
+        if turn.recorded and isinstance(exc, StateUnavailable):
+            raise
         _note_stage_unreachable(turn.execution, exc)
         text = None
         failure = _DeliverableFailure(
@@ -1351,6 +1353,8 @@ def _read_initial_watch_deliverable(
     try:
         text = _read_watch_request(turn.workspace, turn.remote_stage)
     except (OSError, StateUnavailable, ValueError) as exc:
+        if turn.recorded and isinstance(exc, StateUnavailable):
+            raise
         _note_stage_unreachable(turn.execution, exc)
         text = None
         failure = _DeliverableFailure(
@@ -1406,6 +1410,10 @@ async def _validate_patch_deliverable(
         settled.graph_update = result.model_copy(update={"correction_rounds": correction_rounds})
         return _DeliverableStep()
     assert failure is not None
+    if turn.recorded and failure.commit_status == "absent":
+        # Nothing published, so a recorded pass retries rather than spending
+        # its result on an outage.
+        raise StateUnavailable(failure.message)
     return _DeliverableStep(failure=failure)
 
 
@@ -1832,7 +1840,6 @@ async def _settle_patch_deliverable(
                 outcome=correction_outcome,
                 validator_staged=correction_validator,
                 validator_lifecycle=correction_lifecycle,
-                supervise_remote=launch_turn.supervise_remote,
             )
         except BaseException as exc:
             if correction_lifecycle is not None:
@@ -1941,6 +1948,8 @@ async def _settle_watch_deliverable(
                 parsed = WorkTurnOutcome.model_validate_json(raw or "null")
                 settled.turn_outcome = TurnOutcome.model_validate(parsed.model_dump())
             except (ValueError, OSError, StateUnavailable) as exc:
+                if turn.recorded and isinstance(exc, StateUnavailable):
+                    raise
                 settled.turn_outcome = TurnOutcome(status="not_stated")
                 if correction_rounds < TURN_OUTCOME_CORRECTION_MAX_ROUNDS:
                     outcome_failure = f"Write a valid outcome.json for the completed turn: {exc}"
@@ -2068,7 +2077,6 @@ async def _settle_watch_deliverable(
                 outcome=correction_outcome,
                 validator_staged=correction_validator,
                 validator_lifecycle=correction_lifecycle,
-                supervise_remote=launch_turn.supervise_remote,
             )
             async with aclosing(correction_stream) as stream:
                 async for frame in stream:
@@ -2145,7 +2153,6 @@ async def _apply_work_turn(
         provider_binary=launch_turn.provider_binary if launch_turn is not None else None,
         retry_output_digests=retry_baseline.experiment_watch_digests,
         maximum_corrections=maximum_corrections,
-        supervise_remote=launch_turn.supervise_remote if launch_turn is not None else False,
         continuation=_maintenance_continuation(launch_turn, composed),
     )
     applied.native_session_id = native_session_id
@@ -2251,10 +2258,8 @@ async def _launch_and_stream_work_turn(
     _wake_episode: object | None,
     required_session_id: str | None = None,
     *,
-    supervise_remote: bool = False,
     browser_grant: BrowserGrant | None = None,
 ) -> AsyncGenerator[str, None]:
-    turn.supervise_remote = supervise_remote
     try:
         if is_consolidation(turn.execution) and not turn.execution.store.agent_task_has_receipt(
             turn.execution.operation_id, "agent_launch"
@@ -2313,7 +2318,6 @@ async def _launch_and_stream_work_turn(
                 session_id=turn.request.session_id,
                 required_session_id=required_session_id,
                 outcome=turn.outcome,
-                supervise_remote=supervise_remote,
                 browser_grant=browser_grant,
             )
         ) as stream:
@@ -2692,7 +2696,6 @@ async def _stream_work_run(
             staged,
             None,
             required_session_id=required_session_id,
-            supervise_remote=bool(turn.execution_host),
             browser_grant=browser_grant,
         )
     ) as stream:
@@ -3458,6 +3461,7 @@ def open_recorded_work_turn(
     """
 
     turn = _load_work_finalization_context(service, request, execution, role=role, owner=owner)
+    turn.recorded = True
     question = execution.store.question_for_followup(execution.operation_id)
     if question is not None:
         require_question_origin_binding(

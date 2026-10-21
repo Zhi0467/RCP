@@ -16,7 +16,7 @@ from rcp.agents.continuation_prompt import LaunchPhase, classify, compose
 from rcp.agents.episode_report_prompt import episode_report_task_contract
 from rcp.agents.provider_accounts import account_login_refusal, record_provider_failure
 from rcp.agents.provider_environment import ProviderCredentialStore
-from rcp.agents.write_scope import resolve_project_write_scope
+from rcp.agents.write_scope import ProjectWriteScope, resolve_project_write_scope
 from rcp.artifacts import classify_artifact_bytes, html_document_title
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES
 from rcp.providers import AgentCapability, ProviderId, profile_for
@@ -44,6 +44,7 @@ from rcp.transport import RemoteRunStage, RunStageMailbox, StateUnavailable
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution
+    from rcp.runs.recorded_turn import RecordedProviderTurn
 
 _REPORT_SKILL_ID = "episode-report"
 _REPORT_OUTPUT_DEFAULT = "episode-report.html"
@@ -85,8 +86,16 @@ async def stream_episode_report_run(
     launcher: AgentLauncher,
     request: EpisodeReportRunRequest,
     execution: AgentTaskExecution,
+    *,
+    recorded: bool = False,
+    consumed_pass: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Run at most three hidden report calls inside one exact episode continuation.
+
+    `recorded` settles a call its host finished while RCP was away; an outage
+    then propagates so reconciliation retries rather than ending the wrap-up.
+    `consumed_pass` is that call's pass: it stays open, and so recoverable,
+    until a retry is about to take its place.
 
     Operational context is deliberately absent. The native provider session supplies its retained
     context; RCP adds only the immutable compact receipt, the official report skill, and an optional
@@ -133,6 +142,14 @@ async def stream_episode_report_run(
             repository_inventory=service.repository_ownership_inventory(
                 project_id=turn.task.project_id
             ),
+        )
+        # What a recorded pass needs to decode this call; the same on every re-entry.
+        retained = write_scope.model_dump_json()
+        execution.store.record_agent_task_contract(
+            execution.operation_id,
+            EPISODE_REPORT_FINALIZATION_ROLE,
+            retained,
+            hashlib.sha256(retained.encode("utf-8")).hexdigest(),
         )
         attempt = execution.store.current_episode_report_attempt(turn.episode.episode_id)
         if attempt is not None and attempt.status == "running":
@@ -209,6 +226,10 @@ async def stream_episode_report_run(
                 attempt = execution.store.allocate_episode_report_attempt(turn.episode.episode_id)
                 if attempt.attempt_number != attempt_number:
                     raise RuntimeError("Episode report attempt allocation changed under launch.")
+            if consumed_pass is not None:
+                # Every preflight passed, so the retry takes over from here.
+                execution.store.finish_remote_provider_pass(execution.operation_id, consumed_pass)
+                consumed_pass = None
             execution.store.mark_episode_report_attempt_running(attempt.attempt_id)
             _record_agent_launch_receipt(
                 execution,
@@ -261,6 +282,9 @@ async def stream_episode_report_run(
                         event = _event_from_frame(frame)
                         if event.event == "error" and event.text.strip():
                             provider_errors.append(" ".join(event.text.split())[:1000])
+                        if event.event == "remote_result_pending":
+                            # The task waits on this frame for its recorded pass.
+                            yield frame
                         if event.usage is not None or event.status is not None:
                             # Usage is still real accounting, and status still feeds the
                             # live panel, even though intermediate report failures and
@@ -271,36 +295,15 @@ async def stream_episode_report_run(
             except (OSError, RuntimeError, StateUnavailable, ValueError) as exc:
                 outcome.failed = True
                 provider_errors.append(" ".join(str(exc).split())[:1000])
+            if outcome.remote_result_pending:
+                # The attempt stays running; its recorded pass re-enters below.
+                return
 
-            auth_error = next(
-                (
-                    error
-                    for error in provider_errors
-                    if profile_for(request.provider).credential_failure(error)
-                ),
-                None,
+            auth_frame = _settle_provider_auth_failure(
+                execution, request, stage.execution_host, attempt, provider_errors
             )
-            if auth_error is not None:
-                record_provider_failure(
-                    execution.store,
-                    request.provider,
-                    stage.execution_host,
-                    generation=execution.login_generation,
-                    evidence=auth_error,
-                    source="report",
-                )
-                execution.store.record_episode_report_attempt_error(
-                    attempt.attempt_id, auth_error, provider_auth=True
-                )
-                yield _sse(
-                    AgentEvent(
-                        event="error",
-                        text=(
-                            f"{profile_for(request.provider).label} must be signed in again. "
-                            "Sign in on the machine, then use Verify sign-in."
-                        ),
-                    )
-                )
+            if auth_frame is not None:
+                yield auth_frame
                 return
 
             if outcome.session_id != turn.wrapup.native_session_id:
@@ -372,9 +375,114 @@ async def stream_episode_report_run(
             yield _sse(AgentEvent(event="done"))
             return
     except (KeyError, OSError, StateUnavailable, ValueError) as exc:
+        if recorded and isinstance(exc, StateUnavailable):
+            raise
         diagnostic = " ".join(str(exc).split()) or "Episode report generation failed."
         _settle_unlaunchable_existing_wrapup(execution, request.episode_id, diagnostic)
         yield _sse(AgentEvent(event="error", text=diagnostic))
+
+
+EPISODE_REPORT_FINALIZATION_ROLE = "episode_report_finalization"
+
+
+async def finalize_recorded_episode_report_result(
+    service: ProjectService,
+    launcher: AgentLauncher,
+    request: RunRequest,
+    data_dir: Path,
+    execution: AgentTaskExecution,
+    recorded: RecordedProviderTurn,
+) -> AsyncGenerator[str, None]:
+    """Settle a report call its host recorded: the report is the HTML file it left.
+
+    Re-entering the run reconciles the running attempt from the stage, exactly as
+    after a crash, once the recorded pass is held to the frozen session.
+    """
+
+    # Settlement helpers import the task engine, which imports this module.
+    from rcp.runs.recorded_settlement import (
+        absorb_recorded_events,
+        provider_turn_request,
+        refuse_recorded_session_mismatch,
+    )
+    from rcp.runs.recorded_turn import decode_recorded_turn
+
+    del data_dir
+    report_request = cast(EpisodeReportRunRequest, request)
+    turn = _canonical_report_turn(execution, report_request)
+    retained = execution.store.agent_task_contract(
+        execution.operation_id, EPISODE_REPORT_FINALIZATION_ROLE
+    )
+    if retained is None:
+        raise ValueError("The episode report finalization context is unavailable.")
+    stage = _open_exact_report_stage(service, turn)
+    verdict = decode_recorded_turn(
+        recorded,
+        provider_turn_request(
+            stage.workspace,
+            recorded,
+            capability="work_auto",
+            write_scope=ProjectWriteScope.model_validate_json(retained),
+        ),
+    )
+    outcome = _ProviderOutcome(session_id=turn.wrapup.native_session_id)
+    refused = refuse_recorded_session_mismatch(
+        execution, outcome, verdict, turn.wrapup.native_session_id
+    )
+    attempt = execution.store.current_episode_report_attempt(turn.episode.episode_id)
+    if refused and attempt is not None:
+        execution.store.finish_episode_report_error(
+            attempt.attempt_id,
+            "Episode report continuation changed the frozen native provider session.",
+        )
+    for frame in refused:
+        yield frame
+    if refused:
+        return
+    for frame in absorb_recorded_events(outcome, verdict):
+        # As live, only accounting reaches the task; provider errors stay internal.
+        if _event_from_frame(frame).event == "raw":
+            yield frame
+    if not outcome.completed and attempt is not None and attempt.status == "running":
+        # As live: a call that failed publishes nothing it left, and its retry,
+        # if any remain, runs when the report run re-enters below. A replay of
+        # this pass finds its attempt already counted, or a queued retry that
+        # is not its own, and only re-enters.
+        errors = [
+            " ".join(event.text.split())[:1000]
+            for event in verdict.events
+            if event.event == "error" and event.text.strip()
+        ]
+        auth_frame = _settle_provider_auth_failure(
+            execution, report_request, stage.execution_host, attempt, errors
+        )
+        if auth_frame is not None:
+            yield auth_frame
+            return
+        diagnostic = (
+            errors[-1]
+            if errors
+            else f"{request.provider} produced no completed episode report result."
+        )
+        episode, _failed = execution.store.record_episode_report_attempt_error(
+            attempt.attempt_id, diagnostic
+        )
+        if episode.wrapup_state == "failed":
+            yield _terminal_report_error(episode)
+            return
+        _record_retryable_error(execution, attempt, diagnostic)
+    async with aclosing(
+        stream_episode_report_run(
+            service,
+            launcher,
+            report_request,
+            execution,
+            recorded=True,
+            consumed_pass=recorded.pid_file,
+        )
+    ) as stream:
+        async for frame in stream:
+            yield frame
 
 
 def _canonical_report_turn(
@@ -724,6 +832,47 @@ def _finish_report(
     )
     _episode, stored = execution.store.finish_episode_report_ready(attempt.attempt_id, report)
     return stored
+
+
+def _settle_provider_auth_failure(
+    execution: AgentTaskExecution,
+    request: EpisodeReportRunRequest,
+    execution_host: str,
+    attempt: EpisodeReportAttemptRecord,
+    provider_errors: list[str],
+) -> str | None:
+    """Park a call that failed on sign-in so Verify sign-in can release it."""
+
+    auth_error = next(
+        (
+            error
+            for error in provider_errors
+            if profile_for(request.provider).credential_failure(error)
+        ),
+        None,
+    )
+    if auth_error is None:
+        return None
+    record_provider_failure(
+        execution.store,
+        request.provider,
+        execution_host,
+        generation=execution.login_generation,
+        evidence=auth_error,
+        source="report",
+    )
+    execution.store.record_episode_report_attempt_error(
+        attempt.attempt_id, auth_error, provider_auth=True
+    )
+    return _sse(
+        AgentEvent(
+            event="error",
+            text=(
+                f"{profile_for(request.provider).label} must be signed in again. "
+                "Sign in on the machine, then use Verify sign-in."
+            ),
+        )
+    )
 
 
 def _record_retryable_error(

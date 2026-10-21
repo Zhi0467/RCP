@@ -243,6 +243,49 @@ def test_graph_attention_projection_pairs_each_changed_field_with_its_current_va
     }
 
 
+def test_graph_attention_projection_names_a_node_once_above_its_status_and_standing() -> None:
+    state = GraphState(
+        nodes={
+            "hyp/weak": Hypothesis(
+                id="hyp/weak",
+                type="hypothesis",
+                title="The edit is too weak",
+                statement="The edit is too weak.",
+                status="proposed",
+            )
+        },
+        proposals={
+            "prop/settle": Proposal.model_validate(
+                {
+                    "id": "prop/settle",
+                    "title": "Settle the hypothesis",
+                    "card": {"decision_needed": "Approve."},
+                    "ops": [
+                        {
+                            "op": "update_nodes",
+                            "intent": "status_change",
+                            "nodes": [{"id": "hyp/weak", "changes": {"status": "rejected"}}],
+                        },
+                        {
+                            "op": "set_standing",
+                            "intent": "standing_change",
+                            "node_id": "hyp/weak",
+                            "standing": "accepted",
+                        },
+                    ],
+                }
+            )
+        },
+    )
+
+    lines = project_graph_attention(state).model_dump(mode="json")["proposal_actions"]
+    assert [(line["label"], line["before"], line["text"]) for line in lines["prop/settle"]] == [
+        ("Node", None, "The edit is too weak"),
+        ("Status", "proposed", "rejected"),
+        ("Standing", "asserted", "accepted"),
+    ]
+
+
 @pytest.mark.parametrize(
     "operation",
     [

@@ -1378,7 +1378,7 @@ class BackgroundAgentTasks:
             control.request_pause()
 
     def shutdown(self, *, timeout: float = BACKGROUND_TASKS_SHUTDOWN_TIMEOUT_SECONDS) -> None:
-        """Pause live subprocesses before the web process exits."""
+        """Detach recoverable remote turns and pause other live subprocesses."""
         with self._watcher_delivery_lock:
             self._accepting_watcher_deliveries = False
             with self._transport_retry_fence:
@@ -1409,6 +1409,8 @@ class BackgroundAgentTasks:
         if reconciliation_timer is not None:
             reconciliation_timer.cancel()
         for operation_id, control in active:
+            if control.request_detach():
+                continue
             with suppress(ValueError):
                 self.store.request_agent_task_pause(operation_id, requested_by="shutdown")
             control.request_pause()
@@ -2571,6 +2573,11 @@ class BackgroundAgentTasks:
                         )
                         continue
                     except Exception as exc:
+                        if isinstance(exc, StateUnavailable) and not isinstance(exc, StateMissing):
+                            # An unreachable host says nothing about the binding,
+                            # so it never spends an attempt.
+                            pending = True
+                            continue
                         # Unreadable here, not invalid: retry on a later pass, boundedly.
                         attempts = self._mailbox_resume_failures.get(operation_id, 0) + 1
                         self._mailbox_resume_failures[operation_id] = attempts
@@ -2673,6 +2680,24 @@ class BackgroundAgentTasks:
                 )
             except TaskPaused:
                 self.store.release_recorded_finalization(record.operation_id)
+                retry = True
+                continue
+            except TaskAwaitingRemoteResult as exc:
+                # Settling this pass launched another that also outlived its
+                # link: this one is consumed, and the task waits on the next.
+                with self._remote_result_lock:
+                    self.store.finish_remote_provider_pass(record.operation_id, pid_file)
+                    if execution.command_mailbox is not None:
+                        execution.command_mailbox.detach()
+                        self._register_detached_mailbox(
+                            record.operation_id, execution.command_mailbox
+                        )
+                    self.store.update_agent_task_message(
+                        record.operation_id,
+                        str(exc),
+                        phase="awaiting_remote_result",
+                        event=True,
+                    )
                 retry = True
                 continue
             except StateMissing as exc:

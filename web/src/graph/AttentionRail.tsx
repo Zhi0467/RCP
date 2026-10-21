@@ -73,6 +73,7 @@ export function ProposalJudgmentSection({
         if (!proposedAction) {
           throw new Error(`Attention projection is missing Proposal action ${proposal.id}.`);
         }
+        const subjectNodeIds = proposalSubjectNodeIds(proposal, graph);
         const approvalConflict = proposalApprovalConflict(draft, graph, proposal.id);
         const conflictingTitles = approvalConflict?.proposalIds.map(
           (proposalId) => graph.proposals[proposalId]?.title ?? proposalId,
@@ -133,7 +134,7 @@ export function ProposalJudgmentSection({
                 <dt>Proposed action</dt>
                 <dd>
                   <span className="proposal-subjects">
-                    {proposalSubjectNodeIds(proposal, graph).map((nodeId) => (
+                    {subjectNodeIds.map((nodeId) => (
                       <button
                         key={nodeId}
                         type="button"
@@ -146,7 +147,11 @@ export function ProposalJudgmentSection({
                       </button>
                     ))}
                   </span>
-                  <ProposedAction lines={proposedAction} glossaryIndex={glossaryIndex} />
+                  <ProposedAction
+                    lines={proposedAction}
+                    soleSubject={subjectNodeIds.length === 1}
+                    glossaryIndex={glossaryIndex}
+                  />
                 </dd>
               </div>
             </dl>
@@ -274,9 +279,12 @@ function RefreshProposalButton({
  */
 function ProposedAction({
   lines,
+  soleSubject,
   glossaryIndex,
 }: {
   lines: ProposalActionLine[];
+  /** The subject link above already names the one node these lines change. */
+  soleSubject: boolean;
   glossaryIndex: GlossaryIndex;
 }) {
   const hasFieldChanges = lines.some((line) => line.before != null);
@@ -302,7 +310,7 @@ function ProposedAction({
           );
         // Beside field changes the node line only names what they change.
         if (hasFieldChanges && line.label === "Node")
-          return (
+          return soleSubject ? null : (
             <div className="proposal-action-node" key={key}>
               <GlossaryText text={line.text} glossaryIndex={glossaryIndex} />
             </div>

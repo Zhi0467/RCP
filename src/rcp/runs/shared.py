@@ -861,7 +861,6 @@ async def _stream_agent_events(
     invocation_gate: ProviderInvocationGate | None = None,
     shell_timeout_seconds: int | None | EllipsisType = ...,
     required_session_id: str | None = None,
-    supervise_remote: bool = False,
     browser_grant: BrowserGrant | None = None,
     hidden_read_scope: HiddenReadScope | None = None,
     service: ProjectService | None = None,
@@ -906,6 +905,9 @@ async def _stream_agent_events(
         if execution is not None and remote_stage is not None and remote_stage.root
         else None
     )
+    # Every remote pass a task owns is supervised, so any of them can settle after
+    # its link drops; supervision is a property of the launch, not of the owner.
+    supervise_remote = remote_pid_file is not None
     remote_pass_recorded = False
     supervisor_path: str | None = None
     if remote_stage is not None:

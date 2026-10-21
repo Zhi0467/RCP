@@ -249,3 +249,10 @@ test("chat run scope preserves valid choices, prunes removed repositories, and r
     ["repo-a"],
   );
 });
+
+test("the agent-name field shares the server's agent-name cap", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { AGENT_NAME_MAX_CHARS } = await server.ssrLoadModule("/src/chat/chatWorkspace.ts");
+  const limits = await readFile(new URL("../../src/rcp/limits.py", import.meta.url), "utf8");
+  assert.equal(AGENT_NAME_MAX_CHARS, Number(limits.match(/^AGENT_NAME_MAX_CHARS = (\d+)$/m)[1]));
+});

@@ -1343,6 +1343,28 @@ a.digest-title:hover {
 .dag-lens {
   padding-left: 15px;
 }
+.dag-lens-row {
+  display: inline-flex;
+}
+.dag-lens-row .dag-lens {
+  border-radius: 5px 0 0 5px;
+}
+.dag-lens-hide {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 29px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-left: 0;
+  border-radius: 0 5px 5px 0;
+  background: var(--surface);
+  color: var(--muted);
+}
+.dag-lens-hide[aria-pressed="true"] {
+  color: var(--ink);
+  background: var(--surface-cool);
+}
 .dag-lens::before {
   background: var(--lens-color);
   content: "";
@@ -1471,7 +1493,8 @@ a.digest-title:hover {
 }
 .dag-node {
   --node-accent: var(--slate);
-  background: color-mix(in srgb, var(--sheet) 96%, transparent);
+  /* Opaque at every emphasis, so a card always covers the edges under it. */
+  background: var(--sheet);
   border: 1px solid var(--rule);
   border-radius: 7px;
   box-shadow: 0 7px 20px rgb(var(--shadow-rgb) / 10%);
@@ -1505,15 +1528,45 @@ a.digest-title:hover {
   z-index: 3;
 }
 .dag-node.is-dim {
+  box-shadow: none;
   filter: saturate(0.28);
-  opacity: 0.16;
 }
-.dag-node.is-dim:hover {
-  opacity: 0.34;
+.dag-node.is-dim > .dag-node-inspect,
+.dag-node.is-dim::before {
+  opacity: 0.2;
+}
+.dag-node.is-dim:hover > .dag-node-inspect {
+  opacity: 0.4;
 }
 .dag-node.is-layer-neutral:not(.is-dim) {
   filter: saturate(0.5);
+}
+.dag-node.is-layer-neutral:not(.is-dim) > .dag-node-inspect {
   opacity: 0.58;
+}
+.dag-node-light {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.dag-node-light.is-lit {
+  color: var(--amber);
+}
+.dag-node-light:hover,
+.dag-node-light:focus-visible {
+  background: var(--surface-cool);
+  color: var(--ink);
 }
 .dag-node.is-pinned {
   border-color: color-mix(in srgb, var(--node-accent) 64%, var(--rule));

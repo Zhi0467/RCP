@@ -1709,7 +1709,6 @@ async def _settle_watch_deliverable(
                 browser_grant=composed.browser_grant,
                 validator_staged=correction_validator,
                 validator_lifecycle=correction_lifecycle,
-                supervise_remote=launch_turn.supervise_remote,
             )
         except BaseException as exc:
             if correction_lifecycle is not None:
@@ -2008,7 +2007,6 @@ async def _apply_experiment_loop_turn(
                     browser_grant=composed.browser_grant,
                     validator_staged=loop_validator,
                     validator_lifecycle=loop_validator_lifecycle,
-                    supervise_remote=launch_turn.supervise_remote,
                 )
             ) as stream:
                 async for frame in stream:
@@ -2384,10 +2382,8 @@ async def _launch_and_stream_work_turn(
     wake_episode: EpisodeRecord | None,
     required_session_id: str | None = None,
     *,
-    supervise_remote: bool = False,
     browser_grant: BrowserGrant | None = None,
 ) -> AsyncGenerator[str, None]:
-    turn.supervise_remote = supervise_remote
     try:
         _record_agent_launch_receipt(
             turn.execution,
@@ -2439,7 +2435,6 @@ async def _launch_and_stream_work_turn(
                     ),
                     outcome=turn.outcome,
                     browser_grant=browser_grant,
-                    supervise_remote=supervise_remote,
                 )
             ) as stream:
                 async for frame in stream:
@@ -2714,7 +2709,6 @@ async def _stream_experiment_loop_task_with_browser_lifetime(
             contract_path,
             wake_episode,
             required_session_id=required_session_id,
-            supervise_remote=bool(turn.execution_host),
             browser_grant=browser_grant,
         )
     ) as stream:

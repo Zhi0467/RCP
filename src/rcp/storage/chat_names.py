@@ -31,7 +31,11 @@ def initialize_chat_name(
     # A Markdown heading names the task better than the prose under it.
     heading = re.search(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", message, re.MULTILINE)
     text = heading.group(1) if heading else message
-    name = " ".join(text.split())[:AGENT_NAME_MAX_CHARS].rstrip() or "Chat"
+    name = " ".join(text.split())
+    if len(name) > AGENT_NAME_MAX_CHARS:
+        # Cut after the last whole word; a single overlong word is cut where it must be.
+        name = name[: AGENT_NAME_MAX_CHARS + 1].rsplit(" ", 1)[0][:AGENT_NAME_MAX_CHARS]
+    name = name or "Chat"
     connection.execute(
         "INSERT INTO chat_display (project_id, chat_id, title) VALUES (?, ?, ?) "
         "ON CONFLICT(project_id, chat_id) DO UPDATE SET title = excluded.title "

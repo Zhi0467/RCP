@@ -820,6 +820,7 @@ def _recorded_pass(
     answer: str,
     watch_text: str | None = None,
     experiment_watch: dict[str, str] | None = None,
+    thread_id: str = "recorded-thread",
 ):
     """One completed Codex pass, as a host would have recorded it."""
 
@@ -828,7 +829,7 @@ def _recorded_pass(
     events = "".join(
         json.dumps(item) + "\n"
         for item in (
-            {"type": "thread.started", "thread_id": "recorded-thread"},
+            {"type": "thread.started", "thread_id": thread_id},
             {"type": "item.completed", "item": {"type": "agent_message", "text": answer}},
             {"type": "turn.completed", "usage": {"input_tokens": 3, "output_tokens": 4}},
         )
@@ -858,7 +859,7 @@ def _recorded_pass(
             name: hashlib.sha256(text.encode("utf-8")).hexdigest()
             for name, text in (experiment_watch or {}).items()
         },
-        "root_thread_id": "recorded-thread",
+        "root_thread_id": thread_id,
         "input_message_ids": [],
         "steer_requests": {},
     }
@@ -1149,9 +1150,6 @@ async def test_work_correction_disconnect_waits_and_recovers_original_reply(
     await work_module._prepare_work_prompt_context(primed, staged)
     composed = work_module._compose_fresh_prompt(primed, staged, retry_diagnostics_path=None)
     await primed.validator_lifecycle.close()
-    # Exercise the owner's remote opt-in while keeping filesystem I/O local.
-    # The actual SSH supervisor is covered by the remote provider journey.
-    primed.supervise_remote = True
     write_turn_outcome(primed.workspace)
     primed.outcome.completed = True
     primed.outcome.session_id = "recorded-thread"
@@ -1170,7 +1168,6 @@ async def test_work_correction_disconnect_waits_and_recovers_original_reply(
 
     async def disconnected_correction(*_args, **kwargs):
         correction_calls.append(kwargs)
-        assert kwargs["supervise_remote"] is True
         kwargs["outcome"].remote_result_pending = True
         yield _sse(AgentEvent(event="remote_result_pending", text="Connection lost."))
 
@@ -1466,6 +1463,58 @@ async def test_a_host_lost_during_watcher_maintenance_leaves_the_task_waiting(
             pass
 
 
+@pytest.mark.parametrize("outage", ["patch_read", "apply_before_commit"])
+@pytest.mark.asyncio
+async def test_a_recorded_settlement_that_loses_canonical_state_retries(
+    tmp_path, monkeypatch, outage
+) -> None:
+    """An outage while settling a recorded pass is not a verdict on that pass.
+
+    Spending the result on it would end the turn with its graph update lost;
+    letting it out leaves the task waiting to settle the same pass again.
+    """
+
+    from rcp.runs.tasks.work_turn_runtime import DeliverableFailure
+    from rcp.transport import StateUnavailable
+
+    service, request, execution = _one_result_app(tmp_path)
+    resolved = work_module._resolve_work_execution(service, request, execution)
+    primed, staged = await work_module._stage_work_turn(
+        service, resolved, tmp_path / "data", execution
+    )
+    work_module._record_work_finalization_context(primed, staged)
+    execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
+    await work_module._prepare_work_prompt_context(primed, staged)
+    await primed.validator_lifecycle.close()
+
+    if outage == "patch_read":
+
+        def unreachable(*_args, **_kwargs):
+            raise StateUnavailable("ssh exited 255")
+
+        monkeypatch.setattr(work_module, "_read_chat_patch", unreachable)
+    else:
+        monkeypatch.setattr(
+            work_module,
+            "_apply_work_patch",
+            lambda *_args, **_kwargs: (
+                None,
+                DeliverableFailure("lost state", correctable=False, commit_status="absent"),
+            ),
+        )
+
+    with pytest.raises(StateUnavailable):
+        async for _frame in work_module.finalize_recorded_work_result(
+            service,
+            ScriptedLauncher([{}], message="must not launch"),
+            request,
+            tmp_path / "not-used",
+            execution,
+            _recorded_pass(agent_patch_json(seed_patch()), "The work is done."),
+        ):
+            pass
+
+
 @pytest.mark.asyncio
 async def test_a_live_supervised_turn_whose_host_vanishes_fails_visibly(
     tmp_path, monkeypatch
@@ -1493,7 +1542,6 @@ async def test_a_live_supervised_turn_whose_host_vanishes_fails_visibly(
     await work_module._prepare_work_prompt_context(primed, staged)
     composed = work_module._compose_fresh_prompt(primed, staged, retry_diagnostics_path=None)
     await primed.validator_lifecycle.close()
-    primed.supervise_remote = True
     primed.outcome.completed = True
     primed.outcome.session_id = "recorded-thread"
     primed.outcome.answers = ["The research work is complete."]
@@ -1654,7 +1702,6 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(
             binary=None,
             validator_staged=staged,
             validator_lifecycle=owner,
-            supervise_remote=True,
         ):
             pass
         return owner

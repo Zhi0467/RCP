@@ -3438,3 +3438,383 @@ def test_a_recovery_handoff_keeps_what_fits_and_still_refuses_a_bad_first_item(c
     assert [record.levelname for record in caplog.records] == ["WARNING"]
     with pytest.raises(ValueError):
         fit(["bad", "a"], build, kind="mail messages", allocation="wake")
+
+
+def _blocker_patch(node_id: str) -> str:
+    """One agent Patch creating one open blocker."""
+
+    return agent_patch_json(
+        Patch.model_validate(
+            dict(
+                kind="work",
+                author="agent",
+                producer="agent",
+                summary="Recorded a blocker.",
+                run_truth_scope=["repo-a"],
+                repositories_read=["repo-a"],
+                ops=[
+                    {
+                        "op": "create_nodes",
+                        "nodes": [
+                            {
+                                "id": node_id,
+                                "type": "blocker",
+                                "title": "Recorded",
+                                "description": "Written by an Auto-research worker.",
+                                "status": "open",
+                            }
+                        ],
+                    }
+                ],
+                change_summary=["Recorded a blocker."],
+            )
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_worker_that_outlives_its_link_settles_from_its_recorded_pass(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    """A dropped link leaves the turn to its host; the recorded pass then settles it."""
+
+    from rcp.runs.remote_finalization import recorded_finalizer
+    from rcp.runs.tasks.work_turn_runtime import DeliverableFailure as _WorkPatchFailure
+    from rcp.transport import StateUnavailable
+
+    from .test_work_agent_io import _recorded_pass
+
+    service = _service(manifest, tmp_path)
+    service, store, _auto_research, _root, worker = _setup_branch_auto_research(service, tmp_path)
+    execution = _execution(store, worker)
+    request = AutoResearchRunRequest.model_validate(worker.request)
+
+    class _LinkLost(_WorkerLauncher):
+        async def stream(self, _provider, prompt, **kwargs):
+            self.calls += 1
+            yield AgentEvent(event="session", session_id=self.session_id)
+            yield AgentEvent(event="remote_result_pending")
+
+    live = await _events(
+        stream_auto_research_worker_run(
+            service,
+            cast(Any, _LinkLost()),
+            request,
+            tmp_path / "data",
+            execution,
+            command_dispatcher=_dispatcher(store),
+        )
+    )
+    assert not [event for event in live if event.event in {"answer", "error", "done"}]
+
+    finalizer = recorded_finalizer(store, execution.operation_id)
+    assert finalizer is auto_research_stream_module.finalize_recorded_auto_research_result
+    launcher = _WorkerLauncher()
+    finalize = auto_research_stream_module.finalize_recorded_auto_research_result
+    recorded = _recorded_pass(_blocker_patch("blk/recorded"), "Worker finished offline.")
+    # An outage before anything publishes is waited out, not spent as a rejection.
+    for target, outage in (
+        ("_read_chat_patch", lambda *_args: (_ for _ in ()).throw(StateUnavailable("ssh 255"))),
+        (
+            "_apply_work_patch",
+            lambda *_args, **_kwargs: (
+                None,
+                _WorkPatchFailure("ssh 255", correctable=False, commit_status="absent"),
+            ),
+        ),
+    ):
+        with monkeypatch.context() as patched:
+            patched.setattr(auto_research_stream_module, target, outage)
+            with pytest.raises(StateUnavailable):
+                await _events(
+                    finalize(
+                        service,
+                        cast(Any, launcher),
+                        cast(Any, request),
+                        tmp_path / "data",
+                        execution,
+                        recorded,
+                    )
+                )
+    settled = await _events(
+        finalize(
+            service,
+            cast(Any, launcher),
+            cast(Any, request),
+            tmp_path / "data",
+            execution,
+            recorded,
+        )
+    )
+
+    assert [event.text for event in settled if event.event == "answer"] == [
+        "Worker finished offline."
+    ]
+    assert settled[-1].event == "done"
+    assert "blk/recorded" in service.history.state().nodes
+    assert launcher.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_retry_ignores_its_inherited_patch_after_an_outage(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    """The primary pass of a Retry keeps its freshness baseline when settled again."""
+
+    from rcp.transport import StateUnavailable
+
+    from .test_work_agent_io import _recorded_pass
+
+    service = _service(manifest, tmp_path)
+    stage, service, store, auto_research, _root, worker = _saved_worker(
+        tmp_path, status="failed", service=service
+    )
+    _record_original_contract(store, worker, stage)
+    inherited = _blocker_patch("blk/inherited")
+    # The failed pass cleared its handoffs, then wrote this before it failed.
+    store.mark_auto_research_handoffs_cleared(worker.operation_id)
+    (stage / "patch.json").write_text(inherited, encoding="utf-8")
+    retry = _recovery_task(store, auto_research, worker)
+
+    class _LinkLost(_WorkerLauncher):
+        async def stream(self, _provider, prompt, **kwargs):
+            self.calls += 1
+            yield AgentEvent(event="session", session_id=self.session_id)
+            yield AgentEvent(event="remote_result_pending")
+
+    execution = _execution(store, retry, continuation="retry")
+    request = AutoResearchRunRequest.model_validate(retry.request)
+    await _events(
+        stream_auto_research_worker_run(
+            service,
+            cast(Any, _LinkLost(session_id="worker-session")),
+            request,
+            tmp_path / "data",
+            execution,
+            command_dispatcher=_dispatcher(store),
+        )
+    )
+    finalize = auto_research_stream_module.finalize_recorded_auto_research_result
+    recorded = _recorded_pass(inherited, "Nothing new.", thread_id="worker-session")
+    with monkeypatch.context() as outage:
+        outage.setattr(
+            auto_research_stream_module,
+            "_read_chat_patch",
+            lambda *_args: (_ for _ in ()).throw(StateUnavailable("ssh 255")),
+        )
+        with pytest.raises(StateUnavailable):
+            await _events(
+                finalize(
+                    service,
+                    cast(Any, _WorkerLauncher()),
+                    cast(Any, request),
+                    tmp_path / "data",
+                    execution,
+                    recorded,
+                )
+            )
+    settled = await _events(
+        finalize(
+            service,
+            cast(Any, _WorkerLauncher()),
+            cast(Any, request),
+            tmp_path / "data",
+            execution,
+            recorded,
+        )
+    )
+
+    assert settled[-1].event == "done", [(event.event, event.text) for event in settled]
+    assert "blk/inherited" not in service.history.state().nodes
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_correction_that_failed_keeps_the_primary_answer(
+    manifest, tmp_path
+) -> None:
+    """As live, a failed correction rejects the graph update, not the finished work."""
+
+    from .test_work_agent_io import _recorded_failed_correction
+
+    service = _service(manifest, tmp_path)
+    service, store, _auto_research, _root, worker = _setup_branch_auto_research(service, tmp_path)
+    execution = _execution(store, worker)
+    request = AutoResearchRunRequest.model_validate(worker.request)
+
+    class _LinkLost(_WorkerLauncher):
+        async def stream(self, _provider, prompt, **kwargs):
+            yield AgentEvent(event="session", session_id=self.session_id)
+            yield AgentEvent(event="remote_result_pending")
+
+    await _events(
+        stream_auto_research_worker_run(
+            service,
+            cast(Any, _LinkLost()),
+            request,
+            tmp_path / "data",
+            execution,
+            command_dispatcher=_dispatcher(store),
+        )
+    )
+    # The primary pass answered and its Patch was sent back for correction.
+    for pid_file in ("/stage/primary.pid", "/stage/one.pid"):
+        store.begin_remote_provider_pass(
+            execution.operation_id, "gpu", "/stage", pid_file, supervised=True
+        )
+        if pid_file == "/stage/primary.pid":
+            store.finish_remote_provider_pass(execution.operation_id, pid_file)
+    answer = "The worker finished its research."
+    store.record_agent_task_contract(
+        execution.operation_id,
+        auto_research_stream_module._AUTO_RESEARCH_PRIMARY_ANSWER_ROLE,
+        answer,
+        hashlib.sha256(answer.encode("utf-8")).hexdigest(),
+    )
+
+    settled = await _events(
+        auto_research_stream_module.finalize_recorded_auto_research_result(
+            service,
+            cast(Any, _WorkerLauncher()),
+            cast(Any, request),
+            tmp_path / "data",
+            execution,
+            _recorded_failed_correction("correction crashed"),
+        )
+    )
+
+    assert [event.event for event in settled if event.event not in {"raw", "session"}] == [
+        "answer",
+        "message",
+        "done",
+    ]
+    assert settled[[event.event for event in settled].index("answer")].text == answer
+    message = next(event for event in settled if event.event == "message")
+    assert json.loads(message.text)["graph_update"]["status"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_a_relaunch_serves_a_detached_actor_mailbox_as_its_launch_did(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    """What a launch saves for its mailbox is enough to serve that pass again after a relaunch."""
+
+    service = _service(manifest, tmp_path)
+    service, store, _auto_research, _root, worker = _setup_branch_auto_research(service, tmp_path)
+    execution = _execution(store, worker)
+    request = AutoResearchRunRequest.model_validate(worker.request)
+    launched: dict[str, Any] = {}
+    actor_mailbox = auto_research_stream_module._actor_mailbox
+
+    def record_the_mailbox(staged, *, serve, resume_context, **kwargs):
+        launched.update(serve.keywords, context=resume_context)
+        return actor_mailbox(staged, serve=serve, resume_context=resume_context, **kwargs)
+
+    monkeypatch.setattr(auto_research_stream_module, "_actor_mailbox", record_the_mailbox)
+
+    class _LinkLost(_WorkerLauncher):
+        async def stream(self, _provider, prompt, **kwargs):
+            yield AgentEvent(event="session", session_id=self.session_id)
+            yield AgentEvent(event="remote_result_pending")
+
+    await _events(
+        stream_auto_research_worker_run(
+            service,
+            cast(Any, _LinkLost()),
+            request,
+            tmp_path / "data",
+            execution,
+            command_dispatcher=_dispatcher(store),
+        )
+    )
+
+    restored: dict[str, Any] = {}
+    monkeypatch.setattr(
+        auto_research_stream_module, "load_work_mailbox_context", lambda _: launched["context"]
+    )
+    monkeypatch.setattr(
+        auto_research_stream_module,
+        "restore_work_validator_mailbox",
+        lambda _execution, **kwargs: restored.update(kwargs),
+    )
+    served: dict[str, Any] = {}
+
+    async def record_the_serve(staged, **kwargs):
+        served.update(kwargs)
+
+    monkeypatch.setattr(
+        auto_research_stream_module, "_serve_auto_research_commands", record_the_serve
+    )
+    auto_research_stream_module.resume_auto_research_command_mailbox(
+        lambda: service, execution, request, lambda _service: _dispatcher(store)
+    )
+    await restored["serve"](
+        staged=object(),
+        stop=None,
+        suspend=None,
+        responses={},
+        terminal={},
+        checkpoint=None,
+        execution=execution,
+        validate=None,
+        budget=None,
+    )
+
+    for key in ("episode_id", "expected_turn_id", "graph_read_scope"):
+        assert served[key] == launched[key]
+    assert served["dispatcher"].allowed_verbs == launched["dispatcher"].allowed_verbs
+
+
+def test_a_relaunch_restores_a_remote_actor_mailbox_without_reaching_its_host(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    """An unreachable host must not cost a detached pass its mailbox owner."""
+
+    from rcp.transport import RemoteRunStage
+
+    service = _service(manifest, tmp_path)
+    service, store, _auto_research, _root, worker = _setup_branch_auto_research(service, tmp_path)
+    execution = _execution(store, worker)
+    execution.stage_host, execution.stage_root = "gpu", "/stage"
+    request = AutoResearchRunRequest.model_validate(worker.request)
+    monkeypatch.setattr(
+        auto_research_stream_module,
+        "_retained_finalization",
+        lambda _execution: SimpleNamespace(
+            stage_host="gpu", stage_root="/stage", workspace="/stage/workspace"
+        ),
+    )
+
+    # The actor binding is not under test; this one was launched locally.
+    monkeypatch.setattr(
+        auto_research_stream_module,
+        "_canonical_worker_turn",
+        lambda _execution, supplied: SimpleNamespace(request=supplied),
+    )
+
+    def unreachable(*_args, **_kwargs):
+        raise AssertionError("restoring a mailbox must not probe its host")
+
+    monkeypatch.setattr(RemoteRunStage, "attach", unreachable)
+    monkeypatch.setattr(
+        auto_research_stream_module,
+        "load_work_mailbox_context",
+        lambda _execution: {
+            "turn_id": f"{worker.operation_id}:worker",
+            "graph_read_scope": GraphReadScope(
+                project_id=worker.project_id, target=GraphTargetRef()
+            ).model_dump(mode="json"),
+            "allowed_verbs": [],
+        },
+    )
+    restored: dict[str, Any] = {}
+    monkeypatch.setattr(
+        auto_research_stream_module,
+        "restore_work_validator_mailbox",
+        lambda _execution, **kwargs: restored.update(kwargs),
+    )
+
+    auto_research_stream_module.resume_auto_research_command_mailbox(
+        lambda: service, execution, request, lambda _service: _dispatcher(store)
+    )
+
+    assert callable(restored["serve"])

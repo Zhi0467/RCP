@@ -134,6 +134,9 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "compute_command_result",
     "remote_provider_started",
     "remote_provider_stopped",
+    # What a recorded pass settles against, read back after its link drops.
+    "branch_merge_turn_plan",
+    "graph_pass_baseline",
     "question_answer_offered",
     "question_answer_acknowledged",
 )
@@ -5907,7 +5910,12 @@ class AgentTaskStoreMixin(StoreMixinBase):
         return changed == 1
 
     def release_recorded_finalization(self, operation_id: str) -> None:
-        """Hand the claim back when finalization did not settle the task."""
+        """Hand the claim back when finalization did not settle the task.
+
+        Only the claim's holder calls this, and settling may have moved the phase
+        on (say, to applying) before an outage stopped it; any still-active
+        task goes back to waiting.
+        """
 
         now = self.now()
         with self.connection() as connection:
@@ -5915,7 +5923,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 """
                 UPDATE graph_runs
                 SET phase = 'awaiting_remote_result', updated_at = ?
-                WHERE operation_id = ? AND phase = 'finalizing_recorded_result'
+                WHERE operation_id = ? AND status IN ('queued', 'running', 'pausing')
                 """,
                 (now, operation_id),
             )

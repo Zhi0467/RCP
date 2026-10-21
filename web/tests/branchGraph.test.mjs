@@ -338,3 +338,11 @@ test("a graph-archived Experiment still owns its branch through the Experiment i
   assert.equal(branchOwnerEpisode(target, [], []), null);
   assert.equal(branchOwnerEpisode({ kind: "main" }, [owner], []), null);
 });
+
+test("a typed branch name turns spaces into hyphens and then passes the name check", async () => {
+  const { branchNameProblem, typedBranchName } = await server.ssrLoadModule(
+    "/src/core/branchNames.ts",
+  );
+  assert.equal(typedBranchName("main observer  run"), "main-observer-run");
+  assert.equal(branchNameProblem(typedBranchName("main observer run")), null);
+});

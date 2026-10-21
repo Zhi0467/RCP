@@ -561,7 +561,6 @@ async def test_failed_remote_continuation_cleanup_settles_retained_lease(
                 capability="discuss",
                 outcome=outcome,
                 binary=None,
-                supervise_remote=True,
                 browser_grant=grant,
             )
         ]

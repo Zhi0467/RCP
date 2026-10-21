@@ -225,7 +225,6 @@ async def stream_artifact_edit_run(
             capability="discuss",
             outcome=outcome,
             binary=machine.provider_paths.get(request.provider),
-            supervise_remote=bool(remote),
             required_session_id=request.session_id,
         )
     ) as stream:

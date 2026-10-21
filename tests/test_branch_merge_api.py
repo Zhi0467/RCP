@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import threading
@@ -1492,7 +1493,14 @@ def test_merge_history_client_and_main_observation(manifest, tmp_path, monkeypat
         serving.set()
         await kwargs["stop"].wait()
 
-    monkeypatch.setattr("rcp.runs.tasks.branch_merge.serve_patch_validation_mailbox", serve)
+    from rcp.runs.tasks import branch_merge as merge_task
+
+    start = merge_task.start_work_validator_mailbox
+    monkeypatch.setattr(
+        merge_task,
+        "start_work_validator_mailbox",
+        lambda staged, **kwargs: start(staged, serve=serve, **kwargs),
+    )
     calls = []
 
     async def launch(_provider, _prompt, *, cwd, invocation_gate, **_kwargs):
@@ -1587,3 +1595,186 @@ def test_independent_episode_branch_merges_into_main(manifest, tmp_path, monkeyp
         harness.service.history.state().nodes["blk/merge-ready"].model_dump()["status"]
         == "resolved"
     )
+
+
+def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
+    manifest, tmp_path, monkeypatch
+):
+    """A dropped link leaves the merge to its host; the recorded pass then commits."""
+
+    import threading
+
+    from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
+    from rcp.runs import merge_patch
+    from rcp.runs.branch_merge import BranchMergeStage, recorded_turn_plan
+    from rcp.runs.branch_merge_request import BranchMergeRunRequest
+    from rcp.runs.remote_finalization import resume_recorded_command_mailbox
+    from rcp.runs.tasks import branch_merge as merge_task
+    from rcp.runs.tasks.branch_merge import finalize_recorded_branch_merge_result
+    from rcp.transport import StateUnavailable
+
+    from .test_work_agent_io import _recorded_pass
+
+    harness = _create_branch_harness(manifest, tmp_path, change="status")
+    for title in ("Branch title", "Main title"):
+        patch = Patch(
+            kind="work",
+            author="agent",
+            summary="Change the merge gate title.",
+            run_truth_scope=["repo-a"],
+            source_operation_id=harness.root.operation_id,
+            ops=[
+                {
+                    "op": "update_nodes",
+                    "nodes": [{"id": "blk/merge-ready", "changes": {"title": title}}],
+                }
+            ],
+        )
+        if title == "Branch title":
+            harness.branch.append(patch, expected_revision=harness.branch.state().revision)
+        else:
+            append_fixture_patch(harness.service, patch)
+    # This test settles the recorded pass itself; probing a host is not under test.
+    monkeypatch.setattr(
+        harness.app.state.background_tasks, "_reconcile_remote_results", lambda: False
+    )
+
+    async def launch(_provider, _prompt, *, cwd, **_kwargs):
+        plan = json.loads(next((cwd.parent / "inputs").glob("*-merge-plan-*.json")).read_text())
+        (cwd / "answers.json").write_text(json.dumps(_answers_for_plan(plan)))
+        yield AgentEvent(event="session", session_id="merge-session")
+        yield AgentEvent(event="remote_result_pending")
+
+    mailboxes = []
+    start = merge_task.start_work_validator_mailbox
+
+    saved = {}
+
+    def remote_mailbox(staged, **kwargs):
+        # A remote stage serves its mailbox on a thread; only that kind can detach.
+        saved.update(kwargs["resume_context"])
+        mailbox = start(staged, **kwargs)
+        mailbox.thread = threading.Thread(target=lambda: None)
+        mailboxes.append(mailbox)
+        return mailbox
+
+    monkeypatch.setattr(merge_task, "start_work_validator_mailbox", remote_mailbox)
+    monkeypatch.setattr(harness.app.state.launcher, "stream", launch)
+    response = harness.client.post(
+        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge", json={}
+    )
+    assert response.status_code == 202, response.text
+    operation_id = next(
+        task.operation_id
+        for task in harness.store.agent_tasks(harness.project_id)
+        if task.kind == "branch_merge"
+    )
+    record = wait_until(
+        lambda: (
+            task
+            if (task := harness.store.agent_task(operation_id)).phase == "awaiting_remote_result"
+            else None
+        )
+    )
+    assert harness.branch.merge_receipts() == []
+    # Recovery reads back the exact plan this turn was given, however many
+    # answer checks the turn ran before its link dropped.
+    for index in range(AGENT_TASK_RECEIPT_RETENTION_COUNTS["diagnostic"] + 1):
+        harness.store.record_agent_task_receipt(
+            operation_id, "merge_answers_checked", {"index": index}, tier="diagnostic"
+        )
+    stage_root = Path(record.stage_root or "")
+    turn_plan = recorded_turn_plan(
+        AgentTaskExecution(
+            operation_id=operation_id, store=harness.store, control=AgentProcessControl()
+        ),
+        BranchMergeStage(
+            local_stage=stage_root, remote_stage=None, workspace=stage_root / "workspace"
+        ),
+    )
+    assert turn_plan is not None and turn_plan[1] == ()
+    # The host's turn can still check its answers while RCP is away.
+    assert [mailbox.detached for mailbox in mailboxes] == [True]
+
+    # A relaunch serves that turn's checks and graph reads from what it saved.
+    restored = {}
+    monkeypatch.setattr(merge_task, "load_work_mailbox_context", lambda _execution: saved)
+    monkeypatch.setattr(
+        merge_task,
+        "restore_work_validator_mailbox",
+        lambda _execution, **kwargs: restored.update(kwargs),
+    )
+    resume_recorded_command_mailbox(
+        lambda: harness.service,
+        AgentTaskExecution(
+            operation_id=operation_id, store=harness.store, control=AgentProcessControl()
+        ),
+    )
+    assert (
+        restored["command_handler"](
+            GraphDiffCommandRequest.model_validate(
+                {
+                    "mailbox_id": "0" * 32,
+                    "request_id": uuid.uuid4().hex,
+                    "credential": "0" * 64,
+                    "verb": "graph_diff",
+                    "arguments": {"from": "main@0", "to": "main@head"},
+                }
+            ),
+            None,
+        ).status
+        == "ok"
+    )
+
+    def recorded_execution() -> AgentTaskExecution:
+        return AgentTaskExecution(
+            operation_id=operation_id,
+            store=harness.store,
+            control=AgentProcessControl(),
+            stage_host=record.stage_host,
+            stage_root=record.stage_root,
+        )
+
+    async def settle(recorded, execution=None) -> list[AgentEvent]:
+        return [
+            AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
+            async for frame in finalize_recorded_branch_merge_result(
+                harness.service,
+                harness.app.state.launcher,
+                BranchMergeRunRequest.model_validate(record.request),
+                tmp_path / "data",
+                execution or recorded_execution(),
+                recorded,
+            )
+        ]
+
+    recorded = _recorded_pass("", "Merged.")
+
+    # A host that drops while the stage reattaches, or while the merge prepares,
+    # is an outage, not a verdict.
+    def unreachable(*_args, **_kwargs):
+        raise StateUnavailable("ssh exited 255")
+
+    for owner, name in (
+        (merge_task, "attach_retained_stage"),
+        (merge_patch, "prepare_merge_candidate"),
+    ):
+        with monkeypatch.context() as outage:
+            outage.setattr(owner, name, unreachable)
+            execution = recorded_execution()
+            assert asyncio.run(settle(recorded, execution))[-1].event == "error"
+            assert execution.stage_unreachable
+    # A turn its host recorded as failed commits nothing it left behind.
+    failed = dataclasses.replace(
+        recorded,
+        events=recorded.events.replace(
+            '{"type": "turn.completed"', '{"type": "turn.failed", "error": {"message": "x"}'
+        ),
+    )
+    assert asyncio.run(settle(failed))[-1].event == "error"
+    assert harness.branch.merge_receipts() == []
+
+    settled = asyncio.run(settle(recorded))
+    assert settled[-1].event == "done"
+    assert [receipt.outcome for receipt in harness.branch.merge_receipts()] == ["committed"]
+    assert harness.service.history.state().nodes["blk/merge-ready"].title == "Branch title"

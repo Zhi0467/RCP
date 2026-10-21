@@ -5,7 +5,7 @@ import hashlib
 import math
 import subprocess
 import threading
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from concurrent.futures import Future
 from contextlib import aclosing, suppress
 from dataclasses import asdict, dataclass, field
@@ -192,7 +192,6 @@ class WorkTurn:
     outcome: _ProviderOutcome
     answer: str | None = None
     compute_commands: WorkComputeCommands | None = None
-    supervise_remote: bool = False
     question_snapshot: QuestionSnapshot | None = None
     hidden_read_scope: HiddenReadScope | None = None
     data_dir: Path | None = None
@@ -295,6 +294,9 @@ class WorkFinalizationContext:
     #: recovered continuation is held to it exactly as the live stream was.
     required_session_id: str | None = None
     answer: str | None = None
+    #: Settling a pass its host recorded. Canonical state it cannot reach then
+    #: means retry the settlement, never a verdict on the pass.
+    recorded: bool = False
 
     @property
     def surface(self) -> AgentSurface:
@@ -470,18 +472,16 @@ async def stream_turn_agent_events(
     outcome: _ProviderOutcome,
     validator_staged: StagedCommandMailbox | None = None,
     validator_lifecycle: WorkValidatorMailboxLifecycle | None = None,
-    supervise_remote: bool = False,
     browser_grant: BrowserGrant | None = None,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     """Stream one provider continuation from a staged Work execution context."""
 
     snapshot = turn.question_snapshot
     hidden_read_scope = turn.hidden_read_scope
     turn.hidden_read_scope = None
-    if supervise_remote:
-        # Every owner's supervised launch comes through here, so a pinned
-        # continuation cannot reach a host without its pin being recoverable.
-        checkpoint_required_session(turn.execution, required_session_id)
+    # Every owner's launch comes through here, so a pinned continuation cannot
+    # reach a host without its pin being recoverable.
+    checkpoint_required_session(turn.execution, required_session_id)
     async with aclosing(
         stream_work_agent_events(
             launcher,
@@ -505,7 +505,6 @@ async def stream_turn_agent_events(
                 validator_lifecycle if validator_staged is not None else turn.validator_lifecycle
             ),
             required_session_id=required_session_id,
-            supervise_remote=supervise_remote,
             browser_grant=browser_grant,
         )
     ) as stream:
@@ -538,7 +537,6 @@ async def stream_work_agent_events(
     validator_staged: StagedCommandMailbox,
     validator_lifecycle: WorkValidatorMailboxLifecycle,
     required_session_id: str | None = None,
-    supervise_remote: bool = False,
     browser_grant: BrowserGrant | None = None,
 ) -> AsyncGenerator[str, None]:
     primary_error: BaseException | None = None
@@ -565,7 +563,6 @@ async def stream_work_agent_events(
                 invocation_gate=validator_staged.invocation_gate,
                 shell_timeout_seconds=validator_staged.shell_timeout_seconds,
                 required_session_id=required_session_id,
-                supervise_remote=supervise_remote,
                 browser_grant=browser_grant,
             )
         ) as stream:

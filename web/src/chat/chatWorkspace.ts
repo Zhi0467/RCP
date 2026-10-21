@@ -19,7 +19,7 @@ import type {
 } from "../core/types";
 
 /** Mirrors rcp.limits.AGENT_NAME_MAX_CHARS: one cap for a conversation's stored agent name. */
-export const AGENT_NAME_MAX_CHARS = 25;
+export const AGENT_NAME_MAX_CHARS = 35;
 
 export type ChatKind = "node_chat" | "project_chat";
 

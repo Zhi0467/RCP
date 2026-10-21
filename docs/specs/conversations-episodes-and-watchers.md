@@ -11,7 +11,7 @@ One agent is one Agents-board conversation (`chat_id`). Its name is the stored
 `chat_display.title` for that project and conversation, shared by the board,
 transcript responses, and Bulletin. Creation uses the first Markdown heading
 in the first message when present, otherwise the whole message, with whitespace
-collapsed, cut to `AGENT_NAME_MAX_CHARS` (25), and trailing spaces trimmed. An
+collapsed, cut to `AGENT_NAME_MAX_CHARS` (35), and trailing spaces trimmed. An
 empty node-chat message uses the node id, then "Chat". An Auto-research chain
 starts with its branch name, cut the same way. Graph consolidation starts as
 "Graph consolidation", explicitly seeded by its admission owner, and cannot

@@ -156,11 +156,25 @@ def _proposal_action(proposal: Proposal, state: GraphState) -> list[ProposalActi
         )
         for operation in proposal.ops
     ):
-        return [
-            line
-            for operation in proposal.ops
-            for line in _proposal_action(proposal.model_copy(update={"ops": [operation]}), state)
-        ]
+        # Each node is named once, above all of its changes.
+        combined: list[ProposalActionLine] = []
+        named: set[str] = set()
+        for operation in proposal.ops:
+            if isinstance(operation, ProposalStandingChangeOperation):
+                node_id = operation.node_id
+            elif isinstance(
+                operation, (ProposalContentChangeOperation, ProposalStatusChangeOperation)
+            ):
+                node_id = operation.nodes[0].id if operation.nodes else None
+            else:
+                node_id = None
+            single = _proposal_action(proposal.model_copy(update={"ops": [operation]}), state)
+            if node_id in named and single[0].label == "Node":
+                single = single[1:]
+            if node_id is not None:
+                named.add(node_id)
+            combined.extend(single)
+        return combined
     if len(proposal.ops) != 1:
         return fallback
     operation = proposal.ops[0]
@@ -238,9 +252,7 @@ def _proposal_action(proposal: Proposal, state: GraphState) -> list[ProposalActi
         if node is not None:
             lines = [
                 ProposalActionLine(label="Node", text=node.title),
-                ProposalActionLine(
-                    label="Standing", text=f"{node.standing} → {operation.standing}"
-                ),
+                ProposalActionLine(label="Standing", before=node.standing, text=operation.standing),
             ]
     elif isinstance(operation, ProposalStatusChangeOperation):
         if not operation.nodes:
@@ -252,7 +264,7 @@ def _proposal_action(proposal: Proposal, state: GraphState) -> list[ProposalActi
         if node is not None and isinstance(current, str) and isinstance(proposed, str):
             lines = [
                 ProposalActionLine(label="Node", text=node.title),
-                ProposalActionLine(label="Status", text=f"{current} → {proposed}"),
+                ProposalActionLine(label="Status", before=current, text=proposed),
             ]
     return lines or fallback
 

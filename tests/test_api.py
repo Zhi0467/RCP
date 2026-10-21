@@ -2421,7 +2421,8 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
         instances = []
         finalize_error = False
 
-        def __init__(self, _host):
+        def __init__(self, host):
+            self.host = host
             self.root = None
             self.closed = False
             self.finalized = 0
@@ -2445,6 +2446,9 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
             assert self.root is not None
             assert reuse is False
             return str(self.root / "inputs" / label)
+
+        def read_input_text(self, label):
+            raise ValueError(label)
 
         def finalize_inputs(self):
             self.finalized += 1
@@ -8537,3 +8541,181 @@ def test_a_succeeding_chat_turn_records_the_usage_its_result_reported(app, tmp_p
     assert len(counted) == 1
     assert counted[0]["processed_input_tokens"] == 11
     assert counted[0]["generated_tokens"] == 7
+
+
+def test_a_recorded_correction_that_kept_the_inherited_patch_applies_nothing(app, tmp_path) -> None:
+    """A correction settles against its own launch's baseline, as it would live."""
+
+    import dataclasses
+
+    from rcp.runs.tasks.graph import finalize_recorded_graph_result
+
+    from .test_work_agent_io import _recorded_pass
+
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    store = app.state.background_tasks.store
+    execution = _agent_task_execution(store, "refresh-correction-unchanged")
+    request = RunRequest(provider="codex", run_truth_scope=["repo-a"], run_on="laptop")
+
+    class LinkLost:
+        async def stream(self, *_args, **_kwargs):
+            yield AgentEvent(event="error", text="link lost")
+
+    async def events(stream) -> list[AgentEvent]:
+        return [
+            AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
+            async for frame in stream
+        ]
+
+    asyncio.run(
+        events(
+            stream_graph_run(
+                service, LinkLost(), "refresh", request, tmp_path / "data", execution=execution
+            )
+        )
+    )
+    # The primary pass ran; its correction launched over the Patch it had left.
+    patch_text = agent_patch_json(refresh_patch())
+    store.begin_remote_provider_pass(
+        execution.operation_id, "host", "/stage", "/stage/primary.pid", supervised=True
+    )
+    store.finish_remote_provider_pass(execution.operation_id, "/stage/primary.pid")
+    store.record_agent_task_receipt(
+        execution.operation_id,
+        "graph_pass_baseline",
+        {
+            "pre_launch_patch_digest": hashlib.sha256(patch_text.encode("utf-8")).hexdigest(),
+            "requires_new_patch": True,
+        },
+    )
+    store.begin_remote_provider_pass(
+        execution.operation_id, "host", "/stage", "/stage/correction.pid", supervised=True
+    )
+    recorded = dataclasses.replace(
+        _recorded_pass(patch_text, "Kept it."), pid_file="/stage/correction.pid"
+    )
+    settled = asyncio.run(
+        events(
+            finalize_recorded_graph_result(
+                service, ScriptedLauncher([{}]), request, tmp_path / "data", execution, recorded
+            )
+        )
+    )
+
+    assert settled[-1].event == "error"
+    assert "rq/transfer-after-shift" not in service.history.state().nodes
+
+
+def test_a_refresh_that_outlives_its_link_settles_from_its_recorded_pass(
+    app, tmp_path, monkeypatch
+) -> None:
+    """A dropped link leaves the pass to its host; the recorded pass then applies."""
+
+    from rcp.agents.command_protocol import GraphDiffCommandRequest
+    from rcp.runs.remote_finalization import recorded_finalizer, resume_recorded_command_mailbox
+    from rcp.runs.tasks import graph as graph_module
+    from rcp.runs.tasks.graph import finalize_recorded_graph_result
+
+    from .test_work_agent_io import _recorded_pass
+
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    store = app.state.background_tasks.store
+    execution = _agent_task_execution(store, "refresh-link-lost")
+    request = RunRequest(provider="codex", run_truth_scope=["repo-a"], run_on="laptop")
+
+    class LinkLost:
+        async def stream(self, *_args, **_kwargs):
+            yield AgentEvent(event="session", session_id="recorded-thread")
+            yield AgentEvent(event="error", text="link lost")
+
+    async def events(stream) -> list[AgentEvent]:
+        return [
+            AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
+            async for frame in stream
+        ]
+
+    saved = {}
+    start = graph_module.start_work_validator_mailbox
+
+    def record_the_mailbox(staged, **kwargs):
+        saved.update(kwargs["resume_context"])
+        return start(staged, **kwargs)
+
+    monkeypatch.setattr(graph_module, "start_work_validator_mailbox", record_the_mailbox)
+    # The launch retains what a recorded pass needs before the provider starts.
+    asyncio.run(
+        events(
+            stream_graph_run(
+                service, LinkLost(), "refresh", request, tmp_path / "data", execution=execution
+            )
+        )
+    )
+    assert recorded_finalizer(store, execution.operation_id) is finalize_recorded_graph_result
+
+    # A relaunch serves that pass's Patch checks and graph reads from what it saved.
+    restored = {}
+    monkeypatch.setattr(graph_module, "load_work_mailbox_context", lambda _execution: saved)
+    monkeypatch.setattr(
+        graph_module,
+        "restore_work_validator_mailbox",
+        lambda _execution, **kwargs: restored.update(kwargs),
+    )
+    resume_recorded_command_mailbox(lambda: service, execution)
+    assert restored["validate"](agent_patch_json(refresh_patch())).status == "valid"
+    assert (
+        restored["command_handler"](
+            GraphDiffCommandRequest.model_validate(
+                {
+                    "mailbox_id": "0" * 32,
+                    "request_id": uuid.uuid4().hex,
+                    "credential": "0" * 64,
+                    "verb": "graph_diff",
+                    "arguments": {"from": "main@0", "to": "main@head"},
+                }
+            ),
+            None,
+        ).status
+        == "ok"
+    )
+
+    launcher = ScriptedLauncher([{}], message="must not launch")
+    recorded = _recorded_pass(agent_patch_json(refresh_patch()), "Refreshed offline.")
+    # Losing the state host while applying is an outage the pass waits out, even
+    # when the commit landed and only its acknowledgement was lost.
+    from rcp.transport.state import BatchPublishFailed
+
+    append = service.history.append
+    with monkeypatch.context() as outage:
+
+        def lost_acknowledgement(*args, **kwargs):
+            append(*args, **kwargs)
+            raise BatchPublishFailed("ssh exited 255", commit_status="unknown")
+
+        outage.setattr(service.history, "append", lost_acknowledgement)
+        asyncio.run(
+            events(
+                finalize_recorded_graph_result(
+                    service, launcher, request, tmp_path / "data", execution, recorded
+                )
+            )
+        )
+    assert execution.stage_unreachable
+    settled = asyncio.run(
+        events(
+            finalize_recorded_graph_result(
+                service, launcher, request, tmp_path / "data", execution, recorded
+            )
+        )
+    )
+
+    assert [event.text for event in settled if event.event == "answer"] == ["Refreshed offline."]
+    assert settled[-1].event == "done"
+    assert "rq/transfer-after-shift" in service.history.state().nodes
+    assert [
+        item
+        for item in service.history.load_patches()
+        if item.source_operation_id == execution.operation_id
+    ] != []
+    assert launcher.calls == 0

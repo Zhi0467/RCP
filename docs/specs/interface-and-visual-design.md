@@ -181,8 +181,10 @@ icon-only retry. Controls wrap and retain phone-sized targets at 390px.
 
 One floating toolbar inside the canvas holds every control: + Node, Undo,
 Redo, a Layout menu (layout mode, repulsion, Release all pins, Reset layout), a
-View menu (projection, per-type brightness, brighten/dim-all), Fit, and full
-screen. Menus close on an outside click or Escape; at <=560px the menu buttons
+View menu (projection, per-type brightness and hiding, brighten/dim-all), Fit,
+and full screen. A graph opens dim. Each node's bulb lights that node and its own
+edges, never its neighbours; a hidden type hides its edges too. Lit nodes and
+hidden types are remembered per project. Dim cards stay opaque above the edges. Menus close on an outside click or Escape; at <=560px the menu buttons
 show icons only. Floating edit menus keep screen size at every zoom. Provide
 boundary-aware scroll chaining, fullscreen with node detail, and individual pin
 release. Repulsion visibly changes spacing;
