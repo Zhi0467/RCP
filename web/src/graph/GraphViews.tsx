@@ -44,6 +44,8 @@ import {
   Focus,
   Gauge,
   GitBranch,
+  Lightbulb,
+  LightbulbOff,
   Link2,
   Maximize2,
   Minimize2,
@@ -56,6 +58,15 @@ import {
   Workflow,
   X,
 } from "lucide-react";
+import {
+  lensBrightEdge,
+  lensBrightNode,
+  lensShows,
+  readDagLens,
+  toggled,
+  writeDagLens,
+  type DagLens,
+} from "./dagLens";
 import {
   useCallback,
   useEffect,
@@ -262,7 +273,15 @@ export function DagView({
     () => (relationFocusNodeId ? relationFocus(relationFocusNodeId, projection.edges) : null),
     [projection.edges, relationFocusNodeId],
   );
-  const [brightTypes, setBrightTypes] = useState<Set<GraphNode["type"]>>(() => new Set(dagTypes));
+  const [lensState, setLensState] = useState(() => ({
+    projectId,
+    lens: readDagLens(projectId),
+  }));
+  if (lensState.projectId !== projectId) setLensState({ projectId, lens: readDagLens(projectId) });
+  const lens = lensState.lens;
+  const updateLens = (change: Partial<DagLens>) =>
+    setLensState((current) => ({ ...current, lens: { ...current.lens, ...change } }));
+  useEffect(() => writeDagLens(lensState.projectId, lensState.lens), [lensState]);
   const [ontologyProjection, setOntologyProjection] = useState<DagOntologyProjection>("all");
   const nodeProjectionEmphasis = useMemo(
     () => buildNodeProjectionEmphasis(projection.edges, ontologyProjection),
@@ -528,15 +547,6 @@ export function DagView({
     return () => window.clearTimeout(timer);
   }, [focusNodeId, relationFocusNodeId, layoutMode, layoutReady]);
 
-  const toggleType = (type: GraphNode["type"]) => {
-    setBrightTypes((current) => {
-      const next = new Set(current);
-      if (next.has(type)) next.delete(type);
-      else next.add(type);
-      return next;
-    });
-  };
-
   const pointerDown = (event: ReactPointerEvent<HTMLDivElement>, nodeId: string) => {
     if (event.button !== 0) return;
     if ((event.target as Element).closest(".dag-connect-handle, input, select")) return;
@@ -611,8 +621,8 @@ export function DagView({
     }
   };
 
-  const allBright = brightTypes.size === dagTypes.length;
-  const allDim = brightTypes.size === 0;
+  const allBright = lens.brightTypes.size === dagTypes.length;
+  const allDim = lens.brightTypes.size === 0 && lens.litNodeIds.size === 0;
   const fullscreenSupported =
     typeof document !== "undefined" &&
     document.fullscreenEnabled &&
@@ -701,8 +711,7 @@ export function DagView({
         <div className="dag-relation-focus" role="status">
           <Focus size={16} />
           <span>
-            <strong>Relation focus:</strong> {graph.nodes[relationFocusNodeId].title}. This node and
-            its directly connected neighbors stay bright; all other graph context is dimmed.
+            <strong>{graph.nodes[relationFocusNodeId].title}</strong>
           </span>
           <button className="button compact secondary" onClick={onClearRelationFocus}>
             <X size={14} /> Clear focus
@@ -847,22 +856,34 @@ export function DagView({
               </div>
               <div className="dag-lenses" role="group" aria-label="Node brightness by type">
                 {dagTypes.map((type) => {
-                  const active = brightTypes.has(type);
+                  const active = lens.brightTypes.has(type);
+                  const hidden = lens.hiddenTypes.has(type);
                   const meta = dagTypeMeta[type];
                   return (
-                    <button
-                      className={`dag-lens ${active ? "is-bright" : "is-dim"}`}
-                      style={{ "--lens-color": meta.color } as CSSProperties}
-                      type="button"
-                      aria-pressed={active}
-                      aria-label={`${active ? "Dim" : "Brighten"} ${meta.label.toLowerCase()} (${typeCounts[type]})`}
-                      onClick={() => toggleType(type)}
-                      key={type}
-                    >
-                      {active ? <Eye size={12} /> : <EyeOff size={12} />}
-                      <span>{meta.label}</span>
-                      <small>{typeCounts[type]}</small>
-                    </button>
+                    <div className="dag-lens-row" key={type}>
+                      <button
+                        className={`dag-lens ${active ? "is-bright" : "is-dim"}`}
+                        style={{ "--lens-color": meta.color } as CSSProperties}
+                        type="button"
+                        aria-pressed={active}
+                        aria-label={`${active ? "Dim" : "Brighten"} ${meta.label.toLowerCase()} (${typeCounts[type]})`}
+                        disabled={hidden}
+                        onClick={() => updateLens({ brightTypes: toggled(lens.brightTypes, type) })}
+                      >
+                        {active ? <Lightbulb size={12} /> : <LightbulbOff size={12} />}
+                        <span>{meta.label}</span>
+                        <small>{typeCounts[type]}</small>
+                      </button>
+                      <button
+                        className="dag-lens-hide"
+                        type="button"
+                        aria-pressed={hidden}
+                        aria-label={`${hidden ? "Show" : "Hide"} ${meta.label.toLowerCase()}`}
+                        onClick={() => updateLens({ hiddenTypes: toggled(lens.hiddenTypes, type) })}
+                      >
+                        {hidden ? <EyeOff size={12} /> : <Eye size={12} />}
+                      </button>
+                    </div>
                   );
                 })}
               </div>
@@ -871,17 +892,17 @@ export function DagView({
                   className="dag-tool-button"
                   type="button"
                   disabled={allBright}
-                  onClick={() => setBrightTypes(new Set(dagTypes))}
+                  onClick={() => updateLens({ brightTypes: new Set(dagTypes) })}
                 >
-                  <Eye size={14} /> Brighten all
+                  <Lightbulb size={14} /> Brighten all
                 </button>
                 <button
                   className="dag-tool-button"
                   type="button"
                   disabled={allDim}
-                  onClick={() => setBrightTypes(new Set())}
+                  onClick={() => updateLens({ brightTypes: new Set(), litNodeIds: new Set() })}
                 >
-                  <EyeOff size={14} /> Dim all
+                  <LightbulbOff size={14} /> Dim all
                 </button>
               </div>
             </div>
@@ -940,13 +961,15 @@ export function DagView({
                 {projection.edges.map((edge, edgeIndex) => {
                   const source = layout.positions[edge.source];
                   const target = layout.positions[edge.target];
-                  if (!source || !target) return null;
+                  const sourceNode = displayGraph.nodes[edge.source];
+                  const targetNode = displayGraph.nodes[edge.target];
+                  if (!source || !target || !lensShows(lens, sourceNode)) return null;
+                  if (!lensShows(lens, targetNode)) return null;
                   const geometry = edgeGeometry(source, target, edgeIndex);
                   const projectionEmphasis = edgeProjectionEmphasis(edge, ontologyProjection);
                   const dimmed =
                     projectionEmphasis === "dimmed" ||
-                    !brightTypes.has(displayGraph.nodes[edge.source]?.type) ||
-                    !brightTypes.has(displayGraph.nodes[edge.target]?.type) ||
+                    !lensBrightEdge(lens, sourceNode, targetNode) ||
                     Boolean(focusedRelations && !focusedRelations.edgeIds.has(edge.id)) ||
                     Boolean(
                       selectedTaskId &&
@@ -982,13 +1005,14 @@ export function DagView({
               </svg>
               {projection.nodes.map((node) => {
                 const position = layout.positions[node.id];
-                if (!position) return null;
+                if (!position || !lensShows(lens, node)) return null;
+                const lit = lens.litNodeIds.has(node.id);
                 const projectionEmphasis =
                   nodeProjectionEmphasis.get(node.id) ??
                   (ontologyProjection === "all" ? "emphasized" : "neutral");
                 const dimmed =
                   projectionEmphasis === "dimmed" ||
-                  !brightTypes.has(node.type) ||
+                  !lensBrightNode(lens, node) ||
                   Boolean(focusedRelations && !focusedRelations.nodeIds.has(node.id)) ||
                   Boolean(selectedTaskId && !taskHighlights.has(node.id));
                 const nodeChange = nodeChanges.get(node.id);
@@ -1041,6 +1065,19 @@ export function DagView({
                         <span className={`standing ${node.standing}`}>{node.standing}</span>
                         <span>{node.status || node.validity || ""}</span>
                       </small>
+                    </button>
+                    <button
+                      className={`dag-node-light ${lit ? "is-lit" : ""}`}
+                      type="button"
+                      aria-pressed={lit}
+                      aria-label={`${lit ? "Dim" : "Light up"} ${node.title}`}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        updateLens({ litNodeIds: toggled(lens.litNodeIds, node.id) });
+                      }}
+                    >
+                      {lit ? <Lightbulb size={13} /> : <LightbulbOff size={13} />}
                     </button>
                     {editor.renameField(node)}
                     {canEdit &&
