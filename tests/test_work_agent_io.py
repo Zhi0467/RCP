@@ -1463,6 +1463,58 @@ async def test_a_host_lost_during_watcher_maintenance_leaves_the_task_waiting(
             pass
 
 
+@pytest.mark.parametrize("outage", ["patch_read", "apply_before_commit"])
+@pytest.mark.asyncio
+async def test_a_recorded_settlement_that_loses_canonical_state_retries(
+    tmp_path, monkeypatch, outage
+) -> None:
+    """An outage while settling a recorded pass is not a verdict on that pass.
+
+    Spending the result on it would end the turn with its graph update lost;
+    letting it out leaves the task waiting to settle the same pass again.
+    """
+
+    from rcp.runs.tasks.work_turn_runtime import DeliverableFailure
+    from rcp.transport import StateUnavailable
+
+    service, request, execution = _one_result_app(tmp_path)
+    resolved = work_module._resolve_work_execution(service, request, execution)
+    primed, staged = await work_module._stage_work_turn(
+        service, resolved, tmp_path / "data", execution
+    )
+    work_module._record_work_finalization_context(primed, staged)
+    execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
+    await work_module._prepare_work_prompt_context(primed, staged)
+    await primed.validator_lifecycle.close()
+
+    if outage == "patch_read":
+
+        def unreachable(*_args, **_kwargs):
+            raise StateUnavailable("ssh exited 255")
+
+        monkeypatch.setattr(work_module, "_read_chat_patch", unreachable)
+    else:
+        monkeypatch.setattr(
+            work_module,
+            "_apply_work_patch",
+            lambda *_args, **_kwargs: (
+                None,
+                DeliverableFailure("lost state", correctable=False, commit_status="absent"),
+            ),
+        )
+
+    with pytest.raises(StateUnavailable):
+        async for _frame in work_module.finalize_recorded_work_result(
+            service,
+            ScriptedLauncher([{}], message="must not launch"),
+            request,
+            tmp_path / "not-used",
+            execution,
+            _recorded_pass(agent_patch_json(seed_patch()), "The work is done."),
+        ):
+            pass
+
+
 @pytest.mark.asyncio
 async def test_a_live_supervised_turn_whose_host_vanishes_fails_visibly(
     tmp_path, monkeypatch

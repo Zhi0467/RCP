@@ -1082,7 +1082,9 @@ An explicit human Pause stops the active remote turn and settles it as paused;
 signalling its local SSH client does not turn Pause into a lost-link wait.
 
 Owners mark transport outages while reopening stages, reading, validating or
-persisting results; these keep recorded finalization waiting. A reachable host
+persisting results; these keep recorded finalization waiting. So does an Apply
+that lost canonical state before its commit point; one that may have committed
+is reported instead, never applied twice. A reachable host
 reporting a removed, replaced or unowned stage is a real failure. Reading one
 part successfully does not make later reads reliable. Once a live stream has
 recorded its stop, reconciliation never rereads it; a later settlement outage

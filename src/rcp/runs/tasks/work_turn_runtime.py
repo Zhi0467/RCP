@@ -294,6 +294,9 @@ class WorkFinalizationContext:
     #: recovered continuation is held to it exactly as the live stream was.
     required_session_id: str | None = None
     answer: str | None = None
+    #: Settling a pass its host recorded. Canonical state it cannot reach then
+    #: means retry the settlement, never a verdict on the pass.
+    recorded: bool = False
 
     @property
     def surface(self) -> AgentSurface:

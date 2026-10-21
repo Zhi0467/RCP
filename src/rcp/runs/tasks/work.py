@@ -1324,6 +1324,8 @@ def _read_initial_patch_deliverable(
     try:
         text = _read_chat_patch(turn.workspace, turn.remote_stage)
     except (OSError, StateUnavailable, ValueError) as exc:
+        if turn.recorded and isinstance(exc, StateUnavailable):
+            raise
         _note_stage_unreachable(turn.execution, exc)
         text = None
         failure = _DeliverableFailure(
@@ -1351,6 +1353,8 @@ def _read_initial_watch_deliverable(
     try:
         text = _read_watch_request(turn.workspace, turn.remote_stage)
     except (OSError, StateUnavailable, ValueError) as exc:
+        if turn.recorded and isinstance(exc, StateUnavailable):
+            raise
         _note_stage_unreachable(turn.execution, exc)
         text = None
         failure = _DeliverableFailure(
@@ -1406,6 +1410,10 @@ async def _validate_patch_deliverable(
         settled.graph_update = result.model_copy(update={"correction_rounds": correction_rounds})
         return _DeliverableStep()
     assert failure is not None
+    if turn.recorded and failure.commit_status == "absent":
+        # Nothing published, so a recorded pass retries rather than spending
+        # its result on an outage.
+        raise StateUnavailable(failure.message)
     return _DeliverableStep(failure=failure)
 
 
@@ -1940,6 +1948,8 @@ async def _settle_watch_deliverable(
                 parsed = WorkTurnOutcome.model_validate_json(raw or "null")
                 settled.turn_outcome = TurnOutcome.model_validate(parsed.model_dump())
             except (ValueError, OSError, StateUnavailable) as exc:
+                if turn.recorded and isinstance(exc, StateUnavailable):
+                    raise
                 settled.turn_outcome = TurnOutcome(status="not_stated")
                 if correction_rounds < TURN_OUTCOME_CORRECTION_MAX_ROUNDS:
                     outcome_failure = f"Write a valid outcome.json for the completed turn: {exc}"
@@ -3451,6 +3461,7 @@ def open_recorded_work_turn(
     """
 
     turn = _load_work_finalization_context(service, request, execution, role=role, owner=owner)
+    turn.recorded = True
     question = execution.store.question_for_followup(execution.operation_id)
     if question is not None:
         require_question_origin_binding(
