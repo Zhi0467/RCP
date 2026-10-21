@@ -1531,17 +1531,17 @@ a.digest-title:hover {
   box-shadow: none;
   filter: saturate(0.28);
 }
-.dag-node.is-dim > :not(.dag-node-light),
+.dag-node.is-dim > .dag-node-inspect,
 .dag-node.is-dim::before {
   opacity: 0.2;
 }
-.dag-node.is-dim:hover > :not(.dag-node-light) {
+.dag-node.is-dim:hover > .dag-node-inspect {
   opacity: 0.4;
 }
 .dag-node.is-layer-neutral:not(.is-dim) {
   filter: saturate(0.5);
 }
-.dag-node.is-layer-neutral:not(.is-dim) > * {
+.dag-node.is-layer-neutral:not(.is-dim) > .dag-node-inspect {
   opacity: 0.58;
 }
 .dag-node-light {
