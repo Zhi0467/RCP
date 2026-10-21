@@ -1645,7 +1645,6 @@ async def _stream_graph_agent_events(
                 invocation_gate=validator_staged.invocation_gate,
                 outcome=outcome,
                 binary=binary,
-                supervise_remote=remote_stage is not None,
             )
         ) as stream:
             async for frame in stream:

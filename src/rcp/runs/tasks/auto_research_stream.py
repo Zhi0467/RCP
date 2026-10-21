@@ -486,7 +486,6 @@ async def stream_auto_research_orchestrator_run(
                     outcome=outcome,
                     binary=stage.provider_binary,
                     invocation_gate=staged_commands.invocation_gate,
-                    supervise_remote=stage.remote is not None,
                 )
             ) as stream:
                 async for frame in stream:
@@ -735,7 +734,6 @@ async def stream_auto_research_worker_run(
                     outcome=outcome,
                     binary=stage.provider_binary,
                     invocation_gate=staged_commands.invocation_gate,
-                    supervise_remote=stage.remote is not None,
                 )
             ) as stream:
                 async for frame in stream:
@@ -2348,7 +2346,6 @@ async def _settle_worker_patch(
                     outcome=correction_outcome,
                     binary=correction.provider_binary,
                     invocation_gate=correction_mailbox.invocation_gate,
-                    supervise_remote=stage.remote is not None,
                     required_session_id=native_session_id,
                 )
             ) as stream:

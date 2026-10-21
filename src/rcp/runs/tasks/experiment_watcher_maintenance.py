@@ -87,7 +87,6 @@ async def _process_experiment_watcher_maintenance(
     provider_binary: str | None,
     retry_output_digests: dict[str, str],
     maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
-    supervise_remote: bool = False,
     continuation: Callable[[str, str], str] | None = None,
 ) -> tuple[list[str], str | None, bool]:
     """Admit, validate, and atomically persist each physical Experiment watcher file.
@@ -332,11 +331,10 @@ async def _process_experiment_watcher_maintenance(
             )
             correction_outcome = _ProviderOutcome(session_id=native_session_id)
             correction_error: str | None = None
-            if supervise_remote:
-                # This correction continues the pass it corrects. It reaches its
-                # host through the raw stream rather than the shared Work one,
-                # so it writes down its own pin the way that one does.
-                checkpoint_required_session(execution, native_session_id)
+            # This correction continues the pass it corrects. It reaches its
+            # host through the raw stream rather than the shared Work one, so
+            # it writes down its own pin the way that one does.
+            checkpoint_required_session(execution, native_session_id)
             async with aclosing(
                 _stream_agent_events(
                     launcher,
@@ -355,7 +353,6 @@ async def _process_experiment_watcher_maintenance(
                     outcome=correction_outcome,
                     binary=provider_binary,
                     required_session_id=native_session_id,
-                    supervise_remote=supervise_remote,
                 )
             ) as stream:
                 async for frame in stream:

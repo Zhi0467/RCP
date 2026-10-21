@@ -464,17 +464,16 @@ async def test_provider_turn_rides_the_master_of_its_own_run(
 
 
 @pytest.mark.parametrize(
-    ("host", "supervised", "delivered", "human_pause"),
+    ("host", "delivered", "human_pause"),
     [
-        ("test-host", True, True, False),
-        ("", False, True, False),
-        ("test-host", True, False, False),
-        ("test-host", False, True, False),
-        ("test-host", True, True, True),
+        ("test-host", True, False),
+        ("", True, False),
+        ("test-host", False, False),
+        ("test-host", True, True),
     ],
 )
 def test_shutdown_and_pause_settle_the_right_pass(
-    tmp_path, monkeypatch, transported_launcher, host, supervised, delivered, human_pause
+    tmp_path, monkeypatch, transported_launcher, host, delivered, human_pause
 ):
     import hashlib
     from unittest.mock import Mock
@@ -545,7 +544,6 @@ def test_shutdown_and_pause_settle_the_right_pass(
             capability="scratch_patch",
             outcome=shared._ProviderOutcome(),
             binary=None,
-            supervise_remote=supervised,
         ):
             yield frame
 
@@ -577,7 +575,7 @@ def test_shutdown_and_pause_settle_the_right_pass(
         assert tasks.runtime_is_idle()
         record = store.agent_task(task.operation_id)
         assert record is not None
-        detached = bool(host and supervised and delivered and not human_pause)
+        detached = bool(host and delivered and not human_pause)
         if not detached:
             assert record.status == "paused"
             assert record.phase != "awaiting_remote_result"

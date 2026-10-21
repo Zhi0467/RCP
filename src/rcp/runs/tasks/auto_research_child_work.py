@@ -877,7 +877,6 @@ async def settle_child_work_deliverables(
         provider_binary=launch_turn.provider_binary if launch_turn is not None else None,
         retry_output_digests=retry_baseline.experiment_watch_digests,
         maximum_corrections=maximum_corrections,
-        supervise_remote=launch_turn.supervise_remote if launch_turn is not None else False,
         continuation=_maintenance_continuation(launch_turn, composed),
     )
     settled.native_session_id = native_session_id
@@ -995,7 +994,6 @@ async def stream_auto_research_child_work_run(
             staged,
             None,
             required_session_id=required_session_id,
-            supervise_remote=bool(turn.execution_host),
         )
     ) as stream:
         async for frame in stream:

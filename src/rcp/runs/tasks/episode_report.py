@@ -264,7 +264,6 @@ async def stream_episode_report_run(
                         capability=capability,
                         outcome=outcome,
                         binary=stage.provider_binary,
-                        supervise_remote=stage.remote is not None,
                     )
                 ) as stream:
                     async for frame in stream:

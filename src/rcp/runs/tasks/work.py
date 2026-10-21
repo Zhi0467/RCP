@@ -1832,7 +1832,6 @@ async def _settle_patch_deliverable(
                 outcome=correction_outcome,
                 validator_staged=correction_validator,
                 validator_lifecycle=correction_lifecycle,
-                supervise_remote=launch_turn.supervise_remote,
             )
         except BaseException as exc:
             if correction_lifecycle is not None:
@@ -2068,7 +2067,6 @@ async def _settle_watch_deliverable(
                 outcome=correction_outcome,
                 validator_staged=correction_validator,
                 validator_lifecycle=correction_lifecycle,
-                supervise_remote=launch_turn.supervise_remote,
             )
             async with aclosing(correction_stream) as stream:
                 async for frame in stream:
@@ -2145,7 +2143,6 @@ async def _apply_work_turn(
         provider_binary=launch_turn.provider_binary if launch_turn is not None else None,
         retry_output_digests=retry_baseline.experiment_watch_digests,
         maximum_corrections=maximum_corrections,
-        supervise_remote=launch_turn.supervise_remote if launch_turn is not None else False,
         continuation=_maintenance_continuation(launch_turn, composed),
     )
     applied.native_session_id = native_session_id
@@ -2251,10 +2248,8 @@ async def _launch_and_stream_work_turn(
     _wake_episode: object | None,
     required_session_id: str | None = None,
     *,
-    supervise_remote: bool = False,
     browser_grant: BrowserGrant | None = None,
 ) -> AsyncGenerator[str, None]:
-    turn.supervise_remote = supervise_remote
     try:
         if is_consolidation(turn.execution) and not turn.execution.store.agent_task_has_receipt(
             turn.execution.operation_id, "agent_launch"
@@ -2313,7 +2308,6 @@ async def _launch_and_stream_work_turn(
                 session_id=turn.request.session_id,
                 required_session_id=required_session_id,
                 outcome=turn.outcome,
-                supervise_remote=supervise_remote,
                 browser_grant=browser_grant,
             )
         ) as stream:
@@ -2692,7 +2686,6 @@ async def _stream_work_run(
             staged,
             None,
             required_session_id=required_session_id,
-            supervise_remote=bool(turn.execution_host),
             browser_grant=browser_grant,
         )
     ) as stream:

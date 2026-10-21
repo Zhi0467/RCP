@@ -34,7 +34,7 @@ class _Stage:
         self.last_workspace_write = (name, content)
 
 
-async def _consume(store, launcher, tmp_path, *, stage=None, supervise_remote=False):
+async def _consume(store, launcher, tmp_path, *, stage=None):
     outcome = _ProviderOutcome()
     events = [
         event
@@ -53,7 +53,6 @@ async def _consume(store, launcher, tmp_path, *, stage=None, supervise_remote=Fa
             capability="work_auto",
             outcome=outcome,
             binary=None,
-            supervise_remote=supervise_remote,
         )
     ]
     return outcome, events
@@ -77,7 +76,6 @@ async def test_supervised_stream_records_ownership_and_forwards_pending_state(tm
         store,
         Launcher(),
         tmp_path,
-        supervise_remote=True,
     )
 
     assert "remote_result_pending" in events[0]

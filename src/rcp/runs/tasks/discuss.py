@@ -1190,7 +1190,6 @@ async def stream_discuss_run(
                     browser_grant=browser_grant,
                     outcome=outcome,
                     binary=provider_binary,
-                    supervise_remote=bool(execution_host),
                 )
             ) as stream:
                 async for frame in stream:

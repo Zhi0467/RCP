@@ -1316,7 +1316,6 @@ def _provider_turn(
         binary=binary,
         required_session_id=required_session_id,
         hidden_read_scope=hidden_read_scope,
-        supervise_remote=stage.remote_stage is not None,
     )
     return provider_outcome, stream
 
