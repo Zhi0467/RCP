@@ -9,7 +9,11 @@ import pytest
 from rcp.agents import AgentLauncher, ProviderReadiness
 from rcp.agents import launcher as launcher_module
 from rcp.runs.provider_process import require_remote_provider_quiescence
-from rcp.runs.shared import _ProviderOutcome, _stream_agent_events
+from rcp.runs.shared import (
+    _ProviderOutcome,
+    _remote_turn_supervisor_script,
+    _stream_agent_events,
+)
 from rcp.service import RunRequest
 from rcp.storage import AppStore
 from rcp.transport import (
@@ -150,7 +154,12 @@ async def test_a_failed_input_transfer_marks_only_a_lost_link(
         operation_id="op-transfer",
         stage_unreachable=False,
     )
-    remote_stage = SimpleNamespace(root=Path("/stage"), finalize_inputs=finalize_inputs)
+    remote_stage = SimpleNamespace(
+        root=Path("/stage"),
+        finalize_inputs=finalize_inputs,
+        # Every remote launch is supervised; its supervisor is already staged here.
+        read_input_text=lambda _label: _remote_turn_supervisor_script(),
+    )
     outcome = _ProviderOutcome()
 
     def never_launched(*args, **kwargs):
