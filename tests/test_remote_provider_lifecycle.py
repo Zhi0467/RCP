@@ -380,6 +380,65 @@ async def test_supervised_transport_loss_leaves_the_remote_pass_for_reconciliati
 
 
 @pytest.mark.asyncio
+async def test_pause_of_supervised_remote_turn_does_not_wait_for_reconciliation(
+    tmp_path, monkeypatch, transported_launcher
+):
+    from rcp.agents import AgentProcessControl
+    from rcp.agents import launcher as launcher_module
+
+    # Stand in for the local SSH client: deliver a provider event, then remain
+    # connected until Pause signals it. The remote stop is observed separately.
+    monkeypatch.setattr(
+        launcher_module, "_supervised_remote_turn_command", lambda command, **kwargs: command
+    )
+    monkeypatch.setattr(
+        transported_launcher,
+        "_command",
+        lambda *args, **kwargs: [
+            sys.executable,
+            "-c",
+            "import sys, time; sys.stdin.read(); "
+            'print(\'{"type":"thread.started","thread_id":"paused-session"}\', flush=True); '
+            "time.sleep(30)",
+        ],
+    )
+    stops = []
+    monkeypatch.setattr(
+        AgentProcessControl,
+        "_terminate_remote_after_hold",
+        lambda *args, **kwargs: stops.append(args[:2]) or True,
+    )
+    monkeypatch.setattr(AgentProcessControl, "_confirm_remote_stopped", lambda *a, **kw: True)
+    control = AgentProcessControl()
+
+    async def collect():
+        events = []
+        async for event in transported_launcher.stream(
+            "codex",
+            "prompt",
+            cwd=tmp_path,
+            capability="scratch_patch",
+            host="test-host",
+            remote_pid_file=str(tmp_path / "agent.pid"),
+            runtime_id="exec",
+            supervisor_path="/stage/supervisor.py",
+            control=control,
+        ):
+            events.append(event)
+            if event.event == "session":
+                control.request_pause()
+        return events
+
+    events = await asyncio.wait_for(collect(), timeout=10)
+    evidence = json.loads(next(event.text for event in events if event.event == "provider_exit"))
+    assert evidence["return_code"] < 0
+    assert stops
+    assert events[-1].event == "paused"
+    assert evidence["remote_process_stopped"] is True
+    assert not any(event.event in {"remote_result_pending", "error"} for event in events)
+
+
+@pytest.mark.asyncio
 async def test_provider_turn_rides_the_master_of_its_own_run(
     tmp_path, monkeypatch, transported_launcher
 ):
@@ -417,3 +476,175 @@ async def test_provider_turn_rides_the_master_of_its_own_run(
     # it deliberately stays on the shared one.
     assert partitions[0] == "test-host:/tmp/rcp-run.op-one"
     assert set(partitions[1:]) <= {None}
+
+
+@pytest.mark.parametrize(
+    ("host", "delivered", "human_pause"),
+    [
+        ("test-host", True, False),
+        ("", True, False),
+        ("test-host", False, False),
+        ("test-host", True, True),
+    ],
+)
+def test_shutdown_and_pause_settle_the_right_pass(
+    tmp_path, monkeypatch, transported_launcher, host, delivered, human_pause
+):
+    import hashlib
+    from unittest.mock import Mock
+
+    from rcp.agents import AgentEvent, AgentProcessControl
+    from rcp.background import BackgroundAgentTasks
+    from rcp.runs import remote_finalization, shared
+    from rcp.runs.tasks.work import WORK_FINALIZATION_CONTEXT_ROLE
+    from rcp.transport import RemoteRunStage
+
+    from .helpers import wait_until
+    from .test_background import _admitted_launch_task, _sse, _store
+    from .test_remote_reconciliation import _journal
+
+    store = _store(tmp_path)
+    pause = Mock(wraps=store.request_agent_task_pause)
+    monkeypatch.setattr(store, "request_agent_task_pause", pause)
+    monkeypatch.setattr(
+        transported_launcher,
+        "readiness",
+        lambda *a, **kw: ProviderReadiness(
+            provider="codex", installed=True, authenticated=True, version="0.153.4"
+        ),
+    )
+    stage = Mock(spec=RemoteRunStage, root=tmp_path)
+    stage.list_workspace_files.return_value = []
+    monkeypatch.setattr(shared, "_stage_or_reuse_task_input", lambda *a: "/stage/supervisor.py")
+    monkeypatch.setattr(shared, "require_remote_provider_quiescence", lambda *a: None)
+    # A real local process stands in for SSH; host stop and journal reads are
+    # independent inputs, so killing the client cannot imply provider death.
+    ready = tmp_path / "client-ready"
+    spawn = asyncio.create_subprocess_exec
+
+    async def spawn_client(*args, **kwargs):
+        return await spawn(
+            sys.executable,
+            "-c",
+            "import sys, time; from pathlib import Path; sys.stdin.buffer.readline(); "
+            f"Path({str(ready)!r}).touch(); "
+            'print(\'{"type":"thread.started","thread_id":"kept-session"}\', flush=True); '
+            "time.sleep(30)",
+            **kwargs,
+        )
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn_client)
+    stop = Mock(return_value=True)
+    confirm = Mock(return_value=True)
+    monkeypatch.setattr(AgentProcessControl, "_terminate_remote_after_hold", stop)
+    monkeypatch.setattr(AgentProcessControl, "_confirm_remote_stopped", confirm)
+    mailbox = Mock()
+
+    async def stream(_project_id, _kind, request, execution):
+        execution.checkpoint_stage(host, str(tmp_path))
+        execution.command_mailbox = mailbox
+        mailbox.execution = execution
+        async for frame in shared._stream_agent_events(
+            transported_launcher,
+            request,
+            "prompt",
+            workspace=tmp_path,
+            session_id=None,
+            read_dirs=[],
+            write_dirs=[],
+            write_scope=None,
+            execution_host=host,
+            execution=execution,
+            remote_stage=stage if host else None,
+            capability="scratch_patch",
+            outcome=shared._ProviderOutcome(),
+            binary=None,
+        ):
+            yield frame
+
+    tasks = BackgroundAgentTasks(store, stream)
+    task = _admitted_launch_task(
+        store,
+        operation_id="quit-turn",
+        record_updates={
+            "runtime_id": "codex.exec-json.v1" if delivered else "codex.app-server-stdio.v1"
+        },
+    )
+    store.record_agent_task_contract(
+        task.operation_id, WORK_FINALIZATION_CONTEXT_ROLE, "{}", hashlib.sha256(b"{}").hexdigest()
+    )
+    tasks.launch_admitted(task.operation_id)
+    try:
+        wait_until(
+            lambda: (
+                (current := store.agent_task(task.operation_id)) is not None
+                and current.native_session_id == "kept-session"
+                if delivered
+                else ready.exists()
+            )
+        )
+        if human_pause:
+            tasks.pause(task.operation_id)
+            wait_until(tasks.runtime_is_idle)
+        tasks.shutdown()
+        assert tasks.runtime_is_idle()
+        record = store.agent_task(task.operation_id)
+        assert record is not None
+        detached = bool(host and delivered and not human_pause)
+        if not detached:
+            assert record.status == "paused"
+            assert record.phase != "awaiting_remote_result"
+            if host:
+                assert stop.called
+                assert confirm.called
+                assert store.unresolved_remote_provider_passes(host, str(tmp_path)) == []
+            return
+
+        assert record.status == "running"
+        assert record.phase == "awaiting_remote_result"
+        stop.assert_not_called()
+        confirm.assert_not_called()
+        mailbox.detach.assert_called_once()
+        mailbox.suspend.assert_called()
+        passes = store.unresolved_remote_provider_passes(host, str(tmp_path))
+        assert len(passes) == 1
+        operation_id, pid_file = passes[0]
+        assert operation_id == task.operation_id
+        pause.assert_not_called()
+
+        # Drive the real planner and journal validation across a new manager's
+        # startup. Only remote observations and the owner's effects are fixtures.
+        finished = False
+        journal = _journal(events=json.dumps({"type": "turn.completed"}) + "\n")
+        journal["outcome"]["pid_file"] = pid_file
+        journal["accepted"]["pid_file"] = pid_file
+        plan = remote_finalization.plan_remote_reconciliation
+        monkeypatch.setattr(
+            remote_finalization,
+            "plan_remote_reconciliation",
+            lambda store: plan(store, stopped=lambda *a: finished, read_journal=lambda *a: journal),
+        )
+        finalized = []
+
+        async def recorded_stream(_project_id, _kind, _request, execution, recorded):
+            finalized.append((execution.operation_id, recorded.pid_file))
+            yield _sse(AgentEvent(event="answer", text="Recovered answer."))
+            yield _sse(AgentEvent(event="done"))
+
+        restarted = BackgroundAgentTasks(store, stream, recorded_stream=recorded_stream)
+        monkeypatch.setattr(restarted, "_schedule_remote_reconciliation", lambda **kw: None)
+        restarted.recover_at_startup()
+        recovered = store.agent_task(operation_id)
+        assert recovered is not None and recovered.phase == "awaiting_remote_result"
+        assert restarted._reconcile_remote_results() is True
+        assert finalized == []
+        finished = True
+        assert restarted._reconcile_remote_results() is False
+        assert finalized == [(operation_id, pid_file)]
+        settled = store.agent_task(operation_id)
+        assert settled is not None and settled.status == "succeeded"
+        assert settled.result == {"messages": ["Recovered answer."]}
+        assert store.unresolved_remote_provider_passes(host, str(tmp_path)) == []
+        assert len(store.agent_tasks("project", include_hidden=True)) == 1
+    finally:
+        tasks.shutdown()

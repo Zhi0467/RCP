@@ -297,10 +297,11 @@ def _supervised_remote_turn_command(
 
 
 class AgentProcessControl:
-    """Thread-safe pause control for one provider subprocess."""
+    """Thread-safe pause and remote-detach control for one provider subprocess."""
 
     def __init__(self) -> None:
         self.pause_requested = threading.Event()
+        self.detach_requested = threading.Event()
         self._lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._process: asyncio.subprocess.Process | None = None
@@ -308,6 +309,7 @@ class AgentProcessControl:
         self._remote_pid_file: str | None = None
         self._steering: LiveProviderSteering | None = None
         self._started_at: float | None = None
+        self._remote_prompt_delivered: Callable[[], bool] | None = None
 
     def steering_state(self) -> ProviderSteeringState:
         with self._lock:
@@ -342,8 +344,8 @@ class AgentProcessControl:
             self._remote_pid_file = pid_file
 
     def request_pause(self) -> None:
-        self.pause_requested.set()
         with self._lock:
+            self.pause_requested.set()
             loop = self._loop
             process = self._process
             remote_host = self._remote_host
@@ -366,6 +368,33 @@ class AgentProcessControl:
                 lambda: asyncio.create_task(self._terminate(process, started_at))
             )
 
+    def allow_remote_detach(self, prompt_delivered: Callable[[], bool]) -> None:
+        """Bind shutdown eligibility to this supervised pass's delivery boundary."""
+        with self._lock:
+            self._remote_prompt_delivered = prompt_delivered
+
+    def request_detach(self) -> bool:
+        """End only the local SSH stream if its supervised turn can be recovered."""
+        with self._lock:
+            loop = self._loop
+            process = self._process
+            started_at = self._started_at
+            if (
+                self.pause_requested.is_set()
+                or self._remote_prompt_delivered is None
+                or not self._remote_prompt_delivered()
+                or loop is None
+                or loop.is_closed()
+                or process is None
+                or started_at is None
+            ):
+                return False
+            self.detach_requested.set()
+            loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(self._terminate(process, started_at))
+            )
+            return True
+
     def attach(self, process: asyncio.subprocess.Process) -> None:
         with self._lock:
             self._loop = asyncio.get_running_loop()
@@ -385,6 +414,8 @@ class AgentProcessControl:
     def detach(self, process: asyncio.subprocess.Process) -> None:
         with self._lock:
             if self._process is process:
+                self._remote_prompt_delivered = None
+                self.detach_requested.clear()
                 self._steering = None
                 self._process = None
                 self._loop = None
@@ -1520,6 +1551,8 @@ class AgentLauncher:
         remote_stopped: bool | None = None
         remote_result_pending = False
         prompt_delivered = False
+        if control is not None and host:
+            control.allow_remote_detach(lambda: prompt_delivered)
         try:
             assert process.stdin is not None
             assert process.stdout is not None
@@ -1577,6 +1610,9 @@ class AgentLauncher:
                     monitored,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
+                if control is not None and control.detach_requested.is_set():
+                    # Leave all remaining provider bytes to its recorded owner.
+                    break
                 if stdin_pending and stdin_task in done:
                     await stdin_task
                     stdin_pending = False
@@ -1730,7 +1766,13 @@ class AgentLauncher:
                 stderr = await stderr_task
             stderr = _meaningful_stderr(stderr)
             remote_result_pending = bool(
-                host and prompt_delivered and transport_failure(return_code, host)
+                host
+                and prompt_delivered
+                and not (control is not None and control.pause_requested.is_set())
+                and (
+                    (control is not None and control.detach_requested.is_set())
+                    or transport_failure(return_code, host)
+                )
             )
             if host and remote_pid_file and not remote_result_pending:
                 remote_stopped = await asyncio.to_thread(
@@ -1812,13 +1854,13 @@ class AgentLauncher:
                     separators=(",", ":"),
                 ),
             )
-            if remote_result_pending:
+            if paused:
+                yield AgentEvent(event="paused", text="Provider process paused.")
+            elif remote_result_pending:
                 yield AgentEvent(
                     event="remote_result_pending",
                     text="The connection ended after the remote host accepted this turn.",
                 )
-            elif paused:
-                yield AgentEvent(event="paused", text="Provider process paused.")
             elif completion_stop_failed:
                 yield AgentEvent(
                     event="error",
@@ -1851,6 +1893,7 @@ class AgentLauncher:
                         and remote_pid_file
                         and remote_stopped is not True
                         and not remote_result_pending
+                        and not (control is not None and control.detach_requested.is_set())
                     ):
                         await asyncio.to_thread(
                             AgentProcessControl._confirm_remote_stopped,
