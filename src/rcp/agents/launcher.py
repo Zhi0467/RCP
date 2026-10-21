@@ -1848,13 +1848,13 @@ class AgentLauncher:
                     separators=(",", ":"),
                 ),
             )
-            if paused:
-                yield AgentEvent(event="paused", text="Provider process paused.")
-            elif remote_result_pending:
+            if remote_result_pending:
                 yield AgentEvent(
                     event="remote_result_pending",
                     text="The connection ended after the remote host accepted this turn.",
                 )
+            elif paused:
+                yield AgentEvent(event="paused", text="Provider process paused.")
             elif completion_stop_failed:
                 yield AgentEvent(
                     event="error",

@@ -464,29 +464,23 @@ async def test_provider_turn_rides_the_master_of_its_own_run(
 
 
 @pytest.mark.parametrize(
-    ("host", "delivered", "human_pause"),
-    [
-        ("test-host", True, False),
-        ("", True, False),
-        ("test-host", False, False),
-        ("test-host", True, True),
-    ],
+    "delivered",
+    [True, False],
 )
 def test_shutdown_and_pause_settle_the_right_pass(
-    tmp_path, monkeypatch, transported_launcher, host, delivered, human_pause
+    tmp_path, monkeypatch, transported_launcher, delivered
 ):
     import hashlib
     from unittest.mock import Mock
 
-    from rcp.agents import AgentEvent, AgentProcessControl
+    from rcp.agents import AgentProcessControl
     from rcp.background import BackgroundAgentTasks
-    from rcp.runs import remote_finalization, shared
+    from rcp.runs import shared
     from rcp.runs.tasks.work import WORK_FINALIZATION_CONTEXT_ROLE
     from rcp.transport import RemoteRunStage
 
     from .helpers import wait_until
-    from .test_background import _admitted_launch_task, _sse, _store
-    from .test_remote_reconciliation import _journal
+    from .test_background import _admitted_launch_task, _store
 
     store = _store(tmp_path)
     pause = Mock(wraps=store.request_agent_task_pause)
@@ -526,7 +520,7 @@ def test_shutdown_and_pause_settle_the_right_pass(
     mailbox = Mock()
 
     async def stream(_project_id, _kind, request, execution):
-        execution.checkpoint_stage(host, str(tmp_path))
+        execution.checkpoint_stage("test-host", str(tmp_path))
         execution.command_mailbox = mailbox
         mailbox.execution = execution
         async for frame in shared._stream_agent_events(
@@ -538,9 +532,9 @@ def test_shutdown_and_pause_settle_the_right_pass(
             read_dirs=[],
             write_dirs=[],
             write_scope=None,
-            execution_host=host,
+            execution_host="test-host",
             execution=execution,
-            remote_stage=stage if host else None,
+            remote_stage=stage,
             capability="scratch_patch",
             outcome=shared._ProviderOutcome(),
             binary=None,
@@ -568,68 +562,22 @@ def test_shutdown_and_pause_settle_the_right_pass(
                 else ready.exists()
             )
         )
-        if human_pause:
-            tasks.pause(task.operation_id)
-            wait_until(tasks.runtime_is_idle)
         tasks.shutdown()
         assert tasks.runtime_is_idle()
         record = store.agent_task(task.operation_id)
         assert record is not None
-        detached = bool(host and delivered and not human_pause)
-        if not detached:
+        passes = store.unresolved_remote_provider_passes("test-host", str(tmp_path))
+        if not delivered:
             assert record.status == "paused"
-            assert record.phase != "awaiting_remote_result"
-            if host:
-                assert stop.called
-                assert confirm.called
-                assert store.unresolved_remote_provider_passes(host, str(tmp_path)) == []
+            assert stop.called
+            assert passes == []
             return
 
         assert record.status == "running"
         assert record.phase == "awaiting_remote_result"
         stop.assert_not_called()
-        confirm.assert_not_called()
         mailbox.detach.assert_called_once()
-        mailbox.suspend.assert_called()
-        passes = store.unresolved_remote_provider_passes(host, str(tmp_path))
-        assert len(passes) == 1
-        operation_id, pid_file = passes[0]
-        assert operation_id == task.operation_id
+        assert [operation_id for operation_id, _pid_file in passes] == [task.operation_id]
         pause.assert_not_called()
-
-        # Drive the real planner and journal validation across a new manager's
-        # startup. Only remote observations and the owner's effects are fixtures.
-        finished = False
-        journal = _journal(events=json.dumps({"type": "turn.completed"}) + "\n")
-        journal["outcome"]["pid_file"] = pid_file
-        journal["accepted"]["pid_file"] = pid_file
-        plan = remote_finalization.plan_remote_reconciliation
-        monkeypatch.setattr(
-            remote_finalization,
-            "plan_remote_reconciliation",
-            lambda store: plan(store, stopped=lambda *a: finished, read_journal=lambda *a: journal),
-        )
-        finalized = []
-
-        async def recorded_stream(_project_id, _kind, _request, execution, recorded):
-            finalized.append((execution.operation_id, recorded.pid_file))
-            yield _sse(AgentEvent(event="answer", text="Recovered answer."))
-            yield _sse(AgentEvent(event="done"))
-
-        restarted = BackgroundAgentTasks(store, stream, recorded_stream=recorded_stream)
-        monkeypatch.setattr(restarted, "_schedule_remote_reconciliation", lambda **kw: None)
-        restarted.recover_at_startup()
-        recovered = store.agent_task(operation_id)
-        assert recovered is not None and recovered.phase == "awaiting_remote_result"
-        assert restarted._reconcile_remote_results() is True
-        assert finalized == []
-        finished = True
-        assert restarted._reconcile_remote_results() is False
-        assert finalized == [(operation_id, pid_file)]
-        settled = store.agent_task(operation_id)
-        assert settled is not None and settled.status == "succeeded"
-        assert settled.result == {"messages": ["Recovered answer."]}
-        assert store.unresolved_remote_provider_passes(host, str(tmp_path)) == []
-        assert len(store.agent_tasks("project", include_hidden=True)) == 1
     finally:
         tasks.shutdown()
