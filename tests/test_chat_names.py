@@ -88,6 +88,10 @@ def test_agent_name_cap_cuts_starting_names_and_refuses_longer_names(tmp_path):
     words = "w" * (AGENT_NAME_MAX_CHARS - 1) + " tail"
     task = _turn(store, chat, words, store.now())
     assert store.agent_name_state("project", chat)["name"] == "w" * (AGENT_NAME_MAX_CHARS - 1)
+    # A cut never ends inside a word.
+    mid_word = str(uuid.uuid4())
+    _turn(store, mid_word, "abcdefg " * AGENT_NAME_MAX_CHARS, store.now())
+    assert set(store.agent_name_state("project", mid_word)["name"].split(" ")) == {"abcdefg"}
     with store.connection() as connection:
         connection.execute(
             "UPDATE graph_runs SET status='running' WHERE operation_id=?", (task.operation_id,)
@@ -146,7 +150,7 @@ def test_old_database_backfills_first_turn_and_preserves_human_name(tmp_path):
         )
     store = AppStore(path)
     titles = store.chat_display(project_id, metadata["user_id"])["titles"]
-    assert titles[first] == ("Original task " + "o" * 120)[:AGENT_NAME_MAX_CHARS]
+    assert titles[first] == "Original task"
     assert titles[renamed] == "Human choice"
     assert titles[long_human] == "h" * (AGENT_NAME_MAX_CHARS - 1)
     root = metadata["legacy_branch_id"]
