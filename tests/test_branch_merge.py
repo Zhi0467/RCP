@@ -379,7 +379,11 @@ class _Run:
     def provider(self, launcher, request, prompt, **kwargs):
         self.launches.append((prompt, kwargs))
         outcome = SimpleNamespace(
-            session_id="merge-session", completed=True, failed=False, paused=False
+            session_id="merge-session",
+            completed=True,
+            failed=False,
+            paused=False,
+            remote_result_pending=False,
         )
 
         async def events():

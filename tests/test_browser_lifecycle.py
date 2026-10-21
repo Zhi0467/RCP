@@ -543,6 +543,11 @@ async def test_failed_remote_continuation_cleanup_settles_retained_lease(
         remote_stage=remote,
         capability="discuss",
     ) as grant:
+        from rcp.runs.tasks.discuss import DISCUSS_FINALIZATION_CONTEXT_ROLE
+
+        execution.store.record_agent_task_contract(
+            execution.operation_id, DISCUSS_FINALIZATION_CONTEXT_ROLE, "{}", "test"
+        )
         frames = [
             frame
             async for frame in _stream_agent_events(
@@ -561,7 +566,6 @@ async def test_failed_remote_continuation_cleanup_settles_retained_lease(
                 capability="discuss",
                 outcome=outcome,
                 binary=None,
-                supervise_remote=True,
                 browser_grant=grant,
             )
         ]

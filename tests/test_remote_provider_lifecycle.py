@@ -99,7 +99,7 @@ async def test_codex_exec_requires_terminal_protocol_event(
 
 
 @pytest.fixture
-def transported_launcher(monkeypatch):
+def transported_launcher(monkeypatch, tmp_path):
     from rcp.agents import launcher as launcher_module
 
     launcher = AgentLauncher()
@@ -116,6 +116,17 @@ def transported_launcher(monkeypatch):
     monkeypatch.setattr(
         launcher_module, "ssh_arguments", lambda host, command, **kwargs: shlex.split(command)
     )
+    from rcp.transport.state import _remote_turn_supervisor_script
+
+    supervisor = tmp_path / "supervisor.py"
+    supervisor.write_text(_remote_turn_supervisor_script(), encoding="utf-8")
+    original_stream = launcher.stream
+
+    def stream(*args, **kwargs):
+        kwargs.setdefault("supervisor_path", str(supervisor))
+        return original_stream(*args, **kwargs)
+
+    monkeypatch.setattr(launcher, "stream", stream)
     return launcher
 
 
@@ -167,6 +178,12 @@ async def test_preprompt_fallback_requires_remote_exit_confirmation(
 
     from rcp.agents import AgentProcessControl
     from rcp.providers import ProviderRuntimeStep, ProviderStreamEvent, ProviderTurn, profile_for
+
+    # This test supplies a synthetic runtime without a real wire protocol. The
+    # supervisor's actual wire fence is exercised by the journal journey below.
+    monkeypatch.setattr(
+        "rcp.agents.launcher._supervised_remote_turn_command", lambda command, **_kwargs: command
+    )
 
     actions = []
 
@@ -350,7 +367,6 @@ async def test_supervised_transport_loss_leaves_the_remote_pass_for_reconciliati
             host="test-host",
             remote_pid_file=pid_file,
             runtime_id=profile_for("codex").legacy_runtime_id,
-            supervise_remote=True,
             supervisor_path=str(supervisor),
         )
     ]

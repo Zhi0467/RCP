@@ -110,14 +110,12 @@ from rcp.runs.question_snapshots import (
     question_snapshot_part,
 )
 from rcp.runs.recorded_settlement import (
-    absorb_recorded_events,
-    provider_turn_request,
-    refuse_recorded_session_mismatch,
-)
-from rcp.runs.recorded_settlement import (
     note_stage_unreachable as _note_stage_unreachable,
 )
-from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
+from rcp.runs.recorded_settlement import (
+    open_recorded_pass,
+)
+from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.session_master import (
     SESSION_MASTER_KEY_ROLE,
     SESSION_MASTER_ROLE,
@@ -186,7 +184,6 @@ from rcp.runs.tasks.work import (
     _work_turn_command_handler,
     _WorkMailboxContext,
     _WorkValidatorMailboxLifecycle,
-    _write_recorded_patch,
 )
 from rcp.runs.tasks.work_staging import WorkStageLayout, stage_work_turn
 from rcp.runs.tasks.work_turn_runtime import (
@@ -1709,7 +1706,6 @@ async def _settle_watch_deliverable(
                 browser_grant=composed.browser_grant,
                 validator_staged=correction_validator,
                 validator_lifecycle=correction_lifecycle,
-                supervise_remote=launch_turn.supervise_remote,
             )
         except BaseException as exc:
             if correction_lifecycle is not None:
@@ -2008,7 +2004,6 @@ async def _apply_experiment_loop_turn(
                     browser_grant=composed.browser_grant,
                     validator_staged=loop_validator,
                     validator_lifecycle=loop_validator_lifecycle,
-                    supervise_remote=launch_turn.supervise_remote,
                 )
             ) as stream:
                 async for frame in stream:
@@ -2384,10 +2379,8 @@ async def _launch_and_stream_work_turn(
     wake_episode: EpisodeRecord | None,
     required_session_id: str | None = None,
     *,
-    supervise_remote: bool = False,
     browser_grant: BrowserGrant | None = None,
 ) -> AsyncGenerator[str, None]:
-    turn.supervise_remote = supervise_remote
     try:
         _record_agent_launch_receipt(
             turn.execution,
@@ -2439,7 +2432,6 @@ async def _launch_and_stream_work_turn(
                     ),
                     outcome=turn.outcome,
                     browser_grant=browser_grant,
-                    supervise_remote=supervise_remote,
                 )
             ) as stream:
                 async for frame in stream:
@@ -2714,7 +2706,6 @@ async def _stream_experiment_loop_task_with_browser_lifetime(
             contract_path,
             wake_episode,
             required_session_id=required_session_id,
-            supervise_remote=bool(turn.execution_host),
             browser_grant=browser_grant,
         )
     ) as stream:
@@ -2762,26 +2753,20 @@ async def finalize_recorded_experiment_loop_result(
         owner="Experiment loop",
     )
     episode = _load_experiment_loop_episode_context(execution)
-    verdict = decode_recorded_turn(
+    frames = open_recorded_pass(
         recorded,
-        provider_turn_request(
-            turn.workspace, recorded, capability="work_auto", write_scope=turn.write_scope
-        ),
+        execution=execution,
+        workspace=turn.workspace,
+        remote_stage=turn.remote_stage,
+        outcome=turn.outcome,
+        capability="work_auto",
+        write_scope=turn.write_scope,
+        required_session_id=turn.required_session_id,
     )
-    refusal = refuse_recorded_session_mismatch(
-        execution, turn.outcome, verdict, turn.required_session_id
-    )
-    if refusal:
-        # A wake or continuation that answered on another session arms nothing
-        # and admits no Patch, so neither reaches the stage.
-        for frame in refusal:
+    if turn.outcome.session_mismatch:
+        for frame in frames:
             yield frame
         return
-    # The verified Patch replaces whatever the stage holds, before anything reads
-    # the stage. Half of this turn's admission is that Patch, and a stage that
-    # changed after the host finished would admit a different one.
-    _write_recorded_patch(turn, recorded)
-    frames = absorb_recorded_events(turn.outcome, verdict)
     frames.extend(
         _settle_experiment_loop_outcome(turn, wake_native_session_id=episode.wake_native_session_id)
     )

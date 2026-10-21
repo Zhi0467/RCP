@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -16,7 +16,7 @@ from rcp.agents.continuation_prompt import LaunchPhase, classify, compose
 from rcp.agents.episode_report_prompt import episode_report_task_contract
 from rcp.agents.provider_accounts import account_login_refusal, record_provider_failure
 from rcp.agents.provider_environment import ProviderCredentialStore
-from rcp.agents.write_scope import resolve_project_write_scope
+from rcp.agents.write_scope import ProjectWriteScope, resolve_project_write_scope
 from rcp.artifacts import classify_artifact_bytes, html_document_title
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES
 from rcp.providers import AgentCapability, ProviderId, profile_for
@@ -44,9 +44,11 @@ from rcp.transport import RemoteRunStage, RunStageMailbox, StateUnavailable
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution
+    from rcp.runs.recorded_turn import RecordedProviderTurn
 
 _REPORT_SKILL_ID = "episode-report"
 _REPORT_OUTPUT_DEFAULT = "episode-report.html"
+EPISODE_REPORT_FINALIZATION_ROLE = "episode_report_finalization"
 
 
 class EpisodeReportRunRequest(BaseModel):
@@ -115,25 +117,15 @@ async def stream_episode_report_run(
         output_name, report_output_path = _exact_report_output(turn.wrapup, stage)
         mailbox = RunStageMailbox.for_stage(local_stage=stage.local, remote_stage=stage.remote)
         capability: AgentCapability = "work_auto"
-        write_scope = resolve_project_write_scope(
-            manifest=service.manifest,
-            project_id=turn.task.project_id,
-            execution_machine=turn.request.run_on,
-            capability=capability,
-            stage_root=(
-                str(stage.remote.root)
-                if stage.remote is not None and stage.remote.root is not None
-                else str(stage.workspace)
-            ),
-            workspace_root=str(stage.workspace),
-            admitted_aliases=[],
-            repository_pointers=[],
-            remote_stage=stage.remote,
-            app_data_dir=None,
-            repository_inventory=service.repository_ownership_inventory(
-                project_id=turn.task.project_id
-            ),
-        )
+        write_scope = _report_write_scope(service, turn, stage)
+        if stage.execution_host:
+            content = request.model_dump_json()
+            execution.store.record_agent_task_contract(
+                execution.operation_id,
+                EPISODE_REPORT_FINALIZATION_ROLE,
+                content,
+                hashlib.sha256(content.encode()).hexdigest(),
+            )
         attempt = execution.store.current_episode_report_attempt(turn.episode.episode_id)
         if attempt is not None and attempt.status == "running":
             recovered = _reconcile_running_attempt(execution, turn, attempt, mailbox, output_name)
@@ -255,10 +247,15 @@ async def stream_episode_report_run(
                         capability=capability,
                         outcome=outcome,
                         binary=stage.provider_binary,
+                        owner_deliverables=(output_name,),
+                        required_session_id=turn.wrapup.native_session_id,
                     )
                 ) as stream:
                     async for frame in stream:
                         event = _event_from_frame(frame)
+                        if event.event in {"runtime", "runtime_fallback", "remote_result_pending"}:
+                            yield frame
+                            continue
                         if event.event == "error" and event.text.strip():
                             provider_errors.append(" ".join(event.text.split())[:1000])
                         if event.usage is not None or event.status is not None:
@@ -271,6 +268,9 @@ async def stream_episode_report_run(
             except (OSError, RuntimeError, StateUnavailable, ValueError) as exc:
                 outcome.failed = True
                 provider_errors.append(" ".join(str(exc).split())[:1000])
+
+            if outcome.remote_result_pending:
+                return
 
             auth_error = next(
                 (
@@ -303,7 +303,11 @@ async def stream_episode_report_run(
                 )
                 return
 
-            if outcome.session_id != turn.wrapup.native_session_id:
+            if outcome.session_id != turn.wrapup.native_session_id or any(
+                receipt.category == "continuation_context_unavailable"
+                and receipt.payload.get("reason") == "native_session_mismatch"
+                for receipt in execution.store.agent_task_receipts(execution.operation_id)
+            ):
                 diagnostic = (
                     "Episode report continuation changed the frozen native provider session."
                 )
@@ -367,14 +371,117 @@ async def stream_episode_report_run(
                 attempt = None
                 continue
 
-            report = _finish_report(execution, turn, attempt, html)
-            yield _report_ready_frame(report)
-            yield _sse(AgentEvent(event="done"))
+            for frame in _settle_report(execution, turn, attempt, html):
+                yield frame
             return
     except (KeyError, OSError, StateUnavailable, ValueError) as exc:
         diagnostic = " ".join(str(exc).split()) or "Episode report generation failed."
         _settle_unlaunchable_existing_wrapup(execution, request.episode_id, diagnostic)
         yield _sse(AgentEvent(event="error", text=diagnostic))
+
+
+def _report_write_scope(
+    service: ProjectService,
+    turn: _CanonicalReportTurn,
+    stage: _ReportStage,
+) -> ProjectWriteScope:
+    return resolve_project_write_scope(
+        manifest=service.manifest,
+        project_id=turn.task.project_id,
+        execution_machine=turn.request.run_on,
+        capability="work_auto",
+        stage_root=(
+            str(stage.remote.root)
+            if stage.remote is not None and stage.remote.root is not None
+            else str(stage.workspace)
+        ),
+        workspace_root=str(stage.workspace),
+        admitted_aliases=[],
+        repository_pointers=[],
+        remote_stage=stage.remote,
+        app_data_dir=None,
+        repository_inventory=service.repository_ownership_inventory(
+            project_id=turn.task.project_id
+        ),
+    )
+
+
+def _settle_report(
+    execution: AgentTaskExecution,
+    turn: _CanonicalReportTurn,
+    attempt: EpisodeReportAttemptRecord,
+    html: str,
+) -> Iterator[str]:
+    report = _finish_report(execution, turn, attempt, html)
+    yield _report_ready_frame(report)
+    yield _sse(AgentEvent(event="done"))
+
+
+async def finalize_recorded_episode_report_result(
+    service: ProjectService,
+    launcher: AgentLauncher,
+    request: EpisodeReportRunRequest,
+    data_dir: Path,
+    execution: AgentTaskExecution,
+    recorded: RecordedProviderTurn,
+) -> AsyncIterator[str]:
+    from rcp.runs.recorded_settlement import open_recorded_pass
+
+    del launcher, data_dir
+    content = execution.store.agent_task_contract(
+        execution.operation_id, EPISODE_REPORT_FINALIZATION_ROLE
+    )
+    if content is None or EpisodeReportRunRequest.model_validate_json(content) != request:
+        raise ValueError("The episode report finalization request changed after launch.")
+    turn = _canonical_report_turn(execution, request)
+    existing = execution.store.episode_report(turn.episode.episode_id, include_deleted=True)
+    if existing is not None:
+        yield _report_ready_frame(existing)
+        yield _sse(AgentEvent(event="done"))
+        return
+    stage = _open_exact_report_stage(service, turn)
+    output_name, _ = _exact_report_output(turn.wrapup, stage)
+    attempt = execution.store.current_episode_report_attempt(turn.episode.episode_id)
+    if attempt is None or attempt.status != "running":
+        raise ValueError("The recorded report has no running attempt on its allocation.")
+    outcome = _ProviderOutcome(session_id=turn.wrapup.native_session_id)
+    frames = open_recorded_pass(
+        recorded,
+        execution=execution,
+        workspace=stage.workspace,
+        remote_stage=stage.remote,
+        outcome=outcome,
+        capability="work_auto",
+        write_scope=_report_write_scope(service, turn, stage),
+        required_session_id=turn.wrapup.native_session_id,
+    )
+    if not outcome.completed or outcome.failed:
+        diagnostic = next(
+            (
+                event.text
+                for frame in reversed(frames)
+                if (event := _event_from_frame(frame)).event == "error"
+            ),
+            f"{request.provider} produced no completed episode report result.",
+        )
+        execution.store.record_episode_report_attempt_error(attempt.attempt_id, diagnostic)
+        for frame in frames:
+            if _event_from_frame(frame).event != "error":
+                yield frame
+        yield _sse(AgentEvent(event="error", text=diagnostic))
+        return
+    for frame in frames:
+        yield frame
+    mailbox = RunStageMailbox.for_stage(local_stage=stage.local, remote_stage=stage.remote)
+    try:
+        html = _read_valid_report(mailbox, output_name)
+    except (FileNotFoundError, ValueError) as exc:
+        diagnostic = _report_validation_diagnostic(exc)
+        execution.store.record_episode_report_attempt_error(attempt.attempt_id, diagnostic)
+        yield _sse(AgentEvent(event="error", text=diagnostic))
+        return
+    for frame in _settle_report(execution, turn, attempt, html):
+        yield frame
 
 
 def _canonical_report_turn(

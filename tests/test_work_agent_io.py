@@ -1149,9 +1149,9 @@ async def test_work_correction_disconnect_waits_and_recovers_original_reply(
     await work_module._prepare_work_prompt_context(primed, staged)
     composed = work_module._compose_fresh_prompt(primed, staged, retry_diagnostics_path=None)
     await primed.validator_lifecycle.close()
-    # Exercise the owner's remote opt-in while keeping filesystem I/O local.
+    # Exercise remote ownership while keeping filesystem I/O local.
     # The actual SSH supervisor is covered by the remote provider journey.
-    primed.supervise_remote = True
+    primed.execution_host = "recorded-host"
     write_turn_outcome(primed.workspace)
     primed.outcome.completed = True
     primed.outcome.session_id = "recorded-thread"
@@ -1170,7 +1170,6 @@ async def test_work_correction_disconnect_waits_and_recovers_original_reply(
 
     async def disconnected_correction(*_args, **kwargs):
         correction_calls.append(kwargs)
-        assert kwargs["supervise_remote"] is True
         kwargs["outcome"].remote_result_pending = True
         yield _sse(AgentEvent(event="remote_result_pending", text="Connection lost."))
 
@@ -1493,7 +1492,6 @@ async def test_a_live_supervised_turn_whose_host_vanishes_fails_visibly(
     await work_module._prepare_work_prompt_context(primed, staged)
     composed = work_module._compose_fresh_prompt(primed, staged, retry_diagnostics_path=None)
     await primed.validator_lifecycle.close()
-    primed.supervise_remote = True
     primed.outcome.completed = True
     primed.outcome.session_id = "recorded-thread"
     primed.outcome.answers = ["The research work is complete."]
@@ -1654,7 +1652,6 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(
             binary=None,
             validator_staged=staged,
             validator_lifecycle=owner,
-            supervise_remote=True,
         ):
             pass
         return owner

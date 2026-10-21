@@ -243,6 +243,7 @@ def _supervised_remote_turn_command(
     watch_path: str,
     experiment_watch_glob: str,
     close_input_after_initial: bool,
+    owner_deliverables: tuple[str, ...] = (),
 ) -> list[str]:
     """Wrap one remote provider pass in the execution-host journal."""
 
@@ -284,6 +285,10 @@ def _supervised_remote_turn_command(
         "--poll-seconds",
         str(REMOTE_PROVIDER_STOP_POLL_SECONDS),
     ]
+    for name in owner_deliverables:
+        if not name or Path(name).name != name or name in {".", ".."}:
+            raise ValueError("A turn deliverable must name one workspace file.")
+        wrapped.extend(("--owner-deliverable", str(Path(patch_path).parent / name)))
     if provider_version:
         wrapped.extend(("--provider-version", provider_version))
     if close_input_after_initial:
@@ -1128,8 +1133,8 @@ class AgentLauncher:
         binary: str | None = None,
         runtime_id: str | None = None,
         before_start: Callable[[], Awaitable[None]] | None = None,
-        supervise_remote: bool = False,
         supervisor_path: str | None = None,
+        owner_deliverables: tuple[str, ...] = (),
         operation_id: str | None = None,
         git_access: ProviderGitAccess | None = None,
         browser_grant: BrowserGrant | None = None,
@@ -1191,8 +1196,8 @@ class AgentLauncher:
                         binary=binary,
                         runtime_id=runtime.id,
                         before_start=before_start,
-                        supervise_remote=supervise_remote,
                         supervisor_path=supervisor_path,
+                        owner_deliverables=owner_deliverables,
                         operation_id=operation_id,
                         git_access=git_access,
                         browser_grant=browser_grant,
@@ -1244,8 +1249,8 @@ class AgentLauncher:
         binary: str | None = None,
         runtime_id: str,
         before_start: Callable[[], Awaitable[None]] | None = None,
-        supervise_remote: bool = False,
         supervisor_path: str | None = None,
+        owner_deliverables: tuple[str, ...] = (),
         operation_id: str | None = None,
         git_access: ProviderGitAccess | None = None,
         browser_grant: BrowserGrant | None = None,
@@ -1364,8 +1369,8 @@ class AgentLauncher:
         command = turn.command
         if invocation_gate is not None:
             command = invocation_gate.wrap_command(command)
-        if supervise_remote:
-            if not host or remote_pid_file is None:
+        if host:
+            if remote_pid_file is None:
                 raise ValueError("A supervised provider turn requires a remote pidfile.")
             if not supervisor_path:
                 raise ValueError("A supervised provider turn requires its staged supervisor.")
@@ -1380,6 +1385,7 @@ class AgentLauncher:
                 watch_path=str(cwd / "watch.json"),
                 experiment_watch_glob=str(cwd / EXPERIMENT_WATCH_OUTPUT_GLOB),
                 close_input_after_initial=turn.close_input_after_initial,
+                owner_deliverables=owner_deliverables,
             )
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
@@ -1724,7 +1730,7 @@ class AgentLauncher:
                 stderr = await stderr_task
             stderr = _meaningful_stderr(stderr)
             remote_result_pending = bool(
-                supervise_remote and prompt_delivered and transport_failure(return_code, host)
+                host and prompt_delivered and transport_failure(return_code, host)
             )
             if host and remote_pid_file and not remote_result_pending:
                 remote_stopped = await asyncio.to_thread(

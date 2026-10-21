@@ -19,8 +19,8 @@ from rcp.runs.chat import (
     _prepare_local_artifact_directory,
     stage_artifact_context,
 )
-from rcp.runs.recorded_settlement import absorb_recorded_events, provider_turn_request
-from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
+from rcp.runs.recorded_settlement import open_recorded_pass
+from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.session_artifacts import publish_session_artifacts, sync_session_artifacts
 from rcp.runs.session_master import record_inline_prompt
 from rcp.runs.shared import (
@@ -225,7 +225,6 @@ async def stream_artifact_edit_run(
             capability="discuss",
             outcome=outcome,
             binary=machine.provider_paths.get(request.provider),
-            supervise_remote=bool(remote),
             required_session_id=request.session_id,
         )
     ) as stream:
@@ -258,10 +257,17 @@ async def finalize_recorded_artifact_edit_result(
     _, remote, workspace, _ = _open_stage(service, request, data_dir, execution)
     directory = workspace / "turns" / execution.operation_id / "artifacts"
     outcome = _ProviderOutcome(session_id=request.session_id)
-    verdict = decode_recorded_turn(
-        recorded, provider_turn_request(workspace, recorded, capability="discuss")
-    )
-    for frame in absorb_recorded_events(outcome, verdict):
+    for frame in open_recorded_pass(
+        recorded,
+        execution=execution,
+        workspace=workspace,
+        remote_stage=remote,
+        outcome=outcome,
+        capability="discuss",
+        required_session_id=request.session_id,
+    ):
         yield frame
+    if outcome.failed:
+        return
     for frame in _settle(service, request, execution, workspace, remote, directory, outcome):
         yield frame

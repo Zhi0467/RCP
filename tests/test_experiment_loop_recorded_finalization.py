@@ -30,6 +30,25 @@ _EPISODE_ID = "00000000-0000-4000-8000-0000000000a1"
 _ROLE = loop_module.EXPERIMENT_LOOP_FINALIZATION_CONTEXT_ROLE
 
 
+def _local_remote_launch_transport(monkeypatch):
+    """Keep preparation and settlement local; supply the remote stage at launch."""
+    import rcp.runs.tasks.work_turn_runtime as runtime
+
+    from .test_auto_research_stream import _LocalBackedRemoteStage
+
+    stream = runtime._stream_agent_events
+
+    async def remote_launch(*args, **kwargs):
+        if kwargs["execution_host"]:
+            kwargs["remote_stage"] = _LocalBackedRemoteStage(kwargs["execution_host"]).attach(
+                kwargs["execution"].stage_root
+            )
+        async for frame in stream(*args, **kwargs):
+            yield frame
+
+    monkeypatch.setattr(runtime, "_stream_agent_events", remote_launch)
+
+
 def _watch_handoff(watcher_cwd: Path) -> str:
     return json.dumps(
         {
@@ -266,6 +285,7 @@ async def test_a_loop_launch_retains_its_context_under_its_own_role(
         turn.execution_host = "recorded-host"
         return turn, staged
 
+    _local_remote_launch_transport(monkeypatch)
     monkeypatch.setattr(loop_module, "_stage_work_turn", remote_stage_work_turn)
     async for _frame in loop_module.stream_experiment_loop_task(
         service,
@@ -495,18 +515,24 @@ async def test_a_supervised_loop_correction_is_itself_supervised(
         return turn, staged
 
     corrections: list[dict] = []
+    supervised_passes: list[str] = []
     stream = loop_module._stream_turn_agent_events
 
     def record_the_launch(turn, launcher, prompt, **kwargs):
         corrections.append(kwargs)
         return stream(turn, launcher, prompt, **kwargs)
 
+    _local_remote_launch_transport(monkeypatch)
     monkeypatch.setattr(loop_module, "_stage_work_turn", remote_stage_work_turn)
     monkeypatch.setattr(loop_module, "_stream_turn_agent_events", record_the_launch)
 
     launcher = _LoopLauncher("provider-session-supervised", tmp_path, write_handoff=False)
 
     async def invalid_then_nothing(_provider, prompt, **kwargs):
+        assert kwargs["host"] == "recorded-host"
+        supervisor = kwargs["supervisor_path"]
+        assert supervisor is not None and Path(supervisor).is_file()
+        supervised_passes.append(supervisor)
         # An observer the loop cannot validate is what sends a live turn back
         # for exactly one correction round.
         Path(kwargs["cwd"]).joinpath("watch.json").write_text(
@@ -523,7 +549,7 @@ async def test_a_supervised_loop_correction_is_itself_supervised(
         pass
 
     assert corrections, "the invalid handoff should have asked for a correction"
-    assert all(item["supervise_remote"] is True for item in corrections)
+    assert len(supervised_passes) >= 2
 
 
 @pytest.mark.asyncio
@@ -637,13 +663,14 @@ async def test_a_correction_that_goes_pending_leaves_the_turn_for_its_own_task(
     stream = loop_module._stream_turn_agent_events
 
     async def pending_correction(turn, launcher, prompt, **kwargs):
-        if kwargs.get("supervise_remote"):
+        if turn.execution_host:
             kwargs["outcome"].remote_result_pending = True
             yield _sse(AgentEvent(event="remote_result_pending", text="Connection lost."))
             return
         async for frame in stream(turn, launcher, prompt, **kwargs):
             yield frame
 
+    _local_remote_launch_transport(monkeypatch)
     monkeypatch.setattr(loop_module, "_stage_work_turn", remote_stage_work_turn)
 
     launcher = _LoopLauncher("provider-session-pending", tmp_path, write_handoff=False)

@@ -25,7 +25,6 @@ from rcp.storage.models import (
     _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,
     _EXPERIMENT_EPISODE_PINNED_FIELDS,
     _MISSING_EXPERIMENT_EPISODE_CONTEXT_DIAGNOSTIC,
-    _NON_PROMPT_CONTRACT_ROLES,
     _START_NEW_EPISODE,
     AgentTaskAdmissionConflict,
     AgentTaskRecord,
@@ -47,6 +46,7 @@ from rcp.storage.models import (
     WatcherStopRequest,
     _experiment_pinned_value,
     _optional_str,
+    is_prompt_contract_role,
 )
 from rcp.storage.question_models import QuestionOrigin
 from rcp.storage.questions import _question_record
@@ -2296,16 +2296,12 @@ class ExperimentStoreMixin(StoreMixinBase):
         nothing, so there is no prompt to continue.
         """
 
-        roles = sorted(_NON_PROMPT_CONTRACT_ROLES)
-        placeholders = ", ".join("?" for _ in roles)
-        return all(
-            connection.execute(
-                "SELECT 1 FROM graph_run_contracts WHERE operation_id = ? "
-                f"AND role NOT IN ({placeholders}) LIMIT 1",
-                (current_id, *roles),
-            ).fetchone()
-            is None
+        return not any(
+            is_prompt_contract_role(row["role"])
             for current_id in lineage
+            for row in connection.execute(
+                "SELECT role FROM graph_run_contracts WHERE operation_id = ?", (current_id,)
+            ).fetchall()
         )
 
     @staticmethod

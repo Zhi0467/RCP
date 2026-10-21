@@ -13,6 +13,7 @@ import dataclasses
 import hashlib
 import json
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 
 from rcp.agents import AgentEvent
 from rcp.limits import TURN_JOURNAL_MAX_EVENT_BYTES
@@ -66,6 +67,9 @@ class RecordedProviderTurn:
     #: Whether the host snapshotted that set at all, told apart from a pass that
     #: wrote none, for the same reason `watch_snapshotted` is.
     experiment_watch_snapshotted: bool = False
+
+    #: Explicit owner outputs; None means the host observed no such file.
+    owner_deliverables: dict[str, str | None] = field(default_factory=dict)
 
     @property
     def intact(self) -> bool:
@@ -198,6 +202,30 @@ def recorded_provider_turn(pid_file: str, journal: dict[str, object]) -> Recorde
     patch = _verified_deliverable(journal, outcome, "patch")
     watch = _verified_deliverable(journal, outcome, "watch")
     experiment_watch = _verified_experiment_watch(journal, outcome)
+    owner_digests = outcome.get("owner_deliverable_sha256", {})
+    owner_contents = journal.get("owner_deliverables", {})
+    if not isinstance(owner_digests, dict) or not isinstance(owner_contents, dict):
+        raise ValueError("The provider journal's owner deliverables are not a mapping.")
+    owner_deliverables: dict[str, str | None] = {}
+    for name, digest in owner_digests.items():
+        if (
+            not isinstance(name, str)
+            or not name
+            or PurePosixPath(name).name != name
+            or name in {".", ".."}
+        ):
+            raise ValueError("The provider journal's owner deliverable name is unsafe.")
+        value = owner_contents.get(name)
+        if digest is None and value is None:
+            owner_deliverables[name] = None
+        elif (
+            isinstance(value, str)
+            and isinstance(digest, str)
+            and hashlib.sha256(value.encode("utf-8", "surrogateescape")).hexdigest() == digest
+        ):
+            owner_deliverables[name] = value
+        else:
+            raise ValueError(f"The provider journal's {name} does not match its recorded digest.")
     marker = journal.get("accepted")
     if marker is not None and (
         not isinstance(marker, dict)
@@ -225,6 +253,7 @@ def recorded_provider_turn(pid_file: str, journal: dict[str, object]) -> Recorde
         watch_snapshotted="watch_present" in outcome,
         experiment_watch=experiment_watch,
         experiment_watch_snapshotted=bool(outcome.get("experiment_watch_snapshotted")),
+        owner_deliverables=owner_deliverables,
         accepted=accepted,
     )
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from pathlib import PurePosixPath
+import ast
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -34,7 +35,11 @@ class _Stage:
         self.last_workspace_write = (name, content)
 
 
-async def _consume(store, launcher, tmp_path, *, stage=None, supervise_remote=False):
+async def _consume(store, launcher, tmp_path, *, stage=None, bind_finalizer=True):
+    from rcp.runs.tasks.work import WORK_FINALIZATION_CONTEXT_ROLE
+
+    if bind_finalizer:
+        store.record_agent_task_contract("first", WORK_FINALIZATION_CONTEXT_ROLE, "{}", "test")
     outcome = _ProviderOutcome()
     events = [
         event
@@ -53,7 +58,6 @@ async def _consume(store, launcher, tmp_path, *, stage=None, supervise_remote=Fa
             capability="work_auto",
             outcome=outcome,
             binary=None,
-            supervise_remote=supervise_remote,
         )
     ]
     return outcome, events
@@ -65,7 +69,7 @@ async def test_supervised_stream_records_ownership_and_forwards_pending_state(tm
 
     class Launcher:
         async def stream(self, *_args, **kwargs):
-            assert kwargs["supervise_remote"] is True
+            assert kwargs["supervisor_path"]
             pid = kwargs["remote_pid_file"]
             yield AgentEvent(event="remote_process_start", text=pid)
             yield AgentEvent(
@@ -77,7 +81,6 @@ async def test_supervised_stream_records_ownership_and_forwards_pending_state(tm
         store,
         Launcher(),
         tmp_path,
-        supervise_remote=True,
     )
 
     assert "remote_result_pending" in events[0]
@@ -128,6 +131,7 @@ async def test_remote_stream_unknown_exit_before_prompt_retains_fence(tmp_path):
 
     class Launcher:
         async def stream(self, *_args, **kwargs):
+            assert kwargs["supervisor_path"]
             pid = kwargs["remote_pid_file"]
             recorded_pid.append(pid)
             yield AgentEvent(event="remote_process_start", text=pid)
@@ -168,3 +172,46 @@ async def test_competing_remote_reservation_closes_launcher_before_provider_adva
     assert store.unresolved_remote_provider_passes("remote", "/stage") == [
         ("second", "/stage/other.pid")
     ]
+
+
+@pytest.mark.asyncio
+async def test_remote_launch_without_registered_owner_refuses_before_launch(tmp_path):
+    store = _store(tmp_path)
+
+    class Launcher:
+        async def stream(self, *_args, **_kwargs):
+            pytest.fail("An unowned remote turn must never launch")
+            yield
+
+    with pytest.raises(ValueError, match="registered finalization contract"):
+        await _consume(store, Launcher(), tmp_path, bind_finalizer=False)
+    assert store.unresolved_remote_provider_passes("remote", "/stage") == []
+
+
+def test_every_finalization_contract_in_launch_owners_is_registered():
+    from rcp.runs.remote_finalization import RECORDED_FINALIZERS
+
+    # Derive the owner roles from executable launch modules, so adding an owner
+    # without routing its retained contract fails even if its launch is mocked.
+    roles = set()
+    source = Path(__file__).parents[1] / "src" / "rcp" / "runs"
+    for path in source.rglob("*.py"):
+        for node in ast.parse(path.read_text()).body:
+            if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Constant):
+                continue
+            if any(
+                isinstance(target, ast.Name)
+                and "FINALIZATION" in target.id
+                and target.id.endswith("ROLE")
+                for target in node.targets
+            ):
+                roles.add(node.value.value)
+    assert roles
+    assert roles == set(RECORDED_FINALIZERS)
+
+    from rcp.storage.models import is_prompt_contract_role
+
+    assert all(not is_prompt_contract_role(role) for role in roles)
+    assert not is_prompt_contract_role("graph_finalization_round_2")
+    assert not is_prompt_contract_role("branch_merge_finalization_pass_2")
+    assert is_prompt_contract_role("graph_patch_correction_2")

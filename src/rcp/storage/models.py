@@ -2078,6 +2078,12 @@ _NON_PROMPT_CONTRACT_ROLES = frozenset(
         "experiment_loop_finalization_context",
         "auto_research_child_finalization_context",
         "discuss_finalization_context",
+        "artifact_edit_finalization",
+        "auto_research_finalization_context",
+        "auto_research_primary_answer",
+        "graph_finalization",
+        "episode_report_finalization",
+        "branch_merge_finalization_context",
         "work_correction_session",
         "work_primary_answer",
         "session_master",
@@ -2085,6 +2091,15 @@ _NON_PROMPT_CONTRACT_ROLES = frozenset(
         "session_master_values",
     }
 )
+
+
+def is_prompt_contract_role(role: str) -> bool:
+    """Finalization snapshots are bookkeeping, never a prompt to resume."""
+    return role not in _NON_PROMPT_CONTRACT_ROLES and not role.startswith(
+        ("graph_finalization_round_", "branch_merge_finalization_pass_")
+    )
+
+
 # An ended episode shows these next to Add turns and Start new episode, and a live
 # one next to Stop loop, so the advice has to hold in both.
 _START_NEW_EPISODE = "Stop the loop if it is still running, then start a new episode."

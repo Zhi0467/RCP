@@ -333,6 +333,7 @@ def run(args):
     watch_sha256 = None
     experiment_watch = {}
     experiment_watch_snapshotted = False
+    owner_deliverables = {}
     if fence.terminal and journal_complete and not error and not external_stop:
         try:
             patch_present, patch_sha256 = _deliverable_snapshot(
@@ -343,6 +344,16 @@ def run(args):
             watch_present, watch_sha256 = _deliverable_snapshot(
                 args.watch_path, directory / "watch.json", args.max_patch_bytes
             )
+            owner_directory = directory / "owner-deliverables"
+            if args.owner_deliverable:
+                owner_directory.mkdir(mode=0o700)
+            remaining = args.max_patch_bytes
+            for source in args.owner_deliverable:
+                name = os.path.basename(source)
+                present, digest = _deliverable_snapshot(source, owner_directory / name, remaining)
+                owner_deliverables[name] = digest if present else None
+                if present:
+                    remaining -= os.path.getsize(owner_directory / name)
             # Experiment watcher maintenance writes one file per resource, so
             # unlike the two above this set is discovered rather than named. The
             # settling turn discovers it the same way off the stage, which is
@@ -417,6 +428,7 @@ def run(args):
                 "patch_sha256": patch_sha256,
                 "watch_present": watch_present,
                 "watch_sha256": watch_sha256,
+                "owner_deliverable_sha256": owner_deliverables,
                 # Absent entirely in a journal written before these were
                 # snapshotted, which is not the same as a turn that wrote none.
                 "experiment_watch_snapshotted": experiment_watch_snapshotted,
@@ -469,6 +481,7 @@ def main(argv=None):
     ):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--provider-version")
+    parser.add_argument("--owner-deliverable", action="append", default=[])
     for name in (
         "max-journal-bytes",
         "max-event-bytes",
