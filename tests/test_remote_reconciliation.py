@@ -227,6 +227,9 @@ def test_only_one_caller_can_claim_a_recorded_finalization(tmp_path) -> None:
     assert store.claim_recorded_finalization("first") is False
     assert store.operation_ids_awaiting_remote_result() == []
 
+    # Settling moved on before an outage stopped it; the release still returns it.
+    with store.connection() as connection:
+        connection.execute("UPDATE graph_runs SET phase = 'applying' WHERE operation_id = 'first'")
     store.release_recorded_finalization("first")
 
     assert store.operation_ids_awaiting_remote_result() == ["first"]
