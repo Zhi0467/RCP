@@ -8682,13 +8682,18 @@ def test_a_refresh_that_outlives_its_link_settles_from_its_recorded_pass(
 
     launcher = ScriptedLauncher([{}], message="must not launch")
     recorded = _recorded_pass(agent_patch_json(refresh_patch()), "Refreshed offline.")
-    # Losing the state host while applying is an outage the pass waits out.
+    # Losing the state host while applying is an outage the pass waits out, even
+    # when the commit landed and only its acknowledgement was lost.
+    from rcp.transport.state import BatchPublishFailed
+
+    append = service.history.append
     with monkeypatch.context() as outage:
 
-        def unreachable(*_args, **_kwargs):
-            raise StateUnavailable("ssh exited 255")
+        def lost_acknowledgement(*args, **kwargs):
+            append(*args, **kwargs)
+            raise BatchPublishFailed("ssh exited 255", commit_status="unknown")
 
-        outage.setattr(service.history, "append", unreachable)
+        outage.setattr(service.history, "append", lost_acknowledgement)
         asyncio.run(
             events(
                 finalize_recorded_graph_result(
@@ -8708,4 +8713,9 @@ def test_a_refresh_that_outlives_its_link_settles_from_its_recorded_pass(
     assert [event.text for event in settled if event.event == "answer"] == ["Refreshed offline."]
     assert settled[-1].event == "done"
     assert "rq/transfer-after-shift" in service.history.state().nodes
+    assert [
+        item
+        for item in service.history.load_patches()
+        if item.source_operation_id == execution.operation_id
+    ] != []
     assert launcher.calls == 0

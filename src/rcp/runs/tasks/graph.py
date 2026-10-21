@@ -1471,10 +1471,20 @@ def _settle_graph_pass(
         else:
             try:
                 lease.assert_owned()
-                _appended, result = service.history.append(
-                    patch,
-                    discard_on_reject=True,
+                committed = execution is not None and any(
+                    item.source_operation_id == execution.operation_id
+                    and item.admission == "accepted"
+                    for item in service.history.load_patches()
                 )
+                if committed:
+                    # An earlier settlement's commit landed but its
+                    # acknowledgement was lost; appending again would apply it twice.
+                    result = service.history.current_materialization()
+                else:
+                    _appended, result = service.history.append(
+                        patch,
+                        discard_on_reject=True,
+                    )
             except PatchRejected as exc:
                 state.problem = state.last_problem = str(exc)
                 if execution is not None:
