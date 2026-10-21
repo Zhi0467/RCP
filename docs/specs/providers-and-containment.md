@@ -1025,14 +1025,17 @@ owns remote state locking.
 
 ### A remote turn outliving its connection
 
-Ordinary Work, Discuss, Experiment-loop and Auto-research child Work register
-typed, durable finalizers. Routing uses the retained contract, never chat kind.
-Zero or multiple contracts leave the task visibly waiting. Other owners retain
-their own launch behavior. Local turns register no remote finalizer.
+Every remote launch is supervised; owners do not opt in. Ordinary Work,
+Discuss, Experiment-loop, Auto-research actors and child Work, graph Seed and
+Refresh, episode reports, artifact edits and branch merges register typed,
+durable finalizers. Routing uses the retained contract, never chat kind.
+Zero or multiple contracts leave the task visibly waiting. Local turns register
+no remote finalizer.
 
 Each owner settles its own effects: Work's Patch/watchers/reply; Discuss's reply
 and session binding; the child's parent-authorized result; Experiment's joint
-Patch/watch admission and wake binding. Experiment records its baseline, control
+Patch/watch admission and wake binding; an Auto-research actor's Patch and
+reply; graph Seed/Refresh's Patch; a report's stage file; a merge's answers. Experiment records its baseline, control
 snapshot and committed wake session before launch. Recovery creates no second
 child or invocation and retains the original authority, target and accounting.
 
@@ -1071,8 +1074,10 @@ with no recorded stop as waiting for their remote result. Reconciliation handles
 Normal shutdown detaches a supervised remote turn after prompt delivery: it ends
 the local SSH stream without signalling the remote process or recording Pause.
 Its unresolved pass follows the same restart reconciliation as a lost link, and
-its command mailbox is suspended until reconnect. Local turns, remote turns
-before prompt delivery, and unsupervised remote turns still pause on shutdown.
+its command mailbox is suspended until reconnect. A relaunch rebuilds each
+owner's mailbox from its saved turn binding, Auto-research's command surface
+included, before probing the host. Local turns and remote
+turns before prompt delivery still pause on shutdown.
 An explicit human Pause stops the active remote turn and settles it as paused;
 signalling its local SSH client does not turn Pause into a lost-link wait.
 
