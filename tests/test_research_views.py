@@ -116,7 +116,7 @@ def test_pin_keep_current_version_undo_and_unpin(served_views):
     assert result.json()["pins"][0]["artifact_id"] == artifact.artifact_id
     assert generation(store, project) > before
     assert store.artifact(artifact.artifact_id).expires_at is None
-    assert _state(client, artifact)["pinned"]
+    assert _state(client, artifact)["pinned_branch_ids"] == [""]
     version = store.publish_artifact_version(
         artifact.artifact_id,
         base_version=artifact.current_version,
@@ -142,10 +142,6 @@ def test_personal_target_and_membership_isolation(tmp_path):
     store.rename_branch(project, "branch-a", "matrix-run")
     assert _state(client, artifact)["pin_branch_name"] == "matrix-run"
     assert (
-        client.post(url, json={"artifact_id": artifact.artifact_id}).json()["detail"]["code"]
-        == "target_mismatch"
-    )
-    assert (
         client.post(
             url, json={"artifact_id": artifact.artifact_id, "branch_id": "branch-a"}
         ).status_code
@@ -156,7 +152,7 @@ def test_personal_target_and_membership_isolation(tmp_path):
     assert client.get(url).status_code == 404
     store.seat_project_member(project, people[1].user_id)
     assert client.get(url + "?branch_id=branch-a").json() == {"pins": []}
-    assert not _state(client, artifact)["pinned"]
+    assert _state(client, artifact)["pinned_branch_ids"] == []
     with store.connection() as connection:
         connection.execute(
             "DELETE FROM project_members WHERE project_id=? AND user_id=?", (project, acting[0])
@@ -210,7 +206,7 @@ def test_limit_is_atomic_and_retry_is_idempotent(views):
     assert len({pin["position"] for pin in retry.json()["pins"]}) == RESEARCH_VIEW_PIN_LIMIT
     refused = next(a for a in artifacts if a not in kept)
     assert store.artifact(refused.artifact_id).kept_at is None
-    assert not _state(client, refused)["can_pin"]
+    assert _state(client, refused)["can_pin"]
 
 
 def test_failed_insert_rolls_back_keep(views):
@@ -236,6 +232,7 @@ def test_migration_cleanup_and_transfer_classification(views):
     path = store.path
     store.close()
     store = AppStore(path)
+    assert store.local_owner is not None
     artifact = page(store, project)
     store.pin_research_view(project, store.local_owner.user_id, artifact.artifact_id, None)
     assert AppStore(path).research_view_pins(project, store.local_owner.user_id)
@@ -273,3 +270,22 @@ def test_expired_artifact_pins_only_while_an_edit_protects_it(views):
     )
     assert client.post(url, json=body).status_code == 200
     assert store.artifact(artifact.artifact_id).kept_at
+
+
+def test_pin_to_another_project_branch(views):
+    store, project, client, url = views
+    artifact = page(store, project, "origin")
+    page(store, project, "destination")
+    for branch in ("destination", ""):
+        response = client.post(url, json={"artifact_id": artifact.artifact_id, "branch_id": branch})
+        assert response.status_code == 200
+        assert (
+            client.get(url, params={"branch_id": branch}).json()["pins"][0]["artifact_id"]
+            == artifact.artifact_id
+        )
+    state = _state(client, artifact)
+    assert state["pin_branch_id"] == "origin"
+    assert state["pinned_branch_ids"] == ["", "destination"]
+    response = client.post(url, json={"artifact_id": artifact.artifact_id, "branch_id": "unknown"})
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "branch_not_found"

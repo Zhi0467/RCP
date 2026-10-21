@@ -477,6 +477,7 @@ test("universal cards preserve actions, refresh Keep, and resolve file citations
 function viewerState(artifactId, version = 1) {
   return {
     artifact_id: artifactId,
+    pinned_branch_ids: [],
     name: "Saved plot",
     media_type: "text/html",
     view: "html",

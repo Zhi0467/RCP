@@ -18,11 +18,11 @@
   user-select: none;
   touch-action: none;
   font-size: var(--type-sm);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 .artifact-viewer-header strong {
   flex: 1;
-  min-width: 60px;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -42,12 +42,13 @@
   background: color-mix(in srgb, var(--cobalt) 12%, transparent);
   color: var(--cobalt-dark);
 }
-.pin-view-action .branch-tag {
-  max-width: 12rem;
-}
 @media (max-width: 560px) {
-  .pin-view-action .branch-tag {
-    max-width: 6.5rem;
+  .artifact-viewer-header {
+    gap: 3px;
+    padding: 8px 4px;
+  }
+  .artifact-viewer-header .branch-picker-trigger > span:first-of-type {
+    max-width: 48px;
   }
   .artifact-viewer-label {
     display: none;

@@ -1,4 +1,4 @@
-"""Personal HTML views bound to the graph of their retained origin task."""
+"""Personal HTML views pinned to member-selected project graphs."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ class ResearchViewPin(BaseModel):
 class ResearchViewOffers(BaseModel):
     pin_branch_id: str | None
     can_pin: bool
-    pinned: bool
+    pinned_branch_ids: list[str]
 
 
 def migrate_research_views(connection: sqlite3.Connection) -> None:
@@ -102,15 +102,20 @@ class ResearchViewStoreMixin(ArtifactStoreMixin):
             try:
                 target = _bound_target(connection, artifact)
             except ResearchViewConflict:
-                return ResearchViewOffers(pin_branch_id=None, can_pin=False, pinned=False)
-            pins = _pins(connection, artifact.project_id, user_id, target)
-            pinned = any(pin.artifact_id == artifact.artifact_id for pin in pins)
+                return ResearchViewOffers(pin_branch_id=None, can_pin=False, pinned_branch_ids=[])
+            pinned_branch_ids = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT branch_id FROM research_view_pins "
+                    "WHERE project_id=? AND user_id=? AND artifact_id=? ORDER BY branch_id",
+                    (artifact.project_id, user_id, artifact.artifact_id),
+                )
+            ]
             return ResearchViewOffers(
                 pin_branch_id=target or None,
                 can_pin=artifact.media_type == "text/html"
-                and not self._pin_expired(connection, artifact)
-                and (pinned or len(pins) < RESEARCH_VIEW_PIN_LIMIT),
-                pinned=pinned,
+                and not self._pin_expired(connection, artifact),
+                pinned_branch_ids=pinned_branch_ids,
             )
 
     def pin_research_view(
@@ -137,8 +142,16 @@ class ResearchViewStoreMixin(ArtifactStoreMixin):
             if artifact.media_type != "text/html":
                 raise ResearchViewConflict("not_html")
             target = branch_id or ""
-            if _bound_target(connection, artifact) != target:
-                raise ResearchViewConflict("target_mismatch")
+            _bound_target(connection, artifact)
+            if (
+                target
+                and connection.execute(
+                    "SELECT 1 FROM graph_branches WHERE project_id=? AND branch_id=?",
+                    (project_id, target),
+                ).fetchone()
+                is None
+            ):
+                raise ResearchViewConflict("branch_not_found", 404)
             pins = _pins(connection, project_id, user_id, target)
             if any(pin.artifact_id == artifact_id for pin in pins):
                 return pins
