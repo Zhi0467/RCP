@@ -94,6 +94,7 @@ from rcp.runs.merge_contract import (
     SourceHumanFact,
 )
 from rcp.runs.patch_validator import MergeAnswersCheck
+from rcp.runs.recorded_settlement import note_stage_unreachable
 from rcp.runs.session_master import (
     prepare_graph_observation,
     record_inline_prompt,
@@ -1028,6 +1029,8 @@ async def stream_branch_merge_run(
                 return
             # The next iteration rebuilds the plan before preparing or appending.
         except (OSError, StateUnavailable, TimeoutError, ValueError) as exc:
+            # A host that went away is an outage, so a recorded turn waits to retry.
+            note_stage_unreachable(execution, exc)
             outcome.receipt = None
             outcome.status = "rejected" if isinstance(exc, ValueError) else "retryable"
             outcome.diagnostic = str(exc)

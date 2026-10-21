@@ -3442,11 +3442,13 @@ def test_a_recovery_handoff_keeps_what_fits_and_still_refuses_a_bad_first_item(c
 
 @pytest.mark.asyncio
 async def test_a_worker_that_outlives_its_link_settles_from_its_recorded_pass(
-    manifest, tmp_path
+    manifest, tmp_path, monkeypatch
 ) -> None:
     """A dropped link leaves the turn to its host; the recorded pass then settles it."""
 
     from rcp.runs.remote_finalization import recorded_finalizer
+    from rcp.runs.tasks.work_turn_runtime import DeliverableFailure as _WorkPatchFailure
+    from rcp.transport import StateUnavailable
 
     from .test_work_agent_io import _recorded_pass
 
@@ -3502,6 +3504,31 @@ async def test_a_worker_that_outlives_its_link_settles_from_its_recorded_pass(
     )
     launcher = _WorkerLauncher()
     finalize = auto_research_stream_module.finalize_recorded_auto_research_result
+    recorded = _recorded_pass(agent_patch_json(patch), "Worker finished offline.")
+    # An outage before anything publishes is waited out, not spent as a rejection.
+    for target, outage in (
+        ("_read_chat_patch", lambda *_args: (_ for _ in ()).throw(StateUnavailable("ssh 255"))),
+        (
+            "_apply_work_patch",
+            lambda *_args, **_kwargs: (
+                None,
+                _WorkPatchFailure("ssh 255", correctable=False, commit_status="absent"),
+            ),
+        ),
+    ):
+        with monkeypatch.context() as patched:
+            patched.setattr(auto_research_stream_module, target, outage)
+            with pytest.raises(StateUnavailable):
+                await _events(
+                    finalize(
+                        service,
+                        cast(Any, launcher),
+                        cast(Any, request),
+                        tmp_path / "data",
+                        execution,
+                        recorded,
+                    )
+                )
     settled = await _events(
         finalize(
             service,
@@ -3509,7 +3536,7 @@ async def test_a_worker_that_outlives_its_link_settles_from_its_recorded_pass(
             cast(Any, request),
             tmp_path / "data",
             execution,
-            _recorded_pass(agent_patch_json(patch), "Worker finished offline."),
+            recorded,
         )
     )
 

@@ -1604,6 +1604,7 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
 
     import threading
 
+    from rcp.runs import merge_patch
     from rcp.runs.branch_merge import BranchMergeStage, recorded_turn_plan
     from rcp.runs.branch_merge_request import BranchMergeRunRequest
     from rcp.runs.remote_finalization import resume_recorded_command_mailbox
@@ -1742,16 +1743,21 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
         ]
 
     recorded = _recorded_pass("", "Merged.")
-    # A host that drops while its stage reattaches is an outage, not a verdict.
-    with monkeypatch.context() as outage:
 
-        def unreachable(*_args, **_kwargs):
-            raise StateUnavailable("ssh exited 255")
+    # A host that drops while the stage reattaches, or while the merge prepares,
+    # is an outage, not a verdict.
+    def unreachable(*_args, **_kwargs):
+        raise StateUnavailable("ssh exited 255")
 
-        outage.setattr(merge_task, "attach_retained_stage", unreachable)
-        execution = recorded_execution()
-        assert asyncio.run(settle(recorded, execution))[-1].event == "error"
-        assert execution.stage_unreachable
+    for owner, name in (
+        (merge_task, "attach_retained_stage"),
+        (merge_patch, "prepare_merge_candidate"),
+    ):
+        with monkeypatch.context() as outage:
+            outage.setattr(owner, name, unreachable)
+            execution = recorded_execution()
+            assert asyncio.run(settle(recorded, execution))[-1].event == "error"
+            assert execution.stage_unreachable
     # A turn its host recorded as failed commits nothing it left behind.
     failed = dataclasses.replace(
         recorded,

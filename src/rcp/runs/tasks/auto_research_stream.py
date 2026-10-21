@@ -2104,6 +2104,10 @@ async def _settle_worker_patch(
     try:
         patch_text = _read_chat_patch(stage.workspace, stage.remote)
     except (OSError, StateUnavailable, ValueError) as exc:
+        if correction is None and isinstance(exc, StateUnavailable):
+            # Only a recorded pass settles without a correction owner. It has
+            # applied nothing yet, so its settlement waits out the outage.
+            raise
         patch_text = None
         failure: _WorkPatchFailure | None = _WorkPatchFailure(
             f"The auto_research {_actor_role} wrote a patch file that could not be read: {exc}",
@@ -2146,6 +2150,10 @@ async def _settle_worker_patch(
                     profile=_profile,
                     source_effect_id=source_effect_id,
                 )
+                if correction is None and failure is not None and failure.commit_status == "absent":
+                    # Canonical state was unreachable before anything published:
+                    # a recorded pass retries rather than spending its result.
+                    raise StateUnavailable(failure.message)
                 if result is not None and recovered_apply:
                     consumer = command_file_consumer
                     if consumer is None:
