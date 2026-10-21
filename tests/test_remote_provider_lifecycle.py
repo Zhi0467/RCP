@@ -99,7 +99,7 @@ async def test_codex_exec_requires_terminal_protocol_event(
 
 
 @pytest.fixture
-def transported_launcher(monkeypatch, tmp_path):
+def transported_launcher(monkeypatch):
     from rcp.agents import launcher as launcher_module
 
     launcher = AgentLauncher()
@@ -116,17 +116,6 @@ def transported_launcher(monkeypatch, tmp_path):
     monkeypatch.setattr(
         launcher_module, "ssh_arguments", lambda host, command, **kwargs: shlex.split(command)
     )
-    from rcp.transport.state import _remote_turn_supervisor_script
-
-    supervisor = tmp_path / "supervisor.py"
-    supervisor.write_text(_remote_turn_supervisor_script(), encoding="utf-8")
-    original_stream = launcher.stream
-
-    def stream(*args, **kwargs):
-        kwargs.setdefault("supervisor_path", str(supervisor))
-        return original_stream(*args, **kwargs)
-
-    monkeypatch.setattr(launcher, "stream", stream)
     return launcher
 
 
@@ -178,12 +167,6 @@ async def test_preprompt_fallback_requires_remote_exit_confirmation(
 
     from rcp.agents import AgentProcessControl
     from rcp.providers import ProviderRuntimeStep, ProviderStreamEvent, ProviderTurn, profile_for
-
-    # This test supplies a synthetic runtime without a real wire protocol. The
-    # supervisor's actual wire fence is exercised by the journal journey below.
-    monkeypatch.setattr(
-        "rcp.agents.launcher._supervised_remote_turn_command", lambda command, **_kwargs: command
-    )
 
     actions = []
 
@@ -367,6 +350,7 @@ async def test_supervised_transport_loss_leaves_the_remote_pass_for_reconciliati
             host="test-host",
             remote_pid_file=pid_file,
             runtime_id=profile_for("codex").legacy_runtime_id,
+            supervise_remote=True,
             supervisor_path=str(supervisor),
         )
     ]
@@ -421,6 +405,7 @@ async def test_pause_of_supervised_remote_turn_does_not_wait_for_reconciliation(
             host="test-host",
             remote_pid_file=str(tmp_path / "agent.pid"),
             runtime_id="exec",
+            supervise_remote=True,
             supervisor_path="/stage/supervisor.py",
             control=control,
         ):
@@ -479,16 +464,17 @@ async def test_provider_turn_rides_the_master_of_its_own_run(
 
 
 @pytest.mark.parametrize(
-    ("host", "delivered", "human_pause"),
+    ("host", "supervised", "delivered", "human_pause"),
     [
-        ("test-host", True, False),
-        ("", True, False),
-        ("test-host", False, False),
-        ("test-host", True, True),
+        ("test-host", True, True, False),
+        ("", False, True, False),
+        ("test-host", True, False, False),
+        ("test-host", False, True, False),
+        ("test-host", True, True, True),
     ],
 )
 def test_shutdown_and_pause_settle_the_right_pass(
-    tmp_path, monkeypatch, transported_launcher, host, delivered, human_pause
+    tmp_path, monkeypatch, transported_launcher, host, supervised, delivered, human_pause
 ):
     import hashlib
     from unittest.mock import Mock
@@ -559,6 +545,7 @@ def test_shutdown_and_pause_settle_the_right_pass(
             capability="scratch_patch",
             outcome=shared._ProviderOutcome(),
             binary=None,
+            supervise_remote=supervised,
         ):
             yield frame
 
@@ -590,7 +577,7 @@ def test_shutdown_and_pause_settle_the_right_pass(
         assert tasks.runtime_is_idle()
         record = store.agent_task(task.operation_id)
         assert record is not None
-        detached = bool(host and delivered and not human_pause)
+        detached = bool(host and supervised and delivered and not human_pause)
         if not detached:
             assert record.status == "paused"
             assert record.phase != "awaiting_remote_result"

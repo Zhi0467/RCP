@@ -117,15 +117,19 @@ from rcp.runs.patch_validator import (
 from rcp.runs.questions import WorkCommandHandler, require_question_origin_binding
 from rcp.runs.questions import work_command_handler as _work_command_handler
 from rcp.runs.recorded_settlement import (
+    absorb_recorded_events,
     attach_retained_stage,
-    open_recorded_pass,
+    provider_turn_request,
+    refuse_recorded_session_mismatch,
     retained_artifact_directory,
+    write_recorded_patch,
 )
 from rcp.runs.recorded_settlement import (
     note_stage_unreachable as _note_stage_unreachable,
 )
 from rcp.runs.recorded_turn import (
     RecordedProviderTurn,
+    decode_recorded_turn,
 )
 from rcp.runs.session_artifacts import publish_session_artifacts, sync_session_artifacts
 from rcp.runs.session_master import (
@@ -1828,6 +1832,7 @@ async def _settle_patch_deliverable(
                 outcome=correction_outcome,
                 validator_staged=correction_validator,
                 validator_lifecycle=correction_lifecycle,
+                supervise_remote=launch_turn.supervise_remote,
             )
         except BaseException as exc:
             if correction_lifecycle is not None:
@@ -2063,6 +2068,7 @@ async def _settle_watch_deliverable(
                 outcome=correction_outcome,
                 validator_staged=correction_validator,
                 validator_lifecycle=correction_lifecycle,
+                supervise_remote=launch_turn.supervise_remote,
             )
             async with aclosing(correction_stream) as stream:
                 async for frame in stream:
@@ -2139,6 +2145,7 @@ async def _apply_work_turn(
         provider_binary=launch_turn.provider_binary if launch_turn is not None else None,
         retry_output_digests=retry_baseline.experiment_watch_digests,
         maximum_corrections=maximum_corrections,
+        supervise_remote=launch_turn.supervise_remote if launch_turn is not None else False,
         continuation=_maintenance_continuation(launch_turn, composed),
     )
     applied.native_session_id = native_session_id
@@ -2244,8 +2251,10 @@ async def _launch_and_stream_work_turn(
     _wake_episode: object | None,
     required_session_id: str | None = None,
     *,
+    supervise_remote: bool = False,
     browser_grant: BrowserGrant | None = None,
 ) -> AsyncGenerator[str, None]:
+    turn.supervise_remote = supervise_remote
     try:
         if is_consolidation(turn.execution) and not turn.execution.store.agent_task_has_receipt(
             turn.execution.operation_id, "agent_launch"
@@ -2304,6 +2313,7 @@ async def _launch_and_stream_work_turn(
                 session_id=turn.request.session_id,
                 required_session_id=required_session_id,
                 outcome=turn.outcome,
+                supervise_remote=supervise_remote,
                 browser_grant=browser_grant,
             )
         ) as stream:
@@ -2682,6 +2692,7 @@ async def _stream_work_run(
             staged,
             None,
             required_session_id=required_session_id,
+            supervise_remote=bool(turn.execution_host),
             browser_grant=browser_grant,
         )
     ) as stream:
@@ -3458,18 +3469,24 @@ def open_recorded_work_turn(
             write_scope_fingerprint=turn.write_scope.fingerprint,
         )
         turn.required_session_id = question.origin.native_session_id
-    frames = open_recorded_pass(
+    verdict = decode_recorded_turn(
         recorded,
-        execution=execution,
-        workspace=turn.workspace,
-        remote_stage=turn.remote_stage,
-        outcome=turn.outcome,
-        capability="work_auto",
-        write_scope=turn.write_scope,
-        required_session_id=turn.required_session_id,
+        provider_turn_request(
+            turn.workspace, recorded, capability="work_auto", write_scope=turn.write_scope
+        ),
     )
-    if turn.outcome.session_mismatch:
-        return turn, frames
+    refusal = refuse_recorded_session_mismatch(
+        execution, turn.outcome, verdict, turn.required_session_id
+    )
+    if refusal:
+        # Nothing about this pass is accepted, so its Patch does not reach the
+        # stage either.
+        return turn, refusal
+    # The verified Patch replaces whatever the stage holds. A stage is mutable
+    # and this value is not, so settling from the record means settling from
+    # the record.
+    _write_recorded_patch(turn, recorded)
+    frames = absorb_recorded_events(turn.outcome, verdict)
     frames.extend(_settle_work_outcome(turn))
     if turn.answer is not None:
         # The live path emits this from its launch stream after settling. The
@@ -3522,3 +3539,10 @@ async def finalize_recorded_work_result(
     ) as stream:
         async for frame in stream:
             yield frame
+
+
+def _write_recorded_patch(
+    turn: WorkFinalizationContext,
+    recorded: RecordedProviderTurn,
+) -> None:
+    write_recorded_patch(turn.workspace, turn.remote_stage, recorded)

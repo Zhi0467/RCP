@@ -27,33 +27,15 @@ from rcp.runs.tasks.auto_research_child_work import (
     finalize_recorded_auto_research_child_work_result,
     resume_child_work_command_mailbox,
 )
-from rcp.runs.tasks.auto_research_stream import (
-    AUTO_RESEARCH_FINALIZATION_CONTEXT_ROLE,
-    finalize_recorded_auto_research_result,
-)
-from rcp.runs.tasks.branch_merge import (
-    BRANCH_MERGE_FINALIZATION_ROLE,
-    finalize_recorded_branch_merge_result,
-    resume_branch_merge_command_mailbox,
-)
 from rcp.runs.tasks.discuss import (
     DISCUSS_FINALIZATION_CONTEXT_ROLE,
     finalize_recorded_discuss_result,
     resume_discuss_command_mailbox,
 )
-from rcp.runs.tasks.episode_report import (
-    EPISODE_REPORT_FINALIZATION_ROLE,
-    finalize_recorded_episode_report_result,
-)
 from rcp.runs.tasks.experiment_loop import (
     EXPERIMENT_LOOP_FINALIZATION_CONTEXT_ROLE,
     finalize_recorded_experiment_loop_result,
     resume_experiment_command_mailbox,
-)
-from rcp.runs.tasks.graph import (
-    GRAPH_FINALIZATION_ROLE,
-    finalize_recorded_graph_result,
-    resume_graph_command_mailbox,
 )
 from rcp.runs.tasks.work import (
     WORK_FINALIZATION_CONTEXT_ROLE,
@@ -94,10 +76,6 @@ class RecordedFinalizer(Protocol):
 #: Retained finalization contract -> the owner that wrote and can consume it.
 RECORDED_FINALIZERS: dict[str, RecordedFinalizer] = {
     ARTIFACT_EDIT_FINALIZATION_ROLE: finalize_recorded_artifact_edit_result,
-    BRANCH_MERGE_FINALIZATION_ROLE: finalize_recorded_branch_merge_result,
-    GRAPH_FINALIZATION_ROLE: finalize_recorded_graph_result,
-    EPISODE_REPORT_FINALIZATION_ROLE: finalize_recorded_episode_report_result,
-    AUTO_RESEARCH_FINALIZATION_CONTEXT_ROLE: finalize_recorded_auto_research_result,
     WORK_FINALIZATION_CONTEXT_ROLE: finalize_recorded_work_result,
     DISCUSS_FINALIZATION_CONTEXT_ROLE: finalize_recorded_discuss_result,
     AUTO_RESEARCH_CHILD_FINALIZATION_CONTEXT_ROLE: (
@@ -123,8 +101,6 @@ RECORDED_MAILBOX_RESUMERS: dict[
     ],
 ] = {
     WORK_FINALIZATION_CONTEXT_ROLE: resume_work_command_mailbox,
-    BRANCH_MERGE_FINALIZATION_ROLE: resume_branch_merge_command_mailbox,
-    GRAPH_FINALIZATION_ROLE: resume_graph_command_mailbox,
     DISCUSS_FINALIZATION_CONTEXT_ROLE: resume_discuss_command_mailbox,
     AUTO_RESEARCH_CHILD_FINALIZATION_CONTEXT_ROLE: resume_child_work_command_mailbox,
     EXPERIMENT_LOOP_FINALIZATION_CONTEXT_ROLE: resume_experiment_command_mailbox,

@@ -39,7 +39,7 @@ from rcp.providers.browser_grant import BrowserGrant, BrowserTurnStatus
 from rcp.rcp_home import rcp_temp_dir
 from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.service import CoachRequest, ProjectService, RunRequest
-from rcp.storage.models import is_prompt_contract_role
+from rcp.storage.models import _NON_PROMPT_CONTRACT_ROLES
 from rcp.transport import RemoteRunStage, StateUnavailable, StateUnreachable
 from rcp.transport.remote_stage_root import READ_CONTEXT_INPUT, prepare_read_context_input
 from rcp.transport.run_stage import run_stage_partition
@@ -523,7 +523,7 @@ def retry_original_contract_path(
         if ancestor is None:
             break
         if any(
-            is_prompt_contract_role(contract.role)
+            contract.role not in _NON_PROMPT_CONTRACT_ROLES
             for contract in execution.store.agent_task_contracts(ancestor_id)
         ) or any(
             receipt.category == "agent_prompt"
@@ -594,7 +594,7 @@ def _parent_task_contract_path(
         durable_contracts = [
             contract
             for contract in execution.store.agent_task_contracts(ancestor_id)
-            if is_prompt_contract_role(contract.role)
+            if contract.role not in _NON_PROMPT_CONTRACT_ROLES
         ]
         if durable_contracts:
             durable = durable_contracts[-1]
@@ -777,7 +777,6 @@ class _ProviderOutcome:
     session_id: str | None = None
     completed: bool = False
     failed: bool = False
-    session_mismatch: bool = False
     paused: bool = False
     answers: list[str] = dataclasses.field(default_factory=list)
     trace_messages: list[str] = dataclasses.field(default_factory=list)
@@ -859,10 +858,10 @@ async def _stream_agent_events(
     capability: AgentCapability,
     outcome: _ProviderOutcome,
     binary: str | None,
-    owner_deliverables: tuple[str, ...] = (),
     invocation_gate: ProviderInvocationGate | None = None,
     shell_timeout_seconds: int | None | EllipsisType = ...,
     required_session_id: str | None = None,
+    supervise_remote: bool = False,
     browser_grant: BrowserGrant | None = None,
     hidden_read_scope: HiddenReadScope | None = None,
     service: ProjectService | None = None,
@@ -873,13 +872,6 @@ async def _stream_agent_events(
     Terminal and labelled events are withheld from the wire: the caller decides
     what a completed run, an answer, or a trace is worth in its own protocol.
     """
-    if execution_host:
-        from rcp.runs.remote_finalization import recorded_finalizer
-
-        if execution is None or recorded_finalizer(execution.store, execution.operation_id) is None:
-            raise ValueError("A remote agent launch requires one registered finalization contract.")
-        if remote_stage is None or remote_stage.root is None:
-            raise ValueError("A remote agent launch requires its retained task stage.")
     if execution is not None and write_scope is not None:
         from rcp.runs.episodes.isolation import validate_episode_launch
 
@@ -918,16 +910,17 @@ async def _stream_agent_events(
     supervisor_path: str | None = None
     if remote_stage is not None:
         try:
-            # The supervisor travels as a staged input, never on the command
-            # line: an argument that large cannot reach an SSH multiplexing
-            # master, which fails the launch before the host runs anything.
-            supervisor_path = await asyncio.to_thread(
-                _stage_or_reuse_task_input,
-                None,
-                remote_stage,
-                remote_turn_supervisor_input_label(),
-                _remote_turn_supervisor_script(),
-            )
+            if supervise_remote:
+                # The supervisor travels as a staged input, never on the command
+                # line: an argument that large cannot reach an SSH multiplexing
+                # master, which fails the launch before the host runs anything.
+                supervisor_path = await asyncio.to_thread(
+                    _stage_or_reuse_task_input,
+                    None,
+                    remote_stage,
+                    remote_turn_supervisor_input_label(),
+                    _remote_turn_supervisor_script(),
+                )
             if execution is not None and remote_stage.root is not None:
                 await asyncio.to_thread(
                     require_remote_provider_quiescence,
@@ -1000,8 +993,8 @@ async def _stream_agent_events(
             binary=binary,
             runtime_id=(execution.runtime_id or None) if execution is not None else None,
             before_start=capture_login_generation if execution is not None else None,
+            supervise_remote=supervise_remote,
             supervisor_path=supervisor_path,
-            owner_deliverables=owner_deliverables,
             operation_id=execution.operation_id if execution is not None else None,
             git_access=execution.git_access if execution is not None else None,
         )
@@ -1040,7 +1033,7 @@ async def _stream_agent_events(
                     execution_host,
                     str(remote_stage.root),
                     remote_pid_file,
-                    supervised=True,
+                    supervised=supervise_remote,
                 )
                 remote_pass_recorded = True
                 continue

@@ -317,34 +317,3 @@ def test_a_steered_turn_replays_the_reply_it_actually_finished_with(tmp_path) ->
 
     assert recorded.input_message_ids == [_CLAUDE_PROMPT, _CLAUDE_STEER]
     assert any(event.text == "the real answer" for event in verdict.events)
-
-
-@pytest.mark.parametrize("name", ["episode-report.html", "answers.json"])
-def test_owner_deliverables_restore_turn_end_bytes_and_absence(tmp_path, name):
-    from rcp.runs.recorded_settlement import write_recorded_patch
-
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    output = workspace / name
-    missing = workspace / "missing.json"
-    output.write_text("the turn's result", encoding="utf-8")
-    completed, directory = _supervise(
-        tmp_path,
-        json.dumps({"emit": [{"type": "turn.completed"}], "exit": 0}) + "\n",
-        owner_deliverables=(output, missing),
-    )
-    assert completed.returncode == 0, completed.stderr
-    pid_file = str(directory).removesuffix(".turn")
-    journal = read_journal(pid_file, 1000000)
-    recorded = recorded_provider_turn(pid_file, journal)
-    output.write_text("a later turn", encoding="utf-8")
-    missing.write_text("a later file", encoding="utf-8")
-    write_recorded_patch(workspace, None, recorded)
-    assert output.read_text() == "the turn's result"
-    assert not missing.exists()
-
-    outputs = journal["owner_deliverables"]
-    assert isinstance(outputs, dict)
-    outputs[name] = "changed bytes"
-    with pytest.raises(ValueError, match="recorded digest"):
-        recorded_provider_turn(pid_file, journal)

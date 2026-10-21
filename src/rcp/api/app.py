@@ -772,115 +772,6 @@ def create_app(
     )
     graph_watcher_retry = GraphWatcherRetryRegistry()
 
-    def auto_research_dispatcher(
-        service: ProjectService,
-        request: AutoResearchRunRequest,
-        execution: AgentTaskExecution,
-    ) -> AutoResearchCommandDispatcher:
-        task = store.agent_task(execution.operation_id)
-        if task is None:
-            raise ValueError("Auto-research command recovery lost its durable task.")
-        project_id = task.project_id
-        if request.run_on is None:
-            raise ValueError("An Auto-research turn has no pinned execution machine.")
-        execution_machine = service.manifest.machine_map.get(request.run_on)
-        if execution_machine is None:
-            raise ValueError(f"unknown execution machine: {request.run_on}")
-
-        def validate_auto_research_patch(context, arguments) -> AutoResearchCommandEffectResult:
-            validated = _validate_work_patch_live(
-                service,
-                arguments.patch,
-                run_truth_scope=list(context.request.run_truth_scope or ()),
-                source_operation_id=context.task.operation_id,
-                profile=("orchestrator" if context.request.role == "orchestrator" else "ordinary"),
-            )
-            result = validated.model_dump(mode="json")
-            if validated.status == "valid":
-                return AutoResearchCommandEffectResult(result=result)
-            diagnostic = (
-                validated.messages[0]
-                if validated.messages
-                else f"Auto-research Patch validation is {validated.status}."
-            )
-            return AutoResearchCommandEffectResult(
-                status=validated.status,
-                message=diagnostic,
-                result=result,
-            )
-
-        def apply_auto_research_patch(context, patch_text, source_effect_id):
-            result, failure = _apply_work_patch(
-                service,
-                execution,
-                patch_text,
-                run_truth_scope=list(
-                    context.request.run_truth_scope
-                    or service.manifest.agent.default_run_truth_scope
-                ),
-                profile="orchestrator",
-                source_operation_id=context.task.operation_id,
-                source_effect_id=source_effect_id,
-            )
-            if failure is not None:
-                return None, failure.message, failure.correctable
-            return result, None, False
-
-        def merge_owned_branch(context, arguments, command_key):
-            from rcp.runs.branch_merge_admission import start_owned_branch_merge
-
-            try:
-                result = start_owned_branch_merge(
-                    background_tasks,
-                    service,
-                    episode=context.episode,
-                    dispatcher_operation_id=context.task.operation_id,
-                    branch_id=arguments.branch_id,
-                    command_key=command_key,
-                )
-            except ValueError as exc:
-                code = str(exc)
-                if not code.isascii() or not code.isidentifier():
-                    raise
-                return AutoResearchCommandEffectResult(
-                    status="invalid", message=code, result={"code": code}
-                )
-            return AutoResearchCommandEffectResult(result=result)
-
-        effects = auto_research_command_effects(
-            store=store,
-            background=background_tasks,
-            validate=validate_auto_research_patch,
-            worker_request_factory=lambda context, arguments, instruction, worker_id: (
-                _auto_research_worker_request(
-                    service,
-                    context,
-                    arguments,
-                    instruction,
-                    worker_id,
-                )
-            ),
-            graph_state=service.history.state,
-            execution_host=execution_machine.host,
-            apply_patch=apply_auto_research_patch,
-            merge=merge_owned_branch,
-            on_graph_applied=lambda: evaluate_graph_wake_boundary(
-                project_id,
-                None,
-                graph_target=task.graph_target,
-                source="Auto-research in-turn Apply",
-            ),
-            on_watcher_ready=lambda ready_project_id: evaluate_graph_wake_boundary(
-                ready_project_id,
-                None,
-                graph_target=task.graph_target,
-                source="Auto-research graph condition",
-            ),
-            experiment_coordinator=auto_research_experiment_coordinator,
-            branch_head=lambda target: service.for_graph_target(target).history.head_ref(),
-        )
-        return AutoResearchCommandDispatcher(store, effects)
-
     async def background_task_stream(
         project_id: str,
         kind: AgentTaskKind,
@@ -991,7 +882,107 @@ def create_app(
         if kind == "auto_research":
             if not isinstance(request, AutoResearchRunRequest):
                 raise TypeError("An Auto-research task requires its operational run request.")
-            dispatcher = auto_research_dispatcher(service, request, execution)
+            if request.run_on is None:
+                raise ValueError("An Auto-research turn has no pinned execution machine.")
+            execution_machine = service.manifest.machine_map.get(request.run_on)
+            if execution_machine is None:
+                raise ValueError(f"unknown execution machine: {request.run_on}")
+
+            def validate_auto_research_patch(context, arguments) -> AutoResearchCommandEffectResult:
+                validated = _validate_work_patch_live(
+                    service,
+                    arguments.patch,
+                    run_truth_scope=list(context.request.run_truth_scope or ()),
+                    source_operation_id=context.task.operation_id,
+                    profile=(
+                        "orchestrator" if context.request.role == "orchestrator" else "ordinary"
+                    ),
+                )
+                result = validated.model_dump(mode="json")
+                if validated.status == "valid":
+                    return AutoResearchCommandEffectResult(result=result)
+                diagnostic = (
+                    validated.messages[0]
+                    if validated.messages
+                    else f"Auto-research Patch validation is {validated.status}."
+                )
+                return AutoResearchCommandEffectResult(
+                    status=validated.status,
+                    message=diagnostic,
+                    result=result,
+                )
+
+            def apply_auto_research_patch(context, patch_text, source_effect_id):
+                result, failure = _apply_work_patch(
+                    service,
+                    execution,
+                    patch_text,
+                    run_truth_scope=list(
+                        context.request.run_truth_scope
+                        or service.manifest.agent.default_run_truth_scope
+                    ),
+                    profile="orchestrator",
+                    source_operation_id=context.task.operation_id,
+                    source_effect_id=source_effect_id,
+                )
+                if failure is not None:
+                    return None, failure.message, failure.correctable
+                return result, None, False
+
+            def merge_owned_branch(context, arguments, command_key):
+                from rcp.runs.branch_merge_admission import start_owned_branch_merge
+
+                try:
+                    result = start_owned_branch_merge(
+                        background_tasks,
+                        service,
+                        episode=context.episode,
+                        dispatcher_operation_id=context.task.operation_id,
+                        branch_id=arguments.branch_id,
+                        command_key=command_key,
+                    )
+                except ValueError as exc:
+                    code = str(exc)
+                    if not code.isascii() or not code.isidentifier():
+                        raise
+                    return AutoResearchCommandEffectResult(
+                        status="invalid", message=code, result={"code": code}
+                    )
+                return AutoResearchCommandEffectResult(result=result)
+
+            effects = auto_research_command_effects(
+                store=store,
+                background=background_tasks,
+                validate=validate_auto_research_patch,
+                worker_request_factory=lambda context, arguments, instruction, worker_id: (
+                    _auto_research_worker_request(
+                        service,
+                        context,
+                        arguments,
+                        instruction,
+                        worker_id,
+                    )
+                ),
+                graph_state=service.history.state,
+                execution_host=execution_machine.host,
+                apply_patch=apply_auto_research_patch,
+                merge=merge_owned_branch,
+                on_graph_applied=lambda: evaluate_graph_wake_boundary(
+                    project_id,
+                    None,
+                    graph_target=task.graph_target,
+                    source="Auto-research in-turn Apply",
+                ),
+                on_watcher_ready=lambda ready_project_id: evaluate_graph_wake_boundary(
+                    ready_project_id,
+                    None,
+                    graph_target=task.graph_target,
+                    source="Auto-research graph condition",
+                ),
+                experiment_coordinator=auto_research_experiment_coordinator,
+                branch_head=lambda target: service.for_graph_target(target).history.head_ref(),
+            )
+            dispatcher = AutoResearchCommandDispatcher(store, effects)
             stream_auto_research = (
                 stream_auto_research_orchestrator_run
                 if request.role == "orchestrator"
@@ -1124,20 +1115,6 @@ def create_app(
                 )
             return service
 
-        from rcp.runs.tasks.auto_research_stream import (
-            AUTO_RESEARCH_FINALIZATION_CONTEXT_ROLE,
-            resume_auto_research_command_mailbox,
-        )
-
-        if store.agent_task_contract(task.operation_id, AUTO_RESEARCH_FINALIZATION_CONTEXT_ROLE):
-            request = AutoResearchRunRequest.model_validate(task.request)
-            return resume_auto_research_command_mailbox(
-                service_for_validation,
-                execution,
-                command_dispatcher=auto_research_dispatcher(
-                    service_for_validation(), request, execution
-                ),
-            )
         return resume_recorded_command_mailbox(service_for_validation, execution)
 
     # One per process: admission and the machine card share its cache.

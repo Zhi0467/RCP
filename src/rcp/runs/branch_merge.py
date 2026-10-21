@@ -331,7 +331,6 @@ class BranchMergeRunOutcome:
     receipt: BranchMergeReceipt | None = None
     rebase_rounds: int = 0
     diagnostic: str | None = None
-    remote_result_pending: bool = False
 
 
 @dataclass(frozen=True)
@@ -840,7 +839,7 @@ async def stream_branch_merge_run(
                         local_stage=stage.local_stage,
                         remote_stage=stage.remote_stage,
                         label=f"task-{token}-branch-merge-rebase-{launch_number}.md",
-                        role=f"branch_merge_rebase_{launch_number}",
+                        role="branch_merge_rebase",
                         prompt=prompt,
                     )
                     continuation = "merge_rebase"
@@ -853,15 +852,6 @@ async def stream_branch_merge_run(
                     context=context,
                     continuation=continuation,
                     round_number=launch_number,
-                )
-                record_merge_finalization_pass(
-                    execution,
-                    stage=stage,
-                    write_scope=write_scope,
-                    context=context,
-                    plan=plan,
-                    session_id=session_id,
-                    turn_id=checks.turn_id,
                 )
                 provider, events = _provider_turn(
                     launcher,
@@ -883,9 +873,6 @@ async def stream_branch_merge_run(
                         event = AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
                         if event.event != "done":
                             yield frame
-                if provider.remote_result_pending:
-                    outcome.remote_result_pending = True
-                    return
                 session_id = provider.session_id
                 outcome.native_session_id = session_id
                 if provider.paused:
@@ -936,17 +923,48 @@ async def stream_branch_merge_run(
                 outcome.rebased_main_head = plan.destination_head
                 continue
 
-            settle_branch_merge(
-                context=context,
-                plan=plan,
-                answers=answers,
-                main_history=main_history,
-                load_context=load_context,
-                outcome=outcome,
-                before_commit=before_commit,
-                reconcile_receipt=reconcile_receipt,
-                publish_receipt=publish_receipt,
-            )
+            outcome.prepared = merge_patch.prepare_merge_candidate(plan, answers, main_history)
+            if before_commit is not None:
+                before_commit()
+            if not outcome.prepared.patch.ops:
+                if classify_refreshed_context(context, load_context()) == "main_moved":
+                    raise RevisionConflict("Destination moved before no-change settlement.")
+                outcome.receipt = BranchMergeReceipt(
+                    outcome="no_change",
+                    provenance=plan.provenance,
+                    result_main_head=plan.destination_head,
+                    authorized_by=plan.authorized_by,
+                )
+                outcome.status = "noop"
+            else:
+                try:
+                    outcome.committed = commit_branch_merge_with_history(
+                        main_history,
+                        merge_patch.build_merge_patch(plan, answers),
+                        expected_main_head=plan.destination_head,
+                    )
+                    outcome.receipt = branch_merge_receipt_from_committed_patch(
+                        outcome.committed.patch
+                    )
+                except BranchMergeAlreadyCommitted as exc:
+                    outcome.receipt = branch_merge_receipt_from_committed_patch(exc.patch)
+                except BranchMergeAlreadyResolved as exc:
+                    outcome.receipt = exc.receipt
+                except (OSError, StateUnavailable):
+                    # Publication can have succeeded before its acknowledgment was lost.
+                    outcome.receipt = reconcile_receipt() if reconcile_receipt is not None else None
+                    if outcome.receipt is None:
+                        raise
+                outcome.status = "committed" if outcome.receipt.outcome == "committed" else "noop"
+            if publish_receipt is not None:
+                try:
+                    outcome.receipt = publish_receipt(outcome.receipt)
+                except (OSError, StateUnavailable):
+                    outcome.receipt = reconcile_receipt() if reconcile_receipt is not None else None
+                    if outcome.receipt is None:
+                        raise
+            outcome.status = "committed" if outcome.receipt.outcome == "committed" else "noop"
+            outcome.result_main_head = outcome.receipt.result_main_head
             yield _sse(AgentEvent(event="done"))
             return
         except merge_contract.MergeHiddenClash as exc:
@@ -980,62 +998,6 @@ async def stream_branch_merge_run(
             outcome.diagnostic = str(exc)
             yield _sse(AgentEvent(event="error", text=outcome.diagnostic))
             return
-
-
-def settle_branch_merge(
-    *,
-    context: BranchMergeContext,
-    plan: merge_contract.MergePlan,
-    answers: merge_contract.MergeAnswers,
-    main_history: HistoryManager | BranchHistoryManager,
-    load_context: Callable[[], BranchMergeContext],
-    outcome: BranchMergeRunOutcome,
-    before_commit: Callable[[], None] | None = None,
-    reconcile_receipt: Callable[[], BranchMergeReceipt | None] | None = None,
-    publish_receipt: Callable[[BranchMergeReceipt], BranchMergeReceipt] | None = None,
-) -> None:
-    """Commit the same checked candidate for a live or recorded provider turn."""
-
-    outcome.prepared = merge_patch.prepare_merge_candidate(plan, answers, main_history)
-    if before_commit is not None:
-        before_commit()
-    if not outcome.prepared.patch.ops:
-        if classify_refreshed_context(context, load_context()) == "main_moved":
-            raise RevisionConflict("Destination moved before no-change settlement.")
-        outcome.receipt = BranchMergeReceipt(
-            outcome="no_change",
-            provenance=plan.provenance,
-            result_main_head=plan.destination_head,
-            authorized_by=plan.authorized_by,
-        )
-        outcome.status = "noop"
-    else:
-        try:
-            outcome.committed = commit_branch_merge_with_history(
-                main_history,
-                merge_patch.build_merge_patch(plan, answers),
-                expected_main_head=plan.destination_head,
-            )
-            outcome.receipt = branch_merge_receipt_from_committed_patch(outcome.committed.patch)
-        except BranchMergeAlreadyCommitted as exc:
-            outcome.receipt = branch_merge_receipt_from_committed_patch(exc.patch)
-        except BranchMergeAlreadyResolved as exc:
-            outcome.receipt = exc.receipt
-        except (OSError, StateUnavailable):
-            # Publication can have succeeded before its acknowledgment was lost.
-            outcome.receipt = reconcile_receipt() if reconcile_receipt is not None else None
-            if outcome.receipt is None:
-                raise
-        outcome.status = "committed" if outcome.receipt.outcome == "committed" else "noop"
-    if publish_receipt is not None:
-        try:
-            outcome.receipt = publish_receipt(outcome.receipt)
-        except (OSError, StateUnavailable):
-            outcome.receipt = reconcile_receipt() if reconcile_receipt is not None else None
-            if outcome.receipt is None:
-                raise
-    outcome.status = "committed" if outcome.receipt.outcome == "committed" else "noop"
-    outcome.result_main_head = outcome.receipt.result_main_head
 
 
 def _promotion_still_applies(
@@ -1115,9 +1077,6 @@ async def stream_code_merge_run(
     execution: Any | None = None,
     binary: str | None = None,
     hidden_read_scope: HiddenReadScope | None = None,
-    outcome: _ProviderOutcome | None = None,
-    context: BranchMergeContext | None = None,
-    plan: merge_contract.MergePlan | None = None,
 ) -> AsyncGenerator[str, None]:
     """Run one code merge turn with no graph questions, then RCP verifies the landing."""
 
@@ -1130,7 +1089,7 @@ async def stream_code_merge_run(
         f"task-{_task_token(execution)}-code-merge.md",
         contract,
         execution=execution,
-        role="code_merge",
+        role="branch_merge",
     )
     _record_agent_launch_receipt(
         execution,
@@ -1152,15 +1111,6 @@ async def stream_code_merge_run(
             "repository_write_root_count": len(write_scope.repository_roots),
         },
     )
-    record_merge_finalization_pass(
-        execution,
-        stage=stage,
-        write_scope=write_scope,
-        context=context,
-        plan=plan,
-        session_id=None,
-        turn_id=None,
-    )
     provider, events = _provider_turn(
         launcher,
         request,
@@ -1172,13 +1122,10 @@ async def stream_code_merge_run(
         session_id=None,
         required_session_id=None,
         hidden_read_scope=hidden_read_scope,
-        outcome=outcome,
     )
     async with aclosing(events) as frames:
         async for frame in frames:
             yield frame
-    if provider.remote_result_pending:
-        return
     if provider.paused or provider.failed or not provider.completed:
         raise ValueError("The code merge provider did not complete its turn.")
     verify()
@@ -1328,9 +1275,8 @@ def _provider_turn(
     required_session_id: str | None,
     hidden_read_scope: HiddenReadScope | None,
     invocation_gate: ProviderInvocationGate | None = None,
-    outcome: _ProviderOutcome | None = None,
 ) -> tuple[_ProviderOutcome, AsyncGenerator[str, None]]:
-    provider_outcome = outcome if outcome is not None else _ProviderOutcome(session_id=session_id)
+    provider_outcome = _ProviderOutcome(session_id=session_id)
     inputs = (
         Path(str(stage.remote_stage.root / "inputs"))
         if stage.remote_stage is not None and stage.remote_stage.root is not None
@@ -1357,60 +1303,8 @@ def _provider_turn(
         binary=binary,
         required_session_id=required_session_id,
         hidden_read_scope=hidden_read_scope,
-        owner_deliverables=("answers.json",),
     )
     return provider_outcome, stream
-
-
-MERGE_FINALIZATION_PASS_PREFIX = "branch_merge_finalization_pass_"
-
-
-class MergeFinalizationPass(_StrictMergeModel):
-    stage_host: str
-    stage_root: str
-    workspace: str
-    write_scope: ProjectWriteScope
-    context: BranchMergeContext | None
-    plan: merge_contract.MergePlan | None
-    session_id: str | None
-    turn_id: str | None
-
-
-def record_merge_finalization_pass(
-    execution: Any | None,
-    *,
-    stage: BranchMergeStage,
-    write_scope: ProjectWriteScope,
-    context: BranchMergeContext | None,
-    plan: merge_contract.MergePlan | None,
-    session_id: str | None,
-    turn_id: str | None,
-) -> None:
-    if stage.remote_stage is None:
-        return
-    if execution is None:
-        raise ValueError("A remote merge requires its durable task owner.")
-    passes = [
-        contract
-        for contract in execution.store.agent_task_contracts(execution.operation_id)
-        if contract.role.startswith(MERGE_FINALIZATION_PASS_PREFIX)
-    ]
-    content = MergeFinalizationPass(
-        stage_host=stage.remote_stage.host,
-        stage_root=str(stage.remote_stage.root),
-        workspace=str(stage.workspace),
-        write_scope=write_scope,
-        context=context,
-        plan=plan,
-        session_id=session_id,
-        turn_id=turn_id,
-    ).model_dump_json()
-    execution.store.record_agent_task_contract(
-        execution.operation_id,
-        f"{MERGE_FINALIZATION_PASS_PREFIX}{len(passes)}",
-        content,
-        hashlib.sha256(content.encode()).hexdigest(),
-    )
 
 
 def _record_merge_launch(

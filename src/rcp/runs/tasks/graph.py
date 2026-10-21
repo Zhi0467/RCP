@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator
+from collections.abc import AsyncGenerator
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -46,14 +46,9 @@ from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,
     cleanup_patch_validation_mailbox,
+    serve_patch_validation_mailbox,
     stage_patch_validation_mailbox,
 )
-from rcp.runs.recorded_settlement import (
-    attach_retained_stage,
-    note_stage_unreachable,
-    open_recorded_pass,
-)
-from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.session_master import (
     commit_prepared_graph_observation,
     continuation_session_master,
@@ -85,12 +80,6 @@ from rcp.runs.shared import (
     _swept_stage_root,
     _task_token,
 )
-from rcp.runs.tasks.work_turn_runtime import (
-    WorkValidatorMailboxLifecycle,
-    load_work_mailbox_context,
-    restore_work_validator_mailbox,
-    start_work_validator_mailbox,
-)
 from rcp.service import ProjectService, RunRequest
 from rcp.skills.staging import stage_skill_selection
 from rcp.sources import ImportedProviderSourceInventory
@@ -106,29 +95,6 @@ from rcp.transport import (
 
 logger = logging.getLogger(__name__)
 _PREPARED_GRAPH_CONTEXT_FILE = "prepared-context.json"
-GRAPH_FINALIZATION_ROLE = "graph_finalization"
-
-
-class _GraphFinalizationSnapshot(BaseModel):
-    request: RunRequest
-    kind: str
-    stage_host: str
-    stage_root: str
-    workspace: str
-    run_truth_scope: list[str]
-    pre_launch_patch_digest: str | None
-    requires_new_patch: bool
-    last_problem: str | None
-    session_id: str | None
-    round: int
-
-
-@dataclass
-class _GraphPatchSettlement:
-    applied: bool = False
-    problem: str | None = None
-    last_problem: str | None = None
-
 
 # A stage retained across this upgrade still holds a version-2 context carrying
 # the retired `coverage_path`. `RunContext` forbids extras, so validating that
@@ -686,7 +652,6 @@ async def stream_graph_run(
     run_lock_lease: RunLockLease | None = None
     run_lock_acquired = False
     applied = False
-    remote_result_pending = False
     retry_state: _GraphRetryState | None = None
     graph_revision = 0
     imported_stage_verified = False
@@ -1131,39 +1096,6 @@ async def stream_graph_run(
                     reused=False,
                 )
                 imported_stage_verified = True
-            if execution_host and execution is not None:
-                assert remote_stage is not None
-                if rounds == 0:
-                    task = execution.store.agent_task(execution.operation_id)
-                    if task is None:
-                        raise ValueError("The graph launch has no durable task.")
-                    content = RunRequest.model_validate(task.request).model_dump_json()
-                    execution.store.record_agent_task_contract(
-                        execution.operation_id,
-                        GRAPH_FINALIZATION_ROLE,
-                        content,
-                        hashlib.sha256(content.encode()).hexdigest(),
-                    )
-                snapshot = _GraphFinalizationSnapshot(
-                    request=request,
-                    kind=kind,
-                    stage_host=execution_host,
-                    stage_root=str(remote_stage.root),
-                    workspace=str(workspace),
-                    run_truth_scope=context.run_truth_scope,
-                    pre_launch_patch_digest=pre_launch_patch_digest,
-                    requires_new_patch=requires_new_patch,
-                    last_problem=last_problem,
-                    session_id=session_id,
-                    round=rounds,
-                )
-                content = snapshot.model_dump_json()
-                execution.store.record_agent_task_contract(
-                    execution.operation_id,
-                    f"{GRAPH_FINALIZATION_ROLE}_round_{rounds}",
-                    content,
-                    hashlib.sha256(content.encode()).hexdigest(),
-                )
             _record_agent_launch_receipt(
                 execution,
                 request,
@@ -1232,9 +1164,6 @@ async def stream_graph_run(
                                 tier="diagnostic",
                             )
                     yield frame
-            if outcome.remote_result_pending:
-                remote_result_pending = True
-                return
             _record_provider_exit(
                 execution,
                 outcome,
@@ -1262,28 +1191,119 @@ async def stream_graph_run(
                     phase="applying",
                     event=True,
                 )
-            settlement = _GraphPatchSettlement(last_problem=last_problem)
-            for frame in _settle_graph_patch(
-                service,
-                workspace=workspace,
-                remote_stage=remote_stage,
-                execution=execution,
-                kind=kind,
-                run_truth_scope=context.run_truth_scope,
-                pre_launch_patch_digest=pre_launch_patch_digest,
-                requires_new_patch=requires_new_patch,
-                last_problem=last_problem,
-                rounds=rounds,
-                native_session_id=native_session_id,
-                run_lock_lease=run_lock_lease,
-                settlement=settlement,
-            ):
-                yield frame
-            applied = settlement.applied
-            if applied or settlement.problem is None:
-                return
-            problem = settlement.problem
-            last_problem = settlement.last_problem
+            stale_patch = False
+            try:
+                patch_text, output_name = _collect_patch_text(workspace, remote_stage)
+                unchanged = (
+                    pre_launch_patch_digest is not None
+                    and hashlib.sha256(patch_text.encode("utf-8")).hexdigest()
+                    == pre_launch_patch_digest
+                )
+                if unchanged and execution is not None:
+                    execution.store.record_agent_task_receipt(
+                        execution.operation_id,
+                        "patch_predates_launch",
+                        {"correction_round": rounds, "accepted": not requires_new_patch},
+                        tier="diagnostic",
+                    )
+                if unchanged and requires_new_patch:
+                    # Applying it would attribute inherited output to this launch.
+                    # The substantive diagnostic still leads; the fingerprint only
+                    # proves that this launch did not rewrite the deliverable.
+                    stale_patch = True
+                    raise AgentOutputProblem(
+                        (f"{last_problem} " if last_problem else "")
+                        + "The patch file is byte-identical to the one this launch "
+                        "inherited, so this launch did not write a new patch. Rewrite "
+                        "patch.json before RCP can accept it as this attempt's output."
+                    )
+            except AgentOutputProblem as exc:
+                problem = str(exc)
+                if not stale_patch:
+                    last_problem = problem
+            else:
+                if execution is not None:
+                    # Persisted before validation: a patch that fails validation is
+                    # still the run's work product and must survive the failure.
+                    execution.store.record_agent_task_patch_output(
+                        execution.operation_id, patch_text
+                    )
+                    execution.store.record_agent_task_receipt(
+                        execution.operation_id,
+                        "patch_retained",
+                        {
+                            "byte_length": len(patch_text.encode("utf-8")),
+                            "file_name": output_name,
+                        },
+                        tier="diagnostic",
+                    )
+                    if output_name != "patch.json":
+                        execution.store.record_agent_task_event(
+                            execution.operation_id,
+                            f"Recovered the patch from {output_name}.",
+                            level="warning",
+                        )
+                try:
+                    patch = _prepare_graph_patch_candidate(
+                        service,
+                        patch_text,
+                        kind=kind,
+                        run_truth_scope=context.run_truth_scope,
+                        source_operation_id=execution.operation_id if execution else None,
+                    )
+                    _record_patch_receipt(
+                        execution,
+                        patch,
+                        byte_length=len(patch_text.encode("utf-8")),
+                    )
+                except ValueError as exc:
+                    problem = str(exc)
+                    last_problem = problem
+                else:
+                    try:
+                        run_lock_lease.assert_owned()
+                        _appended, result = service.history.append(
+                            patch,
+                            discard_on_reject=True,
+                        )
+                    except PatchRejected as exc:
+                        problem = str(exc)
+                        last_problem = problem
+                        if execution is not None:
+                            execution.store.record_agent_task_receipt(
+                                execution.operation_id,
+                                "patch_rejected",
+                                {
+                                    "round": rounds,
+                                    "messages": [
+                                        item.model_dump(mode="json") for item in exc.report.messages
+                                    ],
+                                },
+                                tier="diagnostic",
+                            )
+                    except (ReplayHalted, StateUnavailable) as exc:
+                        yield _sse(AgentEvent(event="error", text=str(exc)))
+                        return
+                    else:
+                        _record_patch_applied_receipt(execution, result.state)
+                        commit_prepared_graph_observation(
+                            execution,
+                            service,
+                            native_session_id=native_session_id,
+                            applied_revision=result.state.revision,
+                        )
+                        applied = True
+                        yield _sse(
+                            AgentEvent(
+                                event="message",
+                                text=json.dumps(
+                                    {"applied_revision": result.state.revision},
+                                    separators=(",", ":"),
+                                ),
+                            )
+                        )
+                        yield _sse(AgentEvent(event="done"))
+                        return
 
             # Rungs 2 and 3: hand the concrete problem back to the agent that is still
             # holding the analysis, rather than discarding the run and asking a human.
@@ -1369,11 +1389,7 @@ async def stream_graph_run(
             )
         )
     finally:
-        if (
-            not remote_result_pending
-            and validator_staged is not None
-            and not validator_staged.credential.expired
-        ):
+        if validator_staged is not None and not validator_staged.credential.expired:
             await asyncio.to_thread(
                 cleanup_patch_validation_mailbox,
                 staged=validator_staged,
@@ -1394,255 +1410,6 @@ async def stream_graph_run(
                 execution.store.clear_agent_task_stage(execution.operation_id)
         if run_lock_acquired:
             run_lock.__exit__(None, None, None)
-
-
-def _load_graph_finalization_snapshot(execution: AgentTaskExecution) -> _GraphFinalizationSnapshot:
-    rounds = [
-        item
-        for item in execution.store.agent_task_contracts(execution.operation_id)
-        if item.role.startswith(f"{GRAPH_FINALIZATION_ROLE}_round_")
-    ]
-    if not rounds:
-        raise ValueError("The graph turn has no retained finalization context.")
-    return _GraphFinalizationSnapshot.model_validate_json(rounds[-1].content)
-
-
-async def finalize_recorded_graph_result(
-    service: ProjectService,
-    launcher: AgentLauncher,
-    request: RunRequest,
-    data_dir: Path,
-    execution: AgentTaskExecution,
-    recorded: RecordedProviderTurn,
-) -> AsyncIterator[str]:
-    del launcher, data_dir
-    snapshot = _load_graph_finalization_snapshot(execution)
-    task = execution.store.agent_task(execution.operation_id)
-    admitted = execution.store.agent_task_contract(execution.operation_id, GRAPH_FINALIZATION_ROLE)
-    if (
-        task is None
-        or task.kind != snapshot.kind
-        or task.request != request.model_dump(mode="json")
-        or (admitted is None or RunRequest.model_validate_json(admitted) != request)
-    ):
-        raise ValueError("The retained graph finalization request changed after launch.")
-    local, remote, workspace = attach_retained_stage(
-        execution,
-        owner="graph",
-        stage_host=snapshot.stage_host,
-        stage_root=snapshot.stage_root,
-        workspace=snapshot.workspace,
-    )
-    outcome = _ProviderOutcome(session_id=snapshot.session_id)
-    for frame in open_recorded_pass(
-        recorded,
-        execution=execution,
-        workspace=workspace,
-        remote_stage=remote,
-        outcome=outcome,
-        capability="scratch_patch",
-        required_session_id=snapshot.session_id,
-    ):
-        yield frame
-    if outcome.failed:
-        return
-    if not outcome.completed:
-        yield _sse(AgentEvent(event="error", text=f"{request.provider} produced no result."))
-        return
-    if snapshot.round == 0:
-        for answer in outcome.answers:
-            yield _sse(AgentEvent(event="answer", text=answer))
-    settlement = _GraphPatchSettlement(last_problem=snapshot.last_problem)
-    with service.history.workspace.run_lock() as lease:
-        lease.assert_owned()
-        for frame in _settle_graph_patch(
-            service,
-            workspace=workspace,
-            remote_stage=remote,
-            execution=execution,
-            kind=snapshot.kind,
-            run_truth_scope=snapshot.run_truth_scope,
-            pre_launch_patch_digest=snapshot.pre_launch_patch_digest,
-            requires_new_patch=snapshot.requires_new_patch,
-            last_problem=snapshot.last_problem,
-            rounds=snapshot.round,
-            native_session_id=outcome.session_id,
-            run_lock_lease=lease,
-            settlement=settlement,
-        ):
-            yield frame
-    if settlement.applied:
-        if local is not None:
-            with suppress(OSError, ValueError):
-                _remove_local_tree(local, local.parent)
-        if remote is not None:
-            remote.close()
-        execution.store.clear_agent_task_stage(execution.operation_id)
-    elif settlement.problem is not None:
-        yield _sse(AgentEvent(event="error", text=settlement.problem))
-
-
-def resume_graph_command_mailbox(
-    service: Callable[[], ProjectService],
-    execution: AgentTaskExecution,
-) -> WorkValidatorMailboxLifecycle | None:
-    from rcp.runs.graph_history_queries import handle_graph_history_command
-
-    saved = load_work_mailbox_context(execution)
-    if saved is None:
-        return None
-    context = _GraphMailboxContext.model_validate(saved)
-    return restore_work_validator_mailbox(
-        execution,
-        validate=lambda text: _validate_graph_patch_live(
-            service(),
-            text,
-            kind=context.kind,
-            run_truth_scope=context.run_truth_scope,
-            source_operation_id=execution.operation_id,
-        ),
-        command_handler=lambda request, _identity: handle_graph_history_command(
-            service(), context.graph_read_scope, request
-        ),
-    )
-
-
-class _GraphMailboxContext(BaseModel):
-    kind: str
-    run_truth_scope: list[str]
-    graph_read_scope: GraphReadScope
-
-
-def _settle_graph_patch(
-    service: ProjectService,
-    *,
-    workspace: Path,
-    remote_stage: RemoteRunStage | None,
-    execution: AgentTaskExecution | None,
-    kind: str,
-    run_truth_scope: list[str],
-    pre_launch_patch_digest: str | None,
-    requires_new_patch: bool,
-    last_problem: str | None,
-    rounds: int,
-    native_session_id: str | None,
-    run_lock_lease: RunLockLease,
-    settlement: _GraphPatchSettlement,
-) -> Iterator[str]:
-    stale_patch = False
-    try:
-        patch_text, output_name = _collect_patch_text(workspace, remote_stage)
-        unchanged = (
-            pre_launch_patch_digest is not None
-            and hashlib.sha256(patch_text.encode("utf-8")).hexdigest() == pre_launch_patch_digest
-        )
-        if unchanged and execution is not None:
-            execution.store.record_agent_task_receipt(
-                execution.operation_id,
-                "patch_predates_launch",
-                {"correction_round": rounds, "accepted": not requires_new_patch},
-                tier="diagnostic",
-            )
-        if unchanged and requires_new_patch:
-            # Applying it would attribute inherited output to this launch.
-            # The substantive diagnostic still leads; the fingerprint only
-            # proves that this launch did not rewrite the deliverable.
-            stale_patch = True
-            raise AgentOutputProblem(
-                (f"{last_problem} " if last_problem else "")
-                + "The patch file is byte-identical to the one this launch "
-                "inherited, so this launch did not write a new patch. Rewrite "
-                "patch.json before RCP can accept it as this attempt's output."
-            )
-    except AgentOutputProblem as exc:
-        problem = str(exc)
-        settlement.problem = problem
-        if not stale_patch:
-            settlement.last_problem = problem
-    else:
-        if execution is not None:
-            # Persisted before validation: a patch that fails validation is
-            # still the run's work product and must survive the failure.
-            execution.store.record_agent_task_patch_output(execution.operation_id, patch_text)
-            execution.store.record_agent_task_receipt(
-                execution.operation_id,
-                "patch_retained",
-                {
-                    "byte_length": len(patch_text.encode("utf-8")),
-                    "file_name": output_name,
-                },
-                tier="diagnostic",
-            )
-            if output_name != "patch.json":
-                execution.store.record_agent_task_event(
-                    execution.operation_id,
-                    f"Recovered the patch from {output_name}.",
-                    level="warning",
-                )
-        try:
-            patch = _prepare_graph_patch_candidate(
-                service,
-                patch_text,
-                kind=kind,
-                run_truth_scope=run_truth_scope,
-                source_operation_id=execution.operation_id if execution else None,
-            )
-            _record_patch_receipt(
-                execution,
-                patch,
-                byte_length=len(patch_text.encode("utf-8")),
-            )
-        except ValueError as exc:
-            problem = str(exc)
-            settlement.problem = problem
-            settlement.last_problem = problem
-        else:
-            try:
-                run_lock_lease.assert_owned()
-                _appended, result = service.history.append(
-                    patch,
-                    discard_on_reject=True,
-                )
-            except PatchRejected as exc:
-                problem = str(exc)
-                settlement.problem = problem
-                settlement.last_problem = problem
-                if execution is not None:
-                    execution.store.record_agent_task_receipt(
-                        execution.operation_id,
-                        "patch_rejected",
-                        {
-                            "round": rounds,
-                            "messages": [
-                                item.model_dump(mode="json") for item in exc.report.messages
-                            ],
-                        },
-                        tier="diagnostic",
-                    )
-            except (ReplayHalted, StateUnavailable) as exc:
-                note_stage_unreachable(execution, exc)
-                yield _sse(AgentEvent(event="error", text=str(exc)))
-                return
-            else:
-                _record_patch_applied_receipt(execution, result.state)
-                commit_prepared_graph_observation(
-                    execution,
-                    service,
-                    native_session_id=native_session_id,
-                    applied_revision=result.state.revision,
-                )
-                settlement.applied = True
-                yield _sse(
-                    AgentEvent(
-                        event="message",
-                        text=json.dumps(
-                            {"applied_revision": result.state.revision},
-                            separators=(",", ":"),
-                        ),
-                    )
-                )
-                yield _sse(AgentEvent(event="done"))
-                return
 
 
 async def _stream_graph_agent_events(
@@ -1668,25 +1435,24 @@ async def _stream_graph_agent_events(
 ) -> AsyncGenerator[str, None]:
     from rcp.runs.graph_history_queries import handle_graph_history_command
 
-    lifecycle = start_work_validator_mailbox(
-        validator_staged,
-        execution=execution,
-        validate=lambda text: _validate_graph_patch_live(
-            service,
-            text,
-            kind=kind,
-            run_truth_scope=run_truth_scope,
-            source_operation_id=execution.operation_id if execution else None,
-        ),
-        command_handler=lambda request, _identity: handle_graph_history_command(
-            service, graph_read_scope, request
-        ),
-        budget=validator_budget,
-        resume_context=_GraphMailboxContext(
-            kind=kind,
-            run_truth_scope=run_truth_scope,
-            graph_read_scope=graph_read_scope,
-        ).model_dump(mode="json"),
+    stop = asyncio.Event()
+    mailbox = asyncio.create_task(
+        serve_patch_validation_mailbox(
+            staged=validator_staged,
+            execution=execution,
+            validate=lambda text: _validate_graph_patch_live(
+                service,
+                text,
+                kind=kind,
+                run_truth_scope=run_truth_scope,
+                source_operation_id=execution.operation_id if execution else None,
+            ),
+            stop=stop,
+            command_handler=lambda request, _identity: handle_graph_history_command(
+                service, graph_read_scope, request
+            ),
+            budget=validator_budget,
+        )
     )
     try:
         async with aclosing(
@@ -1698,7 +1464,6 @@ async def _stream_graph_agent_events(
                 data_dir=data_dir,
                 workspace=workspace,
                 session_id=session_id,
-                required_session_id=session_id,
                 read_dirs=read_dirs,
                 write_dirs=[],
                 write_scope=None,
@@ -1714,9 +1479,15 @@ async def _stream_graph_agent_events(
             async for frame in stream:
                 yield frame
     finally:
-        if outcome.remote_result_pending:
-            lifecycle.detach()
-        await lifecycle.close()
+        stop.set()
+        try:
+            await mailbox
+        finally:
+            await asyncio.to_thread(
+                cleanup_patch_validation_mailbox,
+                staged=validator_staged,
+                execution=execution,
+            )
 
 
 def _prepare_graph_patch_candidate(

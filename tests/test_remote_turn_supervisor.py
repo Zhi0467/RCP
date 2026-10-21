@@ -45,7 +45,6 @@ def _supervise(
     experiment_watch_files: int = 64,
     experiment_watch_bytes: int = 100000,
     close_input_after_initial: bool = True,
-    owner_deliverables: tuple[Path, ...] = (),
 ) -> tuple[subprocess.CompletedProcess, Path]:
     stage = tmp_path / "stage"
     stage.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -91,8 +90,6 @@ def _supervise(
         "--poll-seconds",
         "0.02",
     ]
-    for path in owner_deliverables:
-        argv.extend(("--owner-deliverable", str(path)))
     if close_input_after_initial:
         argv.append("--close-input-after-initial")
     argv += ["--", sys.executable, "-c", provider]

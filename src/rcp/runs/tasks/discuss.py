@@ -80,14 +80,17 @@ from rcp.runs.questions import (
     require_question_origin_binding,
 )
 from rcp.runs.recorded_settlement import (
+    absorb_recorded_events,
     attach_retained_stage,
-    open_recorded_pass,
+    provider_turn_request,
+    refuse_recorded_session_mismatch,
     retained_artifact_directory,
+    write_recorded_patch,
 )
 from rcp.runs.recorded_settlement import (
     note_stage_unreachable as _note_stage_unreachable,
 )
-from rcp.runs.recorded_turn import RecordedProviderTurn
+from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
 from rcp.runs.session_artifacts import publish_session_artifacts, sync_session_artifacts
 from rcp.runs.session_master import (
     commit_prepared_graph_observation,
@@ -560,6 +563,9 @@ async def finalize_recorded_discuss_result(
 
     del launcher, data_dir  # Recovery launches nothing and stages nothing.
     context = _load_discuss_finalization_context(service, request, execution)
+    verdict = decode_recorded_turn(
+        recorded, provider_turn_request(context.workspace, recorded, capability="discuss")
+    )
     question = execution.store.question_for_followup(execution.operation_id)
     required_session = None
     if question is not None:
@@ -572,18 +578,18 @@ async def finalize_recorded_discuss_result(
             write_scope_fingerprint=None,
         )
         required_session = question.origin.native_session_id
-    for frame in open_recorded_pass(
-        recorded,
-        execution=execution,
-        workspace=context.workspace,
-        remote_stage=context.remote_stage,
-        outcome=context.outcome,
-        capability="discuss",
-        required_session_id=required_session,
-    ):
-        yield frame
-    if context.outcome.failed:
+    refusal = refuse_recorded_session_mismatch(
+        execution, context.outcome, verdict, required_session
+    )
+    if refusal:
+        for frame in refusal:
+            yield frame
         return
+    # A discarded Patch is still this turn's evidence. The stage is mutable and
+    # the record is not, so restore what the host proved before reading it.
+    write_recorded_patch(context.workspace, context.remote_stage, recorded)
+    for frame in absorb_recorded_events(context.outcome, verdict):
+        yield frame
     for frame in _settle_discuss_outcome(context, recorded=recorded):
         yield frame
 
@@ -1184,6 +1190,7 @@ async def stream_discuss_run(
                     browser_grant=browser_grant,
                     outcome=outcome,
                     binary=provider_binary,
+                    supervise_remote=bool(execution_host),
                 )
             ) as stream:
                 async for frame in stream:

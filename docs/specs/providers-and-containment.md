@@ -705,7 +705,7 @@ validate-only credentials refuse keyed commands. The helper's `launch` verb and
 scheduler route are owned by [compute jobs](compute-jobs.md); `lesson` is owned by
 [graph consolidation](graph-consolidation-and-lessons.md).
 
-Remote command mailboxes retain one thread owner
+Remote Discuss, Work, Experiment and child Work mailboxes retain one thread owner
 through settlement. Disconnected accepted turns transfer it to reconciliation.
 Settlement fences new requests and drains admitted work; shutdown suspends the
 owner with a private checkpoint. Startup restores the same id, token, budget
@@ -1025,25 +1025,21 @@ owns remote state locking.
 
 ### A remote turn outliving its connection
 
-Every remote agent launch is supervised, including correction rounds, ingestion,
-reports, artifact edits, Auto-research and branch merges. Each owner records one
-immutable finalization contract before launch and registers its recorded-result
-finalizer. Routing uses that retained contract, never chat kind. A new remote
-launch without exactly one registered owner is refused before the provider
-starts. Old waiting records with zero or multiple contracts remain visibly
-waiting; passes launched unsupervised by older builds retain their prior recovery
-behavior. Local turns need no remote finalizer.
+Ordinary Work, Discuss, Experiment-loop and Auto-research child Work register
+typed, durable finalizers. Routing uses the retained contract, never chat kind.
+Zero or multiple contracts leave the task visibly waiting. Other owners retain
+their own launch behavior. Local turns register no remote finalizer.
 
-Each owner shares settlement between live and recorded results under the original
-operation, authority, target and accounting. Round-specific snapshots have distinct
-immutable roles; recovery reads the snapshot captured before that pass launched.
-It reopens the exact stage without rerunning launch preparation. Branch merge
-revalidates recorded answers against the retained plan; a moved destination or a
-result needing another provider turn requires human Retry.
+Each owner settles its own effects: Work's Patch/watchers/reply; Discuss's reply
+and session binding; the child's parent-authorized result; Experiment's joint
+Patch/watch admission and wake binding. Experiment records its baseline, control
+snapshot and committed wake session before launch. Recovery creates no second
+child or invocation and retains the original authority, target and accounting.
 
-Corrections retain the primary answer and their pinned native session before
-launch. Recorded settlement starts no further correction. An incomplete report
-records its failed attempt without relaunching the provider.
+Supervised Work corrections retain the primary answer in an immutable checkpoint.
+Replay preserves it, even when correction failed, and starts no further correction.
+A recorded deliverable needing correction is rejected; manual graph repair keeps
+its separate launch path.
 
 The host supervisor is shipped as a staged source file; launches without that
 path are refused. It journals output and records prompt acceptance before any
@@ -1056,10 +1052,9 @@ scope. Codex app-server rechecks the actual journalled thread response against
 that contract, including its active permission profile; recovery does not
 substitute a read-only capability or waive enforcement.
 
-At turn end it snapshots Patch, watcher handoff, maintenance files and the
-owner's named outputs (report HTML and merge answers) under digests. Before
-reading deliverables, finalizers restore that exact set, removing later
-maintenance files. Per-file and aggregate limits apply: overflow makes the
+At turn end it snapshots Patch, watcher handoff and maintenance files under
+digests. Before reading deliverables, finalizers restore that exact set, removing
+later maintenance files. Per-file and aggregate limits apply: overflow makes the
 whole set incomplete. Journals without snapshot metadata leave files alone.
 Every supervised launch also records its pinned native session, including each
 correction. A mismatched recorded session is refused before restoring Patch,

@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from rcp.agents import AgentEvent
 from rcp.agents.provider_environment import unhidden_read_scope
 from rcp.providers import AgentCapability, ProviderTurnRequest
-from rcp.runs.recorded_turn import decode_recorded_turn
+from rcp.runs.experiment_loop import _experiment_watcher_output_names
 from rcp.runs.shared import _ProviderOutcome, _sse
 from rcp.transport import RemoteRunStage, StateUnavailable
 
@@ -27,35 +27,6 @@ if TYPE_CHECKING:
     from rcp.agents.write_scope import ProjectWriteScope
     from rcp.background import AgentTaskExecution
     from rcp.runs.recorded_turn import RecordedProviderTurn, RecordedVerdict
-
-
-def open_recorded_pass(
-    recorded: RecordedProviderTurn,
-    *,
-    execution: AgentTaskExecution,
-    workspace: Path,
-    remote_stage: RemoteRunStage | None,
-    outcome: _ProviderOutcome,
-    capability: AgentCapability,
-    write_scope: ProjectWriteScope | None = None,
-    required_session_id: str | None = None,
-) -> list[str]:
-    """Decode and restore a pass after its owner validates the retained launch.
-
-    Snapshot schemas and authority belong to owners. Every owner then accepts
-    the same verified bytes, with the session fence before any stage mutation.
-    Recovery never checks provider quiescence here: reconciliation owns that
-    check and keeps the pass outstanding until settlement succeeds.
-    """
-    verdict = decode_recorded_turn(
-        recorded,
-        provider_turn_request(workspace, recorded, capability=capability, write_scope=write_scope),
-    )
-    refusal = refuse_recorded_session_mismatch(execution, outcome, verdict, required_session_id)
-    if refusal:
-        return refusal
-    write_recorded_patch(workspace, remote_stage, recorded)
-    return absorb_recorded_events(outcome, verdict)
 
 
 def provider_turn_request(
@@ -106,13 +77,9 @@ def write_recorded_patch(
     """
 
     _restore(workspace, remote_stage, "patch.json", recorded.patch)
-    for name, content in recorded.owner_deliverables.items():
-        _restore(workspace, remote_stage, name, content)
     if recorded.watch_snapshotted:
         _restore(workspace, remote_stage, "watch.json", recorded.watch)
     if recorded.experiment_watch_snapshotted:
-        from rcp.runs.experiment_loop import _experiment_watcher_output_names
-
         # Experiment watcher maintenance is read by discovery, so restoring the
         # recorded files is not enough: the stage's set has to become the pass's
         # set, or one added afterwards would be admitted as this turn's.
@@ -192,7 +159,6 @@ def refuse_recorded_session_mismatch(
     if session_id is None or session_id == required_session_id:
         return []
     outcome.failed = True
-    outcome.session_mismatch = True
     if execution is not None:
         execution.store.record_agent_task_receipt(
             execution.operation_id,

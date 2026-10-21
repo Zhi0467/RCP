@@ -61,15 +61,6 @@ def read_journal(pid_file: str, max_bytes: int) -> dict[str, object]:
         except (OSError, ValueError):
             errors = ""
         experiment_watch: dict[str, str] = {}
-        owner_deliverables: dict[str, str | None] = {}
-        owner_names = outcome.get("owner_deliverable_sha256")
-        if isinstance(owner_names, dict) and owner_names:
-            owner_fd = os.open("owner-deliverables", flags | os.O_DIRECTORY, dir_fd=journal_fd)
-            descriptors.append(owner_fd)
-            for name, digest in sorted(owner_names.items()):
-                if not name or os.path.basename(name) != name or name in {".", ".."}:
-                    raise ValueError("Provider journal deliverable name is unsafe.")
-                owner_deliverables[name] = read(name, max_bytes, owner_fd) if digest else None
         recorded_names = outcome.get("experiment_watch_sha256")
         if isinstance(recorded_names, dict) and recorded_names:
             # One directory of per-resource outputs. The outcome names them, so
@@ -86,7 +77,6 @@ def read_journal(pid_file: str, max_bytes: int) -> dict[str, object]:
             "patch": read("patch.json", max_bytes) if outcome.get("patch_present") else None,
             "watch": read("watch.json", max_bytes) if outcome.get("watch_present") else None,
             "experiment_watch": experiment_watch,
-            "owner_deliverables": owner_deliverables,
         }
     finally:
         for fd in reversed(descriptors):
