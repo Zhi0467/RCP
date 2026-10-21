@@ -1085,7 +1085,7 @@ def create_app(
         task = store.agent_task(execution.operation_id)
         if task is None or task.project_id != project_id:
             raise ValueError("Recorded finalization lost its durable project task.")
-        if task.graph_target.kind == "branch":
+        if task.graph_target.kind == "branch" and kind != "branch_merge":
             service = await asyncio.to_thread(
                 service.for_graph_target,
                 task.graph_target,

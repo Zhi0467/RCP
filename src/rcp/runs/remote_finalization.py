@@ -31,6 +31,10 @@ from rcp.runs.tasks.auto_research_stream import (
     AUTO_RESEARCH_FINALIZATION_ROLE,
     finalize_recorded_auto_research_result,
 )
+from rcp.runs.tasks.branch_merge import (
+    BRANCH_MERGE_FINALIZATION_ROLE,
+    finalize_recorded_branch_merge_result,
+)
 from rcp.runs.tasks.discuss import (
     DISCUSS_FINALIZATION_CONTEXT_ROLE,
     finalize_recorded_discuss_result,
@@ -94,6 +98,7 @@ RECORDED_FINALIZERS: dict[str, RecordedFinalizer] = {
     AUTO_RESEARCH_FINALIZATION_ROLE: finalize_recorded_auto_research_result,
     GRAPH_FINALIZATION_ROLE: finalize_recorded_graph_result,
     EPISODE_REPORT_FINALIZATION_ROLE: finalize_recorded_episode_report_result,
+    BRANCH_MERGE_FINALIZATION_ROLE: finalize_recorded_branch_merge_result,
 }
 
 

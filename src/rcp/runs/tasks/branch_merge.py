@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import aclosing, suppress
@@ -15,12 +16,13 @@ from rcp.agents.write_scope import resolve_project_write_scope
 from rcp.core.models import BranchMergeReceipt
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history.branches import BranchHistoryManager
-from rcp.limits import PATCH_SELF_CHECK_TIMEOUT_SECONDS
+from rcp.limits import PATCH_SELF_CHECK_MAX_REQUEST_BYTES, PATCH_SELF_CHECK_TIMEOUT_SECONDS
 from rcp.runs import merge_plan
 from rcp.runs.branch_merge import (
     BranchMergeContext,
     BranchMergeRunOutcome,
     BranchMergeStage,
+    _answers_mailbox,
     branch_merge_id,
     merge_planning_context,
     stream_branch_merge_run,
@@ -34,12 +36,14 @@ from rcp.runs.episodes.merge import (
     verify_episode_merge_code,
 )
 from rcp.runs.graph_history_queries import handle_graph_history_command
+from rcp.runs.merge_contract import MergeAnswers
 from rcp.runs.patch_validator import (
     MergeAnswersCheck,
     cleanup_patch_validation_mailbox,
     serve_patch_validation_mailbox,
     stage_patch_validation_mailbox,
 )
+from rcp.runs.recorded_settlement import attach_retained_stage
 from rcp.runs.session_master import commit_prepared_graph_observation
 from rcp.runs.shared import (
     _prepare_hidden_read_scope,
@@ -55,6 +59,7 @@ from rcp.transport import RemoteRunStage, StateUnavailable
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution
+    from rcp.runs.recorded_turn import RecordedProviderTurn
 
 
 async def stream_branch_merge_task(
@@ -66,8 +71,13 @@ async def stream_branch_merge_task(
     episode: EpisodeRecord | None,
     task: AgentTaskRecord,
     execution: AgentTaskExecution,
+    recorded: bool = False,
 ) -> AsyncGenerator[str, None]:
-    """Run one authorized branch merge through its contained scratch stage."""
+    """Run one authorized branch merge through its contained scratch stage.
+
+    `recorded` settles a merge whose turn its host finished while RCP was away:
+    it reattaches that turn's stage and commits the answers left there.
+    """
 
     binding = request.merge_binding if isinstance(request, BranchMergeRunRequest) else None
     if binding is None and episode is None:
@@ -116,7 +126,23 @@ async def stream_branch_merge_task(
     completed = False
     try:
         stage_id = f"{task.operation_id}-attempt-{task.attempt}" if binding else task.operation_id
-        if machine.host:
+        if recorded:
+            if execution.stage_root is None:
+                raise ValueError("The recorded branch merge has no retained stage.")
+            remote = execution.stage_host or ""
+            local_stage, remote_stage, workspace = attach_retained_stage(
+                execution,
+                owner="branch merge",
+                stage_host=remote,
+                stage_root=execution.stage_root,
+                workspace=(
+                    str(RemoteRunStage(remote).attach(execution.stage_root).workspace)
+                    if remote
+                    else str(Path(execution.stage_root) / "workspace")
+                ),
+            )
+            stage_root = execution.stage_root
+        elif machine.host:
             remote_stage = RemoteRunStage(machine.host).open(
                 stage_id,
                 protected_roots=_protected_run_stage_roots(execution.store, machine.host),
@@ -133,6 +159,12 @@ async def stream_branch_merge_task(
             workspace.mkdir(mode=0o700)
             execution.checkpoint_stage("", str(local_stage))
             stage_root = str(local_stage)
+        execution.store.record_agent_task_contract(
+            task.operation_id,
+            BRANCH_MERGE_FINALIZATION_ROLE,
+            BRANCH_MERGE_FINALIZATION_ROLE,
+            hashlib.sha256(BRANCH_MERGE_FINALIZATION_ROLE.encode("utf-8")).hexdigest(),
+        )
 
         stage = BranchMergeStage(
             local_stage=local_stage,
@@ -175,9 +207,15 @@ async def stream_branch_merge_task(
             local_stage=local_stage,
         )
 
+        code_pending = False
+
         async def code_turn() -> AsyncIterator[str]:
             # The agent lands the code in its own turn; RCP verifies before anything else.
+            nonlocal code_pending
             assert code is not None
+            if recorded:
+                # A recorded code turn is verified where the merge commits: before_commit.
+                return
             async with aclosing(
                 stream_code_merge_run(
                     request,
@@ -192,6 +230,7 @@ async def stream_branch_merge_task(
                 )
             ) as stream:
                 async for frame in stream:
+                    code_pending = code_pending or _event(frame).event == "remote_result_pending"
                     if _event(frame).event != "done":
                         yield frame
 
@@ -201,6 +240,10 @@ async def stream_branch_merge_task(
                 raise ValueError("The code merge task has no code to merge.")
             async for frame in code_turn():
                 yield frame
+            if code_pending:
+                return
+            if recorded:
+                verify_episode_merge_code(execution.store, episode)
             complete_graph_merge(service, execution.store, episode)
             completed = True
             yield _sse(AgentEvent(event="done"))
@@ -274,6 +317,8 @@ async def stream_branch_merge_task(
             # turn, as an agentless merge does.
             async for frame in code_turn():
                 yield frame
+            if code_pending:
+                return
             code_block = code.landed_section(write_scope)
             code_landed = True
 
@@ -374,8 +419,9 @@ async def stream_branch_merge_task(
                     binary=machine.provider_paths.get(request.provider),
                     code_block=code_block,
                     code_roots=list(write_scope.repository_roots) if code else None,
-                    code_landed=code_landed,
+                    code_landed=code_landed or recorded,
                     hidden_read_scope=hidden_read_scope,
+                    recorded_answers=_left_answers(stage) if recorded else None,
                 )
             ) as stream:
                 async for frame in stream:
@@ -390,6 +436,8 @@ async def stream_branch_merge_task(
                 await validator_task
 
         if outcome.receipt is None:
+            if outcome.status == "awaiting_remote_result":
+                return
             if outcome.status in {"rejected", "retryable"} and outcome.diagnostic:
                 yield _sse(AgentEvent(event="error", text=outcome.diagnostic))
             return
@@ -428,6 +476,52 @@ async def stream_branch_merge_task(
             if remote_stage is not None:
                 remote_stage.close()
             execution.store.clear_agent_task_stage(task.operation_id)
+
+
+BRANCH_MERGE_FINALIZATION_ROLE = "branch_merge_finalization"
+
+
+def _left_answers(stage: BranchMergeStage) -> MergeAnswers:
+    """The answers a recorded turn left on its stage, or none for a code-only turn."""
+
+    try:
+        raw = _answers_mailbox(stage).read_text(
+            "answers.json", max_bytes=PATCH_SELF_CHECK_MAX_REQUEST_BYTES
+        )
+    except FileNotFoundError:
+        return MergeAnswers(answers={}, cards={})
+    return MergeAnswers.model_validate_json(raw)
+
+
+async def finalize_recorded_branch_merge_result(
+    service: ProjectService,
+    launcher: AgentLauncher,
+    request: RunRequest,
+    data_dir: Path,
+    execution: AgentTaskExecution,
+    recorded: RecordedProviderTurn,
+) -> AsyncGenerator[str, None]:
+    """Settle a merge turn its host recorded from what that turn left on its stage."""
+
+    del recorded  # The deliverable is answers.json on the stage, read by the merge itself.
+    task = execution.store.agent_task(execution.operation_id)
+    if task is None:
+        raise ValueError("The recorded branch merge lost its task.")
+    episode = execution.store.episode(task.episode_id) if task.episode_id else None
+    async with aclosing(
+        stream_branch_merge_task(
+            service,
+            launcher,
+            request,
+            data_dir,
+            episode=episode,
+            task=task,
+            execution=execution,
+            recorded=True,
+        )
+    ) as stream:
+        async for frame in stream:
+            yield frame
 
 
 def _apply_receipt_to_execution(

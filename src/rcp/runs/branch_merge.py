@@ -320,6 +320,7 @@ class BranchMergeRunOutcome:
         "rejected",
         "paused",
         "retryable",
+        "awaiting_remote_result",
     ] = "pending"
     merge_id: str | None = None
     native_session_id: str | None = None
@@ -703,8 +704,13 @@ async def stream_branch_merge_run(
     code_roots: list[str] | None = None,
     code_landed: bool = False,
     hidden_read_scope: HiddenReadScope | None = None,
+    recorded_answers: merge_contract.MergeAnswers | None = None,
 ) -> AsyncGenerator[str, None]:
     """Collect checked answers, rebase unchanged decisions, and publish once.
+
+    `recorded_answers` settles a turn its host finished while RCP was away: the
+    answers it left are prepared and committed like checked ones, and nothing
+    is launched again.
 
     The check and commit use the same preparation contract. Only destination
     movement and newly promoted hidden clashes can require continuation; an
@@ -740,7 +746,7 @@ async def stream_branch_merge_run(
     outcome.merge_id = plan.provenance.merge_id
     outcome.source_branch_head = plan.source_head
     outcome.rebased_main_head = plan.destination_head
-    answers = merge_contract.MergeAnswers(answers={}, cards={})
+    answers = recorded_answers or merge_contract.MergeAnswers(answers={}, cards={})
     token = _task_token(execution)
     session_id: str | None = None
     session_master: tuple[str, str, bool] | None = None
@@ -755,6 +761,8 @@ async def stream_branch_merge_run(
     while True:
         try:
             if not merge_answers_complete(plan, answers) or needs_code:
+                if recorded_answers is not None:
+                    raise ValueError("The recorded merge turn left its answers incomplete.")
                 # A fresh receipt is required for every launched continuation.
                 validator_command, history_client, invocation_gate = await start_check_turn(plan)
                 _answers_mailbox(stage).remove("answers.json")
@@ -875,6 +883,9 @@ async def stream_branch_merge_run(
                             yield frame
                 session_id = provider.session_id
                 outcome.native_session_id = session_id
+                if provider.remote_result_pending:
+                    outcome.status = "awaiting_remote_result"
+                    return
                 if provider.paused:
                     outcome.status = "paused"
                     return
@@ -1126,6 +1137,8 @@ async def stream_code_merge_run(
     async with aclosing(events) as frames:
         async for frame in frames:
             yield frame
+    if provider.remote_result_pending:
+        return
     if provider.paused or provider.failed or not provider.completed:
         raise ValueError("The code merge provider did not complete its turn.")
     verify()
@@ -1303,6 +1316,7 @@ def _provider_turn(
         binary=binary,
         required_session_id=required_session_id,
         hidden_read_scope=hidden_read_scope,
+        supervise_remote=stage.remote_stage is not None,
     )
     return provider_outcome, stream
 
