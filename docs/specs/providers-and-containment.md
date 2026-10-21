@@ -1068,6 +1068,14 @@ with no recorded stop as waiting for their remote result. Reconciliation handles
 - Stopped incomplete pass, or no accepted prompt: fail visibly for human Retry.
 - Already consumed/settled pass: do nothing.
 
+Normal shutdown detaches a supervised remote turn after prompt delivery: it ends
+the local SSH stream without signalling the remote process or recording Pause.
+Its unresolved pass follows the same restart reconciliation as a lost link, and
+its command mailbox is suspended until reconnect. Local turns, remote turns
+before prompt delivery, and unsupervised remote turns still pause on shutdown.
+An explicit human Pause stops the active remote turn and settles it as paused;
+signalling its local SSH client does not turn Pause into a lost-link wait.
+
 Owners mark transport outages while reopening stages, reading, validating or
 persisting results; these keep recorded finalization waiting. A reachable host
 reporting a removed, replaced or unowned stage is a real failure. Reading one

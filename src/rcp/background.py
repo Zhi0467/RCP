@@ -1378,7 +1378,7 @@ class BackgroundAgentTasks:
             control.request_pause()
 
     def shutdown(self, *, timeout: float = BACKGROUND_TASKS_SHUTDOWN_TIMEOUT_SECONDS) -> None:
-        """Pause live subprocesses before the web process exits."""
+        """Detach recoverable remote turns and pause other live subprocesses."""
         with self._watcher_delivery_lock:
             self._accepting_watcher_deliveries = False
             with self._transport_retry_fence:
@@ -1409,6 +1409,8 @@ class BackgroundAgentTasks:
         if reconciliation_timer is not None:
             reconciliation_timer.cancel()
         for operation_id, control in active:
+            if control.request_detach():
+                continue
             with suppress(ValueError):
                 self.store.request_agent_task_pause(operation_id, requested_by="shutdown")
             control.request_pause()
