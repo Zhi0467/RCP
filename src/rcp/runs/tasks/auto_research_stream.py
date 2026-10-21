@@ -2796,6 +2796,12 @@ async def finalize_recorded_auto_research_result(
     primary_answer = execution.store.agent_task_contract(
         execution.operation_id, _AUTO_RESEARCH_PRIMARY_ANSWER_ROLE
     )
+    # A correction follows the operation's first pass; settling that first pass
+    # again after an outage keeps its own freshness baseline.
+    starts = execution.store.agent_task_receipts_by_category(
+        execution.operation_id, "remote_provider_started"
+    )
+    correction = bool(starts) and starts[0].payload.get("pid_file") != recorded.pid_file
     async for frame in _settle_actor_turn(
         service,
         execution,
@@ -2803,7 +2809,7 @@ async def finalize_recorded_auto_research_result(
         stage,
         outcome,
         write_scope=retained.write_scope,
-        retry_patch_digest=None if primary_answer is not None else retained.retry_patch_digest,
+        retry_patch_digest=None if correction else retained.retry_patch_digest,
         command_file_consumer=RunStageMailbox.for_stage(
             local_stage=stage.local, remote_stage=stage.remote
         ).remove_if_sha256,
