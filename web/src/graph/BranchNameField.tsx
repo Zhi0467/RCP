@@ -1,6 +1,6 @@
 import { useId, useState, type ReactNode } from "react";
 import { ApiError } from "../core/api";
-import { branchNameProblem } from "../core/branchNames";
+import { branchNameProblem, typedBranchName } from "../core/branchNames";
 
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 
@@ -91,7 +91,7 @@ export function BranchNameField({
             autoComplete="off"
             aria-invalid={warning ? true : undefined}
             aria-describedby={warning ? warningId : undefined}
-            onChange={(event) => onChange(event.target.value)}
+            onChange={(event) => onChange(typedBranchName(event.target.value))}
           />
         </label>
         {children}

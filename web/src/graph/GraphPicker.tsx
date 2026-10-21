@@ -12,7 +12,7 @@ import {
   X,
 } from "lucide-react";
 import { ApiError, mergeGraphFork, renameGraphBranch, setGraphBranchArchived } from "../core/api";
-import { branchName, branchNameProblem } from "../core/branchNames";
+import { branchName, branchNameProblem, typedBranchName } from "../core/branchNames";
 import { sameGraphTarget } from "../core/graphTarget";
 import type { GraphRef, GraphTargetRef } from "../core/types";
 import {
@@ -264,7 +264,7 @@ export function GraphPicker({
                           value={name}
                           disabled={busy}
                           onChange={(event) => {
-                            setName(event.target.value);
+                            setName(typedBranchName(event.target.value));
                             setWarning(null);
                           }}
                           onKeyDown={(event) => {
