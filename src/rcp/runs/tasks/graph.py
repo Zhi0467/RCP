@@ -51,6 +51,7 @@ from rcp.runs.patch_validator import (
 from rcp.runs.recorded_settlement import (
     absorb_recorded_events,
     attach_retained_stage,
+    note_stage_unreachable,
     provider_turn_request,
     refuse_recorded_session_mismatch,
     write_recorded_patch,
@@ -1334,8 +1335,6 @@ async def stream_graph_run(
 
 
 GRAPH_FINALIZATION_ROLE = "graph_finalization"
-# A correction pass has its own journal; only the first pass's answers are the run's.
-_GRAPH_PRIMARY_ANSWERS_ROLE = "graph_primary_answers"
 
 
 class _GraphFinalization(BaseModel):
@@ -1388,14 +1387,6 @@ def _settle_graph_pass(
     if rounds == 0:
         for answer in outcome.answers:
             yield _sse(AgentEvent(event="answer", text=answer))
-        if execution is not None:
-            answers = json.dumps(outcome.answers)
-            execution.store.record_agent_task_contract(
-                execution.operation_id,
-                _GRAPH_PRIMARY_ANSWERS_ROLE,
-                answers,
-                hashlib.sha256(answers.encode("utf-8")).hexdigest(),
-            )
 
     if execution is not None:
         execution.store.update_agent_task_message(
@@ -1490,6 +1481,8 @@ def _settle_graph_pass(
                         tier="diagnostic",
                     )
             except (ReplayHalted, StateUnavailable) as exc:
+                # Losing the state host is an outage, so a recorded pass waits to retry.
+                note_stage_unreachable(execution, exc)
                 yield _sse(AgentEvent(event="error", text=str(exc)))
                 state.ended = True
                 return
@@ -1550,10 +1543,12 @@ async def finalize_recorded_graph_result(
     write_recorded_patch(workspace, remote_stage, recorded)
     for frame in absorb_recorded_events(outcome, verdict):
         yield frame
-    correction = (
-        execution.store.agent_task_contract(execution.operation_id, _GRAPH_PRIMARY_ANSWERS_ROLE)
-        is not None
+    # A correction follows the operation's first pass; settling that first pass
+    # again after an outage is still the primary pass, answers and all.
+    starts = execution.store.agent_task_receipts_by_category(
+        execution.operation_id, "remote_provider_started"
     )
+    correction = bool(starts) and starts[0].payload.get("pid_file") != recorded.pid_file
     settled = _GraphPass(last_problem=None)
     with service.history.workspace.run_lock() as lease:
         for frame in _settle_graph_pass(

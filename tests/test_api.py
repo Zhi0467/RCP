@@ -8618,6 +8618,21 @@ def test_a_refresh_that_outlives_its_link_settles_from_its_recorded_pass(
 
     launcher = ScriptedLauncher([{}], message="must not launch")
     recorded = _recorded_pass(agent_patch_json(refresh_patch()), "Refreshed offline.")
+    # Losing the state host while applying is an outage the pass waits out.
+    with monkeypatch.context() as outage:
+
+        def unreachable(*_args, **_kwargs):
+            raise StateUnavailable("ssh exited 255")
+
+        outage.setattr(service.history, "append", unreachable)
+        asyncio.run(
+            events(
+                finalize_recorded_graph_result(
+                    service, launcher, request, tmp_path / "data", execution, recorded
+                )
+            )
+        )
+    assert execution.stage_unreachable
     settled = asyncio.run(
         events(
             finalize_recorded_graph_result(
