@@ -287,35 +287,11 @@ async def stream_episode_report_run(
                 # The attempt stays running; its recorded pass re-enters below.
                 return
 
-            auth_error = next(
-                (
-                    error
-                    for error in provider_errors
-                    if profile_for(request.provider).credential_failure(error)
-                ),
-                None,
+            auth_frame = _settle_provider_auth_failure(
+                execution, request, stage.execution_host, attempt, provider_errors
             )
-            if auth_error is not None:
-                record_provider_failure(
-                    execution.store,
-                    request.provider,
-                    stage.execution_host,
-                    generation=execution.login_generation,
-                    evidence=auth_error,
-                    source="report",
-                )
-                execution.store.record_episode_report_attempt_error(
-                    attempt.attempt_id, auth_error, provider_auth=True
-                )
-                yield _sse(
-                    AgentEvent(
-                        event="error",
-                        text=(
-                            f"{profile_for(request.provider).label} must be signed in again. "
-                            "Sign in on the machine, then use Verify sign-in."
-                        ),
-                    )
-                )
+            if auth_frame is not None:
+                yield auth_frame
                 return
 
             if outcome.session_id != turn.wrapup.native_session_id:
@@ -456,9 +432,19 @@ async def finalize_recorded_episode_report_result(
     if not outcome.completed and attempt is not None:
         # As live: a call that failed publishes nothing it left, and its retry,
         # if any remain, runs when the report run re-enters below.
-        errors = [event.text for event in verdict.events if event.event == "error"]
+        errors = [
+            " ".join(event.text.split())[:1000]
+            for event in verdict.events
+            if event.event == "error" and event.text.strip()
+        ]
+        auth_frame = _settle_provider_auth_failure(
+            execution, report_request, stage.execution_host, attempt, errors
+        )
+        if auth_frame is not None:
+            yield auth_frame
+            return
         diagnostic = (
-            " ".join(errors[-1].split())[:1000]
+            errors[-1]
             if errors
             else f"{request.provider} produced no completed episode report result."
         )
@@ -826,6 +812,47 @@ def _finish_report(
     )
     _episode, stored = execution.store.finish_episode_report_ready(attempt.attempt_id, report)
     return stored
+
+
+def _settle_provider_auth_failure(
+    execution: AgentTaskExecution,
+    request: EpisodeReportRunRequest,
+    execution_host: str,
+    attempt: EpisodeReportAttemptRecord,
+    provider_errors: list[str],
+) -> str | None:
+    """Park a call that failed on sign-in so Verify sign-in can release it."""
+
+    auth_error = next(
+        (
+            error
+            for error in provider_errors
+            if profile_for(request.provider).credential_failure(error)
+        ),
+        None,
+    )
+    if auth_error is None:
+        return None
+    record_provider_failure(
+        execution.store,
+        request.provider,
+        execution_host,
+        generation=execution.login_generation,
+        evidence=auth_error,
+        source="report",
+    )
+    execution.store.record_episode_report_attempt_error(
+        attempt.attempt_id, auth_error, provider_auth=True
+    )
+    return _sse(
+        AgentEvent(
+            event="error",
+            text=(
+                f"{profile_for(request.provider).label} must be signed in again. "
+                "Sign in on the machine, then use Verify sign-in."
+            ),
+        )
+    )
 
 
 def _record_retryable_error(

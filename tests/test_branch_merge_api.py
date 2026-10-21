@@ -1604,6 +1604,7 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
 
     import threading
 
+    from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
     from rcp.runs import merge_patch
     from rcp.runs.branch_merge import BranchMergeStage, recorded_turn_plan
     from rcp.runs.branch_merge_request import BranchMergeRunRequest
@@ -1676,7 +1677,12 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
         )
     )
     assert harness.branch.merge_receipts() == []
-    # Recovery reads back the exact plan this turn was given.
+    # Recovery reads back the exact plan this turn was given, however many
+    # answer checks the turn ran before its link dropped.
+    for index in range(AGENT_TASK_RECEIPT_RETENTION_COUNTS["diagnostic"] + 1):
+        harness.store.record_agent_task_receipt(
+            operation_id, "merge_answers_checked", {"index": index}, tier="diagnostic"
+        )
     stage_root = Path(record.stage_root or "")
     turn_plan = recorded_turn_plan(
         AgentTaskExecution(

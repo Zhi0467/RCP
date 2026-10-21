@@ -1188,3 +1188,41 @@ async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
     assert any(event.usage for event in settled)
     assert store.episode_report("episode") is not None
     assert launcher.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_report_call_that_lost_its_sign_in_waits_for_verify(
+    manifest, tmp_path
+) -> None:
+    """A recorded sign-in failure parks the report as a live one does; nothing retries."""
+
+    from rcp.runs.tasks.episode_report import finalize_recorded_episode_report_result
+
+    from .test_work_agent_io import _recorded_pass
+
+    service, store, request, execution, _stage = _setup_report(manifest, tmp_path)
+
+    class LinkLost(_ReportLauncher):
+        async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
+            self.calls += 1
+            yield AgentEvent(event="session", session_id="native-session")
+            yield AgentEvent(event="remote_result_pending")
+
+    launcher = LinkLost([])
+    await _events(stream_episode_report_run(service, launcher, request, execution))
+    recorded = _recorded_pass("", "unused", thread_id="native-session")
+    signed_out = dataclasses.replace(
+        recorded,
+        events=recorded.events.replace(
+            '{"type": "turn.completed"',
+            '{"type": "turn.failed", "error": {"message": "refresh_token_reused"}',
+        ),
+    )
+    await _events(
+        finalize_recorded_episode_report_result(
+            service, launcher, request, tmp_path / "unused", execution, signed_out
+        )
+    )
+
+    assert launcher.calls == 1
+    assert store.agent_task(execution.operation_id).failure_kind == "provider_auth"

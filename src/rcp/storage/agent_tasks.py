@@ -134,6 +134,9 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "compute_command_result",
     "remote_provider_started",
     "remote_provider_stopped",
+    # What a recorded pass settles against, read back after its link drops.
+    "branch_merge_turn_plan",
+    "graph_pass_baseline",
     "question_answer_offered",
     "question_answer_acknowledged",
 )
