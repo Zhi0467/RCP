@@ -5,12 +5,16 @@ import hashlib
 import json
 import logging
 import os
+import threading
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, aclosing, asynccontextmanager, suppress
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
-from typing import Literal, TypeVar, cast
+from typing import Any, Literal, TypeVar, cast
+
+from pydantic import BaseModel, ConfigDict
 
 from rcp.agents import (
     AgentEvent,
@@ -98,6 +102,14 @@ from rcp.runs.chat import (
 )
 from rcp.runs.lessons import stage_operational_context_pointer
 from rcp.runs.patch_validator import command_rejection_recorder
+from rcp.runs.recorded_settlement import (
+    absorb_recorded_events,
+    attach_retained_stage,
+    provider_turn_request,
+    refuse_recorded_session_mismatch,
+    write_recorded_patch,
+)
+from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
 from rcp.runs.session_master import (
     commit_prepared_graph_observation,
     continuation_session_master,
@@ -132,7 +144,7 @@ from rcp.runs.tasks.work import (
     _record_work_graph_rejection,
     _WorkPatchFailure,
 )
-from rcp.runs.tasks.work_turn_runtime import failed_graph_update
+from rcp.runs.tasks.work_turn_runtime import failed_graph_update, start_work_validator_mailbox
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.storage import (
@@ -215,6 +227,40 @@ class _PatchSettlement:
     graph_update: GraphUpdateResult | None
     frames: tuple[str, ...] = ()
     had_patch: bool = False
+    # A correction pass lost its link; the turn now waits for its recorded result.
+    awaiting_remote_result: bool = False
+
+
+AUTO_RESEARCH_FINALIZATION_ROLE = "auto_research_finalization"
+# A correction has its own journal, and its prose is not the turn's answer.
+_AUTO_RESEARCH_PRIMARY_ANSWER_ROLE = "auto_research_primary_answer"
+
+
+class _AutoResearchFinalization(BaseModel):
+    """The launch facts a recorded pass needs that durable rows do not hold."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    stage_host: str
+    stage_root: str
+    workspace: str
+    write_scope: ProjectWriteScope
+    retry_patch_digest: str | None
+
+
+@dataclass(frozen=True)
+class _Correction:
+    """What only a live correction round needs; recorded settlement passes none."""
+
+    launcher: AgentLauncher
+    master: MasterRef
+    values: dict[str, object]
+    read_dirs: list[Path]
+    write_dirs: list[Path]
+    provider_binary: str | None
+    staged_head: GraphHeadRef | None
+    group_context: GroupContext | None
+    command_dispatcher: AutoResearchCommandDispatcher
 
 
 async def stream_auto_research_orchestrator_run(
@@ -336,17 +382,19 @@ async def stream_auto_research_orchestrator_run(
             task_id=execution.operation_id,
             turn_id=expected_turn_id,
         )
-        async with _worker_mailbox_lifecycle(
+        outcome = _ProviderOutcome(session_id=turn.binding.native_session_id)
+        async with _actor_mailbox(
             staged_commands,
             execution=execution,
-            start=lambda stop: _serve_auto_research_commands(
+            outcome=outcome,
+            serve=partial(
+                _serve_auto_research_commands,
                 staged_commands,
                 execution=execution,
                 turn=turn,
                 dispatcher=command_dispatcher,
                 service=service,
                 graph_read_scope=graph_read_scope,
-                stop=stop,
                 expected_turn_id=expected_turn_id,
             ),
         ):
@@ -397,6 +445,7 @@ async def stream_auto_research_orchestrator_run(
                 if execution.continuation == "retry"
                 else None
             )
+            _record_auto_research_finalization(execution, stage, write_scope, retry_patch_digest)
             _record_agent_launch_receipt(
                 execution,
                 cast(RunRequest, turn.request),
@@ -417,7 +466,6 @@ async def stream_auto_research_orchestrator_run(
                     "write_directory_count": len(write_dirs),
                 },
             )
-            outcome = _ProviderOutcome(session_id=turn.binding.native_session_id)
             async with aclosing(
                 _stream_agent_events(
                     launcher,
@@ -438,100 +486,35 @@ async def stream_auto_research_orchestrator_run(
                     outcome=outcome,
                     binary=stage.provider_binary,
                     invocation_gate=staged_commands.invocation_gate,
+                    supervise_remote=stage.remote is not None,
                 )
             ) as stream:
                 async for frame in stream:
                     yield frame
-        if outcome.paused or outcome.failed:
+        if outcome.remote_result_pending:
             return
-        if not outcome.completed:
-            yield _sse(
-                AgentEvent(
-                    event="error",
-                    text=f"{turn.request.provider} produced no auto_research orchestrator result.",
-                )
-            )
-            return
-        if not outcome.session_id:
-            yield _sse(
-                AgentEvent(
-                    event="error", text="AutoResearch orchestrator returned no native session id."
-                )
-            )
-            return
-        if (
-            turn.binding.native_session_id is not None
-            and outcome.session_id != turn.binding.native_session_id
-        ):
-            yield _sse(
-                AgentEvent(
-                    event="error",
-                    text="AutoResearch orchestrator continuation changed its canonical native session.",
-                )
-            )
-            return
-        answer = "\n\n".join(item.strip() for item in outcome.answers if item.strip())
-        if not answer:
-            yield _sse(
-                AgentEvent(
-                    event="error", text="AutoResearch orchestrator finished without an answer."
-                )
-            )
-            return
-        mark_auto_research_question_snapshot_delivered(execution.store, execution.operation_id)
-        yield _sse(AgentEvent(event="answer", text=answer))
-
-        settlement = await _settle_orchestrator_patch(
+        async for frame in _settle_actor_turn(
             service,
-            launcher,
             execution,
             turn,
             stage,
-            master=master,
-            values=values,
-            staged_head=staged_head,
-            patch_path=patch_path,
-            read_dirs=read_dirs,
-            write_dirs=write_dirs,
+            outcome,
             write_scope=write_scope,
-            provider_binary=stage.provider_binary,
-            native_session_id=outcome.session_id,
             retry_patch_digest=retry_patch_digest,
-            command_dispatcher=command_dispatcher,
-            group_context=context.group_context,
-        )
-        for frame in settlement.frames:
-            yield frame
-        graph_updates = _ordered_orchestrator_graph_updates(execution)
-        graph_update = settlement.graph_update
-        if graph_update is not None and (settlement.had_patch or not graph_updates):
-            graph_updates.append(graph_update)
-        if not graph_updates:
-            return
-        graph_update = graph_updates[-1]
-        payload: dict[str, object] = {
-            "graph_update": graph_update.model_dump(mode="json"),
-            "graph_updates": [item.model_dump(mode="json") for item in graph_updates],
-        }
-        latest_applied_revision = next(
-            (
-                item.applied_revision
-                for item in reversed(graph_updates)
-                if item.applied_revision is not None
+            command_file_consumer=command_dispatcher.command_file_consumer,
+            correction=_Correction(
+                launcher=launcher,
+                master=master,
+                values=values,
+                read_dirs=read_dirs,
+                write_dirs=write_dirs,
+                provider_binary=stage.provider_binary,
+                staged_head=staged_head,
+                group_context=context.group_context,
+                command_dispatcher=command_dispatcher,
             ),
-            None,
-        )
-        if latest_applied_revision is not None:
-            payload["applied_revision"] = latest_applied_revision
-        yield _sse(AgentEvent(event="message", text=json.dumps(payload, separators=(",", ":"))))
-        if graph_update.status in {"applied", "none"}:
-            commit_prepared_graph_observation(
-                execution,
-                service,
-                native_session_id=outcome.session_id,
-                applied_revision=latest_applied_revision,
-            )
-        yield _sse(AgentEvent(event="done"))
+        ):
+            yield frame
     except (KeyError, OSError, StateUnavailable, ValueError) as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
     finally:
@@ -647,17 +630,19 @@ async def stream_auto_research_worker_run(
             task_id=execution.operation_id,
             turn_id=f"{execution.operation_id}:worker",
         )
-        async with _worker_mailbox_lifecycle(
+        outcome = _ProviderOutcome(session_id=turn.binding.native_session_id)
+        async with _actor_mailbox(
             staged_commands,
             execution=execution,
-            start=lambda stop: _serve_auto_research_commands(
+            outcome=outcome,
+            serve=partial(
+                _serve_auto_research_commands,
                 staged_commands,
                 execution=execution,
                 turn=turn,
                 dispatcher=command_dispatcher,
                 service=service,
                 graph_read_scope=graph_read_scope,
-                stop=stop,
                 expected_turn_id=f"{execution.operation_id}:worker",
             ),
         ):
@@ -707,6 +692,7 @@ async def stream_auto_research_worker_run(
                 if execution.continuation == "retry"
                 else None
             )
+            _record_auto_research_finalization(execution, stage, write_scope, retry_patch_digest)
             _record_agent_launch_receipt(
                 execution,
                 cast(RunRequest, turn.request),
@@ -729,7 +715,6 @@ async def stream_auto_research_worker_run(
                 },
             )
 
-            outcome = _ProviderOutcome(session_id=turn.binding.native_session_id)
             async with aclosing(
                 _stream_agent_events(
                     launcher,
@@ -750,80 +735,35 @@ async def stream_auto_research_worker_run(
                     outcome=outcome,
                     binary=stage.provider_binary,
                     invocation_gate=staged_commands.invocation_gate,
+                    supervise_remote=stage.remote is not None,
                 )
             ) as stream:
                 async for frame in stream:
                     yield frame
-        if outcome.paused or outcome.failed:
+        if outcome.remote_result_pending:
             return
-        if not outcome.completed:
-            yield _sse(
-                AgentEvent(
-                    event="error",
-                    text=f"{turn.request.provider} produced no auto_research worker result.",
-                )
-            )
-            return
-        if not outcome.session_id:
-            yield _sse(
-                AgentEvent(event="error", text="AutoResearch worker returned no native session id.")
-            )
-            return
-        if (
-            turn.binding.native_session_id is not None
-            and outcome.session_id != turn.binding.native_session_id
-        ):
-            yield _sse(
-                AgentEvent(
-                    event="error",
-                    text="AutoResearch worker continuation changed its canonical native session.",
-                )
-            )
-            return
-        answer = "\n\n".join(item.strip() for item in outcome.answers if item.strip())
-        if not answer:
-            yield _sse(
-                AgentEvent(event="error", text="AutoResearch worker finished without an answer.")
-            )
-            return
-        yield _sse(AgentEvent(event="answer", text=answer))
-
-        settlement = await _settle_worker_patch(
+        async for frame in _settle_actor_turn(
             service,
-            launcher,
             execution,
             turn,
             stage,
-            master=master,
-            values=values,
-            staged_head=staged_head,
-            patch_path=patch_path,
-            read_dirs=read_dirs,
-            write_dirs=write_dirs,
+            outcome,
             write_scope=write_scope,
-            provider_binary=stage.provider_binary,
-            native_session_id=outcome.session_id,
             retry_patch_digest=retry_patch_digest,
-            command_dispatcher=command_dispatcher,
-            group_context=context.group_context,
-        )
-        for frame in settlement.frames:
+            command_file_consumer=command_dispatcher.command_file_consumer,
+            correction=_Correction(
+                launcher=launcher,
+                master=master,
+                values=values,
+                read_dirs=read_dirs,
+                write_dirs=write_dirs,
+                provider_binary=stage.provider_binary,
+                staged_head=staged_head,
+                group_context=context.group_context,
+                command_dispatcher=command_dispatcher,
+            ),
+        ):
             yield frame
-        graph_update = settlement.graph_update
-        if graph_update is None:
-            return
-        payload: dict[str, object] = {"graph_update": graph_update.model_dump(mode="json")}
-        if graph_update.applied_revision is not None:
-            payload["applied_revision"] = graph_update.applied_revision
-        yield _sse(AgentEvent(event="message", text=json.dumps(payload, separators=(",", ":"))))
-        if graph_update.status in {"applied", "none"}:
-            commit_prepared_graph_observation(
-                execution,
-                service,
-                native_session_id=outcome.session_id,
-                applied_revision=graph_update.applied_revision,
-            )
-        yield _sse(AgentEvent(event="done"))
     except (KeyError, OSError, StateUnavailable, ValueError) as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
     finally:
@@ -1927,10 +1867,11 @@ async def _serve_auto_research_commands(
     execution: AgentTaskExecution,
     turn: _CanonicalWorkerTurn | _CanonicalOrchestratorTurn,
     dispatcher: AutoResearchCommandDispatcher,
-    stop: asyncio.Event,
+    stop: asyncio.Event | threading.Event,
     expected_turn_id: str,
     service: ProjectService | None = None,
     graph_read_scope: GraphReadScope | None = None,
+    **mailbox_state: Any,
 ) -> None:
     async def handle(
         request: CommandRequest,
@@ -1969,6 +1910,7 @@ async def _serve_auto_research_commands(
         stop=stop,
         invocation_gate=staged.invocation_gate,
         record_rejection=command_rejection_recorder(execution),
+        **mailbox_state,
     )
 
 
@@ -2147,23 +2089,15 @@ async def _close_worker_mailbox(
 
 async def _settle_worker_patch(
     service: ProjectService,
-    launcher: AgentLauncher,
     execution: AgentTaskExecution,
     turn: _CanonicalWorkerTurn | _CanonicalOrchestratorTurn,
     stage: _WorkerStage,
     *,
-    master: MasterRef,
-    values: dict[str, object],
-    patch_path: str,
-    read_dirs: list[Path],
-    write_dirs: list[Path],
     write_scope: ProjectWriteScope,
-    provider_binary: str | None,
     native_session_id: str,
-    staged_head: GraphHeadRef | None = None,
     retry_patch_digest: str | None,
-    command_dispatcher: AutoResearchCommandDispatcher,
-    group_context: GroupContext | None,
+    command_file_consumer: Callable[[str, str], bool] | None,
+    correction: _Correction | None,
     _actor_role: Literal["worker", "orchestrator"] = "worker",
     _profile: Literal["ordinary", "orchestrator"] = "ordinary",
     _capability: Literal["work_auto", "orchestrate"] = "work_auto",
@@ -2191,6 +2125,7 @@ async def _settle_worker_patch(
 
     correction_rounds = 0
     correction_frames: list[str] = []
+    staged_head = correction.staged_head if correction is not None else None
     while True:
         if patch_text is not None:
             source_effect_id: str | None = None
@@ -2213,7 +2148,7 @@ async def _settle_worker_patch(
                     source_effect_id=source_effect_id,
                 )
                 if result is not None and recovered_apply:
-                    consumer = command_dispatcher.command_file_consumer
+                    consumer = command_file_consumer
                     if consumer is None:
                         raise ValueError(
                             "The retained in-turn Apply Patch could not be consumed during "
@@ -2246,6 +2181,7 @@ async def _settle_worker_patch(
         assert failure is not None
         if (
             not failure.correctable
+            or correction is None
             or correction_rounds >= PATCH_CORRECTION_MAX_ROUNDS
             or not native_session_id
         ):
@@ -2279,7 +2215,7 @@ async def _settle_worker_patch(
         )
         context = _auto_research_context(service, turn.request, stage)
         # The launch's group, which the reused read_dirs were built from.
-        context.group_context = group_context
+        context.group_context = correction.group_context
         graph_read_scope = GraphReadScope.resolve(
             turn.task.project_id, service.history, context.group_context
         )
@@ -2300,26 +2236,29 @@ async def _settle_worker_patch(
                 f"{execution.operation_id}:{_actor_role}-patch-correction:{correction_rounds}"
             ),
         )
-        async with _worker_mailbox_lifecycle(
+        correction_outcome = _ProviderOutcome(session_id=native_session_id)
+        async with _actor_mailbox(
             correction_mailbox,
             execution=execution,
-            start=lambda stop, mailbox=correction_mailbox, round_number=correction_rounds, scope=graph_read_scope: (
+            outcome=correction_outcome,
+            # Built inside the mailbox's lifetime, so a setup failure still closes it.
+            serve=lambda mailbox=correction_mailbox, round_number=correction_rounds, scope=graph_read_scope, **state: (
                 _serve_auto_research_commands(
                     mailbox,
                     execution=execution,
                     turn=turn,
                     dispatcher=_ValidateOnlyAutoResearchCommandDispatcher(
-                        command_dispatcher.store,
-                        command_dispatcher.effects,
+                        correction.command_dispatcher.store,
+                        correction.command_dispatcher.effects,
                         service=service,
                         graph_read_scope=scope,
                     ),
                     service=service,
                     graph_read_scope=scope,
-                    stop=stop,
                     expected_turn_id=(
                         f"{execution.operation_id}:{_actor_role}-patch-correction:{round_number}"
                     ),
+                    **state,
                 )
             ),
         ):
@@ -2327,7 +2266,7 @@ async def _settle_worker_patch(
             # so the correction points to it rather than looking up a settled record.
             correction_grant = BrowserGrant()
             correction_values = {
-                **values,
+                **correction.values,
                 "graph": context.graph_path,
                 "research": context.research_md_path,
                 "command_prefix": correction_mailbox.client_command(),
@@ -2353,9 +2292,9 @@ async def _settle_worker_patch(
                     ),
                     browser_prompt_line(correction_grant),
                 ],
-                master=master,
+                master=correction.master,
                 delta={
-                    **(changed_since_master(master, correction_values) or {}),
+                    **(changed_since_master(correction.master, correction_values) or {}),
                     **graph_head_delta(staged_head, correction_head),
                 },
             )
@@ -2385,22 +2324,21 @@ async def _settle_worker_patch(
                     "network_access": True,
                     "launch_kind": "graph_correction",
                     "correction_round": correction_rounds,
-                    "write_directory_count": len(write_dirs),
+                    "write_directory_count": len(correction.write_dirs),
                     "repeat_operational_work": False,
                 },
             )
-            correction_outcome = _ProviderOutcome(session_id=native_session_id)
             correction_error: str | None = None
             async with aclosing(
                 _stream_agent_events(
-                    launcher,
+                    correction.launcher,
                     cast(RunRequest, turn.request),
                     correction_prompt,
                     service=service,
                     workspace=stage.workspace,
                     session_id=native_session_id,
-                    read_dirs=read_dirs,
-                    write_dirs=write_dirs,
+                    read_dirs=correction.read_dirs,
+                    write_dirs=correction.write_dirs,
                     write_scope=write_scope,
                     execution_host=stage.execution_host,
                     execution=execution,
@@ -2408,8 +2346,10 @@ async def _settle_worker_patch(
                     capability=_capability,
                     browser_grant=correction_grant,
                     outcome=correction_outcome,
-                    binary=provider_binary,
+                    binary=correction.provider_binary,
                     invocation_gate=correction_mailbox.invocation_gate,
+                    supervise_remote=stage.remote is not None,
+                    required_session_id=native_session_id,
                 )
             ) as stream:
                 async for frame in stream:
@@ -2420,6 +2360,10 @@ async def _settle_worker_patch(
                         )
                     else:
                         correction_frames.append(frame)
+        if correction_outcome.remote_result_pending:
+            return _PatchSettlement(
+                None, tuple(correction_frames), had_patch=had_patch, awaiting_remote_result=True
+            )
         if correction_outcome.paused:
             return _PatchSettlement(None, tuple(correction_frames), had_patch=had_patch)
         if (
@@ -2504,45 +2448,242 @@ def _orchestrator_final_source_effect_id(
     )
 
 
-async def _settle_orchestrator_patch(
-    service: ProjectService,
-    launcher: AgentLauncher,
+def _record_auto_research_finalization(
     execution: AgentTaskExecution,
-    turn: _CanonicalOrchestratorTurn,
     stage: _WorkerStage,
-    *,
-    master: MasterRef,
-    values: dict[str, object],
-    patch_path: str,
-    read_dirs: list[Path],
-    write_dirs: list[Path],
     write_scope: ProjectWriteScope,
-    provider_binary: str | None,
-    native_session_id: str,
-    staged_head: GraphHeadRef | None = None,
     retry_patch_digest: str | None,
-    command_dispatcher: AutoResearchCommandDispatcher,
-    group_context: GroupContext | None,
-) -> _PatchSettlement:
-    return await _settle_worker_patch(
+) -> None:
+    """Retain what a recorded pass of this turn needs, before it launches."""
+
+    if execution.stage_root is None:
+        raise ValueError("An Auto-research launch has no checkpointed stage.")
+    content = _AutoResearchFinalization(
+        stage_host=stage.execution_host,
+        stage_root=execution.stage_root,
+        workspace=str(stage.workspace),
+        write_scope=write_scope,
+        retry_patch_digest=retry_patch_digest,
+    ).model_dump_json()
+    execution.store.record_agent_task_contract(
+        execution.operation_id,
+        AUTO_RESEARCH_FINALIZATION_ROLE,
+        content,
+        hashlib.sha256(content.encode("utf-8")).hexdigest(),
+    )
+
+
+@asynccontextmanager
+async def _actor_mailbox(
+    staged: StagedCommandMailbox,
+    *,
+    execution: AgentTaskExecution,
+    outcome: _ProviderOutcome,
+    serve: Callable[..., Awaitable[None]],
+) -> AsyncIterator[None]:
+    """Serve one actor pass's commands; a remote pass keeps serving if its link drops."""
+
+    if staged.mailbox.remote_stage is None:
+        async with _worker_mailbox_lifecycle(
+            staged, execution=execution, start=lambda stop: serve(stop=stop)
+        ):
+            yield
+        return
+    lifecycle = start_work_validator_mailbox(
+        staged,
+        execution=execution,
+        budget=None,
+        validate=None,
+        serve=lambda stop, suspend, responses, terminal, checkpoint, **_: serve(
+            stop=stop,
+            suspend=suspend,
+            responses=responses,
+            terminal=terminal,
+            checkpoint=checkpoint,
+        ),
+    )
+    try:
+        yield
+    except BaseException as exc:
+        await lifecycle.close(primary_error=exc)
+        raise
+    if outcome.remote_result_pending:
+        lifecycle.detach()
+    else:
+        await lifecycle.close()
+
+
+async def _settle_actor_turn(
+    service: ProjectService,
+    execution: AgentTaskExecution,
+    turn: _CanonicalWorkerTurn | _CanonicalOrchestratorTurn,
+    stage: _WorkerStage,
+    outcome: _ProviderOutcome,
+    *,
+    write_scope: ProjectWriteScope,
+    retry_patch_digest: str | None,
+    command_file_consumer: Callable[[str, str], bool] | None,
+    correction: _Correction | None,
+    answer: str | None = None,
+) -> AsyncIterator[str]:
+    """Settle one finished actor pass, watched live or read back from its host."""
+
+    role = turn.binding.role
+    if outcome.paused or outcome.failed:
+        return
+    if not outcome.completed:
+        yield _error(f"{turn.request.provider} produced no auto_research {role} result.")
+        return
+    if not outcome.session_id:
+        yield _error(f"AutoResearch {role} returned no native session id.")
+        return
+    if (
+        turn.binding.native_session_id is not None
+        and outcome.session_id != turn.binding.native_session_id
+    ):
+        yield _error(f"AutoResearch {role} continuation changed its canonical native session.")
+        return
+    if answer is None:
+        answer = "\n\n".join(item.strip() for item in outcome.answers if item.strip())
+    if not answer:
+        yield _error(f"AutoResearch {role} finished without an answer.")
+        return
+    if role == "orchestrator":
+        mark_auto_research_question_snapshot_delivered(execution.store, execution.operation_id)
+    yield _sse(AgentEvent(event="answer", text=answer))
+    execution.store.record_agent_task_contract(
+        execution.operation_id,
+        _AUTO_RESEARCH_PRIMARY_ANSWER_ROLE,
+        answer,
+        hashlib.sha256(answer.encode("utf-8")).hexdigest(),
+    )
+    orchestrator = role == "orchestrator"
+    settlement = await _settle_worker_patch(
         service,
-        launcher,
         execution,
         turn,
         stage,
-        master=master,
-        values=values,
-        staged_head=staged_head,
-        patch_path=patch_path,
-        read_dirs=read_dirs,
-        write_dirs=write_dirs,
         write_scope=write_scope,
-        provider_binary=provider_binary,
-        native_session_id=native_session_id,
+        native_session_id=outcome.session_id,
         retry_patch_digest=retry_patch_digest,
-        command_dispatcher=command_dispatcher,
-        group_context=group_context,
-        _actor_role="orchestrator",
-        _profile="orchestrator",
-        _capability="orchestrate",
+        command_file_consumer=command_file_consumer,
+        correction=correction,
+        _actor_role=role,
+        _profile="orchestrator" if orchestrator else "ordinary",
+        _capability="orchestrate" if orchestrator else "work_auto",
     )
+    for frame in settlement.frames:
+        yield frame
+    if settlement.awaiting_remote_result:
+        return
+    graph_update = settlement.graph_update
+    if orchestrator:
+        graph_updates = _ordered_orchestrator_graph_updates(execution)
+        if graph_update is not None and (settlement.had_patch or not graph_updates):
+            graph_updates.append(graph_update)
+    else:
+        graph_updates = [graph_update] if graph_update is not None else []
+    if not graph_updates:
+        return
+    graph_update = graph_updates[-1]
+    payload: dict[str, object] = {"graph_update": graph_update.model_dump(mode="json")}
+    if orchestrator:
+        payload["graph_updates"] = [item.model_dump(mode="json") for item in graph_updates]
+    latest_applied_revision = next(
+        (
+            item.applied_revision
+            for item in reversed(graph_updates)
+            if item.applied_revision is not None
+        ),
+        None,
+    )
+    if latest_applied_revision is not None:
+        payload["applied_revision"] = latest_applied_revision
+    yield _sse(AgentEvent(event="message", text=json.dumps(payload, separators=(",", ":"))))
+    if graph_update.status in {"applied", "none"}:
+        commit_prepared_graph_observation(
+            execution,
+            service,
+            native_session_id=outcome.session_id,
+            applied_revision=latest_applied_revision,
+        )
+    yield _sse(AgentEvent(event="done"))
+
+
+def _error(text: str) -> str:
+    return _sse(AgentEvent(event="error", text=text))
+
+
+async def finalize_recorded_auto_research_result(
+    service: ProjectService,
+    launcher: AgentLauncher,
+    request: RunRequest,
+    data_dir: Path,
+    execution: AgentTaskExecution,
+    recorded: RecordedProviderTurn,
+) -> AsyncIterator[str]:
+    """Settle an Auto-research pass from what its host recorded, on the same operation.
+
+    Corrections are not relaunched. When the recorded pass was a correction, the
+    turn's answer is the primary one retained before the correction started.
+    """
+
+    del launcher, data_dir
+    supplied = cast(AutoResearchRunRequest, request)
+    turn = (
+        _canonical_orchestrator_turn(execution, supplied)
+        if supplied.role == "orchestrator"
+        else _canonical_worker_turn(execution, supplied)
+    )
+    content = execution.store.agent_task_contract(
+        execution.operation_id, AUTO_RESEARCH_FINALIZATION_ROLE
+    )
+    if content is None:
+        raise ValueError("The Auto-research finalization context is unavailable.")
+    retained = _AutoResearchFinalization.model_validate_json(content)
+    local, remote, workspace = attach_retained_stage(
+        execution,
+        owner="Auto-research",
+        stage_host=retained.stage_host,
+        stage_root=retained.stage_root,
+        workspace=retained.workspace,
+    )
+    stage = _WorkerStage(local, remote, workspace, retained.stage_host, None)
+    outcome = _ProviderOutcome(session_id=turn.binding.native_session_id)
+    verdict = decode_recorded_turn(
+        recorded,
+        provider_turn_request(
+            workspace,
+            recorded,
+            capability="orchestrate" if supplied.role == "orchestrator" else "work_auto",
+            write_scope=retained.write_scope,
+        ),
+    )
+    refused = refuse_recorded_session_mismatch(
+        execution, outcome, verdict, turn.binding.native_session_id
+    )
+    for frame in refused:
+        yield frame
+    if refused:
+        return
+    write_recorded_patch(workspace, remote, recorded)
+    for frame in absorb_recorded_events(outcome, verdict):
+        yield frame
+    primary_answer = execution.store.agent_task_contract(
+        execution.operation_id, _AUTO_RESEARCH_PRIMARY_ANSWER_ROLE
+    )
+    async for frame in _settle_actor_turn(
+        service,
+        execution,
+        turn,
+        stage,
+        outcome,
+        write_scope=retained.write_scope,
+        retry_patch_digest=None if primary_answer is not None else retained.retry_patch_digest,
+        command_file_consumer=RunStageMailbox.for_stage(
+            local_stage=local, remote_stage=remote
+        ).remove_if_sha256,
+        correction=None,
+        answer=primary_answer,
+    ):
+        yield frame

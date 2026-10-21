@@ -27,6 +27,10 @@ from rcp.runs.tasks.auto_research_child_work import (
     finalize_recorded_auto_research_child_work_result,
     resume_child_work_command_mailbox,
 )
+from rcp.runs.tasks.auto_research_stream import (
+    AUTO_RESEARCH_FINALIZATION_ROLE,
+    finalize_recorded_auto_research_result,
+)
 from rcp.runs.tasks.discuss import (
     DISCUSS_FINALIZATION_CONTEXT_ROLE,
     finalize_recorded_discuss_result,
@@ -82,6 +86,7 @@ RECORDED_FINALIZERS: dict[str, RecordedFinalizer] = {
         finalize_recorded_auto_research_child_work_result
     ),
     EXPERIMENT_LOOP_FINALIZATION_CONTEXT_ROLE: finalize_recorded_experiment_loop_result,
+    AUTO_RESEARCH_FINALIZATION_ROLE: finalize_recorded_auto_research_result,
 }
 
 

@@ -3438,3 +3438,84 @@ def test_a_recovery_handoff_keeps_what_fits_and_still_refuses_a_bad_first_item(c
     assert [record.levelname for record in caplog.records] == ["WARNING"]
     with pytest.raises(ValueError):
         fit(["bad", "a"], build, kind="mail messages", allocation="wake")
+
+
+@pytest.mark.asyncio
+async def test_a_worker_that_outlives_its_link_settles_from_its_recorded_pass(
+    manifest, tmp_path
+) -> None:
+    """A dropped link leaves the turn to its host; the recorded pass then settles it."""
+
+    from rcp.runs.remote_finalization import recorded_finalizer
+
+    from .test_work_agent_io import _recorded_pass
+
+    service = _service(manifest, tmp_path)
+    service, store, _auto_research, _root, worker = _setup_branch_auto_research(service, tmp_path)
+    execution = _execution(store, worker)
+    request = AutoResearchRunRequest.model_validate(worker.request)
+
+    class _LinkLost(_WorkerLauncher):
+        async def stream(self, _provider, prompt, **kwargs):
+            self.calls += 1
+            yield AgentEvent(event="session", session_id=self.session_id)
+            yield AgentEvent(event="remote_result_pending")
+
+    live = await _events(
+        stream_auto_research_worker_run(
+            service,
+            cast(Any, _LinkLost()),
+            request,
+            tmp_path / "data",
+            execution,
+            command_dispatcher=_dispatcher(store),
+        )
+    )
+    assert not [event for event in live if event.event in {"answer", "error", "done"}]
+
+    finalizer = recorded_finalizer(store, execution.operation_id)
+    assert finalizer is auto_research_stream_module.finalize_recorded_auto_research_result
+    patch = Patch.model_validate(
+        dict(
+            kind="work",
+            author="agent",
+            producer="agent",
+            summary="Recorded the worker's blocker.",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[
+                {
+                    "op": "create_nodes",
+                    "nodes": [
+                        {
+                            "id": "blk/recorded",
+                            "type": "blocker",
+                            "title": "Recorded",
+                            "description": "Written while the link was down.",
+                            "status": "open",
+                        }
+                    ],
+                }
+            ],
+            change_summary=["Recorded the worker blocker."],
+        )
+    )
+    launcher = _WorkerLauncher()
+    finalize = auto_research_stream_module.finalize_recorded_auto_research_result
+    settled = await _events(
+        finalize(
+            service,
+            cast(Any, launcher),
+            cast(Any, request),
+            tmp_path / "data",
+            execution,
+            _recorded_pass(agent_patch_json(patch), "Worker finished offline."),
+        )
+    )
+
+    assert [event.text for event in settled if event.event == "answer"] == [
+        "Worker finished offline."
+    ]
+    assert settled[-1].event == "done"
+    assert "blk/recorded" in service.history.state().nodes
+    assert launcher.calls == 0
