@@ -495,6 +495,14 @@ def test_artifact_links_resolve_from_text_within_the_project(store):
         "project", "turn", "edit", post_id=first["post_id"], key="edit-artifact", text="No link"
     )
     assert edited["post"]["artifacts"] == []
+    # Links resolve at read time, so an artifact change refreshes open Bulletins.
+    bulletin = (
+        "SELECT generation FROM resource_versions WHERE scope='project' AND resource='bulletin'"
+    )
+    with store.connection() as connection:
+        before = connection.execute(bulletin).fetchone()[0]
+        connection.execute("DELETE FROM artifacts WHERE artifact_id='lapsed'")
+        assert connection.execute(bulletin).fetchone()[0] > before
 
 
 def test_agent_posts_to_named_channel_or_own_default(store):

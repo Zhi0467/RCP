@@ -927,9 +927,14 @@ class AppStoreBase:
             migration=self._migrate_conversation_names,
         )
         from rcp.storage.chat_forks import migrate_chat_forks
+        from rcp.storage.resource_versions import install_bulletin_artifact_versions
+
+        def migrate_v60(connection: sqlite3.Connection) -> None:
+            migrate_chat_forks(connection)
+            install_bulletin_artifact_versions(connection)
 
         self._run_storage_schema_migration(
-            connection, version=60, name="chat_forks_v1", migration=migrate_chat_forks
+            connection, version=60, name="chat_forks_v1", migration=migrate_v60
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

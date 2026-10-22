@@ -778,8 +778,11 @@ test(
     assert.ok(sourceReads >= 1 && sourceReads <= 4, `source chat read ${sourceReads} times`);
 
     await menu.click();
+    const archived = page.waitForResponse((response) =>
+      response.url().endsWith("/chats/source/archive"),
+    );
     await page.getByRole("menuitem", { name: "Archive", exact: true }).click();
-    await page.waitForResponse((response) => response.url().endsWith("/chats/source/archive"));
+    await archived;
     await page.evaluate(() => new Promise(requestAnimationFrame));
     assert.equal(
       await page.evaluate(() => new URLSearchParams(location.hash.split("?")[1]).has("branch_id")),

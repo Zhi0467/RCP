@@ -48,19 +48,20 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
         # Chat forks (v60) after conversation names: fresh, immutable fixture
         # upgrades, and in-place upgrades.
-        "06ce0e8a34a0e12b22efda79b5b4d10b01c57b8952b1328db39debc8cc7753d6",
-        "137d6e4663009f01e47cf3f2f425a00d3dd90762bc93231462aeae147b7f2189",
-        "352a83314c130eff64f8d33772b3259bbd23cf2b101fce74db44ac6802b4c72a",
+        "292cf729baeb529eb6c37920df537da471712be9fe36e08b3a9e0ffe5c27d130",
+        "29f373777116e061534fcfa3a4262725806e61ad45d26fc43ebd47efce6ed88d",
+        "2e9ba1a17b6552e35a15d1058d8a0c7bdd5dd6f69e4e12a8030206d313136ec1",
+        "2edd3fce460765a591e8eca7264eff82c31d42c0de4fde2c3d483923e10f0f82",
+        "39808b37449d3aa00d8917c9a1e5629f78638718a94f471cd4de517c160075e7",
+        "6a1f4ede3f9974cc0d3eb25ceeed3727f43767b276d4a5c45712c951918d1063",
+        "91cdccaf937f96635e581ebb6671890a8eeaed0a5a43b18c0f134a818b95f922",
+        "aab27836c1b8cd138d4c55801db9bf332be953c953f409af9832d9d879ffe310",
+        "be7bb3cd6a940288ba6dc7107a72bd0d6038057efaab8e6f81a95e798f778a2e",
+        "c4417dfdba0e0e482756301ae7078fd3d6c135bca90e99fbbffe1457113f93dc",
+        "d3bfb92a5e44f8b0caad37a7116b41bcdc2afc2fbd7cb8c7f8df44428ccf61da",
+        # Artifact storage re-migrated after v60 runs without its Bulletin trigger.
         "368d427899ee21e25e5b86d31d279c36e77354ae8010231b71b5612bf6630705",
-        "5bac563d9dfb4a28812c3ac2cd75f1da7234ab37015ff529671f85d4a763af4b",
-        "6c326e18cc2829deb6c4daf7373104419132de3c079f9b42ee155ce91ca0b0f2",
         "76a29f571e9e3982e84b3a758c6d5f38ebc154f0fdbae77e175b8eedb0a06358",
-        "9a706a5abbad5370fd5f4d76185729902323944c56f8a47a6134502361a879ff",
-        "b1f66de797113d24b2c8f08ebedb04a7a5f73238fd63ab31536c5144c430dd97",
-        "bbd6146904f9ab1c9d50842fe4637ea7f87f0ebaf244e45c8037c5fb669fb281",
-        "d75c7e973d4be7cfad121f1e33dcefd6c3ff3b08d7603e2ace333a678d5b80c6",
-        "e39e80f5287d655018d028bc45fab1d55beb1bc092ec0bfb17e42befc0240ad7",
-        "febdc8d318b035ed4f41c237d9ce212359cd9dddacd7382da9a0ce417eefd9f9",
         # Conversation names (v59) after project worker seats: fresh, immutable
         # fixture upgrades, and in-place upgrades.
         "2b2019b71037bd625ad8f0efd44bb436e9a9fc9eef87fe6543bbe773553b37ad",
