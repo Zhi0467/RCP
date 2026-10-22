@@ -153,6 +153,29 @@ test("SSH repositories retain manual paths and offer the bounded remote browser"
   assert.match(html, /value="\/home\/alice\/paper"/);
 });
 
+test("a lone repository has no name field; a second repository shows one", () => {
+  const editor = (only) =>
+    renderMarkup(
+      React.createElement(RepositoryEditor, {
+        repository: {
+          id: 9,
+          alias: "plasticity",
+          nameEdited: false,
+          location: "local",
+          path: "/Users/example/plasticity",
+          host: "",
+          default_read: true,
+        },
+        canonical: true,
+        only,
+        onCanonical() {},
+        onChange() {},
+      }),
+    );
+  assert.doesNotMatch(editor(true), /<input[^>]*value="plasticity"/);
+  assert.match(editor(false), /<input[^>]*value="plasticity"/);
+});
+
 test("the folder picker does not introduce sub-10px primary or status text", async () => {
   const styles = withResolvedTypeScale(appStylesheet());
   const start = styles.indexOf(".path-picker {");

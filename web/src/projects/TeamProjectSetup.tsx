@@ -760,9 +760,15 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
                   onCanonical={() => setStateRepository(repository.alias)}
                   onChange={(patch) => updateRepository(repository.id, patch)}
                   onRemove={() => {
-                    const remaining = repositories.filter((item) => item.id !== repository.id);
+                    let remaining = repositories.filter((item) => item.id !== repository.id);
+                    // A lone repository shows no name field, so its name is derived again.
+                    if (remaining.length === 1) {
+                      const lone = { ...remaining[0], nameEdited: false };
+                      remaining = nameRepository([lone], lone, name);
+                    }
                     setRepositories(remaining);
-                    if (repository.alias === stateRepository)
+                    if (remaining.length === 1) setStateRepository(remaining[0].alias);
+                    else if (repository.alias === stateRepository)
                       setStateRepository(remaining[0]?.alias ?? "");
                   }}
                 />
@@ -1153,14 +1159,16 @@ function TeamRepositoryEditor({
         )}
       </header>
       <div className="team-repository-fields">
-        <label>
-          Name
-          <input
-            value={repository.alias}
-            onChange={(event) => onChange({ alias: event.target.value, nameEdited: true })}
-          />
-        </label>
-        <label>
+        {!only && (
+          <label>
+            Name
+            <input
+              value={repository.alias}
+              onChange={(event) => onChange({ alias: event.target.value, nameEdited: true })}
+            />
+          </label>
+        )}
+        <label className="wide">
           GitHub URL (optional)
           <input
             value={repository.source}

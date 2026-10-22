@@ -449,11 +449,19 @@ function PersonalProjectSetup({
   };
 
   const removeRepository = (id: number) => {
-    setRepositories((current) => {
-      const next = current.filter((repo) => repo.id !== id);
-      setStateRepository((selected) => stateRepositoryAfterRemoval(current, id, selected));
-      return next;
-    });
+    let next = repositories.filter((repo) => repo.id !== id);
+    // A lone repository shows no name field, so its name follows its folder again.
+    if (next.length === 1) {
+      next = withDefaultRepositoryName([{ ...next[0], nameEdited: false }], next[0].id, [
+        repositoryFolderName(next[0].path),
+      ]);
+    }
+    setStateRepository(
+      next.length === 1
+        ? next[0].alias
+        : stateRepositoryAfterRemoval(repositories, id, stateRepository),
+    );
+    setRepositories(next);
   };
 
   const goBack = () => {
@@ -1192,14 +1200,16 @@ export function RepositoryEditor({
         )}
       </header>
       <div className="repository-fields">
-        <label>
-          <span>Name</span>
-          <input
-            value={repository.alias}
-            onChange={(event) => onChange({ alias: event.target.value, nameEdited: true })}
-            placeholder="research-code"
-          />
-        </label>
+        {!only && (
+          <label>
+            <span>Name</span>
+            <input
+              value={repository.alias}
+              onChange={(event) => onChange({ alias: event.target.value, nameEdited: true })}
+              placeholder="research-code"
+            />
+          </label>
+        )}
         <div className="segmented location-toggle" role="group" aria-label="Repository location">
           <button
             type="button"
