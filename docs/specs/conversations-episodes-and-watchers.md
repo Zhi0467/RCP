@@ -183,9 +183,14 @@ Its first human message forks the recorded native session using the source
 provider, model, reasoning and machine. Client choices cannot move that first
 launch to another machine. Fork failure fails the turn and leaves Retry available;
 it never falls back to a fresh session. Once the provider reports the new native
-session, later attempts and turns resume that session normally. The existing
-continuation prompt carries the new graph target and tells the agent that its
-current graph can differ from the inherited context.
+session, later attempts and turns resume that session normally. The fork turn
+replaces the inherited master and, only on that turn, names the graph target
+the task was admitted to. It tells the agent that the inherited transcript's
+graph, Bulletin channel, roster, mentions and paths belong to the source. Every
+other branch-scoped fact (branch read pointers, Bulletin snapshot and roster,
+agent name, questions, workspace and command client) is rendered each turn from
+the new chat's own task, so nothing after the first turn reads the source chat.
+**Why:** the provider transcript is the only place a stale branch can come from.
 
 The entry point is "Branch this chat" in the chat header's menu. It opens the
 branch picker, listing branches to move to and New branch, without merge, rename,

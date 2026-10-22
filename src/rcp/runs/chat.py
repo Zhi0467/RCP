@@ -26,7 +26,11 @@ from rcp.agents.continuation_prompt import (
     master_key,
 )
 from rcp.agents.group_context import group_prompt_value
-from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION, chat_master_contract_key
+from rcp.agents.prompts import (
+    CHAT_MASTER_CONTEXT_VERSION,
+    CONVERSATION_FORK_NOTE,
+    chat_master_contract_key,
+)
 from rcp.agents.write_scope import (
     ProjectWriteScope,
     resolve_project_write_scope,
@@ -409,12 +413,8 @@ def _prepare_chat_prompt_state(
         delta = {
             **(delta or {}),
             "conversation_fork": {
-                "graph_target": record.graph_target.model_dump(mode="json"),
-                "instruction": (
-                    "This conversation now works on this graph target. Read its current graph; "
-                    "it may differ from the graph in the conversation before the fork. "
-                    "Use the new master contract and workspace for this conversation."
-                ),
+                "graph_target": record.graph_target.model_dump(mode="json", exclude_none=True),
+                "instruction": CONVERSATION_FORK_NOTE,
             },
         }
 

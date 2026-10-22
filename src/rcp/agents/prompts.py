@@ -160,6 +160,15 @@ BULLETIN_RULES = (
 )
 
 
+# Sent once, on a branched chat's first turn, beside the graph target that turn was admitted to.
+CONVERSATION_FORK_NOTE = (
+    "This conversation now works on this graph target, not the one in the conversation before "
+    "the fork. Read its current graph; it may differ. Your Bulletin channel, roster, and "
+    "mentions are now this target's and this conversation's; earlier Bulletin reads, mentions, "
+    "and paths describe the source conversation. Use the new master contract and workspace."
+)
+
+
 def chat_master_contract_key(*, ontology_extensions: bool, owner: str | None = None) -> str:
     """Identify one master-context shape; changed graph rules re-send it to existing chats.
 

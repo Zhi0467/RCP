@@ -180,6 +180,10 @@ def test_branch_chat_defers_fork_and_keeps_source_unchanged(manifest, tmp_path, 
     send(child_id, branch_id)
     assert launcher.sessions[2] == "forked-session"
     assert launcher.launch_kwargs[2].get("fork_session_id") is None
+    # Only the fork turn moves the conversation; later turns carry no fork fact.
+    assert not any(
+        key.startswith("conversation_fork.") for key in changed_values(launcher.prompts[2])
+    )
     if mode == "discuss" and not fail_fork:
         back_to_main = client.post(
             f"/api/projects/{project_id}/chats/{child_id}/branch",
@@ -189,6 +193,13 @@ def test_branch_chat_defers_fork_and_keeps_source_unchanged(manifest, tmp_path, 
         assert back_to_main.json()["graph_target"]["kind"] == "main"
         assert back_to_main.json()["origin"]["source_graph_target"] == target
         assert len(launcher.prompts) == 3
+        # Leaving a branch, the fork turn names main and forks the branch chat's own session.
+        launcher.native_session_id = "main-session"
+        send(back_to_main.json()["chat_id"])
+        assert launcher.launch_kwargs[3]["fork_session_id"] == "forked-session"
+        moved = changed_values(launcher.prompts[3])
+        assert moved["conversation_fork.graph_target.kind"] == "main"
+        assert "conversation_fork.graph_target.branch_id" not in moved
 
 
 def test_branch_chat_rejects_missing_source_session(manifest, tmp_path):
