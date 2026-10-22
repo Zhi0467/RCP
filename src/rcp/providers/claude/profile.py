@@ -66,6 +66,7 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
                 model=request.model,
                 reasoning=request.reasoning,
                 session_id=request.session_id,
+                fork_session_id=request.fork_session_id,
                 read_dirs=request.read_dirs,
                 write_dirs=request.write_dirs,
                 write_scope=request.write_scope,
@@ -266,6 +267,10 @@ _AUTOCOMPACT_MIN_TOKENS = 100_000
 _AUTOCOMPACT_MAX_TOKENS = 1_000_000
 # Claude Code's own BASH_MAX_TIMEOUT_MS default (probed on 2.1.291).
 _BASH_MAX_TIMEOUT_DEFAULT_SECONDS = 600
+# The account's own skills and plugins come from its user settings. Work loads
+# them too: their allow rules cannot widen RCP's `--settings`, and hooks stay
+# off through `disableAllHooks` there. The skill probe loads the same sources.
+_SETTING_SOURCES = ("--setting-sources", "user")
 
 
 class ClaudeProfile(ProviderProfile):
@@ -409,8 +414,7 @@ class ClaudeProfile(ProviderProfile):
             "--input-format",
             "stream-json",
             "--no-session-persistence",
-            "--setting-sources",
-            "",
+            *_SETTING_SOURCES,
             "--settings",
             json.dumps(_claude_write_settings(), separators=(",", ":")),
             "--strict-mcp-config",
@@ -430,6 +434,7 @@ class ClaudeProfile(ProviderProfile):
                 "--verbose",
                 "--permission-mode",
                 "plan",
+                *_SETTING_SOURCES,
                 "--settings",
                 '{"disableAllHooks":true}',
                 "--strict-mcp-config",
@@ -500,6 +505,7 @@ class ClaudeProfile(ProviderProfile):
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
         autocompact: str = "",
+        fork_session_id: str | None = None,
     ) -> list[str]:
         # Claude accepts `auto` syntactically but non-interactive `--print`
         # normalizes it to `default` and denies both scratch and repository
@@ -537,8 +543,7 @@ class ClaudeProfile(ProviderProfile):
         if scope is not None:
             command.extend(
                 [
-                    "--setting-sources",
-                    "",
+                    *_SETTING_SOURCES,
                     "--settings",
                     json.dumps(
                         _claude_write_settings(scope, hidden_read_scope, cwd), separators=(",", ":")
@@ -569,7 +574,9 @@ class ClaudeProfile(ProviderProfile):
                 pattern = _claude_absolute_pattern(directory)
                 command.extend(f"{tool}({pattern})" for tool in ("Read", "Glob", "Grep"))
         command.extend(["--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}'])
-        if session_id:
+        if fork_session_id:
+            command.extend(["--resume", fork_session_id, "--fork-session"])
+        elif session_id:
             command.extend(["--resume", session_id])
         # Deduplicate while preserving first-seen order: one --add-dir per source
         # session directory previously blew past the argv size limit.

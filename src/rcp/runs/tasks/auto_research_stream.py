@@ -496,7 +496,6 @@ async def stream_auto_research_orchestrator_run(
             outcome,
             write_scope=write_scope,
             retry_patch_digest=retry_patch_digest,
-            command_file_consumer=command_dispatcher.command_file_consumer,
             correction=_Correction(
                 launcher=launcher,
                 master=master,
@@ -749,7 +748,6 @@ async def stream_auto_research_worker_run(
             outcome,
             write_scope=write_scope,
             retry_patch_digest=retry_patch_digest,
-            command_file_consumer=command_dispatcher.command_file_consumer,
             correction=_Correction(
                 launcher=launcher,
                 master=master,
@@ -1212,6 +1210,7 @@ def _auto_research_context(
     }
     context = ContextAssembler(service.manifest, graph_root=service.history.root).chat_context(
         state,
+        graph_target=service.history.graph_target,
         node_id=None,
         run_truth_scope=request.run_truth_scope,
         repository_access=access,
@@ -2095,7 +2094,6 @@ async def _settle_worker_patch(
     write_scope: ProjectWriteScope,
     native_session_id: str,
     retry_patch_digest: str | None,
-    command_file_consumer: Callable[[str, str], bool] | None,
     correction: _Correction | None,
     failed_correction: str | None = None,
     _actor_role: Literal["worker", "orchestrator"] = "worker",
@@ -2165,13 +2163,10 @@ async def _settle_worker_patch(
                     # a recorded pass retries rather than spending its result.
                     raise StateUnavailable(failure.message)
                 if result is not None and recovered_apply:
-                    consumer = command_file_consumer
-                    if consumer is None:
-                        raise ValueError(
-                            "The retained in-turn Apply Patch could not be consumed during "
-                            "final settlement."
-                        )
-                    if not consumer("patch.json", patch_digest):
+                    command_files = RunStageMailbox.for_stage(
+                        local_stage=stage.local, remote_stage=stage.remote
+                    )
+                    if not command_files.remove_if_sha256("patch.json", patch_digest):
                         raise ValueError(
                             "The retained in-turn Apply Patch changed before final settlement."
                         )
@@ -2560,15 +2555,14 @@ def _bind_actor_dispatcher(
 ) -> AutoResearchCommandDispatcher:
     """Bind one actor pass's command surface, at launch and again after a relaunch."""
 
-    if request.role != "orchestrator":
-        return dispatcher.with_allowed_verbs(allowed_verbs)
     command_files = RunStageMailbox.for_stage(local_stage=stage.local, remote_stage=stage.remote)
+    if request.role != "orchestrator":
+        return dispatcher.with_allowed_verbs(allowed_verbs, mailbox=command_files)
     return dispatcher.with_command_files(
+        mailbox=command_files,
         service=service,
         graph_read_scope=graph_read_scope,
         allowed_verbs=allowed_verbs,
-        reader=lambda name, max_bytes: command_files.read_text(name, max_bytes=max_bytes),
-        consumer=command_files.remove_if_sha256,
         refresher=lambda: _refreshed_orchestrator_state_paths(service, request, stage),
     )
 
@@ -2669,7 +2663,6 @@ async def _settle_actor_turn(
     *,
     write_scope: ProjectWriteScope,
     retry_patch_digest: str | None,
-    command_file_consumer: Callable[[str, str], bool] | None,
     correction: _Correction | None,
     answer: str | None = None,
     failed_correction: str | None = None,
@@ -2714,7 +2707,6 @@ async def _settle_actor_turn(
         write_scope=write_scope,
         native_session_id=outcome.session_id,
         retry_patch_digest=retry_patch_digest,
-        command_file_consumer=command_file_consumer,
         correction=correction,
         failed_correction=failed_correction,
         _actor_role=role,
@@ -2835,9 +2827,6 @@ async def finalize_recorded_auto_research_result(
         outcome,
         write_scope=retained.write_scope,
         retry_patch_digest=None if correction else retained.retry_patch_digest,
-        command_file_consumer=RunStageMailbox.for_stage(
-            local_stage=stage.local, remote_stage=stage.remote
-        ).remove_if_sha256,
         correction=None,
         answer=primary_answer,
         failed_correction=failed_correction,

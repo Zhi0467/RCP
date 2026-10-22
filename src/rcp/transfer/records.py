@@ -81,6 +81,8 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "_legacy_campaigns_archive",
         "artifact_revision_candidates",
         "chat_session_contexts",
+        # A fork names a native session that stays on the source installation.
+        "chat_forks",
         # Archive and rename are local display choices; a moved project shows
         # every chat with a stored initial name rebuilt from its first turn.
         "chat_display",

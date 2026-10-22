@@ -1297,7 +1297,8 @@ def test_claude_work_uses_exact_sandbox_and_tool_allowlists(session_id, write_di
     assert command[command.index("--permission-mode") + 1] == "dontAsk"
     assert "bypassPermissions" not in command
     assert "--allowedTools" not in command
-    assert command[command.index("--setting-sources") + 1] == ""
+    # The account's own skills load; RCP's settings below still bound the turn.
+    assert command[command.index("--setting-sources") + 1] == "user"
     settings = json.loads(command[command.index("--settings") + 1])
     assert settings == {
         "disableAllHooks": True,

@@ -47,7 +47,7 @@ from rcp.agents.prompts import (
 )
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
-from rcp.background import AgentTaskExecution
+from rcp.background import AgentTaskExecution, persisted_request_roundtrips
 from rcp.compute_jobs.job_managers import JOB_MANAGERS
 from rcp.config import AgentSurface, Manifest
 from rcp.conversation_worktrees import conversation_worktree_context
@@ -392,7 +392,10 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
         )
     if "bulletin" in handler.allowed_verbs:
         instructions.append(
-            bulletin_command_usage(client or turn.patch_inputs.validator_staged.client_command())
+            bulletin_command_usage(
+                client or turn.patch_inputs.validator_staged.client_command(),
+                turn_artifacts=handler.turn_artifacts,
+            )
         )
     if "ask" in handler.allowed_verbs:
         instructions.append(live_ask_contract(turn.patch_inputs.validator_staged.ask_wait_seconds))
@@ -617,7 +620,7 @@ def _load_work_finalization_context(
     except ValueError as exc:
         raise ValueError(f"The retained {owner} finalization context is invalid.") from exc
     task = execution.store.agent_task(execution.operation_id)
-    if task is None or task.request != request.model_dump(mode="json"):
+    if task is None or not persisted_request_roundtrips(request, task.request):
         raise ValueError(f"The {owner} finalization request does not match its durable task.")
     if execution.write_scope_fingerprint != stored.write_scope.fingerprint:
         raise ValueError(f"The retained {owner} finalization write scope changed after launch.")
@@ -1083,6 +1086,7 @@ def _work_chat_master_context(
 
     return PromptFactory.chat_master_context(
         project_name=turn.context.project_name,
+        graph_target=turn.context.graph_target,
         ontology_path=f"{turn.context.graph_path}#ontology",
         ontology_extensions=turn.context.ontology_extensions,
         graph_path=turn.context.graph_path,
@@ -2645,7 +2649,7 @@ async def _stream_work_run(
         if resuming:
             composed_prompt = _compose_resume_prompt(turn, staged, browser_grant=browser_grant)
         else:
-            if turn.retrying:
+            if turn.retrying and not turn.request.fork_session_id:
                 composed_prompt = _compose_retry_prompt(turn, staged, browser_grant=browser_grant)
             else:
                 retry_diagnostics_path = _stage_retry_diagnostics(turn, staged)
@@ -3076,6 +3080,7 @@ def _start_work_validator_mailbox(
     command_handler = _work_command_handler(
         execution,
         compute_commands,
+        mailbox=staged.mailbox,
         service=service,
         graph_read_scope=graph_read_scope,
         consolidation_apply=(
@@ -3164,23 +3169,24 @@ def _resume_work_command_handler(
     service: Callable[[], ProjectService],
 ):
     compute_commands = _resume_work_compute_commands(execution, context)
-    if is_consolidation(execution):
-        from rcp.transport.workspace_mailbox import RunStageMailbox
+    from rcp.transport.workspace_mailbox import RunStageMailbox
 
-        if not execution.stage_root:
-            raise ValueError("The consolidation mailbox lost its stage.")
-        stage = None
-        if execution.stage_host:
-            stage = RemoteRunStage(execution.stage_host)
-            stage.root = PurePosixPath(execution.stage_root)
-        mailbox = RunStageMailbox(
-            Path(str(stage.workspace)) if stage else Path(execution.stage_root) / "workspace", stage
-        )
+    if not execution.stage_root:
+        raise ValueError("The Work mailbox lost its stage.")
+    stage = None
+    if execution.stage_host:
+        stage = RemoteRunStage(execution.stage_host)
+        stage.root = PurePosixPath(execution.stage_root)
+    mailbox = RunStageMailbox(
+        Path(str(stage.workspace)) if stage else Path(execution.stage_root) / "workspace", stage
+    )
+    if is_consolidation(execution):
         handler = _work_command_handler(
             execution,
             None,
             service=service(),
             graph_read_scope=context.graph_read_scope,
+            mailbox=mailbox,
             consolidation_apply=consolidation_apply_handler(
                 service, execution, mailbox, context.run_truth_scope
             ),
@@ -3191,6 +3197,7 @@ def _resume_work_command_handler(
             compute_commands,
             service=service() if context.graph_read_scope is not None else None,
             graph_read_scope=context.graph_read_scope,
+            mailbox=mailbox,
         )
     if not context.ask_allowed:
         handler = replace(handler, allowed_verbs=handler.allowed_verbs - {"ask"})

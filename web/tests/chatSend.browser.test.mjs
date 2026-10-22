@@ -39,8 +39,17 @@ test("a failed send stays in place and Resend reuses its request id", async () =
     await page.getByRole("button", { name: "Start Discuss turn", exact: true }).click();
     const failed = lines.getByRole("button", { name: "Resend", exact: true });
     await failed.waitFor();
-    // The message stays where it was sent, and the composer keeps a copy.
+    // The message stays where it was sent, after every admitted turn, and the
+    // composer keeps a copy.
     assert.equal(await lines.getByText("Lost on the way", { exact: true }).count(), 1);
+    assert.equal(
+      await lines
+        .locator(".node-chat-line.human")
+        .last()
+        .getByText("Lost on the way", { exact: true })
+        .count(),
+      1,
+    );
     assert.equal(await composer.inputValue(), "Lost on the way");
 
     await failed.click();
@@ -54,6 +63,51 @@ test("a failed send stays in place and Resend reuses its request id", async () =
     assert.equal(calls[1].requestId, calls[0].requestId);
     // Starting before a provider process exists shows no steering refusal.
     assert.equal(await page.getByText("No live provider process", { exact: false }).count(), 0);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
+
+test("a never-run chat keeps fast typing and shows one line per send", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0, strictPort: false },
+  });
+  let browser;
+  try {
+    await server.listen();
+    const address = server.httpServer?.address();
+    assert.ok(address && typeof address === "object");
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 1000, height: 900 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    // A development build reports a render loop on the console instead of throwing.
+    page.on("console", (message) => {
+      if (message.type() === "error" && message.text().includes("Maximum update depth"))
+        errors.push(message.text());
+    });
+    await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatSend.html?fresh`);
+    const composer = page.getByRole("textbox", { name: "Message", exact: true });
+    const lines = page.locator(".node-chat-lines");
+    await composer.waitFor();
+
+    const text = "Every keystroke arrives in a chat that never ran";
+    await composer.pressSequentially(text, { delay: 0 });
+    assert.equal(await composer.inputValue(), text);
+
+    await page.getByRole("button", { name: "Start Discuss turn", exact: true }).click();
+    await lines.getByText(text, { exact: true }).waitFor();
+    // The held start shows the message once, though both the store and the
+    // chat hold it.
+    assert.equal(await lines.locator(".node-chat-line.human").count(), 1);
+    // A lost request keeps that one line, now with Resend.
+    await page.evaluate(() => window.failHeldStart());
+    await lines.getByRole("button", { name: "Resend", exact: true }).waitFor();
+    assert.equal(await lines.locator(".node-chat-line.human").count(), 1);
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

@@ -408,12 +408,8 @@ class ConsolidationStoreMixin(StoreMixinBase):
                 if artifact is None:
                     raise ValueError("consolidation report artifact is unavailable")
                 metadata = json.loads(artifact[0])
-                if metadata.get("kept_at"):
-                    conn.execute(
-                        "UPDATE consolidation_runs SET state='kept',resolved_at=COALESCE(resolved_at,?) WHERE run_id=? AND state='open'",
-                        (metadata["kept_at"], run_id),
-                    )
-                elif row["state"] == "open":
+                # A saved report is retained, not reviewed; only a human settles the row.
+                if row["state"] == "open":
                     metadata["expires_at"] = None
                 conn.execute(
                     "UPDATE artifacts SET metadata=? WHERE artifact_id=?",

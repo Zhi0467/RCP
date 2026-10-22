@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from rcp.__main__ import _configure_logging
-from rcp.agents import AgentLauncher, ProviderReadiness
+from rcp.agents import AgentLauncher, AgentProcessControl, ProviderReadiness
 
 _TOKEN_SHAPED = "sk-ant-oat01-SECRETSECRETSECRETSECRET"
 _LAUNCHER_LOGGER = "rcp.agents.launcher"
@@ -88,6 +88,43 @@ async def test_provider_process_leaves_two_journal_lines_and_none_of_its_output(
     if exit_code:
         assert "reason=" in exit_line
     assert all(_TOKEN_SHAPED not in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_a_paused_provider_exit_is_logged_at_info(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A pause RCP asked for ends the process by signal; that is not a warning."""
+
+    launcher = _codex_exec_launcher(monkeypatch, exit_code=0)
+    started = json.dumps({"type": "thread.started", "thread_id": "session-test"})
+    script = f"import sys, time\nprint({started!r}, flush=True)\ntime.sleep(60)\n"
+    monkeypatch.setattr(
+        launcher, "_command", lambda *args, **kwargs: [sys.executable, "-c", script]
+    )
+    control = AgentProcessControl()
+
+    async def drain() -> None:
+        async for event in launcher.stream(
+            "codex",
+            "inspect the task",
+            cwd=tmp_path,
+            capability="scratch_patch",
+            operation_id="op-pause",
+            control=control,
+        ):
+            if event.event == "session":
+                control.request_pause()
+
+    with caplog.at_level(logging.INFO, logger=_LAUNCHER_LOGGER):
+        await asyncio.wait_for(drain(), timeout=30)
+
+    exited = [r for r in caplog.records if "return_code=" in r.getMessage()]
+    assert len(exited) == 1
+    assert "return_code=0 " not in exited[0].getMessage()
+    assert exited[0].levelno == logging.INFO
 
 
 def test_serve_attaches_one_stderr_handler_to_the_package_logger() -> None:

@@ -2381,10 +2381,13 @@ def create_app(
                 response = JSONResponse(
                     status_code=409,
                     content={
-                        "detail": (
-                            "RCP was replaced by another backend instance. Refresh before "
-                            "making changes."
-                        ),
+                        "detail": {
+                            "code": "backend_instance_replaced",
+                            "message": (
+                                "RCP was replaced by another backend instance. Refresh before "
+                                "making changes."
+                            ),
+                        },
                         "instance_id": identity.instance_id,
                     },
                 )

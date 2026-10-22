@@ -166,6 +166,60 @@ without making it current; composer comments use the current chat session.
 **New session** creates a new chat id. Provider, host, stage, target and scope
 remain bound; neither another chat nor another graph target can reuse them.
 
+### Branch this chat
+
+A member can create a new conversation on a new graph branch forked at the
+source conversation's current target and head, or on an existing non-archived
+branch (including main when leaving a branch). The source conversation and its
+stage stay unchanged. Creation records the source chat, its latest operation,
+source graph target, title and launch profile; it launches no provider. An active,
+paused, imported or unusable latest session cannot seed a branch, and the client
+checks this before it creates a new graph branch for the chat. The request carries
+a client id that names the new chat, so a retried request returns the same chat.
+The new, initially empty conversation is immediately readable and listed on its
+own target, which ordinary admission keeps fixed. A node conversation keeps its
+node when that node exists on the target; otherwise the new chat has project
+scope while retaining the native conversation context. A chat without a native
+session of its own, such as a branched chat before its first turn, cannot branch.
+
+Its first human message forks the source chat's latest session as it stands when
+that message is admitted, with that turn's provider, model, reasoning and machine;
+the same usability rules apply again then. Admission records the source session,
+its cwd, its host and the source chat's latest turn on the turn. From then on the
+new chat never takes newer source state: Retry and later messages before it has a
+session carry that record, and an attempt on another host fails. Fork failure fails
+the turn and leaves Retry available; it never falls back to a fresh session. Once
+the source chat admits a newer turn or loses that session, a carried fork is
+refused before launch (`chat_fork_source_moved` or `chat_fork_source_unavailable`)
+as a failed turn without Retry, because the provider can only fork the source's
+live state. The launch rechecks this just before the provider starts, so a queued
+or slow-starting fork fails the same way, without Retry, instead of taking newer
+source turns. When the provider first names the forked session, the same check runs
+again in the transaction that would record it; a refusal fails the turn the same way
+and never records that session, so a source turn admitted during startup is never
+inherited. The failed turn shows the code's shared human reason, as the composer
+does for a refused admission. Offline restore detaches a fork that has no session yet, so the new
+chat's next message starts a fresh session like any restored chat; its origin
+link remains. Once the provider reports the new native
+session, later attempts and turns, including a Retry after Pause, resume that
+session normally. The fork turn replaces the inherited master, which states the
+graph target as every chat master does, and on that turn alone adds a fork note
+naming the admitted target. The note tells the agent that the inherited
+transcript's graph, Bulletin channel, roster, mentions and paths belong to the
+source. Every other branch-scoped fact (branch read pointers, Bulletin snapshot
+and roster, agent name, questions, workspace and command client) is rendered each
+turn from the new chat's own task.
+**Why:** the provider transcript is the only place a stale branch can come from.
+
+The entry point is "Branch this chat" in the chat header's menu. It opens the
+branch picker, listing branches to move to and New branch, without merge, rename,
+or archive. The top bar's picker names the new chat's target; the transcript's
+first line links back to the source chat, named by the source's current title, or
+by the title recorded at creation once the source is gone.
+Origin metadata remains available after the new chat has its own turns. Browser consent remains the new chat's own preference.
+The fork turn always states that preference, even when off, because the forked
+session may still hold the source's grant; later turns state it only when it changes.
+
 A generic `watcher_wake` is a new logical turn, clears handoffs and uses the wake
 prompt node. Experiment and child wakes keep their own policies. Shared master
 restoration, deltas and replacement are owned by

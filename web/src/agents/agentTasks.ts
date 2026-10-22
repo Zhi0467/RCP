@@ -1,3 +1,4 @@
+import { TURN_REFUSAL_REASONS } from "../core/api.ts";
 import { ARTIFACT_VIEWS } from "../core/types.ts";
 import type {
   AgentArtifactDescriptor,
@@ -333,7 +334,10 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
       lines.push({
         lineId: `task:${task.operation_id}:error`,
         role: "error",
-        text: task.error,
+        // A refusal recorded as a stable code reads as the composer's own text.
+        text: Object.hasOwn(TURN_REFUSAL_REASONS, task.error)
+          ? TURN_REFUSAL_REASONS[task.error]
+          : task.error,
         taskId: task.operation_id,
         timestamp: task.created_at,
         trigger,

@@ -548,6 +548,7 @@ def test_stale_instance_guard_rejects_mutation_before_side_effect(app) -> None:
     )
 
     assert rejected.status_code == 409
+    assert rejected.json()["detail"]["code"] == "backend_instance_replaced"
     assert rejected.json()["instance_id"] == app.state.instance_metadata.instance_id
     assert any(item["id"] == project_id for item in client.get("/api/projects").json())
 
@@ -3631,6 +3632,30 @@ def test_new_chat_turn_refuses_resumable_paused_attempt(app, tmp_path) -> None:
 
     assert response.status_code == 409
     assert "paused turn" in response.json()["detail"]
+
+
+def test_new_chat_turn_refuses_archived_chat_until_restored(app) -> None:
+    client = signed_in_client(app)
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    url = f"/api/projects/{project_id}"
+    chat_id = str(uuid.uuid4())
+    client.post(f"{url}/chats/{chat_id}/archive", json={"archived": True})
+    tasks_before = len(store.agent_tasks(project_id))
+
+    refused = client.post(
+        f"{url}/tasks/project_chat", json={"chat_id": chat_id, "message": "from a stale tab"}
+    )
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == "chat_archived"
+    assert len(store.agent_tasks(project_id)) == tasks_before
+    assert client.get(f"{url}/chat-display").json()["archived"] == [chat_id]
+    client.post(f"{url}/chats/{chat_id}/archive", json={"archived": False})
+    restored = client.post(
+        f"{url}/tasks/project_chat", json={"chat_id": chat_id, "message": "after restore"}
+    )
+    assert restored.status_code == 202
 
 
 @pytest.mark.parametrize("legacy_layout", [False, True])

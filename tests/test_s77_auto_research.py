@@ -33,7 +33,7 @@ from rcp.service import ProjectService, ProposalDecisionRequest
 from rcp.storage import AppStore
 from tests.helpers import unchecked_write_authority
 
-from .helpers import fabricated_authorizer, seated_on_every_project
+from .helpers import CommandFileMailbox, fabricated_authorizer, seated_on_every_project
 from .test_auto_research_commands import _Effects, _setup_auto_research, _spawn_request
 from .test_auto_research_stream import (
     _dispatcher,
@@ -524,8 +524,8 @@ def test_s77_worker_seating_boundary_does_not_narrow_decision_authority(tmp_path
     dispatcher = AutoResearchCommandDispatcher(
         store,
         effects.bundle(),
-        command_file_reader=lambda _filename, _max_bytes: (
-            "Inspect the seated node and return the concrete result."
+        mailbox=CommandFileMailbox(
+            lambda _filename, _max_bytes: "Inspect the seated node and return the concrete result."
         ),
     )
 

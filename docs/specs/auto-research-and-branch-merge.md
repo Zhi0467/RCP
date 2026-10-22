@@ -75,7 +75,9 @@ and hyphens, with alphanumeric ends, never `main`. Retired and archived names
 stay reserved. Both episode kinds accept `branch_name`; an Experiment may name
 one only when creating an isolated branch. Invalid/taken names return
 `branch_name_invalid` (422) / `branch_name_taken` (409). Name and episode
-reservation share one SQLite transaction.
+reservation share one SQLite transaction. A name field lowercases as the member
+types and turns each run of spaces or hyphens into one hyphen; it drops edge hyphens
+only when the name is submitted, so a space typed between words survives.
 
 Blank names become `research-<mon>-<day>` or `experiment-<mon>-<day>` using the
 root's UTC date, lowercase English month, and two-digit day; clashes get `-2`,

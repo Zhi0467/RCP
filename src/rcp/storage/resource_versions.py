@@ -499,6 +499,11 @@ def install_bulletin_resource_versions(connection: sqlite3.Connection) -> None:
     )
 
 
+def install_bulletin_artifact_versions(connection: sqlite3.Connection) -> None:
+    """Posts resolve their artifact links at read time, so an artifact change refreshes them."""
+    _install(connection, "artifacts", [_bump("ROW.project_id", "bulletin")], suffix="_bulletin")
+
+
 def migrate_chat_name_versions(connection: sqlite3.Connection) -> None:
     """Reinstall the chat owner after adding persistent self-name state."""
     for event in ("insert", "update", "delete"):

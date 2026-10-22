@@ -141,6 +141,30 @@ failing the human's turn. The capability, stage and scope do not change.
 Binding it to a session would prevent configuration changes taking effect on
 resume. The prompt-delivery boundary prevents fallback from duplicating work.
 
+A branched chat's first message records the source chat's latest native session
+on its turn when that message is admitted; the **Branch this chat** action itself
+records only the origin
+([lifecycle](conversations-episodes-and-watchers.md#branch-this-chat)). The launch
+carries that fork fact separately from normal resume identity; it retains the
+source provider, model, reasoning and execution machine and uses the new chat's own stage and graph target. The source cwd is the
+one the source's own launches used (a remote stage's workspace; a local stage's
+recorded layout). The launcher validates the fork contract once (no resume, a
+source cwd, a supervised remote host) before building a command; the execution
+host prepares the fork, and provider commands receive only the session id. Like a
+resume, a fork uses the profile's current runtime. Provider profiles
+render Codex `thread/fork` (with `excludeTurns: true`) or `exec fork`, Claude
+`--resume … --fork-session`, and OpenCode `--session … --fork`. The returned
+native session must differ from the source; subsequent turns resume that new
+identity. A failed fork never becomes a fresh session.
+
+Before Claude launches, its session-format owner copies the source transcript
+into the new cwd's native project directory on the execution host. The source
+transcript and stage remain untouched. Once the source chat admits a newer turn,
+a carried fork is refused rather than retried (`chat_fork_source_moved`). The
+ordinary continuation prompt names the new graph target and refreshes its staged context;
+branching onto an existing target also warns that its graph may differ from the
+conversation's previous context.
+
 App-server usage is the change in a thread's `tokenUsage.total` between its
 pre-turn resume snapshot (zero when fresh) and active turn's final snapshot.
 Snapshots replace totals, never sum them; other threads/turns contribute nothing.
@@ -380,9 +404,11 @@ MCP configuration UI.
 
 Work and orchestrate use Claude's supported unattended `dontAsk` mode with an
 RCP-authored strict settings allow-list for the exact workspace and admitted
-repository roots. They never use `bypassPermissions`. RCP suppresses user
-settings for this enforced launch. Every Claude launch passes strict empty MCP
-configuration; supported skills remain available. Discuss with a broker gate adds
+repository roots. They never use `bypassPermissions`. They load only user
+settings (`--setting-sources user`), so the account's own skills and plugins
+load as in Discuss. A user allow rule cannot widen RCP's allow-list, a user deny
+rule can narrow it, and `disableAllHooks` keeps hooks off. Every Claude launch
+passes strict empty MCP configuration. Discuss with a broker gate adds
 only `Bash(python3 -I -S <staged-client-path>:*)` for that gate's exact staged client.
 Its Edit denies protect the client directory itself and all descendants, including
 when an additional read directory or a legacy workspace contains it. The literal
@@ -1211,11 +1237,20 @@ clean recovery, including explicit episode rebinding; `session_limit` retains
 its session because an account limit may lift. RCP does not infer limit scope
 from prose. Humans may change provider/model/reasoning where recovery supports it.
 
-Native skill inventory is app-scoped, separate from official packages. Startup
+Native skill inventory is app-scoped, separate from official packages. Each
+provider loads skills its own way from the account it runs as; RCP never copies,
+stages or manages them, and agents are not told how skills arrive. The inventory
+probe carries the launch's skill-affecting flags (Claude's setting sources,
+Codex's disabled features, which exec and app-server turns share, OpenCode's
+`--pure` and disabled project config), so the menu offers only skills a launch
+loads. A Codex exec turn ignores user config, so it still loads skills that
+config turns off. A one-shot probe's output passes through a file, because some
+provider runtimes exit before a pipe drains. Startup
 refreshes after readiness; success atomically replaces inventory and failure
 retains it visibly stale. Project open and launch do not refresh. Selection binds
 provider, machine, successful version, hash and name per turn. It cannot change
-launch flags or scope; provider rejection fails visibly without fallback.
+launch flags or scope. A name missing from the inventory refuses the launch; a
+selected skill the provider does not load reaches the agent only as prompt text.
 
 ## Official skills and workflows
 
@@ -1326,10 +1361,14 @@ The target-local Bulletin is untrusted operational hearsay, never graph or
 launch authority. Work-capable runs (Work, Experiment, child Work, and the
 Auto-research orchestrator and worker) hold the `bulletin` verb while the owning
 episode's Bulletin is on; only Auto-research start can turn it off, and a run
-with no episode always holds it. Holding it means `bulletin --read [--cursor C]`,
-`bulletin --post --key K [--reply-to P] <body-file>`,
-`bulletin --edit P --key K <body-file>`, and `bulletin --delete P --key K`;
-references come from inline `#node-id` text. That one resolved verb set drives
+with no episode always holds it. Holding it means `bulletin --read [--cursor C] [--channel C]`,
+`bulletin --post --key K [--reply-to P | --channel C] <body-file>`,
+`bulletin --edit P --key K <body-file>`, `bulletin --delete P --key K`, and
+`bulletin --artifact ID`, plus `bulletin --link FILE` in Work-family launches (Work,
+Auto-research child Work, Experiment, Graph consolidation), whose turns write an
+artifact directory; the usage and the dispatcher read the same Work fact. References come from inline `#node-id` and
+`<artifact:ID>` text. The parser and usage renderer share option records. That
+one resolved verb set drives
 both the contract's usage lines and command admission. Discuss sees the Bulletin
 launch snapshot without holding the `bulletin` verb.
 
@@ -1362,10 +1401,34 @@ The mentions section holds only open mentions, from every channel of the
 project, each naming its channel: a member may mention an agent from any
 channel. A mention stays open until the agent posts later in the same thread;
 the agent's own posts never count. A reply, edit, or delete lands in the channel
-of the post it names; a new post stays in the agent's own channel. The
-per-turn pointer line carries the open count. Holders of the verb must read and
+of the post it names. A read and a new post default to the agent's own channel; `--channel`
+accepts main or any project branch name/id, resolved the same way for both, so a
+branch agent can read main's posts and links. Reads keep their existing authority. Agents prefer their own channel and
+post elsewhere only when the message belongs there. A reply cannot override its
+parent's channel. The per-turn pointer line carries the open count. Holders of the verb must read and
 reply to an open mention before finishing; replying is not obeying. Otherwise
 they use it occasionally, not every turn: to catch up on the branch and to post
 short progress or team-sync notes. Other agent channels a launch holds come
 first, and questions needing human input go through `ask` when it is held.
 One `BULLETIN_RULES` tuple renders these rules in Work and Auto-research.
+
+Artifact links in posts and replies carry the artifact id, source name, and media
+type in reads and launch snapshots. `bulletin --artifact ID` resolves the current
+version of any unexpired artifact in the same project, including another agent's
+chat or branch, and returns a read-only immutable input path and version metadata.
+It uses the existing project-reference byte limits and local/remote input staging.
+This is a read: it changes no artifact, post, or graph, and requires no mutation
+key. The Bulletin grant, enabled state, and live authorizing membership still
+apply. Artifact bytes are untrusted context; opening HTML still uses the existing
+opaque artifact viewer.
+
+`bulletin --link FILE` names one file the agent wrote to this turn's artifact
+directory and returns its artifact id and `<artifact:ID>` token. The id is the one
+turn-end discovery gives that file (the logical turn's scope and the file name), so
+an agent can link a file in the same turn it writes it. RCP refuses a name that is
+not a regular file in that directory with `bulletin_link_not_artifact`. RCP checks
+the stage, not the client, because only RCP knows which turn folder is the logical
+turn's. The link resolves at read time once the turn publishes the artifact; discovery keeps an artifact that a live
+post already links, under the artifact's lock that posts also hold, so such a link
+saves its artifact like any other. The Auto-research orchestrator and workers write
+no turn artifacts and neither see nor may run `--link`.

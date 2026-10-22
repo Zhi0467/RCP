@@ -844,51 +844,58 @@ button.agent-provider-label {
 .coach-column > .agent-provider-label {
   margin: 6px 10px;
 }
-.chat-scope-control {
-  display: flex;
-  margin-left: auto;
-  min-width: 0;
-}
-.chat-new-session {
-  align-items: center;
-  background: var(--paper);
-  border: 1px solid var(--line-strong);
-  border-radius: 4px;
-  color: var(--ink);
-  display: inline-flex;
+.chat-header-menu {
   flex: none;
-  font-size: var(--type-2xs);
-  font-weight: 650;
-  gap: 5px;
-  min-height: 26px;
-  padding: 4px 8px;
+  margin-left: auto;
+  position: relative;
 }
-.chat-new-session:hover {
-  background: var(--surface);
-  border-color: var(--ink);
+.chat-header-menu-list {
+  min-width: 200px;
 }
-.chat-scope-control .scope-picker,
-.chat-scope-control .scope-trigger {
+/* The branch and repository pickers open from ordinary rows of this menu: its
+   type and hover, the current value muted, and a trailing chevron. */
+.chat-header-menu-list :is(.branch-picker-trigger, .scope-trigger) {
+  align-items: center;
+  display: flex;
+  font-weight: inherit;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+}
+.chat-header-menu-list :is(.branch-picker-trigger, .scope-trigger) > svg:last-child {
+  color: var(--muted);
+  height: 13px;
+  margin-left: auto;
+  width: 13px;
+}
+.chat-scope-control {
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+  padding-top: 4px;
+}
+.chat-scope-control .scope-trigger > span {
+  display: flex;
+  flex: 1;
+  gap: 12px;
+  justify-content: space-between;
   min-width: 0;
 }
-.chat-scope-control .scope-trigger {
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  gap: 6px;
-  min-height: 26px;
-  padding: 4px 8px;
+.chat-scope-control .scope-trigger .eyebrow {
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: nowrap;
 }
 .chat-scope-control .scope-trigger strong {
-  font-size: var(--type-2xs);
-  font-weight: 650;
+  color: var(--muted);
+  font-size: inherit;
+  font-weight: inherit;
   margin-top: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.chat-scope-control .scope-trigger .eyebrow {
-  display: none;
 }
 
 .agent-role-stack {
@@ -1240,10 +1247,10 @@ button.agent-provider-label {
   }
 }
 .agent-row-menu-list {
-  background: var(--sheet);
+  background: var(--surface);
   border: 1px solid var(--line-strong);
   border-radius: 6px;
-  box-shadow: 0 6px 18px color-mix(in srgb, var(--ink) 16%, transparent);
+  box-shadow: var(--shadow);
   display: grid;
   min-width: 120px;
   padding: 4px;
@@ -1264,7 +1271,7 @@ button.agent-provider-label {
 }
 .agent-row-menu-list button:hover:not(:disabled),
 .agent-row-menu-list button:focus-visible {
-  background: var(--surface);
+  background: var(--cobalt-soft);
 }
 .agent-row-menu-list button:disabled {
   color: var(--faint);
@@ -1437,6 +1444,10 @@ button.agent-provider-label {
   /* A bare grid column grows to its text, which then clips without an ellipsis. */
   grid-template-columns: minmax(0, 1fr);
   min-width: 0;
+}
+/* A phone header without a title, meta, or banner is just the controls row. */
+.conversation-heading:empty {
+  display: none;
 }
 .conversation-header > .chat-context-controls {
   border-bottom: 0;
@@ -2792,9 +2803,9 @@ button.agent-provider-label {
     font-weight: 700;
     text-align: left;
   }
-  .conversation-list-toggle {
-    grid-column: 1;
-    grid-row: 1;
+  /* The controls take their own full row under any heading; the menu ends it. */
+  .conversation-header > .chat-context-controls {
+    flex: 1 1 100%;
   }
   .view-disclosure-summary > span {
     flex: 1;

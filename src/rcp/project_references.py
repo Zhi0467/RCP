@@ -32,6 +32,42 @@ class ResolvedProjectReference:
     reference: ProjectReferenceSource
 
 
+def resolve_project_artifact(
+    store: AppStore,
+    project_id: str,
+    artifact_id: str,
+    *,
+    max_bytes: int = CHAT_ATTACHMENT_MAX_TOTAL_BYTES,
+) -> ResolvedProjectReference:
+    """Copy the current project artifact under its lock, preserving lifetime and size limits."""
+    try:
+        with store.artifact_lock(artifact_id):
+            artifact = store.readable_artifact(project_id, artifact_id)
+            if artifact is None:
+                raise ValueError("Project reference artifact is unavailable.")
+            size = next(
+                version.size_bytes
+                for version in store.artifact_versions(artifact.artifact_id)
+                if version.version_id == artifact.current_version
+            )
+            if size > min(CHAT_ATTACHMENT_MAX_FILE_BYTES, max_bytes):
+                raise ValueError("Project reference artifacts exceed the attachment limits.")
+            content = store.read_artifact_bytes(artifact.artifact_id, artifact.current_version)
+            return ResolvedProjectReference(
+                filename=PurePosixPath(artifact.source_name).name,
+                display_name=artifact.display_title or artifact.source_name,
+                media_type=artifact.media_type,
+                content=content,
+                reference=ProjectReferenceSource(
+                    kind="artifact",
+                    source_id=artifact.artifact_id,
+                    version=artifact.current_version,
+                ),
+            )
+    except (KeyError, OSError, StateUnavailable, StopIteration) as exc:
+        raise ValueError("Project reference source is unavailable.") from exc
+
+
 def resolve_project_references(
     store: AppStore,
     catalog: ProjectCatalog,
@@ -48,50 +84,14 @@ def resolve_project_references(
     for selector in selectors:
         try:
             if selector.kind == "artifact":
-                with store.artifact_lock(selector.artifact_id):
-                    artifact = store.artifact(selector.artifact_id)
-                    if artifact is None or artifact.project_id != project_id:
-                        raise ValueError("Project reference artifact is unavailable.")
-                    # The same lifetime rule as the artifact routes' _stored_artifact.
-                    if (
-                        artifact.expires_at is not None
-                        and artifact.expires_at <= store.now()
-                        and artifact.artifact_id
-                        not in (
-                            store.protected_edit_artifact_ids() | store.legacy_artifact_import_ids()
-                        )
-                    ):
-                        raise ValueError("Project reference artifact has expired.")
-                    # Stored versions may exceed the turn caps; check sizes before reading.
-                    size = next(
-                        version.size_bytes
-                        for version in store.artifact_versions(artifact.artifact_id)
-                        if version.version_id == artifact.current_version
-                    )
-                    artifact_bytes += size
-                    if (
-                        size > CHAT_ATTACHMENT_MAX_FILE_BYTES
-                        or artifact_bytes > CHAT_ATTACHMENT_MAX_TOTAL_BYTES
-                    ):
-                        raise ValueError(
-                            "Project reference artifacts exceed the attachment limits."
-                        )
-                    content = store.read_artifact_bytes(
-                        artifact.artifact_id, artifact.current_version
-                    )
-                    resolved.append(
-                        ResolvedProjectReference(
-                            filename=PurePosixPath(artifact.source_name).name,
-                            display_name=artifact.display_title or artifact.source_name,
-                            media_type=artifact.media_type,
-                            content=content,
-                            reference=ProjectReferenceSource(
-                                kind="artifact",
-                                source_id=artifact.artifact_id,
-                                version=artifact.current_version,
-                            ),
-                        )
-                    )
+                item = resolve_project_artifact(
+                    store,
+                    project_id,
+                    selector.artifact_id,
+                    max_bytes=CHAT_ATTACHMENT_MAX_TOTAL_BYTES - artifact_bytes,
+                )
+                artifact_bytes += len(item.content)
+                resolved.append(item)
                 continue
             service = catalog.open(project_id)
             if selector.kind == "paper":
@@ -118,7 +118,7 @@ def resolve_project_references(
             materialization = source.history.current_materialization()
             head = source.history.head_ref(materialization)
             context = ContextAssembler(source.manifest).chat_context(
-                materialization.state, node_id=selector.node_id
+                materialization.state, graph_target=target, node_id=selector.node_id
             )
             content = json.dumps(
                 {

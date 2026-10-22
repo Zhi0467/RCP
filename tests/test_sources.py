@@ -11,6 +11,7 @@ import rcp.sources.indexer as source_indexer
 from rcp.agents import ContextAssembler
 from rcp.config import MachineConfig
 from rcp.core.models import GraphState
+from rcp.core.transition_models import GraphTargetRef
 from rcp.history import HistoryManager
 from rcp.paper import PaperService
 from rcp.service import ProjectService, RunRequest
@@ -514,10 +515,12 @@ def test_chat_context_ignores_remote_indexed_app_chat(manifest, tmp_path, monkey
     state = GraphState(project_truth_scope=manifest.project.truth_scope)
     on_owner = assembler.chat_context(
         state,
+        graph_target=GraphTargetRef(),
         run_truth_scope=["repo-a"],
     )
     from_laptop = assembler.chat_context(
         state,
+        graph_target=GraphTargetRef(),
         run_truth_scope=["repo-a"],
     )
 
@@ -549,6 +552,7 @@ def test_chat_context_does_not_include_indexed_transcripts(manifest, tmp_path) -
     assert index.sessions
     context = ContextAssembler(manifest).chat_context(
         GraphState(project_truth_scope=manifest.project.truth_scope),
+        graph_target=GraphTargetRef(),
         run_truth_scope=["repo-a"],
     )
 
@@ -618,7 +622,9 @@ def test_chat_context_does_not_resolve_remote_transcript_pointers(
     index = indexer.build()
     assert index.sessions
     state = GraphState(project_truth_scope=manifest.project.truth_scope)
-    context = ContextAssembler(manifest).chat_context(state, run_truth_scope=["repo-a"])
+    context = ContextAssembler(manifest).chat_context(
+        state, graph_target=GraphTargetRef(), run_truth_scope=["repo-a"]
+    )
 
     assert "conversations" not in context.model_dump()
 

@@ -243,6 +243,12 @@ DEPENDENCIES: tuple[Dependency, ...] = (
         apt="coreutils",
     ),
     Dependency(
+        "mktemp",
+        "Hold a provider skill probe's output in a file, so a provider that exits before its pipe drains is read whole.",
+        required_on=frozenset({"local", "remote"}),
+        apt="coreutils",
+    ),
+    Dependency(
         "mv",
         "Publish the keep-awake watchdog's state files atomically.",
         optional_on=frozenset({"local"}),

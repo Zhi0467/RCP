@@ -1,3 +1,6 @@
+import { ChatOriginLink } from "./ChatBranchPicker";
+import { ChatHeaderMenu, type ChatHeaderAction } from "./ChatHeaderMenu";
+import type { ChatOrigin } from "../core/types";
 import { turnOutcomeChip } from "./turnOutcome";
 import { memberDraftKey } from "../core/draftStorage";
 import { MAIN_GRAPH } from "../core/graphTarget";
@@ -204,6 +207,7 @@ import {
   profileRunConfig,
 } from "../core/AgentConfigControls";
 import { SkillPicker, useSkillPicker } from "../core/SkillPicker";
+import { useLayerDismiss } from "../core/useLayerDismiss";
 import { RepositoryScope } from "./RepositoryScope";
 import { AgentStatusStrip, CompactionDivider } from "./AgentStatusStrip";
 import { chatStatusTasks, compactionAnchors } from "./agentStatusModel";
@@ -221,11 +225,16 @@ interface Props {
   conversationTitle?: string;
   /** Workspace title and status; shares one row with the chat controls. */
   header?: ReactNode;
+  /** Chat actions the host adds to the header menu, before New session. */
+  headerActions?: readonly ChatHeaderAction[];
+  /** Controls the host adds to the header menu after its actions. */
+  headerMenuItems?: ReactNode;
   headerState?: string;
   runScope: string[];
   tasks: AgentTask[];
   watchers?: WatcherRecord[];
   historyMessages?: ChatMessage[];
+  origin?: ChatOrigin | null;
   chatId: string;
   presentation?: "floating" | "workspace";
   fixedConversation?: boolean;
@@ -318,6 +327,8 @@ interface KeyboardChatAnnotationComposer {
 type ChatAnnotationComposer = SelectedChatAnnotationComposer | KeyboardChatAnnotationComposer;
 
 const EMPTY_WATCHERS: WatcherRecord[] = [];
+const EMPTY_HISTORY: ChatMessage[] = [];
+const NO_HEADER_ACTIONS: readonly ChatHeaderAction[] = [];
 
 function chatScrollObservation(element: HTMLElement, previousTop: number) {
   return {
@@ -358,11 +369,14 @@ export function NodeChat({
   glossaryIndex,
   conversationTitle,
   header,
+  headerActions = NO_HEADER_ACTIONS,
+  headerMenuItems,
   headerState,
   runScope,
   tasks,
   watchers = EMPTY_WATCHERS,
-  historyMessages = [],
+  historyMessages = EMPTY_HISTORY,
+  origin,
   chatId,
   presentation = "floating",
   fixedConversation = false,
@@ -417,27 +431,33 @@ export function NodeChat({
   }, [chatId, historyMessages, steeringMessages]);
   const [pendingTurn, setPendingTurn] = useState<PendingChatTurn | null>(null);
   const transcript = useMemo(
-    () =>
-      orderTranscriptLines([
+    () => [
+      ...orderTranscriptLines([
         ...reconcileChatHistoryArtifacts(displayedMessages, relatedTasks),
         ...reconstructTaskTranscript(chatTasksMissingFromHistory(relatedTasks, displayedMessages)),
-        // The shared store already shows the sent message while its start is in
-        // flight; this local line covers only a chat with no loaded transcript.
-        ...(pendingTurn && !pendingTurnShownByHistory(pendingTurn.clientId, displayedMessages)
-          ? [
-              {
-                lineId: `pending:${pendingTurn.clientId}`,
-                role: "human" as const,
-                text: pendingTurn.text,
-                taskId: pendingTurn.clientId,
-                timestamp: pendingTurn.timestamp,
-                mode: pendingTurn.mode,
-                attachments: pendingTurn.attachments,
-                trigger: "human" as const,
-              },
-            ]
-          : []),
       ]),
+      // The shared store already shows the sent message while its start is in
+      // flight, in the transcript or as a task under the same id; this local line
+      // covers only a chat the store does not show it in.
+      // Not yet admitted, it stays last: a turn another tab started first may
+      // carry a later server time than this browser's send time.
+      ...(pendingTurn &&
+      !pendingTurnShownByHistory(pendingTurn.clientId, displayedMessages) &&
+      !relatedTasks.some((task) => task.operation_id === pendingTurn.clientId)
+        ? [
+            {
+              lineId: `pending:${pendingTurn.clientId}`,
+              role: "human" as const,
+              text: pendingTurn.text,
+              taskId: pendingTurn.clientId,
+              timestamp: pendingTurn.timestamp,
+              mode: pendingTurn.mode,
+              attachments: pendingTurn.attachments,
+              trigger: "human" as const,
+            },
+          ]
+        : []),
+    ],
     [displayedMessages, pendingTurn, relatedTasks],
   );
   const derivedConfig = useMemo(
@@ -445,9 +465,16 @@ export function NodeChat({
       latestPersistedChatConfig(
         historyMessages,
         relatedTasks,
-        profileRunConfig(project.agent_profiles[surface]),
+        origin
+          ? {
+              provider: origin.provider,
+              model: origin.model ?? "",
+              reasoning: origin.reasoning ?? "",
+              run_on: origin.run_on,
+            }
+          : profileRunConfig(project.agent_profiles[surface]),
       ),
-    [historyMessages, project.agent_profiles, relatedTasks, surface],
+    [historyMessages, origin, project.agent_profiles, relatedTasks, surface],
   );
   // The human's pick for this chat's next turns. It is keyed by chat, so another
   // chat starts from its own default; the machine always stays the derived one.
@@ -456,6 +483,19 @@ export function NodeChat({
     config: AgentRunConfig;
   } | null>(null);
   const [configOpen, setConfigOpen] = useState(false);
+  const configChipRef = useRef<HTMLButtonElement | null>(null);
+  const configPanelRef = useRef<HTMLDivElement | null>(null);
+  useLayerDismiss(
+    configOpen,
+    () => setConfigOpen(false),
+    [configChipRef, configPanelRef],
+    configChipRef,
+  );
+  const pendingFork = Boolean(
+    origin?.pending &&
+    !relatedTasks.some((task) => task.native_session_id) &&
+    !historyMessages.some((message) => message.native_session_id),
+  );
   const config = useMemo(
     () =>
       configOverride?.chatId === chatId
@@ -554,6 +594,12 @@ export function NodeChat({
   );
   const referencesIdentity = useRef(referencesKey);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const addPickerRef = useRef<HTMLDivElement | null>(null);
+  const addButtonRef = useRef<HTMLButtonElement | null>(null);
+  const closeAddMenu = useCallback(() => setAddMenuOpen(false), []);
+  useLayerDismiss(addMenuOpen, closeAddMenu, [addPickerRef], addButtonRef);
+  // Another chat starts with its Add menu closed.
+  useEffect(closeAddMenu, [chatId, closeAddMenu]);
   const [referencePickerOpen, setReferencePickerOpen] = useState(false);
   useEffect(() => {
     if (referencesIdentity.current !== referencesKey) {
@@ -791,10 +837,11 @@ export function NodeChat({
     const reset = computeIdentityRef.current !== identity;
     computeIdentityRef.current = identity;
     setComputeState((current) => {
-      if (reset) return { ids: derivedComputeIds, pinned: false };
-      const reconciled = reconcileActiveComputeIds(current.ids, computeConnections);
-      if (current.pinned) return { ...current, ids: reconciled };
-      return { ids: derivedComputeIds, pinned: false };
+      const next =
+        reset || !current.pinned
+          ? { ids: derivedComputeIds, pinned: false }
+          : { ...current, ids: reconcileActiveComputeIds(current.ids, computeConnections) };
+      return next.pinned === current.pinned && sameIds(next.ids, current.ids) ? current : next;
     });
     if (reset) {
       setComputeMenuOpen(false);
@@ -1987,6 +2034,7 @@ export function NodeChat({
     // A new send is a new request; only Resend reuses a failed turn's key.
     const requestId = crypto.randomUUID();
     setMessage("");
+    setAddMenuOpen(false);
     await submitTurn({
       clientId: `pending-${requestId}`,
       requestId,
@@ -2043,6 +2091,16 @@ export function NodeChat({
       attachmentSetIdRef.current = null;
       if (!commentOnly) selectMode(turn.mode);
     } catch (error) {
+      // A replaced backend admitted nothing and Reconnect is already offered, so
+      // the text returns to the composer with no failed turn to resend. The
+      // changed backend may already have unmounted this chat, so the stored draft
+      // carries the text to the composer Reconnect reopens.
+      if (error instanceof ApiError && error.code === "backend_instance_replaced") {
+        if (!readStorage(draftKey)) writeStorage(draftKey, turn.draft);
+        setPendingTurn((current) => (current?.clientId === turn.clientId ? null : current));
+        setMessage((current) => (current ? current : turn.draft));
+        return;
+      }
       // The request may never have reached the server, so the turn stays where it
       // was sent, with Resend under the same key: at most one turn is admitted.
       // The composer gets the text back too, so it survives leaving this chat.
@@ -2394,11 +2452,12 @@ export function NodeChat({
   const effectiveModel = config.provider === profile.provider ? profile.effective_model : "";
   const agentSummary = (
     <AgentConfigChip
+      ref={configChipRef}
       project={project}
       value={config}
       effectiveModel={effectiveModel}
       open={configOpen}
-      disabled={readOnly}
+      disabled={readOnly || pendingFork}
       label="Chat agent"
       workLike={mode === "work"}
       onToggle={() => setConfigOpen((open) => !open)}
@@ -2409,29 +2468,28 @@ export function NodeChat({
     <div className="chat-context-controls">
       {(showProvider || !readOnly) && agentSummary}
       <AgentStatusStrip tasks={statusTasks} />
-      {!fixedConversation && !readOnly && (
-        <button
-          className="chat-new-session"
-          type="button"
-          aria-label="New session"
-          onClick={onNewSession}
-        >
-          <MessageCirclePlus size={14} />
-          <span className="chat-new-session-label">New session</span>
-        </button>
-      )}
       {presentation === "workspace" && watcherToggle}
-      {!readOnly && (
-        <div className="chat-scope-control">
-          <RepositoryScope
-            repositories={project.repositories}
-            projectScope={project.project_truth_scope}
-            stateRepository={project.state_repository}
-            selected={scope}
-            onChange={relatedActive || reviewPending ? () => undefined : setScope}
-          />
-        </div>
-      )}
+      <ChatHeaderMenu
+        actions={[
+          ...headerActions,
+          ...(!fixedConversation && !readOnly
+            ? [{ label: "New session", onSelect: onNewSession }]
+            : []),
+        ]}
+      >
+        {headerMenuItems}
+        {!readOnly && (
+          <div className="chat-scope-control">
+            <RepositoryScope
+              repositories={project.repositories}
+              projectScope={project.project_truth_scope}
+              stateRepository={project.state_repository}
+              selected={scope}
+              onChange={relatedActive || reviewPending ? () => undefined : setScope}
+            />
+          </div>
+        )}
+      </ChatHeaderMenu>
     </div>
   );
 
@@ -2468,6 +2526,7 @@ export function NodeChat({
       )}
       {configOpen && !readOnly && (
         <AgentConfigControls
+          ref={configPanelRef}
           project={project}
           value={config}
           onChange={(next) => setConfigOverride({ chatId, config: next })}
@@ -2516,6 +2575,7 @@ export function NodeChat({
         onScroll={handleChatScroll}
         ref={chatLinesRef}
       >
+        {origin && <ChatOriginLink projectId={project.id} origin={origin} />}
         {questionTranscript(transcript, questionState.questions).map((entry) => {
           if (entry.kind === "question")
             return (
@@ -3135,8 +3195,9 @@ export function NodeChat({
           />
           <div className="chat-send">
             <div className="chat-composer-tools">
-              <div className="chat-add-picker">
+              <div className="chat-add-picker" ref={addPickerRef}>
                 <button
+                  ref={addButtonRef}
                   className="icon-button chat-add-file"
                   type="button"
                   aria-label="Add"
@@ -3989,4 +4050,8 @@ function withoutMapKey(map: Map<string, string>, key: string): Map<string, strin
   const next = new Map(map);
   next.delete(key);
   return next;
+}
+
+function sameIds(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
 }

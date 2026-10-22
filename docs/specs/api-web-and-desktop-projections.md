@@ -87,8 +87,14 @@ Both admit project members and return the GraphRef. Rename returns 422
 Main cannot be renamed or archived. Archive creates missing isolation state,
 without changing Patch history or episode-history archive state.
 
-The `⑂ <name>` picker sits after view tabs, or beside the project name on phones.
-It hides on main with no live branch. An amber dot signals attention on another
+The `⑂ <name>` picker sits after view tabs, or beside the project name on phones,
+even on main with no branch. Its last row, New branch, opens a name field (empty
+lets the server choose) and forks the viewed head through `POST .../graph-refs`
+with `{request_id, at, name}`, then switches to the new branch. A refused name
+(`branch_name_taken`, `branch_name_invalid`) reddens the field; any other failure
+reddens the row and offers one retry icon, reusing the request id only after a
+network or 5xx failure. The artifact viewer's pin picker offers no New branch and
+hides on main with no live branch. An amber dot signals attention on another
 unarchived branch. Rows order main, running, then newest; hide archived branches
 except the active one, which offers Unarchive. Rows show running/attention marks,
 rename/archive icons, and a check for selection. Rename is inline; archiving an
@@ -794,9 +800,12 @@ capped backoff, then rechecks identity without restarting the remote service.
 Backend contact failure keeps the rendered page beneath a blocking overlay,
 preserving panels, scroll, and text. Same version/instance/data-directory/space
 recovery reconciles normally; changed identity requires explicit reconnect and
-a fresh project open. Ordinary browsers can use a reachable team UI but cannot
-own tunnels, credentials, multi-space routing, or native commands, and do not
-offer Add team space.
+a fresh project open. A changed watermark epoch reverifies identity, so a restart
+offers Reconnect before the next write. A write the instance fence refuses
+(409 `backend_instance_replaced`) admits nothing: the composer keeps its text,
+and Reconnect reopens the chat the route names. Ordinary browsers can use a
+reachable team UI but cannot own tunnels, credentials, multi-space routing, or
+native commands, and do not offer Add team space.
 
 One project wizard offers **Use an existing checkout personally**, **Create a
 shared team project**, and **Move an existing personal project to a team**.
@@ -1392,7 +1401,10 @@ column starts folded. Read markers and unread finishes cover the whole project.
 
 Selection stays exact-target. A link to a conversation on another graph switches the
 workspace through `#/projects/P?view=chats&chat=C&branch_id=B` before the
-composer mounts. An orchestrator selected from main's Agents opens in place
+composer mounts. A link whose `branch_id` is wrong or missing reroutes to the
+graph the inventory records for that chat; a chat no graph lists selects nothing.
+A `branch_id` that is empty or that the backend does not know opens main with an
+error notice. An orchestrator selected from main's Agents opens in place
 against its own branch target without switching the workspace. Node actions select only within the viewed graph. A
 conversation a task names before the inventory lists it has unknown ownership:
 its composer stays closed and the inventory is fetched again. Posting
@@ -1893,8 +1905,14 @@ name matches its Agents card; `started_at` is its first turn time. Agent snapsho
 and command reads keep their own channel's roster. Text is limited to 8000 characters; the server
 extracts ordered, deduplicated `#node-id` references and valid
 `<@member:USER_ID>` / `<@agent:ACTOR_ID>` mentions. Requests carry text, never a
-separate references field. Agent tokens must identify an agent of the project in
-any channel, because the mention list offers every channel's agents; unknown tokens
+separate references field. Posts carry `artifacts` metadata (`artifact_id`,
+`source_name`, `media_type`) resolved at read time from the text's
+`<artifact:ID>` tokens; a token naming no readable artifact of the project stays prose.
+An artifact change bumps the Bulletin watermark, so open channels drop a deleted link. The
+composer's paperclip opens the existing project artifact picker and inserts the
+token. Each link renders as an icon and source-name chip opening the shared
+artifact viewer, including its opaque HTML sandbox. Agent tokens must identify
+an agent of the project in any channel, because the mention list offers every channel's agents; unknown tokens
 remain ordinary text. The composer's `@` labels are unique across the project, the
 shown channel's agents keeping bare names, and picking an agent from another channel
 keeps the draft in the shown channel. The list opens above the composer, or below it
@@ -1914,8 +1932,7 @@ its chat. A sent post shows from the accepted response at once, before the
 confirming read.
 
 `POST .../bulletin` accepts `{text, key, reply_to}`. `PATCH .../bulletin/{post_id}`
-accepts `{text, key}` and reparses references and mentions. `DELETE` on the same
-path soft-deletes the post. Only its author may edit or delete; another author
+accepts `{text, key}` and reparses references and mentions. `DELETE` on the same path soft-deletes the post. Only its author may edit or delete; another author
 gets `403 bulletin_not_author`, and editing a deleted post gets
 `409 bulletin_post_deleted`. Deleted replies and deleted top-level posts without
 replies are omitted; parents with replies remain empty placeholders. Posts

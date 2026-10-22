@@ -26,7 +26,11 @@ from rcp.agents.continuation_prompt import (
     master_key,
 )
 from rcp.agents.group_context import group_prompt_value
-from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION, chat_master_contract_key
+from rcp.agents.prompts import (
+    CHAT_MASTER_CONTEXT_VERSION,
+    CONVERSATION_FORK_NOTE,
+    chat_master_contract_key,
+)
 from rcp.agents.write_scope import (
     ProjectWriteScope,
     resolve_project_write_scope,
@@ -228,6 +232,7 @@ def chat_prompt_values(
             "run_on": request.run_on,
         },
         "current": {
+            "graph_target": context.graph_target.key,
             "ontology_path": f"{context.graph_path}#ontology",
             "graph_path": context.graph_path,
             "research_path": context.research_md_path,
@@ -321,7 +326,7 @@ def _prepare_chat_prompt_state(
     latest, revoked = _chat_master_status(execution, request.session_id)
     node = classify(
         LaunchPhase(
-            session_id=request.session_id,
+            session_id=request.session_id or request.fork_session_id,
             phase="wake"
             if execution is not None and execution.continuation == "watcher_wake"
             else "turn",
@@ -391,7 +396,9 @@ def _prepare_chat_prompt_state(
         delta = changed_since_master(
             MasterRef(path=master_context_path, bootstrap=False, values=reference), values
         )
-    replaces = (previous is not None or latest is not None) and must_bootstrap
+    replaces = (
+        previous is not None or latest is not None or bool(request.fork_session_id)
+    ) and must_bootstrap
     if replaces:
         delta = {
             "master_context": {
@@ -400,12 +407,29 @@ def _prepare_chat_prompt_state(
             },
         }
     delta = merge_prepared_graph_observation_delta(delta, execution, request.session_id)
+    if request.fork_session_id:
+        record = execution.store.agent_task(execution.operation_id) if execution else None
+        if record is None:
+            raise ValueError("A chat fork requires its admitted graph target.")
+        delta = {
+            **(delta or {}),
+            "conversation_fork": {
+                "graph_target": record.graph_target.model_dump(mode="json", exclude_none=True),
+                "instruction": CONVERSATION_FORK_NOTE,
+            },
+        }
+
     # The browser grant is also compared with the last committed turn: the human
-    # toggles it between turns, so the session hears it only when it changes.
+    # toggles it between turns, so the session hears it only when it changes. A
+    # fork's first turn has no committed turn of its own but continues the
+    # source's session, which may hold another grant, so it always hears it.
     browser = values.get("browser")
     if delta is not None:
         delta = {key: value for key, value in delta.items() if key != "browser"} or None
-    if browser is not None and previous is not None and previous.values.get("browser") != browser:
+    if browser is not None and (
+        (previous is None and bool(request.fork_session_id))
+        or (previous is not None and previous.values.get("browser") != browser)
+    ):
         delta = {**(delta or {}), "browser": browser}
 
     snapshot = _ChatMasterSnapshot(
@@ -786,15 +810,15 @@ def _local_chat_workspace_for_task(store: AppStore, task: AgentTaskRecord) -> Pa
         or not chat_id
     ):
         raise ValueError("The conversation stage has no durable chat binding.")
-    layout = store.chat_stage_layout(
-        project_id=task.project_id,
-        kind=task.kind,
-        chat_id=chat_id,
-        stage_host="",
-        stage_root=task.stage_root,
+    return Path(
+        store.chat_stage_workspace(
+            project_id=task.project_id,
+            kind=task.kind,
+            chat_id=chat_id,
+            stage_host="",
+            stage_root=task.stage_root,
+        )
     )
-    stage = Path(task.stage_root)
-    return stage / "workspace" if layout == "split-v1" else stage
 
 
 def _local_chat_artifact_directory(
@@ -909,7 +933,7 @@ def _discover_chat_artifacts(
                 if task is None:
                     raise ValueError("The artifact supplier task is unavailable.")
                 now = execution.store.now()
-                stored_artifact = execution.store.create_artifact(
+                stored_artifact = execution.store.create_turn_artifact(
                     Artifact(
                         artifact_id=descriptor.artifact_id,
                         project_id=task.project_id,
@@ -930,6 +954,7 @@ def _discover_chat_artifacts(
                     ),
                     data=data,
                 )
+                descriptor = descriptor.model_copy(update={"kept_at": stored_artifact.kept_at})
                 if service is not None and media_type == "text/html":
                     from rcp.live_artifact_runtime import resolve_artifact_live_version
 

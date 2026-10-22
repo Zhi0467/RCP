@@ -60,6 +60,9 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       await page.route("**/api/projects/fixture/graph-edit-options", (route) =>
         route.fulfill({ json: { node_prefixes: {}, relations: [] } }),
       );
+      await page.route("**/api/projects/project/graph-refs", (route) =>
+        route.fulfill({ json: [] }),
+      );
       await page.route("**/api/service-connections", (route) =>
         route.fulfill({ json: { dictation: "system", connections: [] } }),
       );
@@ -68,8 +71,22 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       const composer = page.getByRole("textbox", { name: "Message", exact: true });
       await composer.waitFor();
       const list = page.locator(".conversation-list");
-      const chatToggle = page.getByRole("button", { name: "Agents", exact: true });
+      // Phones reach the agents through More → Agents (the board); Cmd+B still opens the list.
+      const toggleList = () => page.keyboard.press("Meta+b");
+      const header = page.locator(".conversation-header");
       assert.equal(await list.isVisible(), false, "Mobile conversation list starts closed");
+      assert.equal(await header.getByText("First chat").count(), 0, "No chat title on a phone");
+      assert.equal(await header.locator(".conversation-heading").isVisible(), false);
+      await header.getByRole("button", { name: "Chat menu", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Rename" }).click();
+      const rename = header.getByRole("textbox", { name: "Agent name" });
+      await rename.waitFor();
+      await rename.press("Escape");
+      await rename.waitFor({ state: "detached" });
+      // Focus returns to the menu the rename came from, not to the page.
+      await page.waitForFunction(
+        () => document.activeElement?.getAttribute("aria-label") === "Chat menu",
+      );
       assert.equal(await page.getByRole("separator").count(), 0, "No narrow resize strip");
       const composerWidth = (await composer.boundingBox()).width;
       assert.ok(composerWidth >= viewport.width - 50, "Composer uses the full narrow column");
@@ -206,8 +223,8 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       await page.evaluate(() => window.getSelection().removeAllRanges());
       await offer.waitFor({ state: "detached" });
       await composer.fill("A draft survives opening the conversation list.");
-      await chatToggle.focus();
-      await page.keyboard.press("Enter");
+      await composer.focus();
+      await toggleList();
       await list.waitFor();
       assert.equal(await composer.inputValue(), "A draft survives opening the conversation list.");
       assert.equal((await composer.boundingBox()).width, composerWidth);
@@ -225,14 +242,14 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       }
       await page.getByRole("option", { name: "Second chat, project conversation" }).click();
       await list.waitFor({ state: "hidden" });
-      await chatToggle.click();
+      await toggleList();
       assert.equal(
         await page
           .getByRole("option", { name: "Second chat, project conversation" })
           .getAttribute("aria-selected"),
         "true",
       );
-      await chatToggle.click();
+      await toggleList();
       await list.waitFor({ state: "hidden" });
 
       await page.setViewportSize({ width: 1100, height: 900 });
@@ -257,8 +274,9 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       await page.getByRole("button", { name: "Collapse conversation list" }).click();
       await list.waitFor({ state: "hidden" });
       await page.setViewportSize(viewport);
-      await chatToggle.waitFor();
-      await chatToggle.click();
+      // The phone header drops the title once the narrow layout applies.
+      await header.locator(".conversation-heading").waitFor({ state: "hidden" });
+      await toggleList();
       await list.waitFor();
       await page.setViewportSize({ width: 1100, height: 900 });
       await list.waitFor({ state: "hidden" });

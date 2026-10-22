@@ -490,6 +490,7 @@ def test_history_reads_keep_apply_revoked(tmp_path, monkeypatch, mode, resume):
     from rcp.core.transition_models import GraphTargetRef
 
     execution, _ = work_execution(tmp_path, mode=mode)
+    execution.stage_root = str(tmp_path)
     scope = GraphReadScope(project_id="project", target=GraphTargetRef())
     service = cast(ProjectService, SimpleNamespace(resolve_project_service=lambda _: None))
     calls = []

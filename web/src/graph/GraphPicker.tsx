@@ -9,12 +9,20 @@ import {
   GitMerge,
   LoaderCircle,
   Pencil,
+  Plus,
+  RotateCcw,
   X,
 } from "lucide-react";
 import { ApiError, mergeGraphFork, renameGraphBranch, setGraphBranchArchived } from "../core/api";
-import { branchName, branchNameProblem, typedBranchName } from "../core/branchNames";
+import {
+  branchName,
+  branchNameProblem,
+  submittedBranchName,
+  typedBranchName,
+} from "../core/branchNames";
 import { sameGraphTarget } from "../core/graphTarget";
-import type { GraphRef, GraphTargetRef } from "../core/types";
+import { rovingFocusTarget } from "../core/rovingFocus";
+import type { GraphHeadRef, GraphRef, GraphTargetRef } from "../core/types";
 import {
   graphPickerOptions,
   graphRefCanMerge,
@@ -31,29 +39,60 @@ interface GraphPickerProps {
   activeRef: GraphTargetRef;
   projectId: string;
   onSelect: (target: GraphTargetRef) => void;
+  /** Forks `head` into a new branch and switches to it; the name may be empty. */
+  onCreate?: (name: string, requestId: string, head: GraphHeadRef) => Promise<void>;
+  /** The head being viewed, which a new branch starts from. */
+  viewedHead?: GraphHeadRef | null;
+  createDisabled?: boolean;
   onOpen?: () => void;
   /** The last read failed: names stay, choices are disabled until a read succeeds. */
   unavailable?: boolean;
   onRefUpdated: (ref: GraphRef) => void;
   compact?: boolean;
+  /** Names the trigger instead of the current branch, for a picker that moves something;
+   * the trigger then reads as a plain menu row, without the branch icon. */
+  label?: string;
+  /** A line above the list saying what picking does. */
+  heading?: string;
+  /** Lists branches to choose or create, without merge, rename, or archive. */
+  pickOnly?: boolean;
 }
 
 type Branch = Extract<GraphRef, { kind: "branch" }>;
 
-// Matches the popover's CSS width, min(360px, 100vw - 16px).
+// Matches the popover's CSS width, min(360px, 100vw - 32px).
 const POPOVER_WIDTH = 360;
-const VIEWPORT_GUTTER = 8;
+const VIEWPORT_GUTTER = 16;
+const TRIGGER_GAP = 4;
 
-/** Right-aligned under the trigger, shifted left only as far as the viewport allows. */
-function popoverPlacement(trigger: HTMLElement | null) {
+type PopoverPlacement = { top?: number; bottom?: number; right: number; maxHeight: number };
+
+/** Right-aligned beside the trigger, shifted left only as far as the viewport allows.
+ *  It opens on the side with more room and never runs past the viewport, so a
+ *  long list scrolls inside it. */
+function popoverPlacement(trigger: HTMLElement | null): PopoverPlacement | null {
   const rect = trigger?.getBoundingClientRect();
   if (!rect) return null;
   const width = Math.min(POPOVER_WIDTH, window.innerWidth - 2 * VIEWPORT_GUTTER);
   const right = Math.max(VIEWPORT_GUTTER, window.innerWidth - rect.right);
+  const below = window.innerHeight - rect.bottom - TRIGGER_GAP - VIEWPORT_GUTTER;
+  const above = rect.top - TRIGGER_GAP - VIEWPORT_GUTTER;
+  const cap = window.innerHeight * 0.65;
   return {
-    top: rect.bottom + 4,
+    ...(below >= above
+      ? { top: rect.bottom + TRIGGER_GAP }
+      : { bottom: window.innerHeight - rect.top + TRIGGER_GAP }),
     right: Math.min(right, window.innerWidth - VIEWPORT_GUTTER - width),
+    maxHeight: Math.min(cap, Math.max(below, above)),
   };
+}
+
+/** The popover's choosable rows: each branch name and New branch. */
+function rowButtons(popover: HTMLElement | null) {
+  return [
+    ...(popover?.querySelectorAll<HTMLButtonElement>("button.branch-picker-name:not(:disabled)") ??
+      []),
+  ];
 }
 
 export function GraphPicker({
@@ -61,22 +100,35 @@ export function GraphPicker({
   activeRef,
   projectId,
   onSelect,
+  onCreate,
+  viewedHead = null,
+  createDisabled = false,
   onOpen,
   onRefUpdated,
   unavailable = false,
   compact = false,
+  label,
+  heading,
+  pickOnly = false,
 }: GraphPickerProps) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [warning, setWarning] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [nameRefused, setNameRefused] = useState(false);
+  const [createFailure, setCreateFailure] = useState<string | null>(null);
+  // A retry repeats the whole first request, head included: the server
+  // refuses one request id with a different parent head.
+  const createRequest = useRef<{ id: string; head: GraphHeadRef } | null>(null);
   const [confirm, setConfirm] = useState<{
     action: "archive" | "merge";
     ref: Branch;
     requestId: string;
   } | null>(null);
-  const [position, setPosition] = useState({ top: 0, right: 0 });
+  const [position, setPosition] = useState<PopoverPlacement>({ top: 0, right: 0, maxHeight: 0 });
   const button = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const dialog = useRef<HTMLDialogElement>(null);
@@ -97,6 +149,7 @@ export function GraphPicker({
       ) {
         setOpen(false);
         setEditing(null);
+        setCreating(false);
         setWarning(null);
       }
     };
@@ -104,6 +157,7 @@ export function GraphPicker({
       if (event.key !== "Escape" || confirm) return;
       event.preventDefault();
       if (editing) setEditing(null);
+      else if (creating) setCreating(false);
       else {
         setOpen(false);
         button.current?.focus();
@@ -118,14 +172,22 @@ export function GraphPicker({
     window.addEventListener("resize", positionList);
     document.addEventListener("scroll", positionList, true);
     document.addEventListener("pointerdown", closeOutside);
-    document.addEventListener("keydown", escape);
+    // Capture runs before an enclosing overlay's listener, which skips a handled Escape.
+    document.addEventListener("keydown", escape, true);
     return () => {
       window.removeEventListener("resize", positionList);
       document.removeEventListener("scroll", positionList, true);
       document.removeEventListener("pointerdown", closeOutside);
-      document.removeEventListener("keydown", escape);
+      document.removeEventListener("keydown", escape, true);
     };
-  }, [open, editing, confirm]);
+  }, [open, editing, creating, confirm]);
+
+  // The popover is portaled to the end of the page, so focus moves into it on open.
+  useEffect(() => {
+    if (!open) return;
+    const rows = rowButtons(list.current);
+    (rows.find((row) => row.getAttribute("aria-current") === "true") ?? rows[0])?.focus();
+  }, [open]);
 
   useEffect(() => {
     if (confirm) dialog.current?.showModal();
@@ -148,7 +210,8 @@ export function GraphPicker({
 
   async function save(ref: Branch) {
     if (busy) return;
-    const problem = name === "" ? "Enter a branch name." : branchNameProblem(name);
+    const submitted = submittedBranchName(name);
+    const problem = submitted === "" ? "Enter a branch name." : branchNameProblem(submitted);
     if (problem) {
       setWarning(problem);
       return;
@@ -156,10 +219,45 @@ export function GraphPicker({
     setBusy(true);
     setWarning(null);
     try {
-      onRefUpdated(await renameGraphBranch(projectId, ref.branch_id, name));
+      onRefUpdated(await renameGraphBranch(projectId, ref.branch_id, submitted));
       setEditing(null);
     } catch (error) {
       showError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function create() {
+    if (!onCreate || busy || createDisabled) return;
+    const submitted = submittedBranchName(newName);
+    if (branchNameProblem(submitted)) {
+      setNameRefused(true);
+      return;
+    }
+    if (!createRequest.current) {
+      if (!viewedHead) return;
+      createRequest.current = { id: crypto.randomUUID(), head: viewedHead };
+    }
+    const request = createRequest.current;
+    setBusy(true);
+    setNameRefused(false);
+    setCreateFailure(null);
+    try {
+      await onCreate(submitted, request.id, request.head);
+      createRequest.current = null;
+      setCreating(false);
+      setOpen(false);
+    } catch (error) {
+      // Only a transient failure retries under the same request id.
+      if (!(error instanceof TypeError || (error instanceof ApiError && error.status >= 500)))
+        createRequest.current = null;
+      if (
+        error instanceof ApiError &&
+        (error.code === "branch_name_taken" || error.code === "branch_name_invalid")
+      )
+        setNameRefused(true);
+      else setCreateFailure(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
     }
@@ -194,7 +292,12 @@ export function GraphPicker({
   }
 
   // A failed read keeps the button, disabled and naming the current ref.
-  if (activeRef.kind === "main" && refs !== null && !options.some((ref) => ref.kind === "branch"))
+  if (
+    !onCreate &&
+    activeRef.kind === "main" &&
+    refs !== null &&
+    !options.some((ref) => ref.kind === "branch")
+  )
     return null;
 
   return (
@@ -202,7 +305,7 @@ export function GraphPicker({
       <button
         ref={button}
         className="branch-picker-trigger"
-        aria-label={`Branch: ${currentName}`}
+        aria-label={label ?? `Branch: ${currentName}`}
         aria-expanded={open}
         aria-controls={listId}
         aria-haspopup="dialog"
@@ -213,12 +316,13 @@ export function GraphPicker({
           if (!open) onOpen?.();
           setOpen(!open);
           setEditing(null);
+          setCreating(false);
           setWarning(null);
         }}
       >
-        <GitBranch size={15} />
-        <span>{currentName}</span>
-        {attention && (
+        {!label && <GitBranch size={15} />}
+        <span>{label ?? currentName}</span>
+        {!label && attention && (
           <span className="branch-picker-attention" aria-label="Another branch needs you" />
         )}
         {!compact && <ChevronDown size={13} />}
@@ -231,9 +335,35 @@ export function GraphPicker({
             id={listId}
             className="branch-picker-popover"
             role="dialog"
-            aria-label="Branches"
+            aria-label={label ?? "Branches"}
             style={position}
+            onKeyDown={(event) => {
+              // Handled keys stop here: an enclosing menu skips a handled key.
+              // Tab cycles within the open popover; it moves focus itself, since
+              // a chat workspace takes an unhandled Shift+Tab as its mode shortcut.
+              if (event.key === "Tab") {
+                const focusable = [
+                  ...event.currentTarget.querySelectorAll<HTMLElement>(
+                    "button:not(:disabled), input:not(:disabled)",
+                  ),
+                ];
+                const index = focusable.indexOf(event.target as HTMLElement);
+                const step = event.shiftKey ? -1 : 1;
+                event.preventDefault();
+                focusable[(index + step + focusable.length) % focusable.length]?.focus();
+                return;
+              }
+              const next = rovingFocusTarget(
+                rowButtons(event.currentTarget),
+                event.target,
+                event.key,
+              );
+              if (!next) return;
+              event.preventDefault();
+              next.focus();
+            }}
           >
+            {heading && <p className="branch-picker-heading">{heading}</p>}
             <ul className="branch-picker-list">
               {options.map((ref) => {
                 const current = sameGraphTarget(graphRefTarget(ref), activeRef);
@@ -302,6 +432,8 @@ export function GraphPicker({
                         <button
                           className="branch-picker-name"
                           aria-current={current ? "true" : undefined}
+                          // Picking only moves something; it is already on its own branch.
+                          disabled={pickOnly && current}
                           onClick={() => {
                             setOpen(false);
                             setEditing(null);
@@ -319,7 +451,7 @@ export function GraphPicker({
                         {refNeedsYou(ref) && (
                           <span className="branch-picker-attention" aria-label="Needs you" />
                         )}
-                        {ref.kind === "branch" && (
+                        {ref.kind === "branch" && !pickOnly && (
                           <>
                             {graphRefCanMerge(ref) && (
                               <button
@@ -371,6 +503,70 @@ export function GraphPicker({
                 );
               })}
             </ul>
+            {onCreate && (
+              <div className={`branch-picker-row${createFailure ? " branch-picker-failed" : ""}`}>
+                <span className="branch-picker-leading">
+                  <Plus size={15} />
+                </span>
+                {creating ? (
+                  <>
+                    <input
+                      autoFocus
+                      className="branch-picker-name-input"
+                      aria-label="New branch name"
+                      aria-invalid={nameRefused}
+                      value={newName}
+                      disabled={busy}
+                      onChange={(event) => {
+                        setNewName(typedBranchName(event.target.value));
+                        setNameRefused(false);
+                        setCreateFailure(null);
+                        createRequest.current = null;
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          void create();
+                        }
+                      }}
+                    />
+                    <button
+                      className="branch-picker-action"
+                      aria-label={createFailure ? "Retry new branch" : "Create branch"}
+                      title={createFailure ?? undefined}
+                      disabled={busy || createDisabled}
+                      onClick={() => void create()}
+                    >
+                      {createFailure ? <RotateCcw size={14} /> : <Check size={15} />}
+                    </button>
+                    <button
+                      className="branch-picker-action"
+                      aria-label="Cancel new branch"
+                      disabled={busy}
+                      onClick={() => setCreating(false)}
+                    >
+                      <X size={15} />
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    className="branch-picker-name"
+                    disabled={busy || createDisabled}
+                    onClick={() => {
+                      setEditing(null);
+                      setWarning(null);
+                      setCreating(true);
+                      setNewName("");
+                      setNameRefused(false);
+                      setCreateFailure(null);
+                      createRequest.current = null;
+                    }}
+                  >
+                    New branch
+                  </button>
+                )}
+              </div>
+            )}
             {warning && (
               <p className="branch-picker-warning" role="alert">
                 {warning}

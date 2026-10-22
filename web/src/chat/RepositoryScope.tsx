@@ -1,6 +1,9 @@
 import { Check, ChevronDown } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import type { Repository } from "../core/types";
+import { useLayerDismiss } from "../core/useLayerDismiss";
+
+const VIEWPORT_GUTTER = 16;
 
 interface Props {
   repositories: Repository[];
@@ -19,13 +22,28 @@ export function RepositoryScope({
 }: Props) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const close = (event: MouseEvent) => {
-      if (!root.current?.contains(event.target as Node)) setOpen(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const popover = useRef<HTMLDivElement>(null);
+  useLayerDismiss(open, () => setOpen(false), [root], trigger);
+  // Anchored to its trigger's right edge, the list shifts sideways only as far
+  // as it takes to stay inside the viewport's gutter.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const node = popover.current;
+      if (!node) return;
+      node.style.translate = "";
+      const { left, right } = node.getBoundingClientRect();
+      const shift =
+        left < VIEWPORT_GUTTER
+          ? VIEWPORT_GUTTER - left
+          : Math.min(0, window.innerWidth - VIEWPORT_GUTTER - right);
+      node.style.translate = shift ? `${shift}px 0` : "";
     };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, []);
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [open]);
 
   const toggle = (alias: string) => {
     const next = selected.includes(alias)
@@ -36,6 +54,7 @@ export function RepositoryScope({
   return (
     <div className="scope-picker" ref={root}>
       <button
+        ref={trigger}
         className="scope-trigger"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
@@ -51,7 +70,7 @@ export function RepositoryScope({
         <ChevronDown size={16} />
       </button>
       {open && (
-        <div className="scope-popover">
+        <div className="scope-popover" ref={popover}>
           {repositories
             .filter((repo) => projectScope.includes(repo.alias))
             .map((repo) => (

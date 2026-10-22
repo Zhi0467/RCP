@@ -91,7 +91,7 @@ class AppServerTurnFence(TurnFence):
         result = value.get("result")
         method = self.requests.get(value.get("id"))
         if isinstance(result, dict):
-            if method in {"thread/start", "thread/resume"}:
+            if method in {"thread/start", "thread/resume", "thread/fork"}:
                 self.thread_id = result.get("thread", {}).get("id")
             elif method == "turn/start":
                 self.turn_id = result.get("turn", {}).get("id")

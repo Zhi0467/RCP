@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from types import SimpleNamespace
@@ -63,6 +64,46 @@ def test_contract_usage_and_enforcement_share_the_bulletin_verb(store, tmp_path,
     assert "bulletin" not in handler.allowed_verbs
     assert "bulletin" not in _work_execution_instructions(turn, client="rcp-client")
     assert handler(post, identity()).status == "invalid"
+
+
+@pytest.mark.asyncio
+async def test_child_work_link_follows_the_usage_it_renders(store, monkeypatch):  # noqa: F811
+    from rcp.runs import bulletin, patch_validator
+    from rcp.runs.tasks import auto_research_child_work
+
+    execution = AgentTaskExecution(operation_id="turn", store=store, control=AgentProcessControl())
+    turn = SimpleNamespace(
+        execution=execution,
+        compute_commands=None,
+        service=None,
+        graph_read_scope=None,
+        patch_inputs=SimpleNamespace(validator_staged=SimpleNamespace(ask_wait_seconds=1.0)),
+    )
+    usage = _work_execution_instructions(turn, client="rcp-client")
+    seen = []
+    monkeypatch.setattr(
+        bulletin, "handle_bulletin", lambda *_args, **kwargs: seen.append(kwargs["turn_artifacts"])
+    )
+
+    async def serve(**kwargs):
+        await kwargs["handler"](
+            request("link", file_name="plot.png"),
+            SimpleNamespace(episode_id="episode", task_id="turn", authority="broker"),
+        )
+
+    monkeypatch.setattr(auto_research_child_work, "serve_command_mailbox", serve)
+    await auto_research_child_work._serve_auto_research_child_work_mailbox(
+        staged=SimpleNamespace(mailbox=SimpleNamespace(remote_stage=None), invocation_gate=None),
+        execution=execution,
+        route=SimpleNamespace(episode_id="episode"),
+        validate=lambda _: pytest.fail("a link must not validate a patch"),
+        stop=asyncio.Event(),
+        budget=patch_validator.PatchValidationBudget(),
+        compute_commands=SimpleNamespace(allowed_verbs=frozenset()),
+        allowed_verbs=frozenset({"validate", "bulletin"}),
+    )
+    assert seen == [True]
+    assert f"rcp-client bulletin {staged_command_client.BULLETIN_LINK[1]}" in usage
 
 
 def test_bulletin_client_file_backed_keyed_post(tmp_path, monkeypatch):
@@ -358,3 +399,54 @@ def test_agent_edits_and_deletes_across_turns_of_same_actor(store):  # noqa: F81
     assert deleted.status == "ok"
     assert handler(delete, identity(task_id="next")).result == deleted.result
     assert store.list_bulletin("project", "main")["posts"] == []
+
+
+def test_bulletin_channel_and_artifact_options_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "body.txt").write_text("<artifact:" + "a" * 24 + ">")
+    prefix = ["--broker", "broker", "--timeout", "1", "--workspace", str(tmp_path)]
+    parser = staged_command_client._parser()
+    for flags, expected in (
+        (
+            ["--post", "--key", "k", "--channel", "other branch", "body.txt"],
+            {
+                "action": "post",
+                "channel": "other branch",
+                "reply_to": None,
+                "text": "<artifact:" + "a" * 24 + ">",
+            },
+        ),
+        (["--artifact", "a" * 24], {"action": "artifact", "artifact_id": "a" * 24}),
+        (["--read", "--channel", "main"], {"action": "read", "channel": "main", "cursor": None}),
+        (["--link", "plot.png"], {"action": "link", "file_name": "plot.png"}),
+    ):
+        parsed = parser.parse_args([*prefix, "bulletin", *flags])
+        verb, key, arguments = staged_command_client._request_arguments(parsed, str(tmp_path))
+        assert verb == "bulletin" and arguments == expected
+        envelope = request(
+            arguments["action"], key=key, **{k: v for k, v in arguments.items() if k != "action"}
+        )
+        assert envelope.arguments.model_dump(exclude_none=True) == {
+            k: v for k, v in expected.items() if v is not None
+        }
+    for flags in (
+        ["--post", "--reply-to", "p", "--channel", "main", "--key", "k", "body.txt"],
+        ["--edit", "p", "--channel", "main", "--key", "k", "body.txt"],
+        ["--artifact", "a" * 24, "--cursor", "c"],
+        ["--link", "plot.png", "--key", "k"],
+    ):
+        with pytest.raises(staged_command_client.ClientInputError):
+            staged_command_client._request_arguments(
+                parser.parse_args([*prefix, "bulletin", *flags]), str(tmp_path)
+            )
+    for arguments in (
+        {"action": "delete", "post_id": "p", "channel": "main"},
+        {"action": "link", "file_name": "turns/x/plot.png"},
+        {"action": "link", "file_name": ".."},
+        {"action": "post", "text": "reply", "reply_to": "p", "channel": "main"},
+        {"action": "artifact"},
+        {"action": "artifact", "artifact_id": "a" * 24, "text": "extra"},
+        {"action": "read", "artifact_id": "a" * 24},
+    ):
+        with pytest.raises(ValueError):
+            BulletinArguments(**arguments)

@@ -1957,7 +1957,7 @@ def test_stop_provenance_migration_upgrades_version_18(tmp_path, monkeypatch) ->
 
 
 def test_a_request_persisted_before_isolation_fields_still_roundtrips():
-    from rcp.background import _persisted_request_roundtrips
+    from rcp.background import persisted_request_roundtrips
     from rcp.service import AutoResearchRunRequest
 
     request = AutoResearchRunRequest(
@@ -1966,9 +1966,9 @@ def test_a_request_persisted_before_isolation_fields_still_roundtrips():
     stored = request.model_dump(mode="json")
     for key in ("code_worktree", "graph_isolation", "isolation_owner_episode_id"):
         stored.pop(key, None)
-    assert _persisted_request_roundtrips(AutoResearchRunRequest.model_validate(stored), stored)
+    assert persisted_request_roundtrips(AutoResearchRunRequest.model_validate(stored), stored)
     # A stored value that differs from the parsed one still fails.
-    assert not _persisted_request_roundtrips(
+    assert not persisted_request_roundtrips(
         request.model_copy(update={"code_worktree": True}), stored
     )
 

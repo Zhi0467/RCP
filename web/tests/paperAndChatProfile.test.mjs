@@ -84,10 +84,11 @@ const chatProps = {
   onClose() {},
 };
 
-test("chat shows its agent identity, New session, and a self-labelling scope picker", () => {
+test("chat shows its agent identity and keeps New session and the scope picker in its menu", () => {
   const fresh = renderToStaticMarkup(React.createElement(NodeChat, chatProps));
   assert.match(fresh, /aria-label="Chat agent: Codex"/);
-  assert.match(fresh, /class="chat-new-session"/);
+  assert.match(fresh, /class="chat-header-menu"/);
+  assert.doesNotMatch(fresh, /scope-trigger/);
 
   assert.doesNotMatch(fresh, /agent-config-summary/);
 

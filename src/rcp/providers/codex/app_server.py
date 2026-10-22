@@ -20,6 +20,7 @@ from rcp.providers.base import (
     _require_provider_version,
 )
 from rcp.providers.codex.profile import (
+    _DISABLED_FEATURES,
     _codex_autocompact_config,
     _codex_discuss_permission_profile,
     _codex_environment_config,
@@ -88,10 +89,7 @@ class _CodexAppServerTurn(ProviderTurn):
             request.binary,
             "app-server",
             "--stdio",
-            "--disable",
-            "apps",
-            "--disable",
-            "plugins",
+            *_DISABLED_FEATURES,
             "--config",
             'web_search="live"',
         ]
@@ -283,7 +281,13 @@ class _CodexAppServerTurn(ProviderTurn):
             except ValueError as exc:
                 return self._protocol_error(str(exc))
             self._phase = "thread"
-            method = "thread/resume" if self._request.session_id else "thread/start"
+            method = (
+                "thread/fork"
+                if self._request.fork_session_id
+                else "thread/resume"
+                if self._request.session_id
+                else "thread/start"
+            )
             return ProviderRuntimeStep(
                 outgoing=(
                     _rpc_bytes(
@@ -305,6 +309,10 @@ class _CodexAppServerTurn(ProviderTurn):
             if self._request.session_id and thread_id != self._request.session_id:
                 return self._protocol_error(
                     "Codex app-server resumed a different thread than RCP requested."
+                )
+            if self._request.fork_session_id and thread_id == self._request.fork_session_id:
+                return self._protocol_error(
+                    "Codex app-server fork returned the source thread instead of a new thread."
                 )
             enforcement_problem = self._enforcement_problem(result)
             if enforcement_problem is not None:
@@ -343,14 +351,16 @@ class _CodexAppServerTurn(ProviderTurn):
             "serviceName": "rcp",
             "threadSource": "rcp",
         }
-        if self._request.session_id:
-            params["threadId"] = self._request.session_id
+        if self._request.fork_session_id or self._request.session_id:
+            params["threadId"] = self._request.fork_session_id or self._request.session_id
             # RCP never reads the thread's past turns. Without this, resume sends
             # the latest turns in full, which grows with the session (megabytes
             # for an orchestrator) and arrives before the prompt is delivered.
             params["excludeTurns"] = True
         else:
             params["ephemeral"] = False
+        if self._request.fork_session_id:
+            params.pop("serviceName")
         if self._work_like:
             params["permissions"] = "rcp_project"
         elif self._request.capability == "discuss":
@@ -443,7 +453,11 @@ class _CodexAppServerTurn(ProviderTurn):
                 self._usage_baseline = dict(usage["total"])
             elif self._phase == "running" and turn_id == self._turn_id:
                 last = usage.get("last")
-                if self._request.session_id and not self._usage_baseline and isinstance(last, dict):
+                if (
+                    (self._request.session_id or self._request.fork_session_id)
+                    and not self._usage_baseline
+                    and isinstance(last, dict)
+                ):
                     # A resume that sent no snapshot: the turn's first update
                     # covers exactly one model call, so the thread stood at
                     # total minus that call when the turn began.

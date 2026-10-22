@@ -929,7 +929,7 @@ def test_claude_work_readiness_probe_uses_the_enforced_settings_without_a_prompt
     assert command[0] == "/bin/claude"
     assert command[command.index("--input-format") + 1] == "stream-json"
     assert command[command.index("--permission-mode") + 1] == "dontAsk"
-    assert command[command.index("--setting-sources") + 1] == ""
+    assert command[command.index("--setting-sources") + 1] == "user"
     settings = json.loads(command[command.index("--settings") + 1])
     assert settings["disableAllHooks"] is True
     # The probe carries no project write authority, so it grants no write root.
