@@ -225,6 +225,42 @@ def test_app_server_setup_alone_never_claims_the_turn_prompt(tmp_path) -> None:
     assert _journal(journal)["accepted"] is False
 
 
+def test_a_forked_app_server_thread_settles_when_its_turn_completes(tmp_path) -> None:
+    """The fork reply names the thread whose completion ends the turn."""
+
+    requests = (
+        {
+            "id": 3,
+            "method": "thread/fork",
+            "params": {"threadId": "source-thread"},
+            "emit": [{"id": 3, "result": {"thread": {"id": "forked-thread"}}}],
+        },
+        {
+            "id": 4,
+            "method": "turn/start",
+            "params": {"threadId": "forked-thread"},
+            "emit": [
+                {"id": 4, "result": {"turn": {"id": "fork-turn"}}},
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "threadId": "forked-thread",
+                        "turn": {"id": "fork-turn", "status": "completed"},
+                    },
+                },
+            ],
+        },
+    )
+    completed, journal = _supervise(
+        tmp_path,
+        "".join(json.dumps(request) + "\n" for request in requests),
+        runtime_id="codex.app-server-stdio.v1",
+        close_input_after_initial=False,
+    )
+
+    assert _journal(journal)["terminal_event"] is True, completed.stderr
+
+
 def test_the_journal_keeps_the_turn_when_nobody_is_listening(tmp_path) -> None:
     """The point of the whole thing: output survives a reader that went away."""
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 
+from rcp.storage.chat_forks import ChatForkStoreMixin
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import _required_timestamp
 
@@ -37,6 +38,7 @@ class RestoreDetachmentStoreMixin(StoreMixinBase):
                 (str(restore_epoch),),
             )
             self.detach_agent_tasks_for_restore(connection, diagnostic=recorded_detail, now=now)
+            ChatForkStoreMixin.detach_chat_forks_for_restore(connection)
             self.detach_episode_reports_for_restore(connection, diagnostic=recorded_detail, now=now)
             self.detach_experiment_episodes_for_restore(
                 connection,

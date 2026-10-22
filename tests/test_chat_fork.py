@@ -338,3 +338,102 @@ def test_fork_turn_retry_after_pause_continues_and_first_turn_rechecks_source(ma
         _chat_task_execution(
             app, RunRequest(chat_id=unused.chat_id, chat_scope="project", **profile), "late-turn"
         )
+
+
+def _settled_source_and_fork(app, tmp_path, profile):
+    from rcp.service import RunRequest
+    from tests.test_api import _chat_task_execution
+
+    store = app.state.catalog.store
+    source_id = str(uuid4())
+    source = _chat_task_execution(
+        app, RunRequest(chat_id=source_id, chat_scope="project", **profile), "source-turn"
+    )
+    source.checkpoint_stage("", str(tmp_path / "source-stage"))
+    store.checkpoint_agent_task(source.operation_id, native_session_id="source-session")
+    store.complete_agent_task(source.operation_id, applied_revision=None, result={})
+    fork = store.create_chat_fork(
+        app.state.default_project_id, source_id, GraphTargetRef(), str(uuid4())
+    )
+    return source_id, fork
+
+
+@pytest.mark.parametrize("change", ["source_moved", "source_gone"])
+def test_a_failed_first_fork_never_reforks_a_changed_source(manifest, tmp_path, change):
+    from rcp.service import RunRequest
+    from tests.test_api import _chat_task_execution, _named_test_authorizer
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.catalog.store
+    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "laptop"}
+    source_id, fork = _settled_source_and_fork(app, tmp_path, profile)
+    first = _chat_task_execution(
+        app, RunRequest(chat_id=fork.chat_id, chat_scope="project", **profile), "fork-turn"
+    )
+    assert store.agent_task("fork-turn").request["fork_source_operation_id"] == "source-turn"
+    store.fail_agent_task(first.operation_id, "Fork transport unavailable")
+    if change == "source_moved":
+        later = _chat_task_execution(
+            app, RunRequest(chat_id=source_id, chat_scope="project", **profile), "source-later"
+        )
+        store.checkpoint_agent_task(later.operation_id, native_session_id="source-session")
+        store.complete_agent_task(later.operation_id, applied_revision=None, result={})
+    else:
+        store.mark_agent_tasks_history_only(["source-turn"])
+    launched = []
+
+    async def record_launch(*args, **_kwargs):
+        launched.append(args)
+        return
+        yield
+
+    app.state.background_tasks.stream = record_launch
+    authorizer = _named_test_authorizer(store)
+    refused = app.state.background_tasks.retry(first.operation_id, authorized_by=authorizer)
+
+    assert (refused.status, refused.failure_kind) == ("failed", "session_refused")
+    assert refused.error == (
+        "chat_fork_source_moved" if change == "source_moved" else "chat_fork_source_unavailable"
+    )
+    assert refused.request["fork_session_id"] == "source-session"
+    assert not store.agent_task(refused.operation_id).can_retry
+    assert launched == []
+    # A new message refuses the same way; it never starts a fresh session instead.
+    _chat_task_execution(
+        app, RunRequest(chat_id=fork.chat_id, chat_scope="project", **profile), "next-message"
+    )
+    assert store.agent_task("next-message").error == refused.error
+
+
+def test_restore_detaches_unfinished_forks_to_fresh_sessions(manifest, tmp_path):
+    from rcp.service import RunRequest
+    from tests.test_api import _chat_task_execution
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.catalog.store
+    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "laptop"}
+    source_id, failed_fork = _settled_source_and_fork(app, tmp_path, profile)
+    unsent_fork = store.create_chat_fork(
+        app.state.default_project_id, source_id, GraphTargetRef(), str(uuid4())
+    )
+    first = _chat_task_execution(
+        app, RunRequest(chat_id=failed_fork.chat_id, chat_scope="project", **profile), "fork-turn"
+    )
+    store.fail_agent_task(first.operation_id, "Fork transport unavailable")
+
+    store.detach_restored_lifecycle(diagnostic="Restore test", confirmed_by="Human")
+
+    for chat_id, operation_id in (
+        (failed_fork.chat_id, "after-failed"),
+        (unsent_fork.chat_id, "after-unsent"),
+    ):
+        _chat_task_execution(
+            app, RunRequest(chat_id=chat_id, chat_scope="project", **profile), operation_id
+        )
+        request = store.agent_task(operation_id).request
+        assert (request["fork_session_id"], request["session_id"]) == (None, None)
+    origins = {
+        summary["chat_id"]: summary.get("origin")
+        for summary in store.chat_inventory(app.state.default_project_id)
+    }
+    assert origins[unsent_fork.chat_id]["source_chat_id"] == source_id

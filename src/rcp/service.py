@@ -882,6 +882,8 @@ class RunRequest(BaseModel):
     fork_session_id: str | None = None
     fork_source_cwd: str | None = None
     fork_source_host: str | None = None
+    # The source chat's latest turn when the first message forked; no launch reads it.
+    fork_source_operation_id: str | None = None
     mode: ConversationMode = "discuss"
     isolation_owner_episode_id: str | None = None
     code_worktree: bool = False

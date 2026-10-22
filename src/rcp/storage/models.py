@@ -2026,8 +2026,9 @@ AgentTaskReceiptTier = Literal["summary", "diagnostic", "trace"]
 # Why a turn failed, when that changes what recovery should offer. A failure
 # with nothing to name is NULL rather than a member, so every value here is
 # one a recovery owner acts on. `session_refused` is a chat wake refused before
-# launch because its recorded policy differs from the chat's current session;
-# a retry would replay the same refused policy, so it offers none.
+# launch because its recorded policy differs from the chat's current session,
+# or a branched chat's carried fork whose source moved on or lost its session;
+# a retry would replay the same refusal, so it offers none.
 AgentFailureKind = Literal["transport_lost", "provider_auth", "session_refused"]
 
 
