@@ -18,6 +18,7 @@ from rcp.core.models import AuthorizedHuman
 from rcp.limits import ARTIFACT_MAX_VERSION_BYTES, ARTIFACT_RECENT_VERSIONS
 from rcp.live_artifacts import ResolvedLiveVersion
 from rcp.server_ops._local_primitives import fsync_directory
+from rcp.storage.artifact_imports import ArtifactImportStoreMixin
 from rcp.storage.artifact_models import (
     Artifact,
     ArtifactFile,
@@ -160,6 +161,33 @@ class ArtifactStoreMixin(StoreMixinBase):
                 "SELECT metadata FROM artifacts WHERE artifact_id = ?", (artifact_id,)
             ).fetchone()
         return Artifact.model_validate_json(row[0]) if row else None
+
+    def readable_artifact(self, project_id: str, artifact_id: str) -> Artifact | None:
+        with self.connection() as connection:
+            return self._readable_artifact(connection, project_id, artifact_id, now=self.now())
+
+    @staticmethod
+    def _readable_artifact(
+        connection: sqlite3.Connection, project_id: str, artifact_id: str, *, now: str
+    ) -> Artifact | None:
+        """This project's artifact while it may be read: unexpired, or held past expiry
+        by an active edit or an unfinished legacy import. Kept artifacts never expire."""
+        row = connection.execute(
+            "SELECT metadata FROM artifacts WHERE artifact_id = ? AND project_id = ?",
+            (artifact_id, project_id),
+        ).fetchone()
+        if row is None:
+            return None
+        artifact = Artifact.model_validate_json(row[0])
+        if (
+            artifact.expires_at is not None
+            and artifact.expires_at <= now
+            and artifact_id
+            not in ArtifactStoreMixin._protected_edit_artifact_ids(connection)
+            | ArtifactImportStoreMixin._legacy_artifact_import_ids(connection)
+        ):
+            return None
+        return artifact
 
     def artifacts(self, project_id: str) -> list[Artifact]:
         with self.connection() as connection:

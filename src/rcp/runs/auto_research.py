@@ -86,7 +86,6 @@ AutoResearchWakeAdmission = Callable[
     [AgentTaskRecord, AutoResearchActorRole, AutoResearchWakeCause],
     AgentTaskRecord | None,
 ]
-AutoResearchCommandFileReader = Callable[[str, int], str]
 AutoResearchCommandFileConsumer = Callable[[str, str], bool]
 AutoResearchCommandStateRefresher = Callable[[], tuple[int, str, str]]
 
@@ -886,14 +885,12 @@ class AutoResearchCommandDispatcher:
         store: AppStore,
         effects: AutoResearchCommandEffects,
         *,
-        command_file_reader: AutoResearchCommandFileReader | None = None,
-        command_file_consumer: AutoResearchCommandFileConsumer | None = None,
+        mailbox: RunStageMailbox | None = None,
         command_state_refresher: AutoResearchCommandStateRefresher | None = None,
         _apply_admission_locks: _AutoResearchApplyAdmissionLocks | None = None,
         service: ProjectService | None = None,
         graph_read_scope: GraphReadScope | None = None,
         allowed_verbs: tuple[CommandVerb, ...] | None = None,
-        mailbox: RunStageMailbox | None = None,
     ) -> None:
         self.store = store
         self.effects = effects
@@ -901,30 +898,24 @@ class AutoResearchCommandDispatcher:
         self.graph_read_scope = graph_read_scope
         self.allowed_verbs = allowed_verbs
         self.mailbox = mailbox
-        self.command_file_reader = command_file_reader
-        self.command_file_consumer = command_file_consumer
         self.command_state_refresher = command_state_refresher
         self._apply_admission_locks = _apply_admission_locks or _AutoResearchApplyAdmissionLocks()
 
     def with_command_files(
         self,
         *,
-        reader: AutoResearchCommandFileReader,
-        consumer: AutoResearchCommandFileConsumer,
+        mailbox: RunStageMailbox,
         refresher: AutoResearchCommandStateRefresher,
         service: ProjectService | None = None,
         graph_read_scope: GraphReadScope | None = None,
         allowed_verbs: tuple[CommandVerb, ...] | None = None,
-        mailbox: RunStageMailbox | None = None,
     ) -> AutoResearchCommandDispatcher:
         """Bind this turn's exact reusable stage to file-backed commands."""
 
         return AutoResearchCommandDispatcher(
             self.store,
             self.effects,
-            command_file_reader=reader,
-            mailbox=mailbox if mailbox is not None else self.mailbox,
-            command_file_consumer=consumer,
+            mailbox=mailbox,
             command_state_refresher=refresher,
             _apply_admission_locks=self._apply_admission_locks,
             service=service if service is not None else self.service,
@@ -935,14 +926,13 @@ class AutoResearchCommandDispatcher:
         )
 
     def with_allowed_verbs(
-        self, allowed_verbs: tuple[CommandVerb, ...], *, mailbox: RunStageMailbox | None = None
+        self, allowed_verbs: tuple[CommandVerb, ...], *, mailbox: RunStageMailbox
     ) -> AutoResearchCommandDispatcher:
         """Bind the command surface one launch resolved and its prompt renders."""
 
         bound = copy(self)
         bound.allowed_verbs = allowed_verbs
-        if mailbox is not None:
-            bound.mailbox = mailbox
+        bound.mailbox = mailbox
         return bound
 
     def dispatch(self, operation_id: str, request: CommandRequest) -> CommandResponse:
@@ -1599,12 +1589,12 @@ class AutoResearchCommandDispatcher:
         max_bytes: int,
         require_nonblank: bool,
     ) -> AutoResearchCommandFile:
-        if self.command_file_reader is None:
+        if self.mailbox is None:
             raise AutoResearchCommandUnavailable(
                 "The exact Auto-research command workspace is unavailable."
             )
         try:
-            text = self.command_file_reader(filename, max_bytes)
+            text = self.mailbox.read_text(filename, max_bytes=max_bytes)
         except FileNotFoundError as exc:
             raise AutoResearchCommandInvalid(
                 f"Command file {filename!r} does not exist in the orchestrator workspace."
@@ -2048,7 +2038,7 @@ class AutoResearchCommandDispatcher:
             episode=episode,
             task=task,
             request=request,
-            consume_command_file=self.command_file_consumer,
+            consume_command_file=self.mailbox.remove_if_sha256 if self.mailbox else None,
             refresh_command_state=self.command_state_refresher,
         )
 

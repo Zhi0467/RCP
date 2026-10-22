@@ -422,14 +422,10 @@ def _stored_artifact(store: AppStore, project_id: str, artifact_id: str):
             )
     if artifact is None or artifact.project_id != project_id:
         raise HTTPException(status_code=404, detail="Artifact not found")
-    if (
-        artifact.expires_at is not None
-        and artifact.expires_at <= store.now()
-        and artifact_id
-        not in (store.protected_edit_artifact_ids() | store.legacy_artifact_import_ids())
-    ):
+    readable = store.readable_artifact(project_id, artifact_id)
+    if readable is None:
         raise HTTPException(status_code=410, detail="Artifact expired")
-    return artifact
+    return readable
 
 
 class ArtifactViewerState(BaseModel):
