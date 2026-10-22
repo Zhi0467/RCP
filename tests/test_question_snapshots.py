@@ -222,7 +222,7 @@ def test_work_followup_launch_has_fresh_snapshot_and_records_delivery(
 
 @pytest.mark.parametrize("mode", ["work", "discuss"])
 @pytest.mark.parametrize("changed", [None, "session", "scope", "provider", "target", "capability"])
-def test_recovery_snapshot_carries_answers_only_through_identical_binding(
+def test_recovery_snapshot_carries_answers_only_through_the_same_session(
     store, origin, human, monkeypatch, changed, mode
 ):
     from types import SimpleNamespace
@@ -267,4 +267,5 @@ def test_recovery_snapshot_carries_answers_only_through_identical_binding(
     current.write_scope_fingerprint = None  # Launch admission has not bound it yet.
     result = snapshot(store, "recovery", write_scope_fingerprint=resolved_scope)
     ids = {item["question_id"] for item in json.loads(result.text)["questions"]}
-    assert (item.question_id in ids) == (changed is None)
+    # A Work recovery may run with a different scope; a Discuss one still has none.
+    assert (item.question_id in ids) == (changed is None or (changed, mode) == ("scope", "work"))

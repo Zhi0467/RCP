@@ -235,7 +235,6 @@ def require_question_origin_binding(
         or request.mode != ("discuss" if discuss else "work")
         or task.request.get("mode") != request.mode
         or task.graph_target != origin.graph_target
-        or write_scope_fingerprint != origin.write_scope_fingerprint
         or (
             discuss
             and (

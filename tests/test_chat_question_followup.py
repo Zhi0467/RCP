@@ -47,7 +47,6 @@ def _answered(store, *, mode="work"):
             stage_host=task.stage_host or "",
             stage_root=task.stage_root,
             fingerprint="a" * 64,
-            continuation_binding=False,
         )
     question = store.create_or_get_question(
         origin=QuestionOrigin(

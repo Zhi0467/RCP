@@ -170,17 +170,6 @@ _AGENT_TASK_CONTINUATION_CAUSES = frozenset(
 _EXCLUSIVE_CONTINUATION_CAUSES = frozenset({"resume", "retry", "handoff", "graph_repair"})
 
 
-def _joined_repositories(aliases: Sequence[str]) -> str:
-    """Name repositories the way a sentence does, not the way a tuple does."""
-
-    names = [alias for alias in aliases if alias]
-    if not names:
-        return ""
-    if len(names) == 1:
-        return names[0]
-    return f"{', '.join(names[:-1])} and {names[-1]}"
-
-
 def _completed_graph_status_message(graph_update: object) -> str:
     """A completed task's status line for a graph update that did not simply apply."""
 
@@ -323,7 +312,6 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 or task.stage_root != origin.stage_root
                 or (task.stage_host or "") != (origin.stage_host or "")
                 or task.graph_target != origin.graph_target
-                or task.write_scope_fingerprint != origin.write_scope_fingerprint
                 or task.dispatch_authority is None
                 or task.dispatch_authority.task_contract != origin.capability
                 or task.request.get("mode")
@@ -4953,33 +4941,19 @@ class AgentTaskStoreMixin(StoreMixinBase):
         stage_host: str,
         stage_root: str,
         fingerprint: str,
-        continuation_binding: bool,
-        scope_repositories: Sequence[str] = (),
-        compatible_previous_fingerprint: str | None = None,
-        compatible_related_fingerprints: frozenset[str] = frozenset(),
     ) -> None:
-        """Compare-and-set the durable filesystem scope before provider launch.
+        """Record the filesystem scope this launch runs with, before the provider starts.
 
-        A continuation must keep the scope its native session was launched with,
-        so it is compared against the stage's current binding. A fresh launch
-        resumes no session and establishes the binding instead: the providers
-        spec scopes this comparison to Resume, Retry, watcher wake, correction,
-        and child continuation, and says a legitimate scope change starts a
-        fresh task/session. Comparing a fresh launch against superseded history
-        made a chat's repository scope permanent, because a chat stage is named
-        from its chat id and is never cleared.
+        A launch hands the provider exactly the scope it built, so the record
+        describes this attempt; it is never compared with another turn's.
         """
 
         if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
             raise ValueError("agent task write-scope fingerprint must be lowercase SHA-256")
-        normalized_host = stage_host or ""
         with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """
-                SELECT project_id, kind, native_session_id,
-                       COALESCE(stage_host, '') AS stage_host,
-                       stage_root, write_scope_fingerprint
+                SELECT project_id, COALESCE(stage_host, '') AS stage_host, stage_root
                 FROM graph_runs WHERE operation_id = ?
                 """,
                 (operation_id,),
@@ -4988,90 +4962,13 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 raise KeyError(operation_id)
             if row["project_id"] != project_id:
                 raise ValueError("agent task write scope belongs to a different project")
-            if row["stage_host"] != normalized_host or row["stage_root"] != stage_root:
+            if row["stage_host"] != (stage_host or "") or row["stage_root"] != stage_root:
                 raise ValueError("agent task write scope does not match its saved execution stage")
-            existing = row["write_scope_fingerprint"]
-            if existing not in {None, fingerprint, compatible_previous_fingerprint}:
-                raise ValueError("agent task write scope changed after it was durably bound")
-
-            clauses = ["(COALESCE(stage_host, '') = ? AND stage_root = ?)"]
-            values: list[object] = [normalized_host, stage_root]
-            native_session_id = row["native_session_id"]
-            if native_session_id:
-                clauses.append("native_session_id = ?")
-                values.append(native_session_id)
-            admissible = {
-                fingerprint,
-                compatible_previous_fingerprint,
-                *compatible_related_fingerprints,
-            }
-            if continuation_binding:
-                # The durable binding is the stage's current one. Rows older
-                # than the most recent binding were superseded by a fresh
-                # launch and no longer describe this stage.
-                conflict = connection.execute(
-                    f"""
-                    SELECT operation_id, write_scope_fingerprint
-                    FROM graph_runs
-                    WHERE operation_id != ? AND kind = ?
-                      AND write_scope_fingerprint IS NOT NULL
-                      AND ({" OR ".join(clauses)})
-                    ORDER BY created_at DESC, rowid DESC
-                    LIMIT 1
-                    """,
-                    (operation_id, row["kind"], *values),
-                ).fetchone()
-                if conflict is not None and conflict["write_scope_fingerprint"] not in admissible:
-                    raise ValueError(
-                        self._write_scope_conflict_message(
-                            connection,
-                            bound_operation_id=conflict["operation_id"],
-                            offered=scope_repositories,
-                            continuation=True,
-                        )
-                    )
-            else:
-                # A fresh launch may rebind the stage, but never underneath a
-                # run that is still using it.
-                active = ",".join("?" for _ in ACTIVE_AGENT_TASK_STATUSES)
-                conflict = connection.execute(
-                    f"""
-                    SELECT operation_id, write_scope_fingerprint
-                    FROM graph_runs
-                    WHERE operation_id != ? AND kind = ?
-                      AND write_scope_fingerprint IS NOT NULL
-                      AND status IN ({active})
-                      AND ({" OR ".join(clauses)})
-                    ORDER BY created_at DESC, rowid DESC
-                    LIMIT 1
-                    """,
-                    (
-                        operation_id,
-                        row["kind"],
-                        *sorted(ACTIVE_AGENT_TASK_STATUSES),
-                        *values,
-                    ),
-                ).fetchone()
-                if conflict is not None and conflict["write_scope_fingerprint"] not in admissible:
-                    raise ValueError(
-                        self._write_scope_conflict_message(
-                            connection,
-                            bound_operation_id=conflict["operation_id"],
-                            offered=scope_repositories,
-                            continuation=False,
-                        )
-                    )
-            updated = connection.execute(
-                """
-                UPDATE graph_runs
-                SET write_scope_fingerprint = ?, updated_at = ?
-                WHERE operation_id = ?
-                  AND write_scope_fingerprint IS ?
-                """,
-                (fingerprint, self.now(), operation_id, existing),
-            ).rowcount
-            if updated != 1:
-                raise ValueError("agent task write scope changed while it was being bound")
+            connection.execute(
+                "UPDATE graph_runs SET write_scope_fingerprint = ?, updated_at = ? "
+                "WHERE operation_id = ?",
+                (fingerprint, self.now(), operation_id),
+            )
 
     def agent_task_has_receipt(self, operation_id: str, category: str) -> bool:
         """Whether this task recorded one receipt of the given category."""
@@ -5165,45 +5062,6 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 payload.get("explicit_terminal_event") is True
                 or (isinstance(errors, int) and not isinstance(errors, bool) and errors > 0)
             ),
-        )
-
-    @staticmethod
-    def _write_scope_conflict_message(
-        connection: sqlite3.Connection,
-        *,
-        bound_operation_id: str,
-        offered: Sequence[str],
-        continuation: bool,
-    ) -> str:
-        """Name the repositories on both sides so the human can act on this."""
-
-        bound = connection.execute(
-            "SELECT request_json FROM graph_runs WHERE operation_id = ?",
-            (bound_operation_id,),
-        ).fetchone()
-        aliases: list[str] = []
-        if bound is not None:
-            with suppress(ValueError, TypeError):
-                stored = json.loads(bound["request_json"] or "{}")
-                scope = stored.get("run_truth_scope") if isinstance(stored, dict) else None
-                if isinstance(scope, list):
-                    aliases = sorted({str(item) for item in scope if isinstance(item, str)})
-        held = _joined_repositories(aliases) or "a different set of repositories"
-        asked = _joined_repositories(offered)
-        if sorted(set(offered)) == aliases:
-            # Same repositories, so the difference is a path, machine or worktree.
-            held = "a different write scope"
-        subject = f"This turn offers {asked}, and its" if asked else "This turn's"
-        if continuation:
-            return (
-                f"{subject} conversation workspace is already authorized for {held}. "
-                "A continuation keeps the repository scope its provider session was "
-                "launched with. Start a new episode to change the repository scope."
-            )
-        return (
-            f"{subject} conversation workspace is in use by a running turn authorized "
-            f"for {held}. Wait for that turn to finish before starting one with a "
-            "different repository scope."
         )
 
     def clear_agent_task_stage(self, operation_id: str) -> None:

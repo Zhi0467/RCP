@@ -2228,7 +2228,6 @@ def test_interrupted_hidden_report_restarts_once_and_runner_owns_success(
         stage_host="",
         stage_root=str(tmp_path / "report-stage"),
         fingerprint="a" * 64,
-        continuation_binding=False,
     )
     store.record_agent_task_receipt(
         hidden.operation_id,

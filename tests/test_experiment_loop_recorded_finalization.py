@@ -81,7 +81,7 @@ async def _retained_loop_turn(
         data_dir,
         execution,
     )
-    execution.bind_write_scope(turn.write_scope, resumes_native_session=False)
+    execution.bind_write_scope(turn.write_scope)
     prompt_context = await loop_module._prepare_work_prompt_context(turn, staged)
     loop_module._record_work_finalization_context(
         turn, staged, role=_ROLE, required_session_id=required_session_id

@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -29,7 +29,6 @@ from rcp.agents.group_context import group_prompt_value
 from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION, chat_master_contract_key
 from rcp.agents.write_scope import (
     ProjectWriteScope,
-    WritableRepositoryRoot,
     resolve_project_write_scope,
 )
 from rcp.artifact_comments import (
@@ -1508,54 +1507,6 @@ def _project_write_scope(
             else []
         ),
     )
-    if isinstance(binding, ConversationWorktreeBinding) and execution is not None:
-        # Human-authored local integration is the only related-turn root change.
-        # Derive both admissible fingerprints from this exact validated binding;
-        # a retry of an already-bound operation still requires its original scope.
-        repositories = [item for item in scope.repositories if item.path != binding.shared_path]
-        protected = [
-            path
-            for path in scope.protected_write_paths
-            if path != str(PurePosixPath(binding.shared_path) / ".research")
-        ]
-        # Canonical state is protected in both variants, including when stored in
-        # the shared checkout. Keep every ordinary deny in the derived variants.
-        state_repository = service.manifest.repository_map[service.manifest.state.repository]
-        if state_repository.alias == binding.repository_alias:
-            protected.append(str(PurePosixPath(binding.shared_path) / ".research"))
-        common = scope.model_dump(
-            exclude={
-                "schema_generation",
-                "fingerprint",
-                "repositories",
-                "protected_write_paths",
-            }
-        )
-        variants = []
-        for shared in (False, True):
-            roots = list(repositories)
-            denied = list(protected)
-            if shared:
-                roots.append(
-                    WritableRepositoryRoot(
-                        alias=binding.repository_alias,
-                        machine=binding.machine,
-                        path=binding.shared_path,
-                    )
-                )
-                denied.append(str(PurePosixPath(binding.shared_path) / ".research"))
-            variants.append(
-                ProjectWriteScope.create(
-                    **common,
-                    repositories=roots,
-                    protected_write_paths=denied,
-                ).fingerprint
-            )
-        execution.compatible_related_write_scope_fingerprints = frozenset(variants)
-    if execution is not None:
-        question = execution.store.question_for_followup(execution.operation_id)
-        if question is not None and scope.fingerprint != question.origin.write_scope_fingerprint:
-            raise ValueError("question_origin_write_scope_changed")
     return scope
 
 

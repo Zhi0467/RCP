@@ -44,7 +44,6 @@ def question_receiver_binds(origin: QuestionOrigin, task: AgentTaskRecord) -> bo
         or task.native_session_id != origin.native_session_id
         or task.stage_root != origin.stage_root
         or (task.stage_host or "") != (origin.stage_host or "")
-        or task.write_scope_fingerprint != origin.write_scope_fingerprint
         or task.graph_target != origin.graph_target
         or task.dispatch_authority is None
         or task.dispatch_authority.profile != "ordinary"

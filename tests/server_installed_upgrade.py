@@ -288,7 +288,6 @@ def seed_question_followup(data_dir: Path, fixture: dict) -> dict:
         stage_host="",
         stage_root=stage,
         fingerprint=scope.fingerprint,
-        continuation_binding=False,
     )
     store.complete_agent_task(operation_id, applied_revision=None, result={})
     question = store.create_or_get_question(

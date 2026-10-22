@@ -263,8 +263,7 @@ checkpoints/restores, `/etc/rcp`, `/run/rcp`, account `~/.rcp`, remote
 `rcp_owned_paths` and scope construction compare filesystem identity on the host.
 Save and picker refuse roots equal to or inside protected storage. Storage inside
 a grant remains read-only via `granted_protected_paths`, except the launch's own
-workspace/jobs. Grants stay outside the fingerprint so the next chat turn can
-use changed machine settings without losing resumability.
+workspace/jobs.
 
 systemd uses `ReadWritePaths`/`ReadOnlyPaths`; Codex permits a deeper write root
 inside a read parent. Claude denies override allows, so a protected parent of its
@@ -489,22 +488,15 @@ Provider logins, and the model picker, locally and on an SSH execution machine.
 Launch receipts record project, host, capability, canonical write roots,
 fingerprint, enforcement mode and fresh/resumed state. Their canonical-state
 boundary is `provider_enforced` only where every tool is bounded (Codex) and
-`file_tools_only` where the Work shell is not (Claude, OpenCode). Before any
-resumed launch, RCP recomputes and compares project, host, exact stage, graph
-target and root fingerprint. Missing/moved roots, cross-project bindings or incompatible
-run scope fail before launch; they require a fresh session.
+`file_tools_only` where the Work shell is not (Claude, OpenCode). A resumed
+launch checks that its stage still belongs to the same project and host, then
+records the scope it built; the provider receives exactly that scope.
 
-The session id actually passed to the provider decides whether this is a
-continuation, not admission's label. A sessionless launch establishes a new
-stage binding, but refuses an overlapping live turn with another scope. A
-continuation compares the current stage binding, not one superseded by a fresh
-launch. Refusals name both repository sets and direct run-scope changes to a
-new episode.
-
-Conversation-local merge and the following ordinary turn may transition between
-exactly recomputed worktree-only and worktree-plus-shared roots for the same
-binding. Resume/Retry of an already-bound operation still requires its original
-fingerprint. This exception cannot change project, host, stage or repository.
+**Why:** No turn's scope is compared with an earlier turn's. Enforcement happens
+at each launch, the human chooses the repositories, and containment here is
+cooperative rather than hostile-agent proof. The old comparison protected no one
+and refused ordinary follow-ups whenever an input changed, such as a path, a
+worktree, or a turn-only deny.
 
 The same resolver covers Work, orchestration, children, wakes and corrections.
 Runtime fallback preserves every binding and the native session. Recovery keeps
