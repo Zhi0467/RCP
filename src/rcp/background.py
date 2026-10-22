@@ -1762,7 +1762,7 @@ class BackgroundAgentTasks:
             raise ValueError(
                 "The admitted task has no valid persisted request for its kind."
             ) from exc
-        if not _persisted_request_roundtrips(request, record.request):
+        if not persisted_request_roundtrips(request, record.request):
             raise ValueError("The admitted task request failed its persisted roundtrip.")
 
         from rcp.runs.consolidation import require_consolidation_launch
@@ -2002,7 +2002,7 @@ class BackgroundAgentTasks:
             self._validate_request_type(current.kind, current_request)
         except (TypeError, ValueError) as exc:
             raise ValueError("The committed task lost its persisted request contract.") from exc
-        if not _persisted_request_roundtrips(current_request, current.request):
+        if not persisted_request_roundtrips(current_request, current.request):
             raise ValueError("The committed task request failed its persisted roundtrip.")
         return current
 
@@ -3325,7 +3325,7 @@ class BackgroundAgentTasks:
             self._workers.pop(operation_id, None)
 
 
-def _persisted_request_roundtrips(request: BaseModel, stored: dict) -> bool:
+def persisted_request_roundtrips(request: BaseModel, stored: dict) -> bool:
     """A row written before a field existed omits it; its default is the legacy meaning."""
     dumped = request.model_dump(mode="json")
     fields = type(request).model_fields

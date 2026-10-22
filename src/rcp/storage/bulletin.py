@@ -687,8 +687,9 @@ class BulletinStoreMixin(StoreMixinBase):
         outcome: dict[str, Any],
         now: str,
     ) -> list[Artifact]:
-        """A link saves its artifact, exactly as Save to Artifacts does, in the post's
-        own transaction, so a published link never outlives its artifact."""
+        """A link saves its artifact in the post's own transaction, so a published
+        link never outlives its artifact. Saving is not a review: a linked
+        consolidation report stays open in the Inbox until a human settles it."""
         store = cast("AppStore", self)
         kept = []
         for link in outcome.get("post", {}).get("artifacts", []):
@@ -696,7 +697,7 @@ class BulletinStoreMixin(StoreMixinBase):
                 connection, project_id, link["artifact_id"], now=now
             )
             if artifact is not None and not artifact.kept_at:
-                kept.append(store._keep_artifact(connection, artifact))
+                kept.append(store._retain_artifact(connection, artifact))
         return kept
 
     def execute_bulletin_command(

@@ -47,7 +47,7 @@ from rcp.agents.prompts import (
 )
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
-from rcp.background import AgentTaskExecution
+from rcp.background import AgentTaskExecution, persisted_request_roundtrips
 from rcp.compute_jobs.job_managers import JOB_MANAGERS
 from rcp.config import AgentSurface, Manifest
 from rcp.conversation_worktrees import conversation_worktree_context
@@ -617,7 +617,7 @@ def _load_work_finalization_context(
     except ValueError as exc:
         raise ValueError(f"The retained {owner} finalization context is invalid.") from exc
     task = execution.store.agent_task(execution.operation_id)
-    if task is None or task.request != request.model_dump(mode="json"):
+    if task is None or not persisted_request_roundtrips(request, task.request):
         raise ValueError(f"The {owner} finalization request does not match its durable task.")
     if execution.write_scope_fingerprint != stored.write_scope.fingerprint:
         raise ValueError(f"The retained {owner} finalization write scope changed after launch.")

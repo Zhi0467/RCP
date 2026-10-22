@@ -479,8 +479,9 @@ and soft-delete timestamps. Artifact links are not stored: each read resolves th
 text's `<artifact:ID>` tokens against the project's readable artifacts (the
 artifact store's one availability rule), so a token naming no readable artifact of
 the project stays prose. Posting or editing a post that links an unsaved artifact
-saves it, as Save to Artifacts does, in the post's own transaction and under the
-artifact's lock, so a link never outlives its artifact. Membership, author identity,
+saves it in the post's own transaction and under the artifact's lock, so a link
+never outlives its artifact. Saving settles no review: a linked consolidation
+report stays open in the Inbox. Membership, author identity,
 receipt lookup, Stop admission, and mutation are checked within the storage
 transaction. These rows
 are operational records and do not mutate canonical graph history. Restore

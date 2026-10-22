@@ -32,7 +32,7 @@ from rcp.agents.prompts import (
     render_chat_read_context,
 )
 from rcp.attachments import ChatAttachmentStore
-from rcp.background import AgentTaskExecution
+from rcp.background import AgentTaskExecution, persisted_request_roundtrips
 from rcp.config import AgentSurface
 from rcp.conversation_worktrees import conversation_worktree_context
 from rcp.history import ReplayHalted
@@ -329,7 +329,7 @@ def _load_discuss_finalization_context(
     except ValueError as exc:
         raise ValueError("The retained Discuss finalization context is invalid.") from exc
     task = execution.store.agent_task(execution.operation_id)
-    if task is None or task.request != request.model_dump(mode="json"):
+    if task is None or not persisted_request_roundtrips(request, task.request):
         raise ValueError("The Discuss finalization request does not match its durable task.")
     _local_stage, remote_stage, workspace = attach_retained_stage(
         execution,
