@@ -390,6 +390,7 @@ export const TURN_REFUSAL_REASONS: Readonly<Record<string, string>> = {
   chat_fork_source_unavailable:
     "The source conversation's session is no longer available. Branch it again or start a new conversation.",
   graph_branch_archived: "This graph branch is archived. Unarchive it to continue here.",
+  chat_archived: "This chat is archived. Restore it to continue.",
 };
 
 function apiError(status: number, body: unknown): ApiError {

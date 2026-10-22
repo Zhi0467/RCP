@@ -2086,6 +2086,16 @@ export function NodeChat({
       attachmentSetIdRef.current = null;
       if (!commentOnly) selectMode(turn.mode);
     } catch (error) {
+      // A replaced backend admitted nothing and Reconnect is already offered, so
+      // the text returns to the composer with no failed turn to resend. The
+      // changed backend may already have unmounted this chat, so the stored draft
+      // carries the text to the composer Reconnect reopens.
+      if (error instanceof ApiError && error.code === "backend_instance_replaced") {
+        if (!readStorage(draftKey)) writeStorage(draftKey, turn.draft);
+        setPendingTurn((current) => (current?.clientId === turn.clientId ? null : current));
+        setMessage((current) => (current ? current : turn.draft));
+        return;
+      }
       // The request may never have reached the server, so the turn stays where it
       // was sent, with Resend under the same key: at most one turn is admitted.
       // The composer gets the text back too, so it survives leaving this chat.

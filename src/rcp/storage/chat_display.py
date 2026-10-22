@@ -388,6 +388,15 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             "pinned": [row["chat_id"] for row in pinned],
         }
 
+    def chat_archived(self, project_id: str, chat_id: str) -> bool:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM chat_display WHERE project_id = ? AND chat_id = ? "
+                "AND archived_at IS NOT NULL",
+                (project_id, chat_id),
+            ).fetchone()
+        return row is not None
+
     def set_chat_archived(
         self, project_id: str, chat_id: str, user_id: str, *, archived: bool
     ) -> None:
