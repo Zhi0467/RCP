@@ -19,7 +19,7 @@ concurrency:
 jobs:
   lint:
     name: lint and format
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7
@@ -45,7 +45,7 @@ jobs:
 
   python:
     name: pytest (py${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -87,7 +87,7 @@ jobs:
     name: old-data migration tests
     # A fork has none of this repository's releases; PRs from it run here.
     if: ${{ !github.event.repository.fork }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -127,7 +127,7 @@ jobs:
     name: package installed upgrade candidate
     # A fork has none of this repository's releases; PRs from it run here.
     if: ${{ !github.event.repository.fork }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       releases: ${{ steps.catalog.outputs.releases }}
     env:
@@ -248,7 +248,7 @@ jobs:
     name: old-data upgrade
     needs: [old-data-upgrade-tests, installed-upgrade-candidate, installed-upgrade-release]
     if: ${{ always() && !github.event.repository.fork }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Require every installed release journey
         env:
@@ -259,7 +259,7 @@ jobs:
 
   web:
     name: web typecheck and tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7
@@ -308,7 +308,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Publish the exact wheel bytes exercised by every installed upgrade job.

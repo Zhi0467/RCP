@@ -22,7 +22,7 @@ concurrency:
 jobs:
   identity:
     name: resolve the build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       BUILD_NUMBER: ${{ inputs.build }}
       GH_TOKEN: ${{ github.token }}
