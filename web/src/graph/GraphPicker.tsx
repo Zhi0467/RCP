@@ -43,7 +43,8 @@ interface GraphPickerProps {
   unavailable?: boolean;
   onRefUpdated: (ref: GraphRef) => void;
   compact?: boolean;
-  /** Names the trigger instead of the current branch, for a picker that moves something. */
+  /** Names the trigger instead of the current branch, for a picker that moves something;
+   * the trigger then reads as a plain menu row, without the branch icon. */
   label?: string;
   /** A line above the list saying what picking does. */
   heading?: string;
@@ -285,7 +286,7 @@ export function GraphPicker({
           setWarning(null);
         }}
       >
-        <GitBranch size={15} />
+        {!label && <GitBranch size={15} />}
         <span>{label ?? currentName}</span>
         {!label && attention && (
           <span className="branch-picker-attention" aria-label="Another branch needs you" />

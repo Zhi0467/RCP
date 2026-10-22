@@ -113,6 +113,11 @@
 * {
   box-sizing: border-box;
 }
+/* Tailwind's preflight zeroes every margin, including the auto margin that
+   centres a modal dialog in the viewport. */
+dialog:modal {
+  margin: auto;
+}
 html,
 body,
 #root {

@@ -6,7 +6,7 @@ import {
   RefreshCw,
   TriangleAlert,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useState, type ReactNode, type Ref } from "react";
 import {
   modelChange,
   modelOptions,
@@ -56,6 +56,8 @@ interface Props {
    */
   effectiveModel?: string;
   children?: ReactNode;
+  /** The panel element, for a surface that dismisses it as a popover layer. */
+  ref?: Ref<HTMLDivElement>;
 }
 
 export function profileRunConfig(profile: AgentProfile): AgentRunConfig {
@@ -82,6 +84,7 @@ export function AgentConfigChip({
   workLike = false,
   optionCount = 0,
   onToggle,
+  ref,
 }: {
   project: ProjectSnapshot;
   value: AgentRunConfig;
@@ -94,11 +97,13 @@ export function AgentConfigChip({
   /** Launch options switched on inside the picker, counted so a grant stays visible. */
   optionCount?: number;
   onToggle: () => void;
+  ref?: Ref<HTMLButtonElement>;
 }) {
   const readiness = project.provider_readiness[value.run_on]?.[value.provider];
   const providerName = readiness?.label || value.provider;
   return (
     <button
+      ref={ref}
       className="agent-provider-label agent-config-chip"
       type="button"
       aria-busy={readiness === undefined}
@@ -168,6 +173,7 @@ export function AgentConfigControls({
   runtime,
   effectiveModel = "",
   children,
+  ref,
 }: Props) {
   const [expanded, setExpanded] = useState(!defaultCollapsed);
   const [reprobing, setReprobing] = useState(false);
@@ -350,7 +356,12 @@ export function AgentConfigControls({
     </>
   );
 
-  if (!collapsible) return <div className={className}>{contents}</div>;
+  if (!collapsible)
+    return (
+      <div className={className} ref={ref}>
+        {contents}
+      </div>
+    );
 
   return (
     <details

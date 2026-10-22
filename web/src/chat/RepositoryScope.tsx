@@ -1,6 +1,7 @@
 import { Check, ChevronDown } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { Repository } from "../core/types";
+import { useLayerDismiss } from "../core/useLayerDismiss";
 
 interface Props {
   repositories: Repository[];
@@ -19,13 +20,8 @@ export function RepositoryScope({
 }: Props) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const close = (event: MouseEvent) => {
-      if (!root.current?.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, []);
+  const trigger = useRef<HTMLButtonElement>(null);
+  useLayerDismiss(open, () => setOpen(false), [root], trigger);
 
   const toggle = (alias: string) => {
     const next = selected.includes(alias)
@@ -36,6 +32,7 @@ export function RepositoryScope({
   return (
     <div className="scope-picker" ref={root}>
       <button
+        ref={trigger}
         className="scope-trigger"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}

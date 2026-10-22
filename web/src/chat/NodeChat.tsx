@@ -207,6 +207,7 @@ import {
   profileRunConfig,
 } from "../core/AgentConfigControls";
 import { SkillPicker, useSkillPicker } from "../core/SkillPicker";
+import { useLayerDismiss } from "../core/useLayerDismiss";
 import { RepositoryScope } from "./RepositoryScope";
 import { AgentStatusStrip, CompactionDivider } from "./AgentStatusStrip";
 import { chatStatusTasks, compactionAnchors } from "./agentStatusModel";
@@ -475,6 +476,14 @@ export function NodeChat({
     config: AgentRunConfig;
   } | null>(null);
   const [configOpen, setConfigOpen] = useState(false);
+  const configChipRef = useRef<HTMLButtonElement | null>(null);
+  const configPanelRef = useRef<HTMLDivElement | null>(null);
+  useLayerDismiss(
+    configOpen,
+    () => setConfigOpen(false),
+    [configChipRef, configPanelRef],
+    configChipRef,
+  );
   const pendingFork = Boolean(
     origin &&
     !relatedTasks.some((task) => task.native_session_id) &&
@@ -2418,6 +2427,7 @@ export function NodeChat({
   const effectiveModel = config.provider === profile.provider ? profile.effective_model : "";
   const agentSummary = (
     <AgentConfigChip
+      ref={configChipRef}
       project={project}
       value={config}
       effectiveModel={effectiveModel}
@@ -2491,6 +2501,7 @@ export function NodeChat({
       )}
       {configOpen && !readOnly && (
         <AgentConfigControls
+          ref={configPanelRef}
           project={project}
           value={config}
           onChange={(next) => setConfigOverride({ chatId, config: next })}

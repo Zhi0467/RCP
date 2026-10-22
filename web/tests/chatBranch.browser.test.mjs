@@ -210,3 +210,64 @@ test("Escape and presses inside Branch this chat close only the innermost layer"
     await rm(cacheDir, { recursive: true, force: true });
   }
 });
+
+test("Escape closes the repository list before the menu, and the agent picker closes like a popover", async () => {
+  const cacheDir = await mkdtemp(join(tmpdir(), "rcp-chat-layers-"));
+  const server = await createServer({
+    configLoader: "runner",
+    cacheDir,
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 1000, height: 850 } });
+    await page.route("**/api/**", (route) => {
+      const path = new URL(route.request().url()).pathname;
+      const data = path.endsWith("/graph-refs")
+        ? [main, branch]
+        : path.endsWith("/questions")
+          ? []
+          : {};
+      return route.fulfill({ contentType: "application/json", body: JSON.stringify(data) });
+    });
+    const address = server.httpServer.address();
+    await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatBranch.html`);
+    const menu = page.getByRole("button", { name: "Chat menu", exact: true });
+    await menu.click();
+    const scope = page.locator(".chat-scope-control .scope-trigger");
+    await scope.click();
+    await page.locator(".scope-popover").waitFor();
+    await page.keyboard.press("Escape");
+    await page.locator(".scope-popover").waitFor({ state: "detached" });
+    assert.equal(await menu.getAttribute("aria-expanded"), "true");
+    assert.equal(await scope.evaluate((node) => node === document.activeElement), true);
+    await page.keyboard.press("Escape");
+    assert.equal(await menu.getAttribute("aria-expanded"), "false");
+    assert.equal(await menu.evaluate((node) => node === document.activeElement), true);
+
+    const chip = page.locator(".agent-config-chip");
+    const panel = page.locator(".agent-config");
+    await chip.click();
+    await panel.locator("select").first().focus();
+    await page.keyboard.press("Escape");
+    await panel.waitFor({ state: "detached" });
+    assert.equal(await chip.getAttribute("aria-expanded"), "false");
+    assert.equal(await chip.evaluate((node) => node === document.activeElement), true);
+    await chip.click();
+    await panel.waitFor();
+    await page.mouse.click(5, 400);
+    await panel.waitFor({ state: "detached" });
+    await chip.click();
+    await panel.waitFor();
+    await chip.click();
+    await panel.waitFor({ state: "detached" });
+  } finally {
+    await browser?.close();
+    await server.close();
+    await rm(cacheDir, { recursive: true, force: true });
+  }
+});

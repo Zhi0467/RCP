@@ -19,12 +19,14 @@ export function ChatHeaderMenu({
   // A press inside the menu's React tree, portaled popovers included, reaches
   // the root's handler before the document listener sees the same event.
   const pressedInside = useRef<Event | null>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!open) return;
     const close = (event: Event) => {
       if (event instanceof KeyboardEvent) {
         // A nested control that handled Escape closes only its own layer.
         if (event.key !== "Escape" || event.defaultPrevented) return;
+        trigger.current?.focus();
       } else if (pressedInside.current === event) return;
       setOpen(false);
     };
@@ -44,6 +46,7 @@ export function ChatHeaderMenu({
       }}
     >
       <button
+        ref={trigger}
         type="button"
         className="icon-button"
         aria-label="Chat menu"
