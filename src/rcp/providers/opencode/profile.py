@@ -78,6 +78,8 @@ class _OpenCodeRunTurn(_JsonlProviderTurn):
                 model=request.model,
                 reasoning=request.reasoning,
                 session_id=request.session_id,
+                fork_session_id=request.fork_session_id,
+                fork_source_cwd=request.fork_source_cwd,
                 read_dirs=request.read_dirs,
                 write_dirs=request.write_dirs,
                 write_scope=request.write_scope,
@@ -118,6 +120,17 @@ class _OpenCodeRunTurn(_JsonlProviderTurn):
         events: list[ProviderStreamEvent] = []
         session_id = value.get("sessionID")
         if not self._session_seen and isinstance(session_id, str) and session_id:
+            if session_id == self._fork_session_id:
+                self.last_error = (
+                    "OpenCode fork returned the source session instead of a new session."
+                )
+                self._completed = True
+                return ProviderRuntimeStep(
+                    events=(ProviderStreamEvent(event="error", text=self.last_error),),
+                    complete=True,
+                    explicit_terminal=True,
+                    stop_process=True,
+                )
             self._session_seen = True
             events.append(ProviderStreamEvent(event="session", session_id=session_id))
         event = self._profile.decode_event(value, line)
@@ -258,7 +271,12 @@ class OpenCodeProfile(ProviderProfile):
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
         autocompact: str = "",
+        fork_session_id: str | None = None,
+        fork_source_cwd: str | None = None,
     ) -> list[str]:
+        del fork_source_cwd
+        if session_id and fork_session_id:
+            raise ValueError("A provider turn cannot resume and fork a session together.")
         del prompt, read_dirs, autocompact
         work_like = capability in {"work_auto", "orchestrate"}
         if work_like:
@@ -271,7 +289,9 @@ class OpenCodeProfile(ProviderProfile):
         )
         # `--pure` loads no plugin, whose config hook could rewrite these rules.
         command = [binary, "run", "--format", "json", "--pure", "--agent", _agent_name(permission)]
-        if session_id:
+        if fork_session_id:
+            command.extend(["--session", fork_session_id, "--fork"])
+        elif session_id:
             command.extend(["--session", session_id])
         if model:
             command.extend(["--model", model])

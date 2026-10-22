@@ -321,7 +321,7 @@ def _prepare_chat_prompt_state(
     latest, revoked = _chat_master_status(execution, request.session_id)
     node = classify(
         LaunchPhase(
-            session_id=request.session_id,
+            session_id=request.session_id or request.fork_session_id,
             phase="wake"
             if execution is not None and execution.continuation == "watcher_wake"
             else "turn",
@@ -391,7 +391,9 @@ def _prepare_chat_prompt_state(
         delta = changed_since_master(
             MasterRef(path=master_context_path, bootstrap=False, values=reference), values
         )
-    replaces = (previous is not None or latest is not None) and must_bootstrap
+    replaces = (
+        previous is not None or latest is not None or bool(request.fork_session_id)
+    ) and must_bootstrap
     if replaces:
         delta = {
             "master_context": {
@@ -400,6 +402,22 @@ def _prepare_chat_prompt_state(
             },
         }
     delta = merge_prepared_graph_observation_delta(delta, execution, request.session_id)
+    if request.fork_session_id:
+        record = execution.store.agent_task(execution.operation_id) if execution else None
+        if record is None:
+            raise ValueError("A chat fork requires its admitted graph target.")
+        delta = {
+            **(delta or {}),
+            "conversation_fork": {
+                "graph_target": record.graph_target.model_dump(mode="json"),
+                "instruction": (
+                    "This conversation now works on this graph target. Read its current graph; "
+                    "it may differ from the graph in the conversation before the fork. "
+                    "Use the new master contract and workspace for this conversation."
+                ),
+            },
+        }
+
     # The browser grant is also compared with the last committed turn: the human
     # toggles it between turns, so the session hears it only when it changes.
     browser = values.get("browser")

@@ -184,6 +184,12 @@ class ProviderTurnRequest:
     autocompact: str = ""
     # None preserves the provider default; staging has already resolved the card.
     shell_timeout_seconds: int | None = None
+    fork_session_id: str | None = None
+    fork_source_cwd: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.session_id and self.fork_session_id:
+            raise ValueError("A provider turn cannot resume and fork a session together.")
 
 
 @dataclass(frozen=True)
@@ -289,6 +295,7 @@ class _JsonlProviderTurn(ProviderTurn):
     ) -> None:
         self._profile = profile
         self._prompt = request.prompt
+        self._fork_session_id = request.fork_session_id
         self.command = request.legacy_command or profile.command(
             request.prompt,
             binary=request.binary,
@@ -296,6 +303,8 @@ class _JsonlProviderTurn(ProviderTurn):
             model=request.model,
             reasoning=request.reasoning,
             session_id=request.session_id,
+            fork_session_id=request.fork_session_id,
+            fork_source_cwd=request.fork_source_cwd,
             read_dirs=request.read_dirs,
             write_dirs=request.write_dirs,
             write_scope=request.write_scope,
@@ -321,6 +330,18 @@ class _JsonlProviderTurn(ProviderTurn):
             event = ProviderStreamEvent(event="raw", text=line)
             return ProviderRuntimeStep(events=(event,))
         event = self._profile.decode_event(value, line)
+        if (
+            event.event == "session"
+            and self._fork_session_id
+            and self._fork_session_id == event.session_id
+        ):
+            self.last_error = "Provider fork returned the source session instead of a new session."
+            return ProviderRuntimeStep(
+                events=(ProviderStreamEvent(event="error", text=self.last_error),),
+                complete=True,
+                explicit_terminal=True,
+                stop_process=True,
+            )
         if isinstance(value, dict) and value.get("type") == "error":
             self.last_error = event.text
         terminal = event.event == "error" or (
@@ -569,6 +590,8 @@ class ProviderProfile:
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
         autocompact: str = "",
+        fork_session_id: str | None = None,
+        fork_source_cwd: str | None = None,
     ) -> list[str]:
         """The argv that runs one turn. `prompt` arrives on stdin."""
         raise NotImplementedError

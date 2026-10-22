@@ -146,7 +146,9 @@ def refuse_recorded_session_mismatch(
     continued what it pinned.
     """
 
-    if required_session_id is None:
+    record = execution.store.agent_task(execution.operation_id) if execution else None
+    fork_session_id = record.request.get("fork_session_id") if record else None
+    if required_session_id is None and not fork_session_id:
         return []
     session_id = next(
         (
@@ -156,7 +158,12 @@ def refuse_recorded_session_mismatch(
         ),
         None,
     )
-    if session_id is None or session_id == required_session_id:
+    fork_mismatch = bool(fork_session_id) and session_id in {None, fork_session_id}
+    resume_mismatch = required_session_id is not None and session_id not in {
+        None,
+        required_session_id,
+    }
+    if not fork_mismatch and not resume_mismatch:
         return []
     outcome.failed = True
     if execution is not None:

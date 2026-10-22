@@ -1,3 +1,5 @@
+import { ChatOriginLink } from "./ChatBranchDialog";
+import type { ChatOrigin } from "../core/types";
 import { turnOutcomeChip } from "./turnOutcome";
 import { memberDraftKey } from "../core/draftStorage";
 import { MAIN_GRAPH } from "../core/graphTarget";
@@ -226,6 +228,7 @@ interface Props {
   tasks: AgentTask[];
   watchers?: WatcherRecord[];
   historyMessages?: ChatMessage[];
+  origin?: ChatOrigin | null;
   chatId: string;
   presentation?: "floating" | "workspace";
   fixedConversation?: boolean;
@@ -363,6 +366,7 @@ export function NodeChat({
   tasks,
   watchers = EMPTY_WATCHERS,
   historyMessages = [],
+  origin,
   chatId,
   presentation = "floating",
   fixedConversation = false,
@@ -445,9 +449,16 @@ export function NodeChat({
       latestPersistedChatConfig(
         historyMessages,
         relatedTasks,
-        profileRunConfig(project.agent_profiles[surface]),
+        origin
+          ? {
+              provider: origin.provider,
+              model: origin.model ?? "",
+              reasoning: origin.reasoning ?? "",
+              run_on: origin.run_on,
+            }
+          : profileRunConfig(project.agent_profiles[surface]),
       ),
-    [historyMessages, project.agent_profiles, relatedTasks, surface],
+    [historyMessages, origin, project.agent_profiles, relatedTasks, surface],
   );
   // The human's pick for this chat's next turns. It is keyed by chat, so another
   // chat starts from its own default; the machine always stays the derived one.
@@ -456,6 +467,11 @@ export function NodeChat({
     config: AgentRunConfig;
   } | null>(null);
   const [configOpen, setConfigOpen] = useState(false);
+  const pendingFork = Boolean(
+    origin &&
+    !relatedTasks.some((task) => task.native_session_id) &&
+    !historyMessages.some((message) => message.native_session_id),
+  );
   const config = useMemo(
     () =>
       configOverride?.chatId === chatId
@@ -2398,7 +2414,7 @@ export function NodeChat({
       value={config}
       effectiveModel={effectiveModel}
       open={configOpen}
-      disabled={readOnly}
+      disabled={readOnly || pendingFork}
       label="Chat agent"
       workLike={mode === "work"}
       onToggle={() => setConfigOpen((open) => !open)}
@@ -2516,6 +2532,7 @@ export function NodeChat({
         onScroll={handleChatScroll}
         ref={chatLinesRef}
       >
+        {origin && <ChatOriginLink projectId={project.id} origin={origin} />}
         {questionTranscript(transcript, questionState.questions).map((entry) => {
           if (entry.kind === "question")
             return (

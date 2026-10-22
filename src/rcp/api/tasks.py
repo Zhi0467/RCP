@@ -353,6 +353,25 @@ def start_ordinary_task(
         )
     chat_admission_lock = None
     try:
+        if kind in {"node_chat", "project_chat"} and isinstance(body.get("chat_id"), str):
+            fork = store.chat_fork(project_id, str(body["chat_id"]))
+            if (
+                fork is not None
+                and store.current_chat_session(project_id, fork.kind, fork.chat_id) is None
+            ):
+                machine = service.manifest.machine_map.get(fork.origin.run_on)
+                if machine is None or machine.host != fork.source_host:
+                    raise ValueError("The source session's execution machine has changed.")
+                body = {
+                    **body,
+                    **{
+                        field: getattr(fork.origin, field)
+                        for field in ("provider", "model", "reasoning", "run_on")
+                    },
+                    "node_id": fork.node_id,
+                    "chat_scope": "node" if fork.kind == "node_chat" else "project",
+                    "session_id": None,
+                }
         with _task_preparation_service(service) as reader:
             request = _validated_task_request(reader, kind, body)
             if isinstance(request, RunRequest):
@@ -1350,6 +1369,8 @@ def _validated_task_request(
     client_request.pop("resolved_compute_context", None)
     client_request.pop("worktree_integration_target", None)
     client_request.pop("attachments", None)
+    client_request.pop("fork_session_id", None)
+    client_request.pop("fork_source_cwd", None)
     request = RunRequest.model_validate(client_request).model_copy(
         update={
             "trigger": "human",

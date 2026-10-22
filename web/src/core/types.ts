@@ -2938,7 +2938,19 @@ export interface AgentUsageSnapshot {
 
 export type StartAgentTask = (kind: AgentTaskKind, request: AgentTaskRequest) => Promise<AgentTask>;
 
+export interface ChatOrigin {
+  source_chat_id: string;
+  source_operation_id: string;
+  source_graph_target: GraphTargetRef;
+  source_title: string;
+  provider: string;
+  model: string | null;
+  reasoning: string | null;
+  run_on: string;
+}
+
 export interface ChatSummary {
+  origin?: ChatOrigin | null;
   conversation_kind: "chat" | "episode" | "auto_research_child" | "auto_research";
   graph_title: string;
   orchestrator_episode_id: string | null;

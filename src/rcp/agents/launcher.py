@@ -243,6 +243,8 @@ def _supervised_remote_turn_command(
     watch_path: str,
     experiment_watch_glob: str,
     close_input_after_initial: bool,
+    fork_session_id: str | None = None,
+    fork_source_cwd: str | None = None,
 ) -> list[str]:
     """Wrap one remote provider pass in the execution-host journal."""
 
@@ -282,6 +284,10 @@ def _supervised_remote_turn_command(
         "--poll-seconds",
         str(REMOTE_PROVIDER_STOP_POLL_SECONDS),
     ]
+    if fork_session_id:
+        if not fork_source_cwd:
+            raise ValueError("A session fork requires its source working directory.")
+        wrapped.extend(("--fork-session-id", fork_session_id, "--fork-source-cwd", fork_source_cwd))
     if provider_version:
         wrapped.extend(("--provider-version", provider_version))
     if close_input_after_initial:
@@ -1145,6 +1151,8 @@ class AgentLauncher:
         model: str | None = None,
         reasoning: str | None = None,
         session_id: str | None = None,
+        fork_session_id: str | None = None,
+        fork_source_cwd: str | None = None,
         read_dirs: list[Path] | None = None,
         write_dirs: list[Path] | None = None,
         write_scope: ProjectWriteScope | None = None,
@@ -1204,6 +1212,8 @@ class AgentLauncher:
                         model=model,
                         reasoning=reasoning,
                         session_id=session_id,
+                        fork_session_id=fork_session_id,
+                        fork_source_cwd=fork_source_cwd,
                         read_dirs=read_dirs,
                         write_dirs=write_dirs,
                         write_scope=write_scope,
@@ -1261,6 +1271,8 @@ class AgentLauncher:
         model: str | None = None,
         reasoning: str | None = None,
         session_id: str | None = None,
+        fork_session_id: str | None = None,
+        fork_source_cwd: str | None = None,
         read_dirs: list[Path] | None = None,
         write_dirs: list[Path] | None = None,
         write_scope: ProjectWriteScope | None = None,
@@ -1354,6 +1366,8 @@ class AgentLauncher:
                 model=model,
                 reasoning=reasoning,
                 session_id=session_id,
+                fork_session_id=fork_session_id,
+                fork_source_cwd=fork_source_cwd,
                 read_dirs=read_dirs or [],
                 write_dirs=write_dirs or [],
                 write_scope=write_scope,
@@ -1375,6 +1389,8 @@ class AgentLauncher:
                     model=model,
                     reasoning=reasoning,
                     session_id=session_id,
+                    fork_session_id=fork_session_id,
+                    fork_source_cwd=fork_source_cwd,
                     read_dirs=read_dirs or [],
                     write_dirs=write_dirs or [],
                     write_scope=write_scope,
@@ -1390,6 +1406,18 @@ class AgentLauncher:
             )
         except (OSError, RuntimeError, ValueError) as exc:
             raise _PrePromptRuntimeFailure(str(exc)) from exc
+        if fork_session_id:
+            if session_id or not fork_source_cwd:
+                raise ValueError("A session fork requires a source cwd and cannot also resume.")
+            if host and not supervise_remote:
+                raise ValueError("A remote session fork requires execution-host supervision.")
+            if not host and profile.session_format is not None:
+                await asyncio.to_thread(
+                    profile.session_format.prepare_session_fork,
+                    source_session_id=fork_session_id,
+                    source_cwd=Path(fork_source_cwd),
+                    cwd=cwd,
+                )
         command = turn.command
         if invocation_gate is not None:
             command = invocation_gate.wrap_command(command)
@@ -1409,6 +1437,8 @@ class AgentLauncher:
                 watch_path=str(cwd / "watch.json"),
                 experiment_watch_glob=str(cwd / EXPERIMENT_WATCH_OUTPUT_GLOB),
                 close_input_after_initial=turn.close_input_after_initial,
+                fork_session_id=fork_session_id,
+                fork_source_cwd=fork_source_cwd,
             )
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
@@ -1975,6 +2005,8 @@ class AgentLauncher:
         model: str | None,
         reasoning: str | None,
         session_id: str | None,
+        fork_session_id: str | None = None,
+        fork_source_cwd: str | None = None,
         read_dirs: list[Path],
         write_dirs: list[Path] | None = None,
         write_scope: ProjectWriteScope | None = None,
@@ -1991,6 +2023,8 @@ class AgentLauncher:
             model=model,
             reasoning=reasoning,
             session_id=session_id,
+            fork_session_id=fork_session_id,
+            fork_source_cwd=fork_source_cwd,
             read_dirs=read_dirs,
             write_dirs=write_dirs or [],
             write_scope=write_scope,

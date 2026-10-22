@@ -12,6 +12,7 @@ import type {
   ExternalWatcherRecord,
   ChatAttachmentDescriptor,
   ChatDisplay,
+  ChatTranscript,
   ChatReads,
   ChatMessage,
   SteerRequest,
@@ -531,6 +532,17 @@ export function removeChatAttachment(
   );
 }
 
+export function branchChat(
+  projectId: string,
+  chatId: string,
+  graphTarget: GraphTargetRef,
+): Promise<ChatTranscript> {
+  return api<ChatTranscript>(
+    `/api/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(chatId)}/branch`,
+    { method: "POST", body: JSON.stringify({ graph_target: graphTarget }) },
+  );
+}
+
 export function loadGraphRefs(projectId: string): Promise<GraphRef[]> {
   return api<GraphRef[]>(`/api/projects/${encodeURIComponent(projectId)}/graph-refs`);
 }
@@ -540,11 +552,16 @@ export function createGraphFork(
   target: GraphTargetRef,
   revision: number,
   requestId: string,
+  name?: string,
 ): Promise<GraphRef> {
   const ref = target.kind === "main" ? "main" : `branch:${target.branch_id}`;
   return api<GraphRef>(`/api/projects/${encodeURIComponent(projectId)}/graph-refs`, {
     method: "POST",
-    body: JSON.stringify({ request_id: requestId, at: `${ref}@${revision}` }),
+    body: JSON.stringify({
+      request_id: requestId,
+      at: `${ref}@${revision}`,
+      ...(name ? { name } : {}),
+    }),
   });
 }
 

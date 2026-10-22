@@ -166,6 +166,32 @@ without making it current; composer comments use the current chat session.
 **New session** creates a new chat id. Provider, host, stage, target and scope
 remain bound; neither another chat nor another graph target can reuse them.
 
+### Branch this chat
+
+A member can create a new conversation on a new graph branch forked at the
+source conversation's current target and head, or on an existing non-archived
+branch (including main when leaving a branch). The source conversation and its
+stage stay unchanged. Creation records the source chat, exact latest operation,
+source graph target, title, native session and launch profile; it launches no
+provider. An active, paused, imported or unusable latest session cannot seed a
+branch. The new, initially empty conversation is immediately readable and listed
+on its own target, which ordinary admission keeps fixed. A node conversation keeps
+its node when that node exists on the target; otherwise the new chat has project
+scope while retaining the native conversation context.
+
+Its first human message forks the recorded native session using the source
+provider, model, reasoning and machine. Client choices cannot move that first
+launch to another machine. Fork failure fails the turn and leaves Retry available;
+it never falls back to a fresh session. Once the provider reports the new native
+session, later attempts and turns resume that session normally. The existing
+continuation prompt carries the new graph target and tells the agent that its
+current graph can differ from the inherited context.
+
+The entry point is "Branch this chat" in the chat list's row menu; the chat strip
+gains no control. The branch picker already names the new chat's target, so the
+header adds nothing; the transcript's first line links back to the source chat.
+Origin metadata remains available after the new chat has its own turns. Browser consent remains the new chat's own preference.
+
 A generic `watcher_wake` is a new logical turn, clears handoffs and uses the wake
 prompt node. Experiment and child wakes keep their own policies. Shared master
 restoration, deltas and replacement are owned by
