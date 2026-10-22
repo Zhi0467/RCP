@@ -886,6 +886,17 @@ async def _stream_agent_events(
                 AgentEvent(event="error", text="The source session's execution machine changed.")
             )
             return
+        refusal = (
+            await asyncio.to_thread(
+                execution.store.chat_fork_launch_refusal, execution.operation_id
+            )
+            if execution is not None
+            else None
+        )
+        if refusal is not None:
+            outcome.failed = True
+            yield _sse(AgentEvent(event="error", text=refusal))
+            return
         fork = {
             "fork_session_id": request.fork_session_id,
             "fork_source_cwd": request.fork_source_cwd,

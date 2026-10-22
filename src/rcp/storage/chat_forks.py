@@ -109,6 +109,22 @@ class ChatForkStoreMixin(StoreMixinBase):
             return "chat_fork_source_unavailable"
         return None
 
+    def chat_fork_launch_refusal(self, operation_id: str) -> str | None:
+        """Recheck a forking turn's source right before its provider starts.
+
+        Admission recorded the source position, but a queued or slow-starting turn
+        would otherwise fork whatever the source holds by then.
+        """
+        record = cast("AppStore", self).agent_task(operation_id)
+        chat_id = record.request.get("chat_id") if record is not None else None
+        if record is None or not isinstance(chat_id, str):
+            return None
+        with self.connection() as connection:
+            fork = self._chat_fork_record(connection, record.project_id, chat_id)
+            if fork is None or fork.detached:
+                return None
+            return self._chat_fork_refusal(connection, fork, record.request)
+
     @staticmethod
     def detach_chat_forks_for_restore(connection: sqlite3.Connection) -> None:
         """A restored branched chat that has not forked yet starts a fresh session."""

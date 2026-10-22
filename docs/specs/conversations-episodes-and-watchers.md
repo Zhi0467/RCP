@@ -192,7 +192,8 @@ the turn and leaves Retry available; it never falls back to a fresh session. Onc
 the source chat admits a newer turn or loses that session, a carried fork is
 refused before launch (`chat_fork_source_moved` or `chat_fork_source_unavailable`)
 as a failed turn without Retry, because the provider can only fork the source's
-live state. Offline restore detaches a fork that has no session yet, so the new
+live state. The launch rechecks this just before the provider starts, so a queued
+or slow-starting fork fails instead of taking newer source turns. Offline restore detaches a fork that has no session yet, so the new
 chat's next message starts a fresh session like any restored chat; its origin
 link remains. Once the provider reports the new native
 session, later attempts and turns, including a Retry after Pause, resume that

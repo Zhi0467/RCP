@@ -405,6 +405,27 @@ def test_a_failed_first_fork_never_reforks_a_changed_source(manifest, tmp_path, 
     assert store.agent_task("next-message").error == refused.error
 
 
+def test_a_queued_fork_rechecks_its_source_at_launch(manifest, tmp_path):
+    from rcp.service import RunRequest
+    from tests.test_api import _chat_task_execution
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.catalog.store
+    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "laptop"}
+    source_id, fork = _settled_source_and_fork(app, tmp_path, profile)
+    _chat_task_execution(
+        app, RunRequest(chat_id=fork.chat_id, chat_scope="project", **profile), "fork-turn"
+    )
+    assert store.chat_fork_launch_refusal("fork-turn") is None
+    later = _chat_task_execution(
+        app, RunRequest(chat_id=source_id, chat_scope="project", **profile), "source-later"
+    )
+    store.checkpoint_agent_task(later.operation_id, native_session_id="source-session")
+    store.complete_agent_task(later.operation_id, applied_revision=None, result={})
+
+    assert store.chat_fork_launch_refusal("fork-turn") == "chat_fork_source_moved"
+
+
 def test_restore_detaches_unfinished_forks_to_fresh_sessions(manifest, tmp_path):
     from rcp.service import RunRequest
     from tests.test_api import _chat_task_execution
