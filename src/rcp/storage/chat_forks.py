@@ -55,6 +55,10 @@ class ChatForkRecord(BaseModel):
         return {key: item for key, item in value.items() if key not in _RETIRED_RECORD_FIELDS}
 
 
+class ChatForkRefused(ValueError):
+    """A forking turn's source moved or lost its session; the code is the refusal."""
+
+
 # The source turn's launch profile a fork's first turn keeps.
 FORK_PROFILE_FIELDS = ("provider", "model", "reasoning", "run_on")
 
@@ -127,14 +131,22 @@ class ChatForkStoreMixin(StoreMixinBase):
         would otherwise fork whatever the source holds by then.
         """
         record = cast("AppStore", self).agent_task(operation_id)
-        chat_id = record.request.get("chat_id") if record is not None else None
-        if record is None or not isinstance(chat_id, str):
+        if record is None:
             return None
         with self.connection() as connection:
-            fork = self._chat_fork_record(connection, record.project_id, chat_id)
-            if fork is None or fork.detached:
-                return None
-            return self._chat_fork_refusal(connection, fork, record.request)
+            return self._carried_chat_fork_refusal(connection, record.project_id, record.request)
+
+    def _carried_chat_fork_refusal(
+        self, connection: sqlite3.Connection, project_id: str, request: dict[str, object]
+    ) -> str | None:
+        """The refusal for a turn that carries its chat's fork, or None."""
+        chat_id = request.get("chat_id")
+        if not isinstance(chat_id, str):
+            return None
+        fork = self._chat_fork_record(connection, project_id, chat_id)
+        if fork is None or fork.detached:
+            return None
+        return self._chat_fork_refusal(connection, fork, request)
 
     @staticmethod
     def detach_chat_forks_for_restore(connection: sqlite3.Connection) -> None:

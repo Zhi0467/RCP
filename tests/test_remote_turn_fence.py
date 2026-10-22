@@ -19,7 +19,7 @@ import pytest
 from rcp.providers.turn_fence import turn_fence
 
 
-def _canonical_app_server_turn(tmp_path, *, handshake: bool):
+def _canonical_app_server_turn(tmp_path, *, handshake: bool, opener: str = "thread/resume"):
     from rcp.providers import ProviderTurnRequest
     from rcp.providers.codex.app_server import CodexAppServerRuntime
 
@@ -30,12 +30,13 @@ def _canonical_app_server_turn(tmp_path, *, handshake: bool):
             cwd=tmp_path,
             model=None,
             reasoning=None,
-            session_id="fence-thread",
+            session_id=None if opener == "thread/fork" else "fence-thread",
             read_dirs=[],
             write_dirs=[],
             write_scope=None,
             capability="paper_readonly",
             provider_version="0.153.4",
+            fork_session_id="source-thread" if opener == "thread/fork" else None,
         )
     )
     fence = turn_fence("codex.app-server-stdio.v1")
@@ -53,7 +54,7 @@ def _canonical_app_server_turn(tmp_path, *, handshake: bool):
             },
         ):
             turn.receive_line(json.dumps(message))
-        fence.input({"id": 3, "method": "thread/resume"})
+        fence.input({"id": 3, "method": opener})
         fence.output({"id": 3, "result": {"thread": {"id": "fence-thread"}}})
     return turn, fence
 
@@ -83,11 +84,11 @@ def _canonical_turn(tmp_path, runtime_id: str):
     )
 
 
-def _started_decoder_pair(tmp_path, runtime_id: str):
+def _started_decoder_pair(tmp_path, runtime_id: str, opener: str = "thread/resume"):
     """Both decoders for one runtime, holding the same turn and ready for its traffic."""
 
     if runtime_id == "codex.app-server-stdio.v1":
-        turn, fence = _canonical_app_server_turn(tmp_path, handshake=True)
+        turn, fence = _canonical_app_server_turn(tmp_path, handshake=True, opener=opener)
         started = {"id": 4, "result": {"turn": {"id": "corpus-turn"}}}
         turn.receive_line(json.dumps(started))
         fence.input({"id": 4, "method": "turn/start"})
@@ -176,10 +177,16 @@ _COMPLETION_CORPUS = tuple(
 
 
 @pytest.mark.parametrize(
-    "runtime_id,message", _COMPLETION_CORPUS, ids=lambda value: str(value)[:44]
+    "runtime_id,message,opener",
+    [(*case, "thread/resume") for case in _COMPLETION_CORPUS]
+    # A forked thread's turn ends where any other app-server turn does.
+    + [(*case, "thread/fork") for case in _COMPLETION_CORPUS if "app-server" in case[0]],
+    ids=lambda value: str(value)[:44],
 )
-def test_the_fence_ends_a_turn_where_the_canonical_decoder_ends_it(tmp_path, runtime_id, message):
-    turn, fence = _started_decoder_pair(tmp_path, runtime_id)
+def test_the_fence_ends_a_turn_where_the_canonical_decoder_ends_it(
+    tmp_path, runtime_id, message, opener
+):
+    turn, fence = _started_decoder_pair(tmp_path, runtime_id, opener)
     step = turn.receive_line(json.dumps(message))
     fence.output(message)
 

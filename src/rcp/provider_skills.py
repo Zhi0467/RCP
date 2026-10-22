@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import queue
+import signal
 import subprocess
 import threading
 import time
@@ -27,10 +29,39 @@ _REFRESH_COMPLETION_GRACE_SECONDS = 5.0
 # A one-shot probe's stdout goes to a file, then to the pipe. Some provider
 # runtimes write a pipe asynchronously and exit before it drains, silently
 # truncating the inventory at the pipe buffer; file writes complete first.
-# The same wrapper runs locally and inside the remote login shell.
+# The same wrapper runs locally and inside the remote login shell. The file is
+# unlinked once opened, so no kill, even SIGKILL, can leave it behind.
 _FILE_BACKED_STDOUT = (
-    'out=$(mktemp) || exit 1; "$@" > "$out"; status=$?; cat "$out"; rm -f "$out"; exit $status'
+    'out=$(mktemp) || exit 1; exec 3>"$out" 4<"$out"; rm -f "$out"; '
+    '"$@" >&3 3>&- 4<&-; status=$?; cat <&4; exit $status'
 )
+
+
+def _run_process_group(
+    arguments: list[str], *, timeout: float, env: dict[str, str] | None
+) -> subprocess.CompletedProcess[str]:
+    """Run a one-shot probe in its own process group; a timeout kills the whole group.
+
+    Killing only the wrapper shell would leave the provider running and holding
+    the output pipes open. Over SSH the group is the local client, as before.
+    """
+
+    process = subprocess.Popen(
+        arguments,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        process.communicate()
+        raise
+    return subprocess.CompletedProcess(arguments, process.returncode, stdout, stderr)
 
 
 class ProviderSkillInventorySnapshot(BaseModel):
@@ -334,13 +365,10 @@ class ProviderSkillInventoryManager:
                     AgentLauncher._remote_login_command(command, prefix=environment.remote_prefix),
                 )
             if probe.protocol == "jsonl":
-                result = subprocess.run(
+                result = _run_process_group(
                     arguments,
-                    capture_output=True,
-                    text=True,
                     # A timeout kills the probe; never inside the credential hold.
                     timeout=max(self.timeout, PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS),
-                    check=False,
                     env=env,
                 )
                 self._observe_failure(

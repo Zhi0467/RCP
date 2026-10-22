@@ -57,7 +57,7 @@ from rcp.limits import (
 from rcp.providers import ProviderUsage, classify_terminal_error, require_runtime_id
 from rcp.providers.live_status import AgentStatus
 from rcp.storage.branch_names import _chain_root
-from rcp.storage.chat_forks import FORK_PROFILE_FIELDS
+from rcp.storage.chat_forks import FORK_PROFILE_FIELDS, ChatForkRefused
 from rcp.storage.chat_names import initialize_task_chat_name
 from rcp.storage.client_requests import record_client_request
 from rcp.storage.digest import append_task_failed
@@ -4985,6 +4985,18 @@ class AgentTaskStoreMixin(StoreMixinBase):
             if row is None:
                 raise KeyError(operation_id)
             record = self._agent_task_record(row)
+            if (
+                native_session_id is not None
+                and record.native_session_id is None
+                and record.request.get("fork_session_id")
+            ):
+                # The provider has read the source session by the time it names the
+                # fork, so a source turn admitted after this check is never inherited.
+                refusal = cast("AppStore", self)._carried_chat_fork_refusal(
+                    connection, record.project_id, record.request
+                )
+                if refusal is not None:
+                    raise ChatForkRefused(refusal)
             self._require_session_launch_available(
                 connection,
                 record.model_copy(

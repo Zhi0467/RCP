@@ -8,7 +8,7 @@ import pytest
 
 from rcp.api.dependencies import get_graph_service
 from rcp.core.transition_models import GraphTargetRef
-from rcp.runs.session_master import recorded_master_values
+from rcp.runs.session_master import SESSION_MASTER_ROLE
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
 from tests.helpers import changed_values, create_named_app, signed_in_client, wait_for_task_response
@@ -212,20 +212,12 @@ def test_branch_chat_defers_fork_and_keeps_source_unchanged(manifest, tmp_path, 
         on_main = send(back_to_main.json()["chat_id"])
         assert launcher.launch_kwargs[3]["fork_session_id"] == "forked-session"
         # The replacing master itself states the new target, so it survives a compaction.
-        current = (recorded_master_values(store, on_main.operation_id) or {}).get("current")
-        assert isinstance(current, dict) and current["graph_target"] == "main"
+        key = f"branch:{branch_id}"
+        assert key in store.agent_task_contract(forked.operation_id, SESSION_MASTER_ROLE)
+        assert key not in store.agent_task_contract(on_main.operation_id, SESSION_MASTER_ROLE)
         moved = changed_values(launcher.prompts[3])
         assert moved["conversation_fork.graph_target.kind"] == "main"
         assert "conversation_fork.graph_target.branch_id" not in moved
-
-
-def test_branch_chat_rejects_missing_source_session(manifest, tmp_path):
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    store = app.state.catalog.store
-    with pytest.raises(ValueError):
-        store.create_chat_fork(
-            app.state.default_project_id, str(uuid4()), GraphTargetRef(), str(uuid4())
-        )
 
 
 def test_node_chat_branches_to_project_scope_when_target_lacks_node(manifest, tmp_path):
@@ -296,25 +288,14 @@ def test_first_fork_turn_records_the_remote_source_workspace(manifest, tmp_path)
     assert request["fork_source_cwd"] == "/remote/stage/workspace"
 
 
-def test_fork_turn_retry_after_pause_continues_and_first_turn_rechecks_source(manifest, tmp_path):
+def test_fork_turn_retry_after_pause_continues_its_own_session(manifest, tmp_path):
     from rcp.service import RunRequest
     from tests.test_api import _chat_task_execution, _named_test_authorizer
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.catalog.store
-    project_id = app.state.default_project_id
     profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "laptop"}
-    source_id = str(uuid4())
-    source = _chat_task_execution(
-        app, RunRequest(chat_id=source_id, chat_scope="project", **profile), "source-turn"
-    )
-    source.checkpoint_stage("", str(tmp_path / "source-stage"))
-    store.checkpoint_agent_task(source.operation_id, native_session_id="source-session")
-    store.complete_agent_task(source.operation_id, applied_revision=None, result={})
-    fork, unused = (
-        store.create_chat_fork(project_id, source_id, GraphTargetRef(), str(uuid4()))
-        for _ in range(2)
-    )
+    _source_id, fork = _settled_source_and_fork(app, tmp_path, profile)
     first = _chat_task_execution(
         app, RunRequest(chat_id=fork.chat_id, chat_scope="project", **profile), "fork-turn"
     )
@@ -333,14 +314,18 @@ def test_fork_turn_retry_after_pause_continues_and_first_turn_rechecks_source(ma
     assert retried.request["session_id"] == "forked-session"
     assert retried.request["fork_session_id"] is None
 
-    with store.connection() as connection:
-        connection.execute(
-            "UPDATE graph_runs SET history_only = 1 WHERE operation_id = ?",
-            (source.operation_id,),
-        )
+
+def test_a_first_fork_turn_refuses_a_source_without_a_usable_session(manifest, tmp_path):
+    from rcp.service import RunRequest
+    from tests.test_api import _chat_task_execution
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "laptop"}
+    _source_id, fork = _settled_source_and_fork(app, tmp_path, profile)
+    app.state.catalog.store.mark_agent_tasks_history_only(["source-turn"])
     with pytest.raises(ValueError):
         _chat_task_execution(
-            app, RunRequest(chat_id=unused.chat_id, chat_scope="project", **profile), "late-turn"
+            app, RunRequest(chat_id=fork.chat_id, chat_scope="project", **profile), "late-turn"
         )
 
 
@@ -409,28 +394,8 @@ def test_a_failed_first_fork_never_reforks_a_changed_source(manifest, tmp_path, 
     assert store.agent_task("next-message").error == refused.error
 
 
-def test_a_queued_fork_rechecks_its_source_at_launch(manifest, tmp_path):
-    from rcp.service import RunRequest
-    from tests.test_api import _chat_task_execution
-
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    store = app.state.catalog.store
-    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "laptop"}
-    source_id, fork = _settled_source_and_fork(app, tmp_path, profile)
-    _chat_task_execution(
-        app, RunRequest(chat_id=fork.chat_id, chat_scope="project", **profile), "fork-turn"
-    )
-    assert store.chat_fork_launch_refusal("fork-turn") is None
-    later = _chat_task_execution(
-        app, RunRequest(chat_id=source_id, chat_scope="project", **profile), "source-later"
-    )
-    store.checkpoint_agent_task(later.operation_id, native_session_id="source-session")
-    store.complete_agent_task(later.operation_id, applied_revision=None, result={})
-
-    assert store.chat_fork_launch_refusal("fork-turn") == "chat_fork_source_moved"
-
-
-def test_a_fork_refused_at_launch_fails_without_retry(manifest, tmp_path):
+@pytest.mark.parametrize("moment", ["launch", "capture"])
+def test_a_fork_whose_source_moves_after_admission_fails_without_retry(manifest, tmp_path, moment):
     from rcp.service import RunRequest
     from tests.test_api import _chat_task_execution
 
@@ -439,15 +404,27 @@ def test_a_fork_refused_at_launch_fails_without_retry(manifest, tmp_path):
     project_id = app.state.default_project_id
     profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "laptop"}
     source_id, fork = _settled_source_and_fork(app, tmp_path, profile)
-    launcher = _RecordingLauncher("forked-session")
 
-    async def stream(_project_id, _kind, request, execution):
-        # The source moves on after admission recorded it, before the provider starts.
+    def move_source():
         later = _chat_task_execution(
             app, RunRequest(chat_id=source_id, chat_scope="project", **profile), "source-later"
         )
         store.checkpoint_agent_task(later.operation_id, native_session_id="source-session")
         store.complete_agent_task(later.operation_id, applied_revision=None, result={})
+
+    class Launcher(_RecordingLauncher):
+        async def stream(self, provider, prompt, **kwargs):
+            # After the launch check, before the provider names its fork.
+            if moment == "capture":
+                move_source()
+            async for event in super().stream(provider, prompt, **kwargs):
+                yield event
+
+    launcher = Launcher("forked-session")
+
+    async def stream(_project_id, _kind, request, execution):
+        if moment == "launch":
+            move_source()
         service = get_graph_service(app.state.catalog, project_id, None)
         async for frame in stream_discuss_run(
             service, launcher, request, tmp_path / "data", execution=execution
@@ -465,8 +442,10 @@ def test_a_fork_refused_at_launch_fails_without_retry(manifest, tmp_path):
 
     assert task["status"] == "failed", task
     assert not task["can_retry"]
-    assert store.agent_task(task["operation_id"]).failure_kind == "session_refused"
-    assert launcher.prompts == []
+    refused = store.agent_task(task["operation_id"])
+    assert (refused.failure_kind, refused.error) == ("session_refused", "chat_fork_source_moved")
+    assert refused.native_session_id is None
+    assert len(launcher.prompts) == (1 if moment == "capture" else 0)
 
 
 def test_restore_detaches_unfinished_forks_to_fresh_sessions(manifest, tmp_path):

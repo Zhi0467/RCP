@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from rcp import provider_skills
 from rcp.agents import ProviderReadiness
 from rcp.provider_skills import (
     ProviderSkillInventoryManager,
@@ -16,7 +18,7 @@ from rcp.provider_skills import (
 )
 from rcp.providers import ProviderSkillProbe, profile_for
 from rcp.storage import AppStore
-from tests.helpers import TASK_SETTLE_TIMEOUT
+from tests.helpers import TASK_SETTLE_TIMEOUT, wait_until
 
 
 def _ready(provider: str, binary: str, version: str = "provider 1.2.3") -> ProviderReadiness:
@@ -51,7 +53,7 @@ def test_success_replaces_inventory_and_failure_preserves_it(
     def run(*_args, **_kwargs):
         return subprocess.CompletedProcess([], 0, outputs.pop(0), "")
 
-    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(provider_skills, "_run_process_group", run)
     manager.mark_refreshing("claude", "", "/opt/claude")
     fresh = manager.refresh("claude", "", "/opt/claude", _ready("claude", "/opt/claude"))
 
@@ -64,7 +66,7 @@ def test_success_replaces_inventory_and_failure_preserves_it(
     def fail(*_args, **_kwargs):
         return subprocess.CompletedProcess([], 7, "", "probe unavailable")
 
-    monkeypatch.setattr(subprocess, "run", fail)
+    monkeypatch.setattr(provider_skills, "_run_process_group", fail)
     manager.mark_refreshing("claude", "", "/opt/claude")
     # A new provider version is what makes the manager probe again; the same
     # executable at the same version reuses the stored inventory without one.
@@ -90,8 +92,8 @@ def test_same_executable_and_version_reuse_the_inventory_without_a_probe(
     store = AppStore(tmp_path / "app.sqlite3")
     manager = ProviderSkillInventoryManager(store)
     monkeypatch.setattr(
-        subprocess,
-        "run",
+        provider_skills,
+        "_run_process_group",
         lambda *_a, **_k: subprocess.CompletedProcess([], 0, _claude_output("review"), ""),
     )
     manager.mark_refreshing("claude", "", "/opt/claude")
@@ -103,7 +105,7 @@ def test_same_executable_and_version_reuse_the_inventory_without_a_probe(
 
     # A new process (or a later startup) reads the same executable at the same
     # version: the stored inventory stands and the provider is not started.
-    monkeypatch.setattr(subprocess, "run", never)
+    monkeypatch.setattr(provider_skills, "_run_process_group", never)
     again = ProviderSkillInventoryManager(store)
     again.mark_refreshing("claude", "", "/opt/claude")
     reused = again.refresh(
@@ -113,8 +115,8 @@ def test_same_executable_and_version_reuse_the_inventory_without_a_probe(
     assert reused.skills == first.skills
     assert reused.inventory_hash == first.inventory_hash
     monkeypatch.setattr(
-        subprocess,
-        "run",
+        provider_skills,
+        "_run_process_group",
         lambda *_a, **_k: subprocess.CompletedProcess([], 0, _claude_output("new-skill"), ""),
     )
     refreshed = again.refresh("claude", "", "/opt/claude", _ready("claude", "/opt/claude"))
@@ -355,7 +357,7 @@ def test_remote_probe_uses_existing_ssh_login_shell_path(
         captured["kwargs"] = kwargs
         return subprocess.CompletedProcess(arguments, 0, _claude_output("research"), "")
 
-    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(provider_skills, "_run_process_group", run)
     manager = ProviderSkillInventoryManager(AppStore(tmp_path / "app.sqlite3"))
     manager.mark_refreshing("claude", "gpu.example", "/remote/claude")
     result = manager.refresh(
@@ -413,7 +415,9 @@ def test_skill_probe_auth_failure_is_durable(tmp_path, monkeypatch, diagnostic, 
         lambda binary: ProviderSkillProbe(command=[binary, "skills"], protocol="jsonl"),
     )
     monkeypatch.setattr(
-        subprocess, "run", lambda *_, **__: subprocess.CompletedProcess([], 1, "", diagnostic)
+        provider_skills,
+        "_run_process_group",
+        lambda *_, **__: subprocess.CompletedProcess([], 1, "", diagnostic),
     )
     snapshot = manager.refresh("codex", "", "/test/claude", _ready("codex", "/test/claude"))
     assert snapshot.status == "unavailable"
@@ -537,3 +541,46 @@ def test_one_shot_probe_keeps_output_a_provider_left_unflushed(tmp_path, monkeyp
     )
     assert snapshot.status == "fresh", snapshot.diagnostic
     assert len(snapshot.skills) == len(skills)
+
+
+def test_one_shot_probe_timeout_kills_the_provider_and_its_children(tmp_path, monkeypatch):
+    report = tmp_path / "report.json"
+    script = tmp_path / "provider.py"
+    script.write_text(
+        "import json, os, subprocess, sys, time\n"
+        "child = subprocess.Popen(\n"
+        "    [sys.executable, '-c', 'import time; time.sleep(600)'],\n"
+        "    stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        ")\n"
+        "links = os.fstat(1).st_nlink\n"
+        "open(sys.argv[1], 'w').write(json.dumps({'pid': child.pid, 'links': links}))\n"
+        "time.sleep(30)\n"
+    )
+    monkeypatch.setattr(
+        profile_for("opencode"),
+        "skill_probe",
+        lambda binary: ProviderSkillProbe(
+            command=[sys.executable, str(script), str(report)], protocol="jsonl"
+        ),
+    )
+    # The probe gets at least the credential startup hold before it is killed.
+    manager = ProviderSkillInventoryManager(AppStore(tmp_path / "app.sqlite3"), timeout=0.1)
+
+    snapshot = manager.refresh(
+        "opencode", "", "/test/opencode", _ready("opencode", "/test/opencode")
+    )
+
+    assert snapshot.status == "unavailable"
+    reported = json.loads(report.read_text())
+    # The output file was already unlinked, so nothing is left to clean up.
+    assert reported["links"] == 0
+
+    def grandchild_gone() -> bool:
+        try:
+            os.kill(reported["pid"], 0)
+        except ProcessLookupError:
+            return True
+        return False
+
+    wait_until(grandchild_gone, timeout=TASK_SETTLE_TIMEOUT)

@@ -194,7 +194,10 @@ refused before launch (`chat_fork_source_moved` or `chat_fork_source_unavailable
 as a failed turn without Retry, because the provider can only fork the source's
 live state. The launch rechecks this just before the provider starts, so a queued
 or slow-starting fork fails the same way, without Retry, instead of taking newer
-source turns. The failed turn shows the code's shared human reason, as the composer
+source turns. When the provider first names the forked session, the same check runs
+again in the transaction that would record it; a refusal fails the turn the same way
+and never records that session, so a source turn admitted during startup is never
+inherited. The failed turn shows the code's shared human reason, as the composer
 does for a refused admission. Offline restore detaches a fork that has no session yet, so the new
 chat's next message starts a fresh session like any restored chat; its origin
 link remains. Once the provider reports the new native

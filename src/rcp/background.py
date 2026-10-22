@@ -104,6 +104,7 @@ from rcp.storage import (
     EpisodeInvocationCeilingReached,
     EpisodeRecord,
 )
+from rcp.storage.chat_forks import ChatForkRefused
 from rcp.storage.models import AgentTaskAlreadyContinued
 from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable, StateUnreachable
 from rcp.transport.state_transfer import warning_context
@@ -265,8 +266,9 @@ class AgentTaskExecution:
     #: has, since no process exists to leave an exit code. In memory because it
     #: describes this attempt, not the task.
     stage_unreachable: bool = False
-    #: Set when a branched chat's first turn is refused right before launch
-    #: because its fork source moved on or lost its session. Admission records
+    #: Set when a branched chat's first turn is refused right before launch, or
+    #: when it first names its forked session, because its fork source moved on
+    #: or lost its session. Admission records
     #: the same refusal as `session_refused`; this carries it for a turn that
     #: passed admission and was refused later. In memory for the same reason.
     launch_refused: bool = False
@@ -3094,10 +3096,14 @@ class BackgroundAgentTasks:
                     execution.runtime_id = event.text
                     continue
                 if event.event == "session" and event.session_id:
-                    self.store.checkpoint_agent_task(
-                        execution.operation_id,
-                        native_session_id=event.session_id,
-                    )
+                    try:
+                        self.store.checkpoint_agent_task(
+                            execution.operation_id,
+                            native_session_id=event.session_id,
+                        )
+                    except ChatForkRefused as exc:
+                        execution.launch_refused = True
+                        raise TaskFailed(str(exc), messages, artifacts) from exc
                     checkpoint_exists = recorded and any(
                         receipt.category == "native_agent_checkpoint"
                         and receipt.payload.get("native_session_id") == event.session_id

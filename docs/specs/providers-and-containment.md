@@ -141,10 +141,12 @@ failing the human's turn. The capability, stage and scope do not change.
 Binding it to a session would prevent configuration changes taking effect on
 resume. The prompt-delivery boundary prevents fallback from duplicating work.
 
-A human's **Branch this chat** action records a source native session for the new
-chat's first turn. The launch carries that fork fact separately from normal
-resume identity; it retains the source provider, model, reasoning and execution
-machine and uses the new chat's own stage and graph target. The source cwd is the
+A branched chat's first message records the source chat's latest native session
+on its turn when that message is admitted; the **Branch this chat** action itself
+records only the origin
+([lifecycle](conversations-episodes-and-watchers.md#branch-this-chat)). The launch
+carries that fork fact separately from normal resume identity; it retains the
+source provider, model, reasoning and execution machine and uses the new chat's own stage and graph target. The source cwd is the
 one the source's own launches used (a remote stage's workspace; a local stage's
 recorded layout). The launcher validates the fork contract once (no resume, a
 source cwd, a supervised remote host) before building a command; the execution
@@ -157,9 +159,9 @@ identity. A failed fork never becomes a fresh session.
 
 Before Claude launches, its session-format owner copies the source transcript
 into the new cwd's native project directory on the execution host. The source
-transcript and stage remain untouched. Retry preserves an already prepared
-source snapshot even when the source chat has since advanced. The ordinary
-continuation prompt names the new graph target and refreshes its staged context;
+transcript and stage remain untouched. Once the source chat admits a newer turn,
+a carried fork is refused rather than retried (`chat_fork_source_moved`). The
+ordinary continuation prompt names the new graph target and refreshes its staged context;
 branching onto an existing target also warns that its graph may differ from the
 conversation's previous context.
 
