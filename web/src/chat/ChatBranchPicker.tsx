@@ -1,5 +1,5 @@
 import { CornerUpLeft } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { branchChat, createGraphFork, loadGraphRefs } from "../core/api";
 import { projectViewHash, sameGraphTarget } from "../core/graphTarget";
 import type { ChatOrigin, GraphRef, GraphTargetRef } from "../core/types";
@@ -39,6 +39,9 @@ export function ChatBranchPicker({
 }) {
   const [refs, setRefs] = useState<GraphRef[] | null | undefined>(undefined);
   const [failed, setFailed] = useState<string | null>(null);
+  // A branch already created for this name: a retry after the chat step failed
+  // opens the chat there instead of creating the branch again.
+  const created = useRef<{ name: string; target: GraphTargetRef } | null>(null);
   useEffect(() => {
     let live = true;
     loadGraphRefs(projectId).then(
@@ -80,14 +83,17 @@ export function ChatBranchPicker({
         viewedHead={head ?? null}
         onSelect={(target) => void open(target).catch(() => undefined)}
         onCreate={async (name, requestId, forkHead) => {
-          const fork = await createGraphFork(
-            projectId,
-            forkHead.target,
-            forkHead.revision,
-            requestId,
-            name,
-          );
-          await open(graphRefTarget(fork));
+          if (created.current?.name !== name) {
+            const fork = await createGraphFork(
+              projectId,
+              forkHead.target,
+              forkHead.revision,
+              requestId,
+              name,
+            );
+            created.current = { name, target: graphRefTarget(fork) };
+          }
+          await open(created.current.target);
         }}
         onRefUpdated={() => undefined}
       />
