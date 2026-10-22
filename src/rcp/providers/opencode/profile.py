@@ -48,6 +48,11 @@ if TYPE_CHECKING:
     from rcp.core.models import HiddenReadScope
 
 _RUNTIME_ID = "opencode.run-json.v1"
+# Launches load no plugin (`--pure`, whose plugins' config hooks could rewrite
+# the rules) and no project config. The skill probe uses the same two levers,
+# so the menu lists only skills a turn loads.
+_NO_PLUGINS = "--pure"
+_NO_PROJECT_CONFIG = {"OPENCODE_DISABLE_PROJECT_CONFIG": "1"}
 # `opencode models --verbose` prints each model as its `provider/model` slug on
 # one line, followed by that model's JSON object.
 _CATALOG_ENTRY = re.compile(r"^(\S+/\S+)\n\{", re.MULTILINE)
@@ -215,7 +220,17 @@ class OpenCodeProfile(ProviderProfile):
         return choices
 
     def skill_probe(self, binary: str) -> ProviderSkillProbe:
-        return ProviderSkillProbe(command=[binary, "debug", "skill"], protocol="jsonl")
+        return ProviderSkillProbe(
+            command=[
+                "env",
+                *(f"{key}={value}" for key, value in _NO_PROJECT_CONFIG.items()),
+                binary,
+                "debug",
+                "skill",
+                _NO_PLUGINS,
+            ],
+            protocol="jsonl",
+        )
 
     def parse_skills(self, payload: object) -> list[ProviderSkill]:
         if not isinstance(payload, str):
@@ -282,8 +297,15 @@ class OpenCodeProfile(ProviderProfile):
         permission = _permission(
             capability, cwd, write_dirs, write_scope, browser_grant, hidden_read_scope
         )
-        # `--pure` loads no plugin, whose config hook could rewrite these rules.
-        command = [binary, "run", "--format", "json", "--pure", "--agent", _agent_name(permission)]
+        command = [
+            binary,
+            "run",
+            "--format",
+            "json",
+            _NO_PLUGINS,
+            "--agent",
+            _agent_name(permission),
+        ]
         if fork_session_id:
             command.extend(["--session", fork_session_id, "--fork"])
         elif session_id:
@@ -317,7 +339,7 @@ class OpenCodeProfile(ProviderProfile):
         }
         environment = {
             "OPENCODE_CONFIG_CONTENT": json.dumps(policy, separators=(",", ":")),
-            "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
+            **_NO_PROJECT_CONFIG,
         }
 
         if (

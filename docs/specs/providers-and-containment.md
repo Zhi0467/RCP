@@ -402,9 +402,11 @@ MCP configuration UI.
 
 Work and orchestrate use Claude's supported unattended `dontAsk` mode with an
 RCP-authored strict settings allow-list for the exact workspace and admitted
-repository roots. They never use `bypassPermissions`. RCP suppresses user
-settings for this enforced launch. Every Claude launch passes strict empty MCP
-configuration; supported skills remain available. Discuss with a broker gate adds
+repository roots. They never use `bypassPermissions`. They load only user
+settings (`--setting-sources user`), so the account's own skills and plugins
+load as in Discuss. A user allow rule cannot widen RCP's allow-list, a user deny
+rule can narrow it, and `disableAllHooks` keeps hooks off. Every Claude launch
+passes strict empty MCP configuration. Discuss with a broker gate adds
 only `Bash(python3 -I -S <staged-client-path>:*)` for that gate's exact staged client.
 Its Edit denies protect the client directory itself and all descendants, including
 when an additional read directory or a legacy workspace contains it. The literal
@@ -1233,11 +1235,17 @@ clean recovery, including explicit episode rebinding; `session_limit` retains
 its session because an account limit may lift. RCP does not infer limit scope
 from prose. Humans may change provider/model/reasoning where recovery supports it.
 
-Native skill inventory is app-scoped, separate from official packages. Startup
+Native skill inventory is app-scoped, separate from official packages. Each
+provider loads skills its own way from the account it runs as; RCP never copies,
+stages or manages them, and agents are not told how skills arrive. The inventory
+probe carries the launch's skill-affecting flags (Claude's setting sources,
+Codex app-server's disabled features, OpenCode's `--pure` and disabled project
+config), so the menu offers only skills a launch loads. Startup
 refreshes after readiness; success atomically replaces inventory and failure
 retains it visibly stale. Project open and launch do not refresh. Selection binds
 provider, machine, successful version, hash and name per turn. It cannot change
-launch flags or scope; provider rejection fails visibly without fallback.
+launch flags or scope. A name missing from the inventory refuses the launch; a
+selected skill the provider does not load reaches the agent only as prompt text.
 
 ## Official skills and workflows
 

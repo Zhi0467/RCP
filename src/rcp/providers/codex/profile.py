@@ -36,6 +36,10 @@ if TYPE_CHECKING:
     from rcp.core.models import HiddenReadScope
     from rcp.provider_auth import ProviderAuthentication
 
+# App-server launches run with these features off; the skill probe starts
+# app-server with the same flags so the menu lists only skills a turn loads.
+_APP_SERVER_DISABLED_FEATURES = ("--disable", "apps", "--disable", "plugins")
+
 
 class CodexProfile(ProviderProfile):
     @property
@@ -193,7 +197,7 @@ class CodexProfile(ProviderProfile):
 
     def skill_probe(self, binary: str) -> ProviderSkillProbe:
         return ProviderSkillProbe(
-            command=[binary, "app-server"],
+            command=[binary, "app-server", *_APP_SERVER_DISABLED_FEATURES],
             protocol="jsonrpc",
             messages=(
                 {

@@ -376,7 +376,7 @@ def test_refresh_command_is_owned_by_provider_profile() -> None:
     codex = profile_for("codex").skill_probe("/opt/codex")
     claude = profile_for("claude").skill_probe("/opt/claude")
 
-    assert codex.command == ["/opt/codex", "app-server"]
+    assert codex.command[:2] == ["/opt/codex", "app-server"]
     assert codex.protocol == "jsonrpc"
     assert [message["method"] for message in codex.messages] == [
         "initialize",
@@ -387,6 +387,12 @@ def test_refresh_command_is_owned_by_provider_profile() -> None:
     assert claude.protocol == "jsonl"
     assert "--no-session-persistence" in claude.command
     assert '{"disableAllHooks":true}' in claude.command
+    # The inventory loads the same setting sources as a Work launch.
+    work = profile_for("claude").work_like_probe_command("/opt/claude")
+    assert (
+        claude.command[claude.command.index("--setting-sources") + 1]
+        == (work[work.index("--setting-sources") + 1])
+    )
 
 
 @pytest.mark.parametrize(

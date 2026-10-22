@@ -267,6 +267,10 @@ _AUTOCOMPACT_MIN_TOKENS = 100_000
 _AUTOCOMPACT_MAX_TOKENS = 1_000_000
 # Claude Code's own BASH_MAX_TIMEOUT_MS default (probed on 2.1.291).
 _BASH_MAX_TIMEOUT_DEFAULT_SECONDS = 600
+# The account's own skills and plugins come from its user settings. Work loads
+# them too: their allow rules cannot widen RCP's `--settings`, and hooks stay
+# off through `disableAllHooks` there. The skill probe loads the same sources.
+_SETTING_SOURCES = ("--setting-sources", "user")
 
 
 class ClaudeProfile(ProviderProfile):
@@ -410,8 +414,7 @@ class ClaudeProfile(ProviderProfile):
             "--input-format",
             "stream-json",
             "--no-session-persistence",
-            "--setting-sources",
-            "",
+            *_SETTING_SOURCES,
             "--settings",
             json.dumps(_claude_write_settings(), separators=(",", ":")),
             "--strict-mcp-config",
@@ -431,6 +434,7 @@ class ClaudeProfile(ProviderProfile):
                 "--verbose",
                 "--permission-mode",
                 "plan",
+                *_SETTING_SOURCES,
                 "--settings",
                 '{"disableAllHooks":true}',
                 "--strict-mcp-config",
@@ -539,8 +543,7 @@ class ClaudeProfile(ProviderProfile):
         if scope is not None:
             command.extend(
                 [
-                    "--setting-sources",
-                    "",
+                    *_SETTING_SOURCES,
                     "--settings",
                     json.dumps(
                         _claude_write_settings(scope, hidden_read_scope, cwd), separators=(",", ":")
