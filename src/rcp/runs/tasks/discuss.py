@@ -65,7 +65,6 @@ from rcp.runs.chat import (
     retained_work_values,
     stage_artifact_context,
 )
-from rcp.runs.chat_admission import validate_chat_fork_host
 from rcp.runs.experiment_loop import stage_chat_experiment_watcher_resources, stage_chat_loop_status
 from rcp.runs.lessons import stage_operational_context_pointer
 from rcp.runs.patch_validator import cleanup_patch_validation_mailbox
@@ -668,7 +667,6 @@ async def stream_discuss_run(
                 task = execution.store.agent_task(execution.operation_id)
                 if task is None:
                     raise ValueError("The conversation task binding is unavailable.")
-                validate_chat_fork_host(execution.store, task.project_id, request, execution_host)
                 context = conversation_worktree_context(
                     service, execution.store, task.project_id, request, context
                 )

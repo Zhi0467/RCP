@@ -91,7 +91,6 @@ from rcp.runs.chat import (
     chat_prompt_values,
     stage_artifact_context,
 )
-from rcp.runs.chat_admission import validate_chat_fork_host
 from rcp.runs.consolidation import (
     consolidation_apply_handler,
     consolidation_covered_head,
@@ -507,11 +506,6 @@ def _resolve_work_execution(
     )
     request = _pinned_to_profile(request, profile)
     execution_machine = service.manifest.machine_map[profile.run_on]
-    if execution is not None and request.fork_session_id is not None:
-        task = execution.store.agent_task(execution.operation_id)
-        if task is None:
-            raise ValueError("The conversation task binding is unavailable.")
-        validate_chat_fork_host(execution.store, task.project_id, request, execution_machine.host)
     # Read once per turn: the ask hold, the prompt, and the provider all use this value.
     shell_timeout = (
         execution.store.provider_shell_timeout_seconds(profile.provider, execution_machine.host)

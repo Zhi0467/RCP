@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import BaseModel, ConfigDict
@@ -41,10 +40,10 @@ class ChatForkRecord(BaseModel):
     node_id: str | None
     created_at: str
     origin: ChatForkOrigin
-    native_session_id: str
-    source_cwd: str
-    source_host: str
-    runtime_id: str
+
+
+# The source turn's launch profile a fork's first turn keeps.
+FORK_PROFILE_FIELDS = ("provider", "model", "reasoning", "run_on")
 
 
 def migrate_chat_forks(connection: sqlite3.Connection) -> None:
@@ -55,53 +54,92 @@ def migrate_chat_forks(connection: sqlite3.Connection) -> None:
 
 
 class ChatForkStoreMixin(StoreMixinBase):
-    def chat_fork(self, project_id: str, chat_id: str) -> ChatForkRecord | None:
+    def _chat_fork_source(
+        self, connection: sqlite3.Connection, project_id: str, source_chat_id: str
+    ) -> sqlite3.Row:
+        """The chat's latest turn, which must hold a settled, usable native session."""
+        latest = connection.execute(
+            "SELECT operation_id FROM graph_runs WHERE project_id = ? "
+            "AND kind IN ('node_chat', 'project_chat') "
+            "AND json_extract(request_json, '$.chat_id') = ? "
+            "AND (json_extract(request_json, '$.artifact_edit') IS NULL "
+            "OR json_extract(request_json, '$.artifact_edit.origin_bound') = 0) "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (project_id, source_chat_id),
+        ).fetchone()
+        return cast("AppStore", self)._usable_chat_fork_source(
+            connection, latest[0] if latest else None
+        )
+
+    def require_chat_fork_source(self, project_id: str, source_chat_id: str) -> None:
+        """Refuse a branch before anything, such as a new graph branch, is created for it."""
         with self.connection() as connection:
-            row = connection.execute(
-                "SELECT record_json FROM chat_forks WHERE project_id = ? AND chat_id = ?",
+            self._chat_fork_source(connection, project_id, source_chat_id)
+
+    def _pending_chat_fork(
+        self, connection: sqlite3.Connection, project_id: str, chat_id: str
+    ) -> tuple[ChatForkRecord, sqlite3.Row] | None:
+        """A branched chat's origin and the source turn its first turn forks.
+
+        The fork takes the source chat's latest state when the first message is
+        sent; nothing reads the source again after that turn is admitted.
+        """
+        row = connection.execute(
+            "SELECT record_json FROM chat_forks WHERE project_id = ? AND chat_id = ?",
+            (project_id, chat_id),
+        ).fetchone()
+        if row is None:
+            return None
+        fork = ChatForkRecord.model_validate_json(row[0])
+        return fork, self._chat_fork_source(connection, project_id, fork.origin.source_chat_id)
+
+    def pending_chat_fork_profile(self, project_id: str, chat_id: str) -> dict[str, object] | None:
+        """The launch profile and scope a branched chat's first turn must use."""
+        with self.connection() as connection:
+            if connection.execute(
+                "SELECT 1 FROM graph_runs WHERE project_id = ? "
+                "AND json_extract(request_json, '$.chat_id') = ? LIMIT 1",
                 (project_id, chat_id),
-            ).fetchone()
-        return ChatForkRecord.model_validate_json(row[0]) if row else None
+            ).fetchone():
+                return None
+            pending = self._pending_chat_fork(connection, project_id, chat_id)
+        if pending is None:
+            return None
+        fork, source = pending
+        request = json.loads(source["request_json"])
+        return {
+            **{field: request.get(field) for field in FORK_PROFILE_FIELDS},
+            "node_id": fork.node_id,
+            "chat_scope": "node" if fork.kind == "node_chat" else "project",
+        }
 
     def create_chat_fork(
         self,
         project_id: str,
         source_chat_id: str,
         graph_target: GraphTargetRef,
+        request_id: str,
         *,
         target_node_ids: set[str] | None = None,
     ) -> ChatForkRecord:
-        """Capture the latest settled turn without launching or changing its session."""
-        store = cast("AppStore", self)
+        """Capture the latest settled turn without launching or changing its session.
+
+        The request id names the new chat, so a replayed request returns that chat.
+        """
+        chat_id = str(uuid.uuid5(uuid.UUID(source_chat_id), request_id))
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            source = connection.execute(
-                "SELECT * FROM graph_runs WHERE project_id = ? "
-                "AND kind IN ('node_chat', 'project_chat') "
-                "AND json_extract(request_json, '$.chat_id') = ? "
-                "AND (json_extract(request_json, '$.artifact_edit') IS NULL "
-                "OR json_extract(request_json, '$.artifact_edit.origin_bound') = 0) "
-                "ORDER BY created_at DESC, rowid DESC LIMIT 1",
-                (project_id, source_chat_id),
+            replay = connection.execute(
+                "SELECT record_json FROM chat_forks WHERE project_id = ? AND chat_id = ?",
+                (project_id, chat_id),
             ).fetchone()
-            if source is None:
-                raise ValueError("This chat has no native session to branch.")
-            current = store._current_chat_session_row(
-                connection, project_id, source["kind"], source_chat_id
-            )
-            if (
-                current is None
-                or current["operation_id"] != source["operation_id"]
-                or current["status"] in {"queued", "running", "pausing", "paused"}
-                or current["history_only"]
-                or current["recovery_abandoned"]
-                or store._dropped_chat_session_reason(current) is not None
-                or not current["stage_root"]
-            ):
-                raise ValueError("The latest chat turn has no settled, usable native session.")
+            if replay is not None:
+                record = ChatForkRecord.model_validate_json(replay[0])
+                if record.graph_target != graph_target:
+                    raise ValueError("This branch request already chose another graph target.")
+                return record
+            source = self._chat_fork_source(connection, project_id, source_chat_id)
             request = json.loads(source["request_json"])
-            if not request.get("provider") or not request.get("run_on"):
-                raise ValueError("The source chat's provider and machine must be known.")
             source_target = GraphTargetRef.model_validate_json(source["graph_target_json"])
             if graph_target.kind == "branch":
                 branch = connection.execute(
@@ -115,18 +153,6 @@ class ChatForkStoreMixin(StoreMixinBase):
                 (project_id, source_chat_id),
             ).fetchone()
             title = title_row[0] if title_row and title_row[0] else "Chat"
-            layout = connection.execute(
-                "SELECT 1 FROM graph_run_receipts AS receipt "
-                "JOIN graph_runs AS run ON run.operation_id = receipt.operation_id "
-                "WHERE run.project_id = ? AND json_extract(run.request_json, '$.chat_id') = ? "
-                "AND receipt.category = 'chat_stage_layout' "
-                "AND json_extract(receipt.payload_json, '$.stage_root') = ? "
-                "AND json_extract(receipt.payload_json, '$.layout') = 'split-v1' LIMIT 1",
-                (project_id, source_chat_id, source["stage_root"]),
-            ).fetchone()
-            cwd = PurePosixPath(source["stage_root"])
-            if layout is not None:
-                cwd /= "workspace"
             node_id = request.get("node_id")
             kind = source["kind"]
             if (
@@ -137,7 +163,7 @@ class ChatForkStoreMixin(StoreMixinBase):
                 kind, node_id = "project_chat", None
             record = ChatForkRecord(
                 project_id=project_id,
-                chat_id=str(uuid.uuid4()),
+                chat_id=chat_id,
                 graph_target=graph_target,
                 kind=kind,
                 node_id=node_id,
@@ -152,10 +178,6 @@ class ChatForkStoreMixin(StoreMixinBase):
                     reasoning=request.get("reasoning"),
                     run_on=request["run_on"],
                 ),
-                native_session_id=source["native_session_id"],
-                source_cwd=str(cwd),
-                source_host=source["stage_host"] or "",
-                runtime_id=source["runtime_id"],
             )
             connection.execute(
                 "INSERT INTO chat_forks VALUES (?, ?, ?)",

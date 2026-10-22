@@ -284,9 +284,7 @@ def _supervised_remote_turn_command(
         "--poll-seconds",
         str(REMOTE_PROVIDER_STOP_POLL_SECONDS),
     ]
-    if fork_session_id:
-        if not fork_source_cwd:
-            raise ValueError("A session fork requires its source working directory.")
+    if fork_session_id and fork_source_cwd:
         wrapped.extend(("--fork-session-id", fork_session_id, "--fork-source-cwd", fork_source_cwd))
     if provider_version:
         wrapped.extend(("--provider-version", provider_version))
@@ -1181,6 +1179,14 @@ class AgentLauncher:
         held.
         """
 
+        if fork_session_id and (
+            session_id or not fork_source_cwd or (host and not supervise_remote)
+        ):
+            # The execution host prepares a fork from its source cwd: locally here,
+            # remotely in the turn supervisor.
+            raise ValueError(
+                "A session fork needs its source cwd and its host's supervisor, and cannot resume."
+            )
         if hidden_read_scope is None:
             hidden_read_scope = unhidden_read_scope(execution_machine=host or "local", host=host)
         prompt += "\n\n" + hidden_read_prompt(
@@ -1367,7 +1373,6 @@ class AgentLauncher:
                 reasoning=reasoning,
                 session_id=session_id,
                 fork_session_id=fork_session_id,
-                fork_source_cwd=fork_source_cwd,
                 read_dirs=read_dirs or [],
                 write_dirs=write_dirs or [],
                 write_scope=write_scope,
@@ -1390,7 +1395,6 @@ class AgentLauncher:
                     reasoning=reasoning,
                     session_id=session_id,
                     fork_session_id=fork_session_id,
-                    fork_source_cwd=fork_source_cwd,
                     read_dirs=read_dirs or [],
                     write_dirs=write_dirs or [],
                     write_scope=write_scope,
@@ -1406,18 +1410,14 @@ class AgentLauncher:
             )
         except (OSError, RuntimeError, ValueError) as exc:
             raise _PrePromptRuntimeFailure(str(exc)) from exc
-        if fork_session_id:
-            if session_id or not fork_source_cwd:
-                raise ValueError("A session fork requires a source cwd and cannot also resume.")
-            if host and not supervise_remote:
-                raise ValueError("A remote session fork requires execution-host supervision.")
-            if not host and profile.session_format is not None:
-                await asyncio.to_thread(
-                    profile.session_format.prepare_session_fork,
-                    source_session_id=fork_session_id,
-                    source_cwd=Path(fork_source_cwd),
-                    cwd=cwd,
-                )
+        if fork_session_id and not host and profile.session_format is not None:
+            assert fork_source_cwd is not None
+            await asyncio.to_thread(
+                profile.session_format.prepare_session_fork,
+                source_session_id=fork_session_id,
+                source_cwd=Path(fork_source_cwd),
+                cwd=cwd,
+            )
         command = turn.command
         if invocation_gate is not None:
             command = invocation_gate.wrap_command(command)
@@ -2006,7 +2006,6 @@ class AgentLauncher:
         reasoning: str | None,
         session_id: str | None,
         fork_session_id: str | None = None,
-        fork_source_cwd: str | None = None,
         read_dirs: list[Path],
         write_dirs: list[Path] | None = None,
         write_scope: ProjectWriteScope | None = None,
@@ -2024,7 +2023,6 @@ class AgentLauncher:
             reasoning=reasoning,
             session_id=session_id,
             fork_session_id=fork_session_id,
-            fork_source_cwd=fork_source_cwd,
             read_dirs=read_dirs,
             write_dirs=write_dirs or [],
             write_scope=write_scope,

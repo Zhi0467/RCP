@@ -93,6 +93,7 @@ PROJECT_LINKED_TABLES = {
     "chat_pins",
     "chat_reads",
     "chat_session_contexts",
+    "chat_forks",
     "compute_jobs",
     "compute_backend_probes",
     "conversation_worktrees",

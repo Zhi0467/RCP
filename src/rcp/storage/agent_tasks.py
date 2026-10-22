@@ -57,7 +57,7 @@ from rcp.limits import (
 from rcp.providers import ProviderUsage, classify_terminal_error, require_runtime_id
 from rcp.providers.live_status import AgentStatus
 from rcp.storage.branch_names import _chain_root
-from rcp.storage.chat_forks import ChatForkRecord
+from rcp.storage.chat_forks import FORK_PROFILE_FIELDS
 from rcp.storage.chat_names import initialize_task_chat_name
 from rcp.storage.client_requests import record_client_request
 from rcp.storage.digest import append_task_failed
@@ -1633,6 +1633,32 @@ class AgentTaskStoreMixin(StoreMixinBase):
             return "session_stale"
         return row["session_dropped"]
 
+    def _usable_chat_fork_source(
+        self, connection: sqlite3.Connection, operation_id: str | None
+    ) -> sqlite3.Row:
+        """The settled, usable native session a branched chat forks.
+
+        Branch creation and the branched chat's first-turn admission both check it.
+        """
+
+        row = connection.execute(
+            "SELECT run.*, " + _SESSION_DROP_COLUMNS + " FROM graph_runs AS run "
+            "WHERE operation_id = ?",
+            (operation_id,),
+        ).fetchone()
+        if (
+            row is None
+            or not row["native_session_id"]
+            or not row["stage_root"]
+            or row["status"] in {"queued", "running", "pausing", "paused"}
+            or row["history_only"]
+            or row["recovery_abandoned"]
+            or self._dropped_chat_session_reason(row) is not None
+            or not all(json.loads(row["request_json"]).get(key) for key in ("provider", "run_on"))
+        ):
+            raise ValueError("The source chat turn has no settled, usable native session.")
+        return row
+
     def current_chat_session(
         self, project_id: str, kind: str, chat_id: str
     ) -> AgentTaskRecord | None:
@@ -1702,6 +1728,61 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 return code, None
         return "orchestrator_session", binding
 
+    def _chat_fork_launch(
+        self, connection: sqlite3.Connection, record: AgentTaskRecord, chat_id: str
+    ) -> tuple[dict[str, str | None], str | None]:
+        """The fork a branched chat's turn launches, and the source turn it was taken from.
+
+        Only the chat's first turn reads the fork origin and the source session; it
+        records the fork in its own request. Later turns carry that record until the
+        chat has its own native session, then never fork again, so after the first
+        message the chat no longer depends on its source.
+        """
+
+        none: dict[str, str | None] = dict.fromkeys(_FORK_FIELDS)
+        own = connection.execute(
+            "SELECT request_json FROM graph_runs WHERE project_id = ? AND kind = ? "
+            "AND json_extract(request_json, '$.chat_id') = ? "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (record.project_id, record.kind, chat_id),
+        ).fetchone()
+        if own is not None:
+            if self._current_chat_session_row(connection, record.project_id, record.kind, chat_id):
+                return none, None
+            carried = json.loads(own["request_json"])
+            if carried.get("fork_session_id") and any(
+                record.request.get(field) != carried.get(field) for field in FORK_PROFILE_FIELDS
+            ):
+                raise ValueError("A branched turn must use its source launch profile.")
+            return {field: carried.get(field) for field in _FORK_FIELDS}, None
+        pending = cast("AppStore", self)._pending_chat_fork(connection, record.project_id, chat_id)
+        if pending is None:
+            return none, None
+        fork, source = pending
+        source_request = json.loads(source["request_json"])
+        if (
+            record.graph_target != fork.graph_target
+            or record.kind != fork.kind
+            or record.request.get("node_id") != fork.node_id
+        ):
+            raise ValueError("The branched conversation must keep its graph target and scope.")
+        if any(
+            record.request.get(field) != source_request.get(field) for field in FORK_PROFILE_FIELDS
+        ):
+            raise ValueError("A branched turn must use its source launch profile.")
+        return {
+            "fork_session_id": source["native_session_id"],
+            "fork_source_host": source["stage_host"] or "",
+            "fork_source_cwd": self._chat_stage_workspace(
+                connection,
+                project_id=source["project_id"],
+                kind=source["kind"],
+                chat_id=source_request["chat_id"],
+                stage_host=source["stage_host"] or "",
+                stage_root=source["stage_root"],
+            ),
+        }, source["operation_id"]
+
     def _bind_chat_stage(
         self,
         connection: sqlite3.Connection,
@@ -1750,44 +1831,8 @@ class AgentTaskStoreMixin(StoreMixinBase):
         chat_id = record.request.get("chat_id")
         if not isinstance(chat_id, str) or not chat_id:
             return record, resolution
-        fork_row = connection.execute(
-            "SELECT record_json FROM chat_forks WHERE project_id = ? AND chat_id = ?",
-            (record.project_id, chat_id),
-        ).fetchone()
-        fork = ChatForkRecord.model_validate_json(fork_row[0]) if fork_row else None
-        if fork is not None and (
-            record.graph_target != fork.graph_target
-            or record.kind != fork.kind
-            or record.request.get("node_id") != fork.node_id
-        ):
-            raise ValueError("The branched conversation must keep its graph target and scope.")
-        # Derive fork authority only from the immutable origin. A captured native
-        # session belongs to this new chat and every subsequent attempt resumes it.
-        current_fork_session = (
-            self._current_chat_session_row(connection, record.project_id, record.kind, chat_id)
-            if fork is not None
-            else None
-        )
-        fork_pending = fork is not None and current_fork_session is None
-        fork_fields: dict[str, object] = {
-            "fork_session_id": None,
-            "fork_source_cwd": None,
-        }
-        if fork_pending:
-            assert fork is not None
-            for field in ("provider", "model", "reasoning", "run_on"):
-                if record.request.get(field) != getattr(fork.origin, field):
-                    raise ValueError("The first branched turn must use its source launch profile.")
-            if record.stage_root == fork.source_cwd:
-                raise ValueError("A branched conversation requires its own stage.")
-            fork_fields.update(
-                {
-                    "fork_session_id": fork.native_session_id,
-                    "fork_source_cwd": fork.source_cwd,
-                }
-            )
-            record = record.model_copy(update={"runtime_id": fork.runtime_id})
-        if fork is not None or any(field in record.request for field in fork_fields):
+        fork_fields, fork_source_operation_id = self._chat_fork_launch(connection, record, chat_id)
+        if fork_fields["fork_session_id"] or "fork_session_id" in record.request:
             record = record.model_copy(update={"request": {**record.request, **fork_fields}})
         prior_chat_targets = connection.execute(
             """
@@ -1950,13 +1995,12 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 "session_id": session_id,
                 "source_operation_id": source_operation_id,
             }
-            if fork_pending:
-                assert fork is not None
+            if fork_fields["fork_session_id"]:
                 resolution.update(
                     {
                         "outcome": "forking",
                         "reason_code": "branched_chat",
-                        "source_operation_id": fork.origin.source_operation_id,
+                        "source_operation_id": fork_source_operation_id,
                     }
                 )
                 record = record.model_copy(
@@ -2046,26 +2090,74 @@ class AgentTaskStoreMixin(StoreMixinBase):
         """Return the one immutable local-chat stage-layout marker for a binding."""
 
         with self.connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT receipt.payload_json
-                FROM graph_run_receipts AS receipt
-                JOIN graph_runs AS run ON run.operation_id = receipt.operation_id
-                WHERE receipt.category = 'chat_stage_layout'
-                  AND run.project_id = ? AND run.kind = ?
-                  AND json_extract(run.request_json, '$.chat_id') = ?
-                  AND json_extract(receipt.payload_json, '$.stage_host') = ?
-                  AND json_extract(receipt.payload_json, '$.stage_root') = ?
-                ORDER BY receipt.receipt_id ASC
-                """,
-                (
-                    project_id,
-                    kind,
-                    chat_id,
-                    stage_host,
-                    stage_root,
-                ),
-            ).fetchall()
+            return self._chat_stage_layout(
+                connection,
+                project_id=project_id,
+                kind=kind,
+                chat_id=chat_id,
+                stage_host=stage_host,
+                stage_root=stage_root,
+            )
+
+    def chat_stage_workspace(
+        self,
+        *,
+        project_id: str,
+        kind: str,
+        chat_id: str,
+        stage_host: str,
+        stage_root: str,
+    ) -> str:
+        """The provider cwd of a saved conversation stage, as every launch in it resolves it."""
+
+        with self.connection() as connection:
+            return self._chat_stage_workspace(
+                connection,
+                project_id=project_id,
+                kind=kind,
+                chat_id=chat_id,
+                stage_host=stage_host,
+                stage_root=stage_root,
+            )
+
+    def _chat_stage_workspace(self, connection: sqlite3.Connection, **binding: str) -> str:
+        stage = PurePosixPath(binding["stage_root"])
+        # A remote stage always runs in its workspace (`RemoteRunStage.workspace`); a
+        # local one only when its layout marker says so.
+        if binding["stage_host"] or self._chat_stage_layout(connection, **binding):
+            return str(stage / "workspace")
+        return str(stage)
+
+    @staticmethod
+    def _chat_stage_layout(
+        connection: sqlite3.Connection,
+        *,
+        project_id: str,
+        kind: str,
+        chat_id: str,
+        stage_host: str,
+        stage_root: str,
+    ) -> Literal["split-v1"] | None:
+        rows = connection.execute(
+            """
+            SELECT receipt.payload_json
+            FROM graph_run_receipts AS receipt
+            JOIN graph_runs AS run ON run.operation_id = receipt.operation_id
+            WHERE receipt.category = 'chat_stage_layout'
+              AND run.project_id = ? AND run.kind = ?
+              AND json_extract(run.request_json, '$.chat_id') = ?
+              AND json_extract(receipt.payload_json, '$.stage_host') = ?
+              AND json_extract(receipt.payload_json, '$.stage_root') = ?
+            ORDER BY receipt.receipt_id ASC
+            """,
+            (
+                project_id,
+                kind,
+                chat_id,
+                stage_host,
+                stage_root,
+            ),
+        ).fetchall()
         if not rows:
             return None
         if len(rows) != 1:
@@ -6109,6 +6201,8 @@ def _require_merge_destination_open(
 
 
 # Why a run's native session can no longer continue, from its receipts.
+_FORK_FIELDS = ("fork_session_id", "fork_source_cwd", "fork_source_host")
+
 _SESSION_DROP_COLUMNS = """
     EXISTS (
         SELECT 1 FROM graph_run_receipts AS receipt

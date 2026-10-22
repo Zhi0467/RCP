@@ -881,6 +881,7 @@ class RunRequest(BaseModel):
     # Resolved from the immutable chat origin, never accepted from HTTP clients.
     fork_session_id: str | None = None
     fork_source_cwd: str | None = None
+    fork_source_host: str | None = None
     mode: ConversationMode = "discuss"
     isolation_owner_episode_id: str | None = None
     code_worktree: bool = False

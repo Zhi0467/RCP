@@ -54,7 +54,19 @@ for (const width of [1000, 390]) {
                 branch,
                 { ...branch, branch_id: "archived", name: "Archived", archived: true },
               ];
+        if (path.endsWith("/source/branch") && !body) {
+          await route.fulfill({ status: 204 });
+          return;
+        }
         if (path.endsWith("/source/branch")) {
+          // The first response at desktop width is lost; the retry must reuse its id.
+          if (
+            width !== 390 &&
+            requests.filter((item) => item.body && item.path === path).length === 1
+          ) {
+            await route.fulfill({ status: 503, body: JSON.stringify({ detail: "lost" }) });
+            return;
+          }
           result = {
             chat_id: "forked",
             title: "Source chat",
@@ -98,6 +110,7 @@ for (const width of [1000, 390]) {
         await picker.getByRole("button", { name: "New branch", exact: true }).click();
         await picker.getByLabel("New branch name").fill("new-direction");
         await picker.getByRole("button", { name: "Create branch", exact: true }).click();
+        await picker.getByRole("button", { name: "Retry new branch", exact: true }).click();
       }
       await page.getByRole("link", { name: "Source chat", exact: true }).waitFor();
       const hash = await page.evaluate(() => window.location.hash);
@@ -112,9 +125,17 @@ for (const width of [1000, 390]) {
         assert.equal(forks[0].body.at, "main@12");
         assert.equal(forks[0].body.name, "new-direction");
       }
-      assert.deepEqual(requests.find((request) => request.path.endsWith("/source/branch")).body, {
-        graph_target: result.graph_target,
-      });
+      const branched = requests.filter(
+        (request) => request.method === "POST" && request.path.endsWith("/source/branch"),
+      );
+      // Only a new branch is preceded by the source check; it runs before the graph fork.
+      const checked = requests.findIndex(
+        (request) => request.method === "GET" && request.path.endsWith("/source/branch"),
+      );
+      assert.equal(checked >= 0, width !== 390);
+      assert.equal(branched.length, width === 390 ? 1 : 2);
+      assert.deepEqual(branched.at(-1).body.graph_target, result.graph_target);
+      assert.equal(new Set(branched.map((request) => request.body.request_id)).size, 1);
       assert.equal(
         await page.getByRole("textbox", { name: "Message", exact: true }).inputValue(),
         "",

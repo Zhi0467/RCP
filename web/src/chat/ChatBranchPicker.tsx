@@ -1,6 +1,6 @@
 import { CornerUpLeft } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { branchChat, createGraphFork, loadGraphRefs } from "../core/api";
+import { branchChat, createGraphFork, loadGraphRefs, requireChatBranchable } from "../core/api";
 import { projectViewHash, sameGraphTarget } from "../core/graphTarget";
 import type { ChatOrigin, GraphRef, GraphTargetRef } from "../core/types";
 import { GraphPicker } from "../graph/GraphPicker";
@@ -42,6 +42,8 @@ export function ChatBranchPicker({
   // A branch already created for this name: a retry after the chat step failed
   // opens the chat there instead of creating the branch again.
   const created = useRef<{ name: string; target: GraphTargetRef } | null>(null);
+  // One request id per target: a retry after a lost response reopens the same chat.
+  const attempt = useRef<{ target: GraphTargetRef; requestId: string } | null>(null);
   useEffect(() => {
     let live = true;
     loadGraphRefs(projectId).then(
@@ -55,8 +57,11 @@ export function ChatBranchPicker({
 
   const open = async (target: GraphTargetRef) => {
     setFailed(null);
+    if (!attempt.current || !sameGraphTarget(attempt.current.target, target))
+      attempt.current = { target, requestId: crypto.randomUUID() };
     try {
-      const transcript = await branchChat(projectId, chatId, target);
+      const transcript = await branchChat(projectId, chatId, target, attempt.current.requestId);
+      attempt.current = null;
       window.location.hash = projectViewHash(projectId, transcript.graph_target, "chats", {
         chatId: transcript.chat_id,
       });
@@ -84,6 +89,7 @@ export function ChatBranchPicker({
         onSelect={(target) => void open(target).catch(() => undefined)}
         onCreate={async (name, requestId, forkHead) => {
           if (created.current?.name !== name) {
+            await requireChatBranchable(projectId, chatId);
             const fork = await createGraphFork(
               projectId,
               forkHead.target,

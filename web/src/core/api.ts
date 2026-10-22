@@ -532,14 +532,25 @@ export function removeChatAttachment(
   );
 }
 
+/** Refuses a chat that cannot branch, before a new graph branch is created for it. */
+export function requireChatBranchable(projectId: string, chatId: string): Promise<void> {
+  return api<void>(
+    `/api/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(chatId)}/branch`,
+  );
+}
+
 export function branchChat(
   projectId: string,
   chatId: string,
   graphTarget: GraphTargetRef,
+  requestId: string,
 ): Promise<ChatTranscript> {
   return api<ChatTranscript>(
     `/api/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(chatId)}/branch`,
-    { method: "POST", body: JSON.stringify({ graph_target: graphTarget }) },
+    {
+      method: "POST",
+      body: JSON.stringify({ graph_target: graphTarget, request_id: requestId }),
+    },
   );
 }
 

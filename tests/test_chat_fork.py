@@ -104,11 +104,16 @@ def test_branch_chat_defers_fork_and_keeps_source_unchanged(manifest, tmp_path, 
     )
     assert fork_graph.status_code == 201, fork_graph.text
     target = {"kind": "branch", "branch_id": branch_id}
+    branch_request = {"graph_target": target, "request_id": str(uuid4())}
     response = client.post(
-        f"/api/projects/{project_id}/chats/{chat_id}/branch", json={"graph_target": target}
+        f"/api/projects/{project_id}/chats/{chat_id}/branch", json=branch_request
     )
     assert response.status_code == 200, response.text
     branched = response.json()
+    replayed = client.post(
+        f"/api/projects/{project_id}/chats/{chat_id}/branch", json=branch_request
+    )
+    assert replayed.json() == branched
     assert branched["messages"] == []
     assert branched["chat_id"] != chat_id
     assert branched["graph_target"] == target
@@ -117,6 +122,10 @@ def test_branch_chat_defers_fork_and_keeps_source_unchanged(manifest, tmp_path, 
     assert branched["origin"]["run_on"] == source.request["run_on"]
     assert len(launcher.prompts) == 1
     child_id = branched["chat_id"]
+    # A chat without its own native session refuses before any graph branch is made.
+    branchable = f"/api/projects/{project_id}/chats/{{}}/branch"
+    assert client.get(branchable.format(chat_id)).status_code == 204
+    assert client.get(branchable.format(child_id)).status_code == 422
     assert (
         client.get(
             f"/api/projects/{project_id}/chats/{child_id}", params={"branch_id": branch_id}
@@ -183,7 +192,7 @@ def test_branch_chat_defers_fork_and_keeps_source_unchanged(manifest, tmp_path, 
     if mode == "discuss" and not fail_fork:
         back_to_main = client.post(
             f"/api/projects/{project_id}/chats/{child_id}/branch",
-            json={"graph_target": {"kind": "main"}},
+            json={"graph_target": {"kind": "main"}, "request_id": str(uuid4())},
         )
         assert back_to_main.status_code == 200, back_to_main.text
         assert back_to_main.json()["graph_target"]["kind"] == "main"
@@ -195,7 +204,9 @@ def test_branch_chat_rejects_missing_source_session(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.catalog.store
     with pytest.raises(ValueError):
-        store.create_chat_fork(app.state.default_project_id, str(uuid4()), GraphTargetRef())
+        store.create_chat_fork(
+            app.state.default_project_id, str(uuid4()), GraphTargetRef(), str(uuid4())
+        )
 
 
 def test_node_chat_branches_to_project_scope_when_target_lacks_node(manifest, tmp_path):
@@ -231,8 +242,84 @@ def test_node_chat_branches_to_project_scope_when_target_lacks_node(manifest, tm
     assert response.status_code == 201
     response = client.post(
         f"/api/projects/{project_id}/chats/{source_id}/branch",
-        json={"graph_target": {"kind": "branch", "branch_id": branch_id}},
+        json={
+            "graph_target": {"kind": "branch", "branch_id": branch_id},
+            "request_id": str(uuid4()),
+        },
     )
     assert response.status_code == 200, response.text
     assert (response.json()["kind"], response.json()["node_id"]) == ("project_chat", None)
     assert store.agent_task(execution.operation_id).request["node_id"] == "rq/source-only"
+
+
+def test_first_fork_turn_records_the_remote_source_workspace(manifest, tmp_path):
+    from rcp.service import RunRequest
+    from tests.test_api import _chat_task_execution
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.catalog.store
+    project_id = app.state.default_project_id
+    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "laptop"}
+    source_id = str(uuid4())
+    source = _chat_task_execution(
+        app, RunRequest(chat_id=source_id, chat_scope="project", **profile), "remote-source"
+    )
+    source.checkpoint_stage("gpu-host", "/remote/stage")
+    store.checkpoint_agent_task(source.operation_id, native_session_id="remote-session")
+    store.complete_agent_task(source.operation_id, applied_revision=None, result={})
+    fork = store.create_chat_fork(project_id, source_id, GraphTargetRef(), str(uuid4()))
+    _chat_task_execution(
+        app, RunRequest(chat_id=fork.chat_id, chat_scope="project", **profile), "fork-turn"
+    )
+    request = store.agent_task("fork-turn").request
+    assert request["fork_session_id"] == "remote-session"
+    assert request["fork_source_host"] == "gpu-host"
+    assert request["fork_source_cwd"] == "/remote/stage/workspace"
+
+
+def test_fork_turn_retry_after_pause_continues_and_first_turn_rechecks_source(manifest, tmp_path):
+    from rcp.service import RunRequest
+    from tests.test_api import _chat_task_execution, _named_test_authorizer
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.catalog.store
+    project_id = app.state.default_project_id
+    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "laptop"}
+    source_id = str(uuid4())
+    source = _chat_task_execution(
+        app, RunRequest(chat_id=source_id, chat_scope="project", **profile), "source-turn"
+    )
+    source.checkpoint_stage("", str(tmp_path / "source-stage"))
+    store.checkpoint_agent_task(source.operation_id, native_session_id="source-session")
+    store.complete_agent_task(source.operation_id, applied_revision=None, result={})
+    fork, unused = (
+        store.create_chat_fork(project_id, source_id, GraphTargetRef(), str(uuid4()))
+        for _ in range(2)
+    )
+    first = _chat_task_execution(
+        app, RunRequest(chat_id=fork.chat_id, chat_scope="project", **profile), "fork-turn"
+    )
+    first.checkpoint_stage("", str(tmp_path / "fork-stage"))
+    store.checkpoint_agent_task(first.operation_id, native_session_id="forked-session")
+    store.pause_agent_task(first.operation_id)
+
+    async def idle(*_args, **_kwargs):
+        return
+        yield
+
+    app.state.background_tasks.stream = idle
+    retried = app.state.background_tasks.retry(
+        first.operation_id, authorized_by=_named_test_authorizer(store)
+    )
+    assert retried.request["session_id"] == "forked-session"
+    assert retried.request["fork_session_id"] is None
+
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET history_only = 1 WHERE operation_id = ?",
+            (source.operation_id,),
+        )
+    with pytest.raises(ValueError):
+        _chat_task_execution(
+            app, RunRequest(chat_id=unused.chat_id, chat_scope="project", **profile), "late-turn"
+        )

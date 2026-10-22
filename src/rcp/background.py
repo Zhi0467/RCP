@@ -964,7 +964,7 @@ class BackgroundAgentTasks:
                 authorized_by=authorized_by,
             )
         retry_same_provider = (
-            previous.status == "failed"
+            previous.status in {"failed", "paused", "interrupted"}
             and same_provider
             and same_execution_host
             and owned_checkpoint
