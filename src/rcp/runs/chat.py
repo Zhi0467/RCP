@@ -148,7 +148,6 @@ class _ChatPatchInputs:
 @dataclass(frozen=True)
 class StagedArtifactContext:
     pointer: dict[str, object]
-    protected_write_paths: tuple[str, ...] = ()
 
 
 def _stage_chat_patch_inputs(
@@ -1001,10 +1000,6 @@ def stage_artifact_context(
         raise ValueError("The artifact type does not support comments.")
     if classify_artifact_bytes(descriptor.name, data) != descriptor.media_type:
         raise ValueError("The current artifact no longer matches its declared type.")
-    protected_write_paths = (
-        (str(execution.store.path.parent / "artifacts"),) if not current.stage_host else ()
-    )
-
     # Each box the current viewer drew on a raster image is cropped from the exact bytes
     # staged beside it, so a recovery restages the same crops.
     boxes = {
@@ -1088,10 +1083,7 @@ def stage_artifact_context(
     }
     if edit_path is not None:
         pointer["path"] = edit_path
-    return StagedArtifactContext(
-        pointer=pointer,
-        protected_write_paths=protected_write_paths,
-    )
+    return StagedArtifactContext(pointer=pointer)
 
 
 _SELECTION_CROPS = "selections"
@@ -1433,7 +1425,6 @@ def _project_write_scope(
     episode_request: RunRequest | AutoResearchRunRequest | None = None,
     stage_only: bool = False,
     local_stage: Path | None = None,
-    additional_protected_write_paths: list[str] | None = None,
 ) -> ProjectWriteScope:
     """Resolve one durable provider-neutral scope from project-owned authority."""
 
@@ -1511,14 +1502,11 @@ def _project_write_scope(
         machine_writable_paths=_machine_writable_paths(
             service, execution_machine, execution.store if execution is not None else None
         ),
-        additional_protected_write_paths=[
-            *(
-                [str(local_stage / "inputs")]
-                if remote_stage is None and local_stage is not None and workspace == local_stage
-                else []
-            ),
-            *(additional_protected_write_paths or []),
-        ],
+        additional_protected_write_paths=(
+            [str(local_stage / "inputs")]
+            if remote_stage is None and local_stage is not None and workspace == local_stage
+            else []
+        ),
     )
     if isinstance(binding, ConversationWorktreeBinding) and execution is not None:
         # Human-authored local integration is the only related-turn root change.

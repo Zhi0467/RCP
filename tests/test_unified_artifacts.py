@@ -174,7 +174,6 @@ def test_remote_revision_stages_the_stored_copy_without_reading_source_stage(
     )
 
     assert staged is not None
-    assert staged.protected_write_paths == ()
 
 
 def test_svg_is_an_ordinary_bounded_artifact() -> None:

@@ -12,11 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from rcp.agents.launcher import AgentProcessControl
 from rcp.runs.remote_reconciliation import (
     Reconciliation,
     read_remote_journal,
     reconcile_remote_pass,
+    waiting_pass_stopped,
 )
 from rcp.runs.tasks.artifact_edit import (
     ARTIFACT_EDIT_FINALIZATION_ROLE,
@@ -166,7 +166,7 @@ class WaitingTask:
 def plan_remote_reconciliation(
     store: AppStore,
     *,
-    stopped: Callable[[str, str], bool | None] = AgentProcessControl.remote_stopped,
+    stopped: Callable[[str, str], bool | None] = waiting_pass_stopped,
     read_journal: Callable[[str, str], dict[str, object] | None] = read_remote_journal,
 ) -> list[WaitingTask]:
     """Ask the table, once, of every task waiting on a remote result.

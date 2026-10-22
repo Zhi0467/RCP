@@ -97,7 +97,6 @@ TURN_JOURNAL_MAX_BYTES = 64 * 1024 * 1024
 TURN_JOURNAL_MAX_EVENT_BYTES = 16 * 1024 * 1024
 TURN_JOURNAL_MAX_STDERR_BYTES = 1024 * 1024
 TURN_JOURNAL_MAX_PATCH_BYTES = 16 * 1024 * 1024
-TURN_JOURNAL_MAX_UPLINK_BYTES = 1024 * 1024
 TURN_JOURNAL_MAX_CONTROL_MESSAGES = 1024
 # Experiment watcher maintenance snapshots a set the provider chose the size of,
 # so the set is bounded as a whole and not only file by file. The count also

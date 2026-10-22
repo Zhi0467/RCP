@@ -1048,7 +1048,11 @@ The host supervisor is shipped as a staged source file; launches without that
 path are refused. It journals output and records prompt acceptance before any
 prompt byte reaches the provider. Host acceptance, not a controller receipt,
 proves work may have begun. The supervisor detects turn end but assigns no
-semantic verdict; the live decoder also reads recorded bytes.
+semantic verdict; the live decoder also reads recorded bytes. It forwards from its
+journal files at the link's pace, so a burst of output delays the reader and never
+detaches it; only a failed write does. Codex app-server resume asks for no past
+turns (`excludeTurns`): the reply arrives before the prompt is delivered, and its
+size must not grow with the session.
 
 Recorded decoding uses the owner's original capability and retained Work write
 scope. Codex app-server rechecks the actual journalled thread response against
@@ -1069,6 +1073,10 @@ with no recorded stop as waiting for their remote result. Reconciliation handles
 - Unreachable host or still-running provider: wait without a timeout.
 - Stopped pass with a complete journal: finalize the original task.
 - Stopped incomplete pass, or no accepted prompt: fail visibly for human Retry.
+  A pass whose pid file was never written started nothing, since the wrapper
+  writes it before the provider runs, and counts as stopped. Pause and project
+  deletion read it the same way. A lost link's `provider_exit` receipt keeps
+  ssh's stderr, the only record of why the link ended.
 - Already consumed/settled pass: do nothing.
 
 Normal shutdown detaches a supervised remote turn after prompt delivery: it ends

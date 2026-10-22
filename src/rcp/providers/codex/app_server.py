@@ -345,6 +345,10 @@ class _CodexAppServerTurn(ProviderTurn):
         }
         if self._request.session_id:
             params["threadId"] = self._request.session_id
+            # RCP never reads the thread's past turns. Without this, resume sends
+            # the latest turns in full, which grows with the session (megabytes
+            # for an orchestrator) and arrives before the prompt is delivered.
+            params["excludeTurns"] = True
         else:
             params["ephemeral"] = False
         if self._work_like:
@@ -438,8 +442,16 @@ class _CodexAppServerTurn(ProviderTurn):
             if self._turn_id is None and self._phase in {"thread", "turn"}:
                 self._usage_baseline = dict(usage["total"])
             elif self._phase == "running" and turn_id == self._turn_id:
-                self._usage = _usage_event(usage, turn_id, self._usage_baseline)
                 last = usage.get("last")
+                if self._request.session_id and not self._usage_baseline and isinstance(last, dict):
+                    # A resume that sent no snapshot: the turn's first update
+                    # covers exactly one model call, so the thread stood at
+                    # total minus that call when the turn began.
+                    self._usage_baseline = {
+                        key: max(0, _usage_int(value) - _usage_int(last.get(key)))
+                        for key, value in usage["total"].items()
+                    }
+                self._usage = _usage_event(usage, turn_id, self._usage_baseline)
                 # A compaction reports an update with no model call in it
                 # (`last.inputTokens` 0); that is not the context size.
                 context = _usage_int(last.get("inputTokens")) if isinstance(last, dict) else 0

@@ -1457,6 +1457,44 @@ def test_a_carried_session_binds_as_a_continuation_whatever_its_label(tmp_path: 
     assert store.agent_task("follow-up").write_scope_fingerprint is None
 
 
+def test_a_session_bound_with_the_artifact_store_deny_keeps_its_scope(tmp_path: Path) -> None:
+    """An artifact comment once added RCP's artifact store as a turn-only deny.
+
+    The deny no longer exists, so a chat whose session was bound with it must
+    still take its next turn.
+    """
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    stage = "/tmp/rcp-run.artifact-comment"
+    artifact_store = tmp_path / "artifacts"
+    bound = _stage_scope(
+        stage,
+        protected=[f"{stage}/inputs", str(artifact_store), str(artifact_store.resolve())],
+    )
+    current = _stage_scope(stage, protected=[f"{stage}/inputs"])
+    _create_scoped_task(store, "commented", stage_root=stage, kind="project_chat")
+    store.bind_agent_task_write_scope(
+        "commented",
+        project_id="project",
+        stage_host="",
+        stage_root=stage,
+        fingerprint=bound.fingerprint,
+        continuation_binding=False,
+    )
+    store.complete_agent_task("commented", applied_revision=None, result={})
+    _create_scoped_task(store, "next", stage_root=stage, kind="project_chat")
+
+    AgentTaskExecution(
+        operation_id="next",
+        store=store,
+        control=AgentProcessControl(),
+        stage_root=stage,
+        continuation="fresh",
+    ).bind_write_scope(current, resumes_native_session=True)
+
+    assert store.agent_task("next").write_scope_fingerprint == current.fingerprint
+
+
 def test_a_sessionless_fresh_launch_still_rebinds_a_finished_stage(tmp_path: Path) -> None:
     """The failure this branch exists for: a chat stage is named from its chat
     id and never cleared, so a run that carries no session must be able to

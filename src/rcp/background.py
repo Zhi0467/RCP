@@ -322,6 +322,35 @@ class AgentTaskExecution:
                     if path != legacy_inputs and path not in scope.granted_protected_paths
                 ],
             ).fingerprint
+        compatible_related = set(self.compatible_related_write_scope_fingerprints)
+        if not self.stage_host:
+            # A local turn that carried an artifact comment or reference once
+            # also denied RCP's artifact store, which RCP's own-storage rule
+            # already keeps out of reach. A session bound with that redundant
+            # deny keeps its scope.
+            artifact_store = self.store.path.parent / "artifacts"
+            compatible_related.add(
+                ProjectWriteScope.create(
+                    project_id=scope.project_id,
+                    execution_machine=scope.execution_machine,
+                    execution_host=scope.execution_host,
+                    capability=scope.capability,
+                    stage_root=scope.stage_root,
+                    workspace_root=scope.workspace_root,
+                    repositories=scope.repositories,
+                    git_metadata_roots=scope.git_metadata_roots,
+                    protected_write_paths=[
+                        *(
+                            path
+                            for path in scope.protected_write_paths
+                            if path not in scope.granted_protected_paths
+                        ),
+                        str(artifact_store),
+                        str(artifact_store.resolve()),
+                    ],
+                    episode_worktree=scope.episode_worktree,
+                ).fingerprint
+            )
         self.store.bind_agent_task_write_scope(
             self.operation_id,
             project_id=scope.project_id,
@@ -336,7 +365,7 @@ class AgentTaskExecution:
             continuation_binding=self.reuses_native_checkpoint or resumes_native_session,
             scope_repositories=[item.alias for item in scope.repositories],
             compatible_previous_fingerprint=compatible_previous_fingerprint,
-            compatible_related_fingerprints=self.compatible_related_write_scope_fingerprints,
+            compatible_related_fingerprints=frozenset(compatible_related),
         )
         self.write_scope_fingerprint = scope.fingerprint
 
@@ -1186,14 +1215,14 @@ class BackgroundAgentTasks:
         if not host or not root or not passes:
             raise ValueError("This task has no outstanding remote provider pass to stop.")
         pid_file = passes[-1]
-        stopped, identity = AgentProcessControl.remote_process_state(host, pid_file)
+        # A waiting pass's launch is over: no pidfile means it started nothing,
+        # which Pause can settle like any stopped pass.
+        stopped, identity = AgentProcessControl.remote_process_state(
+            host, pid_file, absent_is_stopped=True
+        )
         if stopped is None:
             raise ValueError(
                 "The execution host is unreachable, so RCP left the remote turn running."
-            )
-        if stopped is True:
-            raise ValueError(
-                "The remote provider already stopped; RCP will reconcile its recorded result."
             )
         if stopped is False:
             if identity is None:
@@ -1310,7 +1339,10 @@ class BackgroundAgentTasks:
         ):
             if operation_id != record.operation_id:
                 continue
-            stopped, identity = AgentProcessControl.remote_process_state(host, pid_file)
+            # A waiting pass's launch is over: no pidfile means it started nothing.
+            stopped, identity = AgentProcessControl.remote_process_state(
+                host, pid_file, absent_is_stopped=True
+            )
             if stopped is False and identity is not None:
                 stopped = AgentProcessControl.stop_remote_process(
                     host, pid_file, expected_identity=identity

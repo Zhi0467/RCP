@@ -10,6 +10,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -45,6 +46,7 @@ def _supervise(
     experiment_watch_files: int = 64,
     experiment_watch_bytes: int = 100000,
     close_input_after_initial: bool = True,
+    reader_delay: float = 0,
 ) -> tuple[subprocess.CompletedProcess, Path]:
     stage = tmp_path / "stage"
     stage.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -68,15 +70,13 @@ def _supervise(
         "--provider-version",
         "0.153.4",
         "--max-journal-bytes",
-        "1000000",
+        "10000000",
         "--max-event-bytes",
         "100000",
         "--max-stderr-bytes",
         "100000",
         "--max-patch-bytes",
         "100000",
-        "--max-uplink-bytes",
-        "1000000",
         "--max-control-messages",
         "500",
         "--max-experiment-watch-files",
@@ -93,9 +93,28 @@ def _supervise(
     if close_input_after_initial:
         argv.append("--close-input-after-initial")
     argv += ["--", sys.executable, "-c", provider]
-    completed = subprocess.run(
-        argv, input=stdin, capture_output=True, text=True, start_new_session=True, timeout=60
-    )
+    if reader_delay:
+        # A link slower than the provider: nothing is read until the turn is over.
+        process = subprocess.Popen(
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        assert process.stdin is not None
+        process.stdin.write(stdin)
+        process.stdin.close()
+        time.sleep(reader_delay)
+        assert process.stdout is not None and process.stderr is not None
+        stdout = process.stdout.read()
+        stderr = process.stderr.read()
+        completed = subprocess.CompletedProcess(argv, process.wait(timeout=60), stdout, stderr)
+    else:
+        completed = subprocess.run(
+            argv, input=stdin, capture_output=True, text=True, start_new_session=True, timeout=60
+        )
     return completed, Path(str(pid_file) + ".turn")
 
 
@@ -214,6 +233,24 @@ def test_the_journal_keeps_the_turn_when_nobody_is_listening(tmp_path) -> None:
     )
 
     assert "kept" in (journal / "events.jsonl").read_text(encoding="utf-8")
+    assert completed.returncode == 0
+
+
+def test_a_burst_larger_than_the_link_drains_reaches_the_reader_whole(tmp_path) -> None:
+    """How much a provider prints at once must not decide whether its link survives."""
+
+    burst = [
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "x" * 60000}}
+        for _ in range(50)
+    ]
+    completed, journal = _supervise(
+        tmp_path,
+        json.dumps({"emit": [*burst, {"type": "turn.completed"}], "exit": 0}) + "\n",
+        reader_delay=1,
+    )
+
+    assert _journal(journal)["uplink_detached"] is False
+    assert completed.stdout == (journal / "events.jsonl").read_text(encoding="utf-8")
     assert completed.returncode == 0
 
 

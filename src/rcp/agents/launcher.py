@@ -55,7 +55,6 @@ from rcp.limits import (
     TURN_JOURNAL_MAX_EXPERIMENT_WATCH_FILES,
     TURN_JOURNAL_MAX_PATCH_BYTES,
     TURN_JOURNAL_MAX_STDERR_BYTES,
-    TURN_JOURNAL_MAX_UPLINK_BYTES,
 )
 from rcp.providers import (
     AgentCapability,
@@ -269,8 +268,6 @@ def _supervised_remote_turn_command(
         str(TURN_JOURNAL_MAX_STDERR_BYTES),
         "--max-patch-bytes",
         str(TURN_JOURNAL_MAX_PATCH_BYTES),
-        "--max-uplink-bytes",
-        str(TURN_JOURNAL_MAX_UPLINK_BYTES),
         "--max-control-messages",
         str(TURN_JOURNAL_MAX_CONTROL_MESSAGES),
         "--max-experiment-watch-files",
@@ -1840,7 +1837,12 @@ class AgentLauncher:
                             if host and remote_pid_file
                             else {}
                         ),
-                        **({"delivery_lost": True} if remote_result_pending else {}),
+                        # ssh's own reason for a lost link is the only record of it.
+                        **(
+                            {"delivery_lost": True, "stderr": stderr[-2000:]}
+                            if remote_result_pending
+                            else {}
+                        ),
                         **({"stopped_at_result": True} if stopped_at_result else {}),
                         **({"degradation": degradation} if degradation else {}),
                     },
@@ -1851,7 +1853,7 @@ class AgentLauncher:
             if remote_result_pending:
                 yield AgentEvent(
                     event="remote_result_pending",
-                    text="The connection ended after the remote host accepted this turn.",
+                    text="The connection to the remote host ended during this turn.",
                 )
             elif paused:
                 yield AgentEvent(event="paused", text="Provider process paused.")
@@ -2081,9 +2083,10 @@ class AgentLauncher:
             if cwd is not None:
                 provider = f"cd {shlex.quote(str(cwd))} && {provider}"
             # The start line anchors the startup hold to the provider itself,
-            # not to the local SSH client that spawned this shell.
+            # not to the local SSH client that spawned this shell. Nothing
+            # starts without its pid file, so a missing one means never started.
             child = (
-                f"echo $$ > {shlex.quote(pid_file)}; "
+                f"echo $$ > {shlex.quote(pid_file)} || exit 1; "
                 f"echo {shlex.quote(REMOTE_PROVIDER_START_LINE)}; {provider}"
             )
             # Interactive bash can make setsid a process-group leader, forcing

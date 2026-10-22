@@ -483,6 +483,33 @@ def _accounting_turn(tmp_path: Path, *, resumed: bool):
     return turn
 
 
+def test_app_server_resume_never_asks_for_past_turns(tmp_path: Path) -> None:
+    """A resume reply that carries past turns grows with the session; RCP reads none of it."""
+
+    turn = CodexAppServerRuntime().turn(
+        ProviderTurnRequest(
+            prompt="Continue",
+            binary="codex",
+            cwd=tmp_path,
+            model=None,
+            reasoning=None,
+            session_id="long-thread",
+            read_dirs=[],
+            write_dirs=[],
+            write_scope=None,
+            capability="paper_readonly",
+            provider_version="0.153.4",
+        )
+    )
+    turn.receive_line(json.dumps({"id": 1, "result": {}}))
+    step = turn.receive_line(json.dumps({"id": 2, "result": {"config": {}}}))
+
+    (request,) = [json.loads(item) for item in step.outgoing]
+    assert request["method"] == "thread/resume"
+    assert request["params"]["threadId"] == "long-thread"
+    assert request["params"]["excludeTurns"] is True
+
+
 def _usage_notification(total, *, thread_id="accounting-thread", turn_id="active-turn"):
     return json.dumps(
         {
@@ -563,6 +590,40 @@ def test_app_server_resume_failure_does_not_bill_previous_turn(tmp_path: Path):
     result = turn.receive_line(json.dumps({"id": 4, "error": {"message": "start failed"}}))
     assert result.complete
     assert all(event.usage is None for event in result.events)
+
+
+def test_a_resume_without_a_usage_snapshot_bills_only_the_new_turn(tmp_path: Path):
+    turn = _accounting_turn(tmp_path, resumed=True)
+    turn.receive_line(json.dumps({"id": 4, "result": {"turn": {"id": "active-turn"}}}))
+    calls = [{"inputTokens": 200, "outputTokens": 20}, {"inputTokens": 100, "outputTokens": 10}]
+    total = {"inputTokens": 600, "outputTokens": 60}
+    for call in calls:
+        total = {key: total[key] + call[key] for key in total}
+        turn.receive_line(
+            json.dumps(
+                {
+                    "method": "thread/tokenUsage/updated",
+                    "params": {
+                        "threadId": "accounting-thread",
+                        "turnId": "active-turn",
+                        "tokenUsage": {"total": total, "last": call},
+                    },
+                }
+            )
+        )
+    ending = turn.receive_line(
+        json.dumps(
+            {
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "accounting-thread",
+                    "turn": {"id": "active-turn", "status": "completed"},
+                },
+            }
+        )
+    )
+    (usage,) = [event.usage for event in ending.events if event.usage is not None]
+    assert (usage.processed_input_tokens, usage.generated_tokens) == (300, 30)
 
 
 def test_native_subagent_events_cannot_answer_or_finish_parent(tmp_path: Path):

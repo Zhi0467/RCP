@@ -1192,7 +1192,7 @@ button.relation-map-node:hover {
   align-items: start;
   display: grid;
   gap: 12px;
-  grid-template-columns: 34px 1fr;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
 }
 .run-detail-hero h3 {
   font-family: var(--editorial);

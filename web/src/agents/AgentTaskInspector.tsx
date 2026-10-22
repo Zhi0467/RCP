@@ -129,25 +129,6 @@ export function AgentTaskInspector({
                     task.action_error ? { border: "1px solid var(--danger, #c23b3b)" } : undefined
                   }
                 >
-                  {task.action_error && (
-                    <button
-                      className="icon-button"
-                      title={task.action_error}
-                      aria-label={`Retry action: ${task.action_error}`}
-                      disabled={actionBusy || mutatingActionsDisabled}
-                      onClick={
-                        task.action_error_action === "stop"
-                          ? onStop
-                          : task.action_error_action === "pause"
-                            ? onPause
-                            : task.action_error_action === "resume"
-                              ? onResume
-                              : onRetry
-                      }
-                    >
-                      <RotateCcw size={16} />
-                    </button>
-                  )}
                   <div className={`run-detail-icon ${task.status}`}>
                     {task.settled ? (
                       <Check size={20} />
@@ -174,6 +155,25 @@ export function AgentTaskInspector({
                       </p>
                     )}
                   </div>
+                  {task.action_error && (
+                    <button
+                      className="icon-button"
+                      title={task.action_error}
+                      aria-label={`Retry action: ${task.action_error}`}
+                      disabled={actionBusy || mutatingActionsDisabled}
+                      onClick={
+                        task.action_error_action === "stop"
+                          ? onStop
+                          : task.action_error_action === "pause"
+                            ? onPause
+                            : task.action_error_action === "resume"
+                              ? onResume
+                              : onRetry
+                      }
+                    >
+                      <RotateCcw size={16} />
+                    </button>
+                  )}
                 </section>
 
                 <section>

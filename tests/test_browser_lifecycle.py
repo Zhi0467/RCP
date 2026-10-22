@@ -334,7 +334,7 @@ async def test_detached_remote_browser_lease_finishes_only_on_settlement(
     )
     if settlement == "pause":
         monkeypatch.setattr(
-            "rcp.background.AgentProcessControl.remote_process_state", lambda *_: (False, {})
+            "rcp.background.AgentProcessControl.remote_process_state", lambda *_, **__: (False, {})
         )
         monkeypatch.setattr(
             "rcp.background.AgentProcessControl.stop_remote_process", lambda *a, **kw: True

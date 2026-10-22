@@ -97,11 +97,22 @@ def read_remote_journal(host: str, pid_file: str) -> dict[str, object] | None:
     return None if value.get("missing") is True else value
 
 
+def waiting_pass_stopped(host: str, pid_file: str) -> bool | None:
+    """Whether a waiting pass's process is gone, or None if the host cannot say.
+
+    A pass only waits once its launch has ended, so a standing stage with no
+    pidfile is the host saying the pass started nothing; reading that as
+    unreachable would wait for it forever.
+    """
+
+    return AgentProcessControl.remote_stopped(host, pid_file, absent_is_stopped=True)
+
+
 def reconcile_remote_pass(
     store: AppStore,
     record: AgentTaskRecord,
     *,
-    stopped: Callable[[str, str], bool | None] = AgentProcessControl.remote_stopped,
+    stopped: Callable[[str, str], bool | None] = waiting_pass_stopped,
     read_journal: Callable[[str, str], dict[str, object] | None] = read_remote_journal,
 ) -> Reconciliation:
     """Decide what this task's outstanding remote pass is owed."""

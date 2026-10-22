@@ -77,9 +77,8 @@ class WorkStageLayout:
 
 @dataclass(frozen=True)
 class StagedArtifactAccess:
-    """Artifact inputs an owner staged: paths the turn must not write, and its pointer."""
+    """The artifact pointer an owner staged for this turn."""
 
-    protected_write_paths: list[str]
     pointer: dict[str, object] | None
 
 
@@ -133,7 +132,7 @@ async def stage_work_turn(
         context = service.assemble_chat(request)
         if (
             execution is not None
-            and request.artifact_edit is None
+            and not (request.artifact_edit and request.artifact_edit.origin_bound)
             and not is_consolidation(execution)
         ):
             context.group_context = build_group_context(
@@ -269,9 +268,6 @@ async def stage_work_turn(
             data_dir=data_dir,
             execution=execution,
             capability="work_auto",
-            additional_protected_write_paths=(
-                artifacts.protected_write_paths if artifacts is not None else None
-            ),
         )
         if not read_dirs_before_write_scope:
             read_dirs = read_dirs_now()

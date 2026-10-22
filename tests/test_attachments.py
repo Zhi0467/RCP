@@ -539,8 +539,6 @@ async def test_chat_stages_attachment_as_exact_read_dir_and_persists_metadata(
         async def stream(self, _provider, prompt, **kwargs):
             self.prompt = prompt
             self.read_dirs = [Path(item) for item in kwargs["read_dirs"]]
-            if mode == "work":
-                assert str(data_dir / "artifacts") in kwargs["write_scope"].protected_write_paths
             yield AgentEvent(event="answer", text="Used the temporary context.")
             yield AgentEvent(event="done")
 

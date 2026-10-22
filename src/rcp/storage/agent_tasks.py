@@ -5190,6 +5190,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     aliases = sorted({str(item) for item in scope if isinstance(item, str)})
         held = _joined_repositories(aliases) or "a different set of repositories"
         asked = _joined_repositories(offered)
+        if sorted(set(offered)) == aliases:
+            # Same repositories, so the difference is a path, machine or worktree.
+            held = "a different write scope"
         subject = f"This turn offers {asked}, and its" if asked else "This turn's"
         if continuation:
             return (

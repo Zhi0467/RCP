@@ -453,3 +453,41 @@ def test_member_removal_settles_a_detached_mailbox_before_pausing(tmp_path):
     assert paused.status == "paused"
     assert statuses == ["pausing"]
     assert "first" not in manager._detached_mailboxes
+
+
+def test_a_waiting_pass_that_never_started_fails_and_can_be_paused(tmp_path, monkeypatch):
+    """A launch that died before its wrapper wrote a pidfile ran nothing.
+
+    Reading the missing pidfile as an unreachable host left such a turn waiting
+    forever, and Pause refused it for the same reason.
+    """
+
+    import shlex
+    import sys
+
+    from rcp.agents import launcher
+    from rcp.background import BackgroundAgentTasks
+
+    def local(_host, remote_command):
+        return [sys.executable, *shlex.split(remote_command)[1:]]
+
+    # The host's own probe and journal reader, run on this machine.
+    monkeypatch.setattr(launcher, "ssh_arguments", local)
+    monkeypatch.setattr("rcp.runs.remote_reconciliation.ssh_arguments", local)
+    store = _store(tmp_path)
+    for operation_id in ("first", "second"):
+        # A standing stage whose launch never wrote its pidfile.
+        stage = tmp_path / operation_id
+        stage.mkdir(mode=0o700)
+        store.mark_agent_task_running(operation_id)
+        store.begin_remote_provider_pass(
+            operation_id, "remote", str(stage), str(stage / "never.pid"), supervised=True
+        )
+        store.checkpoint_agent_task(operation_id, stage_host="remote", stage_root=str(stage))
+        store.update_agent_task_message(operation_id, "Detached", phase="awaiting_remote_result")
+
+    (waiting,) = [item for item in _plan(store) if item.record.operation_id == "first"]
+    assert waiting.reconciliation.action == "fail"
+
+    manager = BackgroundAgentTasks(store, None)
+    assert manager.pause("second").status == "paused"

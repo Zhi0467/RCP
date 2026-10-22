@@ -6,7 +6,9 @@ formatter, and `tests/test_remote_turn_supervisor.py` see it.
 
 Stdin stays the live control channel and is never persisted. Stdout is drained
 and journalled whether or not the uplink is still there, under explicit storage
-and memory ceilings.
+ceilings. The uplink forwards from those files at whatever pace the link takes,
+so a burst of output delays the reader rather than cutting it off; only a write
+that fails detaches it.
 
 Nothing here judges the turn. The journal is evidence; `outcome.json` records
 mechanical facts about the pass -- what exited, what was fenced, what was
@@ -126,12 +128,14 @@ def run(args):
     fence = turn_fence(args.runtime_id)
     inputs = Lines(args.max_event_bytes, fence.input)
     outputs = Lines(args.max_event_bytes, fence.output)
-    pending = {1: bytearray(), 2: bytearray()}
-    upstream_open = {1: True, 2: True}
+    # Bytes of each channel's file already written upstream, and the
+    # supervisor's own failure line, which follows stderr.txt.
+    sent = {1: 0, 2: 0}
+    tail = bytearray()
+    uplink_sources = {}
     input_pending = bytearray()
     accepted = False
     detached = False
-    terminal_uplinked = False
     stdin_open = True
     terminal_at = None
     signalled_at = None
@@ -164,6 +168,33 @@ def run(args):
         )
         accepted = True
 
+    def unsent(channel):
+        kept = journal_bytes if channel == 1 else stderr_bytes
+        return sent[channel] < kept or (channel == 2 and bool(tail))
+
+    def forward(channel):
+        nonlocal detached
+        kept = journal_bytes if channel == 1 else stderr_bytes
+        from_file = sent[channel] < kept
+        chunk = (
+            os.pread(uplink_sources[channel], min(65536, kept - sent[channel]), sent[channel])
+            if from_file
+            else bytes(tail)
+        )
+        try:
+            written = os.write(channel, chunk)
+        except BlockingIOError:
+            return
+        except OSError:
+            # The link is gone. The journal keeps everything, so nothing is
+            # lost by not forwarding the rest.
+            detached = True
+            return
+        if from_file:
+            sent[channel] += written
+        else:
+            del tail[:written]
+
     def stop_requested(_signal, _frame):
         nonlocal external_stop
         external_stop = True
@@ -181,6 +212,8 @@ def run(args):
         (directory / "events.jsonl").open("xb") as events,
         (directory / "stderr.txt").open("xb") as errors,
     ):
+        uplink_sources[1] = os.open(directory / "events.jsonl", os.O_RDONLY)
+        uplink_sources[2] = os.open(directory / "stderr.txt", os.O_RDONLY)
         while child_streams or child.poll() is None:
             now = time.monotonic()
             if fence.terminal and terminal_at is None:
@@ -203,7 +236,7 @@ def run(args):
             read_fds = list(child_streams)
             if stdin_open and not detached and len(input_pending) < args.max_event_bytes:
                 read_fds.append(0)
-            write_fds = [fd for fd, data in pending.items() if data and upstream_open[fd]]
+            write_fds = [channel for channel in (1, 2) if not detached and unsent(channel)]
             if input_pending and not child.stdin.closed:
                 write_fds.append(child.stdin.fileno())
             readable, writable, _ = select.select(read_fds, write_fds, [], args.poll_seconds)
@@ -234,9 +267,6 @@ def run(args):
                     del child_streams[descriptor]
                     if channel == 1:
                         outputs.flush()
-                        # A completion only surfaces here once this channel's
-                        # bytes were forwarded, so it travelled with them.
-                        terminal_uplinked = terminal_uplinked or (fence.terminal and not detached)
                     continue
                 if channel == 1:
                     if fence.terminal:
@@ -263,47 +293,26 @@ def run(args):
                     terminal_at = time.monotonic()
                     input_pending.clear()
                     child.stdin.close()
-                if not detached:
-                    if sum(map(len, pending.values())) + len(data) > args.max_uplink_bytes:
-                        detached = True
-                        terminal_uplinked = terminal_uplinked and not pending[1]
-                        pending[1].clear()
-                        pending[2].clear()
-                    else:
-                        pending[channel].extend(data)
-                        # The completion travels at the tail of this chunk: the
-                        # output reader stops feeding at the terminal event, and
-                        # channel 1 is drained without forwarding after it.
-                        terminal_uplinked = terminal_uplinked or (channel == 1 and fence.terminal)
             for descriptor in writable:
-                if descriptor in pending:
-                    buffer = pending[descriptor]
-                elif child.stdin.closed:
+                if descriptor in (1, 2):
+                    if not detached:
+                        forward(descriptor)
                     continue
-                else:
-                    # Once this batch contains the prompt, say so on the host
-                    # before any of it moves. Earlier protocol setup is not a
-                    # delivered turn and must not block a safe runtime fallback.
-                    if fence.prompt_started:
-                        accept()
-                    buffer = input_pending
+                if child.stdin.closed:
+                    continue
+                # Once this batch contains the prompt, say so on the host
+                # before any of it moves. Earlier protocol setup is not a
+                # delivered turn and must not block a safe runtime fallback.
+                if fence.prompt_started:
+                    accept()
                 try:
-                    written = os.write(descriptor, buffer)
-                    del buffer[:written]
+                    written = os.write(descriptor, input_pending)
+                    del input_pending[:written]
                 except BlockingIOError:
                     pass
-                except (BrokenPipeError, OSError):
-                    if descriptor in pending:
-                        detached = True
-                        upstream_open[descriptor] = False
-                        # A failure on either channel drops both buffers, so the
-                        # completion can be lost to a write error on the other.
-                        terminal_uplinked = terminal_uplinked and not pending[1]
-                        pending[1].clear()
-                        pending[2].clear()
-                    else:
-                        input_pending.clear()
-                        child.stdin.close()
+                except OSError:
+                    input_pending.clear()
+                    child.stdin.close()
             if (
                 (args.close_input_after_initial or not fence.prompt_started)
                 and not stdin_open
@@ -381,21 +390,17 @@ def run(args):
         # `outcome.json`, which nothing reads while the link is up. Stderr is the
         # channel a human already sees, and this rides out on it with the
         # provider's own, under the same grace period.
-        pending[2].extend(error.encode("utf-8", "replace") + b"\n")
+        tail.extend(error.encode("utf-8", "replace") + b"\n")
     flush_deadline = time.monotonic() + args.stop_grace_seconds
-    while any(pending.values()) and not detached and time.monotonic() < flush_deadline:
+    while not detached and (unsent(1) or unsent(2)) and time.monotonic() < flush_deadline:
         ready = select.select(
-            [], [fd for fd, data in pending.items() if data], [], args.poll_seconds
+            [], [channel for channel in (1, 2) if unsent(channel)], [], args.poll_seconds
         )[1]
-        for descriptor in ready:
-            try:
-                written = os.write(descriptor, pending[descriptor])
-                del pending[descriptor][:written]
-            except BlockingIOError:
-                pass
-            except OSError:
-                detached = True
-    detached |= any(pending.values())
+        for channel in ready:
+            forward(channel)
+    detached |= unsent(1) or unsent(2)
+    for descriptor in uplink_sources.values():
+        os.close(descriptor)
     _atomic_write(
         directory / "outcome.json",
         json.dumps(
@@ -435,11 +440,11 @@ def run(args):
     if fence.terminal:
         # Zero says the reader already has the whole turn, not that the turn went
         # well -- whoever read those events decides that, as they always have. A
-        # controller can stop draining while the link stays up, backing the uplink
-        # past its ceiling; the turn still ended and the journal still holds it,
-        # but RCP never saw the end. 255 is what RCP already reads as a link that
-        # ended a turn rather than work that did.
-        return 0 if terminal_uplinked and not pending[1] else 255
+        # controller can stop draining while the link stays up, so the end may
+        # never have left the host within the grace period; the journal still
+        # holds it, but RCP never saw the end. 255 is what RCP already reads as a
+        # link that ended a turn rather than work that did.
+        return 0 if not detached else 255
     # The provider ended without reaching its own terminal event, so its exit
     # status is the only account of the pass and it travels unaltered. The
     # supervisor's own fence never ran here, so nothing of ours is in it.
@@ -474,7 +479,6 @@ def main(argv=None):
         "max-event-bytes",
         "max-stderr-bytes",
         "max-patch-bytes",
-        "max-uplink-bytes",
         "max-control-messages",
         "max-experiment-watch-files",
         "max-experiment-watch-bytes",
