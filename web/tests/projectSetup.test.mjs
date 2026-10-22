@@ -8,16 +8,21 @@ import { createServer } from "vite";
 import {
   assertSupportedProjectCreationIntent,
   buildTeamProvisioningRequest,
+  defaultRepositoryName,
   formatCommandArgv,
+  githubRepositoryName,
   invalidProjectProvisioningHash,
   parseProjectSetupRoute,
   projectMoveSetupHash,
   projectProvisioningHash,
   projectProvisioningRequestId,
+  repositoryFolderName,
   repositoryPickerPresentation,
   routeProvedBy,
   selectedProjectCreationIntent,
   stateRepositoryAfterRemoval,
+  stateRepositoryAfterRename,
+  withDefaultRepositoryName,
 } from "../src/projects/projectSetupModel.ts";
 import { appStylesheet, withResolvedTypeScale } from "./appStylesheet.mjs";
 
@@ -74,6 +79,36 @@ test("repository removal preserves another selection and handles an empty remain
   assert.equal(stateRepositoryAfterRemoval([repositories[0]], 1, "research"), "");
 });
 
+test("a repository's default name comes from its folder or GitHub repository", () => {
+  assert.equal(repositoryFolderName("/Users/me/Plasticity Code/"), "Plasticity Code");
+  assert.equal(githubRepositoryName("git@github.com:lab/RL_Agent.git"), "RL_Agent");
+  assert.equal(githubRepositoryName("https://github.com/lab/state"), "state");
+  assert.equal(githubRepositoryName("https://github.com/lab"), "");
+  assert.equal(defaultRepositoryName(["Plasticity Code"], []), "plasticity-code");
+  assert.equal(defaultRepositoryName(["2024_runs"], []), "runs");
+  assert.equal(defaultRepositoryName(["", "Continual RL"], []), "continual-rl");
+  assert.equal(defaultRepositoryName(["", ""], []), "research");
+  assert.equal(defaultRepositoryName(["state"], ["state", "state-2"]), "state-3");
+  const long = defaultRepositoryName(["x".repeat(80)], ["x".repeat(48)]);
+  assert.match(long, /^[a-z][a-z0-9-]{0,47}$/);
+  assert.notEqual(long, "x".repeat(48));
+});
+
+test("only an untyped draft name follows its source, and the canonical choice follows it", () => {
+  const drafts = [
+    { id: 1, alias: "research", nameEdited: false },
+    { id: 2, alias: "code", nameEdited: true },
+  ];
+  const renamed = withDefaultRepositoryName(drafts, 1, ["Code"]);
+  assert.deepEqual(
+    renamed.map((draft) => draft.alias),
+    ["code-2", "code"],
+  );
+  assert.deepEqual(withDefaultRepositoryName(drafts, 2, ["other"]), drafts);
+  assert.equal(stateRepositoryAfterRename(drafts, renamed, "research"), "code-2");
+  assert.equal(stateRepositoryAfterRename(drafts, renamed, "code"), "code");
+});
+
 test("only desktop local repositories offer the native folder picker", () => {
   assert.deepEqual(repositoryPickerPresentation("local", true), {
     showPicker: true,
@@ -116,6 +151,29 @@ test("SSH repositories retain manual paths and offer the bounded remote browser"
   );
 
   assert.match(html, /value="\/home\/alice\/paper"/);
+});
+
+test("a lone repository has no name field; a second repository shows one", () => {
+  const editor = (only) =>
+    renderMarkup(
+      React.createElement(RepositoryEditor, {
+        repository: {
+          id: 9,
+          alias: "plasticity",
+          nameEdited: false,
+          location: "local",
+          path: "/Users/example/plasticity",
+          host: "",
+          default_read: true,
+        },
+        canonical: true,
+        only,
+        onCanonical() {},
+        onChange() {},
+      }),
+    );
+  assert.doesNotMatch(editor(true), /<input[^>]*value="plasticity"/);
+  assert.match(editor(false), /<input[^>]*value="plasticity"/);
 });
 
 test("the folder picker does not introduce sub-10px primary or status text", async () => {

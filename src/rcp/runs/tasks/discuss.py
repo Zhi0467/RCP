@@ -657,7 +657,9 @@ async def stream_discuss_run(
                 )
                 required_session_id = question.origin.native_session_id
             context = service.assemble_chat(request)
-            if execution is not None and request.artifact_edit is None:
+            if execution is not None and not (
+                request.artifact_edit and request.artifact_edit.origin_bound
+            ):
                 context.group_context = build_group_context(
                     service, execution.store, execution_machine.alias
                 )

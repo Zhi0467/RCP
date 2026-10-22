@@ -33,6 +33,11 @@ if TYPE_CHECKING:
     from rcp.storage import AppStore
 
 _EDIT_RETENTION_STATUSES = (*sorted(ACTIVE_AGENT_TASK_STATUSES), "paused", "interrupted")
+# The artifact a turn comments on: its context, or the edit of an older answer turn.
+_COMMENTED_ARTIFACT_SQL = (
+    "COALESCE(json_extract({row}.request_json, '$.artifact_context.artifact_id'), "
+    "json_extract({row}.request_json, '$.artifact_edit.artifact_id'))"
+)
 
 _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()
@@ -374,7 +379,7 @@ class ArtifactStoreMixin(StoreMixinBase):
             row = connection.execute(
                 "SELECT operation_id FROM graph_runs WHERE project_id = ? "
                 f"AND status IN ({','.join('?' for _ in statuses)}) "
-                "AND json_extract(request_json, '$.artifact_edit.artifact_id') = ? "
+                f"AND {_COMMENTED_ARTIFACT_SQL.format(row='graph_runs')} = ? "
                 "ORDER BY created_at DESC, operation_id DESC LIMIT 1",
                 (project_id, *statuses, artifact_id),
             ).fetchone()
@@ -385,7 +390,7 @@ class ArtifactStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             row = connection.execute(
                 "SELECT status, error, status_message FROM graph_runs WHERE project_id = ? "
-                "AND json_extract(request_json, '$.artifact_edit.artifact_id') = ? "
+                f"AND {_COMMENTED_ARTIFACT_SQL.format(row='graph_runs')} = ? "
                 "ORDER BY created_at DESC, operation_id DESC LIMIT 1",
                 (project_id, artifact_id),
             ).fetchone()
@@ -496,15 +501,14 @@ class ArtifactStoreMixin(StoreMixinBase):
                 # continuation edits the current version, so once one exists the
                 # interrupted attempt no longer needs the base retained.
                 pending = connection.execute(
-                    "SELECT json_extract(g.request_json, '$.artifact_edit.base_version') "
+                    "SELECT COALESCE(json_extract(g.request_json, '$.artifact_edit.base_version'), "
+                    "json_extract(g.request_json, '$.artifact_context.base_version')) "
                     "FROM graph_runs g "
-                    "WHERE json_extract(g.request_json, '$.artifact_edit.artifact_id') = ? "
+                    f"WHERE {_COMMENTED_ARTIFACT_SQL.format(row='g')} = ? "
                     f"AND g.status IN ({','.join('?' for _ in statuses)}) "
-                    "AND g.operation_id = json_extract(g.request_json, '$.artifact_edit.operation_id') "
+                    "AND g.parent_operation_id IS NULL "
                     "AND NOT EXISTS (SELECT 1 FROM graph_runs later "
-                    "WHERE later.operation_id != g.operation_id "
-                    "AND json_extract(later.request_json, '$.artifact_edit.operation_id') = "
-                    "g.operation_id)",
+                    "WHERE later.parent_operation_id = g.operation_id)",
                     (artifact_id, *statuses),
                 ).fetchall()
             pinned = {row[0] for row in pending}

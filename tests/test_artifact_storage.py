@@ -36,13 +36,16 @@ def _edit(store, *, status="queued", base=None, kind="artifact_edit", artifact_i
             project_id="project",
             kind=kind,
             status=status,
+            # A chat comment is a plain turn's context; only an origin edit has its binding.
             request={
                 "artifact_edit": {
                     "artifact_id": artifact_id,
                     "base_version": base,
                     "operation_id": "edit",
                 }
-            },
+            }
+            if kind == "artifact_edit"
+            else {"artifact_context": {"artifact_id": artifact_id, "base_version": base}},
             created_at=store.now(),
             updated_at=store.now(),
             status_message="",
@@ -372,7 +375,7 @@ def test_a_retried_interrupted_edit_releases_its_base(store, monkeypatch):
     _edit(store, status="interrupted", base=base.version_id)
     # Its retry edits the current version, so the interrupted attempt pins nothing.
     retry = store.agent_task("edit").model_copy(
-        update={"operation_id": "retry", "status": "succeeded"}
+        update={"operation_id": "retry", "status": "succeeded", "parent_operation_id": "edit"}
     )
     store.create_agent_task(retry)
     _publish(store, "next", base=base.version_id, data=b"next-one")

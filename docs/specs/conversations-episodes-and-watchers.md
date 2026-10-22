@@ -271,10 +271,10 @@ follow-up eligible and shows no false refusal for the answer.
 
 Settlement and startup admit at most one unreceived-answer follow-up, atomically
 claimed with task insertion. It keeps the asking turn's mode, native session,
-provider, host, stage, target and write binding. Both live launch and recorded
+provider, host, stage and target. Both live launch and recorded
 settlement verify the complete origin. Provider switches and clean handoffs
 cannot receive it; occupied/paused bindings defer, unusable bindings stay visible.
-Discuss retains no Patch/write fingerprint; Work retains its original one.
+Discuss has no Patch/write scope; Work runs with the scope its launch builds.
 
 Answers project once through StateWorkspace using question id and revision.
 Chat follow-up ids derive from that pair; Experiment answers name only a claimed

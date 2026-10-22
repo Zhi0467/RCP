@@ -284,10 +284,10 @@ function updateSend() {
   if (askFix) askFix.disabled = blocked;
   const writing = Boolean(current && message.value.trim());
   queue.disabled = !writing;
-  editNow.disabled = blocked || !writing;
+  editNow.disabled = blocked || !viewerState?.can_edit_now || !writing;
   send.disabled = blocked || comments.length === 0;
   editNow.textContent = fresh ? "Edit now in a new session" : "Edit now";
-  send.textContent = fresh ? "Send in a new session" : "Send to original chat";
+  send.textContent = fresh && !viewerState?.send_to_chat ? "Send in a new session" : "Send to original chat";
 }
 async function refreshState() {
   if (stateLoading || stopped || permanentStateError || document.hidden) return;

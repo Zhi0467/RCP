@@ -734,16 +734,7 @@ async def _stage_work_turn(
             remote_stage=layout.remote_stage,
             edit_path=edit_path,
         )
-        has_references = any(item.reference is not None for item in request.attachments)
-        local_references = has_references and layout.remote_stage is None
-        if local_references:
-            # Scope canonicalization requires even a not-yet-used storage root to exist.
-            (data_dir / "artifacts").mkdir(parents=True, exist_ok=True)
         return StagedArtifactAccess(
-            protected_write_paths=[
-                *(artifact_context.protected_write_paths if artifact_context is not None else ()),
-                *([str(data_dir / "artifacts")] if local_references else []),
-            ],
             pointer=artifact_context.pointer if artifact_context is not None else None,
         )
 
@@ -2775,7 +2766,10 @@ async def _stream_work_graph_repair(
         execution_host = execution_machine.host
         provider_binary = execution_machine.provider_paths.get(profile.provider)
         context = service.assemble_chat(request)
-        if request.artifact_edit is None and not is_consolidation(execution):
+        # A chat comment is an ordinary turn; only the viewer's edit runs without it.
+        if not (
+            request.artifact_edit and request.artifact_edit.origin_bound
+        ) and not is_consolidation(execution):
             context.group_context = build_group_context(
                 service, execution.store, execution_machine.alias
             )

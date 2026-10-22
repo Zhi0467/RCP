@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import http.cookies
+import inspect
 import json
 import os
 import pwd
@@ -282,13 +283,18 @@ def seed_question_followup(data_dir: Path, fixture: dict) -> dict:
     store.checkpoint_agent_task(
         operation_id, native_session_id="upgrade-session", stage_host="", stage_root=stage
     )
+    # Seeding runs under each old release and under this checkout; releases
+    # before 0.4.28 compared turn scopes and take this argument.
+    old_binding = (
+        "continuation_binding" in inspect.signature(store.bind_agent_task_write_scope).parameters
+    )
     store.bind_agent_task_write_scope(
         operation_id,
         project_id=task.project_id,
         stage_host="",
         stage_root=stage,
         fingerprint=scope.fingerprint,
-        continuation_binding=False,
+        **({"continuation_binding": False} if old_binding else {}),
     )
     store.complete_agent_task(operation_id, applied_revision=None, result={})
     question = store.create_or_get_question(

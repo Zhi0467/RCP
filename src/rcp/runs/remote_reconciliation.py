@@ -20,6 +20,8 @@ finalized on that same operation, under the authority it already had.
 from __future__ import annotations
 
 import json
+import os
+import selectors
 import shlex
 import subprocess
 from collections.abc import Callable
@@ -28,7 +30,7 @@ from typing import TYPE_CHECKING, Literal
 
 from rcp.agents.launcher import AgentProcessControl
 from rcp.limits import (
-    REMOTE_PROVIDER_STOP_TIMEOUT_SECONDS,
+    REMOTE_JOURNAL_IDLE_TIMEOUT_SECONDS,
     TURN_JOURNAL_MAX_BYTES,
 )
 from rcp.runs.recorded_turn import RecordedProviderTurn, recorded_provider_turn
@@ -75,21 +77,17 @@ def read_remote_journal(host: str, pid_file: str) -> dict[str, object] | None:
         str(TURN_JOURNAL_MAX_BYTES),
     ]
     try:
-        result = subprocess.run(
-            ssh_arguments(host, shlex.join(command)),
-            capture_output=True,
-            text=True,
-            timeout=REMOTE_PROVIDER_STOP_TIMEOUT_SECONDS,
-            check=False,
+        returncode, stdout, stderr = _run_while_moving(
+            ssh_arguments(host, shlex.join(command)), REMOTE_JOURNAL_IDLE_TIMEOUT_SECONDS
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise JournalUnavailable(str(exc)) from exc
-    if result.returncode == _JOURNAL_REJECTED:
-        raise JournalCorrupt(result.stderr.strip() or "The provider journal is unreadable.")
-    if result.returncode != 0:
-        raise JournalUnavailable(result.stderr.strip() or "The provider journal could not be read.")
+    if returncode == _JOURNAL_REJECTED:
+        raise JournalCorrupt(stderr.strip() or "The provider journal is unreadable.")
+    if returncode != 0:
+        raise JournalUnavailable(stderr.strip() or "The provider journal could not be read.")
     try:
-        value = json.loads(result.stdout)
+        value = json.loads(stdout)
     except ValueError as exc:
         raise JournalUnavailable("The provider journal was not readable JSON.") from exc
     if not isinstance(value, dict):
@@ -97,11 +95,59 @@ def read_remote_journal(host: str, pid_file: str) -> dict[str, object] | None:
     return None if value.get("missing") is True else value
 
 
+def _run_while_moving(argv: list[str], idle_seconds: float) -> tuple[int, bytes, str]:
+    """Run one transfer to its end for as long as its output keeps arriving.
+
+    A fixed deadline fails every journal larger than the link carries in that
+    time, and a failed read only waits to be tried again the same way.
+    """
+
+    with subprocess.Popen(
+        argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    ) as process:
+        assert process.stdout is not None and process.stderr is not None
+        output = {process.stdout.fileno(): bytearray(), process.stderr.fileno(): bytearray()}
+        try:
+            with selectors.DefaultSelector() as selector:
+                for descriptor in output:
+                    selector.register(descriptor, selectors.EVENT_READ)
+                while selector.get_map():
+                    ready = selector.select(idle_seconds)
+                    if not ready:
+                        raise subprocess.TimeoutExpired(argv, idle_seconds)
+                    for key, _ in ready:
+                        chunk = os.read(key.fd, 65536)
+                        if chunk:
+                            output[key.fd].extend(chunk)
+                        else:
+                            selector.unregister(key.fd)
+            returncode = process.wait(timeout=idle_seconds)
+        except BaseException:
+            process.kill()
+            raise
+        return (
+            returncode,
+            bytes(output[process.stdout.fileno()]),
+            output[process.stderr.fileno()].decode("utf-8", "replace"),
+        )
+
+
+def waiting_pass_stopped(host: str, pid_file: str) -> bool | None:
+    """Whether a waiting pass's process is gone, or None if the host cannot say.
+
+    A pass only waits once its launch has ended, so a standing stage with no
+    pidfile is the host saying the pass started nothing; reading that as
+    unreachable would wait for it forever.
+    """
+
+    return AgentProcessControl.remote_stopped(host, pid_file, absent_is_stopped=True)
+
+
 def reconcile_remote_pass(
     store: AppStore,
     record: AgentTaskRecord,
     *,
-    stopped: Callable[[str, str], bool | None] = AgentProcessControl.remote_stopped,
+    stopped: Callable[[str, str], bool | None] = waiting_pass_stopped,
     read_journal: Callable[[str, str], dict[str, object] | None] = read_remote_journal,
 ) -> Reconciliation:
     """Decide what this task's outstanding remote pass is owed."""

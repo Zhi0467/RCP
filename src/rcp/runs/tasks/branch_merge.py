@@ -219,7 +219,7 @@ async def stream_branch_merge_task(
             if not admitted:
                 return
         # A merge orchestrator never carries a provider session into its turn.
-        execution.bind_write_scope(write_scope, resumes_native_session=False)
+        execution.bind_write_scope(write_scope)
         # Every merge turn hides the same selected secrets as other orchestration.
         hidden_read_scope = await _prepare_hidden_read_scope(
             service,

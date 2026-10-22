@@ -856,9 +856,8 @@ class ArtifactEditAdmission(BaseModel):
     reply_episode_id: str | None = None
     episode_id: str | None = None
     fresh_session: bool = False
-    # A viewer comment resumes the origin's session; a composer comment is an
-    # ordinary turn of its chat. Records from before the composer route are all
-    # origin-bound.
+    # An edit resumes the origin's session. False only on older composer comments,
+    # which ran as ordinary chat turns; a comment now carries no edit at all.
     origin_bound: bool = True
 
 

@@ -56,7 +56,12 @@ test("repository requests preserve intent and open the bound provisioning review
       await page.goto(kind === "add_repository" ? url : `${url}?connect`);
       if (kind === "add_repository") {
         await page.locator(".repository-requests > button").click();
-        await page.locator('[name="alias"]').fill("analysis");
+        const name = page.locator('[name="alias"]');
+        assert.equal(await name.inputValue(), "plasticity");
+        await page.locator('[name="source"]').fill("https://github.com/lab/state.git");
+        assert.equal(await name.inputValue(), "state-2");
+        await page.locator('[name="source"]').fill("");
+        await name.fill("analysis");
         assert.equal(await page.locator('[name="truth"]').isChecked(), true);
         await page.locator('[name="truth"]').uncheck();
       } else {
@@ -92,7 +97,14 @@ test("repository requests preserve intent and open the bound provisioning review
     await page.locator(".setup-field input").first().fill("Server project");
     await page.locator(".setup-actions button.primary").click();
     await page.locator(".team-repository-stack").waitFor();
-    assert.equal(await page.locator(".team-repository-fields input").nth(1).inputValue(), "");
+    const names = page.locator(".team-repository-stack .repository-editor header strong");
+    const fields = page.locator(".team-repository-fields input");
+    assert.equal(await fields.count(), 1);
+    assert.equal(await fields.first().inputValue(), "");
+    assert.equal(await names.first().textContent(), "server-project");
+    await page.locator(".team-repository-stack + .add-repository").click();
+    assert.deepEqual(await names.allTextContents(), ["server-project", "server-project-2"]);
+    assert.equal(await fields.count(), 4);
     await page.locator(".setup-actions button.primary").click();
     assert.equal(await page.locator('[role="alert"]').count(), 0);
     assert.deepEqual(errors, []);

@@ -334,7 +334,9 @@ async def test_supervised_transport_loss_leaves_the_remote_pass_for_reconciliati
         lambda *args, **kwargs: [
             sys.executable,
             "-c",
-            "import sys; sys.stdin.read(); sys.exit(255)",
+            "import sys; sys.stdin.read(); "
+            "sys.stderr.write('mux_client_request_session: read from master failed\\n'); "
+            "sys.exit(255)",
         ],
     )
     pid_file = str(tmp_path / "agent.pid")
@@ -358,6 +360,7 @@ async def test_supervised_transport_loss_leaves_the_remote_pass_for_reconciliati
     assert [event.event for event in events][-2:] == ["provider_exit", "remote_result_pending"]
     evidence = json.loads(events[-2].text)
     assert evidence["delivery_lost"] is True
+    assert "mux_client_request_session" in evidence["stderr"]
     assert evidence["remote_process_stopped"] is None
     assert not any(event.event in {"error", "remote_process_stop"} for event in events)
     assert (Path(pid_file + ".turn") / "accepted.json").is_file()

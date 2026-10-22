@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -29,7 +29,6 @@ from rcp.agents.group_context import group_prompt_value
 from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION, chat_master_contract_key
 from rcp.agents.write_scope import (
     ProjectWriteScope,
-    WritableRepositoryRoot,
     resolve_project_write_scope,
 )
 from rcp.artifact_comments import (
@@ -60,6 +59,7 @@ from rcp.limits import (
 from rcp.providers import AgentCapability
 from rcp.rcp_home import rcp_temp_dir
 from rcp.runs.patch_validator import stage_patch_validation_mailbox
+from rcp.runs.session_artifacts import commented_artifact
 from rcp.runs.session_master import (
     SESSION_MASTER_KEY_ROLE,
     SESSION_MASTER_ROLE,
@@ -148,7 +148,6 @@ class _ChatPatchInputs:
 @dataclass(frozen=True)
 class StagedArtifactContext:
     pointer: dict[str, object]
-    protected_write_paths: tuple[str, ...] = ()
 
 
 def _stage_chat_patch_inputs(
@@ -978,18 +977,14 @@ def stage_artifact_context(
     origin = execution.store.agent_task(context.operation_id)
     if current is None or origin is None or origin.project_id != current.project_id:
         raise ValueError("The artifact context origin is unavailable.")
-    edit = request.artifact_edit
-    if (edit is None) != (edit_path is None):
+    comment = commented_artifact(execution, request)
+    if comment is None or edit_path is None:
         raise ValueError("An artifact comment requires its tracked file.")
-    artifact = execution.store.artifact(edit.artifact_id if edit else context.artifact_id)
+    artifact = execution.store.artifact(comment.artifact_id)
     if artifact is None or artifact.project_id != current.project_id:
         raise ValueError("The artifact context is unavailable.")
-    # A retry edits the current version, so a pruned base never refuses it.
     data = execution.store.read_artifact_bytes(
-        artifact.artifact_id,
-        edit.base_version
-        if edit and execution.operation_id == edit.operation_id
-        else artifact.current_version,
+        artifact.artifact_id, comment.base_version or artifact.current_version
     )
     descriptor = AgentArtifactDescriptor(
         artifact_id=artifact.artifact_id,
@@ -1001,10 +996,6 @@ def stage_artifact_context(
         raise ValueError("The artifact type does not support comments.")
     if classify_artifact_bytes(descriptor.name, data) != descriptor.media_type:
         raise ValueError("The current artifact no longer matches its declared type.")
-    protected_write_paths = (
-        (str(execution.store.path.parent / "artifacts"),) if not current.stage_host else ()
-    )
-
     # Each box the current viewer drew on a raster image is cropped from the exact bytes
     # staged beside it, so a recovery restages the same crops.
     boxes = {
@@ -1070,7 +1061,6 @@ def stage_artifact_context(
         "source_operation_id": origin.operation_id,
         "source_artifact_id": descriptor.artifact_id,
         "edit_now": context.edit_now,
-        "editable": edit is not None,
         "selections": [
             {
                 **item.model_dump(mode="json"),
@@ -1086,12 +1076,8 @@ def stage_artifact_context(
             for index, item in enumerate(context.selections, 1)
         ],
     }
-    if edit_path is not None:
-        pointer["path"] = edit_path
-    return StagedArtifactContext(
-        pointer=pointer,
-        protected_write_paths=protected_write_paths,
-    )
+    pointer["path"] = edit_path
+    return StagedArtifactContext(pointer=pointer)
 
 
 _SELECTION_CROPS = "selections"
@@ -1433,7 +1419,6 @@ def _project_write_scope(
     episode_request: RunRequest | AutoResearchRunRequest | None = None,
     stage_only: bool = False,
     local_stage: Path | None = None,
-    additional_protected_write_paths: list[str] | None = None,
 ) -> ProjectWriteScope:
     """Resolve one durable provider-neutral scope from project-owned authority."""
 
@@ -1511,63 +1496,12 @@ def _project_write_scope(
         machine_writable_paths=_machine_writable_paths(
             service, execution_machine, execution.store if execution is not None else None
         ),
-        additional_protected_write_paths=[
-            *(
-                [str(local_stage / "inputs")]
-                if remote_stage is None and local_stage is not None and workspace == local_stage
-                else []
-            ),
-            *(additional_protected_write_paths or []),
-        ],
+        additional_protected_write_paths=(
+            [str(local_stage / "inputs")]
+            if remote_stage is None and local_stage is not None and workspace == local_stage
+            else []
+        ),
     )
-    if isinstance(binding, ConversationWorktreeBinding) and execution is not None:
-        # Human-authored local integration is the only related-turn root change.
-        # Derive both admissible fingerprints from this exact validated binding;
-        # a retry of an already-bound operation still requires its original scope.
-        repositories = [item for item in scope.repositories if item.path != binding.shared_path]
-        protected = [
-            path
-            for path in scope.protected_write_paths
-            if path != str(PurePosixPath(binding.shared_path) / ".research")
-        ]
-        # Canonical state is protected in both variants, including when stored in
-        # the shared checkout. Keep every ordinary deny in the derived variants.
-        state_repository = service.manifest.repository_map[service.manifest.state.repository]
-        if state_repository.alias == binding.repository_alias:
-            protected.append(str(PurePosixPath(binding.shared_path) / ".research"))
-        common = scope.model_dump(
-            exclude={
-                "schema_generation",
-                "fingerprint",
-                "repositories",
-                "protected_write_paths",
-            }
-        )
-        variants = []
-        for shared in (False, True):
-            roots = list(repositories)
-            denied = list(protected)
-            if shared:
-                roots.append(
-                    WritableRepositoryRoot(
-                        alias=binding.repository_alias,
-                        machine=binding.machine,
-                        path=binding.shared_path,
-                    )
-                )
-                denied.append(str(PurePosixPath(binding.shared_path) / ".research"))
-            variants.append(
-                ProjectWriteScope.create(
-                    **common,
-                    repositories=roots,
-                    protected_write_paths=denied,
-                ).fingerprint
-            )
-        execution.compatible_related_write_scope_fingerprints = frozenset(variants)
-    if execution is not None:
-        question = execution.store.question_for_followup(execution.operation_id)
-        if question is not None and scope.fingerprint != question.origin.write_scope_fingerprint:
-            raise ValueError("question_origin_write_scope_changed")
     return scope
 
 

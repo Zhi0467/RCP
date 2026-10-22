@@ -161,6 +161,15 @@ the turn; without `turn.failed`, the last retry error explains a nonzero exit.
 The live decoder, remote fence and replay share this rule. A journal without a
 terminal event cannot finalize or claim deliverable snapshots.
 
+A provider event over the per-event ceiling is omitted with a notice when the
+provider closes its input after the prompt, since that provider still exits on
+its own. One that keeps its input open (app-server, Claude stream-json) fails
+the pass instead, in both the live decoder and the remote fence: neither can
+read what it skipped, and a lost setup reply or turn end would leave it waiting
+forever. App-server setup before prompt delivery has a deadline
+(`PROVIDER_SETUP_TIMEOUT_SECONDS`); missing it is a pre-prompt failure, so the
+exec fallback still applies.
+
 Containment differs by transport: exec disables user config and execpolicy
 rules with `--ignore-user-config` and `--ignore-rules`. App-server supports
 neither flag; RCP overrides capability-bearing keys but cannot disable `.rules`.
@@ -263,8 +272,7 @@ checkpoints/restores, `/etc/rcp`, `/run/rcp`, account `~/.rcp`, remote
 `rcp_owned_paths` and scope construction compare filesystem identity on the host.
 Save and picker refuse roots equal to or inside protected storage. Storage inside
 a grant remains read-only via `granted_protected_paths`, except the launch's own
-workspace/jobs. Grants stay outside the fingerprint so the next chat turn can
-use changed machine settings without losing resumability.
+workspace/jobs.
 
 systemd uses `ReadWritePaths`/`ReadOnlyPaths`; Codex permits a deeper write root
 inside a read parent. Claude denies override allows, so a protected parent of its
@@ -489,22 +497,15 @@ Provider logins, and the model picker, locally and on an SSH execution machine.
 Launch receipts record project, host, capability, canonical write roots,
 fingerprint, enforcement mode and fresh/resumed state. Their canonical-state
 boundary is `provider_enforced` only where every tool is bounded (Codex) and
-`file_tools_only` where the Work shell is not (Claude, OpenCode). Before any
-resumed launch, RCP recomputes and compares project, host, exact stage, graph
-target and root fingerprint. Missing/moved roots, cross-project bindings or incompatible
-run scope fail before launch; they require a fresh session.
+`file_tools_only` where the Work shell is not (Claude, OpenCode). A resumed
+launch checks that its stage still belongs to the same project and host, then
+records the scope it built; the provider receives exactly that scope.
 
-The session id actually passed to the provider decides whether this is a
-continuation, not admission's label. A sessionless launch establishes a new
-stage binding, but refuses an overlapping live turn with another scope. A
-continuation compares the current stage binding, not one superseded by a fresh
-launch. Refusals name both repository sets and direct run-scope changes to a
-new episode.
-
-Conversation-local merge and the following ordinary turn may transition between
-exactly recomputed worktree-only and worktree-plus-shared roots for the same
-binding. Resume/Retry of an already-bound operation still requires its original
-fingerprint. This exception cannot change project, host, stage or repository.
+**Why:** No turn's scope is compared with an earlier turn's. Enforcement happens
+at each launch, the human chooses the repositories, and containment here is
+cooperative rather than hostile-agent proof. The old comparison protected no one
+and refused ordinary follow-ups whenever an input changed, such as a path, a
+worktree, or a turn-only deny.
 
 The same resolver covers Work, orchestration, children, wakes and corrections.
 Runtime fallback preserves every binding and the native session. Recovery keeps
@@ -1048,7 +1049,14 @@ The host supervisor is shipped as a staged source file; launches without that
 path are refused. It journals output and records prompt acceptance before any
 prompt byte reaches the provider. Host acceptance, not a controller receipt,
 proves work may have begun. The supervisor detects turn end but assigns no
-semantic verdict; the live decoder also reads recorded bytes.
+semantic verdict; the live decoder also reads recorded bytes. It forwards from its
+journal files at the link's pace, so a burst of output delays the reader and never
+detaches it; only a failed write does. Its final drain after the provider exits,
+and recovery's journal read, give up only after a stretch with no bytes moving,
+never on a fixed deadline, so a slow live link still carries the whole turn.
+Codex app-server resume asks for no past turns (`excludeTurns`): the reply
+arrives before the prompt is delivered, and its size must not grow with the
+session.
 
 Recorded decoding uses the owner's original capability and retained Work write
 scope. Codex app-server rechecks the actual journalled thread response against
@@ -1069,6 +1077,10 @@ with no recorded stop as waiting for their remote result. Reconciliation handles
 - Unreachable host or still-running provider: wait without a timeout.
 - Stopped pass with a complete journal: finalize the original task.
 - Stopped incomplete pass, or no accepted prompt: fail visibly for human Retry.
+  A pass whose pid file was never written started nothing, since the wrapper
+  writes it before the provider runs, and counts as stopped. Pause and project
+  deletion read it the same way. A lost link's `provider_exit` receipt keeps
+  ssh's stderr, the only record of why the link ended.
 - Already consumed/settled pass: do nothing.
 
 Normal shutdown detaches a supervised remote turn after prompt delivery: it ends

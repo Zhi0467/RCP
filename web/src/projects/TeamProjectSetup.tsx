@@ -45,12 +45,16 @@ import {
 } from "./providers";
 import {
   buildTeamProvisioningRequest,
+  defaultRepositoryName,
   formatCommandArgv,
+  githubRepositoryName,
   invalidProjectProvisioningHash,
   projectProvisioningHash,
   projectProvisioningRequestId,
   routeProvedBy,
   routeGroupId,
+  stateRepositoryAfterRename,
+  withDefaultRepositoryName,
 } from "./projectSetupModel";
 import { OperatorActionPanel } from "./OperatorActionPanel";
 import type {
@@ -80,6 +84,8 @@ interface TeamMachineDraft {
 interface TeamRepositoryDraft {
   id: number;
   alias: string;
+  /** A typed name stays; otherwise the name follows the GitHub URL, else the project name. */
+  nameEdited: boolean;
   source: string;
   machine_alias: string;
   default_read: boolean;
@@ -133,6 +139,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
     {
       id: repositorySequence,
       alias: "research",
+      nameEdited: false,
       source: "",
       machine_alias: "server",
       default_read: true,
@@ -307,6 +314,30 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
     return repository?.machine_alias ?? machines[0]?.alias ?? "";
   }, [machines, repositories, stateRepository]);
 
+  const nameRepository = (
+    drafts: TeamRepositoryDraft[],
+    repository: TeamRepositoryDraft,
+    projectName: string,
+  ) =>
+    withDefaultRepositoryName(drafts, repository.id, [
+      githubRepositoryName(repository.source),
+      projectName,
+    ]);
+
+  const commitRepositories = (next: TeamRepositoryDraft[]) => {
+    setStateRepository((selected) => stateRepositoryAfterRename(repositories, next, selected));
+    setRepositories(next);
+    setError(null);
+  };
+
+  const updateRepository = (id: number, patch: Partial<TeamRepositoryDraft>) => {
+    const next = repositories.map((item) => (item.id === id ? { ...item, ...patch } : item));
+    const updated = next.find((item) => item.id === id);
+    commitRepositories(
+      patch.source !== undefined && updated ? nameRepository(next, updated, name) : next,
+    );
+  };
+
   const updateAgent = (profile: AgentExecutionProfile, patch: Partial<SetupAgentProfile>) => {
     setAgents((current) => ({ ...current, [profile]: { ...current[profile], ...patch } }));
     setError(null);
@@ -318,16 +349,16 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
     const machineAliases = machines.map((machine) => machine.alias.trim());
     const repositoryAliases = repositories.map((repository) => repository.alias.trim());
     if (machineAliases.some((alias) => !/^[a-z][a-z0-9-]{0,47}$/.test(alias))) {
-      return "Machine aliases must use lowercase letters, numbers, or hyphens.";
+      return "Machine names must use lowercase letters, numbers, or hyphens.";
     }
     if (new Set(machineAliases).size !== machineAliases.length) {
-      return "Each machine needs a unique alias.";
+      return "Each machine needs a unique name.";
     }
     if (repositoryAliases.some((alias) => !/^[a-z][a-z0-9-]{0,47}$/.test(alias))) {
-      return "Repository aliases must use lowercase letters, numbers, or hyphens.";
+      return "Repository names must use lowercase letters, numbers, or hyphens.";
     }
     if (new Set(repositoryAliases).size !== repositoryAliases.length) {
-      return "Each repository needs a unique alias.";
+      return "Each repository needs a unique name.";
     }
     if (machines.some((machine) => machine.location === "ssh" && !machine.host.trim())) {
       return "Every SSH machine needs an SSH host.";
@@ -383,7 +414,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
         central_root:
           machine.location === "ssh" && central_root.trim() ? central_root.trim() : null,
       })),
-      repositories: repositories.map(({ id: _id, ...repository }) => ({
+      repositories: repositories.map(({ id: _id, nameEdited: _nameEdited, ...repository }) => ({
         ...repository,
         alias: repository.alias.trim(),
         source: repository.source.trim() || null,
@@ -604,8 +635,14 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
                 autoFocus
                 value={name}
                 onChange={(event) => {
-                  setName(event.target.value);
-                  setError(null);
+                  const projectName = event.target.value;
+                  setName(projectName);
+                  commitRepositories(
+                    repositories.reduce(
+                      (drafts, repository) => nameRepository(drafts, repository, projectName),
+                      repositories,
+                    ),
+                  );
                 }}
                 placeholder="Continual RL Plasticity"
               />
@@ -614,14 +651,9 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
               <span>GitHub URL (optional)</span>
               <input
                 value={repositories[0].source}
-                onChange={(event) => {
-                  setRepositories((current) =>
-                    current.map((item, index) =>
-                      index === 0 ? { ...item, source: event.target.value } : item,
-                    ),
-                  );
-                  setError(null);
-                }}
+                onChange={(event) =>
+                  updateRepository(repositories[0].id, { source: event.target.value })
+                }
                 placeholder="https://github.com/lab/research.git"
               />
             </label>
@@ -726,20 +758,17 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
                   canonical={repository.alias === stateRepository}
                   only={repositories.length === 1}
                   onCanonical={() => setStateRepository(repository.alias)}
-                  onChange={(patch) => {
-                    if (patch.alias !== undefined && repository.alias === stateRepository)
-                      setStateRepository(patch.alias);
-                    setRepositories((current) =>
-                      current.map((item) =>
-                        item.id === repository.id ? { ...item, ...patch } : item,
-                      ),
-                    );
-                    setError(null);
-                  }}
+                  onChange={(patch) => updateRepository(repository.id, patch)}
                   onRemove={() => {
-                    const remaining = repositories.filter((item) => item.id !== repository.id);
+                    let remaining = repositories.filter((item) => item.id !== repository.id);
+                    // A lone repository shows no name field, so its name is derived again.
+                    if (remaining.length === 1) {
+                      const lone = { ...remaining[0], nameEdited: false };
+                      remaining = nameRepository([lone], lone, name);
+                    }
                     setRepositories(remaining);
-                    if (repository.alias === stateRepository)
+                    if (remaining.length === 1) setStateRepository(remaining[0].alias);
+                    else if (repository.alias === stateRepository)
                       setStateRepository(remaining[0]?.alias ?? "");
                   }}
                 />
@@ -754,7 +783,11 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
                   ...current,
                   {
                     id: repositorySequence,
-                    alias: `repository-${repositorySequence}`,
+                    alias: defaultRepositoryName(
+                      [name],
+                      current.map((item) => item.alias.trim()),
+                    ),
+                    nameEdited: false,
                     source: "",
                     machine_alias: machines[0]?.alias ?? "",
                     default_read: true,
@@ -1023,7 +1056,7 @@ function MachineEditor({
       </header>
       <div className="team-machine-fields">
         <label>
-          Alias
+          Name
           <input
             value={machine.alias}
             onChange={(event) => onChange({ alias: event.target.value })}
@@ -1126,14 +1159,16 @@ function TeamRepositoryEditor({
         )}
       </header>
       <div className="team-repository-fields">
-        <label>
-          Alias
-          <input
-            value={repository.alias}
-            onChange={(event) => onChange({ alias: event.target.value })}
-          />
-        </label>
-        <label>
+        {!only && (
+          <label>
+            Name
+            <input
+              value={repository.alias}
+              onChange={(event) => onChange({ alias: event.target.value, nameEdited: true })}
+            />
+          </label>
+        )}
+        <label className="wide">
           GitHub URL (optional)
           <input
             value={repository.source}

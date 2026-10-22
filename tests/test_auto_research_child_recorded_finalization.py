@@ -36,7 +36,7 @@ async def _retained_child_turn(tmp_path: Path, *, required_session_id: str | Non
     work_module._record_work_finalization_context(
         turn, staged, role=_ROLE, required_session_id=required_session_id
     )
-    execution.bind_write_scope(turn.write_scope, resumes_native_session=False)
+    execution.bind_write_scope(turn.write_scope)
     await work_module._prepare_work_prompt_context(turn, staged)
     await turn.validator_lifecycle.close()
     return service, request, execution

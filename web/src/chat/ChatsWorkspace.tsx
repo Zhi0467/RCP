@@ -180,6 +180,12 @@ function sinceLabel(timestamp: string | null | undefined, now: number): string {
   return new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+/** A task phase id as words: `awaiting_remote_result` reads "Awaiting remote result". */
+function phaseText(phase: string): string {
+  const words = (phase ?? "").replaceAll("_", " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 /** Everything after the provider, which renders as its own mark: model, effort,
  *  task type, then what the latest turn needs. */
 function agentMeta(status: ConversationAgentStatus, conversation: ChatConversation): string {
@@ -191,7 +197,7 @@ function agentMeta(status: ConversationAgentStatus, conversation: ChatConversati
     agentTypeLabel(conversation),
   ];
   if (status.state === "working") {
-    parts.push(latest.phase, `${Math.max(1, Math.round(latest.elapsed_seconds / 60))}m`);
+    parts.push(phaseText(latest.phase), `${Math.max(1, Math.round(latest.elapsed_seconds / 60))}m`);
   } else {
     if (status.state === "failed" && latest.can_retry) parts.push("Retry");
     if (status.state === "stopped") {
@@ -237,7 +243,7 @@ function agentCardState(status: ConversationAgentStatus, since: string): string 
   const latest = status.latest;
   if (!latest) return "Draft";
   if (status.state === "working")
-    return [latest.phase, `${Math.max(1, Math.round(latest.elapsed_seconds / 60))}m`]
+    return [phaseText(latest.phase), `${Math.max(1, Math.round(latest.elapsed_seconds / 60))}m`]
       .filter(Boolean)
       .join(" · ");
   if (status.state === "failed") return "Failed";

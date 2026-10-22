@@ -929,7 +929,7 @@ async def _delivered_from_record(
         service, resolved, root / "data", execution
     )
     work_module._record_work_finalization_context(primed, _staged)
-    execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
+    execution.bind_write_scope(primed.write_scope)
     await work_module._prepare_work_prompt_context(primed, _staged)
     await primed.validator_lifecycle.close()
     write_turn_outcome(primed.workspace)
@@ -1005,7 +1005,7 @@ async def test_recorded_finalization_never_reenters_launch_preparation(
         service, resolved, tmp_path / "data", execution
     )
     work_module._record_work_finalization_context(primed, _staged)
-    execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
+    execution.bind_write_scope(primed.write_scope)
     await work_module._prepare_work_prompt_context(primed, _staged)
     await primed.validator_lifecycle.close()
 
@@ -1046,7 +1046,7 @@ async def test_recorded_finalization_can_resume_without_applying_the_turn_twice(
         service, resolved, tmp_path / "data", execution
     )
     work_module._record_work_finalization_context(primed, _staged)
-    execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
+    execution.bind_write_scope(primed.write_scope)
     await work_module._prepare_work_prompt_context(primed, _staged)
     await primed.validator_lifecycle.close()
     launcher = ScriptedLauncher([{}], message="")
@@ -1105,7 +1105,7 @@ async def test_a_recorded_retry_keeps_the_baseline_it_launched_with(tmp_path) ->
     primed, _staged = await work_module._stage_work_turn(
         service, resolved, tmp_path / "data", execution
     )
-    execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
+    execution.bind_write_scope(primed.write_scope)
     await work_module._prepare_work_prompt_context(primed, _staged)
     await primed.validator_lifecycle.close()
     execution.store.record_agent_task_receipt(
@@ -1146,7 +1146,7 @@ async def test_work_correction_disconnect_waits_and_recovers_original_reply(
         service, resolved, tmp_path / "data", execution
     )
     work_module._record_work_finalization_context(primed, staged)
-    execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
+    execution.bind_write_scope(primed.write_scope)
     await work_module._prepare_work_prompt_context(primed, staged)
     composed = work_module._compose_fresh_prompt(primed, staged, retry_diagnostics_path=None)
     await primed.validator_lifecycle.close()
@@ -1326,7 +1326,7 @@ async def test_a_recorded_correction_that_failed_keeps_the_reply_it_already_gave
         service, resolved, tmp_path / "data", execution
     )
     work_module._record_work_finalization_context(primed, staged)
-    execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
+    execution.bind_write_scope(primed.write_scope)
     await work_module._prepare_work_prompt_context(primed, staged)
     await primed.validator_lifecycle.close()
     original_answer = "The research work is complete."
@@ -1442,7 +1442,7 @@ async def test_a_host_lost_during_watcher_maintenance_leaves_the_task_waiting(
         service, resolved, tmp_path / "data", execution
     )
     work_module._record_work_finalization_context(primed, staged)
-    execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
+    execution.bind_write_scope(primed.write_scope)
     await work_module._prepare_work_prompt_context(primed, staged)
     await primed.validator_lifecycle.close()
 
@@ -1483,7 +1483,7 @@ async def test_a_recorded_settlement_that_loses_canonical_state_retries(
         service, resolved, tmp_path / "data", execution
     )
     work_module._record_work_finalization_context(primed, staged)
-    execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
+    execution.bind_write_scope(primed.write_scope)
     await work_module._prepare_work_prompt_context(primed, staged)
     await primed.validator_lifecycle.close()
 
@@ -1538,7 +1538,7 @@ async def test_a_live_supervised_turn_whose_host_vanishes_fails_visibly(
         service, resolved, tmp_path / "data", execution
     )
     work_module._record_work_finalization_context(primed, staged)
-    execution.bind_write_scope(primed.write_scope, resumes_native_session=False)
+    execution.bind_write_scope(primed.write_scope)
     await work_module._prepare_work_prompt_context(primed, staged)
     composed = work_module._compose_fresh_prompt(primed, staged, retry_diagnostics_path=None)
     await primed.validator_lifecycle.close()

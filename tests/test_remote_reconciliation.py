@@ -280,6 +280,38 @@ def test_the_shipped_reader_separates_bad_evidence_from_an_unreachable_host(tmp_
     assert completed.returncode == 3
 
 
+@pytest.mark.parametrize("gap", [0.2, 3.0])
+def test_a_journal_read_lasts_as_long_as_its_bytes_keep_moving(monkeypatch, gap) -> None:
+    """Only a transfer that stopped moving is unavailable; a slow one is read whole."""
+
+    import sys
+    import time
+
+    from rcp.runs import remote_reconciliation
+    from rcp.runs.remote_reconciliation import read_remote_journal
+
+    writer = (
+        "import sys, time\n"
+        "sys.stdout.write('{\"outcome\": {}'); sys.stdout.flush()\n"
+        f"for _ in range(int(1.2 / {gap}) or 1):\n"
+        f"    time.sleep({gap}); sys.stdout.write(' '); sys.stdout.flush()\n"
+        "sys.stdout.write('}')\n"
+    )
+    monkeypatch.setattr(remote_reconciliation, "REMOTE_JOURNAL_IDLE_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(
+        remote_reconciliation, "ssh_arguments", lambda *_: [sys.executable, "-c", writer]
+    )
+    started = time.monotonic()
+
+    if gap < 1.0:
+        assert read_remote_journal("remote", "/stage/one.pid") == {"outcome": {}}
+        assert time.monotonic() - started > 1.0
+    else:
+        with pytest.raises(JournalUnavailable):
+            read_remote_journal("remote", "/stage/one.pid")
+        assert time.monotonic() - started < 2.5
+
+
 def test_recorded_settlement_drains_detached_mailbox_before_failing_task(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
@@ -453,3 +485,41 @@ def test_member_removal_settles_a_detached_mailbox_before_pausing(tmp_path):
     assert paused.status == "paused"
     assert statuses == ["pausing"]
     assert "first" not in manager._detached_mailboxes
+
+
+def test_a_waiting_pass_that_never_started_fails_and_can_be_paused(tmp_path, monkeypatch):
+    """A launch that died before its wrapper wrote a pidfile ran nothing.
+
+    Reading the missing pidfile as an unreachable host left such a turn waiting
+    forever, and Pause refused it for the same reason.
+    """
+
+    import shlex
+    import sys
+
+    from rcp.agents import launcher
+    from rcp.background import BackgroundAgentTasks
+
+    def local(_host, remote_command):
+        return [sys.executable, *shlex.split(remote_command)[1:]]
+
+    # The host's own probe and journal reader, run on this machine.
+    monkeypatch.setattr(launcher, "ssh_arguments", local)
+    monkeypatch.setattr("rcp.runs.remote_reconciliation.ssh_arguments", local)
+    store = _store(tmp_path)
+    for operation_id in ("first", "second"):
+        # A standing stage whose launch never wrote its pidfile.
+        stage = tmp_path / operation_id
+        stage.mkdir(mode=0o700)
+        store.mark_agent_task_running(operation_id)
+        store.begin_remote_provider_pass(
+            operation_id, "remote", str(stage), str(stage / "never.pid"), supervised=True
+        )
+        store.checkpoint_agent_task(operation_id, stage_host="remote", stage_root=str(stage))
+        store.update_agent_task_message(operation_id, "Detached", phase="awaiting_remote_result")
+
+    (waiting,) = [item for item in _plan(store) if item.record.operation_id == "first"]
+    assert waiting.reconciliation.action == "fail"
+
+    manager = BackgroundAgentTasks(store, None)
+    assert manager.pause("second").status == "paused"

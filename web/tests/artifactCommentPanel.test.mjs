@@ -48,6 +48,7 @@ function shell(stored = new Map()) {
   const messages = [];
   const saved = stored;
   let canComment = true;
+  let canEditNow = true;
   let editFailure = null;
   let status = 200;
   let sendStatus = 409;
@@ -103,7 +104,12 @@ function shell(stored = new Map()) {
         status: code,
         json: async () =>
           url === "/state"
-            ? { can_comment: canComment, fresh_session_required: false, edit_failure: editFailure }
+            ? {
+                can_comment: canComment,
+                can_edit_now: canComment && canEditNow,
+                fresh_session_required: false,
+                edit_failure: editFailure,
+              }
             : {
                 detail: { code: "fresh_session_required", message: "Start a fresh session" },
                 operation_id: "edit",
@@ -118,6 +124,9 @@ function shell(stored = new Map()) {
     saved,
     setCanComment: (value) => {
       canComment = value;
+    },
+    setCanEditNow: (value) => {
+      canEditNow = value;
     },
     setEditFailure: (value) => {
       editFailure = value;
@@ -298,4 +307,18 @@ test("the queue refuses a comment that the server's joined size would reject", a
   assert.equal(add("a".repeat(2047)), true);
   assert.equal(add("b".repeat(2047)), true);
   assert.equal(add("c"), false);
+});
+
+test("Send stays a chat turn while Edit now waits for the origin session", async () => {
+  const app = shell();
+  app.setCanEditNow(false);
+  await settle();
+  const { general, message, queue, editNow, send } = app.elements;
+  general.listeners.click();
+  message.value = "Relabel the axis";
+  message.listeners.input();
+  assert.equal(queue.disabled, false);
+  assert.equal(editNow.disabled, true);
+  app.addComment({ kind: "whole" });
+  assert.equal(send.disabled, false);
 });

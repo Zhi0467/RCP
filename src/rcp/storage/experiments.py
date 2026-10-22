@@ -85,8 +85,7 @@ class ExperimentStoreMixin(StoreMixinBase):
     def _experiment_question_binding_matches(
         record: AgentTaskRecord, origin: QuestionOrigin, original: AgentTaskRecord
     ) -> bool:
-        # Admission has no newly resolved write-scope fingerprint yet. As with
-        # answer wakes, prove the saved authority and its execution inputs.
+        # As with answer wakes, prove the saved authority and its execution inputs.
         return (
             record.project_id == origin.project_id
             and record.native_session_id == origin.native_session_id
@@ -94,7 +93,6 @@ class ExperimentStoreMixin(StoreMixinBase):
             and record.stage_root == origin.stage_root
             and (record.stage_host or "") == (origin.stage_host or "")
             and record.graph_target == origin.graph_target
-            and original.write_scope_fingerprint == origin.write_scope_fingerprint
             and original.dispatch_authority is not None
             and original.dispatch_authority.task_contract == origin.capability
             and original.request.get("mode") == "work"

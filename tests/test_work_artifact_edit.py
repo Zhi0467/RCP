@@ -11,7 +11,19 @@ from .test_artifact_edit_runtime import _setup
 
 
 @pytest.mark.asyncio
-async def test_work_comment_on_another_stage_edits_it_for_one_turn(manifest, tmp_path):
+async def test_work_comment_on_another_stage_edits_it_for_one_turn(manifest, tmp_path, monkeypatch):
+    from rcp.agents import group_context
+    from rcp.runs.tasks import work, work_staging
+
+    group_reads = []
+
+    def recorded(*args, **kwargs):
+        group_reads.append(args)
+        return group_context.build_group_context(*args, **kwargs)
+
+    # A chat comment is an ordinary turn and keeps the project group's reads.
+    monkeypatch.setattr(work, "build_group_context", recorded)
+    monkeypatch.setattr(work_staging, "build_group_context", recorded)
     app, request, previous, source, _ = _setup(manifest, tmp_path)
     append_fixture_patch(app.state.service, seed_patch())
     previous.store.fail_agent_task(previous.operation_id, "Replaced with composer Work")
@@ -20,8 +32,9 @@ async def test_work_comment_on_another_stage_edits_it_for_one_turn(manifest, tmp
             "mode": "work",
             "session_id": None,
             "run_truth_scope": ["repo-a"],
-            "artifact_edit": request.artifact_edit.model_copy(
-                update={"operation_id": "work-edit", "launch_kind": "discuss", "stage_root": None}
+            "artifact_edit": None,
+            "artifact_context": request.artifact_context.model_copy(
+                update={"base_version": request.artifact_edit.base_version}
             ),
         }
     )
@@ -38,6 +51,7 @@ async def test_work_comment_on_another_stage_edits_it_for_one_turn(manifest, tmp
     ]
     assert not any(event.event == "error" for event in events)
     assert execution.store.read_artifact_bytes(source.artifact_id) == b"<p>updated</p>"
+    assert group_reads
 
 
 async def _turn(app, launcher, request, operation_id, tmp_path):

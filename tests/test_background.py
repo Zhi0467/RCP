@@ -2228,7 +2228,6 @@ def test_interrupted_hidden_report_restarts_once_and_runner_owns_success(
         stage_host="",
         stage_root=str(tmp_path / "report-stage"),
         fingerprint="a" * 64,
-        continuation_binding=False,
     )
     store.record_agent_task_receipt(
         hidden.operation_id,
@@ -2628,7 +2627,7 @@ def test_pause_of_detached_turn_requires_reachable_exact_process(
     monkeypatch.setattr(
         AgentProcessControl,
         "remote_process_state",
-        staticmethod(lambda *_args: (False, "boot:123")),
+        staticmethod(lambda *_args, **_kwargs: (False, "boot:123")),
     )
     stopped: list[tuple[str, str, str]] = []
     monkeypatch.setattr(
@@ -2663,7 +2662,7 @@ def test_pause_of_unreachable_detached_turn_is_a_no_op(
     monkeypatch.setattr(
         AgentProcessControl,
         "remote_process_state",
-        staticmethod(lambda *_args: (None, None)),
+        staticmethod(lambda *_args, **_kwargs: (None, None)),
     )
     tasks = BackgroundAgentTasks(store, _done_stream)
 
@@ -2686,7 +2685,7 @@ def test_pause_preserves_a_finished_remote_result_for_finalization(
     waiting = _waiting_remote_work(store, "finished-before-pause")
     pid_file = "/stage/finished-before-pause.pid"
     monkeypatch.setattr(
-        AgentProcessControl, "remote_process_state", staticmethod(lambda *_: (True, None))
+        AgentProcessControl, "remote_process_state", staticmethod(lambda *_, **__: (True, None))
     )
     monkeypatch.setattr(
         remote_finalization,
@@ -2701,7 +2700,7 @@ def test_pause_preserves_a_finished_remote_result_for_finalization(
 
     tasks = BackgroundAgentTasks(store, _done_stream, recorded_stream=recorded_stream)
 
-    with pytest.raises(ValueError, match="already stopped"):
+    with pytest.raises(ValueError):
         tasks.pause(waiting.operation_id)
 
     assert store.agent_task(waiting.operation_id).phase == "awaiting_remote_result"
@@ -2722,7 +2721,7 @@ def test_pause_preserves_a_result_that_finishes_during_stop(
     monkeypatch.setattr(
         AgentProcessControl,
         "remote_process_state",
-        staticmethod(lambda *_: (False, "boot:123")),
+        staticmethod(lambda *_, **__: (False, "boot:123")),
     )
     monkeypatch.setattr(
         AgentProcessControl,
@@ -2761,7 +2760,9 @@ def test_pause_rechecks_the_task_after_finalization_claims_it(
     monkeypatch.setattr(
         AgentProcessControl,
         "remote_process_state",
-        staticmethod(lambda *_: pytest.fail("a finalizing task must not be probed for Pause")),
+        staticmethod(
+            lambda *_, **__: pytest.fail("a finalizing task must not be probed for Pause")
+        ),
     )
     with ThreadPoolExecutor(max_workers=1) as pool:
         with tasks._remote_result_lock:

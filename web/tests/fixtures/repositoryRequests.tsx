@@ -3,7 +3,12 @@ import { RepositoryRequests } from "../../src/projects/RepositoryRequests";
 import { TeamProjectSetup } from "../../src/projects/TeamProjectSetup";
 import "../../src/styles.css";
 
-const project = { id: "project", machines: [{ alias: "server" }] };
+const project = {
+  id: "project",
+  name: "Plasticity",
+  machines: [{ alias: "server" }],
+  repositories: [{ alias: "state" }],
+};
 const root = createRoot(document.getElementById("root")!);
 function render() {
   root.render(

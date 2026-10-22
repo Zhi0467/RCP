@@ -54,7 +54,7 @@ def _question_delivery_operations(
             or (
                 scope is not None or parent.write_scope_fingerprint is not None
                 if current.request.get("mode") == "discuss"
-                else not scope or scope != parent.write_scope_fingerprint
+                else not scope or not parent.write_scope_fingerprint
             )
             or not current.stage_root
             or current.stage_root != parent.stage_root

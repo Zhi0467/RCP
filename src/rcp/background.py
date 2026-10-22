@@ -9,7 +9,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, aclosing, suppress
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Protocol, cast, get_args
 
 from pydantic import BaseModel
@@ -257,7 +257,6 @@ class AgentTaskExecution:
     #: Set only by the ordinary Work owner from its validated stage file; provider
     #: event text can never supply it.
     turn_outcome: TurnOutcome | None = None
-    compatible_related_write_scope_fingerprints: frozenset[str] = frozenset()
     #: Set when a stage read or host probe during this run failed because the
     #: host could not be reached, rather than because a deliverable was bad or a
     #: setting refused. Only the read that failed knows which happened, and by
@@ -293,50 +292,23 @@ class AgentTaskExecution:
             tier="diagnostic",
         )
 
-    def bind_write_scope(self, scope: ProjectWriteScope, *, resumes_native_session: bool) -> None:
+    def bind_write_scope(self, scope: ProjectWriteScope) -> None:
+        """Record the scope this launch runs with.
+
+        Each launch builds its scope from current project authority and hands
+        exactly that to the provider, so a later turn of the same session may
+        run with a different one; nothing compares it with earlier turns.
+        """
         if self.stage_root is None:
             raise ValueError(
                 "agent task must checkpoint its exact stage before write-scope binding"
             )
-        legacy_inputs = str(PurePosixPath(scope.stage_root) / "inputs")
-        compatible_previous_fingerprint = None
-        if (
-            scope.workspace_root == scope.stage_root
-            and legacy_inputs in scope.protected_write_paths
-        ):
-            # A legacy local stage used its root as cwd and bound this otherwise-
-            # identical scope before inputs had an explicit deny.
-            compatible_previous_fingerprint = ProjectWriteScope.create(
-                project_id=scope.project_id,
-                execution_machine=scope.execution_machine,
-                execution_host=scope.execution_host,
-                capability=scope.capability,
-                stage_root=scope.stage_root,
-                workspace_root=scope.workspace_root,
-                repositories=scope.repositories,
-                git_metadata_roots=scope.git_metadata_roots,
-                # Grant-only protections are outside the fingerprint either way.
-                protected_write_paths=[
-                    path
-                    for path in scope.protected_write_paths
-                    if path != legacy_inputs and path not in scope.granted_protected_paths
-                ],
-            ).fingerprint
         self.store.bind_agent_task_write_scope(
             self.operation_id,
             project_id=scope.project_id,
             stage_host=self.stage_host or "",
             stage_root=scope.stage_root,
             fingerprint=scope.fingerprint,
-            # A continuation is a launch that carries an existing provider
-            # session into this turn, whichever label admission gave it: the
-            # session is what would gain authority it did not start with. A
-            # launch that brings no session establishes the stage binding
-            # instead, which is how a run scope legitimately changes.
-            continuation_binding=self.reuses_native_checkpoint or resumes_native_session,
-            scope_repositories=[item.alias for item in scope.repositories],
-            compatible_previous_fingerprint=compatible_previous_fingerprint,
-            compatible_related_fingerprints=self.compatible_related_write_scope_fingerprints,
         )
         self.write_scope_fingerprint = scope.fingerprint
 
@@ -1186,14 +1158,14 @@ class BackgroundAgentTasks:
         if not host or not root or not passes:
             raise ValueError("This task has no outstanding remote provider pass to stop.")
         pid_file = passes[-1]
-        stopped, identity = AgentProcessControl.remote_process_state(host, pid_file)
+        # A waiting pass's launch is over: no pidfile means it started nothing,
+        # which Pause can settle like any stopped pass.
+        stopped, identity = AgentProcessControl.remote_process_state(
+            host, pid_file, absent_is_stopped=True
+        )
         if stopped is None:
             raise ValueError(
                 "The execution host is unreachable, so RCP left the remote turn running."
-            )
-        if stopped is True:
-            raise ValueError(
-                "The remote provider already stopped; RCP will reconcile its recorded result."
             )
         if stopped is False:
             if identity is None:
@@ -1310,7 +1282,10 @@ class BackgroundAgentTasks:
         ):
             if operation_id != record.operation_id:
                 continue
-            stopped, identity = AgentProcessControl.remote_process_state(host, pid_file)
+            # A waiting pass's launch is over: no pidfile means it started nothing.
+            stopped, identity = AgentProcessControl.remote_process_state(
+                host, pid_file, absent_is_stopped=True
+            )
             if stopped is False and identity is not None:
                 stopped = AgentProcessControl.stop_remote_process(
                     host, pid_file, expected_identity=identity

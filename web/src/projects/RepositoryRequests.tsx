@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { createProjectRepositoryRequest, type ProjectRepositoryRequest } from "../core/api";
 import type { ProjectSnapshot } from "../core/types";
-import { projectProvisioningHash } from "./projectSetupModel";
+import {
+  defaultRepositoryName,
+  githubRepositoryName,
+  projectProvisioningHash,
+} from "./projectSetupModel";
 
 /** Add a repository, or connect the one the Repos list chose, through a setup request. */
 export function RepositoryRequests({
@@ -10,7 +14,7 @@ export function RepositoryRequests({
   connectAlias,
   onCloseConnect,
 }: {
-  project: Pick<ProjectSnapshot, "id" | "machines">;
+  project: Pick<ProjectSnapshot, "id" | "name" | "machines" | "repositories">;
   disabled: boolean;
   connectAlias: string | null;
   onCloseConnect: () => void;
@@ -23,6 +27,8 @@ export function RepositoryRequests({
         ? { kind: "add_repository", alias: "" }
         : null;
   const [alias, setAlias] = useState("");
+  // A typed name stays; otherwise the name follows the GitHub URL, else the project name.
+  const [nameEdited, setNameEdited] = useState(false);
   const [source, setSource] = useState("");
   const [machine, setMachine] = useState(project.machines[0]?.alias ?? "");
   const [truth, setTruth] = useState(true);
@@ -40,10 +46,17 @@ export function RepositoryRequests({
     setError(null);
   }, [connectAlias]);
 
+  const defaultName = (githubUrl: string) =>
+    defaultRepositoryName(
+      [githubRepositoryName(githubUrl), project.name],
+      project.repositories.map((repository) => repository.alias),
+    );
+
   function close() {
     setAdding(false);
     onCloseConnect();
     setAlias("");
+    setNameEdited(false);
     setSource("");
     setTruth(true);
     setError(null);
@@ -82,7 +95,10 @@ export function RepositoryRequests({
           type="button"
           className="button secondary"
           disabled={disabled}
-          onClick={() => setAdding(true)}
+          onClick={() => {
+            setAlias(defaultName(""));
+            setAdding(true);
+          }}
         >
           Add repository
         </button>
@@ -101,13 +117,16 @@ export function RepositoryRequests({
             </legend>
             {editing.kind === "add_repository" && (
               <label className="setup-field">
-                Alias
+                Name
                 <input
                   name="alias"
                   required
                   pattern="[a-z][a-z0-9\-]{0,47}"
                   value={alias}
-                  onChange={(event) => setAlias(event.target.value)}
+                  onChange={(event) => {
+                    setAlias(event.target.value);
+                    setNameEdited(true);
+                  }}
                 />
               </label>
             )}
@@ -117,7 +136,12 @@ export function RepositoryRequests({
                 name="source"
                 required={editing.kind === "connect_repository"}
                 value={source}
-                onChange={(event) => setSource(event.target.value)}
+                onChange={(event) => {
+                  setSource(event.target.value);
+                  if (editing.kind === "add_repository" && !nameEdited) {
+                    setAlias(defaultName(event.target.value));
+                  }
+                }}
                 placeholder="https://github.com/lab/research.git"
               />
             </label>

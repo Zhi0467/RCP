@@ -483,6 +483,33 @@ def _accounting_turn(tmp_path: Path, *, resumed: bool):
     return turn
 
 
+def test_app_server_resume_never_asks_for_past_turns(tmp_path: Path) -> None:
+    """A resume reply that carries past turns grows with the session; RCP reads none of it."""
+
+    turn = CodexAppServerRuntime().turn(
+        ProviderTurnRequest(
+            prompt="Continue",
+            binary="codex",
+            cwd=tmp_path,
+            model=None,
+            reasoning=None,
+            session_id="long-thread",
+            read_dirs=[],
+            write_dirs=[],
+            write_scope=None,
+            capability="paper_readonly",
+            provider_version="0.153.4",
+        )
+    )
+    turn.receive_line(json.dumps({"id": 1, "result": {}}))
+    step = turn.receive_line(json.dumps({"id": 2, "result": {"config": {}}}))
+
+    (request,) = [json.loads(item) for item in step.outgoing]
+    assert request["method"] == "thread/resume"
+    assert request["params"]["threadId"] == "long-thread"
+    assert request["params"]["excludeTurns"] is True
+
+
 def _usage_notification(total, *, thread_id="accounting-thread", turn_id="active-turn"):
     return json.dumps(
         {
@@ -563,6 +590,40 @@ def test_app_server_resume_failure_does_not_bill_previous_turn(tmp_path: Path):
     result = turn.receive_line(json.dumps({"id": 4, "error": {"message": "start failed"}}))
     assert result.complete
     assert all(event.usage is None for event in result.events)
+
+
+def test_a_resume_without_a_usage_snapshot_bills_only_the_new_turn(tmp_path: Path):
+    turn = _accounting_turn(tmp_path, resumed=True)
+    turn.receive_line(json.dumps({"id": 4, "result": {"turn": {"id": "active-turn"}}}))
+    calls = [{"inputTokens": 200, "outputTokens": 20}, {"inputTokens": 100, "outputTokens": 10}]
+    total = {"inputTokens": 600, "outputTokens": 60}
+    for call in calls:
+        total = {key: total[key] + call[key] for key in total}
+        turn.receive_line(
+            json.dumps(
+                {
+                    "method": "thread/tokenUsage/updated",
+                    "params": {
+                        "threadId": "accounting-thread",
+                        "turnId": "active-turn",
+                        "tokenUsage": {"total": total, "last": call},
+                    },
+                }
+            )
+        )
+    ending = turn.receive_line(
+        json.dumps(
+            {
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "accounting-thread",
+                    "turn": {"id": "active-turn", "status": "completed"},
+                },
+            }
+        )
+    )
+    (usage,) = [event.usage for event in ending.events if event.usage is not None]
+    assert (usage.processed_input_tokens, usage.generated_tokens) == (300, 30)
 
 
 def test_native_subagent_events_cannot_answer_or_finish_parent(tmp_path: Path):
@@ -728,3 +789,113 @@ def test_child_interactive_request_is_rejected_without_stopping_parent(tmp_path:
     )
     assert ending.complete
     assert ending.events[0].usage.processed_input_tokens == 300
+
+
+def _stalling_codex(tmp_path: Path, stall: str) -> tuple[Path, Path]:
+    """An app-server whose next protocol line never arrives in a readable form."""
+
+    executable = tmp_path / "stalling-codex"
+    attempts = tmp_path / "runtime-attempts.txt"
+    executable.write_text(
+        f"""#!{sys.executable}
+import json
+import sys
+from pathlib import Path
+
+stall = {stall!r}
+runtime = "app-server" if len(sys.argv) > 1 and sys.argv[1] == "app-server" else "exec"
+with Path({str(attempts)!r}).open("a", encoding="utf-8") as stream:
+    stream.write(runtime + "\\n")
+
+def send(value):
+    print(json.dumps(value, separators=(",", ":")), flush=True)
+
+if runtime == "exec":
+    sys.stdin.read()
+    send({{"type": "thread.started", "thread_id": "exec-thread"}})
+    send({{"type": "item.completed", "item": {{"type": "agent_message", "text": "EXEC_OK"}}}})
+    send({{"type": "turn.completed", "usage": {{"input_tokens": 1, "output_tokens": 1}}}})
+    raise SystemExit(0)
+
+# Every branch then waits on stdin, the way a live app-server does.
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    request_id = message.get("id")
+    if method == "initialize":
+        if stall == "silent setup":
+            continue
+        result = {{"pad": "x" * 100000}} if stall == "oversized setup" else {{}}
+        send({{"id": request_id, "result": result}})
+    elif method == "config/read":
+        send({{"id": request_id, "result": {{"config": {{}}}}}})
+    elif method == "thread/start":
+        send({{
+            "id": request_id,
+            "result": {{
+                "thread": {{"id": "app-thread"}},
+                "approvalPolicy": "never",
+                "sandbox": {{"type": "readOnly"}},
+                "activePermissionProfile": {{"id": "rcp_stage"}},
+            }},
+        }})
+    elif method == "turn/start":
+        send({{"id": request_id, "result": {{"turn": {{"id": "turn-1"}}}}}})
+        send({{
+            "method": "turn/completed",
+            "params": {{
+                "threadId": "app-thread",
+                "turn": {{"id": "turn-1", "status": "completed"}},
+                "pad": "x" * 100000,
+            }},
+        }})
+""",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    return executable, attempts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stall", "runtimes"),
+    [
+        ("oversized setup", ["app-server", "exec"]),
+        ("silent setup", ["app-server", "exec"]),
+        ("oversized end", ["app-server"]),
+    ],
+)
+async def test_an_unreadable_protocol_line_ends_the_pass_instead_of_waiting(
+    tmp_path: Path, monkeypatch, stall: str, runtimes: list[str]
+) -> None:
+    """A setup reply or turn end RCP never reads must fail the pass, not hold it open."""
+
+    import asyncio
+
+    monkeypatch.setattr(AgentLauncher, "_MAX_EVENT_BYTES", 50000)
+    if stall == "silent setup":
+        monkeypatch.setattr("rcp.agents.launcher.PROVIDER_SETUP_TIMEOUT_SECONDS", 1.0)
+    executable, attempts = _stalling_codex(tmp_path, stall)
+    launcher = AgentLauncher()
+    launcher.readiness = lambda provider, host="", binary=None: _ready(executable)
+
+    async def collect():
+        return [
+            event
+            async for event in launcher.stream(
+                "codex",
+                "Reply exactly EXEC_OK",
+                cwd=tmp_path,
+                capability="paper_readonly",
+                runtime_id="app-server",
+            )
+        ]
+
+    events = await asyncio.wait_for(collect(), timeout=30)
+
+    assert attempts.read_text(encoding="utf-8").splitlines() == runtimes
+    if runtimes == ["app-server"]:
+        assert any(event.event == "error" for event in events)
+        assert all(event.event != "done" for event in events)
+    else:
+        assert [event.text for event in events if event.event == "answer"] == ["EXEC_OK"]

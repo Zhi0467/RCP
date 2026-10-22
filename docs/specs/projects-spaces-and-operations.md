@@ -258,6 +258,15 @@ machines/hosts, truth-scope membership, provider roots, and execution profiles.
 Project truth scope is human-authored canonical membership. Run scope is a
 nonempty contextual subset; it does not change project truth.
 
+A repository's alias is its only identifier, so the Web calls it the name.
+Setup suggests it from the source: a chosen folder's name, a GitHub
+repository's name, else the project name for an RCP-created repository, else
+`research`. The suggestion is slugged to `[a-z][a-z0-9-]{0,47}` and numbered
+`-2`, `-3` past names already in the project; it follows the source until the
+human types a name. A project with one repository shows no name field in the
+setup wizard, so its name is always derived; the field appears once a second
+repository makes the names need to differ. Existing aliases never change.
+
 A Patch declares the repositories its run read. Task contracts name repositories
 by path while scope is a list of aliases, so RCP accepts either spelling and
 records each read by its manifest alias, resolving a path at or under a
