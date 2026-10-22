@@ -3076,6 +3076,7 @@ def _start_work_validator_mailbox(
     command_handler = _work_command_handler(
         execution,
         compute_commands,
+        mailbox=staged.mailbox,
         service=service,
         graph_read_scope=graph_read_scope,
         consolidation_apply=(
@@ -3164,23 +3165,24 @@ def _resume_work_command_handler(
     service: Callable[[], ProjectService],
 ):
     compute_commands = _resume_work_compute_commands(execution, context)
-    if is_consolidation(execution):
-        from rcp.transport.workspace_mailbox import RunStageMailbox
+    from rcp.transport.workspace_mailbox import RunStageMailbox
 
-        if not execution.stage_root:
-            raise ValueError("The consolidation mailbox lost its stage.")
-        stage = None
-        if execution.stage_host:
-            stage = RemoteRunStage(execution.stage_host)
-            stage.root = PurePosixPath(execution.stage_root)
-        mailbox = RunStageMailbox(
-            Path(str(stage.workspace)) if stage else Path(execution.stage_root) / "workspace", stage
-        )
+    if not execution.stage_root:
+        raise ValueError("The Work mailbox lost its stage.")
+    stage = None
+    if execution.stage_host:
+        stage = RemoteRunStage(execution.stage_host)
+        stage.root = PurePosixPath(execution.stage_root)
+    mailbox = RunStageMailbox(
+        Path(str(stage.workspace)) if stage else Path(execution.stage_root) / "workspace", stage
+    )
+    if is_consolidation(execution):
         handler = _work_command_handler(
             execution,
             None,
             service=service(),
             graph_read_scope=context.graph_read_scope,
+            mailbox=mailbox,
             consolidation_apply=consolidation_apply_handler(
                 service, execution, mailbox, context.run_truth_scope
             ),
@@ -3191,6 +3193,7 @@ def _resume_work_command_handler(
             compute_commands,
             service=service() if context.graph_read_scope is not None else None,
             graph_read_scope=context.graph_read_scope,
+            mailbox=mailbox,
         )
     if not context.ask_allowed:
         handler = replace(handler, allowed_verbs=handler.allowed_verbs - {"ask"})

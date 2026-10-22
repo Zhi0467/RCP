@@ -66,7 +66,28 @@ def migrate_graph_bulletin(connection: sqlite3.Connection) -> None:
     install_bulletin_resource_versions(connection)
 
 
-def _record(row: sqlite3.Row) -> dict[str, Any]:
+def _artifact_links(connection: sqlite3.Connection, row: sqlite3.Row) -> list[dict[str, str]]:
+    """Resolves the post's `<artifact:ID>` tokens against this project's artifacts.
+
+    Links are read from the text, so an edit needs no bookkeeping and a token naming
+    no artifact of this project stays prose.
+    """
+    ids = list(dict.fromkeys(re.findall(r"<artifact:([^<>\s]+)>", row["text"])))
+    links = []
+    for artifact_id in ids[:BULLETIN_REFS_MAX_COUNT]:
+        found = connection.execute(
+            "SELECT metadata FROM artifacts WHERE project_id=? AND artifact_id=?",
+            (row["project_id"], artifact_id),
+        ).fetchone()
+        if found is not None:
+            artifact = json.loads(found["metadata"])
+            links.append(
+                {key: artifact[key] for key in ("artifact_id", "source_name", "media_type")}
+            )
+    return links
+
+
+def _record(connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
     author = {"kind": row["author_kind"]}
     for key in ("operation_id", "actor_label", "user_id", "display_name"):
         if row[key] is not None:
@@ -78,6 +99,7 @@ def _record(row: sqlite3.Row) -> dict[str, Any]:
         "author": author,
         "text": row["text"],
         "refs": json.loads(row["refs_json"]),
+        "artifacts": _artifact_links(connection, row),
         "reply_to": row["reply_to"],
         "created_at": row["created_at"],
         "mentions": json.loads(row["mentions_json"]),
@@ -209,7 +231,7 @@ def _list(
         (project_id, target_key),
     ).fetchone()[0]
     posts = [
-        _record(row)
+        _record(connection, row)
         for row in sorted(
             [*rows[:BULLETIN_PAGE_SIZE], *replies], key=lambda row: row["sequence"], reverse=True
         )
@@ -409,10 +431,11 @@ def _post(
                 )
         outcome = {
             "post": _record(
+                connection,
                 connection.execute(
                     f"SELECT p.*, {_REPLY_COUNT} AS reply_count FROM bulletin_posts p WHERE post_id=?",
                     (post_id,),
-                ).fetchone()
+                ).fetchone(),
             )
         }
         _retain_recent_threads(connection, project_id, target_key)
@@ -462,7 +485,7 @@ class BulletinStoreMixin(StoreMixinBase):
         """
         with self.connection() as connection:
             return [
-                {**_record(row), "target_key": row["target_key"]}
+                {**_record(connection, row), "target_key": row["target_key"]}
                 for row in connection.execute(
                     f"SELECT p.*, {_REPLY_COUNT} AS reply_count FROM bulletin_posts p WHERE project_id=? AND deleted_at IS NULL "
                     "AND p.author_actor_id IS NOT ? "
@@ -610,8 +633,11 @@ class BulletinStoreMixin(StoreMixinBase):
         reply_to: str | None = None,
         cursor: str | None = None,
         post_id: str | None = None,
+        channel: str | None = None,
     ) -> dict[str, Any]:
-        if subcommand not in {"read", "post", "edit", "delete"}:
+        if channel is not None and (subcommand != "post" or reply_to is not None):
+            raise BulletinError("bulletin_channel_invalid")
+        if subcommand not in {"read", "artifact", "post", "edit", "delete"}:
             raise BulletinError("bulletin_command_invalid")
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -626,24 +652,41 @@ class BulletinStoreMixin(StoreMixinBase):
             target_key = GraphTargetRef.model_validate_json(task["graph_target_json"]).key
             if subcommand == "read":
                 return _list(connection, project_id, target_key, cursor)
-            # A reply, edit, or delete lands in the channel of the post it names, where
-            # a member may have mentioned this agent; a new post stays in its own channel.
+            if channel is not None:
+                if channel == "main":
+                    target_key = "main"
+                else:
+                    branches = connection.execute(
+                        "SELECT branch_id FROM graph_branches WHERE project_id=? AND branch_id=?",
+                        (project_id, channel.removeprefix("branch:")),
+                    ).fetchall()
+                    if not branches:
+                        branches = connection.execute(
+                            "SELECT branch_id FROM graph_branches WHERE project_id=? AND name=?",
+                            (project_id, channel),
+                        ).fetchall()
+                    if len(branches) != 1:
+                        raise BulletinError("bulletin_channel_invalid")
+                    target_key = f"branch:{branches[0]['branch_id']}"
+            # Replies, edits, and deletes land in the named post's channel.
             named = reply_to if subcommand == "post" else post_id
-            channel = (
+            named_channel = (
                 named
                 and connection.execute(
                     "SELECT target_key FROM bulletin_posts WHERE project_id=? AND post_id=?",
                     (project_id, named),
                 ).fetchone()
             )
-            if channel:
-                target_key = channel["target_key"]
+            if named_channel:
+                target_key = named_channel["target_key"]
             authority = json.loads(task["dispatch_authority_json"] or "{}")
             if authority.get("task_contract") not in {
                 "work_auto",
                 "orchestrate",
             } or not live_project_member(connection, project_id, task["authorized_user_id"]):
                 raise BulletinError("bulletin_forbidden")
+            if subcommand == "artifact":
+                return {}
             ProjectProvisioningStoreMixin._require_project_accepts_new_work(connection, project_id)
             from rcp.bulletin import bulletin_actor_id
 

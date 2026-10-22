@@ -2560,10 +2560,11 @@ def _bind_actor_dispatcher(
 ) -> AutoResearchCommandDispatcher:
     """Bind one actor pass's command surface, at launch and again after a relaunch."""
 
-    if request.role != "orchestrator":
-        return dispatcher.with_allowed_verbs(allowed_verbs)
     command_files = RunStageMailbox.for_stage(local_stage=stage.local, remote_stage=stage.remote)
+    if request.role != "orchestrator":
+        return dispatcher.with_allowed_verbs(allowed_verbs, mailbox=command_files)
     return dispatcher.with_command_files(
+        mailbox=command_files,
         service=service,
         graph_read_scope=graph_read_scope,
         allowed_verbs=allowed_verbs,

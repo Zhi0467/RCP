@@ -5,6 +5,12 @@ export interface BulletinMention {
   id: string;
 }
 
+export interface BulletinArtifact {
+  artifact_id: string;
+  source_name: string;
+  media_type: string;
+}
+
 export interface BulletinPost {
   post_id: string;
   author: {
@@ -19,6 +25,7 @@ export interface BulletinPost {
   text: string;
   refs: string[];
   mentions?: BulletinMention[];
+  artifacts?: BulletinArtifact[];
   reply_to: string | null;
   reply_parent?: Pick<BulletinPost, "post_id" | "author" | "text"> | null;
   created_at: string;
@@ -154,21 +161,23 @@ export function bulletinKeyTarget(targetKey: string): GraphTargetRef {
 export type BulletinSegment =
   | { kind: "text"; text: string }
   | { kind: "node"; id: string }
+  | { kind: "artifact"; artifact: BulletinArtifact }
   | { kind: "mention"; mention: BulletinMention; label: string };
 
-const TOKEN = /<@(member|agent):([^>\s]+)>|#([A-Za-z0-9][A-Za-z0-9_./-]*)/g;
+const TOKEN = /<@(member|agent):([^>\s]+)>|#([A-Za-z0-9][A-Za-z0-9_./-]*)|<artifact:([^>\s]+)>/g;
 const NODE_TRAILING = /[.,;:)]+$/;
 
 /**
- * Splits post text into prose, `#node` links, and mention tokens. A `#id`
- * links only when the node exists; a token renders as a pill when its name is
- * known or the server recorded it as a mention; anything else stays prose.
+ * Splits post text into prose, `#node` links, mentions, and recorded artifacts.
+ * A `#id` links only when the node exists; a mention renders as a pill when its
+ * name is known or the server recorded it. Unrecorded artifact tokens stay prose.
  */
 export function bulletinSegments(
   text: string,
   labels: ReadonlyMap<string, string>,
   nodeIds: ReadonlySet<string>,
   mentions: readonly BulletinMention[] = [],
+  artifacts: readonly BulletinArtifact[] = [],
 ): BulletinSegment[] {
   const segments: BulletinSegment[] = [];
   const push = (value: string) => {
@@ -181,6 +190,13 @@ export function bulletinSegments(
   for (const match of text.matchAll(TOKEN)) {
     const start = match.index;
     push(text.slice(at, start));
+    if (match[4] !== undefined) {
+      const artifact = artifacts.find((item) => item.artifact_id === match[4]);
+      if (artifact) segments.push({ kind: "artifact", artifact });
+      else push(match[0]);
+      at = start + match[0].length;
+      continue;
+    }
     if (match[3] !== undefined) {
       const id = match[3].replace(NODE_TRAILING, "");
       if (nodeIds.has(id)) segments.push({ kind: "node", id });

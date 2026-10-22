@@ -358,3 +358,50 @@ def test_agent_edits_and_deletes_across_turns_of_same_actor(store):  # noqa: F81
     assert deleted.status == "ok"
     assert handler(delete, identity(task_id="next")).result == deleted.result
     assert store.list_bulletin("project", "main")["posts"] == []
+
+
+def test_bulletin_channel_and_artifact_options_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "body.txt").write_text("<artifact:" + "a" * 24 + ">")
+    prefix = ["--broker", "broker", "--timeout", "1", "--workspace", str(tmp_path)]
+    parser = staged_command_client._parser()
+    for flags, expected in (
+        (
+            ["--post", "--key", "k", "--channel", "other branch", "body.txt"],
+            {
+                "action": "post",
+                "channel": "other branch",
+                "reply_to": None,
+                "text": "<artifact:" + "a" * 24 + ">",
+            },
+        ),
+        (["--artifact", "a" * 24], {"action": "artifact", "artifact_id": "a" * 24}),
+    ):
+        parsed = parser.parse_args([*prefix, "bulletin", *flags])
+        verb, key, arguments = staged_command_client._request_arguments(parsed, str(tmp_path))
+        assert verb == "bulletin" and arguments == expected
+        envelope = request(
+            arguments["action"], key=key, **{k: v for k, v in arguments.items() if k != "action"}
+        )
+        assert envelope.arguments.model_dump(exclude_none=True) == {
+            k: v for k, v in expected.items() if v is not None
+        }
+    for flags in (
+        ["--read", "--channel", "main"],
+        ["--post", "--reply-to", "p", "--channel", "main", "--key", "k", "body.txt"],
+        ["--edit", "p", "--channel", "main", "--key", "k", "body.txt"],
+        ["--artifact", "a" * 24, "--cursor", "c"],
+    ):
+        with pytest.raises(staged_command_client.ClientInputError):
+            staged_command_client._request_arguments(
+                parser.parse_args([*prefix, "bulletin", *flags]), str(tmp_path)
+            )
+    for arguments in (
+        {"action": "read", "channel": "main"},
+        {"action": "post", "text": "reply", "reply_to": "p", "channel": "main"},
+        {"action": "artifact"},
+        {"action": "artifact", "artifact_id": "a" * 24, "text": "extra"},
+        {"action": "read", "artifact_id": "a" * 24},
+    ):
+        with pytest.raises(ValueError):
+            BulletinArguments(**arguments)

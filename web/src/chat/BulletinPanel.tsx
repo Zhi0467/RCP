@@ -6,6 +6,7 @@ import {
   CornerUpLeft,
   GitBranch,
   Hash,
+  Paperclip,
   Pencil,
   RotateCw,
   Send,
@@ -13,6 +14,9 @@ import {
   Users,
   X,
 } from "lucide-react";
+import { openArtifact } from "../artifacts/artifactViewerModel";
+import { ReferenceIcon } from "../core/ReferenceChip";
+import { ProjectReferencePicker } from "./ProjectReferencePicker";
 import { api } from "../core/api";
 import { graphTargetUrl, projectViewHash, sameGraphTarget } from "../core/graphTarget";
 import { buildNotificationLink } from "../core/notificationLinks";
@@ -87,6 +91,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
   // switches without moving the workspace to another branch.
   const [channel, setChannel] = useState<GraphTargetRef>(target);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [artifactPickerOpen, setArtifactPickerOpen] = useState(false);
   const [cursor, setCursor] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [caret, setCaret] = useState(0);
@@ -280,7 +285,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
         shownTrigger.query,
         (item) => item.match,
       );
-  const suggestOpen = suggestions.length > 0;
+  const suggestOpen = suggestions.length > 0 || artifactPickerOpen;
   const [suggestPlace, setSuggestPlace] = useState<ReturnType<typeof bulletinSuggestPlacement>>();
   // Measured before paint, and again on scroll or resize, so the list never runs
   // past the scroll area's edge or under the phone's pinned bars.
@@ -313,7 +318,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
       window.removeEventListener("resize", measure);
       document.removeEventListener("scroll", measure, true);
     };
-  }, [suggestOpen, suggestions.length]);
+  }, [suggestOpen, suggestions.length, artifactPickerOpen]);
   const activeIndex = Math.min(active, Math.max(suggestions.length - 1, 0));
 
   const run = async (action: () => Promise<void>) => {
@@ -407,6 +412,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
   const channelCandidates = (targetKey: string) =>
     bulletinChannelCandidates(members, roster, targetKey);
   const switchChannel = (next: GraphTargetRef) => {
+    setArtifactPickerOpen(false);
     setChannel(next);
     setCursor(null);
     setReply(null);
@@ -481,8 +487,22 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
       labels,
       workspaceChannel ? nodeIds : new Set(item.refs),
       item.mentions,
+      item.artifacts,
     ).map((segment, index) => {
       if (segment.kind === "text") return segment.text;
+      if (segment.kind === "artifact")
+        return (
+          <button
+            key={index}
+            type="button"
+            className="bulletin-artifact"
+            title={segment.artifact.source_name}
+            onClick={() => openArtifact({ projectId, artifactId: segment.artifact.artifact_id })}
+          >
+            <ReferenceIcon kind="artifact" />
+            <span>{segment.artifact.source_name}</span>
+          </button>
+        );
       if (segment.kind === "node")
         return (
           <button
@@ -806,7 +826,38 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
               post();
             }}
           >
-            {suggestions.length > 0 && (
+            {artifactPickerOpen && (
+              <div
+                className={`bulletin-artifact-picker${suggestPlace?.side === "below" ? " below" : ""}`}
+                style={suggestPlace ? { maxHeight: suggestPlace.maxHeight } : undefined}
+              >
+                <ProjectReferencePicker
+                  projectId={projectId}
+                  target={channel}
+                  nodes={{}}
+                  artifactsOnly
+                  selectedKeys={new Set()}
+                  onClose={() => {
+                    setArtifactPickerOpen(false);
+                    input.current?.focus();
+                  }}
+                  onPick={(reference) => {
+                    if (reference.selector.kind !== "artifact") return;
+                    const token = `<artifact:${reference.selector.artifact_id}>`;
+                    const head = draft.slice(0, caret);
+                    const insertion = `${head && !/\s$/.test(head) ? " " : ""}${token} `;
+                    const next = `${head}${insertion}${draft.slice(caret)}`;
+                    pendingCaret.current = head.length + insertion.length;
+                    setDraft(next);
+                    setCaret(pendingCaret.current);
+                    setKey(crypto.randomUUID());
+                    setArtifactPickerOpen(false);
+                    input.current?.focus();
+                  }}
+                />
+              </div>
+            )}
+            {!artifactPickerOpen && suggestions.length > 0 && (
               <ul
                 className={`bulletin-suggest${suggestPlace?.side === "below" ? " below" : ""}`}
                 style={suggestPlace ? { maxHeight: suggestPlace.maxHeight } : undefined}
@@ -864,6 +915,16 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
               </div>
             )}
             <div className="bulletin-composer-row">
+              <button
+                type="button"
+                className="bulletin-icon bulletin-attach"
+                aria-label="Attach artifact"
+                aria-expanded={artifactPickerOpen}
+                disabled={busy}
+                onClick={() => setArtifactPickerOpen((open) => !open)}
+              >
+                <Paperclip size={15} />
+              </button>
               <textarea
                 ref={input}
                 rows={1}

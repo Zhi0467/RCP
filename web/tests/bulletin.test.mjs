@@ -200,3 +200,23 @@ test("suggestions open where the scroll area has room and never past its edge", 
   const cramped = bulletinSuggestPlacement({ top: 160, bottom: 200 }, { top: 100, bottom: 240 });
   assert.ok(cramped.maxHeight <= 60 && cramped.maxHeight > 0);
 });
+
+test("artifact tokens render only recorded project artifacts, including repeated links", () => {
+  const artifact = { artifact_id: "art-1", source_name: "Results.html", media_type: "text/html" };
+  const segments = bulletinSegments(
+    "See <artifact:art-1> and <artifact:missing>; again <artifact:art-1>",
+    new Map(),
+    new Set(),
+    [],
+    [artifact],
+  );
+  assert.deepEqual(segments, [
+    { kind: "text", text: "See " },
+    { kind: "artifact", artifact },
+    { kind: "text", text: " and <artifact:missing>; again " },
+    { kind: "artifact", artifact },
+  ]);
+  assert.deepEqual(bulletinSegments("<artifact:old>", new Map(), new Set()), [
+    { kind: "text", text: "<artifact:old>" },
+  ]);
+});

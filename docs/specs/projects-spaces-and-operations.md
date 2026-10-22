@@ -475,7 +475,9 @@ no protocol header receive the deletable card with `delete_confirmation`.
 Migration 57 owns target-local Bulletin posts, command receipts, member read
 cursors, and durable mention-notification observations. Posts retain their
 original agent roster actor id across turns, parsed mentions, edit timestamps,
-and soft-delete timestamps. Membership, author identity, receipt lookup, Stop
+and soft-delete timestamps. Artifact links are not stored: each read resolves the
+text's `<artifact:ID>` tokens against the project's artifacts, so a token naming no
+artifact of the project stays prose. Membership, author identity, receipt lookup, Stop
 admission, and mutation are checked within the storage transaction. These rows
 are operational records and do not mutate canonical graph history. Restore
 schema fingerprints, backup integrity, and resource-version registries include
