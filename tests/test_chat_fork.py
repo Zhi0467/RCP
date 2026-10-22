@@ -7,6 +7,7 @@ import pytest
 
 from rcp.api.dependencies import get_graph_service
 from rcp.core.transition_models import GraphTargetRef
+from rcp.runs.session_master import recorded_master_values
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
 from tests.helpers import changed_values, create_named_app, signed_in_client, wait_for_task_response
@@ -195,8 +196,11 @@ def test_branch_chat_defers_fork_and_keeps_source_unchanged(manifest, tmp_path, 
         assert len(launcher.prompts) == 3
         # Leaving a branch, the fork turn names main and forks the branch chat's own session.
         launcher.native_session_id = "main-session"
-        send(back_to_main.json()["chat_id"])
+        on_main = send(back_to_main.json()["chat_id"])
         assert launcher.launch_kwargs[3]["fork_session_id"] == "forked-session"
+        # The replacing master itself states the new target, so it survives a compaction.
+        current = (recorded_master_values(store, on_main.operation_id) or {}).get("current")
+        assert isinstance(current, dict) and current["graph_target"] == "main"
         moved = changed_values(launcher.prompts[3])
         assert moved["conversation_fork.graph_target.kind"] == "main"
         assert "conversation_fork.graph_target.branch_id" not in moved

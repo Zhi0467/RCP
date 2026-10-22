@@ -1089,6 +1089,7 @@ def _work_chat_master_context(
 
     return PromptFactory.chat_master_context(
         project_name=turn.context.project_name,
+        graph_target=turn.context.graph_target,
         ontology_path=f"{turn.context.graph_path}#ontology",
         ontology_extensions=turn.context.ontology_extensions,
         graph_path=turn.context.graph_path,

@@ -232,6 +232,7 @@ def chat_prompt_values(
             "run_on": request.run_on,
         },
         "current": {
+            "graph_target": context.graph_target.key,
             "ontology_path": f"{context.graph_path}#ontology",
             "graph_path": context.graph_path,
             "research_path": context.research_md_path,

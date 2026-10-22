@@ -10,6 +10,7 @@ from rcp.agents.group_context import GroupContext
 from rcp.config import Manifest
 from rcp.core.models import GraphState, Patch
 from rcp.core.operations import SetCoverageOperation
+from rcp.core.transition_models import GraphTargetRef
 from rcp.history.delta import RefreshDelta
 from rcp.providers import PROVIDERS
 from rcp.transport import RepositoryAccess
@@ -81,6 +82,8 @@ class ChatContext(BaseModel):
     project_name: str
     run_truth_scope: list[str]
     repositories: list[RepositoryPointer]
+    # The target this conversation's graph service was resolved for, the one admission binds.
+    graph_target: GraphTargetRef
     graph_path: str
     parent_graph_path: str | None = Field(
         default=None, validation_alias=AliasChoices("parent_graph_path", "main_graph_path")
@@ -162,6 +165,7 @@ class ContextAssembler:
         self,
         state: GraphState,
         *,
+        graph_target: GraphTargetRef,
         node_id: str | None = None,
         run_truth_scope: list[str] | None = None,
         repository_access: dict[str, RepositoryAccess] | None = None,
@@ -194,6 +198,7 @@ class ContextAssembler:
             project_name=self.manifest.name,
             run_truth_scope=selected,
             repositories=repositories,
+            graph_target=graph_target,
             graph_path=str(root / "graph.json"),
             research_md_path=str(root / "research.md"),
             introduction_path=str(introduction) if introduction.exists() else None,
