@@ -57,6 +57,8 @@ test("the picker forks the viewed head into a named branch, retries idempotently
     // Failures add no caption: the popover's text is what it showed before.
     assert.equal(await page.getByRole("dialog").innerText(), popoverText);
     assert.equal(await page.getByRole("alert").count(), 0);
+    // The viewed head moves before the retry; the retry still repeats the first request.
+    await page.evaluate(() => window.advanceHead());
     await Promise.all([page.waitForResponse(/graph-refs$/), retry.click()]);
     await page.getByRole("button", { name: "Branch: probe" }).waitFor();
     assert.deepEqual(

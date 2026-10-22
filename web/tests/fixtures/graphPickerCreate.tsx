@@ -9,14 +9,17 @@ const main = { kind: "main", name: "main", running: false, needs_you: false, arc
 function Harness() {
   const [refs, setRefs] = useState([main]);
   const [active, setActive] = useState({ kind: "main" });
+  const [revision, setRevision] = useState(7);
+  window.advanceHead = () => setRevision((current) => current + 1);
   return React.createElement(GraphPicker, {
     refs,
     activeRef: active,
     projectId: "project",
     onSelect: setActive,
     onRefUpdated() {},
-    onCreate: async (name, requestId) => {
-      const ref = await createGraphFork("project", { kind: "main" }, 7, requestId, name);
+    viewedHead: { target: { kind: "main" }, revision },
+    onCreate: async (name, requestId, head) => {
+      const ref = await createGraphFork("project", head.target, head.revision, requestId, name);
       setRefs((current) => [...current, ref]);
       setActive({ kind: "branch", branch_id: ref.branch_id });
     },

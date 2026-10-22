@@ -16,7 +16,7 @@ import {
 import { ApiError, mergeGraphFork, renameGraphBranch, setGraphBranchArchived } from "../core/api";
 import { branchName, branchNameProblem, typedBranchName } from "../core/branchNames";
 import { sameGraphTarget } from "../core/graphTarget";
-import type { GraphRef, GraphTargetRef } from "../core/types";
+import type { GraphHeadRef, GraphRef, GraphTargetRef } from "../core/types";
 import {
   graphPickerOptions,
   graphRefCanMerge,
@@ -33,8 +33,10 @@ interface GraphPickerProps {
   activeRef: GraphTargetRef;
   projectId: string;
   onSelect: (target: GraphTargetRef) => void;
-  /** Forks the viewed head into a new branch and switches to it; the name may be empty. */
-  onCreate?: (name: string, requestId: string) => Promise<void>;
+  /** Forks `head` into a new branch and switches to it; the name may be empty. */
+  onCreate?: (name: string, requestId: string, head: GraphHeadRef) => Promise<void>;
+  /** The head being viewed, which a new branch starts from. */
+  viewedHead?: GraphHeadRef | null;
   createDisabled?: boolean;
   onOpen?: () => void;
   /** The last read failed: names stay, choices are disabled until a read succeeds. */
@@ -67,6 +69,7 @@ export function GraphPicker({
   projectId,
   onSelect,
   onCreate,
+  viewedHead = null,
   createDisabled = false,
   onOpen,
   onRefUpdated,
@@ -82,7 +85,9 @@ export function GraphPicker({
   const [newName, setNewName] = useState("");
   const [nameRefused, setNameRefused] = useState(false);
   const [createFailure, setCreateFailure] = useState<string | null>(null);
-  const createRequestId = useRef<string | null>(null);
+  // A retry repeats the whole first request, head included: the server
+  // refuses one request id with a different parent head.
+  const createRequest = useRef<{ id: string; head: GraphHeadRef } | null>(null);
   const [confirm, setConfirm] = useState<{
     action: "archive" | "merge";
     ref: Branch;
@@ -185,19 +190,23 @@ export function GraphPicker({
       setNameRefused(true);
       return;
     }
-    createRequestId.current ??= crypto.randomUUID();
+    if (!createRequest.current) {
+      if (!viewedHead) return;
+      createRequest.current = { id: crypto.randomUUID(), head: viewedHead };
+    }
+    const request = createRequest.current;
     setBusy(true);
     setNameRefused(false);
     setCreateFailure(null);
     try {
-      await onCreate(newName, createRequestId.current);
-      createRequestId.current = null;
+      await onCreate(newName, request.id, request.head);
+      createRequest.current = null;
       setCreating(false);
       setOpen(false);
     } catch (error) {
       // Only a transient failure retries under the same request id.
       if (!(error instanceof TypeError || (error instanceof ApiError && error.status >= 500)))
-        createRequestId.current = null;
+        createRequest.current = null;
       if (
         error instanceof ApiError &&
         (error.code === "branch_name_taken" || error.code === "branch_name_invalid")
@@ -439,7 +448,7 @@ export function GraphPicker({
                         setNewName(typedBranchName(event.target.value));
                         setNameRefused(false);
                         setCreateFailure(null);
-                        createRequestId.current = null;
+                        createRequest.current = null;
                       }}
                       onKeyDown={(event) => {
                         if (event.key === "Enter") {
@@ -477,7 +486,7 @@ export function GraphPicker({
                       setNewName("");
                       setNameRefused(false);
                       setCreateFailure(null);
-                      createRequestId.current = null;
+                      createRequest.current = null;
                     }}
                   >
                     New branch

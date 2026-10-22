@@ -4661,9 +4661,8 @@ function MemberApp({
         projectId={project.id}
         compact={phone}
         onSelect={selectGraphRef}
-        onCreate={(name, requestId) =>
-          forkGraph(project.graph_head.target, project.graph_head.revision, requestId, name)
-        }
+        viewedHead={project.graph_head}
+        onCreate={(name, requestId, head) => forkGraph(head.target, head.revision, requestId, name)}
         createDisabled={mutationsDisabled}
         onOpen={() => setGraphRefsReread(null)}
         onRefUpdated={(updated) => {
