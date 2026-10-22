@@ -2425,6 +2425,10 @@ function MemberApp({
     window.history.replaceState(window.history.state, "", `${path}?${params}`);
   }, [view, project?.id, openChatId, pendingChatId]);
 
+  // The request's own answer selects a chat, which changes the merged summaries;
+  // read them at failure time so that answer never cancels and reissues the request.
+  const inventoryChatSummariesRef = useRef(inventoryChatSummaries);
+  inventoryChatSummariesRef.current = inventoryChatSummaries;
   useEffect(() => {
     if (
       !requestedChat.chatId ||
@@ -2446,7 +2450,7 @@ function MemberApp({
       .catch((error) => {
         if (cancelled) return;
         if (error instanceof ApiError && error.status === 404) {
-          const summary = inventoryChatSummaries.find(
+          const summary = inventoryChatSummariesRef.current.find(
             (item) =>
               item.chat_id === requestedChat.chatId &&
               sameGraphTarget(item.graph_target, graphTarget),
@@ -2472,7 +2476,6 @@ function MemberApp({
   }, [
     requestedChat,
     inventoryLoaded,
-    inventoryChatSummaries,
     selectChat,
     loading,
     view,

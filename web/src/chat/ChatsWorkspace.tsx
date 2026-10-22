@@ -521,12 +521,19 @@ export function ChatsWorkspace({
         setArchiveError(failure instanceof Error ? failure.message : String(failure));
     }
   };
+  // The chat that takes over a selection leaving the list, from the viewed graph,
+  // since selecting a chat on another graph switches the page's graph target.
+  const nextOnGraph = (chatId: string) =>
+    filteredConversations.find(
+      (item) =>
+        item.chatId !== chatId &&
+        !archivedChatIds.has(item.chatId) &&
+        sameGraphTarget(item.graphTarget ?? MAIN_GRAPH, graphTarget),
+    );
   const archive = (chatId: string, archived: boolean) => {
     // An archived chat leaves the open list, so it must not stay selected there
     // where a new turn would run out of sight.
-    const next = conversations.find(
-      (item) => item.chatId !== chatId && !archivedChatIds.has(item.chatId),
-    );
+    const next = nextOnGraph(chatId);
     if (archived && !showingArchived && selected?.chatId === chatId && next) onSelect(next.chatId);
     return updateDisplay(() => setChatArchived(apiBase, chatId, archived)).then(() =>
       onArchiveChange?.(),
@@ -550,7 +557,7 @@ export function ChatsWorkspace({
     setMenuChatId(null);
     onRemoveDraft(chatId);
     // Move the selection off the removed draft so the shown chat is the one that loads.
-    const next = conversations.find((item) => item.chatId !== chatId);
+    const next = nextOnGraph(chatId);
     if (selected?.chatId === chatId && next) onSelect(next.chatId);
   };
   const agentMenu = (
