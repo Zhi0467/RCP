@@ -518,5 +518,8 @@ def test_agent_posts_to_named_channel_or_own_default(store):
         assert store.list_bulletin("project", target_key)["posts"][0] == entry
     reply = post(store, "reply-main", reply_to=entry["post_id"])
     assert store.list_bulletin("project", "main")["posts"][0]["post_id"] == reply["post_id"]
+    # A branch agent reads another channel through the same resolution.
+    read = store.execute_bulletin_command("project", "turn", "read", channel="main")
+    assert read == store.list_bulletin("project", "main")
     with pytest.raises(BulletinError, check=lambda exc: exc.code == "bulletin_channel_invalid"):
         post(store, "unknown", channel="missing")

@@ -2644,6 +2644,7 @@ def test_every_advertised_shared_record_usage_parses():
         "<branch-id>": "b1",
         "<channel>": "main",
         "<artifact-id>": "a" * 24,
+        "<artifact-file>": "plot.png",
     }
 
     def parse(usage):
@@ -2664,12 +2665,13 @@ def test_every_advertised_shared_record_usage_parses():
                 client.BULLETIN_EDIT,
                 client.BULLETIN_DELETE,
                 client.BULLETIN_ARTIFACT,
+                client.BULLETIN_LINK,
             )
             if getattr(parse(usage), dest)
         )
-        for usage in client.bulletin_usages()
+        for usage in client.bulletin_usages(turn_artifacts=True)
     ]
-    assert actions == ["read", "post", "edit", "delete", "artifact"]
+    assert actions == ["read", "post", "edit", "delete", "artifact", "link"]
     merge = parse(client.merge_usage())
     assert (merge.verb, merge.key, merge.branch_id) == ("merge", "k1", "b1")
     branch = parse(client.branch_usage())

@@ -1405,6 +1405,7 @@ async def _serve_auto_research_child_work_mailbox(
                 execution.operation_id,
                 request,
                 post_allowed=identity.authority == "broker",
+                turn_artifacts=False,
                 mailbox=staged.mailbox,
             )
         if isinstance(request, LessonCommandRequest):

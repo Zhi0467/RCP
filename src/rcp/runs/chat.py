@@ -927,7 +927,7 @@ def _discover_chat_artifacts(
                 if task is None:
                     raise ValueError("The artifact supplier task is unavailable.")
                 now = execution.store.now()
-                stored_artifact = execution.store.create_artifact(
+                stored_artifact = execution.store.create_turn_artifact(
                     Artifact(
                         artifact_id=descriptor.artifact_id,
                         project_id=task.project_id,
@@ -948,6 +948,7 @@ def _discover_chat_artifacts(
                     ),
                     data=data,
                 )
+                descriptor = descriptor.model_copy(update={"kept_at": stored_artifact.kept_at})
                 if service is not None and media_type == "text/html":
                     from rcp.live_artifact_runtime import resolve_artifact_live_version
 

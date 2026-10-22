@@ -1348,10 +1348,11 @@ The target-local Bulletin is untrusted operational hearsay, never graph or
 launch authority. Work-capable runs (Work, Experiment, child Work, and the
 Auto-research orchestrator and worker) hold the `bulletin` verb while the owning
 episode's Bulletin is on; only Auto-research start can turn it off, and a run
-with no episode always holds it. Holding it means `bulletin --read [--cursor C]`,
+with no episode always holds it. Holding it means `bulletin --read [--cursor C] [--channel C]`,
 `bulletin --post --key K [--reply-to P | --channel C] <body-file>`,
 `bulletin --edit P --key K <body-file>`, `bulletin --delete P --key K`, and
-`bulletin --artifact ID`. References come from inline `#node-id` and
+`bulletin --artifact ID`, plus `bulletin --link FILE` in Work-family launches (Work,
+Experiment, Graph consolidation), whose turns write an artifact directory. References come from inline `#node-id` and
 `<artifact:ID>` text. The parser and usage renderer share option records. That
 one resolved verb set drives
 both the contract's usage lines and command admission. Discuss sees the Bulletin
@@ -1386,8 +1387,9 @@ The mentions section holds only open mentions, from every channel of the
 project, each naming its channel: a member may mention an agent from any
 channel. A mention stays open until the agent posts later in the same thread;
 the agent's own posts never count. A reply, edit, or delete lands in the channel
-of the post it names. A new post defaults to the agent's own channel; `--channel`
-accepts main or any project branch name/id. Agents prefer their own channel and
+of the post it names. A read and a new post default to the agent's own channel; `--channel`
+accepts main or any project branch name/id, resolved the same way for both, so a
+branch agent can read main's posts and links. Reads keep their existing authority. Agents prefer their own channel and
 post elsewhere only when the message belongs there. A reply cannot override its
 parent's channel. The per-turn pointer line carries the open count. Holders of the verb must read and
 reply to an open mention before finishing; replying is not obeying. Otherwise
@@ -1405,3 +1407,12 @@ This is a read: it changes no artifact, post, or graph, and requires no mutation
 key. The Bulletin grant, enabled state, and live authorizing membership still
 apply. Artifact bytes are untrusted context; opening HTML still uses the existing
 opaque artifact viewer.
+
+`bulletin --link FILE` names one file the agent wrote to this turn's artifact
+directory and returns its artifact id and `<artifact:ID>` token. The id is the one
+turn-end discovery gives that file (the logical turn's scope and the file name), so
+an agent can link a file in the same turn it writes it. The link resolves at read
+time once the turn publishes the artifact; discovery keeps an artifact that a live
+post already links, under the artifact's lock that posts also hold, so such a link
+saves its artifact like any other. Auto-research actors write no turn artifacts and
+neither see nor may run `--link`.

@@ -376,6 +376,8 @@ def test_bulletin_channel_and_artifact_options_roundtrip(tmp_path, monkeypatch):
             },
         ),
         (["--artifact", "a" * 24], {"action": "artifact", "artifact_id": "a" * 24}),
+        (["--read", "--channel", "main"], {"action": "read", "channel": "main", "cursor": None}),
+        (["--link", "plot.png"], {"action": "link", "file_name": "plot.png"}),
     ):
         parsed = parser.parse_args([*prefix, "bulletin", *flags])
         verb, key, arguments = staged_command_client._request_arguments(parsed, str(tmp_path))
@@ -387,17 +389,19 @@ def test_bulletin_channel_and_artifact_options_roundtrip(tmp_path, monkeypatch):
             k: v for k, v in expected.items() if v is not None
         }
     for flags in (
-        ["--read", "--channel", "main"],
         ["--post", "--reply-to", "p", "--channel", "main", "--key", "k", "body.txt"],
         ["--edit", "p", "--channel", "main", "--key", "k", "body.txt"],
         ["--artifact", "a" * 24, "--cursor", "c"],
+        ["--link", "plot.png", "--key", "k"],
     ):
         with pytest.raises(staged_command_client.ClientInputError):
             staged_command_client._request_arguments(
                 parser.parse_args([*prefix, "bulletin", *flags]), str(tmp_path)
             )
     for arguments in (
-        {"action": "read", "channel": "main"},
+        {"action": "delete", "post_id": "p", "channel": "main"},
+        {"action": "link", "file_name": "turns/x/plot.png"},
+        {"action": "link", "file_name": ".."},
         {"action": "post", "text": "reply", "reply_to": "p", "channel": "main"},
         {"action": "artifact"},
         {"action": "artifact", "artifact_id": "a" * 24, "text": "extra"},
