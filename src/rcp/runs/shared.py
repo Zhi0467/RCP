@@ -893,8 +893,10 @@ async def _stream_agent_events(
             if execution is not None
             else None
         )
-        if refusal is not None:
+        if execution is not None and refusal is not None:
             outcome.failed = True
+            # A retry replays the same refusal, so it fails as admission's does.
+            execution.launch_refused = True
             yield _sse(AgentEvent(event="error", text=refusal))
             return
         fork = {

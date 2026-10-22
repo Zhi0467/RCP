@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { withTaskAnswers } from "./taskAnswers.mjs";
 import test from "node:test";
 
+import { TURN_REFUSAL_REASONS } from "../src/core/api.ts";
+
 import {
   artifactUrl,
   chatMessageTranscriptLine,
@@ -328,6 +330,23 @@ test("failed chat tasks render a preserved answer before the error", () => {
       { role: "error", text: "The graph moved while this patch was being written" },
     ],
   );
+});
+
+test("a refusal code on a failed turn reads as its shared reason", () => {
+  for (const code of [
+    "chat_fork_source_moved",
+    "chat_fork_source_unavailable",
+    "graph_branch_archived",
+  ]) {
+    const failed = task({
+      operation_id: code,
+      status: "failed",
+      request: { chat_id: "chat", message: "Continue" },
+      error: code,
+    });
+    const line = reconstructTaskTranscript([failed]).find(({ role }) => role === "error");
+    assert.equal(line.text, TURN_REFUSAL_REASONS[code]);
+  }
 });
 
 test("artifacts stay attached to the answer when a later task error is present", () => {

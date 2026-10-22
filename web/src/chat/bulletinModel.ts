@@ -164,7 +164,8 @@ export type BulletinSegment =
   | { kind: "artifact"; artifact: BulletinArtifact }
   | { kind: "mention"; mention: BulletinMention; label: string };
 
-const TOKEN = /<@(member|agent):([^>\s]+)>|#([A-Za-z0-9][A-Za-z0-9_./-]*)|<artifact:([^>\s]+)>/g;
+// The server's token grammar (`storage/bulletin.py`): an id holds no `<`, `>`, or space.
+const TOKEN = /<@(member|agent):([^<>\s]+)>|#([A-Za-z0-9][A-Za-z0-9_./-]*)|<artifact:([^<>\s]+)>/g;
 const NODE_TRAILING = /[.,;:)]+$/;
 
 /**
@@ -310,7 +311,7 @@ export function bulletinEncodeMentions(
   const byLabel = new Map(ordered.map((candidate) => [candidate.label, candidate.token]));
   // A stored token is matched first and kept whole, so a label like `agent` never rewrites its inside.
   const pattern = new RegExp(
-    `(<@(?:member|agent):[^>\\s]+>)|(^|[^\\w@])@(${ordered.map((candidate) => escapeRegExp(candidate.label)).join("|")})(?!\\w)`,
+    `(<@(?:member|agent):[^<>\\s]+>)|(^|[^\\w@])@(${ordered.map((candidate) => escapeRegExp(candidate.label)).join("|")})(?!\\w)`,
     "g",
   );
   return draft.replace(pattern, (whole, token: string | undefined, lead: string, label: string) =>
@@ -324,7 +325,7 @@ export function bulletinDecodeMentions(
   candidates: readonly BulletinMentionCandidate[],
 ): string {
   const labels = bulletinLabelMap(candidates);
-  return text.replace(/<@(member|agent):([^>\s]+)>/g, (token) => {
+  return text.replace(/<@(member|agent):([^<>\s]+)>/g, (token) => {
     const label = labels.get(token);
     return label === undefined ? token : `@${label}`;
   });

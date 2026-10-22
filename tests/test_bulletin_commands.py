@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from types import SimpleNamespace
@@ -63,6 +64,46 @@ def test_contract_usage_and_enforcement_share_the_bulletin_verb(store, tmp_path,
     assert "bulletin" not in handler.allowed_verbs
     assert "bulletin" not in _work_execution_instructions(turn, client="rcp-client")
     assert handler(post, identity()).status == "invalid"
+
+
+@pytest.mark.asyncio
+async def test_child_work_link_follows_the_usage_it_renders(store, monkeypatch):  # noqa: F811
+    from rcp.runs import bulletin, patch_validator
+    from rcp.runs.tasks import auto_research_child_work
+
+    execution = AgentTaskExecution(operation_id="turn", store=store, control=AgentProcessControl())
+    turn = SimpleNamespace(
+        execution=execution,
+        compute_commands=None,
+        service=None,
+        graph_read_scope=None,
+        patch_inputs=SimpleNamespace(validator_staged=SimpleNamespace(ask_wait_seconds=1.0)),
+    )
+    usage = _work_execution_instructions(turn, client="rcp-client")
+    seen = []
+    monkeypatch.setattr(
+        bulletin, "handle_bulletin", lambda *_args, **kwargs: seen.append(kwargs["turn_artifacts"])
+    )
+
+    async def serve(**kwargs):
+        await kwargs["handler"](
+            request("link", file_name="plot.png"),
+            SimpleNamespace(episode_id="episode", task_id="turn", authority="broker"),
+        )
+
+    monkeypatch.setattr(auto_research_child_work, "serve_command_mailbox", serve)
+    await auto_research_child_work._serve_auto_research_child_work_mailbox(
+        staged=SimpleNamespace(mailbox=SimpleNamespace(remote_stage=None), invocation_gate=None),
+        execution=execution,
+        route=SimpleNamespace(episode_id="episode"),
+        validate=lambda _: pytest.fail("a link must not validate a patch"),
+        stop=asyncio.Event(),
+        budget=patch_validator.PatchValidationBudget(),
+        compute_commands=SimpleNamespace(allowed_verbs=frozenset()),
+        allowed_verbs=frozenset({"validate", "bulletin"}),
+    )
+    assert seen == [True]
+    assert f"rcp-client bulletin {staged_command_client.BULLETIN_LINK[1]}" in usage
 
 
 def test_bulletin_client_file_backed_keyed_post(tmp_path, monkeypatch):

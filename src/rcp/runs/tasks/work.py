@@ -392,7 +392,10 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
         )
     if "bulletin" in handler.allowed_verbs:
         instructions.append(
-            bulletin_command_usage(client or turn.patch_inputs.validator_staged.client_command())
+            bulletin_command_usage(
+                client or turn.patch_inputs.validator_staged.client_command(),
+                turn_artifacts=handler.turn_artifacts,
+            )
         )
     if "ask" in handler.allowed_verbs:
         instructions.append(live_ask_contract(turn.patch_inputs.validator_staged.ask_wait_seconds))

@@ -1363,7 +1363,8 @@ with no episode always holds it. Holding it means `bulletin --read [--cursor C] 
 `bulletin --post --key K [--reply-to P | --channel C] <body-file>`,
 `bulletin --edit P --key K <body-file>`, `bulletin --delete P --key K`, and
 `bulletin --artifact ID`, plus `bulletin --link FILE` in Work-family launches (Work,
-Experiment, Graph consolidation), whose turns write an artifact directory. References come from inline `#node-id` and
+Auto-research child Work, Experiment, Graph consolidation), whose turns write an
+artifact directory; the usage and the dispatcher read the same Work fact. References come from inline `#node-id` and
 `<artifact:ID>` text. The parser and usage renderer share option records. That
 one resolved verb set drives
 both the contract's usage lines and command admission. Discuss sees the Bulletin
@@ -1427,5 +1428,5 @@ not a regular file in that directory with `bulletin_link_not_artifact`. RCP chec
 the stage, not the client, because only RCP knows which turn folder is the logical
 turn's. The link resolves at read time once the turn publishes the artifact; discovery keeps an artifact that a live
 post already links, under the artifact's lock that posts also hold, so such a link
-saves its artifact like any other. Auto-research actors write no turn artifacts and
-neither see nor may run `--link`.
+saves its artifact like any other. The Auto-research orchestrator and workers write
+no turn artifacts and neither see nor may run `--link`.

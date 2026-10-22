@@ -61,6 +61,7 @@ from rcp.runs.patch_validator import (
     command_rejection_recorder,
     command_transport_recorder,
 )
+from rcp.runs.questions import WORK_TURN_ARTIFACTS
 from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.session_master import record_inline_prompt
 from rcp.runs.shared import (
@@ -1405,7 +1406,8 @@ async def _serve_auto_research_child_work_mailbox(
                 execution.operation_id,
                 request,
                 post_allowed=identity.authority == "broker",
-                turn_artifacts=False,
+                # The Work usage this child renders offers --link from the same fact.
+                turn_artifacts=WORK_TURN_ARTIFACTS,
                 mailbox=staged.mailbox,
             )
         if isinstance(request, LessonCommandRequest):

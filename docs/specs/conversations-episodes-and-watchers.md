@@ -193,7 +193,9 @@ the source chat admits a newer turn or loses that session, a carried fork is
 refused before launch (`chat_fork_source_moved` or `chat_fork_source_unavailable`)
 as a failed turn without Retry, because the provider can only fork the source's
 live state. The launch rechecks this just before the provider starts, so a queued
-or slow-starting fork fails instead of taking newer source turns. Offline restore detaches a fork that has no session yet, so the new
+or slow-starting fork fails the same way, without Retry, instead of taking newer
+source turns. The failed turn shows the code's shared human reason, as the composer
+does for a refused admission. Offline restore detaches a fork that has no session yet, so the new
 chat's next message starts a fresh session like any restored chat; its origin
 link remains. Once the provider reports the new native
 session, later attempts and turns, including a Retry after Pause, resume that
@@ -209,8 +211,11 @@ turn from the new chat's own task.
 The entry point is "Branch this chat" in the chat header's menu. It opens the
 branch picker, listing branches to move to and New branch, without merge, rename,
 or archive. The top bar's picker names the new chat's target; the transcript's
-first line links back to the source chat.
+first line links back to the source chat, named by the source's current title, or
+by the title recorded at creation once the source is gone.
 Origin metadata remains available after the new chat has its own turns. Browser consent remains the new chat's own preference.
+The fork turn always states that preference, even when off, because the forked
+session may still hold the source's grant; later turns state it only when it changes.
 
 A generic `watcher_wake` is a new logical turn, clears handoffs and uses the wake
 prompt node. Experiment and child wakes keep their own policies. Shared master

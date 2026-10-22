@@ -14,7 +14,12 @@ import {
   X,
 } from "lucide-react";
 import { ApiError, mergeGraphFork, renameGraphBranch, setGraphBranchArchived } from "../core/api";
-import { branchName, branchNameProblem, typedBranchName } from "../core/branchNames";
+import {
+  branchName,
+  branchNameProblem,
+  submittedBranchName,
+  typedBranchName,
+} from "../core/branchNames";
 import { sameGraphTarget } from "../core/graphTarget";
 import type { GraphHeadRef, GraphRef, GraphTargetRef } from "../core/types";
 import {
@@ -178,7 +183,8 @@ export function GraphPicker({
 
   async function save(ref: Branch) {
     if (busy) return;
-    const problem = name === "" ? "Enter a branch name." : branchNameProblem(name);
+    const submitted = submittedBranchName(name);
+    const problem = submitted === "" ? "Enter a branch name." : branchNameProblem(submitted);
     if (problem) {
       setWarning(problem);
       return;
@@ -186,7 +192,7 @@ export function GraphPicker({
     setBusy(true);
     setWarning(null);
     try {
-      onRefUpdated(await renameGraphBranch(projectId, ref.branch_id, name));
+      onRefUpdated(await renameGraphBranch(projectId, ref.branch_id, submitted));
       setEditing(null);
     } catch (error) {
       showError(error);
@@ -197,7 +203,8 @@ export function GraphPicker({
 
   async function create() {
     if (!onCreate || busy || createDisabled) return;
-    if (branchNameProblem(newName)) {
+    const submitted = submittedBranchName(newName);
+    if (branchNameProblem(submitted)) {
       setNameRefused(true);
       return;
     }
@@ -210,7 +217,7 @@ export function GraphPicker({
     setNameRefused(false);
     setCreateFailure(null);
     try {
-      await onCreate(newName, request.id, request.head);
+      await onCreate(submitted, request.id, request.head);
       createRequest.current = null;
       setCreating(false);
       setOpen(false);

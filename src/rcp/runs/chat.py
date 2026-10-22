@@ -420,11 +420,16 @@ def _prepare_chat_prompt_state(
         }
 
     # The browser grant is also compared with the last committed turn: the human
-    # toggles it between turns, so the session hears it only when it changes.
+    # toggles it between turns, so the session hears it only when it changes. A
+    # fork's first turn has no committed turn of its own but continues the
+    # source's session, which may hold another grant, so it always hears it.
     browser = values.get("browser")
     if delta is not None:
         delta = {key: value for key, value in delta.items() if key != "browser"} or None
-    if browser is not None and previous is not None and previous.values.get("browser") != browser:
+    if browser is not None and (
+        (previous is None and bool(request.fork_session_id))
+        or (previous is not None and previous.values.get("browser") != browser)
+    ):
         delta = {**(delta or {}), "browser": browser}
 
     snapshot = _ChatMasterSnapshot(

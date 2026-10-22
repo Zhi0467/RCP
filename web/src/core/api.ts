@@ -385,6 +385,11 @@ export const TURN_REFUSAL_REASONS: Readonly<Record<string, string>> = {
     "The orchestrator lineage or its child Experiment is still running. Message the orchestrator in Runs.",
   auto_research_child_episode_owned:
     "This turn belongs to its Auto-research episode. Message the orchestrator or use Add N turns.",
+  chat_fork_source_moved:
+    "The source conversation moved on after this branch was made. Branch it again to continue.",
+  chat_fork_source_unavailable:
+    "The source conversation's session is no longer available. Branch it again or start a new conversation.",
+  graph_branch_archived: "This graph branch is archived. Unarchive it to continue here.",
 };
 
 function apiError(status: number, body: unknown): ApiError {

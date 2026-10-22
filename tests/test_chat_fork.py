@@ -177,6 +177,8 @@ def test_branch_chat_defers_fork_and_keeps_source_unchanged(manifest, tmp_path, 
     delta = changed_values(launcher.prompts[1])
     assert delta["conversation_fork.graph_target.kind"] == "branch"
     assert delta["conversation_fork.graph_target.branch_id"] == branch_id
+    # The source session may hold another grant, so the fork always states its own.
+    assert "browser" in delta
     assert launcher.launch_kwargs[1]["fork_session_id"] == "source-session"
     assert launcher.sessions[1] is None
     assert launcher.workspaces[1] != launcher.workspaces[0]
@@ -195,6 +197,7 @@ def test_branch_chat_defers_fork_and_keeps_source_unchanged(manifest, tmp_path, 
     assert not any(
         key.startswith("conversation_fork.") for key in changed_values(launcher.prompts[2])
     )
+    assert "browser" not in changed_values(launcher.prompts[2])
     if mode == "discuss" and not fail_fork:
         back_to_main = client.post(
             f"/api/projects/{project_id}/chats/{child_id}/branch",
@@ -427,6 +430,45 @@ def test_a_queued_fork_rechecks_its_source_at_launch(manifest, tmp_path):
     assert store.chat_fork_launch_refusal("fork-turn") == "chat_fork_source_moved"
 
 
+def test_a_fork_refused_at_launch_fails_without_retry(manifest, tmp_path):
+    from rcp.service import RunRequest
+    from tests.test_api import _chat_task_execution
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.catalog.store
+    project_id = app.state.default_project_id
+    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "laptop"}
+    source_id, fork = _settled_source_and_fork(app, tmp_path, profile)
+    launcher = _RecordingLauncher("forked-session")
+
+    async def stream(_project_id, _kind, request, execution):
+        # The source moves on after admission recorded it, before the provider starts.
+        later = _chat_task_execution(
+            app, RunRequest(chat_id=source_id, chat_scope="project", **profile), "source-later"
+        )
+        store.checkpoint_agent_task(later.operation_id, native_session_id="source-session")
+        store.complete_agent_task(later.operation_id, applied_revision=None, result={})
+        service = get_graph_service(app.state.catalog, project_id, None)
+        async for frame in stream_discuss_run(
+            service, launcher, request, tmp_path / "data", execution=execution
+        ):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    client = signed_in_client(app)
+    response = client.post(
+        f"/api/projects/{project_id}/tasks/project_chat",
+        json={"chat_id": fork.chat_id, "message": "Continue", **profile},
+    )
+    assert response.status_code == 202, response.text
+    task = wait_for_task_response(client, project_id, response.json()["operation_id"])
+
+    assert task["status"] == "failed", task
+    assert not task["can_retry"]
+    assert store.agent_task(task["operation_id"]).failure_kind == "session_refused"
+    assert launcher.prompts == []
+
+
 def test_restore_detaches_unfinished_forks_to_fresh_sessions(manifest, tmp_path):
     from rcp.service import RunRequest
     from tests.test_api import _chat_task_execution
@@ -478,3 +520,23 @@ def test_a_pre_release_fork_row_still_lists(manifest, tmp_path):
 
     assert response.status_code == 200, response.text
     assert fork.chat_id in {item["chat_id"] for item in response.json()["items"]}
+
+
+def test_the_origin_link_names_the_source_as_it_is_called_now(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.catalog.store
+    project_id = app.state.default_project_id
+    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "laptop"}
+    source_id, fork = _settled_source_and_fork(app, tmp_path, profile)
+    client = signed_in_client(app)
+    client.post(f"/api/projects/{project_id}/chats/{source_id}/title", json={"title": "Renamed"})
+
+    def origin_title():
+        return client.get(f"/api/projects/{project_id}/chats/{fork.chat_id}").json()["origin"][
+            "source_title"
+        ]
+
+    assert origin_title() == "Renamed"
+    with store.connection() as connection:
+        connection.execute("DELETE FROM chat_display WHERE chat_id = ?", (source_id,))
+    assert origin_title() == fork.origin.source_title

@@ -219,4 +219,16 @@ test("artifact tokens render only recorded project artifacts, including repeated
   assert.deepEqual(bulletinSegments("<artifact:old>", new Map(), new Set()), [
     { kind: "text", text: "<artifact:old>" },
   ]);
+  // The server's grammar: an id never holds `<`, so a nested token is the one that links.
+  const nested = bulletinSegments(
+    "<artifact:x<artifact:art-1> <@agent:y<@agent:worker:9>",
+    new Map(),
+    new Set(),
+    [{ kind: "agent", id: "worker:9" }],
+    [artifact],
+  );
+  assert.deepEqual(
+    nested.map((segment) => segment.kind),
+    ["text", "artifact", "text", "mention"],
+  );
 });

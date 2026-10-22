@@ -265,6 +265,11 @@ class AgentTaskExecution:
     #: has, since no process exists to leave an exit code. In memory because it
     #: describes this attempt, not the task.
     stage_unreachable: bool = False
+    #: Set when a branched chat's first turn is refused right before launch
+    #: because its fork source moved on or lost its session. Admission records
+    #: the same refusal as `session_refused`; this carries it for a turn that
+    #: passed admission and was refused later. In memory for the same reason.
+    launch_refused: bool = False
     agent_name_state: dict[str, object] | None = None
     command_mailbox: TaskCommandMailbox | None = field(default=None, repr=False)
     #: This process's work admission. A question waits for the human only while
@@ -2385,6 +2390,8 @@ class BackgroundAgentTasks:
     ) -> AgentFailureKind | None:
         """Name this failure so recovery can offer the right next step."""
 
+        if execution.launch_refused:
+            return "session_refused"
         provider = request.provider
         profile = None
         if isinstance(provider, str) and provider:

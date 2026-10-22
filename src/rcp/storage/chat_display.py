@@ -122,14 +122,22 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             summaries.extend(orchestrators.values())
             by_id = {summary["chat_id"]: summary for summary in summaries}
             for row in connection.execute(
-                "SELECT fork.record_json, display.title FROM chat_forks AS fork "
+                "SELECT fork.record_json, display.title, source.title AS source_title "
+                "FROM chat_forks AS fork "
                 "JOIN chat_display AS display USING (project_id, chat_id) "
+                "LEFT JOIN chat_display AS source ON source.project_id = fork.project_id "
+                "AND source.chat_id = json_extract(fork.record_json, '$.origin.source_chat_id') "
                 "WHERE fork.project_id = ? AND (? IS NULL OR fork.chat_id = ?)",
                 (project_id, chat_id, chat_id),
             ).fetchall():
                 fork = ChatForkRecord.model_validate_json(row["record_json"])
+                # The origin link names the source as it is called now; the title
+                # captured at fork time stands in only once the source is gone.
+                origin = fork.origin.model_dump(mode="json")
+                if row["source_title"]:
+                    origin["source_title"] = row["source_title"]
                 if fork.chat_id in by_id:
-                    by_id[fork.chat_id]["origin"] = fork.origin.model_dump(mode="json")
+                    by_id[fork.chat_id]["origin"] = origin
                 else:
                     summaries.append(
                         {
@@ -144,7 +152,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                             "conversation_kind": "chat",
                             "orchestrator_episode_id": None,
                             "human_turn_refusal": None,
-                            "origin": fork.origin.model_dump(mode="json"),
+                            "origin": origin,
                         }
                     )
         return summaries

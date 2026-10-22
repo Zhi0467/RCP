@@ -246,6 +246,8 @@ def stage_bulletin_pointer(
     )
 
 
-def bulletin_command_usage(client: str) -> str:
-    usages = [f"`{client} {usage}`" for usage in bulletin_usages(turn_artifacts=True)]
-    return "\n".join(f"- {line}" for line in (*usages, *BULLETIN_RULES, BULLETIN_LINK_RULE))
+def bulletin_command_usage(client: str, *, turn_artifacts: bool) -> str:
+    """Render the same `turn_artifacts` the launch's dispatcher enforces."""
+    usages = [f"`{client} {usage}`" for usage in bulletin_usages(turn_artifacts=turn_artifacts)]
+    link_rule = (BULLETIN_LINK_RULE,) if turn_artifacts else ()
+    return "\n".join(f"- {line}" for line in (*usages, *BULLETIN_RULES, *link_rule))

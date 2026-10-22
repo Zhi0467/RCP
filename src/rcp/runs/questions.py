@@ -289,6 +289,11 @@ def reconcile_question_receipt(store: AppStore, question_id: str) -> None:
         record_settled_question_receipts(store, operation_id)
 
 
+# Every Work launch, an Auto-research child's included, stages and publishes a turn
+# artifact directory, so its Bulletin --link can name a file written there.
+WORK_TURN_ARTIFACTS = True
+
+
 @dataclass(frozen=True)
 class WorkCommandHandler:
     """Dispatch one owner's resolved verbs; questions share no compute authority."""
@@ -303,6 +308,8 @@ class WorkCommandHandler:
     service: ProjectService | None = None
     graph_read_scope: GraphReadScope | None = None
     mailbox: RunStageMailbox | None = None
+    #: Whether Bulletin --link may name this turn's artifact files; the usage renders it.
+    turn_artifacts: bool = WORK_TURN_ARTIFACTS
 
     def __call__(self, request: CommandRequest, identity: CommandTurnIdentity) -> CommandResponse:
         def refuse(message: str, code: str | None = None) -> CommandResponse:
@@ -374,7 +381,7 @@ class WorkCommandHandler:
                 execution.operation_id,
                 request,
                 post_allowed=True,
-                turn_artifacts=True,
+                turn_artifacts=self.turn_artifacts,
                 mailbox=self.mailbox,
             )
         if isinstance(request, LessonCommandRequest):
