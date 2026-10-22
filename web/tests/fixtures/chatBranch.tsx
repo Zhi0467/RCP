@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ResourceRuntime } from "./resourceRuntime";
 import { NodeChat } from "../../src/chat/NodeChat";
-import { ChatBranchDialog } from "../../src/chat/ChatBranchDialog";
+import { ChatBranchPicker } from "../../src/chat/ChatBranchPicker";
 import { loadChatTranscript } from "../../src/chat/chatApi";
 import { api } from "../../src/core/api";
 import { graphTargetFromHash } from "../../src/core/graphTarget";
@@ -54,10 +54,10 @@ const source = {
   ],
 } as unknown as ChatTranscript;
 
+const headerActions = [{ label: "Rename", onSelect: () => {} }];
+
 function Fixture() {
   const [chat, setChat] = useState(source);
-  // Stands in for the chat list's row menu, which opens the dialog.
-  const [branching, setBranching] = useState(false);
   useEffect(() => {
     const route = () => {
       const id = new URLSearchParams(window.location.hash.split("?")[1]).get("chat");
@@ -83,13 +83,14 @@ function Fixture() {
         actorId={null}
         project={project as never}
         graphTarget={chat.graph_target}
-        header={
-          <>
-            <strong>{chat.title}</strong>
-            <button type="button" onClick={() => setBranching(true)}>
-              Branch this chat
-            </button>
-          </>
+        header={<strong>{chat.title}</strong>}
+        headerActions={headerActions}
+        headerMenuItems={
+          <ChatBranchPicker
+            projectId="project"
+            chatId={chat.chat_id}
+            graphTarget={chat.graph_target}
+          />
         }
         origin={chat.origin}
         runScope={["repo"]}
@@ -112,14 +113,6 @@ function Fixture() {
           throw new Error("No task");
         }}
       />
-      {branching && (
-        <ChatBranchDialog
-          projectId="project"
-          chatId={chat.chat_id}
-          graphTarget={chat.graph_target}
-          onClose={() => setBranching(false)}
-        />
-      )}
     </main>
   );
 }

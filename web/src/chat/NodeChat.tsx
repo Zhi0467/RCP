@@ -1,4 +1,5 @@
-import { ChatOriginLink } from "./ChatBranchDialog";
+import { ChatOriginLink } from "./ChatBranchPicker";
+import { ChatHeaderMenu, type ChatHeaderAction } from "./ChatHeaderMenu";
 import type { ChatOrigin } from "../core/types";
 import { turnOutcomeChip } from "./turnOutcome";
 import { memberDraftKey } from "../core/draftStorage";
@@ -223,6 +224,10 @@ interface Props {
   conversationTitle?: string;
   /** Workspace title and status; shares one row with the chat controls. */
   header?: ReactNode;
+  /** Chat actions the host adds to the header menu, before New session. */
+  headerActions?: readonly ChatHeaderAction[];
+  /** Controls the host adds to the header menu after its actions. */
+  headerMenuItems?: ReactNode;
   headerState?: string;
   runScope: string[];
   tasks: AgentTask[];
@@ -321,6 +326,7 @@ interface KeyboardChatAnnotationComposer {
 type ChatAnnotationComposer = SelectedChatAnnotationComposer | KeyboardChatAnnotationComposer;
 
 const EMPTY_WATCHERS: WatcherRecord[] = [];
+const NO_HEADER_ACTIONS: readonly ChatHeaderAction[] = [];
 
 function chatScrollObservation(element: HTMLElement, previousTop: number) {
   return {
@@ -361,6 +367,8 @@ export function NodeChat({
   glossaryIndex,
   conversationTitle,
   header,
+  headerActions = NO_HEADER_ACTIONS,
+  headerMenuItems,
   headerState,
   runScope,
   tasks,
@@ -2425,29 +2433,28 @@ export function NodeChat({
     <div className="chat-context-controls">
       {(showProvider || !readOnly) && agentSummary}
       <AgentStatusStrip tasks={statusTasks} />
-      {!fixedConversation && !readOnly && (
-        <button
-          className="chat-new-session"
-          type="button"
-          aria-label="New session"
-          onClick={onNewSession}
-        >
-          <MessageCirclePlus size={14} />
-          <span className="chat-new-session-label">New session</span>
-        </button>
-      )}
       {presentation === "workspace" && watcherToggle}
-      {!readOnly && (
-        <div className="chat-scope-control">
-          <RepositoryScope
-            repositories={project.repositories}
-            projectScope={project.project_truth_scope}
-            stateRepository={project.state_repository}
-            selected={scope}
-            onChange={relatedActive || reviewPending ? () => undefined : setScope}
-          />
-        </div>
-      )}
+      <ChatHeaderMenu
+        actions={[
+          ...headerActions,
+          ...(!fixedConversation && !readOnly
+            ? [{ label: "New session", onSelect: onNewSession }]
+            : []),
+        ]}
+      >
+        {headerMenuItems}
+        {!readOnly && (
+          <div className="chat-scope-control">
+            <RepositoryScope
+              repositories={project.repositories}
+              projectScope={project.project_truth_scope}
+              stateRepository={project.state_repository}
+              selected={scope}
+              onChange={relatedActive || reviewPending ? () => undefined : setScope}
+            />
+          </div>
+        )}
+      </ChatHeaderMenu>
     </div>
   );
 

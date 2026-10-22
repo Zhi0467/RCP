@@ -867,7 +867,7 @@ test(
     await page.getByRole("button", { name: "Rename draft", exact: true }).click();
     const input = page.getByRole("textbox", { name: "Branch name", exact: true });
     assert.equal((await row(page, "draft").boundingBox()).height, originalHeight);
-    await input.fill("Invalid Name");
+    await input.fill("invalid_name");
     await input.press("Enter");
     await page.locator(".branch-picker-warning").waitFor();
     assert.equal(state.mutations.length, 0);

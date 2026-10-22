@@ -43,6 +43,12 @@ interface GraphPickerProps {
   unavailable?: boolean;
   onRefUpdated: (ref: GraphRef) => void;
   compact?: boolean;
+  /** Names the trigger instead of the current branch, for a picker that moves something. */
+  label?: string;
+  /** A line above the list saying what picking does. */
+  heading?: string;
+  /** Lists branches to choose or create, without merge, rename, or archive. */
+  pickOnly?: boolean;
 }
 
 type Branch = Extract<GraphRef, { kind: "branch" }>;
@@ -75,6 +81,9 @@ export function GraphPicker({
   onRefUpdated,
   unavailable = false,
   compact = false,
+  label,
+  heading,
+  pickOnly = false,
 }: GraphPickerProps) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
@@ -260,7 +269,7 @@ export function GraphPicker({
       <button
         ref={button}
         className="branch-picker-trigger"
-        aria-label={`Branch: ${currentName}`}
+        aria-label={label ?? `Branch: ${currentName}`}
         aria-expanded={open}
         aria-controls={listId}
         aria-haspopup="dialog"
@@ -276,8 +285,8 @@ export function GraphPicker({
         }}
       >
         <GitBranch size={15} />
-        <span>{currentName}</span>
-        {attention && (
+        <span>{label ?? currentName}</span>
+        {!label && attention && (
           <span className="branch-picker-attention" aria-label="Another branch needs you" />
         )}
         {!compact && <ChevronDown size={13} />}
@@ -290,9 +299,10 @@ export function GraphPicker({
             id={listId}
             className="branch-picker-popover"
             role="dialog"
-            aria-label="Branches"
+            aria-label={label ?? "Branches"}
             style={position}
           >
+            {heading && <p className="branch-picker-heading">{heading}</p>}
             <ul className="branch-picker-list">
               {options.map((ref) => {
                 const current = sameGraphTarget(graphRefTarget(ref), activeRef);
@@ -378,7 +388,7 @@ export function GraphPicker({
                         {refNeedsYou(ref) && (
                           <span className="branch-picker-attention" aria-label="Needs you" />
                         )}
-                        {ref.kind === "branch" && (
+                        {ref.kind === "branch" && !pickOnly && (
                           <>
                             {graphRefCanMerge(ref) && (
                               <button

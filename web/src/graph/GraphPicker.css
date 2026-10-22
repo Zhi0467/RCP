@@ -194,3 +194,11 @@
     overflow-wrap: anywhere;
   }
 }
+.branch-picker-heading {
+  color: var(--muted);
+  font-size: var(--type-2xs);
+  font-weight: 650;
+  margin: 0;
+  padding: 6px 10px 2px;
+  text-transform: uppercase;
+}

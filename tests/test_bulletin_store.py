@@ -482,6 +482,8 @@ def test_artifact_links_resolve_from_text_within_the_project(store):
     assert first["artifacts"] == expected
     assert first["refs"] == ["evidence/one"]
     assert store.list_bulletin("project", "main")["posts"][0]["artifacts"] == expected
+    # Linking saves the artifact, so the link cannot expire under the post.
+    assert store.artifact("figure").kept_at is not None
     edited = store.execute_bulletin_command(
         "project", "turn", "edit", post_id=first["post_id"], key="edit-artifact", text="No link"
     )

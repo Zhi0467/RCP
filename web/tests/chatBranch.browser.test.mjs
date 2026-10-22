@@ -11,14 +11,14 @@ const main = {
   branch_id: null,
   name: "main",
   archived: false,
-  head: { revision: 12 },
+  head: { target: { kind: "main" }, revision: 12, transition_id: null },
 };
 const branch = {
   kind: "branch",
   branch_id: "existing",
-  name: "Existing branch",
+  name: "existing",
   archived: false,
-  head: { revision: 4 },
+  head: { target: { kind: "branch", branch_id: "existing" }, revision: 4, transition_id: null },
 };
 
 for (const width of [1000, 390]) {
@@ -58,7 +58,7 @@ for (const width of [1000, 390]) {
           result = {
             chat_id: "forked",
             title: "Source chat",
-            graph_title: width === 390 ? "Existing branch" : "New direction",
+            graph_title: width === 390 ? "existing" : "new-direction",
             graph_target: body.graph_target,
             messages: [],
             origin: {
@@ -81,19 +81,24 @@ for (const width of [1000, 390]) {
       });
       const address = server.httpServer.address();
       await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatBranch.html`);
+      await page.getByRole("button", { name: "Chat menu", exact: true }).click();
       await page.getByRole("button", { name: "Branch this chat", exact: true }).click();
-      const dialog = page.getByRole("dialog", { name: "Branch this chat" });
-      await dialog.getByRole("button", { name: "Branch chat", exact: true }).waitFor();
-      await page.waitForFunction(
-        () => !document.querySelector('.chat-branch-dialog button[type="submit"]').disabled,
+      const picker = page.getByRole("dialog", { name: "Branch this chat" });
+      await picker.locator('[data-branch-id="existing"]').waitFor();
+      assert.equal(await picker.locator('[data-branch-id="archived"]').count(), 0);
+      assert.equal(
+        await picker.getByRole("button", { name: /^(Merge|Rename|Archive) / }).count(),
+        0,
       );
-      assert.equal(await dialog.locator("option", { hasText: "Archived" }).count(), 0);
-      assert.equal(await dialog.locator('option[value="main"]').count(), 0);
-      if (width === 390) await dialog.getByLabel("Branch target").selectOption("existing");
-      else await dialog.getByLabel("Branch name").fill("New direction");
-      const bounds = await dialog.boundingBox();
+      const bounds = await picker.boundingBox();
       assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width);
-      await dialog.getByRole("button", { name: "Branch chat", exact: true }).click();
+      if (width === 390) {
+        await picker.getByRole("button", { name: "existing", exact: true }).click();
+      } else {
+        await picker.getByRole("button", { name: "New branch", exact: true }).click();
+        await picker.getByLabel("New branch name").fill("new-direction");
+        await picker.getByRole("button", { name: "Create branch", exact: true }).click();
+      }
       await page.getByRole("link", { name: "Source chat", exact: true }).waitFor();
       const hash = await page.evaluate(() => window.location.hash);
       assert.match(hash, /chat=forked/);
@@ -105,7 +110,7 @@ for (const width of [1000, 390]) {
       assert.equal(forks.length, width === 390 ? 0 : 1);
       if (forks.length) {
         assert.equal(forks[0].body.at, "main@12");
-        assert.equal(forks[0].body.name, "New direction");
+        assert.equal(forks[0].body.name, "new-direction");
       }
       assert.deepEqual(requests.find((request) => request.path.endsWith("/source/branch")).body, {
         graph_target: result.graph_target,

@@ -103,8 +103,6 @@ class ChatForkStoreMixin(StoreMixinBase):
             if not request.get("provider") or not request.get("run_on"):
                 raise ValueError("The source chat's provider and machine must be known.")
             source_target = GraphTargetRef.model_validate_json(source["graph_target_json"])
-            if source_target == graph_target:
-                raise ValueError("Choose a different graph target for the branched chat.")
             if graph_target.kind == "branch":
                 branch = connection.execute(
                     "SELECT archived FROM graph_branches WHERE project_id = ? AND branch_id = ?",

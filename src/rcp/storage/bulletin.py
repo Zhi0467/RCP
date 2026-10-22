@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import re
 import sqlite3
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from rcp.core.graph_targets import graph_target_json
 from rcp.core.transition_models import GraphTargetRef
@@ -24,6 +25,9 @@ from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.provisioning import ProjectProvisioningStoreMixin
 from rcp.storage.resource_versions import install_bulletin_resource_versions
+
+if TYPE_CHECKING:
+    from rcp.storage import AppStore
 
 
 class BulletinError(ValueError):
@@ -620,7 +624,26 @@ class BulletinStoreMixin(StoreMixinBase):
                 action=action,
                 post_id=post_id,
             )
-        return _result(outcome)["post"]
+        post = _result(outcome)["post"]
+        self._keep_linked_artifacts(post)
+        return post
+
+    def _keep_linked_artifacts(self, post: dict[str, Any]) -> None:
+        """A link saves its artifact, exactly as Save to Artifacts does, so it never expires."""
+        store = cast("AppStore", self)
+        for link in post.get("artifacts", []):
+            artifact_id = link["artifact_id"]
+            with store.artifact_lock(artifact_id):
+                artifact = store.artifact(artifact_id)
+                if artifact is None or artifact.kept_at:
+                    continue
+                kept = store.keep_artifact(artifact_id)
+                if artifact.origin_operation_id:
+                    # An artifact listed on its turn shows as saved there too.
+                    with contextlib.suppress(KeyError):
+                        store.mark_agent_artifact_kept(
+                            artifact.origin_operation_id, artifact_id, kept_at=kept.kept_at or ""
+                        )
 
     def execute_bulletin_command(
         self,
@@ -710,7 +733,10 @@ class BulletinStoreMixin(StoreMixinBase):
                 action=subcommand,
                 post_id=post_id,
             )
-        return _result(outcome)
+        result = _result(outcome)
+        if "post" in result:
+            self._keep_linked_artifacts(result["post"])
+        return result
 
 
 def _agent_label(connection: sqlite3.Connection, task: sqlite3.Row, actor_id: str) -> str:

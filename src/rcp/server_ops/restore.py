@@ -46,6 +46,21 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Chat forks (v60) after conversation names: fresh, immutable fixture
+        # upgrades, and in-place upgrades.
+        "06ce0e8a34a0e12b22efda79b5b4d10b01c57b8952b1328db39debc8cc7753d6",
+        "137d6e4663009f01e47cf3f2f425a00d3dd90762bc93231462aeae147b7f2189",
+        "352a83314c130eff64f8d33772b3259bbd23cf2b101fce74db44ac6802b4c72a",
+        "368d427899ee21e25e5b86d31d279c36e77354ae8010231b71b5612bf6630705",
+        "5bac563d9dfb4a28812c3ac2cd75f1da7234ab37015ff529671f85d4a763af4b",
+        "6c326e18cc2829deb6c4daf7373104419132de3c079f9b42ee155ce91ca0b0f2",
+        "76a29f571e9e3982e84b3a758c6d5f38ebc154f0fdbae77e175b8eedb0a06358",
+        "9a706a5abbad5370fd5f4d76185729902323944c56f8a47a6134502361a879ff",
+        "b1f66de797113d24b2c8f08ebedb04a7a5f73238fd63ab31536c5144c430dd97",
+        "bbd6146904f9ab1c9d50842fe4637ea7f87f0ebaf244e45c8037c5fb669fb281",
+        "d75c7e973d4be7cfad121f1e33dcefd6c3ff3b08d7603e2ace333a678d5b80c6",
+        "e39e80f5287d655018d028bc45fab1d55beb1bc092ec0bfb17e42befc0240ad7",
+        "febdc8d318b035ed4f41c237d9ce212359cd9dddacd7382da9a0ce417eefd9f9",
         # Conversation names (v59) after project worker seats: fresh, immutable
         # fixture upgrades, and in-place upgrades.
         "2b2019b71037bd625ad8f0efd44bb436e9a9fc9eef87fe6543bbe773553b37ad",
@@ -107,7 +122,6 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         "8714bdf47764e07e4994bfca920bed1230bb467c9993d971ace4288efd2631b5",
         "a0052d97fc2b5dbae075cdd5caedcf8a5e4f229d4a25029cb1b37f2ebfa7f85c",
         "ebea56d17097be1d40f319d333e4e42d7e702cce1769a718d7f964ad53dc9d94",
-        "000514cd67ef7e2ac9aa4fb61ab5bb486d09f37ac66eb8fb3882906e2867f500",
         # Per-branch Auto-research (v52), fresh, immutable fixture upgrades, and
         # in-place upgrades.
         "58e6f3c20eba29966620b89c4c007bed285e884e239ef22e7d5543fd5bd96c76",
@@ -211,7 +225,6 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         "5bfc0ff9db6ee91fe4fd3915de0838066910c1ad4c00c3a3004e1a3d915bebf1",
         "c8b4b5273b5d04c6862ec293b6d57046f83d0dd08f5b1b04d4ae67bffabe5736",
         "7085cb3e2e6dec86b6f4effa8f4e1d99640d6648a679d3f5fae6af2167243aa2",
-        "0b0c5ce83844f12868de405171d4ffc7e6839c87cbd0829fbc9541ebb5190748",
         "9f8d6299091eb189a6c3395daf6ed69eb9604a3ec6ecca582908968716b1ed88",
         "529687b1794bb55dbe58d44160f1b95234aec29957cc0f43f1115bae26628da4",
         # Per-machine provider shell timeout, fresh and historical in-place upgrades.

@@ -1,6 +1,5 @@
-import { ChatBranchDialog } from "./ChatBranchDialog";
+import { ChatBranchPicker } from "./ChatBranchPicker";
 import {
-  ChevronDown,
   Circle,
   Ellipsis,
   Kanban,
@@ -293,7 +292,6 @@ interface AgentMenuProps {
   onRename: () => void;
   onPin: () => void;
   onArchive: () => void;
-  onBranch: () => void;
 }
 
 function AgentMenu({
@@ -308,7 +306,6 @@ function AgentMenu({
   onRename,
   onPin,
   onArchive,
-  onBranch,
 }: AgentMenuProps) {
   return (
     <div className="agent-row-menu">
@@ -336,11 +333,6 @@ function AgentMenu({
               {!archived && (
                 <button type="button" role="menuitem" onClick={onPin}>
                   {pinned ? "Unpin" : "Pin"}
-                </button>
-              )}
-              {!archived && (
-                <button type="button" role="menuitem" disabled={working} onClick={onBranch}>
-                  Branch this chat
                 </button>
               )}
               <button
@@ -449,7 +441,8 @@ export function ChatsWorkspace({
     new Set(orchestratorEpisodes.map((episode) => episode.graph_target.branch_id ?? "")),
   );
   const [menuChatId, setMenuChatId] = useState<string | null>(null);
-  const [branchingChat, setBranchingChat] = useState<ChatConversation | null>(null);
+  const [renamingInHeader, setRenamingInHeader] = useState(false);
+  useEffect(() => setRenamingInHeader(false), [selectedChatId]);
   const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const showingArchived = filter === "archived";
@@ -582,19 +575,6 @@ export function ChatsWorkspace({
       }}
       onPin={() => void pin(conversation.chatId, !pinnedChatIds.has(conversation.chatId))}
       onArchive={() => void archive(conversation.chatId, !archived)}
-      onBranch={() => {
-        setMenuChatId(null);
-        setBranchingChat(conversation);
-      }}
-    />
-  );
-
-  const branchDialog = branchingChat && (
-    <ChatBranchDialog
-      projectId={project.id}
-      chatId={branchingChat.chatId}
-      graphTarget={branchingChat.graphTarget ?? MAIN_GRAPH}
-      onClose={() => setBranchingChat(null)}
     />
   );
 
@@ -755,10 +735,43 @@ export function ChatsWorkspace({
     setListWidth(clampChatListWidth(clientX - bounds.left, widthBounds));
   };
 
+  const selectedArchived = selected !== null && archivedChatIds.has(selected.chatId);
+  const selectedWorking = selectedStatus?.state === "working";
+  const headerActions =
+    selected && (selected.tasks.length > 0 || selected.updatedAt)
+      ? [
+          { label: "Rename", onSelect: () => setRenamingInHeader(true) },
+          {
+            label: selectedArchived ? "Restore" : "Archive",
+            disabled: !selectedArchived && selectedWorking,
+            onSelect: () => void archive(selected.chatId, !selectedArchived),
+          },
+        ]
+      : [];
+  const headerMenuItems =
+    headerActions.length > 0 && !selectedArchived && selected ? (
+      <ChatBranchPicker
+        projectId={project.id}
+        chatId={selected.chatId}
+        graphTarget={selected.graphTarget ?? MAIN_GRAPH}
+        disabled={selectedWorking}
+      />
+    ) : undefined;
   const conversationHeading =
     selected && selectedStatus ? (
       <>
-        <strong>{selected.title}</strong>
+        {renamingInHeader ? (
+          <AgentRename
+            title={selected.title}
+            onDone={(title) => {
+              setRenamingInHeader(false);
+              finishRename(selected, title);
+            }}
+          />
+        ) : (
+          // A phone header is only the controls row; More → Agents lists the agents.
+          !narrow && <strong>{selected.title}</strong>
+        )}
         {selected.conversationKind === "auto_research_child" && (
           <span className="conversation-header-meta">
             Managed by the orchestrator in <a href={orchestratorHref}>Runs</a>.
@@ -891,7 +904,6 @@ export function ChatsWorkspace({
           onOpen={openCard}
           onDrop={dropCard}
         />
-        {branchDialog}
       </section>
     );
 
@@ -907,21 +919,10 @@ export function ChatsWorkspace({
             : `${listWidth}px ${CHAT_LIST_DIVIDER_WIDTH}px minmax(0, 1fr)`,
       }}
     >
-      <button
-        className="conversation-list-toggle view-disclosure-summary"
-        type="button"
-        aria-controls="conversation-list-panel"
-        aria-expanded={mobileListOpen}
-        onClick={() => setMobileListOpen((current) => !current)}
-      >
-        <MessageCircle size={14} />
-        <span>Agents</span>
-        <ChevronDown size={14} />
-      </button>
       <aside
         className="conversation-list"
         aria-label="Project conversations"
-        hidden={narrow ? !mobileListOpen : listCollapsed}
+        hidden={narrow ? !mobileListOpen && selected !== null : listCollapsed}
         id="conversation-list-panel"
       >
         <div className="agent-list-tools">
@@ -1152,6 +1153,8 @@ export function ChatsWorkspace({
             nodes={selectedOffGraph ? NO_NODES : nodes}
             glossaryIndex={selectedOffGraph ? NO_GLOSSARY : glossaryIndex}
             header={conversationHeading}
+            headerActions={headerActions}
+            headerMenuItems={headerMenuItems}
             headerState={selectedStatus?.state}
             runScope={runScope}
             tasks={selectedOrchestratorTurns?.tasks ?? []}
@@ -1196,6 +1199,8 @@ export function ChatsWorkspace({
             glossaryIndex={glossaryIndex}
             conversationTitle={selected.kind === "node_chat" ? selected.title : undefined}
             header={conversationHeading}
+            headerActions={headerActions}
+            headerMenuItems={headerMenuItems}
             headerState={selectedStatus?.state}
             runScope={runScope}
             tasks={tasks}
@@ -1233,7 +1238,6 @@ export function ChatsWorkspace({
           />
         ) : null}
       </div>
-      {branchDialog}
     </section>
   );
 }
