@@ -104,6 +104,7 @@ from rcp.storage import (
     EpisodeInvocationCeilingReached,
     EpisodeRecord,
 )
+from rcp.storage.chat_forks import ChatForkRefused
 from rcp.storage.models import AgentTaskAlreadyContinued
 from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable, StateUnreachable
 from rcp.transport.state_transfer import warning_context
@@ -265,6 +266,12 @@ class AgentTaskExecution:
     #: has, since no process exists to leave an exit code. In memory because it
     #: describes this attempt, not the task.
     stage_unreachable: bool = False
+    #: Set when a branched chat's first turn is refused right before launch, or
+    #: when it first names its forked session, because its fork source moved on
+    #: or lost its session. Admission records
+    #: the same refusal as `session_refused`; this carries it for a turn that
+    #: passed admission and was refused later. In memory for the same reason.
+    launch_refused: bool = False
     agent_name_state: dict[str, object] | None = None
     command_mailbox: TaskCommandMailbox | None = field(default=None, repr=False)
     #: This process's work admission. A question waits for the human only while
@@ -964,7 +971,7 @@ class BackgroundAgentTasks:
                 authorized_by=authorized_by,
             )
         retry_same_provider = (
-            previous.status == "failed"
+            previous.status in {"failed", "paused", "interrupted"}
             and same_provider
             and same_execution_host
             and owned_checkpoint
@@ -1762,7 +1769,7 @@ class BackgroundAgentTasks:
             raise ValueError(
                 "The admitted task has no valid persisted request for its kind."
             ) from exc
-        if not _persisted_request_roundtrips(request, record.request):
+        if not persisted_request_roundtrips(request, record.request):
             raise ValueError("The admitted task request failed its persisted roundtrip.")
 
         from rcp.runs.consolidation import require_consolidation_launch
@@ -2002,7 +2009,7 @@ class BackgroundAgentTasks:
             self._validate_request_type(current.kind, current_request)
         except (TypeError, ValueError) as exc:
             raise ValueError("The committed task lost its persisted request contract.") from exc
-        if not _persisted_request_roundtrips(current_request, current.request):
+        if not persisted_request_roundtrips(current_request, current.request):
             raise ValueError("The committed task request failed its persisted roundtrip.")
         return current
 
@@ -2385,6 +2392,8 @@ class BackgroundAgentTasks:
     ) -> AgentFailureKind | None:
         """Name this failure so recovery can offer the right next step."""
 
+        if execution.launch_refused:
+            return "session_refused"
         provider = request.provider
         profile = None
         if isinstance(provider, str) and provider:
@@ -3087,10 +3096,14 @@ class BackgroundAgentTasks:
                     execution.runtime_id = event.text
                     continue
                 if event.event == "session" and event.session_id:
-                    self.store.checkpoint_agent_task(
-                        execution.operation_id,
-                        native_session_id=event.session_id,
-                    )
+                    try:
+                        self.store.checkpoint_agent_task(
+                            execution.operation_id,
+                            native_session_id=event.session_id,
+                        )
+                    except ChatForkRefused as exc:
+                        execution.launch_refused = True
+                        raise TaskFailed(str(exc), messages, artifacts) from exc
                     checkpoint_exists = recorded and any(
                         receipt.category == "native_agent_checkpoint"
                         and receipt.payload.get("native_session_id") == event.session_id
@@ -3325,7 +3338,7 @@ class BackgroundAgentTasks:
             self._workers.pop(operation_id, None)
 
 
-def _persisted_request_roundtrips(request: BaseModel, stored: dict) -> bool:
+def persisted_request_roundtrips(request: BaseModel, stored: dict) -> bool:
     """A row written before a field existed omits it; its default is the legacy meaning."""
     dumped = request.model_dump(mode="json")
     fields = type(request).model_fields

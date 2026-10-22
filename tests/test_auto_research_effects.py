@@ -75,7 +75,7 @@ from rcp.storage import (
 )
 from rcp.storage.auto_research_children import auto_research_inbox_projection
 
-from .helpers import fabricated_authorizer, wait_for_task
+from .helpers import CommandFileMailbox, fabricated_authorizer, wait_for_task
 
 MAILBOX_ID = "a" * 32
 CREDENTIAL = "b" * 64
@@ -1086,7 +1086,7 @@ def test_same_key_spawn_dispatches_a_worker_committed_before_process_launch(
     dispatcher = AutoResearchCommandDispatcher(
         store,
         effects,
-        command_file_reader=lambda _filename, _max_bytes: instruction,
+        mailbox=CommandFileMailbox(lambda _filename, _max_bytes: instruction),
     )
     expected_worker_id = str(
         uuid.uuid5(
@@ -1164,7 +1164,7 @@ def test_transient_spawn_failure_keeps_admission_for_same_key_recovery(
     dispatcher = AutoResearchCommandDispatcher(
         store,
         effects,
-        command_file_reader=lambda _filename, _max_bytes: instruction,
+        mailbox=CommandFileMailbox(lambda _filename, _max_bytes: instruction),
     )
     real_start = start_auto_research_child_work
 

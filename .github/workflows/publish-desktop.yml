@@ -41,7 +41,7 @@ jobs:
     # unchanged. A failed companion remains a draft and can be retried.
     permissions:
       contents: write
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       RELEASE_TAG: ${{ inputs.tag }}
       GH_TOKEN: ${{ github.token }}
@@ -124,7 +124,7 @@ jobs:
     permissions:
       contents: write
       actions: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       RELEASE_TAG: ${{ inputs.tag }}
       TARGET_COMMIT: ${{ needs.identity.outputs.commit }}
@@ -216,7 +216,7 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: write
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       RELEASE_TAG: ${{ inputs.tag }}
       TARGET_COMMIT: ${{ needs.identity.outputs.commit }}
@@ -285,6 +285,6 @@ jobs:
     name: report a desktop failure
     needs: [identity, build, publish, point-updater]
     if: failure()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - run: echo "Desktop publication failed; the server release is unchanged. Retry this workflow with the same tag." >> "$GITHUB_STEP_SUMMARY"

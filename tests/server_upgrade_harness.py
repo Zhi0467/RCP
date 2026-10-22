@@ -92,6 +92,10 @@ EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
         "51f290d37f3bf888b5674870c1cb7c6fe349c003",
         "0463a14b23043a9a0b3cd2752d9fbc90c9cfb65ae5024f0907fab3dc08916fa3",
     ),
+    "pre-chat-forks-v31-cfaebcc": (
+        "cfaebcceb3f7013236fca5654cc413cefc87cd91",
+        "c5fb344c933a62e80482124e9805c032ef9d31773b3fcddf8391c8fc828eb831",
+    ),
     "team-server-v1-78be62b": (
         "78be62b775fd62d7888c2e22d87569c103bffc83",
         "c6fc54845354bb000a9ae9dc26ac40446ba14f96f4f00b8ad8412338ec65da42",

@@ -40,7 +40,7 @@ from rcp.limits import (
 )
 
 # Bumped when the stable policy prose of either Auto-research actor contract changes.
-AUTO_RESEARCH_POLICY_VERSION = "auto-research-v10"
+AUTO_RESEARCH_POLICY_VERSION = "auto-research-v11"
 
 
 def _repositories(repositories: list[dict[str, str]]) -> str:
@@ -147,7 +147,7 @@ def _command_invocations(
         "finish": ("finish --key <key>",),
         "ask": ("ask --key <key> --question <text> [--choice <text> ...] [--multiple]",),
         "lesson": ("lesson add --key <key> --text <text>",),
-        "bulletin": bulletin_usages(),
+        "bulletin": bulletin_usages(turn_artifacts=False),
         "name": (name_usage(),),
     }
     commands = "\n".join(

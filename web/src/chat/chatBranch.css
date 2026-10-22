@@ -1,0 +1,24 @@
+/* It starts the transcript's centered 820px column (.node-chat-line). */
+.chat-origin-link {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: fit-content;
+  max-width: min(100%, 820px);
+  margin: 0 0 12px max(0px, (100% - 820px) / 2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--type-2xs);
+  color: var(--muted);
+  text-decoration: none;
+}
+.chat-origin-link:hover {
+  color: var(--ink);
+}
+.chat-origin-link svg {
+  flex: none;
+}
+.chat-branch-picker[data-failed="true"] .branch-picker-trigger {
+  box-shadow: inset 2px 0 0 var(--red);
+}

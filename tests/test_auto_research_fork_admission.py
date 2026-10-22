@@ -10,7 +10,7 @@ from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.runs.auto_research import AutoResearchCommandDispatcher
 from rcp.runs.auto_research_effects import auto_research_command_effects
-from tests.helpers import wait_for_task
+from tests.helpers import CommandFileMailbox, wait_for_task
 from tests.test_auto_research_effects import (
     CREDENTIAL,
     MAILBOX_ID,
@@ -62,7 +62,7 @@ def test_owned_target_is_pinned_and_same_key_replays_after_rename(tmp_path, proj
         execution_host="execution.example",
     )
     dispatcher = AutoResearchCommandDispatcher(
-        store, effects, command_file_reader=lambda _name, _limit: "Inspect the graph."
+        store, effects, mailbox=CommandFileMailbox(lambda _name, _limit: "Inspect the graph.")
     )
     request = _spawn(
         project=project, seat_node_id=None if project else "blk/check", target=branch.name
@@ -95,7 +95,7 @@ def test_refused_target_does_not_admit_or_spend(tmp_path, refusal):
     dispatcher = AutoResearchCommandDispatcher(
         store,
         _effects(store, BackgroundAgentTasks(store, _successful_stream)),
-        command_file_reader=lambda _name, _limit: "Inspect the graph.",
+        mailbox=CommandFileMailbox(lambda _name, _limit: "Inspect the graph."),
     )
     arguments = {"target": branch.name}
     before = store.episode_budget_meter(episode.episode_id)
@@ -214,7 +214,7 @@ def _fork_dispatch(manifest, tmp_path, *, kind="work", seed=True):
         store,
         effects,
         service=service,
-        command_file_reader=lambda name, _: files[name],
+        mailbox=CommandFileMailbox(lambda name, _: files[name]),
     )
     at = f"main@{service.history.head_ref().revision}"
     options = {"at": at, **({"seed_file": "seed.json"} if seed else {})}

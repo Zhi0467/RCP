@@ -877,6 +877,32 @@ async def _stream_agent_events(
                 write_scope,
                 operation_id=execution.operation_id,
             )
+    fork: dict[str, str] = {}
+    # Only a chat request names a fork, recorded by its first turn's admission.
+    if isinstance(request, RunRequest) and request.fork_session_id and session_id is None:
+        if request.fork_source_host != execution_host or not request.fork_source_cwd:
+            outcome.failed = True
+            yield _sse(
+                AgentEvent(event="error", text="The source session's execution machine changed.")
+            )
+            return
+        refusal = (
+            await asyncio.to_thread(
+                execution.store.chat_fork_launch_refusal, execution.operation_id
+            )
+            if execution is not None
+            else None
+        )
+        if execution is not None and refusal is not None:
+            outcome.failed = True
+            # A retry replays the same refusal, so it fails as admission's does.
+            execution.launch_refused = True
+            yield _sse(AgentEvent(event="error", text=refusal))
+            return
+        fork = {
+            "fork_session_id": request.fork_session_id,
+            "fork_source_cwd": request.fork_source_cwd,
+        }
     if hidden_read_scope is None and service is not None:
         hidden_read_scope = await _prepare_hidden_read_scope(
             service,
@@ -970,6 +996,7 @@ async def _stream_agent_events(
             model=request.model,
             reasoning=request.reasoning,
             session_id=session_id,
+            **fork,
             read_dirs=read_dirs,
             write_dirs=write_dirs,
             write_scope=write_scope,
@@ -1074,6 +1101,14 @@ async def _stream_agent_events(
                 if execution_host and execution is None:
                     continue
             if event.event == "answer":
+                if fork and not outcome.session_id:
+                    outcome.failed = True
+                    yield _sse(
+                        AgentEvent(
+                            event="error", text="The provider did not identify its forked session."
+                        )
+                    )
+                    return
                 outcome.answers.append(event.text)
                 if event.usage is not None:
                     # A provider's final result is both its answer and its

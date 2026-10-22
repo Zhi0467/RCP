@@ -1,6 +1,6 @@
 import { useId, useState, type ReactNode } from "react";
 import { ApiError } from "../core/api";
-import { branchNameProblem, typedBranchName } from "../core/branchNames";
+import { branchNameProblem, submittedBranchName, typedBranchName } from "../core/branchNames";
 
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 
@@ -36,11 +36,11 @@ export function branchNameRefusal(error: unknown): string | null {
 
 /** What a launch sends: blank lets the server assign the date fallback. */
 export function branchNameRequest(value: string): string | null {
-  return value.trim() || null;
+  return submittedBranchName(value) || null;
 }
 
 export function branchNameValid(value: string): boolean {
-  return branchNameProblem(value.trim()) === null;
+  return branchNameProblem(submittedBranchName(value)) === null;
 }
 
 export function BranchNameField({
@@ -68,9 +68,8 @@ export function BranchNameField({
   // A new refusal pins the value it refused; editing the name clears the warning.
   const [refused, setRefused] = useState({ refusal, value });
   if (refused.refusal !== refusal) setRefused({ refusal, value });
-  const trimmed = value.trim();
   const warning =
-    branchNameProblem(trimmed) ??
+    branchNameProblem(submittedBranchName(value)) ??
     (refusal && refused.value === value
       ? refusal === "branch_name_taken"
         ? "That name is taken."

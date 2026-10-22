@@ -190,6 +190,17 @@ def test_catalog_and_skill_probes_read_what_the_cli_prints():
     ]
 
 
+def test_skill_probe_skips_plugins_and_project_config_like_a_launch():
+    turn = OPENCODE.runtime(OPENCODE.legacy_runtime_id).turn(_request("discuss"))
+    probe = OPENCODE.skill_probe("opencode").command
+    assert "--pure" in turn.command and "--pure" in probe
+    assert probe[0] == "env"
+    assert (
+        "OPENCODE_DISABLE_PROJECT_CONFIG=" + turn.environment["OPENCODE_DISABLE_PROJECT_CONFIG"]
+        in probe
+    )
+
+
 def test_the_wrapper_reports_the_exit_and_refuses_a_git_work_tree(tmp_path: Path):
     fake = tmp_path / "opencode"
     fake.write_text("#!/bin/sh\necho started\nexit 3\n")

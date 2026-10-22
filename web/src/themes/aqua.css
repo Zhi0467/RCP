@@ -228,11 +228,21 @@
 }
 
 :root[data-theme="aqua"]
-  :is(.detail-drawer, .chat-dock, .project-cover-menu, .landing-identity-panel) {
+  :is(
+    .detail-drawer,
+    .chat-dock,
+    .project-cover-menu,
+    .landing-identity-panel,
+    .agent-row-menu-list
+  ) {
   border-radius: 13px;
   box-shadow:
     inset 1px 1px 0 var(--aqua-highlight),
     var(--shadow);
+}
+
+:root[data-theme="aqua"] .agent-row-menu-list button {
+  border-radius: 8px;
 }
 
 :root[data-theme="aqua"] .dag-toolbar {

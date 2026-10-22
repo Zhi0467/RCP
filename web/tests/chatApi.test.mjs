@@ -188,3 +188,50 @@ test("transcript validation refuses a branch transcript when viewing main", asyn
     })),
   );
 });
+
+test("branch chat preserves its target and origin without starting a turn", async () => {
+  const { branchChat, createGraphFork } = await server.ssrLoadModule("/src/core/api.ts");
+  const { projectViewHash } = await server.ssrLoadModule("/src/core/graphTarget.ts");
+  const originalFetch = globalThis.fetch;
+  const target = { kind: "branch", branch_id: "destination" };
+  const origin = { source_chat_id: "source", source_operation_id: "source-turn" };
+  const calls = [];
+  globalThis.fetch = async (path, init) => {
+    calls.push({ path, method: init.method, body: JSON.parse(init.body) });
+    return Response.json(
+      path.endsWith("/graph-refs")
+        ? { kind: "branch", branch_id: "destination" }
+        : { chat_id: "new-chat", graph_target: target, origin, messages: [] },
+    );
+  };
+  try {
+    await createGraphFork(
+      "project",
+      { kind: "branch", branch_id: "source-branch" },
+      7,
+      "fork-request",
+      "New direction",
+    );
+    const chat = await branchChat("project", "source", target, "branch-request");
+    assert.deepEqual(calls, [
+      {
+        path: "/api/projects/project/graph-refs",
+        method: "POST",
+        body: { request_id: "fork-request", at: "branch:source-branch@7", name: "New direction" },
+      },
+      {
+        path: "/api/projects/project/chats/source/branch",
+        method: "POST",
+        body: { graph_target: target, request_id: "branch-request" },
+      },
+    ]);
+    assert.deepEqual(chat.origin, origin);
+    assert.deepEqual(chat.messages, []);
+    assert.equal(
+      projectViewHash("project", chat.graph_target, "chats", { chatId: chat.chat_id }),
+      "#/projects/project?view=chats&chat=new-chat&branch_id=destination",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

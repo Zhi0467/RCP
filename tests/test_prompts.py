@@ -65,6 +65,7 @@ def test_chat_master_context_preserves_context_and_skill_paths() -> None:
     skill_path = "/stage/inputs/skills/skill/graph-audit"
     master = PromptFactory.chat_master_context(
         project_name="Example",
+        graph_target=GraphTargetRef(),
         ontology_path="/state/graph.json#ontology",
         ontology_extensions=True,
         graph_path="/state/graph.json",
@@ -100,6 +101,7 @@ def test_chat_master_preserves_experiment_watcher_resource_paths_and_host() -> N
     }
     master = PromptFactory.chat_master_context(
         project_name="Example",
+        graph_target=GraphTargetRef(),
         ontology_path="/state/graph.json#ontology",
         ontology_extensions=False,
         graph_path="/state/graph.json",
@@ -709,6 +711,7 @@ def test_discuss_turn_rejects_work_launch_instructions() -> None:
 def test_compute_resources_preserve_selected_connection_metadata() -> None:
     master = PromptFactory.chat_master_context(
         project_name="Example",
+        graph_target=GraphTargetRef(),
         ontology_path="/state/graph.json#ontology",
         ontology_extensions=True,
         graph_path="/state/graph.json",
@@ -872,6 +875,7 @@ def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
     inputs = dict(
         kind="seed",
         project_name="Example",
+        graph_target=GraphTargetRef(),
         repositories=[],
         ontology_extensions=False,
         provider_log_roots={},

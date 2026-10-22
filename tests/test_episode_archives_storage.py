@@ -317,6 +317,7 @@ def test_archive_migration_defaults_legacy_episodes_visible_and_project_deletion
         "graph_bulletin_v1",
         "project_worker_seats_v1",
         "conversation_names_v1",
+        "chat_forks_v1",
     )
     migrated = AppStore(store.path)
     assert migrated.episode("episode") == before

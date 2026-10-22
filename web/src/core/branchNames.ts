@@ -3,9 +3,17 @@ import type { GraphRef, GraphTargetRef } from "./types";
 /** Lowercase letters, digits, and hyphens; 2–32 characters; never `main`. */
 export const BRANCH_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$/;
 
-/** What a branch-name field keeps as the user types: each run of spaces becomes one hyphen. */
+/**
+ * What a branch-name field keeps as the user types: lowercase, each run of spaces
+ * or hyphens one hyphen. An edge hyphen stays so the next word can follow it.
+ */
 export function typedBranchName(value: string): string {
-  return value.replace(/\s+/g, "-");
+  return value.toLowerCase().replace(/[\s-]+/g, "-");
+}
+
+/** The name a typed value submits: its edge hyphens dropped. */
+export function submittedBranchName(value: string): string {
+  return typedBranchName(value).replace(/^-+|-+$/g, "");
 }
 
 export function branchNameProblem(name: string): string | null {

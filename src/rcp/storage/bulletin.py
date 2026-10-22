@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import re
 import sqlite3
 import uuid
-from typing import Any
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any, cast
 
 from rcp.core.graph_targets import graph_target_json
 from rcp.core.transition_models import GraphTargetRef
@@ -20,10 +22,15 @@ from rcp.limits import (
     BULLETIN_TEXT_MAX_CHARS,
     BULLETIN_UNREAD_MAX_COUNT,
 )
+from rcp.storage.artifacts import ArtifactStoreMixin
 from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.provisioning import ProjectProvisioningStoreMixin
 from rcp.storage.resource_versions import install_bulletin_resource_versions
+
+if TYPE_CHECKING:
+    from rcp.storage import AppStore
+    from rcp.storage.artifact_models import Artifact
 
 
 class BulletinError(ValueError):
@@ -66,7 +73,29 @@ def migrate_graph_bulletin(connection: sqlite3.Connection) -> None:
     install_bulletin_resource_versions(connection)
 
 
-def _record(row: sqlite3.Row) -> dict[str, Any]:
+def _linked_artifact_ids(text: str) -> list[str]:
+    return list(dict.fromkeys(re.findall(r"<artifact:([^<>\s]+)>", text)))[:BULLETIN_REFS_MAX_COUNT]
+
+
+def _artifact_links(
+    connection: sqlite3.Connection, row: sqlite3.Row, now: str
+) -> list[dict[str, str]]:
+    """Resolves the post's `<artifact:ID>` tokens against this project's readable artifacts.
+
+    Links are read from the text, so an edit needs no bookkeeping and a token naming
+    no readable artifact of this project stays prose.
+    """
+    links = []
+    for artifact_id in _linked_artifact_ids(row["text"]):
+        artifact = ArtifactStoreMixin._readable_artifact(
+            connection, row["project_id"], artifact_id, now=now
+        )
+        if artifact is not None:
+            links.append(artifact.model_dump(include={"artifact_id", "source_name", "media_type"}))
+    return links
+
+
+def _record(connection: sqlite3.Connection, row: sqlite3.Row, now: str) -> dict[str, Any]:
     author = {"kind": row["author_kind"]}
     for key in ("operation_id", "actor_label", "user_id", "display_name"):
         if row[key] is not None:
@@ -78,6 +107,7 @@ def _record(row: sqlite3.Row) -> dict[str, Any]:
         "author": author,
         "text": row["text"],
         "refs": json.loads(row["refs_json"]),
+        "artifacts": _artifact_links(connection, row, now),
         "reply_to": row["reply_to"],
         "created_at": row["created_at"],
         "mentions": json.loads(row["mentions_json"]),
@@ -182,7 +212,12 @@ def _parse(
 
 
 def _list(
-    connection: sqlite3.Connection, project_id: str, target_key: str, cursor: str | None
+    connection: sqlite3.Connection,
+    project_id: str,
+    target_key: str,
+    cursor: str | None,
+    *,
+    now: str,
 ) -> dict[str, Any]:
     try:
         before = int(cursor) if cursor is not None else 9223372036854775807
@@ -209,7 +244,7 @@ def _list(
         (project_id, target_key),
     ).fetchone()[0]
     posts = [
-        _record(row)
+        _record(connection, row, now)
         for row in sorted(
             [*rows[:BULLETIN_PAGE_SIZE], *replies], key=lambda row: row["sequence"], reverse=True
         )
@@ -409,10 +444,12 @@ def _post(
                 )
         outcome = {
             "post": _record(
+                connection,
                 connection.execute(
                     f"SELECT p.*, {_REPLY_COUNT} AS reply_count FROM bulletin_posts p WHERE post_id=?",
                     (post_id,),
-                ).fetchone()
+                ).fetchone(),
+                now,
             )
         }
         _retain_recent_threads(connection, project_id, target_key)
@@ -462,7 +499,7 @@ class BulletinStoreMixin(StoreMixinBase):
         """
         with self.connection() as connection:
             return [
-                {**_record(row), "target_key": row["target_key"]}
+                {**_record(connection, row, self.now()), "target_key": row["target_key"]}
                 for row in connection.execute(
                     f"SELECT p.*, {_REPLY_COUNT} AS reply_count FROM bulletin_posts p WHERE project_id=? AND deleted_at IS NULL "
                     "AND p.author_actor_id IS NOT ? "
@@ -556,7 +593,7 @@ class BulletinStoreMixin(StoreMixinBase):
         self, project_id: str, target_key: str, *, cursor: str | None = None
     ) -> dict[str, Any]:
         with self.connection() as connection:
-            return _list(connection, project_id, target_key, cursor)
+            return _list(connection, project_id, target_key, cursor, now=self.now())
 
     def mutate_bulletin_post(
         self,
@@ -574,7 +611,7 @@ class BulletinStoreMixin(StoreMixinBase):
 
         if action not in {"post", "edit", "delete"}:
             raise BulletinError("bulletin_command_invalid")
-        with self.connection() as connection:
+        with self._artifacts_held(text) as kept, self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             if not live_project_member(connection, project_id, user_id):
                 raise BulletinError("bulletin_forbidden")
@@ -585,11 +622,12 @@ class BulletinStoreMixin(StoreMixinBase):
                     "SELECT display_name FROM space_users WHERE user_id=?", (user_id,)
                 ).fetchone()
                 author["display_name"] = user["display_name"] or user_id
+            now = self.now()
             outcome = _post(
                 connection,
                 project_id,
                 target_key,
-                now=self.now(),
+                now=now,
                 author=author,
                 key=key,
                 text=text,
@@ -597,7 +635,70 @@ class BulletinStoreMixin(StoreMixinBase):
                 action=action,
                 post_id=post_id,
             )
+            kept += self._keep_linked_artifacts(connection, project_id, outcome, now)
         return _result(outcome)["post"]
+
+    def create_turn_artifact(self, artifact: Artifact, *, data: bytes) -> Artifact:
+        """Create a turn's artifact, kept when a live post already links it.
+
+        `bulletin --link` lets a post link a turn's file before the turn publishes it.
+        A post holds its linked artifacts' locks across its transaction, so under the
+        same lock a link either is seen here or keeps the created artifact itself.
+        """
+        store = cast("AppStore", self)
+        token = f"<artifact:{artifact.artifact_id}>"
+        with store.artifact_lock(artifact.artifact_id):
+            with self.connection() as connection:
+                rows = connection.execute(
+                    "SELECT text FROM bulletin_posts WHERE project_id=? AND deleted_at IS NULL "
+                    "AND instr(text, ?) > 0",
+                    (artifact.project_id, token),
+                ).fetchall()
+            if any(artifact.artifact_id in _linked_artifact_ids(row["text"]) for row in rows):
+                artifact = artifact.model_copy(update={"kept_at": self.now(), "expires_at": None})
+            return store.create_artifact(artifact, data=data)
+
+    @contextlib.contextmanager
+    def _artifacts_held(self, text: str | None) -> Iterator[list[Artifact]]:
+        """Hold every artifact the text may link across the post's transaction.
+
+        Expiry and Delete take the same locks, so neither lands between the link and
+        its Keep. Artifacts the post kept show as saved on their turns once it commits.
+        """
+        store = cast("AppStore", self)
+        kept: list[Artifact] = []
+        with contextlib.ExitStack() as locks:
+            for artifact_id in sorted(_linked_artifact_ids(text or "")):
+                locks.enter_context(store.artifact_lock(artifact_id))
+            yield kept
+            for artifact in kept:
+                if artifact.origin_operation_id:
+                    with contextlib.suppress(KeyError):
+                        store.mark_agent_artifact_kept(
+                            artifact.origin_operation_id,
+                            artifact.artifact_id,
+                            kept_at=artifact.kept_at or "",
+                        )
+
+    def _keep_linked_artifacts(
+        self,
+        connection: sqlite3.Connection,
+        project_id: str,
+        outcome: dict[str, Any],
+        now: str,
+    ) -> list[Artifact]:
+        """A link saves its artifact in the post's own transaction, so a published
+        link never outlives its artifact. Saving is not a review: a linked
+        consolidation report stays open in the Inbox until a human settles it."""
+        store = cast("AppStore", self)
+        kept = []
+        for link in outcome.get("post", {}).get("artifacts", []):
+            artifact = store._readable_artifact(
+                connection, project_id, link["artifact_id"], now=now
+            )
+            if artifact is not None and not artifact.kept_at:
+                kept.append(store._retain_artifact(connection, artifact))
+        return kept
 
     def execute_bulletin_command(
         self,
@@ -610,10 +711,13 @@ class BulletinStoreMixin(StoreMixinBase):
         reply_to: str | None = None,
         cursor: str | None = None,
         post_id: str | None = None,
+        channel: str | None = None,
     ) -> dict[str, Any]:
-        if subcommand not in {"read", "post", "edit", "delete"}:
+        if channel is not None and (subcommand not in {"read", "post"} or reply_to is not None):
+            raise BulletinError("bulletin_channel_invalid")
+        if subcommand not in {"read", "artifact", "link", "post", "edit", "delete"}:
             raise BulletinError("bulletin_command_invalid")
-        with self.connection() as connection:
+        with self._artifacts_held(text) as kept, self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             task = connection.execute(
                 "SELECT * FROM graph_runs WHERE project_id=? AND operation_id=?",
@@ -624,37 +728,55 @@ class BulletinStoreMixin(StoreMixinBase):
             if not bulletin_enabled_for_task(connection, operation_id):
                 raise BulletinError("bulletin_disabled")
             target_key = GraphTargetRef.model_validate_json(task["graph_target_json"]).key
+            if channel is not None:
+                if channel == "main":
+                    target_key = "main"
+                else:
+                    branches = connection.execute(
+                        "SELECT branch_id FROM graph_branches WHERE project_id=? AND branch_id=?",
+                        (project_id, channel.removeprefix("branch:")),
+                    ).fetchall()
+                    if not branches:
+                        branches = connection.execute(
+                            "SELECT branch_id FROM graph_branches WHERE project_id=? AND name=?",
+                            (project_id, channel),
+                        ).fetchall()
+                    if len(branches) != 1:
+                        raise BulletinError("bulletin_channel_invalid")
+                    target_key = f"branch:{branches[0]['branch_id']}"
             if subcommand == "read":
-                return _list(connection, project_id, target_key, cursor)
-            # A reply, edit, or delete lands in the channel of the post it names, where
-            # a member may have mentioned this agent; a new post stays in its own channel.
+                return _list(connection, project_id, target_key, cursor, now=self.now())
+            # Replies, edits, and deletes land in the named post's channel.
             named = reply_to if subcommand == "post" else post_id
-            channel = (
+            named_channel = (
                 named
                 and connection.execute(
                     "SELECT target_key FROM bulletin_posts WHERE project_id=? AND post_id=?",
                     (project_id, named),
                 ).fetchone()
             )
-            if channel:
-                target_key = channel["target_key"]
+            if named_channel:
+                target_key = named_channel["target_key"]
             authority = json.loads(task["dispatch_authority_json"] or "{}")
             if authority.get("task_contract") not in {
                 "work_auto",
                 "orchestrate",
             } or not live_project_member(connection, project_id, task["authorized_user_id"]):
                 raise BulletinError("bulletin_forbidden")
+            if subcommand in {"artifact", "link"}:
+                return {}
             ProjectProvisioningStoreMixin._require_project_accepts_new_work(connection, project_id)
             from rcp.bulletin import bulletin_actor_id
 
             actor_id = bulletin_actor_id(connection, task)
             if actor_id is None:
                 raise BulletinError("bulletin_forbidden")
+            now = self.now()
             outcome = _post(
                 connection,
                 project_id,
                 target_key,
-                now=self.now(),
+                now=now,
                 author={
                     "actor_id": actor_id,
                     "kind": "agent",
@@ -667,6 +789,7 @@ class BulletinStoreMixin(StoreMixinBase):
                 action=subcommand,
                 post_id=post_id,
             )
+            kept += self._keep_linked_artifacts(connection, project_id, outcome, now)
         return _result(outcome)
 
 

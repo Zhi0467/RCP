@@ -311,7 +311,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
             """
         ).fetchall()
     assert migrations == list(AppStore._STORAGE_SCHEMA_MIGRATIONS)
-    assert migrations[-1] == (59, "conversation_names_v1")
+    assert migrations[-1] == (60, "chat_forks_v1")
 
     def unexpected_migration(*_args) -> None:
         raise AssertionError("completed storage migration was rescanned")
@@ -2225,6 +2225,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "paper_drafts": 1,
         "writing_sessions": 1,
         "chat_session_contexts": 1,
+        "chat_forks": 0,
         "graph_seen_heads": 1,
         "chat_display": 0,
         "chat_browser_preferences": 0,

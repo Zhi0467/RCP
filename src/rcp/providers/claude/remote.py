@@ -7,6 +7,12 @@ imports serve the local copy.
 
 from __future__ import annotations
 
+import json
+import os
+import re
+import shutil
+import uuid
+from pathlib import Path
 from typing import Any
 
 if "SessionFormat" not in globals():
@@ -39,11 +45,68 @@ def is_claude_task_notice(value: dict, sent_ids: set[str], finished_ids: set[str
     )
 
 
+def claude_project_directory(cwd: Path) -> str:
+    """Claude Code's project key, including its long-path hash (2.1.307)."""
+    encoded = str(cwd).encode("utf-16-le")
+    units = [int.from_bytes(encoded[i : i + 2], "little") for i in range(0, len(encoded), 2)]
+    sanitized = "".join(re.sub(r"[^a-zA-Z0-9]", "-", chr(unit)) for unit in units)
+    if len(sanitized) <= 200:
+        return sanitized
+    value = 0
+    for unit in units:
+        value = (31 * value + unit) & 0xFFFFFFFF
+    value = abs(value if value < 0x80000000 else value - 0x100000000)
+    suffix = ""
+    while value:
+        value, remainder = divmod(value, 36)
+        suffix = "0123456789abcdefghijklmnopqrstuvwxyz"[remainder] + suffix
+    return sanitized[:200] + "-" + (suffix or "0")
+
+
 class ClaudeSessionFormat(SessionFormat):
     # Subagent transcripts sit beside their parent and are not sessions.
     skipped_path_parts = frozenset({"subagents"})
     default_thread_source = "user"
     default_source_kind = "claude"
+
+    def prepare_session_fork(self, *, source_session_id: str, source_cwd: Path, cwd: Path) -> None:
+        # Claude resolves --resume within the current project directory. Copy
+        # the transcript, never move it or launch from the source stage.
+        uuid.UUID(source_session_id)
+        source_cwd = source_cwd.resolve()
+        cwd = cwd.resolve()
+        if cwd == source_cwd:
+            raise ValueError("A Claude session fork requires a separate working directory.")
+        config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+        projects = config / "projects"
+        source = projects / claude_project_directory(source_cwd) / f"{source_session_id}.jsonl"
+        target = projects / claude_project_directory(cwd) / source.name
+        if target == source:
+            raise ValueError("Claude source and fork directories share a session namespace.")
+        if target.exists():
+            # Retry keeps the prepared snapshot when the source chat advances.
+            identifiers = {
+                record.get("sessionId")
+                for line in target.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+                and isinstance(record := json.loads(line), dict)
+                and record.get("sessionId")
+            }
+            if identifiers != {source_session_id}:
+                raise ValueError(
+                    "The fork directory already contains a different Claude transcript."
+                )
+            return
+        if not source.is_file():
+            raise ValueError("The source Claude session transcript is unavailable on this machine.")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with source.open("rb") as reader, temporary.open("xb") as writer:
+                shutil.copyfileobj(reader, writer)
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def record_fields(self, raw: dict[str, Any]) -> tuple[Any, str, Any, str, Any]:
         raw_type = str(raw.get("type", ""))

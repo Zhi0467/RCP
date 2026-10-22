@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, cast
 from rcp.core.graph_targets import graph_target_json
 from rcp.core.transition_models import GraphTargetRef
 from rcp.providers.browser_grant import BrowserOwnerKey, BrowserTurnStatus
+from rcp.storage.chat_forks import ChatForkRecord
 from rcp.storage.chat_names import ChatNameError, initialize_chat_name, normalize_chat_name
 from rcp.storage.mixin_base import StoreMixinBase
 
@@ -119,6 +120,43 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                     }
                 )
             summaries.extend(orchestrators.values())
+            by_id = {summary["chat_id"]: summary for summary in summaries}
+            for row in connection.execute(
+                "SELECT fork.record_json, display.title, source.title AS source_title "
+                "FROM chat_forks AS fork "
+                "JOIN chat_display AS display USING (project_id, chat_id) "
+                "LEFT JOIN chat_display AS source ON source.project_id = fork.project_id "
+                "AND source.chat_id = json_extract(fork.record_json, '$.origin.source_chat_id') "
+                "WHERE fork.project_id = ? AND (? IS NULL OR fork.chat_id = ?)",
+                (project_id, chat_id, chat_id),
+            ).fetchall():
+                fork = ChatForkRecord.model_validate_json(row["record_json"])
+                # The origin link names the source as it is called now; the title
+                # captured at fork time stands in only once the source is gone.
+                origin = fork.origin.model_dump(mode="json")
+                # A restored fork that never ran starts fresh; its next message picks freely.
+                origin["pending"] = not fork.detached
+                if row["source_title"]:
+                    origin["source_title"] = row["source_title"]
+                if fork.chat_id in by_id:
+                    by_id[fork.chat_id]["origin"] = origin
+                else:
+                    summaries.append(
+                        {
+                            "chat_id": fork.chat_id,
+                            "graph_target": fork.graph_target.model_dump(),
+                            "kind": fork.kind,
+                            "node_id": fork.node_id,
+                            "title": row["title"],
+                            "updated_at": fork.created_at,
+                            "message_count": 0,
+                            "last_message_preview": "",
+                            "conversation_kind": "chat",
+                            "orchestrator_episode_id": None,
+                            "human_turn_refusal": None,
+                            "origin": origin,
+                        }
+                    )
         return summaries
 
     def _orchestrator_chat_summaries(
@@ -351,6 +389,15 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             # Newest pin first.
             "pinned": [row["chat_id"] for row in pinned],
         }
+
+    def chat_archived(self, project_id: str, chat_id: str) -> bool:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM chat_display WHERE project_id = ? AND chat_id = ? "
+                "AND archived_at IS NOT NULL",
+                (project_id, chat_id),
+            ).fetchone()
+        return row is not None
 
     def set_chat_archived(
         self, project_id: str, chat_id: str, user_id: str, *, archived: bool

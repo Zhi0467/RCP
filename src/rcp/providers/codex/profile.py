@@ -36,6 +36,11 @@ if TYPE_CHECKING:
     from rcp.core.models import HiddenReadScope
     from rcp.provider_auth import ProviderAuthentication
 
+# Every Codex launch, exec and app-server alike, runs with these features off;
+# the skill probe starts app-server with the same flags so the menu lists only
+# skills a turn loads.
+_DISABLED_FEATURES = ("--disable", "apps", "--disable", "plugins")
+
 
 class CodexProfile(ProviderProfile):
     @property
@@ -193,7 +198,7 @@ class CodexProfile(ProviderProfile):
 
     def skill_probe(self, binary: str) -> ProviderSkillProbe:
         return ProviderSkillProbe(
-            command=[binary, "app-server"],
+            command=[binary, "app-server", *_DISABLED_FEATURES],
             protocol="jsonrpc",
             messages=(
                 {
@@ -275,18 +280,21 @@ class CodexProfile(ProviderProfile):
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
         autocompact: str = "",
+        fork_session_id: str | None = None,
     ) -> list[str]:
         del prompt, read_dirs
+        continued_session = fork_session_id or session_id
         command = [binary, "exec"]
-        if session_id:
+        if continued_session:
             # `codex exec resume` has no --sandbox or --cd; it takes the process
             # working directory and, left alone, codex's own default sandbox --
             # which is read-only. A resumed run must be able to write its patch
             # file, so the mode is set through --config.
-            command.append("resume")
+            command.append("fork" if fork_session_id else "resume")
         command.extend(
             ["--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"]
         )
+        command.extend(_DISABLED_FEATURES)
         # Live retrieval is a provider tool, independent of whether command
         # execution is read-only or has workspace-write network access.
         command.extend(["--config", 'web_search="live"'])
@@ -333,20 +341,20 @@ class CodexProfile(ProviderProfile):
                 )
             sandbox = "read-only" if capability == "paper_readonly" else "workspace-write"
             if capability != "discuss" and hidden_read_scope is None:
-                if session_id:
+                if continued_session:
                     command.extend(["--config", f'sandbox_mode="{sandbox}"'])
                 else:
                     command.extend(["--sandbox", sandbox])
             if capability not in {"paper_readonly", "discuss"} and hidden_read_scope is None:
                 command.extend(["--config", "sandbox_workspace_write.network_access=true"])
-        if not session_id:
+        if not continued_session:
             command.extend(["--cd", str(cwd)])
         if model:
             command.extend(["--model", model])
         if reasoning:
             command.extend(["--config", f'model_reasoning_effort="{reasoning}"'])
-        if session_id:
-            command.append(session_id)
+        if continued_session:
+            command.append(continued_session)
         command.append("-")
         return command
 
@@ -523,6 +531,7 @@ class _CodexExecRuntime(_JsonlProviderRuntime):
                 model=request.model,
                 reasoning=request.reasoning,
                 session_id=request.session_id,
+                fork_session_id=request.fork_session_id,
                 read_dirs=request.read_dirs,
                 write_dirs=request.write_dirs,
                 write_scope=request.write_scope,

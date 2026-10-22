@@ -37,9 +37,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .chat-new-session-label {
-    display: none;
-  }
   /* The agent status keeps its ring (and running subagents) as a percentage;
      the panel becomes a bottom sheet that scrolls on its own. */
   .agent-status-chip.compactions,
@@ -130,10 +127,11 @@
   .project-header-actions .button,
   .project-header-actions .icon-button,
   .conversation-list [role="option"],
-  .conversation-list-toggle,
   .conversation-list .agent-list-search input,
   .agent-list-filters button,
-  .agent-status-chip {
+  .agent-status-chip,
+  .chat-header-menu-list > button,
+  .chat-header-menu-list :is(.branch-picker-trigger, .scope-trigger) {
     height: auto;
     min-height: 44px;
   }

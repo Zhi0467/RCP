@@ -1,5 +1,5 @@
+import { ChatBranchPicker } from "./ChatBranchPicker";
 import {
-  ChevronDown,
   Circle,
   Ellipsis,
   Kanban,
@@ -102,6 +102,8 @@ interface Props {
   onRemoveDraft: (chatId: string) => void;
   /** Archive moves a chat in or out of the unread count, which the server derives. */
   onArchiveChange?: () => void;
+  /** The project's archived chat ids as the refreshing chat reads last saw them. */
+  archivedRevision?: string;
   /** The newest Auto-research episode owning the viewed branch, for its orchestrator card. */
   /** Each branch's current Auto-research episode, so every listed orchestrator keeps its attention. */
   orchestratorEpisodes?: readonly Episode[];
@@ -381,6 +383,7 @@ export function ChatsWorkspace({
   unreadChatIds,
   chatTranscripts,
   onArchiveChange,
+  archivedRevision = "",
   onSelect,
   onStartTask,
   onResumeTask,
@@ -441,6 +444,8 @@ export function ChatsWorkspace({
     new Set(orchestratorEpisodes.map((episode) => episode.graph_target.branch_id ?? "")),
   );
   const [menuChatId, setMenuChatId] = useState<string | null>(null);
+  const [renamingInHeader, setRenamingInHeader] = useState(false);
+  useEffect(() => setRenamingInHeader(false), [selectedChatId]);
   const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const showingArchived = filter === "archived";
@@ -489,8 +494,10 @@ export function ChatsWorkspace({
     return () => {
       current = false;
     };
+    // Another tab's archive reaches this one through the chat reads' archived
+    // list, which refreshes with the chats watermark; the display set follows it.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- setDisplay is recreated every render and only closes over apiBase
-  }, [apiBase]);
+  }, [apiBase, archivedRevision]);
 
   useEffect(() => {
     if (menuChatId === null) return;
@@ -519,12 +526,19 @@ export function ChatsWorkspace({
         setArchiveError(failure instanceof Error ? failure.message : String(failure));
     }
   };
+  // The chat that takes over a selection leaving the list, from the viewed graph,
+  // since selecting a chat on another graph switches the page's graph target.
+  const nextOnGraph = (chatId: string) =>
+    filteredConversations.find(
+      (item) =>
+        item.chatId !== chatId &&
+        !archivedChatIds.has(item.chatId) &&
+        sameGraphTarget(item.graphTarget ?? MAIN_GRAPH, graphTarget),
+    );
   const archive = (chatId: string, archived: boolean) => {
     // An archived chat leaves the open list, so it must not stay selected there
     // where a new turn would run out of sight.
-    const next = conversations.find(
-      (item) => item.chatId !== chatId && !archivedChatIds.has(item.chatId),
-    );
+    const next = nextOnGraph(chatId);
     if (archived && !showingArchived && selected?.chatId === chatId && next) onSelect(next.chatId);
     return updateDisplay(() => setChatArchived(apiBase, chatId, archived)).then(() =>
       onArchiveChange?.(),
@@ -548,7 +562,7 @@ export function ChatsWorkspace({
     setMenuChatId(null);
     onRemoveDraft(chatId);
     // Move the selection off the removed draft so the shown chat is the one that loads.
-    const next = conversations.find((item) => item.chatId !== chatId);
+    const next = nextOnGraph(chatId);
     if (selected?.chatId === chatId && next) onSelect(next.chatId);
   };
   const agentMenu = (
@@ -733,10 +747,56 @@ export function ChatsWorkspace({
     setListWidth(clampChatListWidth(clientX - bounds.left, widthBounds));
   };
 
+  const selectedArchived = selected !== null && archivedChatIds.has(selected.chatId);
+  const selectedWorking = selectedStatus?.state === "working";
+  // Only a chat with a native session can branch; a branched chat has none before its first turn.
+  const selectedHasSession =
+    selected?.tasks.some((task) => task.native_session_id) ||
+    selectedHistory?.some((message) => message.native_session_id);
+  const headerActions =
+    selected && (selected.tasks.length > 0 || selected.updatedAt)
+      ? [
+          { label: "Rename", onSelect: () => setRenamingInHeader(true) },
+          {
+            label: selectedArchived ? "Restore" : "Archive",
+            disabled: !selectedArchived && selectedWorking,
+            onSelect: () => void archive(selected.chatId, !selectedArchived),
+          },
+        ]
+      : [];
+  const headerMenuItems =
+    headerActions.length > 0 && !selectedArchived && selected ? (
+      <ChatBranchPicker
+        projectId={project.id}
+        chatId={selected.chatId}
+        graphTarget={selected.graphTarget ?? MAIN_GRAPH}
+        disabled={selectedWorking || !selectedHasSession}
+      />
+    ) : undefined;
   const conversationHeading =
     selected && selectedStatus ? (
       <>
-        <strong>{selected.title}</strong>
+        {renamingInHeader ? (
+          <AgentRename
+            title={selected.title}
+            onDone={(title) => {
+              // A rename ended from its field (Enter or Escape), not by leaving it,
+              // hands focus back to the menu it was opened from.
+              const fromField = document.activeElement?.closest(".agent-row-rename");
+              setRenamingInHeader(false);
+              finishRename(selected, title);
+              if (fromField)
+                requestAnimationFrame(() =>
+                  workspace.current
+                    ?.querySelector<HTMLButtonElement>(".chat-header-menu > button")
+                    ?.focus(),
+                );
+            }}
+          />
+        ) : (
+          // A phone header is only the controls row; More → Agents lists the agents.
+          !narrow && <strong>{selected.title}</strong>
+        )}
         {selected.conversationKind === "auto_research_child" && (
           <span className="conversation-header-meta">
             Managed by the orchestrator in <a href={orchestratorHref}>Runs</a>.
@@ -884,21 +944,10 @@ export function ChatsWorkspace({
             : `${listWidth}px ${CHAT_LIST_DIVIDER_WIDTH}px minmax(0, 1fr)`,
       }}
     >
-      <button
-        className="conversation-list-toggle view-disclosure-summary"
-        type="button"
-        aria-controls="conversation-list-panel"
-        aria-expanded={mobileListOpen}
-        onClick={() => setMobileListOpen((current) => !current)}
-      >
-        <MessageCircle size={14} />
-        <span>Agents</span>
-        <ChevronDown size={14} />
-      </button>
       <aside
         className="conversation-list"
         aria-label="Project conversations"
-        hidden={narrow ? !mobileListOpen : listCollapsed}
+        hidden={narrow ? !mobileListOpen && selected !== null : listCollapsed}
         id="conversation-list-panel"
       >
         <div className="agent-list-tools">
@@ -1129,6 +1178,8 @@ export function ChatsWorkspace({
             nodes={selectedOffGraph ? NO_NODES : nodes}
             glossaryIndex={selectedOffGraph ? NO_GLOSSARY : glossaryIndex}
             header={conversationHeading}
+            headerActions={headerActions}
+            headerMenuItems={headerMenuItems}
             headerState={selectedStatus?.state}
             runScope={runScope}
             tasks={selectedOrchestratorTurns?.tasks ?? []}
@@ -1173,17 +1224,30 @@ export function ChatsWorkspace({
             glossaryIndex={glossaryIndex}
             conversationTitle={selected.kind === "node_chat" ? selected.title : undefined}
             header={conversationHeading}
+            headerActions={headerActions}
+            headerMenuItems={headerMenuItems}
             headerState={selectedStatus?.state}
             runScope={runScope}
             tasks={tasks}
             watchers={watchers}
             historyMessages={chatTranscripts.get(selected.chatId)?.messages}
+            origin={selected.origin}
             chatId={selected.chatId}
             presentation="workspace"
-            readOnly={Boolean(selected.humanTurnRefusal)}
+            readOnly={Boolean(selected.humanTurnRefusal) || selectedArchived}
             allowArtifactComments={selected.conversationKind === "auto_research_child"}
             readOnlyNotice={
-              selected.humanTurnRefusal ? (
+              selectedArchived ? (
+                <div className="chat-composer" role="status">
+                  <button
+                    className="button compact"
+                    type="button"
+                    onClick={() => void archive(selected.chatId, false)}
+                  >
+                    Restore
+                  </button>
+                </div>
+              ) : selected.humanTurnRefusal ? (
                 <div className="chat-composer" role="status">
                   <p>{selected.humanTurnRefusal.detail}</p>
                   {orchestratorCanUnlock(selected.humanTurnRefusal) && (

@@ -73,6 +73,9 @@ KEY_OPTION = ("key", "--key", "<key>")
 MERGE_SOURCE = ("branch_id", "<branch-id>")
 BRANCH_ARCHIVE = ("archive", "--archive", "<branch-id>")
 BULLETIN_READ = ("read", "--read", None)
+BULLETIN_ARTIFACT = ("artifact", "--artifact", "<artifact-id>")
+BULLETIN_LINK = ("link", "--link", "<artifact-file>")
+BULLETIN_CHANNEL = ("channel", "--channel", "<channel>")
 BULLETIN_POST = ("post", "--post", None)
 BULLETIN_EDIT = ("edit", "--edit", "<post-id>")
 BULLETIN_DELETE = ("delete", "--delete", "<post-id>")
@@ -99,14 +102,18 @@ def name_usage():
     return f"name {NAME_VALUE[1]}"
 
 
-def bulletin_usages():
+def bulletin_usages(*, turn_artifacts: bool):
+    """`turn_artifacts` launches write files that become artifacts, so --link names them."""
     key, body = _option_usage(KEY_OPTION), BULLETIN_BODY[1]
     return (
-        f"bulletin {_option_usage(BULLETIN_READ)} [{_option_usage(BULLETIN_CURSOR)}]",
+        f"bulletin {_option_usage(BULLETIN_READ)} [{_option_usage(BULLETIN_CURSOR)}] "
+        f"[{_option_usage(BULLETIN_CHANNEL)}]",
         f"bulletin {_option_usage(BULLETIN_POST)} {key} "
-        f"[{_option_usage(BULLETIN_REPLY_TO)}] {body}",
+        f"[{_option_usage(BULLETIN_REPLY_TO)} | {_option_usage(BULLETIN_CHANNEL)}] {body}",
         f"bulletin {_option_usage(BULLETIN_EDIT)} {key} {body}",
         f"bulletin {_option_usage(BULLETIN_DELETE)} {key}",
+        f"bulletin {_option_usage(BULLETIN_ARTIFACT)}",
+        *((f"bulletin {_option_usage(BULLETIN_LINK)}",) if turn_artifacts else ()),
     )
 
 
@@ -284,12 +291,19 @@ def _parser():
 
     bulletin = subparsers.add_parser("bulletin")
     bulletin_actions = bulletin.add_mutually_exclusive_group(required=True)
-    for dest, option, value in (BULLETIN_POST, BULLETIN_READ, BULLETIN_EDIT, BULLETIN_DELETE):
+    for dest, option, value in (
+        BULLETIN_POST,
+        BULLETIN_READ,
+        BULLETIN_EDIT,
+        BULLETIN_DELETE,
+        BULLETIN_ARTIFACT,
+        BULLETIN_LINK,
+    ):
         if value is None:
             bulletin_actions.add_argument(option, dest=dest, action="store_true")
         else:
             bulletin_actions.add_argument(option, dest=dest, metavar=value)
-    for dest, option, value in (KEY_OPTION, BULLETIN_REPLY_TO, BULLETIN_CURSOR):
+    for dest, option, value in (KEY_OPTION, BULLETIN_REPLY_TO, BULLETIN_CURSOR, BULLETIN_CHANNEL):
         bulletin.add_argument(option, dest=dest, metavar=value)
     bulletin.add_argument(BULLETIN_BODY[0], nargs="?", metavar=BULLETIN_BODY[1])
 
@@ -464,10 +478,50 @@ def _request_arguments(namespace, workspace):
             arguments["ids"] = namespace.ids + namespace.filter_ids
         return verb, None, arguments
     if verb == "bulletin":
+        if namespace.channel is not None and not (
+            namespace.read or (namespace.post and not namespace.reply_to)
+        ):
+            raise ClientInputError("Only Bulletin reads and new posts accept a channel")
+        if namespace.link is not None:
+            if any(
+                value is not None
+                for value in (
+                    namespace.key,
+                    namespace.reply_to,
+                    namespace.body_file,
+                    namespace.cursor,
+                )
+            ):
+                raise ClientInputError("Artifact links accept only an artifact file name")
+            return verb, None, {"action": "link", "file_name": namespace.link}
+        if namespace.artifact is not None:
+            if any(
+                value is not None
+                for value in (
+                    namespace.key,
+                    namespace.reply_to,
+                    namespace.body_file,
+                    namespace.cursor,
+                )
+            ):
+                raise ClientInputError("Artifact reads accept only an artifact id")
+            return verb, None, {"action": "artifact", "artifact_id": namespace.artifact}
         if namespace.read:
             if namespace.key or namespace.reply_to or namespace.body_file:
-                raise ClientInputError("Bulletin reads accept only a cursor")
-            return verb, None, {"action": "read", "cursor": namespace.cursor}
+                raise ClientInputError("Bulletin reads accept only a cursor and channel")
+            return (
+                verb,
+                None,
+                {
+                    "action": "read",
+                    "cursor": namespace.cursor,
+                    **(
+                        {"channel": _nonblank(namespace.channel, "channel")}
+                        if namespace.channel is not None
+                        else {}
+                    ),
+                },
+            )
         if namespace.delete:
             if namespace.cursor or namespace.body_file or namespace.reply_to:
                 raise ClientInputError("Bulletin deletes accept only a post id and key")
@@ -495,6 +549,11 @@ def _request_arguments(namespace, workspace):
             {
                 "action": "edit" if namespace.edit else "post",
                 "text": _nonblank(text, "Bulletin body"),
+                **(
+                    {"channel": _nonblank(namespace.channel, "channel")}
+                    if namespace.channel is not None
+                    else {}
+                ),
                 **(
                     {"post_id": namespace.edit}
                     if namespace.edit

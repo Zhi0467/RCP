@@ -340,9 +340,16 @@ test("a graph-archived Experiment still owns its branch through the Experiment i
 });
 
 test("a typed branch name turns spaces into hyphens and then passes the name check", async () => {
-  const { branchNameProblem, typedBranchName } = await server.ssrLoadModule(
+  const { branchNameProblem, submittedBranchName, typedBranchName } = await server.ssrLoadModule(
     "/src/core/branchNames.ts",
   );
   assert.equal(typedBranchName("main observer  run"), "main-observer-run");
-  assert.equal(branchNameProblem(typedBranchName("main observer run")), null);
+  // Typed one keystroke at a time, a second space or a hyphen beside one adds nothing.
+  const typed = [..." Main  observer - run "].reduce(
+    (value, key) => typedBranchName(value + key),
+    "",
+  );
+  assert.equal(typed, "-main-observer-run-");
+  assert.equal(submittedBranchName(typed), "main-observer-run");
+  assert.equal(branchNameProblem(submittedBranchName(typed)), null);
 });

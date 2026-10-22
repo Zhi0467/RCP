@@ -32,7 +32,7 @@ from rcp.agents.prompts import (
     render_chat_read_context,
 )
 from rcp.attachments import ChatAttachmentStore
-from rcp.background import AgentTaskExecution
+from rcp.background import AgentTaskExecution, persisted_request_roundtrips
 from rcp.config import AgentSurface
 from rcp.conversation_worktrees import conversation_worktree_context
 from rcp.history import ReplayHalted
@@ -329,7 +329,7 @@ def _load_discuss_finalization_context(
     except ValueError as exc:
         raise ValueError("The retained Discuss finalization context is invalid.") from exc
     task = execution.store.agent_task(execution.operation_id)
-    if task is None or task.request != request.model_dump(mode="json"):
+    if task is None or not persisted_request_roundtrips(request, task.request):
         raise ValueError("The Discuss finalization request does not match its durable task.")
     _local_stage, remote_stage, workspace = attach_retained_stage(
         execution,
@@ -949,8 +949,10 @@ async def stream_discuss_run(
             )
             # Keep multiline prose in one structured overlay value.
             discuss_values["discuss"] = {"execution_instructions": instructions.splitlines()}
-            if (resuming or retry_attempt) and (
-                request.artifact_edit is None or not request.artifact_edit.origin_bound
+            if (
+                (resuming or retry_attempt)
+                and not request.fork_session_id
+                and (request.artifact_edit is None or not request.artifact_edit.origin_bound)
             ):
                 assert request.message is not None
                 retry_diagnostics_path = (
@@ -1090,6 +1092,7 @@ async def stream_discuss_run(
                 focused_node_id = str(context.node["id"]) if context.node else None
                 master_context = PromptFactory.chat_master_context(
                     project_name=context.project_name,
+                    graph_target=context.graph_target,
                     ontology_path=f"{context.graph_path}#ontology",
                     ontology_extensions=context.ontology_extensions,
                     graph_path=context.graph_path,

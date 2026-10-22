@@ -1421,9 +1421,6 @@
   position: static;
 }
 .group-name-dialog {
-  inset: 0;
-  margin: auto;
-  position: fixed;
   background: var(--paper);
   color: var(--ink);
   border: 1px solid var(--rule);

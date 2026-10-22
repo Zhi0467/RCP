@@ -3348,14 +3348,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 13,
-                    "endColumn": 22,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 32,
                     "endColumn": 59,
                     "lineCount": 1

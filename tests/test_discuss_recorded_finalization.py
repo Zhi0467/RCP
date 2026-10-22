@@ -295,6 +295,30 @@ def test_a_moved_discuss_stage_refuses_to_finalize(tmp_path) -> None:
         discuss_module._load_discuss_finalization_context(service, request, execution)
 
 
+def test_a_request_recorded_before_fork_fields_still_finalizes(tmp_path) -> None:
+    """An old writer's row omits later request fields; their defaults are its meaning."""
+
+    service, request, execution = _discuss_app(tmp_path)
+    execution.checkpoint_stage("", str(tmp_path / "stage"))
+    (Path(execution.stage_root) / "workspace").mkdir(parents=True)
+    discuss_module._record_discuss_finalization_context(
+        _retained_context(service, request, execution)
+    )
+    with execution.store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=json_remove(request_json, "
+            "'$.fork_session_id', '$.fork_source_cwd', '$.fork_source_host') "
+            "WHERE operation_id=?",
+            (execution.operation_id,),
+        )
+    stored = execution.store.agent_task(execution.operation_id).request
+    assert "fork_session_id" not in stored
+
+    discuss_module._load_discuss_finalization_context(
+        service, RunRequest.model_validate(stored), execution
+    )
+
+
 @pytest.mark.asyncio
 async def test_a_discard_interrupted_before_its_receipt_still_warns_once(tmp_path) -> None:
     """The crash window between the warning and its guard is the real one.

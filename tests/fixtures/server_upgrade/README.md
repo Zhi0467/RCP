@@ -142,3 +142,8 @@ built by the exact boundary source from `pre-graph-branches-v28-ae89ee3`.
 durable names and the self-named marker (storage migration 59), ending at
 migration 58 after Bulletin channels and project worker seats. It is built by
 the exact boundary source from `pre-graph-branches-v29-daad53e`.
+
+`pre-chat-forks-v31-cfaebcc` retains the last shape before chats gained fork
+records (storage migration 60), ending at migration 59 after conversation
+names. It is built by the exact boundary source from
+`pre-conversation-names-v30-51f290d`.

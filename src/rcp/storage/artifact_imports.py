@@ -41,19 +41,23 @@ class ArtifactImportStoreMixin(StoreMixinBase):
         return tuple(records)
 
     def legacy_artifact_import_ids(self) -> frozenset[str]:
-        """Protect archived candidate/source bytes only until storage import completes."""
         with self.connection() as connection:
-            rows = connection.execute(
-                "SELECT source_artifact_id, artifact_scope_id, source_name "
-                "FROM artifact_revision_candidates "
-                "WHERE status IN ('pending', 'accepting', 'conflicted')"
+            return self._legacy_artifact_import_ids(connection)
+
+    @staticmethod
+    def _legacy_artifact_import_ids(connection: sqlite3.Connection) -> frozenset[str]:
+        """Protect archived candidate/source bytes only until storage import completes."""
+        rows = connection.execute(
+            "SELECT source_artifact_id, artifact_scope_id, source_name "
+            "FROM artifact_revision_candidates "
+            "WHERE status IN ('pending', 'accepting', 'conflicted')"
+        ).fetchall()
+        imported = {
+            row[0]
+            for row in connection.execute(
+                "SELECT artifact_id FROM artifact_imports WHERE state = 'imported'"
             ).fetchall()
-            imported = {
-                row[0]
-                for row in connection.execute(
-                    "SELECT artifact_id FROM artifact_imports WHERE state = 'imported'"
-                ).fetchall()
-            }
+        }
         return frozenset(
             value
             for row in rows

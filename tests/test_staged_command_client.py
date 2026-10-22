@@ -2642,9 +2642,14 @@ def test_every_advertised_shared_record_usage_parses():
         "<post-id>": "p1",
         "<body-file>": "body.md",
         "<branch-id>": "b1",
+        "<channel>": "main",
+        "<artifact-id>": "a" * 24,
+        "<artifact-file>": "plot.png",
     }
 
     def parse(usage):
+        # Choose one alternative; channel-only admission is covered with a body file.
+        usage = usage.replace(" | --channel <channel>", "")
         words = usage.replace("[", "").replace("]", "").split()
         return client._parser().parse_args(
             ["--timeout", "1", "--workspace", "/w", "--credential", "c"]
@@ -2659,12 +2664,14 @@ def test_every_advertised_shared_record_usage_parses():
                 client.BULLETIN_POST,
                 client.BULLETIN_EDIT,
                 client.BULLETIN_DELETE,
+                client.BULLETIN_ARTIFACT,
+                client.BULLETIN_LINK,
             )
             if getattr(parse(usage), dest)
         )
-        for usage in client.bulletin_usages()
+        for usage in client.bulletin_usages(turn_artifacts=True)
     ]
-    assert actions == ["read", "post", "edit", "delete"]
+    assert actions == ["read", "post", "edit", "delete", "artifact", "link"]
     merge = parse(client.merge_usage())
     assert (merge.verb, merge.key, merge.branch_id) == ("merge", "k1", "b1")
     branch = parse(client.branch_usage())

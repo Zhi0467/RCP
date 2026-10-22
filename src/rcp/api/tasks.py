@@ -353,6 +353,11 @@ def start_ordinary_task(
         )
     chat_admission_lock = None
     try:
+        if kind in {"node_chat", "project_chat"} and isinstance(body.get("chat_id"), str):
+            # A branched chat's first turn forks with its source's profile; admission rechecks it.
+            fork_profile = store.pending_chat_fork_profile(project_id, str(body["chat_id"]))
+            if fork_profile is not None:
+                body = {**body, **fork_profile, "session_id": None}
         with _task_preparation_service(service) as reader:
             request = _validated_task_request(reader, kind, body)
             if isinstance(request, RunRequest):
@@ -1350,6 +1355,13 @@ def _validated_task_request(
     client_request.pop("resolved_compute_context", None)
     client_request.pop("worktree_integration_target", None)
     client_request.pop("attachments", None)
+    for field in (
+        "fork_session_id",
+        "fork_source_cwd",
+        "fork_source_host",
+        "fork_source_operation_id",
+    ):
+        client_request.pop(field, None)
     request = RunRequest.model_validate(client_request).model_copy(
         update={
             "trigger": "human",

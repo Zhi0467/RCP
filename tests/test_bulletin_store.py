@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from rcp.limits import BULLETIN_KEY_MAX_CHARS, BULLETIN_REPLY_MAX_CHARS
-from rcp.storage import ProjectRecord
+from rcp.storage import Artifact, ProjectRecord
 from rcp.storage.bulletin import BulletinError
 
 from .test_lessons_store import store as store
@@ -454,3 +454,80 @@ def test_retention_prunes_only_observed_orphan_mentions(store, monkeypatch):
         }
     assert observed["post_id"] not in ids
     assert ids == {pending["post_id"], retained["post_id"]}
+
+
+def test_artifact_links_resolve_from_text_within_the_project(store):
+    for artifact_id, project_id in (
+        ("figure", "project"),
+        ("foreign", "other"),
+        ("lapsed", "project"),
+    ):
+        store.create_artifact(
+            Artifact(
+                artifact_id=artifact_id,
+                project_id=project_id,
+                supplier="turn",
+                supplier_id="another-chat",
+                source_name="figure.svg",
+                media_type="image/svg+xml",
+                created_at=store.now(),
+                expires_at=store.now() if artifact_id == "lapsed" else None,
+            ),
+            data=b"<svg />",
+        )
+    # A repeated link counts once; a foreign, expired, or unknown id is not refused and
+    # stays prose.
+    first = post(
+        store,
+        "artifact",
+        text="#evidence/one <artifact:figure> <artifact:figure> <artifact:foreign> <artifact:lapsed> <artifact:gone>",
+    )
+    expected = [
+        {"artifact_id": "figure", "source_name": "figure.svg", "media_type": "image/svg+xml"}
+    ]
+    assert first["artifacts"] == expected
+    assert first["refs"] == ["evidence/one"]
+    assert store.list_bulletin("project", "main")["posts"][0]["artifacts"] == expected
+    # Linking saves the artifact, so the link cannot expire under the post.
+    assert store.artifact("figure").kept_at is not None
+    assert store.artifact("lapsed").kept_at is None
+    edited = store.execute_bulletin_command(
+        "project", "turn", "edit", post_id=first["post_id"], key="edit-artifact", text="No link"
+    )
+    assert edited["post"]["artifacts"] == []
+    # Links resolve at read time, so an artifact change refreshes open Bulletins.
+    bulletin = (
+        "SELECT generation FROM resource_versions WHERE scope='project' AND resource='bulletin'"
+    )
+    with store.connection() as connection:
+        before = connection.execute(bulletin).fetchone()[0]
+        connection.execute("DELETE FROM artifacts WHERE artifact_id='lapsed'")
+        assert connection.execute(bulletin).fetchone()[0] > before
+
+
+def test_agent_posts_to_named_channel_or_own_default(store):
+    from rcp.core.transition_models import GraphTargetRef
+
+    with store.connection() as connection:
+        for branch_id, name in (("own", "Own"), ("other", "Other"), ("collision", "other")):
+            connection.execute(
+                "INSERT INTO graph_branches(project_id,branch_id,parent_target_json,parent_revision,created_by,created_at,name) VALUES('project',?,'{}',0,'member',?,?)",
+                (branch_id, store.now(), name),
+            )
+        connection.execute(
+            "UPDATE graph_runs SET graph_target_json=? WHERE operation_id='turn'",
+            (GraphTargetRef(kind="branch", branch_id="own").model_dump_json(),),
+        )
+    own = post(store, "own")
+    assert store.list_bulletin("project", "branch:own")["posts"] == [own]
+    for selector in ("Other", "other", "branch:other", "main"):
+        entry = post(store, selector, channel=selector)
+        target_key = "main" if selector == "main" else "branch:other"
+        assert store.list_bulletin("project", target_key)["posts"][0] == entry
+    reply = post(store, "reply-main", reply_to=entry["post_id"])
+    assert store.list_bulletin("project", "main")["posts"][0]["post_id"] == reply["post_id"]
+    # A branch agent reads another channel through the same resolution.
+    read = store.execute_bulletin_command("project", "turn", "read", channel="main")
+    assert read == store.list_bulletin("project", "main")
+    with pytest.raises(BulletinError, check=lambda exc: exc.code == "bulletin_channel_invalid"):
+        post(store, "unknown", channel="missing")

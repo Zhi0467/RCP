@@ -8,6 +8,7 @@ the standard library.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 TEXT_CHUNK_TYPES = frozenset({"text", "input_text", "output_text"})
@@ -46,6 +47,9 @@ class SessionFormat:
     default_source_kind: str | None = None
     #: Whether a file without a working directory is malformed.
     requires_cwd = True
+
+    def prepare_session_fork(self, *, source_session_id: str, source_cwd: Path, cwd: Path) -> None:
+        """Make a source session discoverable on its execution host before forking."""
 
     def skip_file(self, parts: tuple[str, ...]) -> bool:
         return any(part in self.skipped_path_parts for part in parts)

@@ -132,6 +132,7 @@ from rcp.sources import (
     project_cache_roots,
 )
 from rcp.storage import AppStore
+from rcp.storage.chat_forks import ChatForkOrigin
 from rcp.transport import repository_access as build_repository_access
 from rcp.transport.state_transfer import diagnostics as state_transfer_diagnostics
 from rcp.turn_outcomes import TurnOutcome
@@ -315,6 +316,11 @@ class ChatMessage(BaseModel):
     )
 
 
+class ChatOriginView(ChatForkOrigin):
+    # False once restore detached the fork; its next message starts a fresh session.
+    pending: bool
+
+
 class ChatSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -330,6 +336,7 @@ class ChatSummary(BaseModel):
     orchestrator_episode_id: str | None = None
     human_turn_refusal: dict[str, str] | None = None
     graph_title: str = "Main"
+    origin: ChatOriginView | None = None
 
 
 class ChatSummaryPage(BaseModel):
@@ -342,7 +349,7 @@ class ChatSummaryPage(BaseModel):
 
 
 class ChatTranscript(ChatSummary):
-    messages: list[ChatMessage] = Field(min_length=1)
+    messages: list[ChatMessage] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -876,6 +883,12 @@ class RunRequest(BaseModel):
     message: str | None = None
     chat_id: str | None = None
     session_id: str | None = None
+    # Resolved from the immutable chat origin, never accepted from HTTP clients.
+    fork_session_id: str | None = None
+    fork_source_cwd: str | None = None
+    fork_source_host: str | None = None
+    # The source chat's latest turn when the first message forked; no launch reads it.
+    fork_source_operation_id: str | None = None
     mode: ConversationMode = "discuss"
     isolation_owner_episode_id: str | None = None
     code_worktree: bool = False
@@ -1311,13 +1324,14 @@ class ProjectService:
         for task in task_summaries or []:
             canonical = summaries.get(task.chat_id)
             if canonical is None:
-                # A conversation with no transcript yet is listed only by the inventory;
-                # the paged per-target list keeps rows its transcript route can open.
-                if inventory:
+                # A dormant fork has a readable empty transcript. Other task-only
+                # conversations remain inventory-only until their transcript exists.
+                if inventory or task.origin is not None:
                     summaries[task.chat_id] = task
             elif canonical.graph_target == task.graph_target:
                 summaries[task.chat_id] = canonical.model_copy(
                     update={
+                        "origin": task.origin,
                         "conversation_kind": task.conversation_kind,
                         "orchestrator_episode_id": task.orchestrator_episode_id,
                         "human_turn_refusal": task.human_turn_refusal,
@@ -2812,6 +2826,7 @@ class ProjectService:
         }
         return ContextAssembler(self.manifest, graph_root=self.history.root).chat_context(
             state,
+            graph_target=self.history.graph_target,
             node_id=request.node_id if request.chat_scope == "node" else None,
             run_truth_scope=request.run_truth_scope,
             repository_access=repository_access,

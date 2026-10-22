@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import json
+import re
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from rcp.agents.command_protocol import BulletinCommandRequest, CommandResponse
-from rcp.agents.prompts import BULLETIN_RULES
+from rcp.agents.prompts import BULLETIN_LINK_RULE, BULLETIN_RULES
 from rcp.agents.staged_command_client import bulletin_usages
+from rcp.artifacts import artifact_id, list_local_regular_files
 from rcp.bulletin import bulletin_actor_id, bulletin_roster
 from rcp.limits import BULLETIN_RENDER_MAX_BYTES, BULLETIN_ROSTER_MAX_COUNT
+from rcp.project_references import resolve_project_artifact
 from rcp.storage import AppStore
+from rcp.transport import StateUnavailable
 from rcp.transport.workspace_mailbox import RunStageMailbox
 
 if TYPE_CHECKING:
@@ -90,12 +95,29 @@ def _add_context(store: AppStore, operation_id: str, snapshot: dict[str, Any]) -
     snapshot["roster"] = bulletin_roster(store, task.project_id, task.graph_target)
 
 
+def _turn_artifact_names(mailbox: RunStageMailbox, scope_id: str) -> set[str]:
+    """Regular, non-symlink files turn-end discovery would find in this turn's directory."""
+    if mailbox.remote_stage is not None:
+        try:
+            listed = mailbox.remote_stage.list_artifact_files(scope_id)
+        except FileNotFoundError:
+            return set()
+    else:
+        try:
+            listed = list_local_regular_files(mailbox.workspace / "turns" / scope_id / "artifacts")
+        except (FileNotFoundError, ValueError):
+            return set()
+    return {name for name, _size in listed}
+
+
 def handle_bulletin(
     store: AppStore,
     operation_id: str,
     request: BulletinCommandRequest,
     *,
     post_allowed: bool,
+    turn_artifacts: bool,
+    mailbox: RunStageMailbox | None = None,
 ) -> CommandResponse:
     from rcp.storage.bulletin import BulletinError
 
@@ -105,15 +127,17 @@ def handle_bulletin(
         code = "bulletin_task_unavailable"
     elif not store.bulletin_enabled_for_task(operation_id):
         code = "bulletin_disabled"
-    elif request.arguments.action != "read" and not post_allowed:
+    elif request.arguments.action not in {"read", "artifact", "link"} and not post_allowed:
         code = "bulletin_post_forbidden"
+    elif request.arguments.action == "link" and not turn_artifacts:
+        code = "bulletin_link_unavailable"
     if code:
         return CommandResponse(
             request_id=request.request_id, status="invalid", message=code, result={"code": code}
         )
     assert task is not None
     try:
-        result = store.execute_bulletin_command(
+        result: dict[str, Any] = store.execute_bulletin_command(
             task.project_id,
             operation_id,
             request.arguments.action,
@@ -122,7 +146,39 @@ def handle_bulletin(
             post_id=request.arguments.post_id,
             reply_to=request.arguments.reply_to,
             cursor=request.arguments.cursor,
+            channel=request.arguments.channel,
         )
+        if request.arguments.action == "link":
+            from rcp.runs.chat import _logical_chat_turn_operation_id
+
+            # The id turn-end discovery gives this file of the turn's artifact directory;
+            # the link resolves once the turn publishes it.
+            assert request.arguments.file_name is not None
+            if mailbox is None:
+                raise BulletinError("bulletin_stage_unavailable")
+            scope_id = _logical_chat_turn_operation_id(store, operation_id)
+            if request.arguments.file_name not in _turn_artifact_names(mailbox, scope_id):
+                raise BulletinError("bulletin_link_not_artifact")
+            linked = artifact_id(scope_id, request.arguments.file_name)
+            result = {"artifact_id": linked, "token": f"<artifact:{linked}>"}
+        if request.arguments.action == "artifact":
+            if mailbox is None:
+                raise BulletinError("bulletin_stage_unavailable")
+            assert request.arguments.artifact_id is not None
+            item = resolve_project_artifact(store, task.project_id, request.arguments.artifact_id)
+            # Source names are display metadata, never trusted paths. Unique names keep
+            # successive reads immutable even when the source's current version changes.
+            filename = re.sub(r"[^A-Za-z0-9._-]", "_", item.filename)[-120:] or "artifact"
+            path = mailbox.stage_bytes_input(
+                f"bulletin-{uuid.uuid4().hex}-{filename}", item.content
+            )
+            result = {
+                "artifact_id": item.reference.source_id,
+                "name": item.display_name,
+                "media_type": item.media_type,
+                "version": item.reference.version,
+                "path": path,
+            }
         if request.arguments.action == "read":
             _add_context(store, operation_id, result)
             result["roster_omitted"] = max(0, len(result["roster"]) - BULLETIN_ROSTER_MAX_COUNT)
@@ -134,6 +190,20 @@ def handle_bulletin(
             status="invalid",
             message=str(exc),
             result={"code": exc.code},
+        )
+    except StateUnavailable as exc:
+        return CommandResponse(
+            request_id=request.request_id,
+            status="unavailable",
+            message=str(exc),
+            result={"code": "bulletin_stage_unavailable"},
+        )
+    except (ValueError, OSError) as exc:
+        return CommandResponse(
+            request_id=request.request_id,
+            status="invalid",
+            message=str(exc),
+            result={"code": "bulletin_artifact_unavailable"},
         )
     return CommandResponse(request_id=request.request_id, status="ok", result=result)
 
@@ -176,6 +246,8 @@ def stage_bulletin_pointer(
     )
 
 
-def bulletin_command_usage(client: str) -> str:
-    usages = [f"`{client} {usage}`" for usage in bulletin_usages()]
-    return "\n".join(f"- {line}" for line in (*usages, *BULLETIN_RULES))
+def bulletin_command_usage(client: str, *, turn_artifacts: bool) -> str:
+    """Render the same `turn_artifacts` the launch's dispatcher enforces."""
+    usages = [f"`{client} {usage}`" for usage in bulletin_usages(turn_artifacts=turn_artifacts)]
+    link_rule = (BULLETIN_LINK_RULE,) if turn_artifacts else ()
+    return "\n".join(f"- {line}" for line in (*usages, *BULLETIN_RULES, *link_rule))

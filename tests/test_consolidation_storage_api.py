@@ -58,7 +58,9 @@ def _report(store, project_id, *, settle=True):
         conn.execute(
             "UPDATE consolidation_runs SET outcome_settled_at=NULL WHERE run_id=?", (run.run_id,)
         )
-    artifact = store.create_artifact(
+    # A turn artifact is readable until its stage retention lapses.
+    expires_at = (datetime.fromisoformat(store.now()) + timedelta(days=1)).isoformat()
+    store.create_artifact(
         Artifact(
             artifact_id="report",
             project_id=project_id,
@@ -67,16 +69,20 @@ def _report(store, project_id, *, settle=True):
             source_name="consolidation-report.html",
             media_type="text/html",
             created_at=store.now(),
-            expires_at=store.now(),
+            expires_at=expires_at,
         ),
         data=b"<p>Report</p>",
     )
     if not settle:
         return run
+    return _report_settlement(store, run)
+
+
+def _report_settlement(store, run):
     return store.settle_consolidation_run(
         run.run_id,
         kind="report",
-        report_artifact_id=artifact.artifact_id,
+        report_artifact_id="report",
         report_title="Report",
         applied_revisions=[{"revision": 1, "summary": "change"}],
         revisions_verified=True,
@@ -280,6 +286,19 @@ def test_keeping_report_closes_inbox_from_either_route(setup, route):
     assert store.artifact("report").kept_at
     assert not client.get(artifact_base + "/report/state").json()["can_keep"]
     assert [item["artifact_id"] for item in client.get(artifact_base).json()] == ["report"]
+
+
+@pytest.mark.parametrize("settled", [False, True])
+def test_a_linked_report_is_saved_but_stays_open_for_review(setup, settled):
+    _, store, project = setup
+    run = _report(store, project, settle=settled)
+    store.mutate_bulletin_post(
+        project, "main", text="See <artifact:report>", user_id=store.local_owner.user_id, key="k"
+    )
+    if not settled:
+        run = _report_settlement(store, run)
+    assert store.artifact("report").kept_at
+    assert store.consolidation_run(run.run_id).state == "open"
 
 
 def test_restore_disables_authorizations_and_fails_only_unresolved_runs(setup):

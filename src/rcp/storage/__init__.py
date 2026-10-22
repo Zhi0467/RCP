@@ -23,6 +23,7 @@ from rcp.storage.base import AppStoreBase
 from rcp.storage.branch_names import BranchNameStoreMixin
 from rcp.storage.bulletin import BulletinStoreMixin
 from rcp.storage.chat_display import ChatDisplayStoreMixin
+from rcp.storage.chat_forks import ChatForkStoreMixin
 from rcp.storage.client_requests import ClientRequestStoreMixin
 from rcp.storage.compute_jobs import ComputeJobStoreMixin
 from rcp.storage.consolidation import ConsolidationStoreMixin
@@ -72,6 +73,7 @@ class AppStore(
     ProviderLoginStoreMixin,
     ComputeJobStoreMixin,
     ChatDisplayStoreMixin,
+    ChatForkStoreMixin,
     ConversationWorktreeStoreMixin,
     ProjectTransferStoreMixin,
     RestoreDetachmentStoreMixin,

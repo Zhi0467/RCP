@@ -200,3 +200,35 @@ test("suggestions open where the scroll area has room and never past its edge", 
   const cramped = bulletinSuggestPlacement({ top: 160, bottom: 200 }, { top: 100, bottom: 240 });
   assert.ok(cramped.maxHeight <= 60 && cramped.maxHeight > 0);
 });
+
+test("artifact tokens render only recorded project artifacts, including repeated links", () => {
+  const artifact = { artifact_id: "art-1", source_name: "Results.html", media_type: "text/html" };
+  const segments = bulletinSegments(
+    "See <artifact:art-1> and <artifact:missing>; again <artifact:art-1>",
+    new Map(),
+    new Set(),
+    [],
+    [artifact],
+  );
+  assert.deepEqual(segments, [
+    { kind: "text", text: "See " },
+    { kind: "artifact", artifact },
+    { kind: "text", text: " and <artifact:missing>; again " },
+    { kind: "artifact", artifact },
+  ]);
+  assert.deepEqual(bulletinSegments("<artifact:old>", new Map(), new Set()), [
+    { kind: "text", text: "<artifact:old>" },
+  ]);
+  // The server's grammar: an id never holds `<`, so a nested token is the one that links.
+  const nested = bulletinSegments(
+    "<artifact:x<artifact:art-1> <@agent:y<@agent:worker:9>",
+    new Map(),
+    new Set(),
+    [{ kind: "agent", id: "worker:9" }],
+    [artifact],
+  );
+  assert.deepEqual(
+    nested.map((segment) => segment.kind),
+    ["text", "artifact", "text", "mention"],
+  );
+});

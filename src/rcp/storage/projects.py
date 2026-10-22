@@ -357,6 +357,11 @@ class ProjectStoreMixin(StoreMixinBase):
                         f"UPDATE {table} SET project_id = ? WHERE project_id = ?",
                         (canonical_project_id, old_project_id),
                     )
+                connection.execute(
+                    "UPDATE chat_forks SET record_json = json_set(record_json, '$.project_id', ?) "
+                    "WHERE project_id = ?",
+                    (canonical_project_id, canonical_project_id),
+                )
                 rewrite_digest_project_links(connection, old_project_id, canonical_project_id)
                 self._rewrite_notification_project_links(
                     connection,
@@ -479,6 +484,9 @@ class ProjectStoreMixin(StoreMixinBase):
                     ).rowcount,
                     "chat_browser_preferences": connection.execute(
                         "DELETE FROM chat_browser_preferences WHERE project_id = ?", (project_id,)
+                    ).rowcount,
+                    "chat_forks": connection.execute(
+                        "DELETE FROM chat_forks WHERE project_id = ?", (project_id,)
                     ).rowcount,
                     "chat_display": connection.execute(
                         "DELETE FROM chat_display WHERE project_id = ?", (project_id,)
@@ -1146,6 +1154,11 @@ class ProjectStoreMixin(StoreMixinBase):
             connection.execute(
                 "UPDATE chat_session_contexts SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),
+            )
+            connection.execute(
+                "UPDATE chat_forks SET project_id = ?, "
+                "record_json = json_set(record_json, '$.project_id', ?) WHERE project_id = ?",
+                (project_id, project_id, legacy_id),
             )
             connection.execute(
                 "UPDATE chat_display SET project_id = ? WHERE project_id = ?",
