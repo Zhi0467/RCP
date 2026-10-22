@@ -834,7 +834,7 @@ test(
     await reread;
     assert.deepEqual(
       await page
-        .locator(".branch-picker-row")
+        .locator(".branch-picker-list .branch-picker-row")
         .evaluateAll((rows) => rows.map((row) => row.dataset.branchId)),
       ["main", "running", "newer", "older"],
     );

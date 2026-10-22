@@ -87,8 +87,14 @@ Both admit project members and return the GraphRef. Rename returns 422
 Main cannot be renamed or archived. Archive creates missing isolation state,
 without changing Patch history or episode-history archive state.
 
-The `⑂ <name>` picker sits after view tabs, or beside the project name on phones.
-It hides on main with no live branch. An amber dot signals attention on another
+The `⑂ <name>` picker sits after view tabs, or beside the project name on phones,
+even on main with no branch. Its last row, New branch, opens a name field (empty
+lets the server choose) and forks the viewed head through `POST .../graph-refs`
+with `{request_id, at, name}`, then switches to the new branch. A refused name
+(`branch_name_taken`, `branch_name_invalid`) reddens the field; any other failure
+reddens the row and offers one retry icon, reusing the request id only after a
+network or 5xx failure. The artifact viewer's pin picker offers no New branch and
+hides on main with no live branch. An amber dot signals attention on another
 unarchived branch. Rows order main, running, then newest; hide archived branches
 except the active one, which offers Unarchive. Rows show running/attention marks,
 rename/archive icons, and a check for selection. Rename is inline; archiving an

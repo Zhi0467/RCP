@@ -81,6 +81,14 @@
   box-shadow: none;
   border-bottom-color: var(--cobalt);
 }
+/* Outranks the theme's field rule so the refusal edge shows in every theme. */
+.branch-picker-popover input.branch-picker-name-input[aria-invalid="true"] {
+  border-color: var(--red);
+  outline-color: var(--red);
+}
+.branch-picker-failed {
+  box-shadow: inset 2px 0 0 var(--red);
+}
 .branch-picker-action {
   display: flex;
   align-items: center;
