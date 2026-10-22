@@ -185,10 +185,16 @@ session of its own, such as a branched chat before its first turn, cannot branch
 Its first human message forks the source chat's latest session as it stands when
 that message is admitted, with that turn's provider, model, reasoning and machine;
 the same usability rules apply again then. Admission records the source session,
-its cwd and its host on the turn. From then on the new chat never reads its source:
-Retry and later messages before it has a session carry that record, and an attempt
-on another host fails. Fork failure fails the turn and leaves Retry available; it
-never falls back to a fresh session. Once the provider reports the new native
+its cwd, its host and the source chat's latest turn on the turn. From then on the
+new chat never takes newer source state: Retry and later messages before it has a
+session carry that record, and an attempt on another host fails. Fork failure fails
+the turn and leaves Retry available; it never falls back to a fresh session. Once
+the source chat admits a newer turn or loses that session, a carried fork is
+refused before launch (`chat_fork_source_moved` or `chat_fork_source_unavailable`)
+as a failed turn without Retry, because the provider can only fork the source's
+live state. Offline restore detaches a fork that has no session yet, so the new
+chat's next message starts a fresh session like any restored chat; its origin
+link remains. Once the provider reports the new native
 session, later attempts and turns, including a Retry after Pause, resume that
 session normally. The fork turn replaces the inherited master, which states the
 graph target as every chat master does, and on that turn alone adds a fork note

@@ -1730,13 +1730,14 @@ class AgentTaskStoreMixin(StoreMixinBase):
 
     def _chat_fork_launch(
         self, connection: sqlite3.Connection, record: AgentTaskRecord, chat_id: str
-    ) -> tuple[dict[str, str | None], str | None]:
-        """The fork a branched chat's turn launches, and the source turn it was taken from.
+    ) -> tuple[dict[str, str | None], str | None, str | None]:
+        """The fork a branched chat's turn launches, its source turn, and any refusal.
 
         Only the chat's first turn reads the fork origin and the source session; it
-        records the fork in its own request. Later turns carry that record until the
-        chat has its own native session, then never fork again, so after the first
-        message the chat no longer depends on its source.
+        records the fork and the source chat's latest turn in its own request. Later
+        turns carry that record until the chat has its own native session, then
+        never fork again. A carried fork is refused once the source chat has moved
+        on, so after the first message the chat no longer depends on its source.
         """
 
         none: dict[str, str | None] = dict.fromkeys(_FORK_FIELDS)
@@ -1748,16 +1749,25 @@ class AgentTaskStoreMixin(StoreMixinBase):
         ).fetchone()
         if own is not None:
             if self._current_chat_session_row(connection, record.project_id, record.kind, chat_id):
-                return none, None
+                return none, None, None
             carried = json.loads(own["request_json"])
-            if carried.get("fork_session_id") and any(
+            if not carried.get("fork_session_id"):
+                return none, None, None
+            fork = cast("AppStore", self)._chat_fork_record(connection, record.project_id, chat_id)
+            if fork is None or fork.detached:
+                return none, None, None
+            if any(
                 record.request.get(field) != carried.get(field) for field in FORK_PROFILE_FIELDS
             ):
                 raise ValueError("A branched turn must use its source launch profile.")
-            return {field: carried.get(field) for field in _FORK_FIELDS}, None
+            return (
+                {field: carried.get(field) for field in _FORK_FIELDS},
+                None,
+                cast("AppStore", self)._chat_fork_refusal(connection, fork, carried),
+            )
         pending = cast("AppStore", self)._pending_chat_fork(connection, record.project_id, chat_id)
         if pending is None:
-            return none, None
+            return none, None, None
         fork, source = pending
         source_request = json.loads(source["request_json"])
         if (
@@ -1770,18 +1780,24 @@ class AgentTaskStoreMixin(StoreMixinBase):
             record.request.get(field) != source_request.get(field) for field in FORK_PROFILE_FIELDS
         ):
             raise ValueError("A branched turn must use its source launch profile.")
-        return {
-            "fork_session_id": source["native_session_id"],
-            "fork_source_host": source["stage_host"] or "",
-            "fork_source_cwd": self._chat_stage_workspace(
-                connection,
-                project_id=source["project_id"],
-                kind=source["kind"],
-                chat_id=source_request["chat_id"],
-                stage_host=source["stage_host"] or "",
-                stage_root=source["stage_root"],
-            ),
-        }, source["operation_id"]
+        return (
+            {
+                "fork_session_id": source["native_session_id"],
+                "fork_source_host": source["stage_host"] or "",
+                "fork_source_cwd": self._chat_stage_workspace(
+                    connection,
+                    project_id=source["project_id"],
+                    kind=source["kind"],
+                    chat_id=source_request["chat_id"],
+                    stage_host=source["stage_host"] or "",
+                    stage_root=source["stage_root"],
+                ),
+                # The source position a later attempt must still find to fork at all.
+                "fork_source_operation_id": source["operation_id"],
+            },
+            source["operation_id"],
+            None,
+        )
 
     def _bind_chat_stage(
         self,
@@ -1831,7 +1847,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
         chat_id = record.request.get("chat_id")
         if not isinstance(chat_id, str) or not chat_id:
             return record, resolution
-        fork_fields, fork_source_operation_id = self._chat_fork_launch(connection, record, chat_id)
+        fork_fields, fork_source_operation_id, fork_refusal = self._chat_fork_launch(
+            connection, record, chat_id
+        )
         if fork_fields["fork_session_id"] or "fork_session_id" in record.request:
             record = record.model_copy(update={"request": {**record.request, **fork_fields}})
         prior_chat_targets = connection.execute(
@@ -1850,6 +1868,19 @@ class AgentTaskStoreMixin(StoreMixinBase):
             raise ValueError(
                 "This conversation belongs to another graph target and cannot continue here."
             )
+        if fork_refusal is not None:
+            # Never a fresh session in its place: the turn fails before launch and
+            # keeps the fork it was refused, so every later attempt refuses too.
+            return record.model_copy(
+                update={
+                    "status": "failed",
+                    "phase": "failed",
+                    "error": fork_refusal,
+                    "status_message": fork_refusal,
+                    "finished_at": record.created_at,
+                    "failure_kind": "session_refused",
+                }
+            ), {"outcome": "refused", "reason_code": fork_refusal}
         consolidation = connection.execute(
             "SELECT run_id FROM consolidation_runs WHERE operation_id = ?",
             (record.operation_id,),
@@ -6200,9 +6231,14 @@ def _require_merge_destination_open(
         raise ValueError("merge_destination_merging")
 
 
-# Why a run's native session can no longer continue, from its receipts.
-_FORK_FIELDS = ("fork_session_id", "fork_source_cwd", "fork_source_host")
+_FORK_FIELDS = (
+    "fork_session_id",
+    "fork_source_cwd",
+    "fork_source_host",
+    "fork_source_operation_id",
+)
 
+# Why a run's native session can no longer continue, from its receipts.
 _SESSION_DROP_COLUMNS = """
     EXISTS (
         SELECT 1 FROM graph_run_receipts AS receipt

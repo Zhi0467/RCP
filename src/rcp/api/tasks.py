@@ -1355,7 +1355,12 @@ def _validated_task_request(
     client_request.pop("resolved_compute_context", None)
     client_request.pop("worktree_integration_target", None)
     client_request.pop("attachments", None)
-    for field in ("fork_session_id", "fork_source_cwd", "fork_source_host"):
+    for field in (
+        "fork_session_id",
+        "fork_source_cwd",
+        "fork_source_host",
+        "fork_source_operation_id",
+    ):
         client_request.pop(field, None)
     request = RunRequest.model_validate(client_request).model_copy(
         update={

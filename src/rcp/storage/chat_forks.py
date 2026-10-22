@@ -7,7 +7,7 @@ import sqlite3
 import uuid
 from typing import TYPE_CHECKING, Literal, cast
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.core.transition_models import GraphTargetRef
 from rcp.storage.chat_names import initialize_chat_name
@@ -40,6 +40,8 @@ class ChatForkRecord(BaseModel):
     node_id: str | None
     created_at: str
     origin: ChatForkOrigin
+    # Restore detaches the fork intent; the origin stays for the origin link.
+    detached: bool = Field(default=False, exclude_if=lambda value: not value)
 
 
 # The source turn's launch profile a fork's first turn keeps.
@@ -54,10 +56,10 @@ def migrate_chat_forks(connection: sqlite3.Connection) -> None:
 
 
 class ChatForkStoreMixin(StoreMixinBase):
-    def _chat_fork_source(
-        self, connection: sqlite3.Connection, project_id: str, source_chat_id: str
-    ) -> sqlite3.Row:
-        """The chat's latest turn, which must hold a settled, usable native session."""
+    @staticmethod
+    def _latest_chat_turn_id(
+        connection: sqlite3.Connection, project_id: str, chat_id: str
+    ) -> str | None:
         latest = connection.execute(
             "SELECT operation_id FROM graph_runs WHERE project_id = ? "
             "AND kind IN ('node_chat', 'project_chat') "
@@ -65,10 +67,53 @@ class ChatForkStoreMixin(StoreMixinBase):
             "AND (json_extract(request_json, '$.artifact_edit') IS NULL "
             "OR json_extract(request_json, '$.artifact_edit.origin_bound') = 0) "
             "ORDER BY created_at DESC, rowid DESC LIMIT 1",
-            (project_id, source_chat_id),
+            (project_id, chat_id),
         ).fetchone()
+        return latest[0] if latest else None
+
+    def _chat_fork_source(
+        self, connection: sqlite3.Connection, project_id: str, source_chat_id: str
+    ) -> sqlite3.Row:
+        """The chat's latest turn, which must hold a settled, usable native session."""
         return cast("AppStore", self)._usable_chat_fork_source(
-            connection, latest[0] if latest else None
+            connection, self._latest_chat_turn_id(connection, project_id, source_chat_id)
+        )
+
+    def _chat_fork_record(
+        self, connection: sqlite3.Connection, project_id: str, chat_id: str
+    ) -> ChatForkRecord | None:
+        row = connection.execute(
+            "SELECT record_json FROM chat_forks WHERE project_id = ? AND chat_id = ?",
+            (project_id, chat_id),
+        ).fetchone()
+        return None if row is None else ChatForkRecord.model_validate_json(row[0])
+
+    def _chat_fork_refusal(
+        self, connection: sqlite3.Connection, fork: ChatForkRecord, carried: dict[str, object]
+    ) -> str | None:
+        """Why a later attempt may not fork the source its first message recorded.
+
+        Forking the source's live session again would import turns the source
+        admitted after the branched chat's first message, so any newer source
+        turn, or a source session that is gone, refuses the fork.
+        """
+
+        project_id, source_chat_id = fork.project_id, fork.origin.source_chat_id
+        if self._latest_chat_turn_id(connection, project_id, source_chat_id) != carried.get(
+            "fork_source_operation_id"
+        ):
+            return "chat_fork_source_moved"
+        try:
+            self._chat_fork_source(connection, project_id, source_chat_id)
+        except ValueError:
+            return "chat_fork_source_unavailable"
+        return None
+
+    @staticmethod
+    def detach_chat_forks_for_restore(connection: sqlite3.Connection) -> None:
+        """A restored branched chat that has not forked yet starts a fresh session."""
+        connection.execute(
+            "UPDATE chat_forks SET record_json = json_set(record_json, '$.detached', json('true'))"
         )
 
     def require_chat_fork_source(self, project_id: str, source_chat_id: str) -> None:
@@ -84,13 +129,9 @@ class ChatForkStoreMixin(StoreMixinBase):
         The fork takes the source chat's latest state when the first message is
         sent; nothing reads the source again after that turn is admitted.
         """
-        row = connection.execute(
-            "SELECT record_json FROM chat_forks WHERE project_id = ? AND chat_id = ?",
-            (project_id, chat_id),
-        ).fetchone()
-        if row is None:
+        fork = self._chat_fork_record(connection, project_id, chat_id)
+        if fork is None or fork.detached:
             return None
-        fork = ChatForkRecord.model_validate_json(row[0])
         return fork, self._chat_fork_source(connection, project_id, fork.origin.source_chat_id)
 
     def pending_chat_fork_profile(self, project_id: str, chat_id: str) -> dict[str, object] | None:
