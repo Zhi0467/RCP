@@ -187,9 +187,10 @@ session, later attempts and turns resume that session normally. The existing
 continuation prompt carries the new graph target and tells the agent that its
 current graph can differ from the inherited context.
 
-The entry point is "Branch this chat" in the chat list's row menu; the chat strip
-gains no control. The branch picker already names the new chat's target, so the
-header adds nothing; the transcript's first line links back to the source chat.
+The entry point is "Branch this chat" in the chat header's menu. It opens the
+branch picker, listing branches to move to and New branch, without merge, rename,
+or archive. The top bar's picker names the new chat's target; the transcript's
+first line links back to the source chat.
 Origin metadata remains available after the new chat has its own turns. Browser consent remains the new chat's own preference.
 
 A generic `watcher_wake` is a new logical turn, clears handoffs and uses the wake
