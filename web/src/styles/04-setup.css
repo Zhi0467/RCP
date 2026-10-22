@@ -627,7 +627,7 @@
   text-transform: uppercase;
 }
 .team-machine-fields label.wide,
-.team-repository-fields label:nth-child(2) {
+.team-repository-fields label.wide {
   grid-column: 1 / -1;
 }
 .team-machine-fields input,

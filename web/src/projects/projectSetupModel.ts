@@ -145,6 +145,73 @@ export function stateRepositoryAfterRemoval(
   return repositories.find((repository) => repository.id !== removedId)?.alias ?? "";
 }
 
+/** The backend's repository name rule: `[a-z][a-z0-9-]{0,47}`. */
+const REPOSITORY_NAME_MAX_LENGTH = 48;
+
+/** A folder path's last segment. */
+export function repositoryFolderName(path: string): string {
+  return (
+    path
+      .trim()
+      .replace(/[/\\]+$/, "")
+      .split(/[/\\]/)
+      .at(-1) ?? ""
+  );
+}
+
+/** A GitHub URL's repository name, or "" until the URL names one. */
+export function githubRepositoryName(source: string): string {
+  return source.trim().match(/github\.com[/:][^/\s]+\/([^/\s]+?)(?:\.git)?\/?$/i)?.[1] ?? "";
+}
+
+function repositoryNameSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^[^a-z]+/, "")
+    .slice(0, REPOSITORY_NAME_MAX_LENGTH)
+    .replace(/-+$/, "");
+}
+
+/**
+ * A new repository's name: the first candidate that makes a valid name, else
+ * "research", numbered past the names the project already uses.
+ */
+export function defaultRepositoryName(
+  candidates: readonly string[],
+  taken: readonly string[],
+): string {
+  const base = candidates.map(repositoryNameSlug).find(Boolean) ?? "research";
+  const used = new Set(taken);
+  if (!used.has(base)) return base;
+  for (let index = 2; ; index += 1) {
+    const suffix = `-${index}`;
+    const stem = base.slice(0, REPOSITORY_NAME_MAX_LENGTH - suffix.length).replace(/-+$/, "");
+    if (!used.has(`${stem}${suffix}`)) return `${stem}${suffix}`;
+  }
+}
+
+/** Draft repositories: one re-derives its name from its source until a name is typed. */
+export function withDefaultRepositoryName<
+  T extends { id: number; alias: string; nameEdited: boolean },
+>(drafts: readonly T[], id: number, candidates: readonly string[]): T[] {
+  const draft = drafts.find((item) => item.id === id);
+  if (!draft || draft.nameEdited) return [...drafts];
+  const taken = drafts.filter((item) => item.id !== id).map((item) => item.alias.trim());
+  const alias = defaultRepositoryName(candidates, taken);
+  return drafts.map((item) => (item.id === id ? { ...item, alias } : item));
+}
+
+/** The canonical choice follows its repository through a rename. */
+export function stateRepositoryAfterRename(
+  before: ReadonlyArray<{ id: number; alias: string }>,
+  after: ReadonlyArray<{ id: number; alias: string }>,
+  stateRepository: string,
+): string {
+  const id = before.find((repository) => repository.alias === stateRepository)?.id;
+  return after.find((repository) => repository.id === id)?.alias ?? stateRepository;
+}
+
 export function repositoryPickerPresentation(location: "local" | "ssh", desktop: boolean) {
   return {
     showPicker: location === "local" && desktop,
