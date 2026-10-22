@@ -45,6 +45,18 @@ const history = Array.from({ length: 40 }, (_, index) => ({
   attachments: [],
 }));
 
+// Another tab's turn, admitted with a server time after this browser's send time.
+history.push({
+  message_id: "other-tab",
+  operation_id: "other-tab",
+  role: "user",
+  text: "From another tab",
+  timestamp: new Date(Date.now() + 60_000).toISOString(),
+  mode: "discuss",
+  trigger: "human",
+  attachments: [],
+});
+
 type StartCall = { message: string; requestId: string | undefined };
 
 function Fixture() {

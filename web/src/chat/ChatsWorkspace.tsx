@@ -775,8 +775,17 @@ export function ChatsWorkspace({
           <AgentRename
             title={selected.title}
             onDone={(title) => {
+              // A rename ended from its field (Enter or Escape), not by leaving it,
+              // hands focus back to the menu it was opened from.
+              const fromField = document.activeElement?.closest(".agent-row-rename");
               setRenamingInHeader(false);
               finishRename(selected, title);
+              if (fromField)
+                requestAnimationFrame(() =>
+                  workspace.current
+                    ?.querySelector<HTMLButtonElement>(".chat-header-menu > button")
+                    ?.focus(),
+                );
             }}
           />
         ) : (

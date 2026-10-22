@@ -16,6 +16,7 @@ import {
 import { ApiError, mergeGraphFork, renameGraphBranch, setGraphBranchArchived } from "../core/api";
 import { branchName, branchNameProblem, typedBranchName } from "../core/branchNames";
 import { sameGraphTarget } from "../core/graphTarget";
+import { rovingFocusTarget } from "../core/rovingFocus";
 import type { GraphHeadRef, GraphRef, GraphTargetRef } from "../core/types";
 import {
   graphPickerOptions,
@@ -68,6 +69,14 @@ function popoverPlacement(trigger: HTMLElement | null) {
     top: rect.bottom + 4,
     right: Math.min(right, window.innerWidth - VIEWPORT_GUTTER - width),
   };
+}
+
+/** The popover's choosable rows: each branch name and New branch. */
+function rowButtons(popover: HTMLElement | null) {
+  return [
+    ...(popover?.querySelectorAll<HTMLButtonElement>("button.branch-picker-name:not(:disabled)") ??
+      []),
+  ];
 }
 
 export function GraphPicker({
@@ -156,6 +165,13 @@ export function GraphPicker({
       document.removeEventListener("keydown", escape, true);
     };
   }, [open, editing, creating, confirm]);
+
+  // The popover is portaled to the end of the page, so focus moves into it on open.
+  useEffect(() => {
+    if (!open) return;
+    const rows = rowButtons(list.current);
+    (rows.find((row) => row.getAttribute("aria-current") === "true") ?? rows[0])?.focus();
+  }, [open]);
 
   useEffect(() => {
     if (confirm) dialog.current?.showModal();
@@ -303,6 +319,31 @@ export function GraphPicker({
             role="dialog"
             aria-label={label ?? "Branches"}
             style={position}
+            onKeyDown={(event) => {
+              // Handled keys stop here: an enclosing menu skips a handled key.
+              // Tab cycles within the open popover; it moves focus itself, since
+              // a chat workspace takes an unhandled Shift+Tab as its mode shortcut.
+              if (event.key === "Tab") {
+                const focusable = [
+                  ...event.currentTarget.querySelectorAll<HTMLElement>(
+                    "button:not(:disabled), input:not(:disabled)",
+                  ),
+                ];
+                const index = focusable.indexOf(event.target as HTMLElement);
+                const step = event.shiftKey ? -1 : 1;
+                event.preventDefault();
+                focusable[(index + step + focusable.length) % focusable.length]?.focus();
+                return;
+              }
+              const next = rovingFocusTarget(
+                rowButtons(event.currentTarget),
+                event.target,
+                event.key,
+              );
+              if (!next) return;
+              event.preventDefault();
+              next.focus();
+            }}
           >
             {heading && <p className="branch-picker-heading">{heading}</p>}
             <ul className="branch-picker-list">
@@ -373,6 +414,8 @@ export function GraphPicker({
                         <button
                           className="branch-picker-name"
                           aria-current={current ? "true" : undefined}
+                          // Picking only moves something; it is already on its own branch.
+                          disabled={pickOnly && current}
                           onClick={() => {
                             setOpen(false);
                             setEditing(null);

@@ -1,10 +1,20 @@
 import { Ellipsis } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { rovingFocusTarget } from "../core/rovingFocus";
 
 export interface ChatHeaderAction {
   label: string;
   disabled?: boolean;
   onSelect: () => void;
+}
+
+/** The menu's rows: its items, then the triggers of the pickers it holds, not their options. */
+function menuRows(menu: HTMLElement | null) {
+  return [
+    ...(menu?.querySelectorAll<HTMLButtonElement>(
+      "button[role=menuitem]:not(:disabled), button[aria-expanded]:not(:disabled)",
+    ) ?? []),
+  ];
 }
 
 /** The chat header's one overflow menu: chat actions, then any inline controls. */
@@ -20,6 +30,10 @@ export function ChatHeaderMenu({
   // the root's handler before the document listener sees the same event.
   const pressedInside = useRef<Event | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (open) menuRows(list.current)[0]?.focus();
+  }, [open]);
   useEffect(() => {
     if (!open) return;
     const close = (event: Event) => {
@@ -57,7 +71,19 @@ export function ChatHeaderMenu({
         <Ellipsis size={16} />
       </button>
       {open && (
-        <div className="agent-row-menu-list chat-header-menu-list" role="menu">
+        <div
+          ref={list}
+          className="agent-row-menu-list chat-header-menu-list"
+          role="menu"
+          onKeyDown={(event) => {
+            // A nested picker that handled the key moves within its own layer.
+            if (event.defaultPrevented) return;
+            const next = rovingFocusTarget(menuRows(list.current), event.target, event.key);
+            if (!next) return;
+            event.preventDefault();
+            next.focus();
+          }}
+        >
           {actions.map((action) => (
             <button
               key={action.label}
