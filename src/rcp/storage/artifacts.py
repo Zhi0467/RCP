@@ -341,14 +341,8 @@ class ArtifactStoreMixin(StoreMixinBase):
         *,
         resolved_by: AuthorizedHuman | None = None,
     ) -> Artifact:
-        """Keep and attribute an artifact within the caller's transaction and lock."""
-        artifact = artifact.model_copy(
-            update={"kept_at": artifact.kept_at or self.now(), "expires_at": None}
-        )
-        connection.execute(
-            "UPDATE artifacts SET metadata = ? WHERE artifact_id = ?",
-            (artifact.model_dump_json(), artifact.artifact_id),
-        )
+        """A human Keep: retain the artifact and close the Inbox review it settles."""
+        artifact = self._retain_artifact(connection, artifact)
         connection.execute(
             "UPDATE consolidation_runs SET state='kept', resolved_by_json=?, resolved_at=? "
             "WHERE report_artifact_id=? AND kind='report' AND state='open'",
@@ -357,6 +351,17 @@ class ArtifactStoreMixin(StoreMixinBase):
                 self.now(),
                 artifact.artifact_id,
             ),
+        )
+        return artifact
+
+    def _retain_artifact(self, connection: sqlite3.Connection, artifact: Artifact) -> Artifact:
+        """Save an artifact from expiry. Retention alone settles no human review."""
+        artifact = artifact.model_copy(
+            update={"kept_at": artifact.kept_at or self.now(), "expires_at": None}
+        )
+        connection.execute(
+            "UPDATE artifacts SET metadata = ? WHERE artifact_id = ?",
+            (artifact.model_dump_json(), artifact.artifact_id),
         )
         return artifact
 

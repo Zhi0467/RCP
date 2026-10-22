@@ -125,7 +125,9 @@ in that chat. Each run produces one **Consolidation** Inbox row:
 
 - **Report:** opens in the viewer, offers Keep into Artifacts or Dismiss. Open
   rows protect temporary artifacts from expiry; Dismiss starts ordinary retention.
-  Keeping from the viewer also closes the row.
+  Keeping from the viewer also closes the row. A Bulletin link saves the report
+  but leaves the row open: saving is retention, and only a human Keep or Dismiss
+  settles the review.
 - **Failure:** typed error and Dismiss only. Prelaunch failures have no operation
   or revisions. Postlaunch failures list canonical operation revisions, marked
   unverified if history cannot be read, never falsely empty.
