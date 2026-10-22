@@ -83,6 +83,10 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       await rename.waitFor();
       await rename.press("Escape");
       await rename.waitFor({ state: "detached" });
+      // Focus returns to the menu the rename came from, not to the page.
+      await page.waitForFunction(
+        () => document.activeElement?.getAttribute("aria-label") === "Chat menu",
+      );
       assert.equal(await page.getByRole("separator").count(), 0, "No narrow resize strip");
       const composerWidth = (await composer.boundingBox()).width;
       assert.ok(composerWidth >= viewport.width - 50, "Composer uses the full narrow column");

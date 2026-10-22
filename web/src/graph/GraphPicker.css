@@ -75,6 +75,11 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The current branch in a pick-only list: checked, not unavailable. */
+.branch-picker-name[aria-current="true"]:disabled {
+  cursor: default;
+  opacity: 1;
+}
 .branch-picker-name-input,
 .branch-picker-name-input:focus {
   outline: none;

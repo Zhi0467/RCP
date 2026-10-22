@@ -430,27 +430,30 @@ export function NodeChat({
   }, [chatId, historyMessages, steeringMessages]);
   const [pendingTurn, setPendingTurn] = useState<PendingChatTurn | null>(null);
   const transcript = useMemo(
-    () =>
-      orderTranscriptLines([
+    () => [
+      ...orderTranscriptLines([
         ...reconcileChatHistoryArtifacts(displayedMessages, relatedTasks),
         ...reconstructTaskTranscript(chatTasksMissingFromHistory(relatedTasks, displayedMessages)),
-        // The shared store already shows the sent message while its start is in
-        // flight; this local line covers only a chat with no loaded transcript.
-        ...(pendingTurn && !pendingTurnShownByHistory(pendingTurn.clientId, displayedMessages)
-          ? [
-              {
-                lineId: `pending:${pendingTurn.clientId}`,
-                role: "human" as const,
-                text: pendingTurn.text,
-                taskId: pendingTurn.clientId,
-                timestamp: pendingTurn.timestamp,
-                mode: pendingTurn.mode,
-                attachments: pendingTurn.attachments,
-                trigger: "human" as const,
-              },
-            ]
-          : []),
       ]),
+      // The shared store already shows the sent message while its start is in
+      // flight; this local line covers only a chat with no loaded transcript.
+      // Not yet admitted, it stays last: a turn another tab started first may
+      // carry a later server time than this browser's send time.
+      ...(pendingTurn && !pendingTurnShownByHistory(pendingTurn.clientId, displayedMessages)
+        ? [
+            {
+              lineId: `pending:${pendingTurn.clientId}`,
+              role: "human" as const,
+              text: pendingTurn.text,
+              taskId: pendingTurn.clientId,
+              timestamp: pendingTurn.timestamp,
+              mode: pendingTurn.mode,
+              attachments: pendingTurn.attachments,
+              trigger: "human" as const,
+            },
+          ]
+        : []),
+    ],
     [displayedMessages, pendingTurn, relatedTasks],
   );
   const derivedConfig = useMemo(
@@ -587,6 +590,12 @@ export function NodeChat({
   );
   const referencesIdentity = useRef(referencesKey);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const addPickerRef = useRef<HTMLDivElement | null>(null);
+  const addButtonRef = useRef<HTMLButtonElement | null>(null);
+  const closeAddMenu = useCallback(() => setAddMenuOpen(false), []);
+  useLayerDismiss(addMenuOpen, closeAddMenu, [addPickerRef], addButtonRef);
+  // Another chat starts with its Add menu closed.
+  useEffect(closeAddMenu, [chatId, closeAddMenu]);
   const [referencePickerOpen, setReferencePickerOpen] = useState(false);
   useEffect(() => {
     if (referencesIdentity.current !== referencesKey) {
@@ -2020,6 +2029,7 @@ export function NodeChat({
     // A new send is a new request; only Resend reuses a failed turn's key.
     const requestId = crypto.randomUUID();
     setMessage("");
+    setAddMenuOpen(false);
     await submitTurn({
       clientId: `pending-${requestId}`,
       requestId,
@@ -3170,8 +3180,9 @@ export function NodeChat({
           />
           <div className="chat-send">
             <div className="chat-composer-tools">
-              <div className="chat-add-picker">
+              <div className="chat-add-picker" ref={addPickerRef}>
                 <button
+                  ref={addButtonRef}
                   className="icon-button chat-add-file"
                   type="button"
                   aria-label="Add"

@@ -94,6 +94,11 @@ for (const width of [1000, 390]) {
       const address = server.httpServer.address();
       await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatBranch.html`);
       await page.getByRole("button", { name: "Chat menu", exact: true }).click();
+      // The repository list stays inside the screen's 16px gutter.
+      await page.locator(".chat-scope-control .scope-trigger").click();
+      const scope = await page.locator(".scope-popover").boundingBox();
+      assert.ok(scope.x >= 16 && scope.x + scope.width <= width - 16);
+      await page.keyboard.press("Escape");
       await page.getByRole("button", { name: "Branch this chat", exact: true }).click();
       const picker = page.getByRole("dialog", { name: "Branch this chat" });
       await picker.locator('[data-branch-id="existing"]').waitFor();
@@ -211,7 +216,7 @@ test("Escape and presses inside Branch this chat close only the innermost layer"
   }
 });
 
-test("Escape closes the repository list before the menu, and the agent picker closes like a popover", async () => {
+test("Escape closes the repository list before the menu; the agent picker and Add menu close like popovers", async () => {
   const cacheDir = await mkdtemp(join(tmpdir(), "rcp-chat-layers-"));
   const server = await createServer({
     configLoader: "runner",
@@ -265,6 +270,122 @@ test("Escape closes the repository list before the menu, and the agent picker cl
     await panel.waitFor();
     await chip.click();
     await panel.waitFor({ state: "detached" });
+
+    // The composer's Add menu closes on Escape, an outside press, and a send.
+    const add = page.getByRole("button", { name: "Add", exact: true });
+    const addMenu = page.locator(".chat-add-menu");
+    await add.click();
+    await page.keyboard.press("Escape");
+    await addMenu.waitFor({ state: "detached" });
+    assert.equal(await add.evaluate((node) => node === document.activeElement), true);
+    await add.click();
+    await page.mouse.click(5, 400);
+    await addMenu.waitFor({ state: "detached" });
+    await add.click();
+    await page.getByRole("textbox", { name: "Message", exact: true }).fill("Send closes it");
+    await page.keyboard.press("Enter");
+    await addMenu.waitFor({ state: "detached" });
+  } finally {
+    await browser?.close();
+    await server.close();
+    await rm(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("The chat menu and Branch this chat work by keyboard; the current branch is not a choice", async () => {
+  const cacheDir = await mkdtemp(join(tmpdir(), "rcp-chat-keys-"));
+  const server = await createServer({
+    configLoader: "runner",
+    cacheDir,
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 1000, height: 850 } });
+    const branched = [];
+    await page.route("**/api/**", (route) => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (path.endsWith("/source/branch") && request.method() === "POST") {
+        branched.push(request.postDataJSON());
+        return route.fulfill({ status: 503, body: JSON.stringify({ detail: "probe" }) });
+      }
+      const data = path.endsWith("/graph-refs")
+        ? [main, branch]
+        : path.endsWith("/questions")
+          ? []
+          : {};
+      return route.fulfill({ contentType: "application/json", body: JSON.stringify(data) });
+    });
+    const address = server.httpServer.address();
+    await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatBranch.html`);
+    const focused = () =>
+      page.evaluate(() => {
+        const element = document.activeElement;
+        return element?.getAttribute("aria-label") ?? element?.textContent?.trim() ?? "";
+      });
+    const menu = page.getByRole("button", { name: "Chat menu", exact: true });
+    await menu.focus();
+    await page.keyboard.press("Enter");
+    // The first row takes focus; the arrows, Home, and End move between rows.
+    assert.equal(
+      await page
+        .getByRole("menuitem")
+        .first()
+        .evaluate((n) => n === document.activeElement),
+      true,
+    );
+    await page.keyboard.press("End");
+    assert.equal(
+      await page
+        .locator(".chat-scope-control .scope-trigger")
+        .evaluate((n) => n === document.activeElement),
+      true,
+    );
+    await page.keyboard.press("ArrowDown");
+    assert.equal(
+      await page
+        .getByRole("menuitem")
+        .first()
+        .evaluate((n) => n === document.activeElement),
+      true,
+    );
+    await page.keyboard.press("ArrowUp");
+    await page.keyboard.press("ArrowUp");
+    assert.equal(await focused(), "Branch this chat");
+    await page.keyboard.press("Enter");
+    const picker = page.getByRole("dialog", { name: "Branch this chat" });
+    await picker.waitFor();
+    // The chat is on main already: that row is inert, and focus starts on a choice.
+    const current = picker.locator('[data-branch-id="main"] .branch-picker-name');
+    assert.equal(await current.isDisabled(), true);
+    const existing = picker.locator('[data-branch-id="existing"] .branch-picker-name');
+    assert.equal(await existing.evaluate((n) => n === document.activeElement), true);
+    const create = picker.getByRole("button", { name: "New branch", exact: true });
+    await page.keyboard.press("ArrowDown");
+    assert.equal(await create.evaluate((n) => n === document.activeElement), true);
+    await page.keyboard.press("ArrowDown");
+    assert.equal(await existing.evaluate((n) => n === document.activeElement), true);
+    // Tab stays within the open picker.
+    await page.keyboard.press("Tab");
+    assert.equal(await create.evaluate((n) => n === document.activeElement), true);
+    await page.keyboard.press("Tab");
+    assert.equal(await existing.evaluate((n) => n === document.activeElement), true);
+    await page.keyboard.press("Shift+Tab");
+    assert.equal(await create.evaluate((n) => n === document.activeElement), true);
+    await page.keyboard.press("Shift+Tab");
+    assert.equal(await existing.evaluate((n) => n === document.activeElement), true);
+    await page.keyboard.press("Enter");
+    await picker.waitFor({ state: "detached" });
+    await page.waitForFunction(() => document.querySelector(".chat-branch-picker[data-failed]"));
+    assert.deepEqual(
+      branched.map((body) => body.graph_target),
+      [{ kind: "branch", branch_id: "existing" }],
+    );
   } finally {
     await browser?.close();
     await server.close();

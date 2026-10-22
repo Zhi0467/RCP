@@ -39,8 +39,17 @@ test("a failed send stays in place and Resend reuses its request id", async () =
     await page.getByRole("button", { name: "Start Discuss turn", exact: true }).click();
     const failed = lines.getByRole("button", { name: "Resend", exact: true });
     await failed.waitFor();
-    // The message stays where it was sent, and the composer keeps a copy.
+    // The message stays where it was sent, after every admitted turn, and the
+    // composer keeps a copy.
     assert.equal(await lines.getByText("Lost on the way", { exact: true }).count(), 1);
+    assert.equal(
+      await lines
+        .locator(".node-chat-line.human")
+        .last()
+        .getByText("Lost on the way", { exact: true })
+        .count(),
+      1,
+    );
     assert.equal(await composer.inputValue(), "Lost on the way");
 
     await failed.click();
