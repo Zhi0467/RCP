@@ -134,6 +134,8 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                 # The origin link names the source as it is called now; the title
                 # captured at fork time stands in only once the source is gone.
                 origin = fork.origin.model_dump(mode="json")
+                # A restored fork that never ran starts fresh; its next message picks freely.
+                origin["pending"] = not fork.detached
                 if row["source_title"]:
                     origin["source_title"] = row["source_title"]
                 if fork.chat_id in by_id:

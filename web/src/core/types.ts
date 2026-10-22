@@ -2947,6 +2947,8 @@ export interface ChatOrigin {
   model: string | null;
   reasoning: string | null;
   run_on: string;
+  /** False once restore detached the fork: its next message starts a fresh session. */
+  pending: boolean;
 }
 
 export interface ChatSummary {

@@ -1,9 +1,11 @@
+/* It starts the transcript's centered 820px column (.node-chat-line). */
 .chat-origin-link {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 4px;
-  align-self: flex-start;
-  max-width: 100%;
+  width: fit-content;
+  max-width: min(100%, 820px);
+  margin: 0 0 12px max(0px, (100% - 820px) / 2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

@@ -645,8 +645,10 @@ button.bulletin-roster-name:hover {
   flex: none;
   margin: 6px 0 6px 6px;
 }
+/* The scrolling wrapper owns the popup shadow; its child's would be clipped. */
 .bulletin-artifact-picker {
   bottom: calc(100% + 4px);
+  box-shadow: var(--shadow);
   left: 0;
   overflow: auto;
   position: absolute;
@@ -658,6 +660,7 @@ button.bulletin-roster-name:hover {
   top: calc(100% + 4px);
 }
 .bulletin-artifact-picker .chat-reference-picker {
+  box-shadow: none;
   box-sizing: border-box;
   position: static;
   width: 100%;

@@ -773,6 +773,7 @@ test(
         model: "",
         reasoning: "high",
         run_on: "local",
+        pending: true,
       },
     };
     const { page, errors, state } = await openedShell(t, {
@@ -787,13 +788,17 @@ test(
     );
     await branchShown(page, "b1");
     const before = state.requests.length;
-    await page.getByRole("link", { name: "Source chat", exact: true }).click();
+    const sourceLoaded = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/api/projects/demo/chats/source",
+    );
+    await page.locator(".chat-origin-link").click();
+    await sourceLoaded;
     await branchShown(page, "main");
     await menu.waitFor();
-    for (let beat = 0; beat < 2; beat++)
-      await page.waitForResponse(
-        (response) => new URL(response.url()).pathname === "/api/resource-watermarks",
-      );
+    // A refetch loop reissues the read as soon as its answer renders.
+    await page.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+    );
     const sourceReads = state.requests
       .slice(before)
       .filter((path) => path === "/api/projects/demo/chats/source").length;

@@ -44,7 +44,9 @@ test("the picker forks the viewed head into a named branch, retries idempotently
     await page.getByRole("button", { name: "Branch: main" }).click();
     await page.getByRole("button", { name: "New branch" }).click();
     const field = page.getByRole("textbox", { name: "New branch name" });
-    const popoverText = await page.getByRole("dialog").innerText();
+    // Elements outside icons: a failure swaps the action's icon, nothing more.
+    const elements = page.locator(".branch-picker-popover *:not(svg, svg *)");
+    const popoverElements = await elements.count();
     await field.fill("taken");
     await Promise.all([page.waitForResponse(/graph-refs$/), field.press("Enter")]);
     await page.locator('[aria-invalid="true"]').waitFor();
@@ -54,8 +56,9 @@ test("the picker forks the viewed head into a named branch, retries idempotently
     await Promise.all([page.waitForResponse(/graph-refs$/), field.press("Enter")]);
     const retry = page.getByRole("button", { name: "Retry new branch" });
     await retry.waitFor();
-    // Failures add no caption: the popover's text is what it showed before.
-    assert.equal(await page.getByRole("dialog").innerText(), popoverText);
+    // A failure is the row's red edge and its Retry action; it adds no caption.
+    await page.locator(".branch-picker-failed").waitFor();
+    assert.equal(await elements.count(), popoverElements);
     assert.equal(await page.getByRole("alert").count(), 0);
     // The viewed head moves before the retry; the retry still repeats the first request.
     await page.evaluate(() => window.advanceHead());

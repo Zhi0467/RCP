@@ -42,9 +42,15 @@ from rcp.limits import CHAT_PAGE_DEFAULT_LIMIT, CHAT_PAGE_MAX_LIMIT
 from rcp.projects import ProjectCatalog
 from rcp.runs.browser_lifecycle import close_chat_browser_owners
 from rcp.runs.chat_admission import require_chat_graph_target
-from rcp.service import ChatMessage, ChatSummary, ChatSummaryPage, ChatTranscript, RunRequest
+from rcp.service import (
+    ChatMessage,
+    ChatOriginView,
+    ChatSummary,
+    ChatSummaryPage,
+    ChatTranscript,
+    RunRequest,
+)
 from rcp.storage import AppStore
-from rcp.storage.chat_forks import ChatForkOrigin
 from rcp.storage.chat_names import ChatNameError
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -516,7 +522,7 @@ def chat(
             else (transcript.graph_target.branch_id or "")[:8],
             **(
                 {
-                    key: ChatForkOrigin.model_validate(summary[key])
+                    key: ChatOriginView.model_validate(summary[key])
                     if key == "origin" and summary[key] is not None
                     else summary[key]
                     for key in (

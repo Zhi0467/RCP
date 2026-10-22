@@ -492,7 +492,7 @@ export function NodeChat({
     configChipRef,
   );
   const pendingFork = Boolean(
-    origin &&
+    origin?.pending &&
     !relatedTasks.some((task) => task.native_session_id) &&
     !historyMessages.some((message) => message.native_session_id),
   );

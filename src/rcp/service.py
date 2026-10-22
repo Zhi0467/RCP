@@ -316,6 +316,11 @@ class ChatMessage(BaseModel):
     )
 
 
+class ChatOriginView(ChatForkOrigin):
+    # False once restore detached the fork; its next message starts a fresh session.
+    pending: bool
+
+
 class ChatSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -331,7 +336,7 @@ class ChatSummary(BaseModel):
     orchestrator_episode_id: str | None = None
     human_turn_refusal: dict[str, str] | None = None
     graph_title: str = "Main"
-    origin: ChatForkOrigin | None = None
+    origin: ChatOriginView | None = None
 
 
 class ChatSummaryPage(BaseModel):
