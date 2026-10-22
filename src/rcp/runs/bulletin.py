@@ -9,8 +9,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from rcp.agents.command_protocol import BulletinCommandRequest, CommandResponse
-from rcp.agents.prompts import BULLETIN_RULES
+from rcp.agents.prompts import BULLETIN_LINK_RULE, BULLETIN_RULES
 from rcp.agents.staged_command_client import bulletin_usages
+from rcp.artifacts import artifact_id
 from rcp.bulletin import bulletin_actor_id, bulletin_roster
 from rcp.limits import BULLETIN_RENDER_MAX_BYTES, BULLETIN_ROSTER_MAX_COUNT
 from rcp.project_references import resolve_project_artifact
@@ -100,6 +101,7 @@ def handle_bulletin(
     request: BulletinCommandRequest,
     *,
     post_allowed: bool,
+    turn_artifacts: bool,
     mailbox: RunStageMailbox | None = None,
 ) -> CommandResponse:
     from rcp.storage.bulletin import BulletinError
@@ -110,15 +112,17 @@ def handle_bulletin(
         code = "bulletin_task_unavailable"
     elif not store.bulletin_enabled_for_task(operation_id):
         code = "bulletin_disabled"
-    elif request.arguments.action not in {"read", "artifact"} and not post_allowed:
+    elif request.arguments.action not in {"read", "artifact", "link"} and not post_allowed:
         code = "bulletin_post_forbidden"
+    elif request.arguments.action == "link" and not turn_artifacts:
+        code = "bulletin_link_unavailable"
     if code:
         return CommandResponse(
             request_id=request.request_id, status="invalid", message=code, result={"code": code}
         )
     assert task is not None
     try:
-        result = store.execute_bulletin_command(
+        result: dict[str, Any] = store.execute_bulletin_command(
             task.project_id,
             operation_id,
             request.arguments.action,
@@ -129,6 +133,16 @@ def handle_bulletin(
             cursor=request.arguments.cursor,
             channel=request.arguments.channel,
         )
+        if request.arguments.action == "link":
+            from rcp.runs.chat import _logical_chat_turn_operation_id
+
+            # The id turn-end discovery gives this file of the turn's artifact directory;
+            # the link resolves once the turn publishes it.
+            assert request.arguments.file_name is not None
+            linked = artifact_id(
+                _logical_chat_turn_operation_id(store, operation_id), request.arguments.file_name
+            )
+            result = {"artifact_id": linked, "token": f"<artifact:{linked}>"}
         if request.arguments.action == "artifact":
             if mailbox is None:
                 raise BulletinError("bulletin_stage_unavailable")
@@ -215,5 +229,5 @@ def stage_bulletin_pointer(
 
 
 def bulletin_command_usage(client: str) -> str:
-    usages = [f"`{client} {usage}`" for usage in bulletin_usages()]
-    return "\n".join(f"- {line}" for line in (*usages, *BULLETIN_RULES))
+    usages = [f"`{client} {usage}`" for usage in bulletin_usages(turn_artifacts=True)]
+    return "\n".join(f"- {line}" for line in (*usages, *BULLETIN_RULES, BULLETIN_LINK_RULE))

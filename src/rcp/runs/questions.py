@@ -374,6 +374,7 @@ class WorkCommandHandler:
                 execution.operation_id,
                 request,
                 post_allowed=True,
+                turn_artifacts=True,
                 mailbox=self.mailbox,
             )
         if isinstance(request, LessonCommandRequest):

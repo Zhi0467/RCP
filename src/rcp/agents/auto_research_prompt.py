@@ -147,7 +147,7 @@ def _command_invocations(
         "finish": ("finish --key <key>",),
         "ask": ("ask --key <key> --question <text> [--choice <text> ...] [--multiple]",),
         "lesson": ("lesson add --key <key> --text <text>",),
-        "bulletin": bulletin_usages(),
+        "bulletin": bulletin_usages(turn_artifacts=False),
         "name": (name_usage(),),
     }
     commands = "\n".join(

@@ -1020,7 +1020,12 @@ class AutoResearchCommandDispatcher:
                     request_id=request.request_id, status="invalid", message=str(exc)
                 )
             return handle_bulletin(
-                self.store, operation_id, request, post_allowed=True, mailbox=self.mailbox
+                self.store,
+                operation_id,
+                request,
+                post_allowed=True,
+                turn_artifacts=False,
+                mailbox=self.mailbox,
             )
 
         if isinstance(request, LessonCommandRequest):

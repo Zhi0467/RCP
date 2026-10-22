@@ -67,7 +67,9 @@ def test_agent_reads_other_chat_artifact_as_immutable_current_bytes(store, tmp_p
         operation_id="other-agent-edit",
         data=b"new bytes",
     )
-    second = handle_bulletin(store, "turn", command, post_allowed=False, mailbox=mailbox)
+    second = handle_bulletin(
+        store, "turn", command, post_allowed=False, turn_artifacts=False, mailbox=mailbox
+    )
     assert second.status == "ok"
     assert Path(second.result["path"]).read_bytes() == b"new bytes"
     assert path.read_bytes() == b"\x89PNG\r\n\x00\xff"
@@ -104,7 +106,35 @@ def test_artifact_read_refuses_unavailable_source_or_authority(
         "turn",
         request("artifact", artifact_id="a" * 24),
         post_allowed=False,
+        turn_artifacts=False,
         mailbox=mailbox,
     )
     assert response.status == "invalid"
     assert not (tmp_path / "inputs").exists()
+
+
+def test_a_linked_turn_file_is_saved_when_the_turn_publishes_it(store, tmp_path):
+    from rcp.runs.chat import _discover_chat_artifacts
+
+    task = store.agent_task("turn")
+    store.record_agent_task_receipt(
+        "turn",
+        "operation_created",
+        {"kind": task.kind, "attempt": task.attempt, "has_parent": False, "resumed": False},
+    )
+    execution = AgentTaskExecution(operation_id="turn", store=store, control=AgentProcessControl())
+    handler = work_command_handler(execution, None)
+    link = handler(request("link", file_name="plot.png"), identity())
+    assert link.status == "ok"
+    store.execute_bulletin_command(
+        "project", "turn", "post", key="link", text=f"Plot: {link.result['token']}"
+    )
+    directory = tmp_path / "artifacts"
+    directory.mkdir()
+    (directory / "plot.png").write_bytes(b"\x89PNG\r\n\x00\xff")
+    [descriptor] = _discover_chat_artifacts(execution, "turn", directory, None)
+    assert descriptor.artifact_id == link.result["artifact_id"]
+    assert descriptor.kept_at is not None
+    assert store.artifact(descriptor.artifact_id).expires_at is None
+    posts = store.list_bulletin("project", "main")["posts"]
+    assert posts[0]["artifacts"][0]["artifact_id"] == descriptor.artifact_id

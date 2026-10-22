@@ -638,6 +638,26 @@ class BulletinStoreMixin(StoreMixinBase):
             kept += self._keep_linked_artifacts(connection, project_id, outcome, now)
         return _result(outcome)["post"]
 
+    def create_turn_artifact(self, artifact: Artifact, *, data: bytes) -> Artifact:
+        """Create a turn's artifact, kept when a live post already links it.
+
+        `bulletin --link` lets a post link a turn's file before the turn publishes it.
+        A post holds its linked artifacts' locks across its transaction, so under the
+        same lock a link either is seen here or keeps the created artifact itself.
+        """
+        store = cast("AppStore", self)
+        token = f"<artifact:{artifact.artifact_id}>"
+        with store.artifact_lock(artifact.artifact_id):
+            with self.connection() as connection:
+                rows = connection.execute(
+                    "SELECT text FROM bulletin_posts WHERE project_id=? AND deleted_at IS NULL "
+                    "AND instr(text, ?) > 0",
+                    (artifact.project_id, token),
+                ).fetchall()
+            if any(artifact.artifact_id in _linked_artifact_ids(row["text"]) for row in rows):
+                artifact = artifact.model_copy(update={"kept_at": self.now(), "expires_at": None})
+            return store.create_artifact(artifact, data=data)
+
     @contextlib.contextmanager
     def _artifacts_held(self, text: str | None) -> Iterator[list[Artifact]]:
         """Hold every artifact the text may link across the post's transaction.
@@ -692,9 +712,9 @@ class BulletinStoreMixin(StoreMixinBase):
         post_id: str | None = None,
         channel: str | None = None,
     ) -> dict[str, Any]:
-        if channel is not None and (subcommand != "post" or reply_to is not None):
+        if channel is not None and (subcommand not in {"read", "post"} or reply_to is not None):
             raise BulletinError("bulletin_channel_invalid")
-        if subcommand not in {"read", "artifact", "post", "edit", "delete"}:
+        if subcommand not in {"read", "artifact", "link", "post", "edit", "delete"}:
             raise BulletinError("bulletin_command_invalid")
         with self._artifacts_held(text) as kept, self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -707,8 +727,6 @@ class BulletinStoreMixin(StoreMixinBase):
             if not bulletin_enabled_for_task(connection, operation_id):
                 raise BulletinError("bulletin_disabled")
             target_key = GraphTargetRef.model_validate_json(task["graph_target_json"]).key
-            if subcommand == "read":
-                return _list(connection, project_id, target_key, cursor, now=self.now())
             if channel is not None:
                 if channel == "main":
                     target_key = "main"
@@ -725,6 +743,8 @@ class BulletinStoreMixin(StoreMixinBase):
                     if len(branches) != 1:
                         raise BulletinError("bulletin_channel_invalid")
                     target_key = f"branch:{branches[0]['branch_id']}"
+            if subcommand == "read":
+                return _list(connection, project_id, target_key, cursor, now=self.now())
             # Replies, edits, and deletes land in the named post's channel.
             named = reply_to if subcommand == "post" else post_id
             named_channel = (
@@ -742,7 +762,7 @@ class BulletinStoreMixin(StoreMixinBase):
                 "orchestrate",
             } or not live_project_member(connection, project_id, task["authorized_user_id"]):
                 raise BulletinError("bulletin_forbidden")
-            if subcommand == "artifact":
+            if subcommand in {"artifact", "link"}:
                 return {}
             ProjectProvisioningStoreMixin._require_project_accepts_new_work(connection, project_id)
             from rcp.bulletin import bulletin_actor_id
