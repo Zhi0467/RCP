@@ -59,6 +59,7 @@ from rcp.limits import (
 from rcp.providers import AgentCapability
 from rcp.rcp_home import rcp_temp_dir
 from rcp.runs.patch_validator import stage_patch_validation_mailbox
+from rcp.runs.session_artifacts import commented_artifact
 from rcp.runs.session_master import (
     SESSION_MASTER_KEY_ROLE,
     SESSION_MASTER_ROLE,
@@ -976,18 +977,14 @@ def stage_artifact_context(
     origin = execution.store.agent_task(context.operation_id)
     if current is None or origin is None or origin.project_id != current.project_id:
         raise ValueError("The artifact context origin is unavailable.")
-    edit = request.artifact_edit
-    if (edit is None) != (edit_path is None):
+    comment = commented_artifact(execution, request)
+    if comment is None or edit_path is None:
         raise ValueError("An artifact comment requires its tracked file.")
-    artifact = execution.store.artifact(edit.artifact_id if edit else context.artifact_id)
+    artifact = execution.store.artifact(comment.artifact_id)
     if artifact is None or artifact.project_id != current.project_id:
         raise ValueError("The artifact context is unavailable.")
-    # A retry edits the current version, so a pruned base never refuses it.
     data = execution.store.read_artifact_bytes(
-        artifact.artifact_id,
-        edit.base_version
-        if edit and execution.operation_id == edit.operation_id
-        else artifact.current_version,
+        artifact.artifact_id, comment.base_version or artifact.current_version
     )
     descriptor = AgentArtifactDescriptor(
         artifact_id=artifact.artifact_id,
@@ -1064,7 +1061,6 @@ def stage_artifact_context(
         "source_operation_id": origin.operation_id,
         "source_artifact_id": descriptor.artifact_id,
         "edit_now": context.edit_now,
-        "editable": edit is not None,
         "selections": [
             {
                 **item.model_dump(mode="json"),
@@ -1080,8 +1076,7 @@ def stage_artifact_context(
             for index, item in enumerate(context.selections, 1)
         ],
     }
-    if edit_path is not None:
-        pointer["path"] = edit_path
+    pointer["path"] = edit_path
     return StagedArtifactContext(pointer=pointer)
 
 

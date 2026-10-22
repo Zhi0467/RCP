@@ -419,26 +419,18 @@ def start_ordinary_task(
                         "references": [],
                     }
                 )
-        composer_edit = (
-            request.artifact_edit
-            if isinstance(request, RunRequest)
-            and request.artifact_edit is not None
-            and not request.artifact_edit.origin_bound
+        comment = (
+            request.artifact_context
+            if isinstance(request, RunRequest) and request.artifact_edit is None
             else None
         )
         try:
-            # Expiry checks admitted edits under this lock, so the base must
+            # Expiry checks admitted comments under this lock, so the base must
             # stay readable until the task that protects it is recorded.
-            with (
-                store.artifact_lock(composer_edit.artifact_id)
-                if composer_edit is not None
-                else nullcontext()
-            ):
-                if composer_edit is not None:
+            with store.artifact_lock(comment.artifact_id) if comment is not None else nullcontext():
+                if comment is not None:
                     try:
-                        store.read_artifact_bytes(
-                            composer_edit.artifact_id, composer_edit.base_version
-                        )
+                        store.read_artifact_bytes(comment.artifact_id, comment.base_version)
                     except (KeyError, OSError, ValueError) as exc:
                         raise AgentTaskAdmissionConflict(
                             "The selected artifact version is no longer available. "
@@ -446,8 +438,8 @@ def start_ordinary_task(
                         ) from exc
                     # An Undo or another edit since admission makes the
                     # comment's base stale; the human must select again.
-                    current = store.artifact(composer_edit.artifact_id)
-                    if current is None or current.current_version != composer_edit.base_version:
+                    current = store.artifact(comment.artifact_id)
+                    if current is None or current.current_version != comment.base_version:
                         raise AgentTaskAdmissionConflict(
                             "This artifact changed to a new version after the parts "
                             "were selected. Select them again."
@@ -1126,24 +1118,8 @@ def retry_agent_task(
                         {**previous.request, **overrides, "session_id": None},
                         operation_id=previous.operation_id,
                     )
+                # A comment's retry is its chat turn's retry: it edits the current version.
                 with _task_preparation_service(service) as reader:
-                    if isinstance(candidate, RunRequest) and candidate.artifact_edit is None:
-                        candidate = _admit_artifact_context_request(
-                            store,
-                            reader,
-                            project_id,
-                            previous.kind,
-                            candidate,
-                        )
-                        if candidate.artifact_context is not None:
-                            overrides.update(
-                                {
-                                    "provider": candidate.provider,
-                                    "model": candidate.model,
-                                    "reasoning": candidate.reasoning,
-                                    "run_on": candidate.run_on,
-                                }
-                            )
                     candidate_payload = candidate.model_dump(mode="json")
                     experiment_admission.require_current(reader, candidate_payload)
                     skills = _validate_stored_task_request(
@@ -1336,10 +1312,10 @@ def _admit_artifact_context_request(
         return request
     if kind not in {"node_chat", "project_chat"}:
         raise ValueError("Artifact comments require a conversation or artifact comment route.")
-    from rcp.runs.artifact_edit_admission import admit_chat_artifact_edit
+    from rcp.runs.artifact_edit_admission import admit_chat_artifact_comment
 
-    admitted = admit_chat_artifact_edit(store, service, project_id, request)
-    if admitted.artifact_edit is not None and admitted.artifact_edit.origin_bound:
+    admitted = admit_chat_artifact_comment(store, service, project_id, request)
+    if admitted.artifact_edit is not None:
         # The viewer's origin-bound edit carries no skills; client-supplied ones
         # would reach the prompt unresolved.
         return admitted.model_copy(
@@ -1362,11 +1338,7 @@ def _validated_task_request(
 ) -> AgentTaskRequest:
     if "graph_target" in body or "branch_id" in body:
         raise ValueError("Select the graph target with the branch_id route parameter.")
-    if body.get("references") and (
-        kind not in {"node_chat", "project_chat"}
-        or body.get("artifact_context") is not None
-        or body.get("artifact_edit") is not None
-    ):
+    if body.get("references") and kind not in {"node_chat", "project_chat"}:
         raise ValueError("Project references require an ordinary chat.")
     if kind == "paper_coach":
         return _resolved_coach_request(service, CoachRequest.model_validate(body))

@@ -762,26 +762,20 @@ def _attachment_items(attachments: list[dict[str, object]] | None) -> str:
         if not isinstance(item.get("source_artifact_id"), str):
             lines.append(f"- {described}: `{item['path']}`")
             continue
-        if not item.get("editable"):
-            lines.append(f"- Artifact {described}, the copy the human viewed: `{item['path']}`")
-            lines.append(
-                "  The human's message holds their comments on it, numbered as anchored below."
-            )
-        else:
-            lines.append(f"- Artifact {described}, the file the human viewed: `{item['path']}`")
-            lines.append(
-                "  The human's message holds their comments on it, numbered as anchored below. "
-                "Whether to change this file or make a new artifact is your judgement from the "
-                "comments. When they correct or enrich it, as most do, change this file in place, "
-                "keeping its name; its bytes when the turn ends become the next version. When "
-                "they ask for something different alongside it, write a new file in this turn's "
-                "directory; that becomes a separate artifact and this one stays as it is."
-            )
-            # Encoded, so a space or `#` in the name still parses as one destination.
-            lines.append(
-                "  Once you change it in place, you can show it in your reply with Markdown "
-                f"image syntax: `![Short title]({quote(str(item['path']), safe='/')})`."
-            )
+        lines.append(f"- Artifact {described}, the file the human viewed: `{item['path']}`")
+        lines.append(
+            "  The human's message holds their comments on it, numbered as anchored below. "
+            "Whether to change this file or make a new artifact is your judgement from the "
+            "comments. When they correct or enrich it, as most do, change this file in place, "
+            "keeping its name; its bytes when the turn ends become the next version. When "
+            "they ask for something different alongside it, write a new file in this turn's "
+            "directory; that becomes a separate artifact and this one stays as it is."
+        )
+        # Encoded, so a space or `#` in the name still parses as one destination.
+        lines.append(
+            "  Once you change it in place, you can show it in your reply with Markdown "
+            f"image syntax: `![Short title]({quote(str(item['path']), safe='/')})`."
+        )
         if item.get("edit_now"):
             lines.append("  The human asked for that in-place edit now, in this turn.")
         selections = item.get("selections")

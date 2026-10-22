@@ -277,7 +277,7 @@ def test_viewer_offers_supported_edits_without_creating_tasks(edit_origin, suffi
         assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == before
 
 
-def test_viewer_session_collision_matches_comment_admission(edit_origin):
+def test_viewer_session_collision_gates_only_edit_now(edit_origin):
     app, store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "artifact.md", b"Original")
     client = signed_in_client(app)
@@ -294,7 +294,9 @@ def test_viewer_session_collision_matches_comment_admission(edit_origin):
     response = client.get(url + "/state")
     assert response.status_code == 200
     state = response.json()
-    assert not state["can_comment"] and not state["fresh_session_required"]
+    # Send is a turn of the artifact's chat, which the other chat's launch does not hold.
+    assert state["can_comment"] and state["send_to_chat"]
+    assert not state["can_edit_now"] and not state["fresh_session_required"]
     response = client.post(
         url + "/comments", json={"comments": [{"text": "Update this"}], "edit_now": True}
     )
@@ -420,7 +422,7 @@ def test_every_comment_is_one_object_on_one_route(edit_origin, monkeypatch):
 
 
 @pytest.mark.parametrize("mode", ["discuss", "work"])
-def test_composer_edit_uses_current_chat_settings(edit_origin, monkeypatch, mode):
+def test_composer_comment_is_a_plain_turn_on_current_settings(edit_origin, monkeypatch, mode):
     app, store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "report.html", b"<p>Original</p>")
     with store.connection() as connection:
@@ -480,12 +482,30 @@ def test_composer_edit_uses_current_chat_settings(edit_origin, monkeypatch, mode
         "laptop",
     )
     assert admitted.session_id is None  # Leave session resolution to the ordinary chat launcher.
-    assert not admitted.artifact_edit.origin_bound
-    assert admitted.artifact_edit.master_operation_id is None
+    assert admitted.artifact_edit is None
     assert (
-        admitted.artifact_edit.base_version == store.artifact(artifact.artifact_id).current_version
+        admitted.artifact_context.base_version
+        == store.artifact(artifact.artifact_id).current_version
     )
     assert admitted.message == "Comment 1: Rewrite"
+
+
+def test_a_comment_and_project_references_share_one_turn(edit_origin, monkeypatch):
+    app, store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
+    monkeypatch.setattr(app.state.background_tasks, "launch_admitted", store.agent_task)
+    response = signed_in_client(app).post(
+        f"/api/projects/{task.project_id}/tasks/project_chat",
+        json={
+            **_request(task, artifact).model_dump(mode="json"),
+            "chat_id": task.request["chat_id"],
+            "references": [{"kind": "artifact", "artifact_id": artifact.artifact_id}],
+        },
+    )
+    assert response.status_code == 202, response.text
+    sent = store.agent_task(response.json()["operation_id"])
+    assert sent.request["artifact_context"]["artifact_id"] == artifact.artifact_id
+    assert [item["reference"]["kind"] for item in sent.request["attachments"]] == ["artifact"]
 
 
 def test_composer_refuses_another_chat_artifact(edit_origin):
@@ -577,21 +597,21 @@ def test_composer_work_edit_runs_graph_admission(edit_origin, monkeypatch):
     assert response.json()["detail"] == "Graph merge in progress"
 
 
-def test_composer_edit_refuses_a_version_moved_after_admission(edit_origin, monkeypatch):
+def test_composer_comment_refuses_a_version_moved_after_admission(edit_origin, monkeypatch):
     import rcp.runs.artifact_edit_admission as admission
 
     from .test_unified_artifacts import _publish_artifact
 
     app, store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
-    admit = admission.admit_chat_artifact_edit
+    admit = admission.admit_chat_artifact_comment
 
     def admit_then_move(*args, **kwargs):
         admitted = admit(*args, **kwargs)
         _publish_artifact(store, artifact.artifact_id, b"Moved by another edit")
         return admitted
 
-    monkeypatch.setattr(admission, "admit_chat_artifact_edit", admit_then_move)
+    monkeypatch.setattr(admission, "admit_chat_artifact_comment", admit_then_move)
     monkeypatch.setattr(
         app.state.background_tasks,
         "start",
@@ -626,7 +646,7 @@ def test_viewer_send_continues_the_chat_with_a_work_turn(edit_origin, monkeypatc
     assert sent.request["mode"] == "work"
     assert sent.request["chat_id"] == task.request["chat_id"]
     assert sent.dispatch_authority is not None
-    assert not sent.request["artifact_edit"]["origin_bound"]
+    assert sent.request.get("artifact_edit") is None
     store.complete_agent_task(sent.operation_id, applied_revision=None, result={})
     # Edit now keeps the origin-bound edit on the recorded session.
     response = client.post(url, json={"comments": [{"text": "Fix the typo"}], "edit_now": True})
@@ -667,7 +687,7 @@ def test_viewer_send_continues_an_ended_orchestrator_chat(manifest, tmp_path, mo
     assert sent.request["node_id"] is None
     assert sent.graph_target == episode.graph_target
     assert sent.native_session_id == "orchestrator-session"
-    assert not sent.request["artifact_edit"]["origin_bound"]
+    assert sent.request.get("artifact_edit") is None
 
 
 @pytest.mark.parametrize("previous_provider", ["codex", "claude"])

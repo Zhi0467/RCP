@@ -28,18 +28,26 @@ class ArtifactFreshSessionRequired(AgentTaskAdmissionConflict):
 class ArtifactEditAvailability:
     can_comment: bool
     comment_unavailable_reason: str | None = None
+    # Edit now, and Send where the chat takes no human turns, resume the origin's session.
     fresh_session_required: bool = False
+    can_edit_now: bool = False
+    # Send is an ordinary turn of the artifact's chat.
+    send_to_chat: bool = False
 
 
 def artifact_edit_availability(
     store: AppStore, service: ProjectService, artifact: Artifact
 ) -> ArtifactEditAvailability:
-    """Read durable availability hints; POST proves stage, bytes, and master integrity."""
+    """Read durable availability hints; POST proves stage, bytes, and master integrity.
+
+    A comment that is an ordinary chat turn needs only readable context and a chat
+    that takes human turns; the origin's master and session gate only the origin edit.
+    """
     fresh = False
     try:
+        origin, reply_episode_id = artifact_reply_origin(store, artifact)
         if not supports_comments(artifact.media_type):
             raise ValueError("The artifact type does not support editing.")
-        origin, _ = artifact_reply_origin(store, artifact)
         if origin.graph_target != service.history.graph_target:
             raise ValueError("The artifact belongs to another graph target.")
         try:
@@ -47,7 +55,7 @@ def artifact_edit_availability(
         except ArtifactFreshSessionRequired:
             fresh = True
         now = store.now()
-        reason = store.session_launch_unavailable_reason(
+        edit_reason = store.session_launch_unavailable_reason(
             AgentTaskRecord(
                 operation_id=str(uuid.uuid4()),
                 project_id=artifact.project_id,
@@ -64,7 +72,27 @@ def artifact_edit_availability(
         )
     except (KeyError, OSError, ValueError) as exc:
         return ArtifactEditAvailability(False, str(exc), fresh)
-    return ArtifactEditAvailability(reason is None, reason, fresh)
+    chat_id = _artifact_chat_id(origin, reply_episode_id)
+    if (
+        not isinstance(chat_id, str)
+        or not chat_id
+        or store.child_human_turn_refusal(artifact.project_id, chat_id) is not None
+    ):
+        ok = edit_reason is None
+        return ArtifactEditAvailability(ok, edit_reason, fresh, can_edit_now=ok)
+    expired = (
+        artifact.expires_at is not None
+        and artifact.expires_at <= store.now()
+        and artifact.artifact_id not in store.protected_edit_artifact_ids()
+    )
+    reason = "The artifact has expired." if expired else None
+    return ArtifactEditAvailability(
+        reason is None,
+        reason,
+        fresh,
+        can_edit_now=reason is None and edit_reason is None,
+        send_to_chat=True,
+    )
 
 
 def _launch_kind_for_master_owner(
@@ -224,10 +252,14 @@ def _edit_version(store: AppStore, artifact: Artifact, context: ArtifactContextR
         return current.current_version
 
 
-def admit_chat_artifact_edit(
+def admit_chat_artifact_comment(
     store: AppStore, service: ProjectService, project_id: str, request: RunRequest
 ) -> RunRequest:
-    """Attach an edit to the current chat without borrowing the origin's session."""
+    """A comment in its artifact's chat is an ordinary turn of that chat.
+
+    Only its text and the version it was drawn on are fixed here; session artifact
+    tracking restores that version and publishes the change, as for any tracked file.
+    """
     context = request.artifact_context
     assert context is not None
     artifact, origin, reply_episode_id = _checked_artifact(store, service, project_id, context)
@@ -239,22 +271,15 @@ def admit_chat_artifact_edit(
     if store.child_human_turn_refusal(project_id, request.chat_id) is not None:
         if request.mode == "work":
             raise ValueError("This artifact can only be edited in Discuss here.")
+        if request.references:
+            raise ValueError("Project references require an ordinary chat.")
         return admit_artifact_edit(store, service, project_id, request)
-    operation_id = str(uuid.uuid4())
-    edit = ArtifactEditAdmission(
-        artifact_id=artifact.artifact_id,
-        base_version=_edit_version(store, artifact, context),
-        source_name=artifact.source_name,
-        media_type=artifact.media_type,
-        operation_id=operation_id,
-        origin_operation_id=origin.operation_id,
-        launch_kind="discuss",
-        episode_id=artifact.episode_id or origin.episode_id,
-        origin_bound=False,
+    comment = context.model_copy(
+        update={"base_version": _edit_version(store, artifact, context), "fresh_session": False}
     )
     return request.model_copy(
         update={
-            "artifact_edit": edit,
+            "artifact_context": comment,
             "message": artifact_comment_message(request.message, context),
         }
     )
