@@ -123,15 +123,20 @@ def test_a_linked_turn_file_is_saved_when_the_turn_publishes_it(store, tmp_path)
         {"kind": task.kind, "attempt": task.attempt, "has_parent": False, "resumed": False},
     )
     execution = AgentTaskExecution(operation_id="turn", store=store, control=AgentProcessControl())
-    handler = work_command_handler(execution, None)
+    mailbox = RunStageMailbox.for_stage(local_stage=tmp_path, remote_stage=None)
+    handler = work_command_handler(execution, None, mailbox=mailbox)
+    directory = tmp_path / "turns" / "turn" / "artifacts"
+    directory.mkdir(parents=True)
+    # A file outside the turn's artifact directory is never saved, so it gets no token.
+    (tmp_path / "plot.png").write_bytes(b"\x89PNG\r\n\x00\xff")
+    outside = handler(request("link", file_name="plot.png"), identity())
+    assert (outside.status, outside.result) == ("invalid", {"code": "bulletin_link_not_artifact"})
+    (directory / "plot.png").write_bytes(b"\x89PNG\r\n\x00\xff")
     link = handler(request("link", file_name="plot.png"), identity())
     assert link.status == "ok"
     store.execute_bulletin_command(
         "project", "turn", "post", key="link", text=f"Plot: {link.result['token']}"
     )
-    directory = tmp_path / "artifacts"
-    directory.mkdir()
-    (directory / "plot.png").write_bytes(b"\x89PNG\r\n\x00\xff")
     [descriptor] = _discover_chat_artifacts(execution, "turn", directory, None)
     assert descriptor.artifact_id == link.result["artifact_id"]
     assert descriptor.kept_at is not None

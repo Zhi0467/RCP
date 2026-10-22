@@ -2426,7 +2426,7 @@ function MemberApp({
   }, [view, project?.id, openChatId, pendingChatId]);
 
   // The request's own answer selects a chat, which changes the merged summaries;
-  // read them at failure time so that answer never cancels and reissues the request.
+  // read them through a ref so that answer never cancels and reissues the request.
   const inventoryChatSummariesRef = useRef(inventoryChatSummaries);
   inventoryChatSummariesRef.current = inventoryChatSummaries;
   useEffect(() => {
@@ -2440,6 +2440,23 @@ function MemberApp({
       !sameGraphTarget(graphTarget, requestedChat.graphTarget)
     )
       return;
+    const finish = () =>
+      setRequestedChat((current) =>
+        current === requestedChat ? { ...current, chatId: undefined } : current,
+      );
+    // A listed chat is read by its own selected resource; a separate read here would
+    // fence that one and make the store confirm the written answer with a third.
+    const listed = inventoryChatSummariesRef.current.find(
+      (item) =>
+        item.chat_id === requestedChat.chatId && sameGraphTarget(item.graph_target, graphTarget),
+    );
+    if (listed) {
+      selectChat(listed.chat_id);
+      setFloatingChat(null);
+      clearNodeSelections();
+      finish();
+      return;
+    }
     let cancelled = false;
     void loadChatTranscript(apiBase, requestedChat.chatId, api, graphTarget)
       .then((transcript) => {
@@ -2449,26 +2466,11 @@ function MemberApp({
       })
       .catch((error) => {
         if (cancelled) return;
-        if (error instanceof ApiError && error.status === 404) {
-          const summary = inventoryChatSummariesRef.current.find(
-            (item) =>
-              item.chat_id === requestedChat.chatId &&
-              sameGraphTarget(item.graph_target, graphTarget),
-          );
-          if (summary && summary.message_count === 0) {
-            selectChat(summary.chat_id);
-            clearNodeSelections();
-            return;
-          }
-        }
         const message = `Conversation could not be opened: ${String(error)}`;
         reportErrorNotice(message);
       })
       .finally(() => {
-        if (cancelled) return;
-        setRequestedChat((current) =>
-          current === requestedChat ? { ...current, chatId: undefined } : current,
-        );
+        if (!cancelled) finish();
       });
     return () => {
       cancelled = true;
@@ -2477,6 +2479,7 @@ function MemberApp({
     requestedChat,
     inventoryLoaded,
     selectChat,
+    setFloatingChat,
     loading,
     view,
     backendSessionReady,

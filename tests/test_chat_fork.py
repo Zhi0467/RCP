@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from uuid import uuid4
 
@@ -458,3 +459,22 @@ def test_restore_detaches_unfinished_forks_to_fresh_sessions(manifest, tmp_path)
         for summary in store.chat_inventory(app.state.default_project_id)
     }
     assert origins[unsent_fork.chat_id]["source_chat_id"] == source_id
+
+
+def test_a_pre_release_fork_row_still_lists(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.catalog.store
+    project_id = app.state.default_project_id
+    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "laptop"}
+    _source_id, fork = _settled_source_and_fork(app, tmp_path, profile)
+    retired = {"native_session_id": "s", "source_cwd": "/w", "source_host": "h", "runtime_id": "r"}
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE chat_forks SET record_json = json_patch(record_json, ?) WHERE chat_id = ?",
+            (json.dumps(retired), fork.chat_id),
+        )
+
+    response = signed_in_client(app).get(f"/api/projects/{project_id}/chats?inventory=true")
+
+    assert response.status_code == 200, response.text
+    assert fork.chat_id in {item["chat_id"] for item in response.json()["items"]}

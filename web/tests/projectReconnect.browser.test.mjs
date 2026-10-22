@@ -775,7 +775,7 @@ test(
     const sourceReads = state.requests
       .slice(before)
       .filter((path) => path === "/api/projects/demo/chats/source").length;
-    assert.ok(sourceReads >= 1 && sourceReads <= 4, `source chat read ${sourceReads} times`);
+    assert.ok(sourceReads >= 1 && sourceReads <= 2, `source chat read ${sourceReads} times`);
 
     await menu.click();
     const archived = page.waitForResponse((response) =>

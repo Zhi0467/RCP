@@ -1422,8 +1422,10 @@ opaque artifact viewer.
 `bulletin --link FILE` names one file the agent wrote to this turn's artifact
 directory and returns its artifact id and `<artifact:ID>` token. The id is the one
 turn-end discovery gives that file (the logical turn's scope and the file name), so
-an agent can link a file in the same turn it writes it. The link resolves at read
-time once the turn publishes the artifact; discovery keeps an artifact that a live
+an agent can link a file in the same turn it writes it. RCP refuses a name that is
+not a regular file in that directory with `bulletin_link_not_artifact`. RCP checks
+the stage, not the client, because only RCP knows which turn folder is the logical
+turn's. The link resolves at read time once the turn publishes the artifact; discovery keeps an artifact that a live
 post already links, under the artifact's lock that posts also hold, so such a link
 saves its artifact like any other. Auto-research actors write no turn artifacts and
 neither see nor may run `--link`.

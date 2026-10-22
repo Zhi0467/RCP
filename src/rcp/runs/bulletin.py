@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from rcp.agents.command_protocol import BulletinCommandRequest, CommandResponse
 from rcp.agents.prompts import BULLETIN_LINK_RULE, BULLETIN_RULES
 from rcp.agents.staged_command_client import bulletin_usages
-from rcp.artifacts import artifact_id
+from rcp.artifacts import artifact_id, list_local_regular_files
 from rcp.bulletin import bulletin_actor_id, bulletin_roster
 from rcp.limits import BULLETIN_RENDER_MAX_BYTES, BULLETIN_ROSTER_MAX_COUNT
 from rcp.project_references import resolve_project_artifact
@@ -95,6 +95,21 @@ def _add_context(store: AppStore, operation_id: str, snapshot: dict[str, Any]) -
     snapshot["roster"] = bulletin_roster(store, task.project_id, task.graph_target)
 
 
+def _turn_artifact_names(mailbox: RunStageMailbox, scope_id: str) -> set[str]:
+    """Regular, non-symlink files turn-end discovery would find in this turn's directory."""
+    if mailbox.remote_stage is not None:
+        try:
+            listed = mailbox.remote_stage.list_artifact_files(scope_id)
+        except FileNotFoundError:
+            return set()
+    else:
+        try:
+            listed = list_local_regular_files(mailbox.workspace / "turns" / scope_id / "artifacts")
+        except (FileNotFoundError, ValueError):
+            return set()
+    return {name for name, _size in listed}
+
+
 def handle_bulletin(
     store: AppStore,
     operation_id: str,
@@ -139,9 +154,12 @@ def handle_bulletin(
             # The id turn-end discovery gives this file of the turn's artifact directory;
             # the link resolves once the turn publishes it.
             assert request.arguments.file_name is not None
-            linked = artifact_id(
-                _logical_chat_turn_operation_id(store, operation_id), request.arguments.file_name
-            )
+            if mailbox is None:
+                raise BulletinError("bulletin_stage_unavailable")
+            scope_id = _logical_chat_turn_operation_id(store, operation_id)
+            if request.arguments.file_name not in _turn_artifact_names(mailbox, scope_id):
+                raise BulletinError("bulletin_link_not_artifact")
+            linked = artifact_id(scope_id, request.arguments.file_name)
             result = {"artifact_id": linked, "token": f"<artifact:{linked}>"}
         if request.arguments.action == "artifact":
             if mailbox is None:
