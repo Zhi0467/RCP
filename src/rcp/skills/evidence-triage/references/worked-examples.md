@@ -17,20 +17,6 @@ ordinary work queues the Decision for a human; an authorized orchestrator may ch
 Do not make the Decision govern the calibration Experiment when the calibration exists to inform
 it, and do not put an Evidence-to-Hypothesis assessment on `informs`.
 
-## Smoke Evidence addresses a Blocker
-
-> **observation** The smoke run completed one end-to-end batch, wrote the expected artifact, and
-> passed the schema check.
-> **interpretation** This addresses the unverified-pipeline Blocker for the main run. The short run
-> does not test the scientific effect targeted by the main Experiment.
-> **role** diagnostic  **validity** valid  **origin** internal_run
-> **relations** smoke Experiment `produces` this Evidence; this Evidence `addresses` the pipeline
-> Blocker.
-
-The Evidence can justify a later lifecycle update, but the `addresses` edge does not itself close
-the Blocker. Do not attach an Evidence-to-Hypothesis assessment to it, and do not attach the
-downstream Blocker as an input that blocks its own smoke test.
-
 ## An incomplete run is a snapshot
 
 > **observation** At the cited timestamp, the job was healthy at step 117 of 120 with no recorded

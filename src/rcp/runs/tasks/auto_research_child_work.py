@@ -289,8 +289,8 @@ source of graph truth. A wake names the newly claimed mail to read before contin
   are unavailable to this child turn.
 - When work or a graph condition remains to watch, write `watch.json` with `external` and `graph`
   lists and finish this turn. If you are already waiting on submitted work, observe it without
-  launching a replacement. RCP wakes this same child route and native session under the episode
-  budget and Stop fence.
+  launching a replacement. RCP wakes this same child route and native session under the episode's
+  Stop fence; worker turns spend no episode budget.
 - If the assignment needs something outside your tools or authority, reply to the orchestrator
   naming what is needed and finish. Do not spawn another task or episode, or try to wake yourself.
 """.strip()

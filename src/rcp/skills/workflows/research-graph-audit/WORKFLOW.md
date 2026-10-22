@@ -2,12 +2,12 @@
 id: research-graph-audit
 kind: workflow
 label: Research graph audit
-version: 3.6.0
+version: 3.7.0
 description: Run a deliberate read-only audit of graph structure, experiment action causality, and load bearing Evidence provenance, ending in one prioritized report.
 dependencies:
 - graph-audit@3.5.0
-- experiment-causality@1.4.0
-- evidence-triage@3.4.0
+- experiment-causality@1.5.0
+- evidence-triage@3.5.0
 ---
 
 # Research graph audit

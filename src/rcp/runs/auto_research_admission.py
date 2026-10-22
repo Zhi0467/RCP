@@ -889,7 +889,7 @@ def start_auto_research_child_work(
     admission_id: str | None = None,
     graph_target: GraphTargetRef | None = None,
 ) -> AgentTaskRecord:
-    """Atomically spend B and launch one routed ordinary node Work task."""
+    """Atomically launch one routed, unmetered ordinary Work task."""
 
     episode = _auto_research_parent_episode(tasks, episode_id)
     if (
@@ -2537,9 +2537,6 @@ def _validate_existing_child_work_wake(
         if isinstance(request, RunRequest)
         else []
     )
-    episode_invocations = {
-        item.operation_id for item in tasks.store.episode_invocations(episode_id)
-    }
     pinned_request_fields = (
         "browser_requested",
         "provider",
@@ -2562,7 +2559,6 @@ def _validate_existing_child_work_wake(
         or existing.project_id != route.project_id
         or existing.episode_id != episode_id
         or existing.kind not in {"node_chat", "project_chat"}
-        or operation_id not in episode_invocations
         or parent is None
         or parent.project_id != existing.project_id
         or parent.episode_id != episode_id

@@ -231,7 +231,7 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
         assert job.origin_operation_id == child.operation_id
         assert job.episode_id == episode.episode_id
         assert job.execution_machine == "laptop"
-    assert store.episode(episode.episode_id).invocations_used == 2
+    assert store.episode(episode.episode_id).invocations_used == 1
 
     if state == "running":
         job = store.compute_job(launcher.job_id)
@@ -260,7 +260,7 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
         assert launcher.watcher["log_path"] in launcher.wake_contract
         assert watchers[0].watcher_id in launcher.wake_contract
         assert wake.native_session_id == child.native_session_id
-        assert store.episode(episode.episode_id).invocations_used == 3
+        assert store.episode(episode.episode_id).invocations_used == 1
 
 
 def test_child_session_replaces_its_master_when_turn_owner_changes(manifest, tmp_path):

@@ -2,12 +2,12 @@
 id: graph-consolidation
 kind: workflow
 label: Graph consolidation
-version: 1.7.0
+version: 1.8.0
 description: Consolidate a project's main research graph and operational lessons while nobody is watching, apply the result inside the turn, and leave one short visual report of every change for the human to read in the morning.
 dependencies:
 - graph-audit@3.5.0
-- experiment-causality@1.4.0
-- evidence-triage@3.4.0
+- experiment-causality@1.5.0
+- evidence-triage@3.5.0
 ---
 
 # Graph consolidation

@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from rcp.storage import AppStore, EpisodeInvocationCeilingReached, EpisodeNotRunning
+from rcp.storage import AppStore, EpisodeNotRunning
 from rcp.storage.models import GraphWatcherRecord, WatcherContinuation, WatcherRecord
 from tests.storage_helpers import downgrade_resource_watermarks
 from tests.test_auto_research_children_storage import (
@@ -61,7 +61,7 @@ def _waiting_child(tmp_path, *, ceiling=5, fork=False):
 
 
 @pytest.mark.parametrize("fork", [False, True])
-def test_child_watcher_wake_claims_once_on_saved_route_and_spends_one_b(tmp_path, fork):
+def test_child_watcher_wake_claims_once_on_saved_route_and_does_not_spend_b(tmp_path, fork):
     store, parent, route, watcher, wake = _waiting_child(tmp_path, fork=fork)
     before = store.episode_budget_meter(parent.episode_id).invocations_used
     candidates = [wake, wake.model_copy(update={"operation_id": "another-wake"})]
@@ -83,20 +83,8 @@ def test_child_watcher_wake_claims_once_on_saved_route_and_spends_one_b(tmp_path
     )
     assert store.agent_task_continuation_cause(result.operation_id) == "watcher_wake"
     assert store.watcher(watcher.watcher_id).notification_operation_id == result.operation_id
-    assert store.episode_budget_meter(parent.episode_id).invocations_used == before + 1
+    assert store.episode_budget_meter(parent.episode_id).invocations_used == before
     assert store.auto_research_waiting_child_work_ids(parent.episode_id) == set()
-
-
-def test_child_watcher_exhausted_budget_retains_visible_pending_completion(tmp_path):
-    store, parent, route, watcher, wake = _waiting_child(tmp_path, ceiling=2)
-    with pytest.raises(EpisodeInvocationCeilingReached):
-        store.create_auto_research_child_work_watcher_wake_task(
-            wake, worker_id=route.worker_id, watcher_ids=[watcher.watcher_id]
-        )
-    assert store.agent_task(wake.operation_id) is None
-    assert store.watcher(watcher.watcher_id).notified is False
-    assert store.auto_research_waiting_child_work_ids(parent.episode_id) == {route.worker_id}
-    assert store.episode_budget_meter(parent.episode_id).invocations_used == 2
 
 
 @pytest.mark.parametrize("stop_parent", [False, True])
@@ -167,7 +155,7 @@ def test_child_watcher_wake_refuses_busy_route_or_changed_binding_without_claim(
             )
     assert store.agent_task(wake.operation_id) is None
     assert store.watcher(watcher.watcher_id).notified is False
-    assert store.episode_budget_meter(parent.episode_id).invocations_used == 2
+    assert store.episode_budget_meter(parent.episode_id).invocations_used == 1
 
 
 def test_old_database_with_child_routes_backfills_watcher_worker_and_episode(tmp_path):
@@ -182,7 +170,7 @@ def test_old_database_with_child_routes_backfills_watcher_worker_and_episode(tmp
     assert upgraded.watcher(watcher.watcher_id).worker_id == route.worker_id
     assert upgraded.watcher(watcher.watcher_id).episode_id == parent.episode_id
     assert upgraded.auto_research_waiting_child_work_ids(parent.episode_id) == {route.worker_id}
-    assert upgraded.episode_budget_meter(parent.episode_id).invocations_used == 2
+    assert upgraded.episode_budget_meter(parent.episode_id).invocations_used == 1
 
 
 def test_child_watcher_cannot_use_unmetered_generic_wake(tmp_path):
@@ -191,7 +179,7 @@ def test_child_watcher_cannot_use_unmetered_generic_wake(tmp_path):
         store.create_watcher_notification_task(wake, [watcher.watcher_id])
     assert store.agent_task(wake.operation_id) is None
     assert store.watcher(watcher.watcher_id).notified is False
-    assert store.episode_budget_meter(parent.episode_id).invocations_used == 2
+    assert store.episode_budget_meter(parent.episode_id).invocations_used == 1
 
 
 @pytest.mark.parametrize("status", ["active", "degraded", "completed"])

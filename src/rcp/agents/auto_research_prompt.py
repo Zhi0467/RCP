@@ -40,7 +40,7 @@ from rcp.limits import (
 )
 
 # Bumped when the stable policy prose of either Auto-research actor contract changes.
-AUTO_RESEARCH_POLICY_VERSION = "auto-research-v11"
+AUTO_RESEARCH_POLICY_VERSION = "auto-research-v12"
 
 
 def _repositories(repositories: list[dict[str, str]]) -> str:
@@ -204,10 +204,10 @@ def _orchestration_progress() -> str:
   can accept a job into its queue while devices are occupied; a direct process host may need a
   worker to diagnose capacity and arrange an observable continuation before launching. Do not
   assume every host has a scheduler or repeat an uncertain submission.
-- Use the remaining budget for useful work within existing authority: act directly, delegate an
-  executable assignment, or arrange an observable continuation. Complete self-service diagnosis,
-  preparation, and prerequisites before a human-only boundary. Do not turn a self-service step
-  into a recommended human next step.
+- Take the shortest path to a real measurement: fix what blocks the next run, check it with one
+  smoke through the real path, then launch. Do not harden infrastructure beyond what that run
+  needs; name the remaining risks instead. Do not turn a self-service step into a recommended
+  human next step.
 - Invoke `finish --key <key>` when the research goal is complete or useful continuation requires
   new human judgment, credentials, approval, privileged action, or coordination with another
   person, and after every admitted child obligation is explicitly settled. For example, a completed
@@ -279,10 +279,9 @@ def _auto_research_commands(
   accepts at most {AUTO_RESEARCH_APPLY_MAX_PER_TURN} distinct keyed Apply admissions, including
   effects that return `unavailable`; a same-key retry uses no additional place. The next distinct
   key is refused before its file is read, so finish the turn before applying again.
-- Seat a worker on a node when its job belongs to that node; use a project seat when it does not,
-  for example independently auditing candidates from a search.
-  These tools let you branch from any revision, double-check in place, or put agents on a fork;
-  see the official `counterfactual-research` skill package.
+- Choose the child by the job, as listed under "Who does what". These tools also let you branch
+  from any revision, double-check in place, or put agents on a fork; see the official
+  `counterfactual-research` skill package.
 - `spawn` starts ordinary Work, not another Auto-research actor. Workers use the human-configured
   Work profile for their seat; child Experiments use node Work. You may name `--provider`,
   `--model`, or `--effort`; an omitted flag keeps that profile's value. Naming only a different provider takes
@@ -557,11 +556,24 @@ instruction is ordinary task prose, not authority.
 {_decision_disposition()}
 {graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 
+Who does what:
+- Code, bug, infrastructure, or documentation fix: do it yourself in this turn, or with
+  provider-native subagents that finish inside it. Never spawn a worker or child Experiment for it.
+- Smoke run, infrastructure check, or other operational job that must be watched: `spawn` a worker
+  seated on the node it serves. It launches the job, arms its own watcher, and reports by mail.
+  Its result is operational: report it in prose, never as an Experiment, Evidence, or Blocker.
+- Real experiment, a run whose result bears on a Hypothesis or Decision: prepare the graph first
+  (its Experiment node and gates), then `episode --kick-off-experiment` with a goal and an
+  `--invocation-limit` sized to it.
+- Research-state upkeep, such as graph cleanup, synthesis, or an independent audit across the
+  project: `spawn --project`.
+- Workers are ordinary Work and unmetered: they spend neither your invocations nor the Experiment
+  allowance. Give each one a whole job that ends in a result, not a slice that needs follow-ups.
+
 Worker coordination:
-- Seat each ordinary worker on the graph node its job is about; any node type may be a seat. Never
-  create a second orchestrator or an elevated worker. The seat selects the worker's context and
-  accountability; each child's own ordinary graph profile and exact write boundary define its
-  authority. State in the instruction what result ends the job. Pending review need not stop
+- A worker's seat may be any node type. Never create a second orchestrator or an elevated worker.
+  The seat selects the worker's context and accountability; each child's own ordinary graph
+  profile and exact write boundary define its authority. State in the instruction what result ends the job. Pending review need not stop
   independent authorized work elsewhere in the project.
 - Give every worker a clear, executable assignment. Instruct it to report in prose when the work
   cannot be resolved without changing an existing {protected_belief_names()}, rather than
@@ -640,9 +652,9 @@ Worker operational boundary:
 {_command_invocations(command_client, allowed_verbs, "worker")}
 
 Coordination:
-- You cannot spawn, pause, resume, stop, or direct another worker; start an episode; register a
-  watcher; or wake yourself. There is no blocking primitive. Finish the useful work available in
-  this turn and return control to the orchestrator.
+- You cannot spawn, pause, resume, stop, or direct another worker, or start an episode. There is
+  no blocking primitive: to wait for a job you launched, arm its watcher as your execution
+  instructions describe and finish the turn; RCP wakes you when it completes.
 - Command prefix: `{command_client}`
 - Reply key: `{reply_key}`
 - Send at most one concise Markdown reply: run the command prefix followed by

@@ -30,8 +30,9 @@ choices its evidence settles. It queues `ready` only for human preference, risk,
 cost, or an unspecified direction, naming the needed judgment in `rationale`.
 Waiting for an unannounced `ready` Decision must not be its only way forward.
 
-Every root/worker turn, mail or graph-condition wake, and operational continuation
-spends one B. Exact recovery spends none and restages durable claimed mail and
+Every root turn, mail or graph-condition wake, and operational continuation
+spends one B. Workers are ordinary Work and unmetered: a worker's turns and wakes
+spend neither B nor E, like a Work chat a member starts. Exact recovery spends none and restages durable claimed mail and
 lifecycle input, replacing failed-attempt copies. It includes input harvested by
 any attempt of that allocation; cleared input stays unread. Oversized recovery
 input stages the oldest items that fit and logs the dropped count. At exhaustion,
@@ -42,6 +43,15 @@ invocation spends one E and one unit of its pinned ceiling. Sleeping reserves
 nothing; exact recovery spends nothing. The orchestrator cannot widen E.
 
 ## Workers and child Experiments
+
+The orchestrator picks the child by the job. A code, bug, infrastructure, or
+documentation fix is its own work, alone or with provider-native subagents inside
+its turn. A smoke run or other operational job that must be watched goes to a
+node-seated worker, and its result stays out of the graph. A real experiment gets
+its graph prepared first, then a child Experiment. Research-state upkeep goes to
+a project-seated worker.
+**Why:** paid workers doing code fixes and smoke runs recorded as Evidence once
+spent a whole episode on preparation without a run.
 
 An ordinary Work worker may sit on any existing node. Its instruction defines
 the result that ends its job; the seat gives context, not subtree authority.
@@ -59,8 +69,9 @@ uses normal readiness on the root's branch. The orchestrator never stops, adopts
 or waits on a loop it did not start. Other-target loops do not block kickoff:
 `live_elsewhere` in its result and `other_branch_loops` in status use capped
 `{rows, omitted}` lists of node, episode, target, starter, state, and checkout.
-Agents ask the human when work could interfere; a child without `ask` pauses
-that work and reports to its orchestrator. Restarting its own child requires
+Agents ask the human when work could interfere with an RCP episode on another
+branch; queueing on a shared scheduler is not interference. A child without
+`ask` pauses that work and reports to its orchestrator. Restarting its own child requires
 Stop, settlement, then kickoff.
 **Why:** branch isolation forbids one branch stopping another's loop. Visibility
 lets humans coordinate legitimate variants without a project-wide start gate.
@@ -248,9 +259,8 @@ wake, hold ordinary mail, or block quiescence/ending; harvest and ending receipt
 still include them.
 
 A completed worker watcher group wakes the same route/session, not the root.
-Its atomic claim binds one continuation and spends one B, requiring a running
-parent, an unfenced route, and a succeeded task. Exhaustion leaves completion
-pending, even after the exhaustion fence. The wake retains pinned scope and
+Its atomic claim binds one continuation, requiring a running parent, an unfenced
+route, and a succeeded task. The wake retains pinned scope and
 watcher model/reasoning/skills, with job identity, result, times, duration, logs,
 backend, and shell observations. Child settlement then notifies the root.
 

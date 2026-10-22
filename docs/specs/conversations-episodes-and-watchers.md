@@ -717,10 +717,9 @@ round repairs it without another invocation; jobs already exited need no
 observer, and a turn that launched nothing is unaffected. Child Work uses the
 ordinary Work reader, validator, and arming path for its final `watch.json`.
 
-A child watcher claim creates one continuation and spends one parent B unit
-atomically. It requires a running parent, a route without a Stop fence, and a
-succeeded current child task. A repeated delivery cannot create a second wake;
-exhausted B leaves the completion pending. A succeeded child with an armed,
+A child watcher claim creates one continuation atomically and spends no parent
+budget. It requires a running parent, a route without a Stop fence, and a
+succeeded current child task. A repeated delivery cannot create a second wake. A succeeded child with an armed,
 undelivered watcher is waiting, which blocks the root's guarded finish. Episode
 Stop and the root's child `stop` verb retire the child's watchers within their
 admission fence. They never cancel the observed jobs.

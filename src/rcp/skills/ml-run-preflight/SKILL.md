@@ -2,7 +2,7 @@
 id: ml-run-preflight
 kind: skill
 label: ML run preflight
-version: 1.0.0
+version: 1.1.0
 description: Prepare ML runs beyond a smoke test with recorded provenance, verified metric outputs, explicit comparison budgets, and bounded live metrics.
 dependencies:
 ---
@@ -50,7 +50,8 @@ Inspect completion and the written values, not just a successful process exit.
 
 Give the smoke separate outputs and record its identity and reductions. Restore
 the full run's intended workload before launch. A smoke validates plumbing only:
-it never tests the hypothesis and never becomes Evidence about that hypothesis.
+it never tests the hypothesis and is operational work, never an Experiment or
+Evidence in the graph.
 If metrics are missing, repair the path and repeat the smoke before proceeding.
 
 ## Keep live reads bounded

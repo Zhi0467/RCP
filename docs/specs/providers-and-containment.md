@@ -1271,12 +1271,10 @@ Graph-writing contracts include shared authoring methods and a local causal
 check, using only inputs the task permits. A planned empirical prerequisite
 names its precursor Experiment and intended handoff; it does not create Evidence
 before an observation exists. For example, plan a calibration before recording
-its measured Evidence and the Decision that Evidence informs. A smoke or
-validation Experiment is never blocked on the infrastructure it exists to
-verify: that setup is written into its own design, the smoke carries
-`blocked_by` only for a constraint its run cannot remove, and a downstream main
-Experiment keeps the `blocked_by` edge to the Blocker the smoke's Evidence will
-address. Decision options are written only after every distinct choice has been
+its measured Evidence and the Decision that Evidence informs. Infrastructure
+work, such as a code fix, CPU test, or smoke run, is operational: it gets no
+Experiment, Evidence, or Blocker, and a Blocker records only a constraint the
+agent cannot remove itself. Decision options are written only after every distinct choice has been
 investigated with equal care, at one level of detail, with any leaning recorded
 in `rationale` rather than in option order, length, or wording. Optional
 `graph-audit`, `experiment-causality`, and `evidence-triage` packages add deeper

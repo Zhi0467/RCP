@@ -92,14 +92,13 @@ Causal check:
 - For an empirical gate, find the precursor Experiment and the observation that would settle the
   gate, and name that handoff in the precursor's design.
 - Check each edge's direction against the actual causal story.
-- A smoke Experiment verifies infrastructure, integration, or recovery, so it is how that
-  uncertainty gets resolved. Its own setup, such as unpinned parameters, an unbuilt image, or an
-  unrun check, belongs in its design, never in a Blocker on it.
-- An open Blocker reached through `blocked_by` stops RCP from starting an Experiment. Give a smoke
-  `blocked_by` only for a constraint the run cannot remove, such as a missing credential or
-  hardware, with a `resolution_condition` that does not require running it.
-- The unverified infrastructure can still gate a downstream main Experiment: that Experiment keeps
-  `blocked_by` the Blocker, and the smoke's Evidence `addresses` it.
+- Infrastructure is operational work, not research. A code fix, CPU test, smoke run, or
+  integration or recovery check gets no Experiment, Evidence, or Blocker: do it, or have a worker
+  do it, and report it in prose. An Experiment is a run whose result bears on a Hypothesis or
+  Decision.
+- An open Blocker reached through `blocked_by` stops RCP from starting an Experiment. Use one only
+  for a constraint the agent cannot remove itself, such as missing access or hardware, a
+  human-only approval, or an external outage.
 """
 
 

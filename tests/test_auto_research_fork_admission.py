@@ -83,7 +83,7 @@ def test_owned_target_is_pinned_and_same_key_replays_after_rename(tmp_path, proj
         root.operation_id, request.model_copy(update={"request_id": uuid.uuid4().hex})
     )
     assert replay.status == "ok" and replay.result["worker_id"] == worker_id
-    assert store.episode_budget_meter(episode.episode_id).invocations_used == before + 1
+    assert store.episode_budget_meter(episode.episode_id).invocations_used == before
 
 
 @pytest.mark.parametrize("refusal", ["foreign", "archived"])
