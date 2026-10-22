@@ -220,7 +220,8 @@ Check again. See [browser API consumers](api-web-and-desktop-projections.md#agen
 
 Discuss is plum; Work is forest. Shift+Tab toggles in an idle focused composer.
 Every turn retains its mode, including resumed tasks. The Agents header has title,
-then agent picker, New session, and repository scope. The picker names provider,
+then agent picker, the context ring, and one menu: Rename, Archive, New session,
+Branch this chat, and repository scope. The picker names provider,
 model, and effort; runtime stays in the inspector. No extra metadata/mode row.
 The list has search and a fold icon, not a title band; a hairline divides chat.
 
@@ -268,7 +269,8 @@ state moves and working-agent archive are refused. Branch episode cards open Run
 and cannot move. Touch scrolls; menus archive. Alt+Up/Down reorders focused cards.
 Columns become two at <=920px and one at <=560px.
 
-At <=560px, the chat list starts behind an Agents disclosure and closes on selection.
+At <=560px, the chat header is one row: agent picker, ring, and menu, with no
+chat name. More → Agents opens the board, which lists every agent.
 Wider layouts retain resizable-list preferences; viewport changes never overwrite
 them. Only code, tables, and display math scroll sideways in transcripts; paths
 and URLs wrap. Fenced blocks have icon-only exact-text Copy, with 44px phone targets.

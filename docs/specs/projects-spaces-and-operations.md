@@ -476,10 +476,13 @@ Migration 57 owns target-local Bulletin posts, command receipts, member read
 cursors, and durable mention-notification observations. Posts retain their
 original agent roster actor id across turns, parsed mentions, edit timestamps,
 and soft-delete timestamps. Artifact links are not stored: each read resolves the
-text's `<artifact:ID>` tokens against the project's artifacts, so a token naming no
-artifact of the project stays prose. Posting or editing a post that links an unsaved
-artifact saves it, as Save to Artifacts does, so a link never outlives its artifact. Membership, author identity, receipt lookup, Stop
-admission, and mutation are checked within the storage transaction. These rows
+text's `<artifact:ID>` tokens against the project's readable artifacts (the
+artifact store's one availability rule), so a token naming no readable artifact of
+the project stays prose. Posting or editing a post that links an unsaved artifact
+saves it, as Save to Artifacts does, in the post's own transaction and under the
+artifact's lock, so a link never outlives its artifact. Membership, author identity,
+receipt lookup, Stop admission, and mutation are checked within the storage
+transaction. These rows
 are operational records and do not mutate canonical graph history. Restore
 schema fingerprints, backup integrity, and resource-version registries include
 the migration's tables and triggers. Each target keeps at most 200 posts by

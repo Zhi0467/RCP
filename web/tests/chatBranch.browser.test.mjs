@@ -161,3 +161,52 @@ for (const width of [1000, 390]) {
     }
   });
 }
+
+test("Escape and presses inside Branch this chat close only the innermost layer", async () => {
+  const cacheDir = await mkdtemp(join(tmpdir(), "rcp-chat-branch-"));
+  const server = await createServer({
+    configLoader: "runner",
+    cacheDir,
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 1000, height: 850 } });
+    await page.route("**/api/**", (route) => {
+      const path = new URL(route.request().url()).pathname;
+      const data = path.endsWith("/graph-refs")
+        ? [main, branch]
+        : path.endsWith("/questions")
+          ? []
+          : {};
+      return route.fulfill({ contentType: "application/json", body: JSON.stringify(data) });
+    });
+    const address = server.httpServer.address();
+    await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatBranch.html`);
+    const menu = page.getByRole("button", { name: "Chat menu", exact: true });
+    await menu.click();
+    await page.getByRole("button", { name: "Branch this chat", exact: true }).click();
+    const picker = page.getByRole("dialog", { name: "Branch this chat" });
+    await picker.getByRole("button", { name: "New branch", exact: true }).click();
+    await picker.getByLabel("New branch name").press("Escape");
+    assert.equal(await picker.getByLabel("New branch name").count(), 0);
+    assert.equal(await menu.getAttribute("aria-expanded"), "true");
+    await picker.getByRole("button", { name: "New branch", exact: true }).waitFor();
+    await picker.locator(".branch-picker-heading").click();
+    assert.equal(await menu.getAttribute("aria-expanded"), "true");
+    await picker.waitFor();
+    await page.keyboard.press("Escape");
+    await picker.waitFor({ state: "detached" });
+    assert.equal(await menu.getAttribute("aria-expanded"), "true");
+    await page.keyboard.press("Escape");
+    assert.equal(await menu.getAttribute("aria-expanded"), "false");
+  } finally {
+    await browser?.close();
+    await server.close();
+    await rm(cacheDir, { recursive: true, force: true });
+  }
+});

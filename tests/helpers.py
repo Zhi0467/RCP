@@ -730,3 +730,16 @@ def resource_watermark_tokens(
 def write_turn_outcome(workspace: Path, outcome: str = '{"status":"done"}') -> None:
     """Complete a scripted Work turn with a valid file-backed outcome."""
     (workspace / "outcome.json").write_text(outcome, encoding="utf-8")
+
+
+class CommandFileMailbox:
+    """A stage mailbox double: `read(name, max_bytes)` supplies each command file."""
+
+    def __init__(self, read: Callable[[str, int | None], str]) -> None:
+        self.read = read
+
+    def read_text(self, name: str, *, max_bytes: int | None = None) -> str:
+        return self.read(name, max_bytes)
+
+    def remove_if_sha256(self, _name: str, _sha256: str) -> bool:
+        return True

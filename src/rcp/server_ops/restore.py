@@ -122,6 +122,7 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         "8714bdf47764e07e4994bfca920bed1230bb467c9993d971ace4288efd2631b5",
         "a0052d97fc2b5dbae075cdd5caedcf8a5e4f229d4a25029cb1b37f2ebfa7f85c",
         "ebea56d17097be1d40f319d333e4e42d7e702cce1769a718d7f964ad53dc9d94",
+        "000514cd67ef7e2ac9aa4fb61ab5bb486d09f37ac66eb8fb3882906e2867f500",
         # Per-branch Auto-research (v52), fresh, immutable fixture upgrades, and
         # in-place upgrades.
         "58e6f3c20eba29966620b89c4c007bed285e884e239ef22e7d5543fd5bd96c76",
@@ -225,6 +226,7 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         "5bfc0ff9db6ee91fe4fd3915de0838066910c1ad4c00c3a3004e1a3d915bebf1",
         "c8b4b5273b5d04c6862ec293b6d57046f83d0dd08f5b1b04d4ae67bffabe5736",
         "7085cb3e2e6dec86b6f4effa8f4e1d99640d6648a679d3f5fae6af2167243aa2",
+        "0b0c5ce83844f12868de405171d4ffc7e6839c87cbd0829fbc9541ebb5190748",
         "9f8d6299091eb189a6c3395daf6ed69eb9604a3ec6ecca582908968716b1ed88",
         "529687b1794bb55dbe58d44160f1b95234aec29957cc0f43f1115bae26628da4",
         # Per-machine provider shell timeout, fresh and historical in-place upgrades.
