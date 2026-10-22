@@ -385,6 +385,7 @@ export const TURN_REFUSAL_REASONS: Readonly<Record<string, string>> = {
     "The orchestrator lineage or its child Experiment is still running. Message the orchestrator in Runs.",
   auto_research_child_episode_owned:
     "This turn belongs to its Auto-research episode. Message the orchestrator or use Add N turns.",
+  chat_archived: "This chat is archived. Restore it to continue.",
 };
 
 function apiError(status: number, body: unknown): ApiError {

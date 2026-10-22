@@ -102,6 +102,8 @@ interface Props {
   onRemoveDraft: (chatId: string) => void;
   /** Archive moves a chat in or out of the unread count, which the server derives. */
   onArchiveChange?: () => void;
+  /** The project's archived chat ids as the refreshing chat reads last saw them. */
+  archivedRevision?: string;
   /** The newest Auto-research episode owning the viewed branch, for its orchestrator card. */
   /** Each branch's current Auto-research episode, so every listed orchestrator keeps its attention. */
   orchestratorEpisodes?: readonly Episode[];
@@ -381,6 +383,7 @@ export function ChatsWorkspace({
   unreadChatIds,
   chatTranscripts,
   onArchiveChange,
+  archivedRevision = "",
   onSelect,
   onStartTask,
   onResumeTask,
@@ -491,8 +494,10 @@ export function ChatsWorkspace({
     return () => {
       current = false;
     };
+    // Another tab's archive reaches this one through the chat reads' archived
+    // list, which refreshes with the chats watermark; the display set follows it.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- setDisplay is recreated every render and only closes over apiBase
-  }, [apiBase]);
+  }, [apiBase, archivedRevision]);
 
   useEffect(() => {
     if (menuChatId === null) return;
@@ -1220,10 +1225,20 @@ export function ChatsWorkspace({
             origin={selected.origin}
             chatId={selected.chatId}
             presentation="workspace"
-            readOnly={Boolean(selected.humanTurnRefusal)}
+            readOnly={Boolean(selected.humanTurnRefusal) || selectedArchived}
             allowArtifactComments={selected.conversationKind === "auto_research_child"}
             readOnlyNotice={
-              selected.humanTurnRefusal ? (
+              selectedArchived ? (
+                <div className="chat-composer" role="status">
+                  <button
+                    className="button compact"
+                    type="button"
+                    onClick={() => void archive(selected.chatId, false)}
+                  >
+                    Restore
+                  </button>
+                </div>
+              ) : selected.humanTurnRefusal ? (
                 <div className="chat-composer" role="status">
                   <p>{selected.humanTurnRefusal.detail}</p>
                   {orchestratorCanUnlock(selected.humanTurnRefusal) && (

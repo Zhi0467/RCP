@@ -800,9 +800,12 @@ capped backoff, then rechecks identity without restarting the remote service.
 Backend contact failure keeps the rendered page beneath a blocking overlay,
 preserving panels, scroll, and text. Same version/instance/data-directory/space
 recovery reconciles normally; changed identity requires explicit reconnect and
-a fresh project open. Ordinary browsers can use a reachable team UI but cannot
-own tunnels, credentials, multi-space routing, or native commands, and do not
-offer Add team space.
+a fresh project open. A changed watermark epoch reverifies identity, so a restart
+offers Reconnect before the next write. A write the instance fence refuses
+(409 `backend_instance_replaced`) admits nothing: the composer keeps its text,
+and Reconnect reopens the chat the route names. Ordinary browsers can use a
+reachable team UI but cannot own tunnels, credentials, multi-space routing, or
+native commands, and do not offer Add team space.
 
 One project wizard offers **Use an existing checkout personally**, **Create a
 shared team project**, and **Move an existing personal project to a team**.
@@ -1398,7 +1401,10 @@ column starts folded. Read markers and unread finishes cover the whole project.
 
 Selection stays exact-target. A link to a conversation on another graph switches the
 workspace through `#/projects/P?view=chats&chat=C&branch_id=B` before the
-composer mounts. An orchestrator selected from main's Agents opens in place
+composer mounts. A link whose `branch_id` is wrong or missing reroutes to the
+graph the inventory records for that chat; a chat no graph lists selects nothing.
+A `branch_id` that is empty or that the backend does not know opens main with an
+error notice. An orchestrator selected from main's Agents opens in place
 against its own branch target without switching the workspace. Node actions select only within the viewed graph. A
 conversation a task names before the inventory lists it has unknown ownership:
 its composer stays closed and the inventory is fetched again. Posting

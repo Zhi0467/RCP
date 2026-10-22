@@ -160,6 +160,7 @@ import {
   listenDesktopEvent,
   openDesktopArtifactPdf,
   returnDesktopToPersonal,
+  reverifyBackendIdentity,
   TEAM_TRANSPORT_RECOVERED,
   type BackendIdentityEventDetail,
 } from "./core/desktopRuntime";
@@ -579,14 +580,17 @@ function RefreshMemberApp(props: {
   const bindings = useRef<RefreshBindings>({ open: [], active: null, lostAccess: () => {} });
   const runtime = useMemo(() => {
     const store = new ResourceStore();
+    // The epoch changes with the backend process, so a restart is seen on the
+    // next beat and Reconnect is offered before a write meets the instance fence.
+    let epoch: string | null = null;
     const scheduler = new RefreshScheduler({
       store,
       clientId: crypto.randomUUID(),
       openProjects: () => bindings.current.open,
       activeProjectId: () => bindings.current.active,
       onLostAccess: (id) => bindings.current.lostAccess(id),
-      send: (request, signal) =>
-        api<WatermarkResponse>(
+      send: async (request, signal) => {
+        const response = await api<WatermarkResponse>(
           "/api/resource-watermarks",
           {
             method: "POST",
@@ -594,7 +598,12 @@ function RefreshMemberApp(props: {
             signal,
           },
           { attemptTimeoutMs: WATERMARK_REQUEST_TIMEOUT_MS, readOnly: true },
-        ),
+        );
+        if (epoch !== null && epoch !== response.epoch)
+          void reverifyBackendIdentity("watermark-epoch");
+        epoch = response.epoch;
+        return response;
+      },
     });
     return { store, scheduler, backendKey: props.identity.backendKey };
   }, [props.identity.backendKey]);
@@ -960,6 +969,29 @@ function MemberApp({
       setNotice({ kind: "error", text: String(graphView.error) });
     }
   }, [graphView.error, graphView.value]);
+  // A route naming no branch, or one the backend does not know, opens main and
+  // says so, replacing the failed read's notice, instead of a blank target
+  // whose every read fails and retries.
+  const missingBranchId =
+    graphTarget.kind === "branch" &&
+    (!graphTarget.branch_id ||
+      (graphView.error instanceof ApiError && graphView.error.status === 404))
+      ? graphTarget.branch_id
+      : null;
+  useEffect(() => {
+    if (missingBranchId === null || !backendSessionReady) return;
+    const [path, query = ""] = window.location.hash.split("?");
+    const params = new URLSearchParams(query);
+    if (!params.has("branch_id")) return;
+    params.delete("branch_id");
+    setNotice({
+      kind: "error",
+      text: missingBranchId
+        ? `Branch ${missingBranchId.slice(0, 8)} was not found. Showing main.`
+        : "The link names no branch. Showing main.",
+    });
+    window.location.replace(`${path}${params.size ? `?${params}` : ""}`);
+  }, [missingBranchId, backendSessionReady]);
   const watcherView = useResource(
     `${projectId}:watcher-view`,
     backendSessionReady && projectId ? watchersProfile(projectId, graphTarget) : null,
@@ -1795,6 +1827,15 @@ function MemberApp({
           route.autoResearchEpisodeId,
         );
         resetProjectChats();
+        // A backend change drops the selection with the cache; the route still
+        // names the open chat, so it is requested again rather than lost.
+        if (previous && previous.backendKey !== backendKey && route.chatId)
+          setRequestedChat({
+            hash: window.location.hash,
+            projectId,
+            chatId: route.chatId,
+            graphTarget,
+          });
         resetProjectTasks();
         resetProjectHistory(projectId, graphTarget);
         resetProjectHeader(projectId);
@@ -2447,10 +2488,23 @@ function MemberApp({
     // A listed chat is read by its own selected resource; a separate read here would
     // fence that one and make the store confirm the written answer with a third.
     const listed = inventoryChatSummariesRef.current.find(
-      (item) =>
-        item.chat_id === requestedChat.chatId && sameGraphTarget(item.graph_target, graphTarget),
+      (item) => item.chat_id === requestedChat.chatId,
     );
-    if (listed) {
+    // A link names the chat; the inventory knows its graph. A wrong or missing
+    // branch_id reroutes to that graph instead of opening another chat.
+    if (
+      listed &&
+      listed.conversation_kind !== "auto_research" &&
+      !sameGraphTarget(listed.graph_target, graphTarget)
+    ) {
+      window.location.replace(
+        projectViewHash(requestedChat.projectId, listed.graph_target, "chats", {
+          chatId: listed.chat_id,
+        }),
+      );
+      return;
+    }
+    if (listed && sameGraphTarget(listed.graph_target, graphTarget)) {
       selectChat(listed.chat_id);
       setFloatingChat(null);
       clearNodeSelections();
@@ -2466,6 +2520,8 @@ function MemberApp({
       })
       .catch((error) => {
         if (cancelled) return;
+        // A chat that cannot be opened leaves nothing selected, never a retained one.
+        selectChat(null);
         const message = `Conversation could not be opened: ${String(error)}`;
         reportErrorNotice(message);
       })
@@ -5341,6 +5397,7 @@ function MemberApp({
               orchestratorEpisodes={orchestratorEpisodes}
               episodeAction={episodeAction}
               onSendOrchestratorMessage={messageEpisodeOrchestrator}
+              archivedRevision={chatReads?.archived.join("\n")}
               onArchiveChange={() =>
                 void refreshChatReads().catch((error) =>
                   reportErrorNotice(

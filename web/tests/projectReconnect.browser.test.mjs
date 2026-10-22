@@ -68,6 +68,11 @@ async function openDemoProject(t, initialFreshness, options = {}) {
     mutations: [],
     renameStatus: 200,
     branchNames: {},
+    epoch: "fixture",
+    archivedChats: [],
+    missingBranches: new Set(),
+    taskRefusal: null,
+    taskStarts: 0,
   };
   const project = (id = "demo", target = mainTarget) => ({
     id,
@@ -144,10 +149,17 @@ async function openDemoProject(t, initialFreshness, options = {}) {
     if (path === "/api/resource-watermarks") {
       if (state.connected) state.reconnectObservations++;
       // Reachability is part of the graph token, as on the server.
-      json = watermarkResponse(route.request().postDataJSON(), {
-        version: (_id, resource) =>
-          resource.name === "graph" ? `${state.connected}:${state.graphVersion}` : "v1",
-      });
+      json = {
+        ...watermarkResponse(route.request().postDataJSON(), {
+          version: (_id, resource) =>
+            resource.name === "graph"
+              ? `${state.connected}:${state.graphVersion}`
+              : resource.name === "chats"
+                ? `chats:${state.archivedChats.join(",")}`
+                : "v1",
+        }),
+        epoch: state.epoch,
+      };
     } else if (path === "/api/health" || path === "/api/health/details") {
       if (!state.health) return route.abort();
       json = state.health;
@@ -191,6 +203,8 @@ async function openDemoProject(t, initialFreshness, options = {}) {
       }
       if (state.projectStatus !== 200)
         return route.fulfill({ status: state.projectStatus, json: { detail: "unavailable" } });
+      if (state.missingBranches.has(branchId))
+        return route.fulfill({ status: 404, json: { detail: "Episode graph not found" } });
       const snapshot = project(
         projectId,
         branchId ? { kind: "branch", branch_id: branchId } : mainTarget,
@@ -219,20 +233,28 @@ async function openDemoProject(t, initialFreshness, options = {}) {
         ? state.chats
         : state.chats.filter((chat) => chat.graph_target.branch_id === branchId);
       json = { items, total: items.length, offset: 0, limit: 200 };
-    } else if (path.endsWith("/chat-display")) json = { archived: [], titles: {}, pinned: [] };
-    else if (/\/chats\/[^/]+\/archive$/.test(path))
-      json = { archived: [path.split("/").at(-2)], titles: {}, pinned: [] };
-    else if (/\/chats\/[^/]+$/.test(path)) {
-      json = {
-        ...state.chats.find((chat) => chat.chat_id === path.split("/").at(-1)),
-        messages: [],
-      };
+    } else if (path.endsWith("/chat-display"))
+      json = { archived: state.archivedChats, titles: {}, pinned: [] };
+    else if (/\/chats\/[^/]+\/archive$/.test(path)) {
+      const chatId = path.split("/").at(-2);
+      state.archivedChats = route.request().postDataJSON().archived
+        ? [...new Set([...state.archivedChats, chatId])]
+        : state.archivedChats.filter((id) => id !== chatId);
+      json = { archived: state.archivedChats, titles: {}, pinned: [] };
+    } else if (/\/chats\/[^/]+$/.test(path)) {
+      const found = state.chats.find((chat) => chat.chat_id === path.split("/").at(-1));
+      if (!found) return route.fulfill({ status: 404, json: { detail: "Chat not found" } });
+      json = { ...found, messages: [] };
+    } else if (path.endsWith("/tasks/project_chat")) {
+      state.taskStarts++;
+      if (state.taskRefusal) return route.fulfill({ status: 409, json: state.taskRefusal });
+      return route.fulfill({ status: 500, json: { detail: "not modelled" } });
     } else if (path.endsWith("/chat-reads"))
       json = {
         baseline: "2026-01-01T00:00:00+00:00",
         reads: {},
         latest_finished: {},
-        archived: [],
+        archived: state.archivedChats,
       };
     else if (path.endsWith("/usage")) json = { tasks: [], totals: {}, by_provider: [] };
     else if (path.endsWith("/digest"))
@@ -1069,3 +1091,111 @@ test(
     state.branchGate.resolve();
   },
 );
+
+const hashParams = (page) =>
+  page.evaluate(() => Object.fromEntries(new URLSearchParams(location.hash.split("?")[1])));
+const composer = (page) => page.getByRole("textbox", { name: "Message", exact: true });
+
+test(
+  "a send refused by a replaced backend keeps its text and Reconnect keeps the open chat",
+  { timeout: 25000 },
+  async (t) => {
+    const { page, state } = await openedShell(t, { chats: [chat] });
+    await page.evaluate(() => (location.hash = "#/projects/demo?view=chats&chat=held-chat"));
+    await composer(page).fill("keep this text");
+    state.health = { ...HEALTH, instance_id: "replacement" };
+    state.taskRefusal = {
+      detail: { code: "backend_instance_replaced", message: "replaced" },
+      instance_id: "replacement",
+    };
+    await composer(page).press("Enter");
+    await page.getByRole("alertdialog").waitFor();
+    assert.equal(state.taskStarts, 1);
+    await page
+      .getByRole("alertdialog")
+      .getByRole("button", { name: "Reconnect", exact: true })
+      .click();
+    await page.getByRole("alertdialog").waitFor({ state: "detached" });
+    await composer(page).waitFor();
+    assert.equal(await composer(page).inputValue(), "keep this text");
+    assert.equal((await hashParams(page)).chat, "held-chat");
+    // The refused send left no failed turn to resend.
+    assert.equal(await page.locator(".node-chat-line.unsent").count(), 0);
+  },
+);
+
+test("a restarted backend is offered Reconnect at the next watermark beat", async (t) => {
+  const { page, state } = await openedShell(t);
+  state.health = { ...HEALTH, instance_id: "replacement" };
+  state.epoch = "restarted";
+  await page.getByRole("alertdialog").waitFor();
+  assert.equal(await shellStillMounted(page), true);
+});
+
+test(
+  "an archive from another tab closes this tab's composer at its next chats refresh",
+  { timeout: 20000 },
+  async (t) => {
+    const { page, state } = await openedShell(t, { chats: [chat] });
+    await page.evaluate(() => (location.hash = "#/projects/demo?view=chats&chat=held-chat"));
+    await composer(page).waitFor();
+    state.archivedChats = ["held-chat"];
+    const restore = page
+      .locator(".chat-dock")
+      .getByRole("button", { name: "Restore", exact: true });
+    await restore.waitFor();
+    assert.equal(await composer(page).count(), 0);
+    await restore.click();
+    await composer(page).waitFor();
+    assert.deepEqual(state.archivedChats, []);
+  },
+);
+
+test(
+  "a chat link opens the chat on its own graph whatever branch_id it names",
+  { timeout: 25000 },
+  async (t) => {
+    const branchChat = {
+      ...chat,
+      chat_id: "branch-chat",
+      title: "Branch conversation",
+      graph_target: { kind: "branch", branch_id: "b1" },
+    };
+    const { page } = await openedShell(t, {
+      graphRefs: [mainRef(), branchRef("b1"), branchRef("b2")],
+      chats: [chat, branchChat],
+    });
+    for (const link of [
+      "#/projects/demo?view=chats&chat=branch-chat&branch_id=b2",
+      "#/projects/demo?view=chats&chat=held-chat",
+      "#/projects/demo?view=chats&chat=branch-chat",
+    ]) {
+      await page.evaluate((hash) => (location.hash = hash), link);
+      const chatId = new URLSearchParams(link.split("?")[1]).get("chat");
+      await branchShown(page, chatId === "branch-chat" ? "b1" : "main");
+      await composer(page).waitFor();
+      assert.equal((await hashParams(page)).chat, chatId);
+    }
+    // A chat no graph lists selects nothing, not the chat open before.
+    await page.evaluate(
+      () => (location.hash = "#/projects/demo?view=chats&chat=ghost&branch_id=b1"),
+    );
+    await page.locator(".toast.error").waitFor();
+    assert.equal(await composer(page).count(), 0);
+    assert.equal((await hashParams(page)).chat, undefined);
+  },
+);
+
+test("an empty or unknown branch_id opens main instead of a blank target", async (t) => {
+  const { page, state } = await openedShell(t, { graphRefs: [mainRef(), branchRef("b1")] });
+  state.missingBranches.add("gone");
+  for (const branch of ["gone", ""]) {
+    await page.evaluate(
+      (id) => (location.hash = `#/projects/demo?view=overview&branch_id=${id}`),
+      branch,
+    );
+    await page.waitForFunction(() => !location.hash.includes("branch_id"));
+    await branchShown(page, "main");
+    await page.locator(".toast.error").waitFor();
+  }
+});

@@ -229,6 +229,9 @@ Cards have a fixed size, one-line title, and secondary metadata. Their menu
 removes local unsent drafts or renames/pins/archives saved chats. Rename/archive
 are shared display choices; pins are member-owned. Blank names restore derived
 names; rename is inline. Archived counts include unloaded chats and offer Restore.
+Another tab sees an archive at its next chats refresh. An archived chat's composer
+is a single Restore, and task admission refuses a new turn there with
+`chat_archived`, so a stale tab cannot revive it.
 Revisits retain the loaded set until refresh, preventing archived-card flashes.
 Use shipped provider logos (Claude orange, others monochrome), otherwise labels.
 Display changes never alter transcripts/tasks.
