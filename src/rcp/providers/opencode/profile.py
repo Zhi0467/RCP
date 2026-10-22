@@ -79,7 +79,6 @@ class _OpenCodeRunTurn(_JsonlProviderTurn):
                 reasoning=request.reasoning,
                 session_id=request.session_id,
                 fork_session_id=request.fork_session_id,
-                fork_source_cwd=request.fork_source_cwd,
                 read_dirs=request.read_dirs,
                 write_dirs=request.write_dirs,
                 write_scope=request.write_scope,
@@ -272,11 +271,7 @@ class OpenCodeProfile(ProviderProfile):
         hidden_read_scope: HiddenReadScope | None = None,
         autocompact: str = "",
         fork_session_id: str | None = None,
-        fork_source_cwd: str | None = None,
     ) -> list[str]:
-        del fork_source_cwd
-        if session_id and fork_session_id:
-            raise ValueError("A provider turn cannot resume and fork a session together.")
         del prompt, read_dirs, autocompact
         work_like = capability in {"work_auto", "orchestrate"}
         if work_like:

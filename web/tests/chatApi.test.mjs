@@ -212,7 +212,7 @@ test("branch chat preserves its target and origin without starting a turn", asyn
       "fork-request",
       "New direction",
     );
-    const chat = await branchChat("project", "source", target);
+    const chat = await branchChat("project", "source", target, "branch-request");
     assert.deepEqual(calls, [
       {
         path: "/api/projects/project/graph-refs",
@@ -222,7 +222,7 @@ test("branch chat preserves its target and origin without starting a turn", asyn
       {
         path: "/api/projects/project/chats/source/branch",
         method: "POST",
-        body: { graph_target: target },
+        body: { graph_target: target, request_id: "branch-request" },
       },
     ]);
     assert.deepEqual(chat.origin, origin);

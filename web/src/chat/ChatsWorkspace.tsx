@@ -737,6 +737,10 @@ export function ChatsWorkspace({
 
   const selectedArchived = selected !== null && archivedChatIds.has(selected.chatId);
   const selectedWorking = selectedStatus?.state === "working";
+  // Only a chat with a native session can branch; a branched chat has none before its first turn.
+  const selectedHasSession =
+    selected?.tasks.some((task) => task.native_session_id) ||
+    selectedHistory?.some((message) => message.native_session_id);
   const headerActions =
     selected && (selected.tasks.length > 0 || selected.updatedAt)
       ? [
@@ -754,7 +758,7 @@ export function ChatsWorkspace({
         projectId={project.id}
         chatId={selected.chatId}
         graphTarget={selected.graphTarget ?? MAIN_GRAPH}
-        disabled={selectedWorking}
+        disabled={selectedWorking || !selectedHasSession}
       />
     ) : undefined;
   const conversationHeading =

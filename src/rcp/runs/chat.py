@@ -804,15 +804,15 @@ def _local_chat_workspace_for_task(store: AppStore, task: AgentTaskRecord) -> Pa
         or not chat_id
     ):
         raise ValueError("The conversation stage has no durable chat binding.")
-    layout = store.chat_stage_layout(
-        project_id=task.project_id,
-        kind=task.kind,
-        chat_id=chat_id,
-        stage_host="",
-        stage_root=task.stage_root,
+    return Path(
+        store.chat_stage_workspace(
+            project_id=task.project_id,
+            kind=task.kind,
+            chat_id=chat_id,
+            stage_host="",
+            stage_root=task.stage_root,
+        )
     )
-    stage = Path(task.stage_root)
-    return stage / "workspace" if layout == "split-v1" else stage
 
 
 def _local_chat_artifact_directory(

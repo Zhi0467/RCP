@@ -16,7 +16,7 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from pydantic import AwareDatetime, BaseModel, ConfigDict
+from pydantic import UUID4, AwareDatetime, BaseModel, ConfigDict
 
 from rcp.api.dependencies import (
     get_attachment_store,
@@ -59,6 +59,21 @@ class BranchChatBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     graph_target: GraphTargetRef
+    # One per branch attempt; a retried request returns the chat it created.
+    request_id: UUID4
+
+
+@router.get("/api/projects/{project_id}/chats/{chat_id}/branch", status_code=204)
+def branchable_chat(
+    project_id: str, chat_id: str, *, catalog: CatalogDependency, store: StoreDependency
+) -> None:
+    """Refuse an unbranchable chat before the client creates a graph branch for it."""
+    try:
+        store.require_chat_fork_source(
+            catalog.resolve_project_id(project_id), _canonical_chat_id(chat_id)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post(
@@ -70,23 +85,24 @@ def branch_chat(
     project_id: str,
     chat_id: str,
     body: BranchChatBody,
-    request: Request,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
-    identity_access: IdentityDependency,
 ) -> ChatTranscript:
-    identity_access.require_patch_capable_identity(request)
     project_id = catalog.resolve_project_id(project_id)
     chat_id = _canonical_chat_id(chat_id)
     target_service = get_graph_service(
-        catalog, project_id, body.graph_target.branch_id, initialize=False
+        catalog, project_id, body.graph_target.branch_id, initialize=False, write=True
     )
     target_node_ids = set(target_service.history.current_materialization().state.nodes)
     try:
         with conversation_worktree_locks(f"{store.path}:{project_id}:{chat_id}"):
             fork = store.create_chat_fork(
-                project_id, chat_id, body.graph_target, target_node_ids=target_node_ids
+                project_id,
+                chat_id,
+                body.graph_target,
+                str(body.request_id),
+                target_node_ids=target_node_ids,
             )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

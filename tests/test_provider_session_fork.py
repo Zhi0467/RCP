@@ -1,18 +1,16 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import subprocess
 import sys
 import uuid
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from rcp.providers import ProviderTurnRequest, profile_for, remote_bundle
-from rcp.providers.claude.remote import ClaudeSessionFormat
+from rcp.providers.claude.remote import ClaudeSessionFormat, claude_project_directory
 from rcp.providers.codex.app_server import CodexAppServerRuntime
 
 
@@ -30,7 +28,6 @@ def _request(tmp_path: Path, provider: str) -> ProviderTurnRequest:
         capability="paper_readonly",
         provider_version="1.18.30" if provider == "opencode" else "0.163.0",
         fork_session_id="source-session",
-        fork_source_cwd=str(tmp_path / "source-stage"),
     )
 
 
@@ -56,8 +53,6 @@ def test_native_fork_commands_and_source_identity_refusal(tmp_path: Path, provid
     assert step.complete and step.stop_process
     assert any(event.event == "error" for event in step.events)
     assert not any(event.event == "session" for event in step.events)
-    with pytest.raises(ValueError):
-        replace(request, session_id="other-session")
 
 
 @pytest.mark.parametrize("returned_session", ["forked-session", "source-session"])
@@ -104,10 +99,8 @@ def test_claude_fork_prepares_new_cwd_without_changing_source(
     source_cwd = (tmp_path / "source.stage").resolve()
     target_cwd = (tmp_path / "fork.stage").resolve()
     session_id = str(uuid.uuid4())
-    source = (
-        config / "projects" / re.sub(r"[^a-zA-Z0-9]", "-", str(source_cwd)) / f"{session_id}.jsonl"
-    )
-    target = config / "projects" / re.sub(r"[^a-zA-Z0-9]", "-", str(target_cwd)) / source.name
+    source = config / "projects" / claude_project_directory(source_cwd) / f"{session_id}.jsonl"
+    target = config / "projects" / claude_project_directory(target_cwd) / source.name
     transcript = "\n".join(
         json.dumps({"sessionId": session_id, "cwd": str(source_cwd), "type": role})
         for role in ("user", "assistant")
@@ -162,7 +155,6 @@ async def test_launcher_prepares_claude_fork_before_sending_prompt(
     from types import SimpleNamespace
 
     from rcp.agents import AgentLauncher
-    from rcp.providers.claude.remote import claude_project_directory
 
     config = tmp_path / "config"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
@@ -195,6 +187,18 @@ print(json.dumps({{"type":"result", "subtype":"success", "result":"Fork ready", 
     launcher.readiness = lambda *_args, **_kwargs: SimpleNamespace(
         installed=True, authenticated=True, binary_path=str(executable), version="2.1.307"
     )
+    with pytest.raises(ValueError):  # The launch contract: a fork never also resumes.
+        await anext(
+            launcher.stream(
+                "claude",
+                "Continue",
+                cwd=target_cwd,
+                session_id=source_id,
+                fork_session_id=source_id,
+                fork_source_cwd=str(source_cwd),
+                capability="paper_readonly",
+            )
+        )
     events = [
         event
         async for event in launcher.stream(

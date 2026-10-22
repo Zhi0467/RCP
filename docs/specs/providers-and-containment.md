@@ -144,7 +144,12 @@ resume. The prompt-delivery boundary prevents fallback from duplicating work.
 A human's **Branch this chat** action records a source native session for the new
 chat's first turn. The launch carries that fork fact separately from normal
 resume identity; it retains the source provider, model, reasoning and execution
-machine and uses the new chat's own stage and graph target. Provider profiles
+machine and uses the new chat's own stage and graph target. The source cwd is the
+one the source's own launches used (a remote stage's workspace; a local stage's
+recorded layout). The launcher validates the fork contract once (no resume, a
+source cwd, a supervised remote host) before building a command; the execution
+host prepares the fork, and provider commands receive only the session id. Like a
+resume, a fork uses the profile's current runtime. Provider profiles
 render Codex `thread/fork` (with `excludeTurns: true`) or `exec fork`, Claude
 `--resume … --fork-session`, and OpenCode `--session … --fork`. The returned
 native session must differ from the source; subsequent turns resume that new

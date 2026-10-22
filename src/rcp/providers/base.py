@@ -185,11 +185,6 @@ class ProviderTurnRequest:
     # None preserves the provider default; staging has already resolved the card.
     shell_timeout_seconds: int | None = None
     fork_session_id: str | None = None
-    fork_source_cwd: str | None = None
-
-    def __post_init__(self) -> None:
-        if self.session_id and self.fork_session_id:
-            raise ValueError("A provider turn cannot resume and fork a session together.")
 
 
 @dataclass(frozen=True)
@@ -304,7 +299,6 @@ class _JsonlProviderTurn(ProviderTurn):
             reasoning=request.reasoning,
             session_id=request.session_id,
             fork_session_id=request.fork_session_id,
-            fork_source_cwd=request.fork_source_cwd,
             read_dirs=request.read_dirs,
             write_dirs=request.write_dirs,
             write_scope=request.write_scope,
@@ -591,7 +585,6 @@ class ProviderProfile:
         hidden_read_scope: HiddenReadScope | None = None,
         autocompact: str = "",
         fork_session_id: str | None = None,
-        fork_source_cwd: str | None = None,
     ) -> list[str]:
         """The argv that runs one turn. `prompt` arrives on stdin."""
         raise NotImplementedError

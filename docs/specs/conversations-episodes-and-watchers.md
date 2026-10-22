@@ -171,25 +171,31 @@ remain bound; neither another chat nor another graph target can reuse them.
 A member can create a new conversation on a new graph branch forked at the
 source conversation's current target and head, or on an existing non-archived
 branch (including main when leaving a branch). The source conversation and its
-stage stay unchanged. Creation records the source chat, exact latest operation,
-source graph target, title, native session and launch profile; it launches no
-provider. An active, paused, imported or unusable latest session cannot seed a
-branch. The new, initially empty conversation is immediately readable and listed
-on its own target, which ordinary admission keeps fixed. A node conversation keeps
-its node when that node exists on the target; otherwise the new chat has project
-scope while retaining the native conversation context.
+stage stay unchanged. Creation records the source chat, its latest operation,
+source graph target, title and launch profile; it launches no provider. An active,
+paused, imported or unusable latest session cannot seed a branch, and the client
+checks this before it creates a new graph branch for the chat. The request carries
+a client id that names the new chat, so a retried request returns the same chat.
+The new, initially empty conversation is immediately readable and listed on its
+own target, which ordinary admission keeps fixed. A node conversation keeps its
+node when that node exists on the target; otherwise the new chat has project
+scope while retaining the native conversation context. A chat without a native
+session of its own, such as a branched chat before its first turn, cannot branch.
 
-Its first human message forks the recorded native session using the source
-provider, model, reasoning and machine. Client choices cannot move that first
-launch to another machine. Fork failure fails the turn and leaves Retry available;
-it never falls back to a fresh session. Once the provider reports the new native
-session, later attempts and turns resume that session normally. The fork turn
-replaces the inherited master and, only on that turn, names the graph target
-the task was admitted to. It tells the agent that the inherited transcript's
-graph, Bulletin channel, roster, mentions and paths belong to the source. Every
-other branch-scoped fact (branch read pointers, Bulletin snapshot and roster,
-agent name, questions, workspace and command client) is rendered each turn from
-the new chat's own task, so nothing after the first turn reads the source chat.
+Its first human message forks the source chat's latest session as it stands when
+that message is admitted, with that turn's provider, model, reasoning and machine;
+the same usability rules apply again then. Admission records the source session,
+its cwd and its host on the turn. From then on the new chat never reads its source:
+Retry and later messages before it has a session carry that record, and an attempt
+on another host fails. Fork failure fails the turn and leaves Retry available; it
+never falls back to a fresh session. Once the provider reports the new native
+session, later attempts and turns, including a Retry after Pause, resume that
+session normally. The fork turn replaces the inherited master and, only on that
+turn, names the graph target the task was admitted to. It tells the agent that the
+inherited transcript's graph, Bulletin channel, roster, mentions and paths belong
+to the source. Every other branch-scoped fact (branch read pointers, Bulletin
+snapshot and roster, agent name, questions, workspace and command client) is
+rendered each turn from the new chat's own task.
 **Why:** the provider transcript is the only place a stale branch can come from.
 
 The entry point is "Branch this chat" in the chat header's menu. It opens the
