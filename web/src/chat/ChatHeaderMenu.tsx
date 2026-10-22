@@ -16,18 +16,16 @@ export function ChatHeaderMenu({
   children?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
+  // A press inside the menu's React tree, portaled popovers included, reaches
+  // the root's handler before the document listener sees the same event.
+  const pressedInside = useRef<Event | null>(null);
   useEffect(() => {
     if (!open) return;
     const close = (event: Event) => {
       if (event instanceof KeyboardEvent) {
-        if (event.key !== "Escape") return;
-      } else if (
-        root.current?.contains(event.target as Node) ||
-        // The branch picker's list is portaled out of the menu but belongs to it.
-        (event.target instanceof Element && event.target.closest(".branch-picker-popover"))
-      )
-        return;
+        // A nested control that handled Escape closes only its own layer.
+        if (event.key !== "Escape" || event.defaultPrevented) return;
+      } else if (pressedInside.current === event) return;
       setOpen(false);
     };
     document.addEventListener("mousedown", close);
@@ -39,7 +37,12 @@ export function ChatHeaderMenu({
   }, [open]);
   if (actions.length === 0 && !children) return null;
   return (
-    <div className="chat-header-menu" ref={root}>
+    <div
+      className="chat-header-menu"
+      onMouseDown={(event) => {
+        pressedInside.current = event.nativeEvent;
+      }}
+    >
       <button
         type="button"
         className="icon-button"

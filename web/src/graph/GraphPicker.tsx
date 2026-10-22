@@ -146,12 +146,13 @@ export function GraphPicker({
     window.addEventListener("resize", positionList);
     document.addEventListener("scroll", positionList, true);
     document.addEventListener("pointerdown", closeOutside);
-    document.addEventListener("keydown", escape);
+    // Capture runs before an enclosing overlay's listener, which skips a handled Escape.
+    document.addEventListener("keydown", escape, true);
     return () => {
       window.removeEventListener("resize", positionList);
       document.removeEventListener("scroll", positionList, true);
       document.removeEventListener("pointerdown", closeOutside);
-      document.removeEventListener("keydown", escape);
+      document.removeEventListener("keydown", escape, true);
     };
   }, [open, editing, creating, confirm]);
 
