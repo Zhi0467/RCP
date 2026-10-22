@@ -161,6 +161,15 @@ the turn; without `turn.failed`, the last retry error explains a nonzero exit.
 The live decoder, remote fence and replay share this rule. A journal without a
 terminal event cannot finalize or claim deliverable snapshots.
 
+A provider event over the per-event ceiling is omitted with a notice when the
+provider closes its input after the prompt, since that provider still exits on
+its own. One that keeps its input open (app-server, Claude stream-json) fails
+the pass instead, in both the live decoder and the remote fence: neither can
+read what it skipped, and a lost setup reply or turn end would leave it waiting
+forever. App-server setup before prompt delivery has a deadline
+(`PROVIDER_SETUP_TIMEOUT_SECONDS`); missing it is a pre-prompt failure, so the
+exec fallback still applies.
+
 Containment differs by transport: exec disables user config and execpolicy
 rules with `--ignore-user-config` and `--ignore-rules`. App-server supports
 neither flag; RCP overrides capability-bearing keys but cannot disable `.rules`.
@@ -1042,9 +1051,12 @@ prompt byte reaches the provider. Host acceptance, not a controller receipt,
 proves work may have begun. The supervisor detects turn end but assigns no
 semantic verdict; the live decoder also reads recorded bytes. It forwards from its
 journal files at the link's pace, so a burst of output delays the reader and never
-detaches it; only a failed write does. Codex app-server resume asks for no past
-turns (`excludeTurns`): the reply arrives before the prompt is delivered, and its
-size must not grow with the session.
+detaches it; only a failed write does. Its final drain after the provider exits,
+and recovery's journal read, give up only after a stretch with no bytes moving,
+never on a fixed deadline, so a slow live link still carries the whole turn.
+Codex app-server resume asks for no past turns (`excludeTurns`): the reply
+arrives before the prompt is delivered, and its size must not grow with the
+session.
 
 Recorded decoding uses the owner's original capability and retained Work write
 scope. Codex app-server rechecks the actual journalled thread response against

@@ -33,11 +33,17 @@ if "turn_fence" not in globals():
 
 
 class Lines:
-    """Feed whole JSON lines to an observer under a per-line ceiling."""
+    """Feed whole JSON lines to an observer under a per-line ceiling.
 
-    def __init__(self, limit, consume):
+    A line over the ceiling is never parsed. `overflow`, when given, hears of it,
+    because the observer cannot know what it missed -- possibly the very event
+    the pass is waiting for.
+    """
+
+    def __init__(self, limit, consume, overflow=None):
         self.limit = limit
         self.consume = consume
+        self.overflow = overflow
         self.buffer = bytearray()
         self.overflowed = False
 
@@ -62,12 +68,16 @@ class Lines:
             consumed += len(chunk)
             if not chunk.endswith(b"\n"):
                 if len(self.buffer) + len(chunk) > self.limit:
+                    if not self.overflowed and self.overflow:
+                        self.overflow()
                     self.overflowed = True
                     self.buffer.clear()
                 else:
                     self.buffer.extend(chunk)
                 continue
             if self.overflowed or len(self.buffer) + len(chunk) > self.limit:
+                if not self.overflowed and self.overflow:
+                    self.overflow()
                 self.buffer.clear()
                 self.overflowed = False
                 continue
@@ -126,8 +136,18 @@ def run(args):
     directory = Path(args.pid_file + ".turn")
     directory.mkdir(mode=0o700)  # Never overwrite another pass's evidence.
     fence = turn_fence(args.runtime_id)
+    error = None
+
+    def oversized():
+        # The live decoder's rule: a provider that keeps its input open never
+        # ends on its own, so an event the fence could not read may be the end
+        # it would otherwise wait for forever.
+        nonlocal error
+        if not args.close_input_after_initial:
+            error = error or "Provider protocol event exceeded its size limit."
+
     inputs = Lines(args.max_event_bytes, fence.input)
-    outputs = Lines(args.max_event_bytes, fence.output)
+    outputs = Lines(args.max_event_bytes, fence.output, oversized)
     # Bytes of each channel's file already written upstream, and the
     # supervisor's own failure line, which follows stderr.txt.
     sent = {1: 0, 2: 0}
@@ -140,7 +160,6 @@ def run(args):
     terminal_at = None
     signalled_at = None
     external_stop = False
-    error = None
     journal_bytes = 0
     stderr_bytes = 0
     stderr_truncated = False
@@ -184,16 +203,17 @@ def run(args):
         try:
             written = os.write(channel, chunk)
         except BlockingIOError:
-            return
+            return 0
         except OSError:
             # The link is gone. The journal keeps everything, so nothing is
             # lost by not forwarding the rest.
             detached = True
-            return
+            return 0
         if from_file:
             sent[channel] += written
         else:
             del tail[:written]
+        return written
 
     def stop_requested(_signal, _frame):
         nonlocal external_stop
@@ -391,13 +411,16 @@ def run(args):
         # channel a human already sees, and this rides out on it with the
         # provider's own, under the same grace period.
         tail.extend(error.encode("utf-8", "replace") + b"\n")
+    # A reader that keeps taking bytes is a live link however slow it is, so
+    # only a reader that takes nothing for the grace period is given up on.
     flush_deadline = time.monotonic() + args.stop_grace_seconds
     while not detached and (unsent(1) or unsent(2)) and time.monotonic() < flush_deadline:
         ready = select.select(
             [], [channel for channel in (1, 2) if unsent(channel)], [], args.poll_seconds
         )[1]
         for channel in ready:
-            forward(channel)
+            if forward(channel):
+                flush_deadline = time.monotonic() + args.stop_grace_seconds
     detached |= unsent(1) or unsent(2)
     for descriptor in uplink_sources.values():
         os.close(descriptor)

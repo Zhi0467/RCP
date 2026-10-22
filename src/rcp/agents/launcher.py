@@ -12,7 +12,7 @@ import stat
 import subprocess
 import threading
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from concurrent.futures import Future
 from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
@@ -42,6 +42,7 @@ from rcp.artifacts import AgentArtifactDescriptor
 from rcp.core.models import HiddenReadScope
 from rcp.limits import (
     PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS,
+    PROVIDER_SETUP_TIMEOUT_SECONDS,
     PROVIDER_STDERR_DRAIN_TIMEOUT_SECONDS,
     REMOTE_PROVIDER_KILL_WAIT_SECONDS,
     REMOTE_PROVIDER_PID_WAIT_SECONDS,
@@ -67,7 +68,7 @@ from rcp.providers import (
     ProviderUsage,
     profile_for,
 )
-from rcp.providers.base import AgentStatusDelta
+from rcp.providers.base import AgentStatusDelta, ProviderRuntimeStep, ProviderStreamEvent
 from rcp.providers.browser_grant import BrowserGrant
 from rcp.storage.models import ProviderLoginStateRecord, ProviderReadinessSnapshotRecord
 from rcp.transport.provider_discovery import discover_provider
@@ -1590,6 +1591,7 @@ class AgentLauncher:
             explicit_terminal_event = False
             stopped_at_result = False
             completion_stop_failed = False
+            setup_expired = False
             while stdout_task is not None:
                 monitored: set[asyncio.Task[object]] = {stdout_task}
                 if stdin_pending:
@@ -1597,8 +1599,16 @@ class AgentLauncher:
                 if stderr_pending:
                     assert stderr_task is not None
                     monitored.add(stderr_task)
+                # Only protocol setup waits on the provider before the prompt
+                # moves, and a reply that never comes must end the launch.
+                setup_wait = (
+                    None
+                    if prompt_delivered or setup_expired
+                    else max(0.0, started_at + PROVIDER_SETUP_TIMEOUT_SECONDS - time.monotonic())
+                )
                 done, _ = await asyncio.wait(
                     monitored,
+                    timeout=setup_wait,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 if control is not None and control.detach_requested.is_set():
@@ -1610,50 +1620,75 @@ class AgentLauncher:
                 if stderr_pending and stderr_task in done:
                     stderr = await stderr_task
                     stderr_pending = False
-                if stdout_task not in done:
-                    continue
-                try:
-                    raw_line, omitted_bytes = stdout_task.result()
-                except StopAsyncIteration:
-                    stdout_task = None
-                    break
-                stdout_task = asyncio.create_task(anext(stdout_lines))
-                if omitted_bytes:
-                    event = AgentEvent(
-                        event="raw",
-                        text=(
-                            "Omitted oversized provider event "
-                            f"({omitted_bytes} bytes; limit {self._MAX_EVENT_BYTES} bytes)."
-                        ),
+                failure = None
+                raw_line = None
+                if not done:
+                    setup_expired = True
+                    failure = (
+                        f"{provider} did not finish its protocol setup within "
+                        f"{PROVIDER_SETUP_TIMEOUT_SECONDS:g} seconds."
                     )
-                    event_counts[event.event] = event_counts.get(event.event, 0) + 1
+                elif stdout_task not in done:
+                    continue
+                else:
+                    try:
+                        raw_line, omitted_bytes = stdout_task.result()
+                    except StopAsyncIteration:
+                        stdout_task = None
+                        break
+                    stdout_task = asyncio.create_task(anext(stdout_lines))
+                    if omitted_bytes and not turn.close_input_after_initial:
+                        # The decoder cannot see what it was. A provider that keeps
+                        # its input open never ends on its own, so a setup reply or
+                        # turn end it never sees would be a wait with no end.
+                        failure = (
+                            f"{provider} emitted a protocol event of {omitted_bytes} bytes, "
+                            f"over the {self._MAX_EVENT_BYTES}-byte limit."
+                        )
+                    elif omitted_bytes:
+                        event = AgentEvent(
+                            event="raw",
+                            text=(
+                                "Omitted oversized provider event "
+                                f"({omitted_bytes} bytes; limit {self._MAX_EVENT_BYTES} bytes)."
+                            ),
+                        )
+                        event_counts[event.event] = event_counts.get(event.event, 0) + 1
+                        credential_hold.release()
+                        if prompt_delivered:
+                            yield event
+                        continue
+                if failure is not None:
                     credential_hold.release()
-                    if prompt_delivered:
-                        yield event
-                    continue
-                assert raw_line is not None
-                line = raw_line.decode("utf-8", errors="replace").rstrip()
-                if not line:
-                    continue
-                if invocation_gate is not None and line == invocation_gate.ready_line:
-                    # The broker prints this straight after spawning, before the
-                    # provider authenticates, so it does not end the hold.
-                    continue
-                if host and line == REMOTE_PROVIDER_START_LINE:
-                    # The SSH handshake before this line was not provider time:
-                    # the stagger and every later stop are measured from here.
-                    started_at = time.monotonic()
-                    credential_hold.restart_minimum()
-                    if control is not None:
-                        control.restart_hold(started_at)
-                    continue
-                # A line the provider itself wrote: it is past its own auth
-                # initialization and the next startup may begin.
-                credential_hold.release()
-                if stdin_pending:
-                    await stdin_task
-                    stdin_pending = False
-                step = turn.receive_line(line)
+                    step = ProviderRuntimeStep(
+                        events=(ProviderStreamEvent(event="error", text=failure),),
+                        complete=True,
+                        explicit_terminal=True,
+                    )
+                else:
+                    assert raw_line is not None
+                    line = raw_line.decode("utf-8", errors="replace").rstrip()
+                    if not line:
+                        continue
+                    if invocation_gate is not None and line == invocation_gate.ready_line:
+                        # The broker prints this straight after spawning, before the
+                        # provider authenticates, so it does not end the hold.
+                        continue
+                    if host and line == REMOTE_PROVIDER_START_LINE:
+                        # The SSH handshake before this line was not provider time:
+                        # the stagger and every later stop are measured from here.
+                        started_at = time.monotonic()
+                        credential_hold.restart_minimum()
+                        if control is not None:
+                            control.restart_hold(started_at)
+                        continue
+                    # A line the provider itself wrote: it is past its own auth
+                    # initialization and the next startup may begin.
+                    credential_hold.release()
+                    if stdin_pending:
+                        await stdin_task
+                        stdin_pending = False
+                    step = turn.receive_line(line)
                 steering.observe(step)
                 if step.stop_process:
                     # Claude can interpret stdin as another turn after result.
@@ -2281,7 +2316,7 @@ async def _read_bounded_lines(
     *,
     max_line_bytes: int,
     chunk_bytes: int,
-) -> AsyncIterator[tuple[bytes | None, int]]:
+) -> AsyncGenerator[tuple[bytes | None, int], None]:
     pending = bytearray()
     discarded = 0
     while True:
