@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from rcp.core.models import HiddenReadScope, HiddenReadStatus
 from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.core.project_types import project_type_of
+from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import (
     AGENT_NAME_MAX_CHARS,
     ASK_CHOICE_MAX_COUNT,
@@ -128,7 +129,7 @@ REPLY_STYLE = """Writing the reply:
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
 
-CHAT_MASTER_CONTEXT_VERSION = 22
+CHAT_MASTER_CONTEXT_VERSION = 23
 
 # Staged RCP commands are written against this placeholder; the contract names the current
 # command client once, and a continuation that changes it sends `patch.command_client`.
@@ -1010,6 +1011,7 @@ class PromptFactory:
     def chat_master_context(
         *,
         project_name: str,
+        graph_target: GraphTargetRef,
         ontology_path: str,
         ontology_extensions: bool,
         graph_path: str,
@@ -1112,6 +1114,9 @@ Turn protocol:
 - The human message follows unchanged.
 
 {_CHANGED_VALUES_RULE}
+
+Graph target: `{graph_target.key}`. This conversation reads and changes this graph; a branch's
+name arrives with each turn's branch read pointers. A later value is `current.graph_target`.
 
 {context}
 {_focused_node_snapshot(graph_revision, focused_node, focused_relations)}

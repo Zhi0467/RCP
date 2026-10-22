@@ -1092,6 +1092,7 @@ async def stream_discuss_run(
                 focused_node_id = str(context.node["id"]) if context.node else None
                 master_context = PromptFactory.chat_master_context(
                     project_name=context.project_name,
+                    graph_target=context.graph_target,
                     ontology_path=f"{context.graph_path}#ontology",
                     ontology_extensions=context.ontology_extensions,
                     graph_path=context.graph_path,

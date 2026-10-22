@@ -13,6 +13,7 @@ from rcp.agents.continuation_prompt import (
 )
 from rcp.agents.graph_rules import GRAPH_RULES_VERSION
 from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION, PromptFactory, chat_master_contract_key
+from rcp.core.transition_models import GraphTargetRef
 
 
 @pytest.mark.parametrize(
@@ -90,6 +91,7 @@ def test_only_a_report_goes_without_the_operational_master() -> None:
 def test_a_continuation_carries_no_master_text() -> None:
     master = PromptFactory.chat_master_context(
         project_name="Example",
+        graph_target=GraphTargetRef(),
         ontology_path="/state/graph.json#ontology",
         ontology_extensions=False,
         graph_path="/state/graph.json",
@@ -118,7 +120,7 @@ def test_a_continuation_carries_no_master_text() -> None:
 
 
 def test_graph_range_is_turn_relative_and_unknown_is_absent() -> None:
-    from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+    from rcp.core.transition_models import GraphHeadRef
 
     target = GraphTargetRef(kind="branch", branch_id="experiment")
     seen = GraphHeadRef(target=target, revision=4)

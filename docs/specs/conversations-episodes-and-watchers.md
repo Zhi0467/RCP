@@ -190,12 +190,13 @@ Retry and later messages before it has a session carry that record, and an attem
 on another host fails. Fork failure fails the turn and leaves Retry available; it
 never falls back to a fresh session. Once the provider reports the new native
 session, later attempts and turns, including a Retry after Pause, resume that
-session normally. The fork turn replaces the inherited master and, only on that
-turn, names the graph target the task was admitted to. It tells the agent that the
-inherited transcript's graph, Bulletin channel, roster, mentions and paths belong
-to the source. Every other branch-scoped fact (branch read pointers, Bulletin
-snapshot and roster, agent name, questions, workspace and command client) is
-rendered each turn from the new chat's own task.
+session normally. The fork turn replaces the inherited master, which states the
+graph target as every chat master does, and on that turn alone adds a fork note
+naming the admitted target. The note tells the agent that the inherited
+transcript's graph, Bulletin channel, roster, mentions and paths belong to the
+source. Every other branch-scoped fact (branch read pointers, Bulletin snapshot
+and roster, agent name, questions, workspace and command client) is rendered each
+turn from the new chat's own task.
 **Why:** the provider transcript is the only place a stale branch can come from.
 
 The entry point is "Branch this chat" in the chat header's menu. It opens the

@@ -2819,6 +2819,7 @@ class ProjectService:
         }
         return ContextAssembler(self.manifest, graph_root=self.history.root).chat_context(
             state,
+            graph_target=self.history.graph_target,
             node_id=request.node_id if request.chat_scope == "node" else None,
             run_truth_scope=request.run_truth_scope,
             repository_access=repository_access,

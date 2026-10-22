@@ -1210,6 +1210,7 @@ def _auto_research_context(
     }
     context = ContextAssembler(service.manifest, graph_root=service.history.root).chat_context(
         state,
+        graph_target=service.history.graph_target,
         node_id=None,
         run_truth_scope=request.run_truth_scope,
         repository_access=access,

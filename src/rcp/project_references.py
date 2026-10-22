@@ -118,7 +118,7 @@ def resolve_project_references(
             materialization = source.history.current_materialization()
             head = source.history.head_ref(materialization)
             context = ContextAssembler(source.manifest).chat_context(
-                materialization.state, node_id=selector.node_id
+                materialization.state, graph_target=target, node_id=selector.node_id
             )
             content = json.dumps(
                 {
