@@ -28,9 +28,13 @@ import {
 } from "./providers";
 import {
   assertSupportedProjectCreationIntent,
+  defaultRepositoryName,
   repositoryPickerPresentation,
+  repositoryFolderName,
   selectedProjectCreationIntent,
   stateRepositoryAfterRemoval,
+  stateRepositoryAfterRename,
+  withDefaultRepositoryName,
   type ProjectSetupRoute,
 } from "./projectSetupModel";
 import { NewMachineForm } from "./MachineCard";
@@ -67,6 +71,8 @@ interface Props {
 
 interface DraftRepository extends SetupRepository {
   id: number;
+  /** A typed name stays; otherwise the name follows the chosen folder. */
+  nameEdited: boolean;
 }
 
 const steps = [
@@ -198,6 +204,7 @@ function PersonalProjectSetup({
     {
       id: repositorySequence,
       alias: "research",
+      nameEdited: false,
       location: "local",
       path: "",
       host: "",
@@ -269,7 +276,7 @@ function PersonalProjectSetup({
   } as const;
   const payload = (): ProjectSetupRequest => ({
     name: name.trim(),
-    repositories: repositories.map(({ id: _id, ...repo }) => ({
+    repositories: repositories.map(({ id: _id, nameEdited: _nameEdited, ...repo }) => ({
       ...repo,
       alias: repo.alias.trim(),
       path: repo.path.trim(),
@@ -294,19 +301,18 @@ function PersonalProjectSetup({
     confirmed: false,
   });
 
-  const updateRepository = (id: number, patch: Partial<SetupRepository>) => {
-    const currentRepository = repositories.find((repo) => repo.id === id);
-    if (patch.alias !== undefined && currentRepository?.alias === stateRepository) {
-      setStateRepository(patch.alias);
+  const updateRepository = (id: number, patch: Partial<DraftRepository>) => {
+    let next = repositories.map((repo) => {
+      if (repo.id !== id) return repo;
+      const updated = { ...repo, ...patch };
+      if (patch.location === "local") updated.host = "";
+      return updated;
+    });
+    if (patch.path !== undefined) {
+      next = withDefaultRepositoryName(next, id, [repositoryFolderName(patch.path)]);
     }
-    setRepositories((current) =>
-      current.map((repo) => {
-        if (repo.id !== id) return repo;
-        const next = { ...repo, ...patch };
-        if (patch.location === "local") next.host = "";
-        return next;
-      }),
-    );
+    setStateRepository((selected) => stateRepositoryAfterRename(repositories, next, selected));
+    setRepositories(next);
     setError(null);
   };
 
@@ -319,9 +325,9 @@ function PersonalProjectSetup({
     if (targetStep < 1) return null;
     const aliases = repositories.map((repo) => repo.alias.trim());
     if (aliases.some((alias) => !/^[a-z][a-z0-9-]{0,47}$/.test(alias))) {
-      return "Aliases must start with a lowercase letter and use only lowercase letters, numbers, or hyphens.";
+      return "Repository names must start with a lowercase letter and use only lowercase letters, numbers, or hyphens.";
     }
-    if (new Set(aliases).size !== aliases.length) return "Each repository needs a unique alias.";
+    if (new Set(aliases).size !== aliases.length) return "Each repository needs a unique name.";
     if (repositories.some((repo) => !repo.path.trim()))
       return "Every repository needs an absolute path.";
     if (repositories.some((repo) => repo.location === "ssh" && !repo.host.trim())) {
@@ -424,12 +430,16 @@ function PersonalProjectSetup({
 
   const addRepository = () => {
     repositorySequence += 1;
-    const alias = `repository-${repositorySequence}`;
+    const alias = defaultRepositoryName(
+      [],
+      repositories.map((repo) => repo.alias.trim()),
+    );
     setRepositories((current) => [
       ...current,
       {
         id: repositorySequence,
         alias,
+        nameEdited: false,
         location: "local",
         path: "",
         host: "",
@@ -1116,7 +1126,7 @@ export function RepositoryEditor({
   accountRequired?: boolean;
   onMachineCreated?: (machine: SpaceMachine) => void;
   onCanonical: () => void;
-  onChange: (patch: Partial<SetupRepository>) => void;
+  onChange: (patch: Partial<DraftRepository>) => void;
   onRemove?: () => void;
 }) {
   const [pickerBusy, setPickerBusy] = useState(false);
@@ -1183,10 +1193,10 @@ export function RepositoryEditor({
       </header>
       <div className="repository-fields">
         <label>
-          <span>Alias</span>
+          <span>Name</span>
           <input
             value={repository.alias}
-            onChange={(event) => onChange({ alias: event.target.value })}
+            onChange={(event) => onChange({ alias: event.target.value, nameEdited: true })}
             placeholder="research-code"
           />
         </label>

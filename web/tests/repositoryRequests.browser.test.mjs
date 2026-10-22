@@ -56,7 +56,12 @@ test("repository requests preserve intent and open the bound provisioning review
       await page.goto(kind === "add_repository" ? url : `${url}?connect`);
       if (kind === "add_repository") {
         await page.locator(".repository-requests > button").click();
-        await page.locator('[name="alias"]').fill("analysis");
+        const name = page.locator('[name="alias"]');
+        assert.equal(await name.inputValue(), "plasticity");
+        await page.locator('[name="source"]').fill("https://github.com/lab/state.git");
+        assert.equal(await name.inputValue(), "state-2");
+        await page.locator('[name="source"]').fill("");
+        await name.fill("analysis");
         assert.equal(await page.locator('[name="truth"]').isChecked(), true);
         await page.locator('[name="truth"]').uncheck();
       } else {

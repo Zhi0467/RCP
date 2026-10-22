@@ -478,7 +478,7 @@ export function TransferProjectSetup({
       return "Set the auto-research ceiling to at least 1 operational invocation.";
     }
     if (machines.length !== source.project.machines.length) {
-      return "Every historical machine alias needs one target placement.";
+      return "Every historical machine name needs one target placement.";
     }
     if (machines.some((machine) => !machine.os_account.trim())) {
       return "Every target machine needs its exact Linux account.";
