@@ -4577,6 +4577,16 @@ function MemberApp({
         : {}),
     });
   };
+  const forkGraph = async (
+    target: GraphTargetRef,
+    revision: number,
+    requestId: string,
+    name?: string,
+  ) => {
+    const ref = await createGraphFork(project.id, target, revision, requestId, name);
+    store.invalidate(resourceKeyId(refsProfile(project.id).key));
+    if (ref.kind === "branch") selectGraphRef({ kind: "branch", branch_id: ref.branch_id });
+  };
   const renderNavItem = (item: (typeof navItems)[number]) =>
     item.view === "terminals" ? (
       <TerminalTab
@@ -4651,6 +4661,10 @@ function MemberApp({
         projectId={project.id}
         compact={phone}
         onSelect={selectGraphRef}
+        onCreate={(name, requestId) =>
+          forkGraph(project.graph_head.target, project.graph_head.revision, requestId, name)
+        }
+        createDisabled={mutationsDisabled}
         onOpen={() => setGraphRefsReread(null)}
         onRefUpdated={(updated) => {
           setGraphRefsReread(null);
@@ -5605,10 +5619,8 @@ function MemberApp({
           key={graphSessionKey(project.id, graphTarget)}
           projectId={project.id}
           onFork={async (revision, requestId) => {
-            const ref = await createGraphFork(project.id, graphTarget, revision, requestId);
-            store.invalidate(resourceKeyId(refsProfile(project.id).key));
+            await forkGraph(graphTarget, revision, requestId);
             closeProjectHistory();
-            if (ref.kind === "branch") selectGraphRef({ kind: "branch", branch_id: ref.branch_id });
           }}
           forkDisabled={mutationsDisabled}
           summaries={historyRevisionSummaries}

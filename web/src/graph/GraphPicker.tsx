@@ -9,6 +9,8 @@ import {
   GitMerge,
   LoaderCircle,
   Pencil,
+  Plus,
+  RotateCcw,
   X,
 } from "lucide-react";
 import { ApiError, mergeGraphFork, renameGraphBranch, setGraphBranchArchived } from "../core/api";
@@ -31,6 +33,9 @@ interface GraphPickerProps {
   activeRef: GraphTargetRef;
   projectId: string;
   onSelect: (target: GraphTargetRef) => void;
+  /** Forks the viewed head into a new branch and switches to it; the name may be empty. */
+  onCreate?: (name: string, requestId: string) => Promise<void>;
+  createDisabled?: boolean;
   onOpen?: () => void;
   /** The last read failed: names stay, choices are disabled until a read succeeds. */
   unavailable?: boolean;
@@ -61,6 +66,8 @@ export function GraphPicker({
   activeRef,
   projectId,
   onSelect,
+  onCreate,
+  createDisabled = false,
   onOpen,
   onRefUpdated,
   unavailable = false,
@@ -71,6 +78,11 @@ export function GraphPicker({
   const [name, setName] = useState("");
   const [warning, setWarning] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [nameRefused, setNameRefused] = useState(false);
+  const [createFailure, setCreateFailure] = useState<string | null>(null);
+  const createRequestId = useRef<string | null>(null);
   const [confirm, setConfirm] = useState<{
     action: "archive" | "merge";
     ref: Branch;
@@ -97,6 +109,7 @@ export function GraphPicker({
       ) {
         setOpen(false);
         setEditing(null);
+        setCreating(false);
         setWarning(null);
       }
     };
@@ -104,6 +117,7 @@ export function GraphPicker({
       if (event.key !== "Escape" || confirm) return;
       event.preventDefault();
       if (editing) setEditing(null);
+      else if (creating) setCreating(false);
       else {
         setOpen(false);
         button.current?.focus();
@@ -125,7 +139,7 @@ export function GraphPicker({
       document.removeEventListener("pointerdown", closeOutside);
       document.removeEventListener("keydown", escape);
     };
-  }, [open, editing, confirm]);
+  }, [open, editing, creating, confirm]);
 
   useEffect(() => {
     if (confirm) dialog.current?.showModal();
@@ -165,6 +179,36 @@ export function GraphPicker({
     }
   }
 
+  async function create() {
+    if (!onCreate || busy || createDisabled) return;
+    if (branchNameProblem(newName)) {
+      setNameRefused(true);
+      return;
+    }
+    createRequestId.current ??= crypto.randomUUID();
+    setBusy(true);
+    setNameRefused(false);
+    setCreateFailure(null);
+    try {
+      await onCreate(newName, createRequestId.current);
+      createRequestId.current = null;
+      setCreating(false);
+      setOpen(false);
+    } catch (error) {
+      // Only a transient failure retries under the same request id.
+      if (!(error instanceof TypeError || (error instanceof ApiError && error.status >= 500)))
+        createRequestId.current = null;
+      if (
+        error instanceof ApiError &&
+        (error.code === "branch_name_taken" || error.code === "branch_name_invalid")
+      )
+        setNameRefused(true);
+      else setCreateFailure(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function merge(ref: Branch, requestId: string) {
     if (busy) return;
     setBusy(true);
@@ -194,7 +238,12 @@ export function GraphPicker({
   }
 
   // A failed read keeps the button, disabled and naming the current ref.
-  if (activeRef.kind === "main" && refs !== null && !options.some((ref) => ref.kind === "branch"))
+  if (
+    !onCreate &&
+    activeRef.kind === "main" &&
+    refs !== null &&
+    !options.some((ref) => ref.kind === "branch")
+  )
     return null;
 
   return (
@@ -213,6 +262,7 @@ export function GraphPicker({
           if (!open) onOpen?.();
           setOpen(!open);
           setEditing(null);
+          setCreating(false);
           setWarning(null);
         }}
       >
@@ -371,6 +421,70 @@ export function GraphPicker({
                 );
               })}
             </ul>
+            {onCreate && (
+              <div className={`branch-picker-row${createFailure ? " branch-picker-failed" : ""}`}>
+                <span className="branch-picker-leading">
+                  <Plus size={15} />
+                </span>
+                {creating ? (
+                  <>
+                    <input
+                      autoFocus
+                      className="branch-picker-name-input"
+                      aria-label="New branch name"
+                      aria-invalid={nameRefused}
+                      value={newName}
+                      disabled={busy}
+                      onChange={(event) => {
+                        setNewName(typedBranchName(event.target.value));
+                        setNameRefused(false);
+                        setCreateFailure(null);
+                        createRequestId.current = null;
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          void create();
+                        }
+                      }}
+                    />
+                    <button
+                      className="branch-picker-action"
+                      aria-label={createFailure ? "Retry new branch" : "Create branch"}
+                      title={createFailure ?? undefined}
+                      disabled={busy || createDisabled}
+                      onClick={() => void create()}
+                    >
+                      {createFailure ? <RotateCcw size={14} /> : <Check size={15} />}
+                    </button>
+                    <button
+                      className="branch-picker-action"
+                      aria-label="Cancel new branch"
+                      disabled={busy}
+                      onClick={() => setCreating(false)}
+                    >
+                      <X size={15} />
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    className="branch-picker-name"
+                    disabled={busy || createDisabled}
+                    onClick={() => {
+                      setEditing(null);
+                      setWarning(null);
+                      setCreating(true);
+                      setNewName("");
+                      setNameRefused(false);
+                      setCreateFailure(null);
+                      createRequestId.current = null;
+                    }}
+                  >
+                    New branch
+                  </button>
+                )}
+              </div>
+            )}
             {warning && (
               <p className="branch-picker-warning" role="alert">
                 {warning}

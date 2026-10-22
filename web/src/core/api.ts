@@ -540,11 +540,16 @@ export function createGraphFork(
   target: GraphTargetRef,
   revision: number,
   requestId: string,
+  name?: string,
 ): Promise<GraphRef> {
   const ref = target.kind === "main" ? "main" : `branch:${target.branch_id}`;
   return api<GraphRef>(`/api/projects/${encodeURIComponent(projectId)}/graph-refs`, {
     method: "POST",
-    body: JSON.stringify({ request_id: requestId, at: `${ref}@${revision}` }),
+    body: JSON.stringify({
+      request_id: requestId,
+      at: `${ref}@${revision}`,
+      name: name || undefined,
+    }),
   });
 }
 
