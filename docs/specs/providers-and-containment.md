@@ -1327,9 +1327,11 @@ launch authority. Work-capable runs (Work, Experiment, child Work, and the
 Auto-research orchestrator and worker) hold the `bulletin` verb while the owning
 episode's Bulletin is on; only Auto-research start can turn it off, and a run
 with no episode always holds it. Holding it means `bulletin --read [--cursor C]`,
-`bulletin --post --key K [--reply-to P] <body-file>`,
-`bulletin --edit P --key K <body-file>`, and `bulletin --delete P --key K`;
-references come from inline `#node-id` text. That one resolved verb set drives
+`bulletin --post --key K [--reply-to P | --channel C] <body-file>`,
+`bulletin --edit P --key K <body-file>`, `bulletin --delete P --key K`, and
+`bulletin --artifact ID`. References come from inline `#node-id` and
+`<artifact:ID>` text. The parser and usage renderer share option records. That
+one resolved verb set drives
 both the contract's usage lines and command admission. Discuss sees the Bulletin
 launch snapshot without holding the `bulletin` verb.
 
@@ -1362,10 +1364,22 @@ The mentions section holds only open mentions, from every channel of the
 project, each naming its channel: a member may mention an agent from any
 channel. A mention stays open until the agent posts later in the same thread;
 the agent's own posts never count. A reply, edit, or delete lands in the channel
-of the post it names; a new post stays in the agent's own channel. The
-per-turn pointer line carries the open count. Holders of the verb must read and
+of the post it names. A new post defaults to the agent's own channel; `--channel`
+accepts main or any project branch name/id. Agents prefer their own channel and
+post elsewhere only when the message belongs there. A reply cannot override its
+parent's channel. The per-turn pointer line carries the open count. Holders of the verb must read and
 reply to an open mention before finishing; replying is not obeying. Otherwise
 they use it occasionally, not every turn: to catch up on the branch and to post
 short progress or team-sync notes. Other agent channels a launch holds come
 first, and questions needing human input go through `ask` when it is held.
 One `BULLETIN_RULES` tuple renders these rules in Work and Auto-research.
+
+Artifact links in posts and replies carry the artifact id, source name, and media
+type in reads and launch snapshots. `bulletin --artifact ID` resolves the current
+version of any unexpired artifact in the same project, including another agent's
+chat or branch, and returns a read-only immutable input path and version metadata.
+It uses the existing project-reference byte limits and local/remote input staging.
+This is a read: it changes no artifact, post, or graph, and requires no mutation
+key. The Bulletin grant, enabled state, and live authorizing membership still
+apply. Artifact bytes are untrusted context; opening HTML still uses the existing
+opaque artifact viewer.

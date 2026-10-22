@@ -40,7 +40,7 @@ from rcp.limits import (
 )
 
 # Bumped when the stable policy prose of either Auto-research actor contract changes.
-AUTO_RESEARCH_POLICY_VERSION = "auto-research-v10"
+AUTO_RESEARCH_POLICY_VERSION = "auto-research-v11"
 
 
 def _repositories(repositories: list[dict[str, str]]) -> str:

@@ -2003,6 +2003,9 @@
 .chat-reference-picker {
   width: min(360px, calc(100vw - 38px));
 }
+.chat-reference-picker.is-error {
+  border-color: var(--red);
+}
 .chat-add-menu button,
 .chat-reference-picker li button {
   align-items: center;

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../core/api";
-import { ArrowLeft, Check, ChevronRight, Folder, Search, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronRight, Folder, RotateCw, Search, X } from "lucide-react";
 import { referenceKey, type DraftReference } from "../core/projectReferences";
 import { ReferenceIcon } from "../core/ReferenceChip";
 import type { GraphNode, GraphTargetRef, PaperSnapshot, ProjectArtifact } from "../core/types";
@@ -22,12 +22,14 @@ export function ProjectReferencePicker({
   target,
   nodes,
   selectedKeys,
+  artifactsOnly = false,
   onPick,
   onClose,
 }: {
   projectId: string;
   target: GraphTargetRef;
   nodes: Readonly<Record<string, GraphNode>>;
+  artifactsOnly?: boolean;
   selectedKeys: ReadonlySet<string>;
   onPick: (reference: DraftReference) => void;
   onClose: () => void;
@@ -38,15 +40,20 @@ export function ProjectReferencePicker({
   const [paperAvailable, setPaperAvailable] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [retry, setRetry] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
     const base = `/api/projects/${encodeURIComponent(projectId)}`;
     void Promise.all([
       api<ProjectArtifact[]>(`${base}/artifacts`, { signal: controller.signal }).then(setArtifacts),
       // Only a saved introduction can be referenced; a draft or no paper cannot.
-      api<PaperSnapshot>(`${base}/paper`, { signal: controller.signal }).then((paper) =>
-        setPaperAvailable(paper.canonical_available && Boolean(paper.canonical_hash)),
-      ),
+      ...(!artifactsOnly
+        ? [
+            api<PaperSnapshot>(`${base}/paper`, { signal: controller.signal }).then((paper) =>
+              setPaperAvailable(paper.canonical_available && Boolean(paper.canonical_hash)),
+            ),
+          ]
+        : []),
     ])
       .catch((failure) => {
         if (!controller.signal.aborted)
@@ -56,7 +63,7 @@ export function ProjectReferencePicker({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [projectId]);
+  }, [projectId, artifactsOnly, retry]);
   const entries: Entry[] = [
     ...artifacts
       .filter((item) => item.available && item.artifact_id)
@@ -68,7 +75,7 @@ export function ProjectReferencePicker({
           target,
         },
       })),
-    ...Object.values(nodes).map((node): Entry => ({
+    ...Object.values(artifactsOnly ? {} : nodes).map((node): Entry => ({
       folder: "nodes",
       reference: {
         selector: {
@@ -80,7 +87,7 @@ export function ProjectReferencePicker({
         target,
       },
     })),
-    ...(paperAvailable
+    ...(!artifactsOnly && paperAvailable
       ? [
           {
             folder: null,
@@ -102,16 +109,18 @@ export function ProjectReferencePicker({
         terms.every((term) => entry.reference.label.toLocaleLowerCase().includes(term))
       : entry.folder === folder,
   );
-  const folders = (Object.keys(FOLDER_LABEL) as FolderId[]).map((id) => ({
-    id,
-    count: entries.filter((entry) => entry.folder === id).length,
-  }));
+  const folders = (Object.keys(FOLDER_LABEL) as FolderId[])
+    .filter((id) => !artifactsOnly || id !== "nodes")
+    .map((id) => ({
+      id,
+      count: entries.filter((entry) => entry.folder === id).length,
+    }));
   const back = () => {
     setFolder(null);
     setQuery("");
   };
   return (
-    <section className="chat-reference-picker" aria-label="From RCP">
+    <section className={`chat-reference-picker${error ? " is-error" : ""}`} aria-label="From RCP">
       <div className="chat-reference-picker-heading">
         {folder ? (
           <button type="button" aria-label="Back to RCP" onClick={back}>
@@ -132,13 +141,26 @@ export function ProjectReferencePicker({
             else onClose();
           }}
         />
+        {error && (
+          <button
+            type="button"
+            aria-label="Retry references"
+            title={error}
+            onClick={() => {
+              setError(null);
+              setLoading(true);
+              setRetry((value) => value + 1);
+            }}
+          >
+            <RotateCw size={14} />
+          </button>
+        )}
         <button type="button" aria-label="Close" onClick={onClose}>
           <X size={14} />
         </button>
       </div>
       {folder && <div className="chat-reference-path">RCP / {FOLDER_LABEL[folder]}</div>}
       {loading && <span role="status">Loading…</span>}
-      {error && <div role="alert">{error}</div>}
       <ul>
         {!searching &&
           !folder &&

@@ -1893,8 +1893,13 @@ name matches its Agents card; `started_at` is its first turn time. Agent snapsho
 and command reads keep their own channel's roster. Text is limited to 8000 characters; the server
 extracts ordered, deduplicated `#node-id` references and valid
 `<@member:USER_ID>` / `<@agent:ACTOR_ID>` mentions. Requests carry text, never a
-separate references field. Agent tokens must identify an agent of the project in
-any channel, because the mention list offers every channel's agents; unknown tokens
+separate references field. Posts carry `artifacts` metadata (`artifact_id`,
+`source_name`, `media_type`) resolved at read time from the text's
+`<artifact:ID>` tokens; a token naming no artifact of the project stays prose. The
+composer's paperclip opens the existing project artifact picker and inserts the
+token. Each link renders as an icon and source-name chip opening the shared
+artifact viewer, including its opaque HTML sandbox. Agent tokens must identify
+an agent of the project in any channel, because the mention list offers every channel's agents; unknown tokens
 remain ordinary text. The composer's `@` labels are unique across the project, the
 shown channel's agents keeping bare names, and picking an agent from another channel
 keeps the draft in the shown channel. The list opens above the composer, or below it
@@ -1914,8 +1919,7 @@ its chat. A sent post shows from the accepted response at once, before the
 confirming read.
 
 `POST .../bulletin` accepts `{text, key, reply_to}`. `PATCH .../bulletin/{post_id}`
-accepts `{text, key}` and reparses references and mentions. `DELETE` on the same
-path soft-deletes the post. Only its author may edit or delete; another author
+accepts `{text, key}` and reparses references and mentions. `DELETE` on the same path soft-deletes the post. Only its author may edit or delete; another author
 gets `403 bulletin_not_author`, and editing a deleted post gets
 `409 bulletin_post_deleted`. Deleted replies and deleted top-level posts without
 replies are omitted; parents with replies remain empty placeholders. Posts

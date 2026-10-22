@@ -3159,7 +3159,11 @@ def _start_work_validator_mailbox(
     control_decision_bundle: list[ExperimentDecisionPin],
 ) -> _WorkValidatorMailboxLifecycle:
     command_handler = _work_command_handler(
-        execution, compute_commands, service=service, graph_read_scope=graph_read_scope
+        execution,
+        compute_commands,
+        service=service,
+        graph_read_scope=graph_read_scope,
+        mailbox=staged.mailbox,
     )
     return start_work_validator_mailbox(
         staged,

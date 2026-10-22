@@ -74,6 +74,7 @@ from rcp.storage import (
     GraphBranchRecord,
 )
 from rcp.transport import StateUnavailable
+from rcp.transport.workspace_mailbox import RunStageMailbox
 
 if TYPE_CHECKING:
     from rcp.runs.episodes.wrapup import EpisodeWrapupSpec
@@ -892,12 +893,14 @@ class AutoResearchCommandDispatcher:
         service: ProjectService | None = None,
         graph_read_scope: GraphReadScope | None = None,
         allowed_verbs: tuple[CommandVerb, ...] | None = None,
+        mailbox: RunStageMailbox | None = None,
     ) -> None:
         self.store = store
         self.effects = effects
         self.service = service
         self.graph_read_scope = graph_read_scope
         self.allowed_verbs = allowed_verbs
+        self.mailbox = mailbox
         self.command_file_reader = command_file_reader
         self.command_file_consumer = command_file_consumer
         self.command_state_refresher = command_state_refresher
@@ -912,6 +915,7 @@ class AutoResearchCommandDispatcher:
         service: ProjectService | None = None,
         graph_read_scope: GraphReadScope | None = None,
         allowed_verbs: tuple[CommandVerb, ...] | None = None,
+        mailbox: RunStageMailbox | None = None,
     ) -> AutoResearchCommandDispatcher:
         """Bind this turn's exact reusable stage to file-backed commands."""
 
@@ -919,6 +923,7 @@ class AutoResearchCommandDispatcher:
             self.store,
             self.effects,
             command_file_reader=reader,
+            mailbox=mailbox if mailbox is not None else self.mailbox,
             command_file_consumer=consumer,
             command_state_refresher=refresher,
             _apply_admission_locks=self._apply_admission_locks,
@@ -930,12 +935,14 @@ class AutoResearchCommandDispatcher:
         )
 
     def with_allowed_verbs(
-        self, allowed_verbs: tuple[CommandVerb, ...]
+        self, allowed_verbs: tuple[CommandVerb, ...], *, mailbox: RunStageMailbox | None = None
     ) -> AutoResearchCommandDispatcher:
         """Bind the command surface one launch resolved and its prompt renders."""
 
         bound = copy(self)
         bound.allowed_verbs = allowed_verbs
+        if mailbox is not None:
+            bound.mailbox = mailbox
         return bound
 
     def dispatch(self, operation_id: str, request: CommandRequest) -> CommandResponse:
@@ -1022,7 +1029,9 @@ class AutoResearchCommandDispatcher:
                 return CommandResponse(
                     request_id=request.request_id, status="invalid", message=str(exc)
                 )
-            return handle_bulletin(self.store, operation_id, request, post_allowed=True)
+            return handle_bulletin(
+                self.store, operation_id, request, post_allowed=True, mailbox=self.mailbox
+            )
 
         if isinstance(request, LessonCommandRequest):
             from rcp.runs.lesson_commands import handle_lesson

@@ -89,7 +89,7 @@ class RunStageMailbox:
         if self.remote_stage is not None:
             self.remote_stage.write_workspace_text(name, content)
             return
-        _atomic_text(self.workspace, name, content, replace=True, mode=0o600)
+        _atomic_bytes(self.workspace, name, content.encode("utf-8"), replace=True, mode=0o600)
 
     def remove(self, name: str, *, missing_ok: bool = True) -> None:
         """Remove one exact direct entry, raising if an unsafe directory occupies it."""
@@ -169,6 +169,9 @@ class RunStageMailbox:
             os.close(directory)
 
     def stage_text_input(self, label: str, content: str) -> str:
+        return self.stage_bytes_input(label, content.encode("utf-8"))
+
+    def stage_bytes_input(self, label: str, content: bytes) -> str:
         """Stage one new immutable source file and return its execution-host path.
 
         Remote inputs are finalized here so the returned path is immediately usable.
@@ -181,7 +184,7 @@ class RunStageMailbox:
                 prefix="rcp-mailbox-input-", dir=rcp_temp_dir()
             ) as temporary:
                 source = Path(temporary) / label
-                source.write_bytes(content.encode("utf-8"))
+                source.write_bytes(content)
                 source.chmod(0o400)
                 remote_path = self.remote_stage.put_file(source, label)
                 self.remote_stage.finalize_inputs()
@@ -196,7 +199,7 @@ class RunStageMailbox:
         else:
             self.workspace.mkdir(mode=0o700, parents=True, exist_ok=True)
             inputs.mkdir(mode=0o700)
-        _atomic_text(inputs, label, content, replace=False, mode=0o400)
+        _atomic_bytes(inputs, label, content, replace=False, mode=0o400)
         return str(inputs / label)
 
 
@@ -253,15 +256,14 @@ def _open_directory(path: Path) -> int:
         raise OSError(f"run workspace {path} is unavailable: {exc}") from exc
 
 
-def _atomic_text(
+def _atomic_bytes(
     directory: Path,
     name: str,
-    content: str,
+    content: bytes,
     *,
     replace: bool,
     mode: int,
 ) -> None:
-    encoded = content.encode("utf-8")
     directory_fd = _open_directory(directory)
     temporary = f".rcp-mailbox-{uuid.uuid4().hex}"
     descriptor: int | None = None
@@ -277,7 +279,7 @@ def _atomic_text(
                 raise ValueError(f"mailbox target is not a regular file: {name}")
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(temporary, flags, mode, dir_fd=directory_fd)
-        view = memoryview(encoded)
+        view = memoryview(content)
         while view:
             view = view[os.write(descriptor, view) :]
         os.fsync(descriptor)

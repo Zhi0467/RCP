@@ -361,3 +361,128 @@ test("an agent's name opens its chat and another channel's node opens on that br
     await server.close();
   }
 });
+
+test("artifact picker inserts a token and the post chip opens the shared viewer at phone and desktop widths", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch({ headless: true });
+    for (const width of [390, 1200]) {
+      const page = await browser.newPage({ viewport: { width, height: 800 } });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      page.on("console", (message) => {
+        if (message.type() === "error") errors.push(message.text());
+      });
+      const requests = [];
+      const posts = [];
+      const artifact = {
+        artifact_id: "art-1",
+        source_name: "Results from another branch.html",
+        media_type: "text/html",
+      };
+      await page.route("**/api/**", (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        requests.push(url.pathname);
+        if (url.pathname.endsWith("/bulletin/channels")) return route.fulfill({ json: [] });
+        if (url.pathname.endsWith("/bulletin") && request.method() === "POST") {
+          const body = JSON.parse(request.postData());
+          posts.push(accepted(body, { artifacts: [artifact] }).post);
+          return route.fulfill({ json: { post: posts[0] } });
+        }
+        if (url.pathname.endsWith("/bulletin"))
+          return route.fulfill({
+            json: {
+              roster: [],
+              members: [],
+              can_post: true,
+              posts,
+              newest_post_id: posts[0]?.post_id ?? null,
+              next_cursor: null,
+              total: posts.length,
+            },
+          });
+        if (url.pathname.endsWith("/artifacts"))
+          return route.fulfill({
+            json: [
+              {
+                artifact_id: artifact.artifact_id,
+                name: artifact.source_name,
+                kind: "artifact",
+                available: true,
+              },
+              { artifact_id: "expired", name: "Expired", kind: "artifact", available: false },
+            ],
+          });
+        if (url.pathname.endsWith("/art-1/state"))
+          return route.fulfill({
+            json: {
+              ...artifact,
+              name: artifact.source_name,
+              view: "html",
+              current_version: "v1",
+              version_number: 1,
+              pinned_branch_ids: [],
+              supplier: "turn",
+              live: null,
+              editing_operation_id: null,
+              viewer_url: "/api/projects/project/artifacts/art-1/viewer",
+              thread_href: null,
+            },
+          });
+        if (url.pathname.endsWith("/art-1/viewer"))
+          return route.fulfill({
+            contentType: "text/html",
+            body: "<p>Shared artifact bytes</p>",
+          });
+        if (url.pathname.endsWith("/refs")) return route.fulfill({ json: [] });
+        return route.fulfill({ json: {} });
+      });
+      await page.goto(
+        `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/bulletinRetry.html`,
+      );
+      const composer = page.getByRole("textbox", { name: "Bulletin post", exact: true });
+      await composer.fill("See");
+      await page.getByRole("button", { name: "Attach artifact", exact: true }).click();
+      const picker = page.getByRole("region", { name: "From RCP" });
+      await picker.getByRole("button", { name: /^Artifacts/ }).click();
+      assert.equal(await picker.getByRole("button", { name: "Expired", exact: true }).count(), 0);
+      assert.equal(await picker.getByRole("button", { name: /^Nodes/ }).count(), 0);
+      const bounds = await picker.boundingBox();
+      assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width);
+      await picker.getByRole("button", { name: artifact.source_name, exact: true }).click();
+      assert.equal(await composer.inputValue(), "See <artifact:art-1> ");
+      await page.getByRole("button", { name: "Post", exact: true }).click();
+      const chip = page.locator(".bulletin-artifact");
+      await chip.waitFor();
+      assert.equal(await chip.textContent(), artifact.source_name);
+      assert.equal(await chip.locator("svg").count(), 1);
+      assert.equal(posts[0].text, "See <artifact:art-1>");
+      assert.equal(
+        requests.some((path) => path.endsWith("/paper")),
+        false,
+      );
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+        true,
+      );
+      await chip.click();
+      await page
+        .frameLocator(".artifact-viewer iframe")
+        .getByText("Shared artifact bytes")
+        .waitFor();
+      assert.ok(requests.includes("/api/projects/project/artifacts/art-1/state"));
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});

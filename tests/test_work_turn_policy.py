@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -71,6 +72,7 @@ def test_resumed_mailbox_preserves_validation_policy_without_opening_graph(
         saved.update(control_node_id="experiment-launch", control_decision_bundle=[])
 
     execution, _ = work_execution(tmp_path)
+    execution.stage_root = str(tmp_path)
     monkeypatch.setattr(module, "load_work_mailbox_context", lambda _: saved)
     restored = {}
     monkeypatch.setattr(
@@ -176,6 +178,12 @@ def test_resumed_mailbox_retains_ask_without_compute_and_rechecks_authority(
     from .test_work_questions import work_execution
 
     execution, _ = work_execution(tmp_path)
+    execution.stage_root = str(tmp_path)
+    from rcp.transport.workspace_mailbox import RunStageMailbox
+
+    staged = SimpleNamespace(
+        mailbox=RunStageMailbox.for_stage(local_stage=tmp_path, remote_stage=None)
+    )
     module = work if owner == "work" else experiment_loop
     policy = {} if owner == "work" else {"control_node_id": "exp", "control_decision_bundle": []}
     saved = {}
@@ -183,7 +191,7 @@ def test_resumed_mailbox_retains_ask_without_compute_and_rechecks_authority(
         module, "start_work_validator_mailbox", lambda _staged, **kwargs: saved.update(kwargs)
     )
     module._start_work_validator_mailbox(
-        None, None, execution=execution, budget=None, run_truth_scope=[], **policy
+        None, staged, execution=execution, budget=None, run_truth_scope=[], **policy
     )
     assert "ask" in saved["command_handler"].allowed_verbs
     context_model = (

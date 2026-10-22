@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution
     from rcp.runs.tasks.compute_commands import WorkComputeCommands
     from rcp.service import ProjectService, RunRequest
+    from rcp.transport.workspace_mailbox import RunStageMailbox
 
 
 def handle_ask(
@@ -301,6 +302,7 @@ class WorkCommandHandler:
 
     service: ProjectService | None = None
     graph_read_scope: GraphReadScope | None = None
+    mailbox: RunStageMailbox | None = None
 
     def __call__(self, request: CommandRequest, identity: CommandTurnIdentity) -> CommandResponse:
         def refuse(message: str, code: str | None = None) -> CommandResponse:
@@ -372,6 +374,7 @@ class WorkCommandHandler:
                 execution.operation_id,
                 request,
                 post_allowed=True,
+                mailbox=self.mailbox,
             )
         if isinstance(request, LessonCommandRequest):
             execution = self.execution
@@ -518,6 +521,7 @@ def work_command_handler(
     | None = None,
     service: ProjectService | None = None,
     graph_read_scope: GraphReadScope | None = None,
+    mailbox: RunStageMailbox | None = None,
 ) -> WorkCommandHandler:
     from rcp.runs.consolidation import is_consolidation
 
@@ -530,6 +534,7 @@ def work_command_handler(
             consolidation_apply,
             service,
             graph_read_scope,
+            mailbox,
         )
     from rcp.runs.agent_names import resolve_agent_name_state
 
@@ -558,4 +563,5 @@ def work_command_handler(
         frozenset(verbs),
         service=service,
         graph_read_scope=graph_read_scope,
+        mailbox=mailbox,
     )

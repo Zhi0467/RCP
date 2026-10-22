@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from rcp.limits import BULLETIN_KEY_MAX_CHARS, BULLETIN_REPLY_MAX_CHARS
-from rcp.storage import ProjectRecord
+from rcp.storage import Artifact, ProjectRecord
 from rcp.storage.bulletin import BulletinError
 
 from .test_lessons_store import store as store
@@ -454,3 +454,60 @@ def test_retention_prunes_only_observed_orphan_mentions(store, monkeypatch):
         }
     assert observed["post_id"] not in ids
     assert ids == {pending["post_id"], retained["post_id"]}
+
+
+def test_artifact_links_resolve_from_text_within_the_project(store):
+    for artifact_id, project_id in (("figure", "project"), ("foreign", "other")):
+        store.create_artifact(
+            Artifact(
+                artifact_id=artifact_id,
+                project_id=project_id,
+                supplier="turn",
+                supplier_id="another-chat",
+                source_name="figure.svg",
+                media_type="image/svg+xml",
+                created_at=store.now(),
+            ),
+            data=b"<svg />",
+        )
+    # A repeated link counts once; a foreign or unknown id is not refused and stays prose.
+    first = post(
+        store,
+        "artifact",
+        text="#evidence/one <artifact:figure> <artifact:figure> <artifact:foreign> <artifact:gone>",
+    )
+    expected = [
+        {"artifact_id": "figure", "source_name": "figure.svg", "media_type": "image/svg+xml"}
+    ]
+    assert first["artifacts"] == expected
+    assert first["refs"] == ["evidence/one"]
+    assert store.list_bulletin("project", "main")["posts"][0]["artifacts"] == expected
+    edited = store.execute_bulletin_command(
+        "project", "turn", "edit", post_id=first["post_id"], key="edit-artifact", text="No link"
+    )
+    assert edited["post"]["artifacts"] == []
+
+
+def test_agent_posts_to_named_channel_or_own_default(store):
+    from rcp.core.transition_models import GraphTargetRef
+
+    with store.connection() as connection:
+        for branch_id, name in (("own", "Own"), ("other", "Other"), ("collision", "other")):
+            connection.execute(
+                "INSERT INTO graph_branches(project_id,branch_id,parent_target_json,parent_revision,created_by,created_at,name) VALUES('project',?,'{}',0,'member',?,?)",
+                (branch_id, store.now(), name),
+            )
+        connection.execute(
+            "UPDATE graph_runs SET graph_target_json=? WHERE operation_id='turn'",
+            (GraphTargetRef(kind="branch", branch_id="own").model_dump_json(),),
+        )
+    own = post(store, "own")
+    assert store.list_bulletin("project", "branch:own")["posts"] == [own]
+    for selector in ("Other", "other", "branch:other", "main"):
+        entry = post(store, selector, channel=selector)
+        target_key = "main" if selector == "main" else "branch:other"
+        assert store.list_bulletin("project", target_key)["posts"][0] == entry
+    reply = post(store, "reply-main", reply_to=entry["post_id"])
+    assert store.list_bulletin("project", "main")["posts"][0]["post_id"] == reply["post_id"]
+    with pytest.raises(BulletinError, check=lambda exc: exc.code == "bulletin_channel_invalid"):
+        post(store, "unknown", channel="missing")

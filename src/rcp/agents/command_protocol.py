@@ -468,15 +468,29 @@ class NameArguments(BaseModel):
 class BulletinArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    action: Literal["post", "read", "edit", "delete"]
+    action: Literal["post", "read", "artifact", "edit", "delete"]
     text: str | None = Field(default=None, min_length=1, max_length=BULLETIN_TEXT_MAX_CHARS)
     post_id: str | None = Field(default=None, min_length=1, max_length=BULLETIN_REPLY_MAX_CHARS)
     reply_to: str | None = Field(default=None, min_length=1, max_length=BULLETIN_REPLY_MAX_CHARS)
     cursor: str | None = Field(default=None, min_length=1, max_length=BULLETIN_CURSOR_MAX_CHARS)
 
+    channel: str | None = Field(default=None, min_length=1, max_length=BULLETIN_REPLY_MAX_CHARS)
+    artifact_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]+$")
+
     @model_validator(mode="after")
     def valid_action(self) -> BulletinArguments:
-        if self.action == "read":
+        if (self.artifact_id is not None) != (self.action == "artifact"):
+            raise ValueError("Only artifact reads require an artifact id")
+        if self.channel is not None and (
+            self.action != "post" or self.reply_to is not None or not self.channel.strip()
+        ):
+            raise ValueError("Only new Bulletin posts accept a channel")
+        if self.action == "artifact":
+            if any(
+                value is not None for value in (self.text, self.post_id, self.reply_to, self.cursor)
+            ):
+                raise ValueError("Artifact reads accept only an artifact id")
+        elif self.action == "read":
             if any(value is not None for value in (self.text, self.post_id, self.reply_to)):
                 raise ValueError("Bulletin reads accept only a cursor")
         else:
@@ -688,7 +702,7 @@ class BulletinCommandRequest(_CommandRequest):
 
     @model_validator(mode="after")
     def mutation_is_keyed(self) -> BulletinCommandRequest:
-        if self.arguments.action != "read" and self.idempotency_key is None:
+        if self.arguments.action not in {"read", "artifact"} and self.idempotency_key is None:
             raise ValueError("Bulletin mutations require an idempotency key")
         return self
 

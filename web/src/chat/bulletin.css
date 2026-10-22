@@ -615,3 +615,50 @@ button.bulletin-roster-name:hover {
     width: 36px;
   }
 }
+
+.bulletin-artifact {
+  align-items: center;
+  background: var(--cobalt-soft);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--cobalt);
+  display: inline-flex;
+  font: inherit;
+  gap: 5px;
+  max-width: 100%;
+  padding: 1px 5px;
+  vertical-align: middle;
+}
+.bulletin-artifact svg {
+  flex: none;
+}
+.bulletin-artifact span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bulletin-artifact:hover {
+  border-color: var(--cobalt);
+}
+.bulletin-composer-row .bulletin-attach {
+  flex: none;
+  margin: 6px 0 6px 6px;
+}
+.bulletin-artifact-picker {
+  bottom: calc(100% + 4px);
+  left: 0;
+  overflow: auto;
+  position: absolute;
+  right: 0;
+  z-index: 5;
+}
+.bulletin-artifact-picker.below {
+  bottom: auto;
+  top: calc(100% + 4px);
+}
+.bulletin-artifact-picker .chat-reference-picker {
+  box-sizing: border-box;
+  position: static;
+  width: 100%;
+}
