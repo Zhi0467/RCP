@@ -769,7 +769,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
             type="button"
             className="bulletin-members"
             aria-expanded={rosterOpen && channelRoster.length > 0}
-            aria-label={`${channelRoster.length} agents`}
+            aria-label={`${channelRoster.length} ${channelRoster.length === 1 ? "agent" : "agents"}`}
             disabled={channelRoster.length === 0}
             onClick={() => setRosterOpen((value) => !value)}
           >

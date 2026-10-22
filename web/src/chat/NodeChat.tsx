@@ -327,6 +327,7 @@ interface KeyboardChatAnnotationComposer {
 type ChatAnnotationComposer = SelectedChatAnnotationComposer | KeyboardChatAnnotationComposer;
 
 const EMPTY_WATCHERS: WatcherRecord[] = [];
+const EMPTY_HISTORY: ChatMessage[] = [];
 const NO_HEADER_ACTIONS: readonly ChatHeaderAction[] = [];
 
 function chatScrollObservation(element: HTMLElement, previousTop: number) {
@@ -374,7 +375,7 @@ export function NodeChat({
   runScope,
   tasks,
   watchers = EMPTY_WATCHERS,
-  historyMessages = [],
+  historyMessages = EMPTY_HISTORY,
   origin,
   chatId,
   presentation = "floating",
@@ -436,10 +437,13 @@ export function NodeChat({
         ...reconstructTaskTranscript(chatTasksMissingFromHistory(relatedTasks, displayedMessages)),
       ]),
       // The shared store already shows the sent message while its start is in
-      // flight; this local line covers only a chat with no loaded transcript.
+      // flight, in the transcript or as a task under the same id; this local line
+      // covers only a chat the store does not show it in.
       // Not yet admitted, it stays last: a turn another tab started first may
       // carry a later server time than this browser's send time.
-      ...(pendingTurn && !pendingTurnShownByHistory(pendingTurn.clientId, displayedMessages)
+      ...(pendingTurn &&
+      !pendingTurnShownByHistory(pendingTurn.clientId, displayedMessages) &&
+      !relatedTasks.some((task) => task.operation_id === pendingTurn.clientId)
         ? [
             {
               lineId: `pending:${pendingTurn.clientId}`,
@@ -833,10 +837,11 @@ export function NodeChat({
     const reset = computeIdentityRef.current !== identity;
     computeIdentityRef.current = identity;
     setComputeState((current) => {
-      if (reset) return { ids: derivedComputeIds, pinned: false };
-      const reconciled = reconcileActiveComputeIds(current.ids, computeConnections);
-      if (current.pinned) return { ...current, ids: reconciled };
-      return { ids: derivedComputeIds, pinned: false };
+      const next =
+        reset || !current.pinned
+          ? { ids: derivedComputeIds, pinned: false }
+          : { ...current, ids: reconcileActiveComputeIds(current.ids, computeConnections) };
+      return next.pinned === current.pinned && sameIds(next.ids, current.ids) ? current : next;
     });
     if (reset) {
       setComputeMenuOpen(false);
@@ -4045,4 +4050,8 @@ function withoutMapKey(map: Map<string, string>, key: string): Map<string, strin
   const next = new Map(map);
   next.delete(key);
   return next;
+}
+
+function sameIds(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
 }

@@ -59,12 +59,17 @@ history.push({
 
 type StartCall = { message: string; requestId: string | undefined };
 
+// `?fresh`: a chat that has never run. Its start is held, and the app's store
+// shows the send as a task under the same pending id, as beginChatSend does.
+const fresh = new URLSearchParams(window.location.search).has("fresh");
+
 function Fixture() {
   const [tasks, setTasks] = useState<object[]>([]);
   const [failNext, setFailNext] = useState(true);
   const fixture = window as unknown as {
     startCalls: StartCall[];
     refreshChatFixture: () => void;
+    failHeldStart: () => void;
   };
   fixture.startCalls ??= [];
   // A poll that returns the same tasks still hands the chat a new list.
@@ -76,11 +81,30 @@ function Fixture() {
         project={project as never}
         runScope={["repo"]}
         tasks={tasks as never}
-        historyMessages={history as never}
+        historyMessages={fresh ? undefined : (history as never)}
         chatId="send-chat"
         presentation="workspace"
         onStartTask={async (_kind, request, requestId) => {
           fixture.startCalls.push({ message: String(request.message), requestId });
+          if (fresh) {
+            setTasks([
+              {
+                operation_id: `pending-${requestId}`,
+                project_id: "project",
+                kind: "project_chat",
+                request,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+                status_message: "Sending",
+                active: true,
+                queued: true,
+              },
+            ]);
+            // A lost request keeps the store's task, as beginChatSend does.
+            await new Promise((_resolve, reject) => {
+              fixture.failHeldStart = () => reject(new TypeError("Load failed"));
+            });
+          }
           if (failNext) {
             setFailNext(false);
             throw new TypeError("Load failed");

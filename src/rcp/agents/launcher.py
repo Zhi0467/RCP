@@ -1983,6 +1983,11 @@ class AgentLauncher:
                             return_code=process.returncode,
                             duration_seconds=time.monotonic() - launched_at,
                             operation_id=operation_id,
+                            stop_requested=control is not None
+                            and (
+                                control.pause_requested.is_set()
+                                or control.detach_requested.is_set()
+                            ),
                         )
 
             cleanup_task = asyncio.create_task(cleanup())
@@ -2213,17 +2218,20 @@ def _log_provider_exit(
     return_code: int | None,
     duration_seconds: float,
     operation_id: str | None,
+    stop_requested: bool,
 ) -> None:
     """One journal line per provider process end, without any provider output.
 
     The exit code and RCP's own reading of it are the whole diagnostic here; a
     provider's stderr can print token-shaped values and stays on the task row.
+    An exit RCP asked for (pause, stop, or detach) is expected, so only other
+    nonzero exits warn.
     """
     detail = ""
     if return_code:
         detail = f" reason={_exit_reason(provider, return_code, host)!r}"
     logger.log(
-        logging.INFO if return_code == 0 else logging.WARNING,
+        logging.INFO if return_code == 0 or stop_requested else logging.WARNING,
         "provider process exited provider=%s capability=%s runtime=%s host=%s "
         "executable=%s pid=%s return_code=%s duration_seconds=%.1f operation=%s%s",
         provider,

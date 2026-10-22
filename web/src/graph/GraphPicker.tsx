@@ -60,19 +60,30 @@ interface GraphPickerProps {
 
 type Branch = Extract<GraphRef, { kind: "branch" }>;
 
-// Matches the popover's CSS width, min(360px, 100vw - 16px).
+// Matches the popover's CSS width, min(360px, 100vw - 32px).
 const POPOVER_WIDTH = 360;
-const VIEWPORT_GUTTER = 8;
+const VIEWPORT_GUTTER = 16;
+const TRIGGER_GAP = 4;
 
-/** Right-aligned under the trigger, shifted left only as far as the viewport allows. */
-function popoverPlacement(trigger: HTMLElement | null) {
+type PopoverPlacement = { top?: number; bottom?: number; right: number; maxHeight: number };
+
+/** Right-aligned beside the trigger, shifted left only as far as the viewport allows.
+ *  It opens on the side with more room and never runs past the viewport, so a
+ *  long list scrolls inside it. */
+function popoverPlacement(trigger: HTMLElement | null): PopoverPlacement | null {
   const rect = trigger?.getBoundingClientRect();
   if (!rect) return null;
   const width = Math.min(POPOVER_WIDTH, window.innerWidth - 2 * VIEWPORT_GUTTER);
   const right = Math.max(VIEWPORT_GUTTER, window.innerWidth - rect.right);
+  const below = window.innerHeight - rect.bottom - TRIGGER_GAP - VIEWPORT_GUTTER;
+  const above = rect.top - TRIGGER_GAP - VIEWPORT_GUTTER;
+  const cap = window.innerHeight * 0.65;
   return {
-    top: rect.bottom + 4,
+    ...(below >= above
+      ? { top: rect.bottom + TRIGGER_GAP }
+      : { bottom: window.innerHeight - rect.top + TRIGGER_GAP }),
     right: Math.min(right, window.innerWidth - VIEWPORT_GUTTER - width),
+    maxHeight: Math.min(cap, Math.max(below, above)),
   };
 }
 
@@ -117,7 +128,7 @@ export function GraphPicker({
     ref: Branch;
     requestId: string;
   } | null>(null);
-  const [position, setPosition] = useState({ top: 0, right: 0 });
+  const [position, setPosition] = useState<PopoverPlacement>({ top: 0, right: 0, maxHeight: 0 });
   const button = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const dialog = useRef<HTMLDialogElement>(null);
