@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rcp.core.transition_models import GraphTargetRef
 from rcp.storage.chat_names import initialize_chat_name
@@ -30,6 +30,9 @@ class ChatForkOrigin(BaseModel):
     run_on: str
 
 
+_RETIRED_RECORD_FIELDS = frozenset({"native_session_id", "source_cwd", "source_host", "runtime_id"})
+
+
 class ChatForkRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -42,6 +45,14 @@ class ChatForkRecord(BaseModel):
     origin: ChatForkOrigin
     # Restore detaches the fork intent; the origin stays for the origin link.
     detached: bool = Field(default=False, exclude_if=lambda value: not value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_retired_session_fields(cls, value: Any) -> Any:
+        # Pre-release rows also pinned the source session; the launch now reads it live.
+        if not isinstance(value, dict):
+            return value
+        return {key: item for key, item in value.items() if key not in _RETIRED_RECORD_FIELDS}
 
 
 # The source turn's launch profile a fork's first turn keeps.
