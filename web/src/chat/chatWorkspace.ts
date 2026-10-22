@@ -33,6 +33,7 @@ export interface ChatConversation {
   /** The latest message's text from the stored summary, for search. */
   preview?: string;
   graphTarget?: GraphTargetRef;
+  origin?: ChatSummary["origin"];
   conversationKind?: ChatSummary["conversation_kind"];
   orchestratorEpisodeId?: string | null;
   humanTurnRefusal?: ChatSummary["human_turn_refusal"];
@@ -289,6 +290,7 @@ export function groupChatConversations(
       updatedAt: summary.updated_at,
       preview: summary.last_message_preview,
       graphTarget: summary.graph_target,
+      origin: summary.origin,
       conversationKind: summary.conversation_kind,
       orchestratorEpisodeId: summary.orchestrator_episode_id,
       humanTurnRefusal: summary.human_turn_refusal,

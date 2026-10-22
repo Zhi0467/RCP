@@ -12,6 +12,7 @@ import type {
   ExternalWatcherRecord,
   ChatAttachmentDescriptor,
   ChatDisplay,
+  ChatTranscript,
   ChatReads,
   ChatMessage,
   SteerRequest,
@@ -528,6 +529,17 @@ export function removeChatAttachment(
   return api<{ removed: boolean }>(
     `${apiBase}/chats/${encodeURIComponent(chatId)}/attachments/${encodeURIComponent(attachmentId)}?${query}`,
     { method: "DELETE" },
+  );
+}
+
+export function branchChat(
+  projectId: string,
+  chatId: string,
+  graphTarget: GraphTargetRef,
+): Promise<ChatTranscript> {
+  return api<ChatTranscript>(
+    `/api/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(chatId)}/branch`,
+    { method: "POST", body: JSON.stringify({ graph_target: graphTarget }) },
   );
 }
 

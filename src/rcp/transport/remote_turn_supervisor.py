@@ -25,8 +25,14 @@ import select
 import signal
 import stat
 import subprocess
+import sys
 import time
 from pathlib import Path
+
+if "SESSION_FORMATS" not in globals():
+    from rcp.providers import SESSION_FORMATS
+else:
+    SESSION_FORMATS = globals()["SESSION_FORMATS"]
 
 if "turn_fence" not in globals():
     from rcp.providers.turn_fence import turn_fence
@@ -133,6 +139,18 @@ def _deliverable_snapshot(source, destination, limit):
 def run(args):
     if os.getpid() != os.getpgrp():
         raise ValueError("The turn supervisor requires its own process group.")
+    if getattr(args, "fork_session_id", None):
+        session_format = SESSION_FORMATS.get(args.provider)
+        if session_format is not None:
+            try:
+                session_format.prepare_session_fork(
+                    source_session_id=args.fork_session_id,
+                    source_cwd=Path(args.fork_source_cwd),
+                    cwd=Path.cwd(),
+                )
+            except (OSError, ValueError) as exc:
+                print(f"Session fork failed: {exc}", file=sys.stderr, flush=True)
+                return 1
     directory = Path(args.pid_file + ".turn")
     directory.mkdir(mode=0o700)  # Never overwrite another pass's evidence.
     fence = turn_fence(args.runtime_id)
@@ -497,6 +515,8 @@ def main(argv=None):
     ):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--provider-version")
+    parser.add_argument("--fork-session-id")
+    parser.add_argument("--fork-source-cwd")
     for name in (
         "max-journal-bytes",
         "max-event-bytes",

@@ -234,7 +234,7 @@ class WorkTurn:
         return (
             _chat_trigger(self.request.trigger, self.continuation)
             and self.request.patch_kind == "work"
-            and not self.retry_attempt
+            and (not self.retry_attempt or bool(self.request.fork_session_id))
         )
 
 
@@ -317,7 +317,9 @@ class WorkFinalizationContext:
         return (
             _chat_trigger(self.request.trigger, self.continuation)
             and self.request.patch_kind == "work"
-            and self.continuation not in {"retry", "handoff"}
+            and (
+                self.continuation not in {"retry", "handoff"} or bool(self.request.fork_session_id)
+            )
         )
 
 

@@ -2225,6 +2225,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "paper_drafts": 1,
         "writing_sessions": 1,
         "chat_session_contexts": 1,
+        "chat_forks": 0,
         "graph_seen_heads": 1,
         "chat_display": 0,
         "chat_browser_preferences": 0,

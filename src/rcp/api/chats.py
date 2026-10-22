@@ -37,12 +37,14 @@ from rcp.conversation_worktrees import (
     project_conversation_worktree,
     remove_conversation_worktree,
 )
+from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import CHAT_PAGE_DEFAULT_LIMIT, CHAT_PAGE_MAX_LIMIT
 from rcp.projects import ProjectCatalog
 from rcp.runs.browser_lifecycle import close_chat_browser_owners
 from rcp.runs.chat_admission import require_chat_graph_target
 from rcp.service import ChatMessage, ChatSummary, ChatSummaryPage, ChatTranscript, RunRequest
 from rcp.storage import AppStore
+from rcp.storage.chat_forks import ChatForkOrigin
 from rcp.storage.chat_names import ChatNameError
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -51,6 +53,50 @@ CatalogDependency = Annotated[ProjectCatalog, Depends(get_catalog)]
 AttachmentStoreDependency = Annotated[ChatAttachmentStore, Depends(get_attachment_store)]
 StoreDependency = Annotated[AppStore, Depends(get_store)]
 IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
+
+
+class BranchChatBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    graph_target: GraphTargetRef
+
+
+@router.post(
+    "/api/projects/{project_id}/chats/{chat_id}/branch",
+    dependencies=[Depends(require_project_write_admission)],
+    response_model=ChatTranscript,
+)
+def branch_chat(
+    project_id: str,
+    chat_id: str,
+    body: BranchChatBody,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> ChatTranscript:
+    identity_access.require_patch_capable_identity(request)
+    project_id = catalog.resolve_project_id(project_id)
+    chat_id = _canonical_chat_id(chat_id)
+    target_service = get_graph_service(
+        catalog, project_id, body.graph_target.branch_id, initialize=False
+    )
+    target_node_ids = set(target_service.history.current_materialization().state.nodes)
+    try:
+        with conversation_worktree_locks(f"{store.path}:{project_id}:{chat_id}"):
+            fork = store.create_chat_fork(
+                project_id, chat_id, body.graph_target, target_node_ids=target_node_ids
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return chat(
+        project_id,
+        fork.chat_id,
+        catalog=catalog,
+        store=store,
+        branch_id=body.graph_target.branch_id,
+    )
 
 
 class ChatArchiveBody(BaseModel):
@@ -438,6 +484,13 @@ def chat(
             transcript = ChatTranscript.model_validate(
                 {**summary, "message_count": len(messages), "messages": messages}
             )
+    if (
+        transcript is None
+        and summary is not None
+        and summary.get("origin") is not None
+        and summary["graph_target"] == service.history.graph_target.model_dump()
+    ):
+        transcript = ChatTranscript.model_validate({**summary, "messages": []})
     if transcript is None:
         raise HTTPException(status_code=404, detail="Chat not found")
     transcript = transcript.model_copy(
@@ -447,12 +500,16 @@ def chat(
             else (transcript.graph_target.branch_id or "")[:8],
             **(
                 {
-                    key: summary[key]
+                    key: ChatForkOrigin.model_validate(summary[key])
+                    if key == "origin" and summary[key] is not None
+                    else summary[key]
                     for key in (
+                        "origin",
                         "conversation_kind",
                         "orchestrator_episode_id",
                         "human_turn_refusal",
                     )
+                    if key in summary
                 }
                 if summary is not None
                 else {}

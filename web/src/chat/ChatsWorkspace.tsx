@@ -1,3 +1,4 @@
+import { ChatBranchDialog } from "./ChatBranchDialog";
 import {
   ChevronDown,
   Circle,
@@ -292,6 +293,7 @@ interface AgentMenuProps {
   onRename: () => void;
   onPin: () => void;
   onArchive: () => void;
+  onBranch: () => void;
 }
 
 function AgentMenu({
@@ -306,6 +308,7 @@ function AgentMenu({
   onRename,
   onPin,
   onArchive,
+  onBranch,
 }: AgentMenuProps) {
   return (
     <div className="agent-row-menu">
@@ -333,6 +336,11 @@ function AgentMenu({
               {!archived && (
                 <button type="button" role="menuitem" onClick={onPin}>
                   {pinned ? "Unpin" : "Pin"}
+                </button>
+              )}
+              {!archived && (
+                <button type="button" role="menuitem" disabled={working} onClick={onBranch}>
+                  Branch this chat
                 </button>
               )}
               <button
@@ -441,6 +449,7 @@ export function ChatsWorkspace({
     new Set(orchestratorEpisodes.map((episode) => episode.graph_target.branch_id ?? "")),
   );
   const [menuChatId, setMenuChatId] = useState<string | null>(null);
+  const [branchingChat, setBranchingChat] = useState<ChatConversation | null>(null);
   const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const showingArchived = filter === "archived";
@@ -573,6 +582,19 @@ export function ChatsWorkspace({
       }}
       onPin={() => void pin(conversation.chatId, !pinnedChatIds.has(conversation.chatId))}
       onArchive={() => void archive(conversation.chatId, !archived)}
+      onBranch={() => {
+        setMenuChatId(null);
+        setBranchingChat(conversation);
+      }}
+    />
+  );
+
+  const branchDialog = branchingChat && (
+    <ChatBranchDialog
+      projectId={project.id}
+      chatId={branchingChat.chatId}
+      graphTarget={branchingChat.graphTarget ?? MAIN_GRAPH}
+      onClose={() => setBranchingChat(null)}
     />
   );
 
@@ -869,6 +891,7 @@ export function ChatsWorkspace({
           onOpen={openCard}
           onDrop={dropCard}
         />
+        {branchDialog}
       </section>
     );
 
@@ -1178,6 +1201,7 @@ export function ChatsWorkspace({
             tasks={tasks}
             watchers={watchers}
             historyMessages={chatTranscripts.get(selected.chatId)?.messages}
+            origin={selected.origin}
             chatId={selected.chatId}
             presentation="workspace"
             readOnly={Boolean(selected.humanTurnRefusal)}
@@ -1209,6 +1233,7 @@ export function ChatsWorkspace({
           />
         ) : null}
       </div>
+      {branchDialog}
     </section>
   );
 }

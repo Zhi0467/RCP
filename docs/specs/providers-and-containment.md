@@ -141,6 +141,23 @@ failing the human's turn. The capability, stage and scope do not change.
 Binding it to a session would prevent configuration changes taking effect on
 resume. The prompt-delivery boundary prevents fallback from duplicating work.
 
+A human's **Branch this chat** action records a source native session for the new
+chat's first turn. The launch carries that fork fact separately from normal
+resume identity; it retains the source provider, model, reasoning and execution
+machine and uses the new chat's own stage and graph target. Provider profiles
+render Codex `thread/fork` (with `excludeTurns: true`) or `exec fork`, Claude
+`--resume … --fork-session`, and OpenCode `--session … --fork`. The returned
+native session must differ from the source; subsequent turns resume that new
+identity. A failed fork never becomes a fresh session.
+
+Before Claude launches, its session-format owner copies the source transcript
+into the new cwd's native project directory on the execution host. The source
+transcript and stage remain untouched. Retry preserves an already prepared
+source snapshot even when the source chat has since advanced. The ordinary
+continuation prompt names the new graph target and refreshes its staged context;
+branching onto an existing target also warns that its graph may differ from the
+conversation's previous context.
+
 App-server usage is the change in a thread's `tokenUsage.total` between its
 pre-turn resume snapshot (zero when fresh) and active turn's final snapshot.
 Snapshots replace totals, never sum them; other threads/turns contribute nothing.

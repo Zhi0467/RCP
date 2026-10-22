@@ -49,6 +49,8 @@ def _supervise(
     reader_delay: float = 0,
     reader_pace: float = 0,
     stop_grace: float = 5,
+    fork_session_id: str | None = None,
+    fork_source_cwd: str | None = None,
 ) -> tuple[subprocess.CompletedProcess, Path]:
     stage = tmp_path / "stage"
     stage.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -92,6 +94,9 @@ def _supervise(
         "--poll-seconds",
         "0.02",
     ]
+    if fork_session_id:
+        argv[argv.index("--provider") + 1] = "claude"
+        argv.extend(["--fork-session-id", fork_session_id, "--fork-source-cwd", fork_source_cwd])
     if close_input_after_initial:
         argv.append("--close-input-after-initial")
     argv += ["--", sys.executable, "-c", provider]
@@ -525,3 +530,31 @@ def test_supervised_launch_ships_the_supervisor_as_a_staged_file():
     assert "/stage/inputs/rcp-turn-supervisor-0123456789abcdef.py" in command
     assert not any(source in argument for argument in command)
     assert len(" ".join(command)) < len(source)
+
+
+def test_fork_preparation_runs_on_the_execution_host(tmp_path, monkeypatch) -> None:
+    import re
+    from uuid import uuid4
+
+    config = tmp_path / "claude"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    session_id = str(uuid4())
+    source_cwd = tmp_path / "source"
+    source = (
+        config / "projects" / re.sub(r"[^a-zA-Z0-9]", "-", str(source_cwd)) / f"{session_id}.jsonl"
+    )
+    source.parent.mkdir(parents=True)
+    source.write_text('{"sessionId": "' + session_id + '"}\n')
+    original = source.read_bytes()
+    destination = config / "projects" / re.sub(r"[^a-zA-Z0-9]", "-", str(Path.cwd())) / source.name
+    completed, _ = _supervise(
+        tmp_path,
+        json.dumps({"emit": [{"type": "turn.completed"}], "exit": 0}) + "\n",
+        fork_session_id=session_id,
+        fork_source_cwd=str(source_cwd),
+        provider=f"from pathlib import Path; assert Path({str(destination)!r}).read_bytes() == {original!r}\n"
+        + _PROVIDER,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert destination.read_bytes() == original
+    assert source.read_bytes() == original

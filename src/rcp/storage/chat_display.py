@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, cast
 from rcp.core.graph_targets import graph_target_json
 from rcp.core.transition_models import GraphTargetRef
 from rcp.providers.browser_grant import BrowserOwnerKey, BrowserTurnStatus
+from rcp.storage.chat_forks import ChatForkRecord
 from rcp.storage.chat_names import ChatNameError, initialize_chat_name, normalize_chat_name
 from rcp.storage.mixin_base import StoreMixinBase
 
@@ -119,6 +120,33 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                     }
                 )
             summaries.extend(orchestrators.values())
+            by_id = {summary["chat_id"]: summary for summary in summaries}
+            for row in connection.execute(
+                "SELECT fork.record_json, display.title FROM chat_forks AS fork "
+                "JOIN chat_display AS display USING (project_id, chat_id) "
+                "WHERE fork.project_id = ? AND (? IS NULL OR fork.chat_id = ?)",
+                (project_id, chat_id, chat_id),
+            ).fetchall():
+                fork = ChatForkRecord.model_validate_json(row["record_json"])
+                if fork.chat_id in by_id:
+                    by_id[fork.chat_id]["origin"] = fork.origin.model_dump(mode="json")
+                else:
+                    summaries.append(
+                        {
+                            "chat_id": fork.chat_id,
+                            "graph_target": fork.graph_target.model_dump(),
+                            "kind": fork.kind,
+                            "node_id": fork.node_id,
+                            "title": row["title"],
+                            "updated_at": fork.created_at,
+                            "message_count": 0,
+                            "last_message_preview": "",
+                            "conversation_kind": "chat",
+                            "orchestrator_episode_id": None,
+                            "human_turn_refusal": None,
+                            "origin": fork.origin.model_dump(mode="json"),
+                        }
+                    )
         return summaries
 
     def _orchestrator_chat_summaries(

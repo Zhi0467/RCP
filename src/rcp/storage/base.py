@@ -130,6 +130,7 @@ class AppStoreBase:
         (57, "graph_bulletin_v1"),
         (58, "project_worker_seats_v1"),
         (59, "conversation_names_v1"),
+        (60, "chat_forks_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -924,6 +925,11 @@ class AppStoreBase:
             version=59,
             name="conversation_names_v1",
             migration=self._migrate_conversation_names,
+        )
+        from rcp.storage.chat_forks import migrate_chat_forks
+
+        self._run_storage_schema_migration(
+            connection, version=60, name="chat_forks_v1", migration=migrate_chat_forks
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

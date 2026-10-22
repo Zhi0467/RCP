@@ -57,6 +57,7 @@ from rcp.limits import (
 from rcp.providers import ProviderUsage, classify_terminal_error, require_runtime_id
 from rcp.providers.live_status import AgentStatus
 from rcp.storage.branch_names import _chain_root
+from rcp.storage.chat_forks import ChatForkRecord
 from rcp.storage.chat_names import initialize_task_chat_name
 from rcp.storage.client_requests import record_client_request
 from rcp.storage.digest import append_task_failed
@@ -1749,6 +1750,45 @@ class AgentTaskStoreMixin(StoreMixinBase):
         chat_id = record.request.get("chat_id")
         if not isinstance(chat_id, str) or not chat_id:
             return record, resolution
+        fork_row = connection.execute(
+            "SELECT record_json FROM chat_forks WHERE project_id = ? AND chat_id = ?",
+            (record.project_id, chat_id),
+        ).fetchone()
+        fork = ChatForkRecord.model_validate_json(fork_row[0]) if fork_row else None
+        if fork is not None and (
+            record.graph_target != fork.graph_target
+            or record.kind != fork.kind
+            or record.request.get("node_id") != fork.node_id
+        ):
+            raise ValueError("The branched conversation must keep its graph target and scope.")
+        # Derive fork authority only from the immutable origin. A captured native
+        # session belongs to this new chat and every subsequent attempt resumes it.
+        current_fork_session = (
+            self._current_chat_session_row(connection, record.project_id, record.kind, chat_id)
+            if fork is not None
+            else None
+        )
+        fork_pending = fork is not None and current_fork_session is None
+        fork_fields: dict[str, object] = {
+            "fork_session_id": None,
+            "fork_source_cwd": None,
+        }
+        if fork_pending:
+            assert fork is not None
+            for field in ("provider", "model", "reasoning", "run_on"):
+                if record.request.get(field) != getattr(fork.origin, field):
+                    raise ValueError("The first branched turn must use its source launch profile.")
+            if record.stage_root == fork.source_cwd:
+                raise ValueError("A branched conversation requires its own stage.")
+            fork_fields.update(
+                {
+                    "fork_session_id": fork.native_session_id,
+                    "fork_source_cwd": fork.source_cwd,
+                }
+            )
+            record = record.model_copy(update={"runtime_id": fork.runtime_id})
+        if fork is not None or any(field in record.request for field in fork_fields):
+            record = record.model_copy(update={"request": {**record.request, **fork_fields}})
         prior_chat_targets = connection.execute(
             """
             SELECT DISTINCT graph_target_json
@@ -1910,7 +1950,19 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 "session_id": session_id,
                 "source_operation_id": source_operation_id,
             }
-            if session_id is None:
+            if fork_pending:
+                assert fork is not None
+                resolution.update(
+                    {
+                        "outcome": "forking",
+                        "reason_code": "branched_chat",
+                        "source_operation_id": fork.origin.source_operation_id,
+                    }
+                )
+                record = record.model_copy(
+                    update={"status_message": "Forking the source chat session."}
+                )
+            elif session_id is None:
                 record = record.model_copy(
                     update={
                         "status_message": f"Starting a fresh chat session: {reason}.",
@@ -3093,8 +3145,11 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 SELECT run.graph_target_json FROM chat_session_contexts AS context
                 JOIN graph_runs AS run ON run.operation_id = context.committed_operation_id
                 WHERE context.project_id = ? AND context.chat_id = ?
+                UNION
+                SELECT json_extract(record_json, '$.graph_target') AS graph_target_json
+                FROM chat_forks WHERE project_id = ? AND chat_id = ?
                 """,
-                (project_id, chat_id, project_id, chat_id),
+                (project_id, chat_id, project_id, chat_id, project_id, chat_id),
             ).fetchall()
             # An Auto-research chain's orchestrator conversation lives on its branch.
             orchestrator = self._orchestrator_chat_target(connection, project_id, chat_id)
