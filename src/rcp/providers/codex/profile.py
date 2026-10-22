@@ -36,9 +36,10 @@ if TYPE_CHECKING:
     from rcp.core.models import HiddenReadScope
     from rcp.provider_auth import ProviderAuthentication
 
-# App-server launches run with these features off; the skill probe starts
-# app-server with the same flags so the menu lists only skills a turn loads.
-_APP_SERVER_DISABLED_FEATURES = ("--disable", "apps", "--disable", "plugins")
+# Every Codex launch, exec and app-server alike, runs with these features off;
+# the skill probe starts app-server with the same flags so the menu lists only
+# skills a turn loads.
+_DISABLED_FEATURES = ("--disable", "apps", "--disable", "plugins")
 
 
 class CodexProfile(ProviderProfile):
@@ -197,7 +198,7 @@ class CodexProfile(ProviderProfile):
 
     def skill_probe(self, binary: str) -> ProviderSkillProbe:
         return ProviderSkillProbe(
-            command=[binary, "app-server", *_APP_SERVER_DISABLED_FEATURES],
+            command=[binary, "app-server", *_DISABLED_FEATURES],
             protocol="jsonrpc",
             messages=(
                 {
@@ -293,6 +294,7 @@ class CodexProfile(ProviderProfile):
         command.extend(
             ["--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"]
         )
+        command.extend(_DISABLED_FEATURES)
         # Live retrieval is a provider tool, independent of whether command
         # execution is read-only or has workspace-write network access.
         command.extend(["--config", 'web_search="live"'])

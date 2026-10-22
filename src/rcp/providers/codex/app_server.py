@@ -20,7 +20,7 @@ from rcp.providers.base import (
     _require_provider_version,
 )
 from rcp.providers.codex.profile import (
-    _APP_SERVER_DISABLED_FEATURES,
+    _DISABLED_FEATURES,
     _codex_autocompact_config,
     _codex_discuss_permission_profile,
     _codex_environment_config,
@@ -89,7 +89,7 @@ class _CodexAppServerTurn(ProviderTurn):
             request.binary,
             "app-server",
             "--stdio",
-            *_APP_SERVER_DISABLED_FEATURES,
+            *_DISABLED_FEATURES,
             "--config",
             'web_search="live"',
         ]

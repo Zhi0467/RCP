@@ -24,6 +24,13 @@ from rcp.storage import AppStore, ProviderSkillInventoryRecord
 from rcp.transport.ssh import ssh_arguments
 
 _REFRESH_COMPLETION_GRACE_SECONDS = 5.0
+# A one-shot probe's stdout goes to a file, then to the pipe. Some provider
+# runtimes write a pipe asynchronously and exit before it drains, silently
+# truncating the inventory at the pipe buffer; file writes complete first.
+# The same wrapper runs locally and inside the remote login shell.
+_FILE_BACKED_STDOUT = (
+    'out=$(mktemp) || exit 1; "$@" > "$out"; status=$?; cat "$out"; rm -f "$out"; exit $status'
+)
 
 
 class ProviderSkillInventorySnapshot(BaseModel):
@@ -317,13 +324,14 @@ class ProviderSkillInventoryManager:
             generation = self.store.provider_login_state(provider, host).generation
             environment = self.process_environment(provider, host)
             env = environment.local_env if not host else None
-            arguments = probe.command
+            command = probe.command
+            if probe.protocol == "jsonl":
+                command = ["sh", "-c", _FILE_BACKED_STDOUT, "sh", *command]
+            arguments = command
             if host:
                 arguments = ssh_arguments(
                     host,
-                    AgentLauncher._remote_login_command(
-                        probe.command, prefix=environment.remote_prefix
-                    ),
+                    AgentLauncher._remote_login_command(command, prefix=environment.remote_prefix),
                 )
             if probe.protocol == "jsonl":
                 result = subprocess.run(

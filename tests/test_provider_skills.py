@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -504,3 +505,35 @@ def test_claude_inventory_preserves_unicode_line_separators():
     )
     skills = profile_for("claude").parse_skills(payload + "\r\n")
     assert [skill.name for skill in skills] == ["review"]
+
+
+def test_one_shot_probe_keeps_output_a_provider_left_unflushed(tmp_path, monkeypatch):
+    # Like OpenCode's runtime: one non-blocking write, then exit. A pipe keeps
+    # only its buffer's worth; the full inventory must still parse.
+    skills = [{"name": f"skill-{index}", "description": "x" * 2000} for index in range(200)]
+    payload = tmp_path / "skills.json"
+    payload.write_text(json.dumps(skills))
+    script = tmp_path / "provider.py"
+    script.write_text(
+        "import fcntl, os, sys\n"
+        "data = open(sys.argv[1], 'rb').read()\n"
+        "fcntl.fcntl(1, fcntl.F_SETFL, fcntl.fcntl(1, fcntl.F_GETFL) | os.O_NONBLOCK)\n"
+        "try:\n"
+        "    os.write(1, data)\n"
+        "except BlockingIOError:\n"
+        "    pass\n"
+        "os._exit(0)\n"
+    )
+    monkeypatch.setattr(
+        profile_for("opencode"),
+        "skill_probe",
+        lambda binary: ProviderSkillProbe(
+            command=[sys.executable, str(script), str(payload)], protocol="jsonl"
+        ),
+    )
+    manager = ProviderSkillInventoryManager(AppStore(tmp_path / "app.sqlite3"))
+    snapshot = manager.refresh(
+        "opencode", "", "/test/opencode", _ready("opencode", "/test/opencode")
+    )
+    assert snapshot.status == "fresh", snapshot.diagnostic
+    assert len(snapshot.skills) == len(skills)

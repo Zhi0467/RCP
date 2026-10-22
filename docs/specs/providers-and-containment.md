@@ -1239,8 +1239,11 @@ Native skill inventory is app-scoped, separate from official packages. Each
 provider loads skills its own way from the account it runs as; RCP never copies,
 stages or manages them, and agents are not told how skills arrive. The inventory
 probe carries the launch's skill-affecting flags (Claude's setting sources,
-Codex app-server's disabled features, OpenCode's `--pure` and disabled project
-config), so the menu offers only skills a launch loads. Startup
+Codex's disabled features, which exec and app-server turns share, OpenCode's
+`--pure` and disabled project config), so the menu offers only skills a launch
+loads. A Codex exec turn ignores user config, so it still loads skills that
+config turns off. A one-shot probe's output passes through a file, because some
+provider runtimes exit before a pipe drains. Startup
 refreshes after readiness; success atomically replaces inventory and failure
 retains it visibly stale. Project open and launch do not refresh. Selection binds
 provider, machine, successful version, hash and name per turn. It cannot change

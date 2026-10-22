@@ -909,5 +909,18 @@ def test_skill_probe_disables_the_same_features_as_a_launch(tmp_path: Path):
 
     launch = _accounting_turn(tmp_path, resumed=False).command
     probe = CodexProfile().skill_probe("codex").command
+    exec_launch = CodexProfile().command(
+        "",
+        binary="codex",
+        cwd=tmp_path,
+        model=None,
+        reasoning=None,
+        session_id=None,
+        read_dirs=[],
+        write_dirs=[],
+        write_scope=None,
+        capability="discuss",
+        provider_version=None,
+    )
     assert "plugins" in disabled(launch)
-    assert disabled(probe) == disabled(launch)
+    assert disabled(probe) == disabled(launch) == disabled(exec_launch)
