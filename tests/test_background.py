@@ -3051,7 +3051,7 @@ def test_a_turn_the_provider_explained_is_never_blamed_on_the_link(
     store.record_agent_task_receipt(
         task.operation_id, "provider_exit", exit_payload, tier="diagnostic"
     )
-    execution = SimpleNamespace(stage_host="gpu.example.edu")
+    execution = SimpleNamespace(stage_host="gpu.example.edu", launch_refused=False)
     request = tasks._request_from_record(store.agent_task(task.operation_id))
 
     assert (
@@ -3545,7 +3545,10 @@ def test_a_link_lost_before_the_provider_is_classified_from_its_typed_word(
 
     def kind(*, stage_unreachable: bool, host: str | None = "gpu.example.edu"):
         execution = SimpleNamespace(
-            stage_host=host, stage_unreachable=stage_unreachable, login_generation=0
+            stage_host=host,
+            stage_unreachable=stage_unreachable,
+            login_generation=0,
+            launch_refused=False,
         )
         return tasks._failure_kind(task.operation_id, request, execution, error)  # type: ignore[arg-type]
 

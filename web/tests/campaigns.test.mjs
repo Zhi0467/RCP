@@ -178,7 +178,7 @@ test("the branch field warns only on a bad name and reads server refusals", asyn
     );
   assert.equal(warns(""), false);
   assert.equal(warns("loss-sweep"), false);
-  assert.equal(warns("Loss"), true);
+  assert.equal(warns("loss_sweep"), true);
   assert.equal(warns("main"), true);
   const day = new Date(Date.UTC(2026, 9, 3, 12));
   assert.equal(branchNamePlaceholder("experiment_loop", [], day), "experiment-oct-03");
