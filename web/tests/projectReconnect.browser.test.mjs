@@ -98,7 +98,7 @@ async function openDemoProject(t, initialFreshness, options = {}) {
     provider_readiness: { local: providers },
     provider_skill_inventories: {},
     skill_catalog: [],
-    skill_defaults: {},
+    skill_defaults: { workflow_ids: [], skill_ids: [] },
     experiment_control: {},
     attention: {
       pending_proposal_ids: [],
@@ -220,6 +220,8 @@ async function openDemoProject(t, initialFreshness, options = {}) {
         : state.chats.filter((chat) => chat.graph_target.branch_id === branchId);
       json = { items, total: items.length, offset: 0, limit: 200 };
     } else if (path.endsWith("/chat-display")) json = { archived: [], titles: {}, pinned: [] };
+    else if (/\/chats\/[^/]+\/archive$/.test(path))
+      json = { archived: [path.split("/").at(-2)], titles: {}, pinned: [] };
     else if (/\/chats\/[^/]+$/.test(path)) {
       json = {
         ...state.chats.find((chat) => chat.chat_id === path.split("/").at(-1)),
@@ -728,6 +730,68 @@ const chat = {
   message_count: 0,
   last_message_preview: "",
 };
+
+test(
+  "following an origin link loads the source chat a bounded number of times and archive stays on its graph",
+  { timeout: 25000 },
+  async (t) => {
+    const source = { ...chat, chat_id: "source", title: "Source chat", message_count: 2 };
+    const fork = {
+      ...source,
+      chat_id: "fork",
+      graph_target: { kind: "branch", branch_id: "b1" },
+      // Newest first, so a selection leaving main's list would land on the fork.
+      updated_at: "2026-10-11T12:00:00Z",
+      origin: {
+        source_chat_id: "source",
+        source_operation_id: "turn",
+        source_graph_target: { kind: "main", branch_id: null },
+        source_title: "Source chat",
+        provider: "codex",
+        model: "",
+        reasoning: "high",
+        run_on: "local",
+      },
+    };
+    const { page, errors, state } = await openedShell(t, {
+      graphRefs: [mainRef(), branchRef("b1")],
+      chats: [fork, source],
+    });
+    const menu = page.getByRole("button", { name: "Chat menu", exact: true });
+    await page.evaluate(() => (location.hash = "#/projects/demo?view=chats&chat=source"));
+    await menu.waitFor();
+    await page.evaluate(
+      () => (location.hash = "#/projects/demo?view=chats&chat=fork&branch_id=b1"),
+    );
+    await branchShown(page, "b1");
+    const before = state.requests.length;
+    await page.getByRole("link", { name: "Source chat", exact: true }).click();
+    await branchShown(page, "main");
+    await menu.waitFor();
+    for (let beat = 0; beat < 2; beat++)
+      await page.waitForResponse(
+        (response) => new URL(response.url()).pathname === "/api/resource-watermarks",
+      );
+    const sourceReads = state.requests
+      .slice(before)
+      .filter((path) => path === "/api/projects/demo/chats/source").length;
+    assert.ok(sourceReads >= 1 && sourceReads <= 4, `source chat read ${sourceReads} times`);
+
+    await menu.click();
+    await page.getByRole("menuitem", { name: "Archive", exact: true }).click();
+    await page.waitForResponse((response) => response.url().endsWith("/chats/source/archive"));
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    assert.equal(
+      await page.evaluate(() => new URLSearchParams(location.hash.split("?")[1]).has("branch_id")),
+      false,
+    );
+    await branchShown(page, "main");
+    assert.deepEqual(
+      errors.filter((message) => !message.includes("Failed to load resource")),
+      [],
+    );
+  },
+);
 
 test(
   "a switch with chats loaded survives identity re-check and fences late branch responses",
