@@ -457,7 +457,11 @@ def test_retention_prunes_only_observed_orphan_mentions(store, monkeypatch):
 
 
 def test_artifact_links_resolve_from_text_within_the_project(store):
-    for artifact_id, project_id in (("figure", "project"), ("foreign", "other")):
+    for artifact_id, project_id in (
+        ("figure", "project"),
+        ("foreign", "other"),
+        ("lapsed", "project"),
+    ):
         store.create_artifact(
             Artifact(
                 artifact_id=artifact_id,
@@ -467,14 +471,16 @@ def test_artifact_links_resolve_from_text_within_the_project(store):
                 source_name="figure.svg",
                 media_type="image/svg+xml",
                 created_at=store.now(),
+                expires_at=store.now() if artifact_id == "lapsed" else None,
             ),
             data=b"<svg />",
         )
-    # A repeated link counts once; a foreign or unknown id is not refused and stays prose.
+    # A repeated link counts once; a foreign, expired, or unknown id is not refused and
+    # stays prose.
     first = post(
         store,
         "artifact",
-        text="#evidence/one <artifact:figure> <artifact:figure> <artifact:foreign> <artifact:gone>",
+        text="#evidence/one <artifact:figure> <artifact:figure> <artifact:foreign> <artifact:lapsed> <artifact:gone>",
     )
     expected = [
         {"artifact_id": "figure", "source_name": "figure.svg", "media_type": "image/svg+xml"}
@@ -484,6 +490,7 @@ def test_artifact_links_resolve_from_text_within_the_project(store):
     assert store.list_bulletin("project", "main")["posts"][0]["artifacts"] == expected
     # Linking saves the artifact, so the link cannot expire under the post.
     assert store.artifact("figure").kept_at is not None
+    assert store.artifact("lapsed").kept_at is None
     edited = store.execute_bulletin_command(
         "project", "turn", "edit", post_id=first["post_id"], key="edit-artifact", text="No link"
     )

@@ -1901,7 +1901,7 @@ extracts ordered, deduplicated `#node-id` references and valid
 `<@member:USER_ID>` / `<@agent:ACTOR_ID>` mentions. Requests carry text, never a
 separate references field. Posts carry `artifacts` metadata (`artifact_id`,
 `source_name`, `media_type`) resolved at read time from the text's
-`<artifact:ID>` tokens; a token naming no artifact of the project stays prose. The
+`<artifact:ID>` tokens; a token naming no readable artifact of the project stays prose. The
 composer's paperclip opens the existing project artifact picker and inserts the
 token. Each link renders as an icon and source-name chip opening the shared
 artifact viewer, including its opaque HTML sandbox. Agent tokens must identify

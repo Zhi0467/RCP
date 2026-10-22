@@ -64,6 +64,7 @@ from rcp.storage import (
     ProjectRecord,
 )
 
+from .helpers import CommandFileMailbox
 from .test_auto_research_children_storage import _experiment_task
 
 MAILBOX_ID = "a" * 32
@@ -470,7 +471,7 @@ def _dispatcher(
     return AutoResearchCommandDispatcher(
         store,
         effects,
-        command_file_reader=lambda _filename, _max_bytes: instruction,
+        mailbox=CommandFileMailbox(lambda _filename, _max_bytes: instruction),
     )
 
 
@@ -634,7 +635,7 @@ def test_transient_apply_snapshot_read_leaves_key_and_apply_slot_for_exact_retry
     dispatcher = AutoResearchCommandDispatcher(
         store,
         replace(effects.bundle(), apply=apply),
-        command_file_reader=read_patch,
+        mailbox=CommandFileMailbox(read_patch),
     )
     key = "apply-after-snapshot-read-recovers"
     request = _request(
@@ -705,7 +706,7 @@ def test_transient_spawn_snapshot_read_leaves_key_for_one_successful_admission(
     dispatcher = AutoResearchCommandDispatcher(
         store,
         effects.bundle(),
-        command_file_reader=read_instruction,
+        mailbox=CommandFileMailbox(read_instruction),
     )
     key = "spawn-after-snapshot-read-recovers"
     request = _spawn_request("8" * 32, key=key)
@@ -801,7 +802,7 @@ def test_transient_goal_snapshot_read_leaves_kickoff_key_for_exact_retry(tmp_pat
     dispatcher = AutoResearchCommandDispatcher(
         store,
         replace(effects.bundle(), episode=episode),
-        command_file_reader=read_goal,
+        mailbox=CommandFileMailbox(read_goal),
     )
     key = "experiment-after-goal-read-recovers"
     request = _request(
@@ -865,8 +866,8 @@ def test_apply_limit_refuses_before_reading_another_patch_file(tmp_path) -> None
     dispatcher = AutoResearchCommandDispatcher(
         store,
         effects.bundle(),
-        command_file_reader=lambda filename, max_bytes: (
-            reads.append((filename, max_bytes)) or '{"ops":[]}'
+        mailbox=CommandFileMailbox(
+            lambda filename, max_bytes: reads.append((filename, max_bytes)) or '{"ops":[]}'
         ),
     )
     admitted = [
@@ -935,8 +936,7 @@ def test_concurrent_apply_admission_reads_only_the_single_remaining_patch(tmp_pa
 
     dispatchers = [
         base_dispatcher.with_command_files(
-            reader=read_patch,
-            consumer=lambda _filename, _sha256: True,
+            mailbox=CommandFileMailbox(read_patch),
             refresher=lambda: (0, "", ""),
         )
         for _ in range(2)
@@ -1304,7 +1304,7 @@ def test_first_admission_refuses_unreadable_command_files(tmp_path) -> None:
     dispatcher = AutoResearchCommandDispatcher(
         store,
         effects.bundle(),
-        command_file_reader=lambda name, max_bytes: mailbox.read_text(name, max_bytes=max_bytes),
+        mailbox=mailbox,
     )
     for index, name in enumerate(("linked.md", "blank.md", "oversized.md", "invalid.md")):
         request = _spawn_request(f"{index + 1:032x}", key=f"spawn-{name}")
@@ -1662,7 +1662,7 @@ def test_completed_unavailable_apply_retries_the_original_snapshot_and_effect_id
     dispatcher = AutoResearchCommandDispatcher(
         store,
         replace(effects.bundle(), apply=apply),
-        command_file_reader=read_patch,
+        mailbox=CommandFileMailbox(read_patch),
     )
     key = "apply-after-transient-unavailable"
     request = _request(
@@ -2685,7 +2685,7 @@ def test_auto_research_root_refuses_compute_launch(tmp_path):
 def test_a_launch_bound_surface_is_the_one_enforced(tmp_path):
     store, episode, root = _setup_auto_research(tmp_path)
     effects = _Effects(store, episode, root)
-    dispatcher = _dispatcher(store, effects.bundle()).with_allowed_verbs(("validate",))
+    dispatcher = AutoResearchCommandDispatcher(store, effects.bundle(), allowed_verbs=("validate",))
     request = _request(
         FinishCommandRequest, request_id="f" * 32, verb="finish", idempotency_key="bound-finish"
     )
@@ -2716,7 +2716,7 @@ def test_history_commands_bypass_effects_and_command_ledger(tmp_path, monkeypatc
     monkeypatch.setattr(store, "start_agent_command", reject_write)
     dispatcher = AutoResearchCommandDispatcher(
         store, _Effects(store, episode, root).bundle(), service=service, graph_read_scope=scope
-    ).with_command_files(reader=reject_write, consumer=reject_write, refresher=reject_write)
+    ).with_command_files(mailbox=CommandFileMailbox(reject_write), refresher=reject_write)
     request = _request(
         GraphLogCommandRequest, request_id="f" * 32, verb="graph_log", arguments={"id": "node"}
     )

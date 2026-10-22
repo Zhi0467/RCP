@@ -42,16 +42,9 @@ def resolve_project_artifact(
     """Copy the current project artifact under its lock, preserving lifetime and size limits."""
     try:
         with store.artifact_lock(artifact_id):
-            artifact = store.artifact(artifact_id)
-            if artifact is None or artifact.project_id != project_id:
+            artifact = store.readable_artifact(project_id, artifact_id)
+            if artifact is None:
                 raise ValueError("Project reference artifact is unavailable.")
-            if (
-                artifact.expires_at is not None
-                and artifact.expires_at <= store.now()
-                and artifact.artifact_id
-                not in (store.protected_edit_artifact_ids() | store.legacy_artifact_import_ids())
-            ):
-                raise ValueError("Project reference artifact has expired.")
             size = next(
                 version.size_bytes
                 for version in store.artifact_versions(artifact.artifact_id)
