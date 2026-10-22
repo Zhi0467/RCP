@@ -2398,8 +2398,12 @@ export interface ArtifactViewerState {
   can_comment: boolean;
   /** Why Send is unavailable right now, such as a session held by another launch. */
   comment_unavailable_reason: string | null;
-  /** The origin cannot resume; Send must be the explicit fresh-session action. */
+  /** The origin cannot resume; Edit now must be the explicit fresh-session action. */
   fresh_session_required: boolean;
+  /** Edit now resumes the origin's session, which another launch may hold. */
+  can_edit_now: boolean;
+  /** Send is an ordinary turn of the artifact's chat, so it never needs a new session. */
+  send_to_chat: boolean;
   /** App hash of the thread the reply goes to, or null when it cannot be opened. */
   thread_href: string | null;
   /** Same-origin viewer shell for the current version; null for PDF and download-only. */

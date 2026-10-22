@@ -782,6 +782,50 @@ def test_a_new_comment_restores_its_base_over_a_dirty_file(manifest, tmp_path):
     assert tracked.read_bytes() == b"<p>base</p>"
 
 
+@pytest.mark.parametrize("failure", ["digest", "bytes"])
+def test_an_unrelated_tracked_file_never_refuses_a_comment_turn(
+    manifest, tmp_path, monkeypatch, failure
+):
+    import rcp.runs.session_artifacts as session_artifacts
+
+    app, request, execution, source, workspace = _setup(manifest, tmp_path)
+    store = execution.store
+    other = _stored_artifact(app, "origin", "notes.html", b"<p>notes</p>")
+    folder = workspace / "turns" / "origin" / "artifacts"
+    folder.mkdir(parents=True)
+    (folder / other.name).write_bytes(b"<p>notes</p>")
+    if failure == "digest":
+        digests = session_artifacts._digests
+
+        def batch_fails(root, remote, tracked):
+            if len(tracked) > 1:
+                raise OSError("unreachable")
+            return digests(root, remote, tracked)
+
+        monkeypatch.setattr(session_artifacts, "_digests", batch_fails)
+    else:
+        read = store.read_artifact_bytes
+
+        def unreadable(artifact_id, *args, **kwargs):
+            if artifact_id == other.artifact_id:
+                raise OSError("unreadable")
+            return read(artifact_id, *args, **kwargs)
+
+        monkeypatch.setattr(store, "read_artifact_bytes", unreadable)
+    # A chat comment is a plain turn carrying the version it was drawn on.
+    comment = request.model_copy(
+        update={
+            "artifact_edit": None,
+            "artifact_context": request.artifact_context.model_copy(
+                update={"base_version": request.artifact_edit.base_version}
+            ),
+        }
+    )
+    _stage(app, comment, execution, workspace)
+    assert (folder / source.name).read_bytes() == b"<p>base</p>"
+    assert any(event.level == "warning" for event in store.agent_task_events("edit"))
+
+
 def test_a_change_from_an_unretained_version_forks_into_its_own_tracked_file(manifest, tmp_path):
     app, request, execution, source, _, directory, staged = _staged_edit(manifest, tmp_path)
     store = execution.store

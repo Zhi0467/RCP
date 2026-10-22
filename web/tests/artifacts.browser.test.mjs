@@ -879,6 +879,21 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
       "true",
     );
     await page.getByRole("button", { name: "Start Work turn", exact: true }).waitFor();
+    // A comment is an ordinary turn, so a pasted project reference joins it.
+    await page.getByRole("textbox", { name: "Message", exact: true }).evaluate(async (input) => {
+      const { referenceUrl } = await import("/src/core/projectReferences.ts");
+      const clipboardData = new DataTransfer();
+      clipboardData.setData(
+        "text/plain",
+        referenceUrl("project", { kind: "main" }, { kind: "paper" }),
+      );
+      input.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true }));
+    });
+    await page.getByLabel("References for this turn").waitFor();
+    assert.equal(
+      await page.getByRole("button", { name: "Start Work turn", exact: true }).isEnabled(),
+      true,
+    );
     assert.equal(await page.evaluate(() => Boolean(window.errorTestSent)), false);
     assert.deepEqual(requests, []);
     state = viewerState("plot", 2);

@@ -32,13 +32,9 @@ async def test_work_comment_on_another_stage_edits_it_for_one_turn(manifest, tmp
             "mode": "work",
             "session_id": None,
             "run_truth_scope": ["repo-a"],
-            "artifact_edit": request.artifact_edit.model_copy(
-                update={
-                    "operation_id": "work-edit",
-                    "launch_kind": "discuss",
-                    "stage_root": None,
-                    "origin_bound": False,
-                }
+            "artifact_edit": None,
+            "artifact_context": request.artifact_context.model_copy(
+                update={"base_version": request.artifact_edit.base_version}
             ),
         }
     )

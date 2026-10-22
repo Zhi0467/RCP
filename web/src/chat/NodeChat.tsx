@@ -1499,7 +1499,7 @@ export function NodeChat({
   };
 
   const addReference = (item: DraftReference) => {
-    if (submitting || artifactContext) return;
+    if (submitting || commentOnly) return;
     const result = mergeReferences(references, [item], attachments.length);
     setReferences(result.references);
     if (result.rejected)
@@ -1510,7 +1510,7 @@ export function NodeChat({
     fileCount = attachments.length,
     insertPlainText = false,
   ) => {
-    if (submitting || artifactContext || !text) return false;
+    if (submitting || commentOnly || !text) return false;
     const target = project.graph_target ?? MAIN_GRAPH;
     const result = extractReferences(text, project.id, references, fileCount, (selector) =>
       selector.kind === "node" &&
@@ -1973,7 +1973,6 @@ export function NodeChat({
     if (
       !(text || artifactContext) ||
       attachmentsUnready ||
-      (Boolean(artifactContext) && references.length > 0) ||
       relatedActive ||
       pausedAttempt ||
       submitting ||
@@ -3170,7 +3169,7 @@ export function NodeChat({
                     <button
                       type="button"
                       role="menuitem"
-                      disabled={attachDisabled || Boolean(artifactContext)}
+                      disabled={attachDisabled || commentOnly}
                       onClick={() => {
                         setAddMenuOpen(false);
                         setReferencePickerOpen(true);
@@ -3377,7 +3376,6 @@ export function NodeChat({
                   (steeringTask
                     ? attachments.length > 0 || references.length > 0 || artifactContext !== null
                     : attachmentsUnready ||
-                      (Boolean(artifactContext) && references.length > 0) ||
                       relatedActive ||
                       Boolean(pausedAttempt) ||
                       Boolean(repairingTaskId) ||

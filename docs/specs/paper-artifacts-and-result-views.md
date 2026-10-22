@@ -261,8 +261,9 @@ selection or leaving mode closes the window. Version changes also clear old
 staged regions with a notice. Keep follows viewer state.
 
 Composer comments use that chat's Discuss/Work mode and execution profile,
-Experiment chats included. Read-only Auto-research children compose comments
-only, in Discuss. Both can
+Experiment chats included, and share a turn with attachments and project
+references. Read-only Auto-research children compose comments only, in Discuss,
+without references. Both can
 publish the same artifact's next version through its tracked file.
 
 `/viewer` is the explicit shell; `/preview` remains its compatibility alias.
@@ -289,8 +290,10 @@ Both send paths post a comment list, with `edit_now` for immediate editing. A re
 keeps the comments with the reason (a refused Edit now files its comment in the tray,
 or returns it to the comment box when the tray is full);
 success removes only the comments it sent and reports the operation to the parent.
-Explicit fresh-session admission is labelled on both actions. Unavailable origins
-only disable editing. A later edit failure comes from `edit_failure` until replaced.
+Explicit fresh-session admission is labelled on Edit now, and on Send only where it
+too resumes the origin. Send, and inline comment mode in a chat, need only a readable
+artifact in a chat that takes human turns; the origin's master and session gate only
+Edit now (`can_edit_now`). A later edit failure comes from `edit_failure` until replaced.
 Theme follows the containing app, or remembered appearance when standalone.
 
 Selections carry bounded text/context. HTML boxes name up to eight elements by
@@ -307,8 +310,10 @@ place can show it there. All input is bounded/untrusted.
 ### Editing and versions
 
 Admission captures artifact/version. A composer comment must belong to that chat
-and follows its ordinary mode, profile, session, graph admission, compute, and
-worktree. A viewer Send is that same composer turn in Work, on the chat's latest
+and is an ordinary turn of it: its `artifact_context` names the artifact and the
+version it was drawn on, and nothing else binds it, so it follows the chat's mode,
+profile, session, write scope, group context, graph admission, compute, and worktree
+exactly as a plain follow-up does. A viewer Send is that same composer turn in Work, on the chat's latest
 profile, whenever the artifact's chat takes human turns (ordinary and Experiment
 chats, and an ended chain's orchestrator conversation). Edit now, and a Send whose
 origin is a running orchestrator or a read-only child, resume the recorded master: chat/child masters get Discuss with the origin
@@ -338,11 +343,14 @@ Before a turn, files still matching the recorded digest are rewritten to current
 versions, reflecting Undo/other edits. Changed files remain; missing files skip.
 
 A new comment restores its selected version at the tracked path, even over failed-
-turn changes or absence. Retrying that same comment preserves changes; if missing,
-it restores current bytes, not a possibly pruned base. A different stage receives
-only the commented artifact at a turn-relative path and publishes at turn end;
-no later session tracks that copy. A question answer rebinds it to the answer turn
-at current version. Read-only selection crops remain alongside turn inputs.
+turn changes or absence. Retrying or resuming that same comment preserves changes;
+if missing, it restores current bytes, not a possibly pruned base. A different stage
+receives only the commented artifact at a turn-relative path and publishes at turn
+end; no later session tracks that copy. A question answer is an ordinary turn with
+no comment, admitted whether or not the artifact still exists. Read-only selection
+crops remain alongside turn inputs. Turn start never refuses a turn over another
+tracked file: one it cannot check or read is a warning event and waits for a later
+turn; only the commented file's own failure refuses its comment.
 
 Settlement digests session files (one SSH call remotely). Changed bytes publish
 against the retained version matching their recorded digest, under the artifact

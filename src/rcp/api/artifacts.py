@@ -44,6 +44,7 @@ from rcp.core.models import AuthorizedHuman
 from rcp.limits import ARTIFACT_CONTEXT_MAX_SELECTIONS, STEERING_MESSAGE_MAX_CHARS
 from rcp.projects import ProjectCatalog
 from rcp.runs.artifact_edit_admission import (
+    ArtifactEditAvailability,
     ArtifactFreshSessionRequired,
     admit_artifact_edit,
     artifact_edit_availability,
@@ -446,6 +447,8 @@ class ArtifactViewerState(BaseModel):
     can_comment: bool
     comment_unavailable_reason: str | None
     fresh_session_required: bool
+    can_edit_now: bool
+    send_to_chat: bool
     thread_href: str | None
     viewer_url: str | None
     download_url: str
@@ -487,21 +490,19 @@ def stored_artifact_state(
         versions = store.artifact_versions(artifact_id)
         current = next(v for v in versions if v.version_id == artifact.current_version)
         can_undo = bool(store._artifact_ancestors(current, versions))
-    can_comment, reason, fresh = False, None, False
+    availability = ArtifactEditAvailability(False)
     origin = store.agent_task(artifact.origin_operation_id or "")
     if origin is None:
-        reason = "The artifact's origin is unavailable."
+        availability = ArtifactEditAvailability(False, "The artifact's origin is unavailable.")
     else:
         try:
             service = get_graph_service(
                 catalog, project_id, origin.graph_target.branch_id, initialize=False
             )
             availability = artifact_edit_availability(store, service, artifact)
-            can_comment = availability.can_comment
-            reason = availability.comment_unavailable_reason
-            fresh = availability.fresh_session_required
         except (HTTPException, OSError, StateUnavailable, ValueError) as exc:
             reason = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+            availability = ArtifactEditAvailability(False, reason)
     editing = store.artifact_edit_operation_id(project_id, artifact_id)
     base = f"/api/projects/{quote(project_id, safe='')}/artifacts/{quote(artifact_id, safe='')}"
     live = None
@@ -530,9 +531,11 @@ def stored_artifact_state(
         live=live,
         editing_operation_id=editing,
         edit_failure=store.artifact_edit_failure(project_id, artifact_id),
-        can_comment=can_comment,
-        comment_unavailable_reason=reason,
-        fresh_session_required=fresh,
+        can_comment=availability.can_comment,
+        comment_unavailable_reason=availability.comment_unavailable_reason,
+        fresh_session_required=availability.fresh_session_required,
+        can_edit_now=availability.can_edit_now,
+        send_to_chat=availability.send_to_chat,
         thread_href=_artifact_source_hrefs(catalog, store, project_id, [artifact]).get(artifact_id),
         viewer_url=f"{base}/viewer"
         if artifact_view(artifact.media_type) not in {"pdf", "file"}
