@@ -1352,18 +1352,27 @@ def _validated_local_chat_resume_stage(
             "Cannot safely resume this chat because its saved stage is missing. "
             "Retry the turn from the beginning."
         )
-    if execution.stage_host:
-        raise ValueError(
-            "Cannot safely resume this chat because its saved stage host does not match "
-            "the execution machine. Retry the turn from the beginning."
-        )
     stored = Path(execution.stage_root)
-    if stored.absolute() != expected.absolute() or stored.is_symlink() or not stored.is_dir():
-        raise ValueError(
-            "Cannot safely resume this chat because its saved stage belongs to a different "
-            "project or conversation, or is unavailable. Retry the turn from the beginning."
+    if execution.stage_host:
+        problem = "its saved stage host does not match the execution machine"
+    elif stored.absolute() != expected.absolute() or stored.is_symlink() or not stored.is_dir():
+        # A moved or copied data directory lands here: the saved path names the
+        # old directory. Native resume needs that exact cwd, so the session cannot
+        # move with it. The receipt makes Retry and the next message start fresh.
+        problem = (
+            "its saved stage is unavailable, moved, or belongs to a different "
+            "project or conversation"
         )
-    return stored
+    else:
+        return stored
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "continuation_context_unavailable",
+        {"reason": "chat_stage_unavailable", "retry_required": True},
+    )
+    raise ValueError(
+        f"Cannot safely resume this chat because {problem}. Retry the turn from the beginning."
+    )
 
 
 def _chat_read_dirs(

@@ -239,6 +239,10 @@ record removal likewise never deletes repository worktrees.
 ## Conversation scratch and human input
 
 A conversation retains one scratch stage because native resume needs its cwd.
+So a saved stage outside the current data directory, after the directory moved
+or was copied, cannot resume: that turn fails and records
+`continuation_context_unavailable`, and Retry or the next message starts a
+fresh session with that recorded reason.
 Each logical turn owns `turns/<turn-id>/artifacts`. New turns clear stale
 `patch.json` and `watch.json` fail-closed. Committed native context retains its
 stage and master even while idle.
