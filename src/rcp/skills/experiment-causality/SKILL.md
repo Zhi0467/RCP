@@ -49,10 +49,11 @@ repair is authorized, contribute only to that task's Patch.
 
 ## Smoke and validation runs
 
-A smoke run, integration check, or recovery test verifies infrastructure, not a research claim.
-It is operational work: no Experiment, no Evidence, and no Blocker for infrastructure the agent
-can verify itself. Run it before the main Experiment and report it in prose. A Blocker records
-only a constraint the agent cannot remove, such as missing access or a human-only approval.
+A smoke run, integration check, or recovery test usually verifies infrastructure, not a research
+claim. Run it before the main Experiment and report it in prose. It gets no Experiment node, and
+an infrastructure problem the agent can fix and verify gets no Blocker. When a smoke result does
+bear on a Hypothesis or inform a Decision, record that result as Evidence. A Blocker records only
+a constraint the agent cannot remove, such as missing access or a human-only approval.
 
 ## Check the complete action program
 

@@ -204,10 +204,10 @@ def _orchestration_progress() -> str:
   can accept a job into its queue while devices are occupied; a direct process host may need a
   worker to diagnose capacity and arrange an observable continuation before launching. Do not
   assume every host has a scheduler or repeat an uncertain submission.
-- Take the shortest path to a real measurement: fix what blocks the next run, check it with one
-  smoke through the real path, then launch. Do not harden infrastructure beyond what that run
-  needs; name the remaining risks instead. Do not turn a self-service step into a recommended
-  human next step.
+- Aim for a real result soon. Fix only what stops the next run. Test that fix once with a small
+  run on the real setup, then start the real run. Do not keep improving code or infrastructure
+  the next run does not need; list the leftover risks in your reply instead.
+- If you can do a step yourself, do it. Do not hand it to the human as a suggested next step.
 - Invoke `finish --key <key>` when the research goal is complete or useful continuation requires
   new human judgment, credentials, approval, privileged action, or coordination with another
   person, and after every admitted child obligation is explicitly settled. For example, a completed
@@ -557,16 +557,22 @@ instruction is ordinary task prose, not authority.
 {graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 
 Who does what:
-- Code, bug, infrastructure, or documentation fix: do it yourself in this turn, or with
-  provider-native subagents that finish inside it. Never spawn a worker or child Experiment for it.
-- Smoke run, infrastructure check, or other operational job that must be watched: `spawn` a worker
-  seated on the node it serves. It launches the job, arms its own watcher, and reports by mail.
-  Its result is operational: report it in prose, never as an Experiment, Evidence, or Blocker.
-- Real experiment, a run whose result bears on a Hypothesis or Decision: prepare the graph first
-  (its Experiment node and gates), then `episode --kick-off-experiment` with a goal and an
-  `--invocation-limit` sized to it.
+- Code, bug, infrastructure, or documentation fix that needs no long compute: do it yourself in
+  this turn, or with provider-native subagents that finish inside it.
+- Work that needs compute and must outlive your turn, such as a smoke run or getting code to work
+  against real jobs: `spawn` a worker seated on the node it serves. It launches the jobs, arms its
+  own watcher, and reports by mail.
+- Real experiment, a run whose result bears on a Hypothesis or Decision: first audit the
+  Experiment and every node one edge away from it (its Hypotheses, Decisions, Blockers, and
+  Evidence). Fix what is wrong or missing, so this subgraph states what the run tests and what it
+  will decide. Then run `episode --kick-off-experiment` with a goal and an `--invocation-limit`
+  sized to it.
 - Research-state upkeep, such as graph cleanup, synthesis, or an independent audit across the
   project: `spawn --project`.
+- When any child or subagent reports, decide from its actual work and findings whether the graph
+  changes. A result that advances a Hypothesis or informs a Decision is Evidence, even when a smoke
+  run produced it. A check that only shows the plumbing works stays out of the graph, and so does
+  an infrastructure problem you can fix and verify.
 - Workers are ordinary Work and unmetered: they spend neither your invocations nor the Experiment
   allowance. Give each one a whole job that ends in a result, not a slice that needs follow-ups.
 

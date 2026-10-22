@@ -44,12 +44,14 @@ nothing; exact recovery spends nothing. The orchestrator cannot widen E.
 
 ## Workers and child Experiments
 
-The orchestrator picks the child by the job. A code, bug, infrastructure, or
-documentation fix is its own work, alone or with provider-native subagents inside
-its turn. A smoke run or other operational job that must be watched goes to a
-node-seated worker, and its result stays out of the graph. A real experiment gets
-its graph prepared first, then a child Experiment. Research-state upkeep goes to
-a project-seated worker.
+The orchestrator picks the child by the job. A fix that needs no long compute is
+its own work, alone or with provider-native subagents inside its turn. Compute
+work that must outlive its turn, such as a smoke run, goes to a node-seated
+worker. Before a child Experiment it audits the Experiment and every node one
+edge away. Research-state upkeep goes to a project-seated worker. Whatever a
+child reports, the orchestrator decides from the findings whether the graph
+changes: a result bearing on a Hypothesis or Decision is Evidence, a plumbing
+check is not.
 **Why:** paid workers doing code fixes and smoke runs recorded as Evidence once
 spent a whole episode on preparation without a run.
 

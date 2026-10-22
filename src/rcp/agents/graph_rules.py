@@ -92,13 +92,14 @@ Causal check:
 - For an empirical gate, find the precursor Experiment and the observation that would settle the
   gate, and name that handoff in the precursor's design.
 - Check each edge's direction against the actual causal story.
-- Infrastructure is operational work, not research. A code fix, CPU test, smoke run, or
-  integration or recovery check gets no Experiment, Evidence, or Blocker: do it, or have a worker
-  do it, and report it in prose. An Experiment is a run whose result bears on a Hypothesis or
-  Decision.
-- An open Blocker reached through `blocked_by` stops RCP from starting an Experiment. Use one only
-  for a constraint the agent cannot remove itself, such as missing access or hardware, a
-  human-only approval, or an external outage.
+- Record what changes the research, not the work that got there. A code fix, CPU test, or smoke
+  run that only shows the plumbing works is reported in prose, not as an Experiment or Evidence.
+  A result from any run, a smoke run included, that bears on a Hypothesis or informs a Decision
+  is Evidence.
+- An open Blocker reached through `blocked_by` stops RCP from starting an Experiment. Do not record
+  an infrastructure problem you can fix and verify as a Blocker. Use one for a constraint the agent
+  cannot remove itself, such as missing access or hardware, a human-only approval, or an external
+  outage.
 """
 
 

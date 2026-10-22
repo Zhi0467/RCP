@@ -49,9 +49,9 @@ Exercise checkpoint and resume only when the full run will rely on them.
 Inspect completion and the written values, not just a successful process exit.
 
 Give the smoke separate outputs and record its identity and reductions. Restore
-the full run's intended workload before launch. A smoke validates plumbing only:
-it never tests the hypothesis and is operational work, never an Experiment or
-Evidence in the graph.
+the full run's intended workload before launch. A smoke validates plumbing;
+it is not a test of the hypothesis. Record it in the graph only when its result
+bears on a Hypothesis or informs a Decision.
 If metrics are missing, repair the path and repeat the smoke before proceeding.
 
 ## Keep live reads bounded
