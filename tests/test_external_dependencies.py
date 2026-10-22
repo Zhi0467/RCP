@@ -36,6 +36,7 @@ RUNNERS = {
     "_runner",
     "_run",
     "_run_process",
+    "_run_process_group",
     "_run_read_only",
     "_require_command",
     "_run_as_account",
