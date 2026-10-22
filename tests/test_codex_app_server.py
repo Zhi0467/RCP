@@ -789,3 +789,113 @@ def test_child_interactive_request_is_rejected_without_stopping_parent(tmp_path:
     )
     assert ending.complete
     assert ending.events[0].usage.processed_input_tokens == 300
+
+
+def _stalling_codex(tmp_path: Path, stall: str) -> tuple[Path, Path]:
+    """An app-server whose next protocol line never arrives in a readable form."""
+
+    executable = tmp_path / "stalling-codex"
+    attempts = tmp_path / "runtime-attempts.txt"
+    executable.write_text(
+        f"""#!{sys.executable}
+import json
+import sys
+from pathlib import Path
+
+stall = {stall!r}
+runtime = "app-server" if len(sys.argv) > 1 and sys.argv[1] == "app-server" else "exec"
+with Path({str(attempts)!r}).open("a", encoding="utf-8") as stream:
+    stream.write(runtime + "\\n")
+
+def send(value):
+    print(json.dumps(value, separators=(",", ":")), flush=True)
+
+if runtime == "exec":
+    sys.stdin.read()
+    send({{"type": "thread.started", "thread_id": "exec-thread"}})
+    send({{"type": "item.completed", "item": {{"type": "agent_message", "text": "EXEC_OK"}}}})
+    send({{"type": "turn.completed", "usage": {{"input_tokens": 1, "output_tokens": 1}}}})
+    raise SystemExit(0)
+
+# Every branch then waits on stdin, the way a live app-server does.
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    request_id = message.get("id")
+    if method == "initialize":
+        if stall == "silent setup":
+            continue
+        result = {{"pad": "x" * 100000}} if stall == "oversized setup" else {{}}
+        send({{"id": request_id, "result": result}})
+    elif method == "config/read":
+        send({{"id": request_id, "result": {{"config": {{}}}}}})
+    elif method == "thread/start":
+        send({{
+            "id": request_id,
+            "result": {{
+                "thread": {{"id": "app-thread"}},
+                "approvalPolicy": "never",
+                "sandbox": {{"type": "readOnly"}},
+                "activePermissionProfile": {{"id": "rcp_stage"}},
+            }},
+        }})
+    elif method == "turn/start":
+        send({{"id": request_id, "result": {{"turn": {{"id": "turn-1"}}}}}})
+        send({{
+            "method": "turn/completed",
+            "params": {{
+                "threadId": "app-thread",
+                "turn": {{"id": "turn-1", "status": "completed"}},
+                "pad": "x" * 100000,
+            }},
+        }})
+""",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    return executable, attempts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stall", "runtimes"),
+    [
+        ("oversized setup", ["app-server", "exec"]),
+        ("silent setup", ["app-server", "exec"]),
+        ("oversized end", ["app-server"]),
+    ],
+)
+async def test_an_unreadable_protocol_line_ends_the_pass_instead_of_waiting(
+    tmp_path: Path, monkeypatch, stall: str, runtimes: list[str]
+) -> None:
+    """A setup reply or turn end RCP never reads must fail the pass, not hold it open."""
+
+    import asyncio
+
+    monkeypatch.setattr(AgentLauncher, "_MAX_EVENT_BYTES", 50000)
+    if stall == "silent setup":
+        monkeypatch.setattr("rcp.agents.launcher.PROVIDER_SETUP_TIMEOUT_SECONDS", 1.0)
+    executable, attempts = _stalling_codex(tmp_path, stall)
+    launcher = AgentLauncher()
+    launcher.readiness = lambda provider, host="", binary=None: _ready(executable)
+
+    async def collect():
+        return [
+            event
+            async for event in launcher.stream(
+                "codex",
+                "Reply exactly EXEC_OK",
+                cwd=tmp_path,
+                capability="paper_readonly",
+                runtime_id="app-server",
+            )
+        ]
+
+    events = await asyncio.wait_for(collect(), timeout=30)
+
+    assert attempts.read_text(encoding="utf-8").splitlines() == runtimes
+    if runtimes == ["app-server"]:
+        assert any(event.event == "error" for event in events)
+        assert all(event.event != "done" for event in events)
+    else:
+        assert [event.text for event in events if event.event == "answer"] == ["EXEC_OK"]

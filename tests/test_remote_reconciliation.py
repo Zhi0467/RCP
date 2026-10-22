@@ -280,6 +280,38 @@ def test_the_shipped_reader_separates_bad_evidence_from_an_unreachable_host(tmp_
     assert completed.returncode == 3
 
 
+@pytest.mark.parametrize("gap", [0.2, 3.0])
+def test_a_journal_read_lasts_as_long_as_its_bytes_keep_moving(monkeypatch, gap) -> None:
+    """Only a transfer that stopped moving is unavailable; a slow one is read whole."""
+
+    import sys
+    import time
+
+    from rcp.runs import remote_reconciliation
+    from rcp.runs.remote_reconciliation import read_remote_journal
+
+    writer = (
+        "import sys, time\n"
+        "sys.stdout.write('{\"outcome\": {}'); sys.stdout.flush()\n"
+        f"for _ in range(int(1.2 / {gap}) or 1):\n"
+        f"    time.sleep({gap}); sys.stdout.write(' '); sys.stdout.flush()\n"
+        "sys.stdout.write('}')\n"
+    )
+    monkeypatch.setattr(remote_reconciliation, "REMOTE_JOURNAL_IDLE_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(
+        remote_reconciliation, "ssh_arguments", lambda *_: [sys.executable, "-c", writer]
+    )
+    started = time.monotonic()
+
+    if gap < 1.0:
+        assert read_remote_journal("remote", "/stage/one.pid") == {"outcome": {}}
+        assert time.monotonic() - started > 1.0
+    else:
+        with pytest.raises(JournalUnavailable):
+            read_remote_journal("remote", "/stage/one.pid")
+        assert time.monotonic() - started < 2.5
+
+
 def test_recorded_settlement_drains_detached_mailbox_before_failing_task(tmp_path, monkeypatch):
     from types import SimpleNamespace
 

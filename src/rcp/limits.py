@@ -86,11 +86,20 @@ PROVIDER_CREDENTIAL_STARTUP_TIMEOUT_SECONDS = 60.0
 PROVIDER_STEER_WRITE_TIMEOUT_SECONDS = 10.0
 PROVIDER_STEER_ACK_TIMEOUT_SECONDS = 30.0
 PROVIDER_STDERR_DRAIN_TIMEOUT_SECONDS = 2.0
+# Protocol setup before a provider takes the prompt (Codex app-server's
+# initialize, config, and thread replies). Generous, because it spans the SSH
+# handshake and a resumed thread's load; a reply that never comes is a failed
+# launch, never an indefinite wait.
+PROVIDER_SETUP_TIMEOUT_SECONDS = 300.0
 REMOTE_PROVIDER_PID_WAIT_SECONDS = 2.0
 REMOTE_PROVIDER_TERM_WAIT_SECONDS = 5.0
 REMOTE_PROVIDER_KILL_WAIT_SECONDS = 2.0
 REMOTE_PROVIDER_STOP_POLL_SECONDS = 0.05
 REMOTE_PROVIDER_STOP_TIMEOUT_SECONDS = 12.0
+# Reading a stopped pass's journal gives up only after this long with no bytes
+# moving; a journal is as large as its turn, so a slow link that keeps moving is
+# given the time the transfer needs.
+REMOTE_JOURNAL_IDLE_TIMEOUT_SECONDS = 12.0
 
 # Per-pass execution-host durability; overflow is an explicit incomplete turn.
 TURN_JOURNAL_MAX_BYTES = 64 * 1024 * 1024
