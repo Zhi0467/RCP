@@ -852,35 +852,50 @@ button.agent-provider-label {
 .chat-header-menu-list {
   min-width: 200px;
 }
+/* The branch and repository pickers open from ordinary rows of this menu: its
+   type and hover, the current value muted, and a trailing chevron. */
+.chat-header-menu-list :is(.branch-picker-trigger, .scope-trigger) {
+  align-items: center;
+  display: flex;
+  font-weight: inherit;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+}
+.chat-header-menu-list :is(.branch-picker-trigger, .scope-trigger) > svg:last-child {
+  color: var(--muted);
+  height: 13px;
+  margin-left: auto;
+  width: 13px;
+}
 .chat-scope-control {
   border-top: 1px solid var(--line);
-  display: flex;
   margin-top: 4px;
-  min-width: 0;
   padding-top: 4px;
 }
-.chat-scope-control .scope-picker,
-.chat-scope-control .scope-trigger {
+.chat-scope-control .scope-trigger > span {
+  display: flex;
+  flex: 1;
+  gap: 12px;
+  justify-content: space-between;
   min-width: 0;
 }
-.chat-scope-control .scope-trigger {
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  gap: 6px;
-  min-height: 26px;
-  padding: 4px 8px;
+.chat-scope-control .scope-trigger .eyebrow {
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: nowrap;
 }
 .chat-scope-control .scope-trigger strong {
-  font-size: var(--type-2xs);
-  font-weight: 650;
+  color: var(--muted);
+  font-size: inherit;
+  font-weight: inherit;
   margin-top: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.chat-scope-control .scope-trigger .eyebrow {
-  display: none;
 }
 
 .agent-role-stack {
@@ -1232,10 +1247,10 @@ button.agent-provider-label {
   }
 }
 .agent-row-menu-list {
-  background: var(--sheet);
+  background: var(--surface);
   border: 1px solid var(--line-strong);
   border-radius: 6px;
-  box-shadow: 0 6px 18px color-mix(in srgb, var(--ink) 16%, transparent);
+  box-shadow: var(--shadow);
   display: grid;
   min-width: 120px;
   padding: 4px;
@@ -1256,7 +1271,7 @@ button.agent-provider-label {
 }
 .agent-row-menu-list button:hover:not(:disabled),
 .agent-row-menu-list button:focus-visible {
-  background: var(--surface);
+  background: var(--cobalt-soft);
 }
 .agent-row-menu-list button:disabled {
   color: var(--faint);
