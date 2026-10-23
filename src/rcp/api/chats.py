@@ -43,6 +43,9 @@ from rcp.projects import ProjectCatalog
 from rcp.runs.browser_lifecycle import close_chat_browser_owners
 from rcp.runs.chat_admission import require_chat_graph_target
 from rcp.service import (
+    ArtifactContextRequest,
+    ChatArtifactComments,
+    ChatArtifactQuote,
     ChatMessage,
     ChatOriginView,
     ChatSummary,
@@ -541,11 +544,42 @@ def chat(
     for message in transcript.messages:
         if message.operation_id is not None:
             message.browser_status = store.browser_turn_status(message.operation_id).public()
+            # An old turn can fall outside the bounded task list the chat polls.
+            task = store.agent_task(message.operation_id)
             if message.role == "assistant":
-                # An old turn can fall outside the bounded task list the chat polls.
-                task = store.agent_task(message.operation_id)
                 message.agent_status = task.agent_status if task is not None else None
+            elif task is not None and message.steering is None:
+                message.artifact_comments = _artifact_comments(store, task.request)
     return transcript
+
+
+def _artifact_comments(store: AppStore, request: dict[str, object]) -> ChatArtifactComments | None:
+    """What the turn's numbered artifact comments were drawn on, so the bubble can quote it."""
+    raw = request.get("artifact_context")
+    if raw is None:
+        return None
+    context = ArtifactContextRequest.model_validate(raw)
+    if not context.selections:
+        return None
+    artifact = store.artifact(context.artifact_id)
+    quotes = []
+    for selection in context.selections:
+        if selection.kind == "text":
+            quote = selection.text
+        elif selection.elements is None:
+            quote = selection.labels  # A box from the viewer before elements were named.
+        else:
+            quote = ", ".join(element.label or element.text for element in selection.elements)
+        quotes.append(
+            ChatArtifactQuote(
+                kind=selection.kind, quote=" ".join(quote.split()), comment=selection.comment
+            )
+        )
+    return ChatArtifactComments(
+        artifact_id=context.artifact_id,
+        name=artifact.source_name if artifact is not None else None,
+        quotes=quotes,
+    )
 
 
 __all__ = [

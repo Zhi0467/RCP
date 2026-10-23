@@ -728,3 +728,58 @@ def test_composer_edit_advances_current_chat_session(edit_origin, monkeypatch, p
     following = store.agent_task(response.json()["operation_id"])
     assert following.request["session_id"] == settled_session
     assert following.request.get("artifact_edit") is None
+
+
+def test_chat_transcript_quotes_what_each_comment_was_drawn_on(edit_origin):
+    from types import SimpleNamespace
+
+    from rcp.runs.artifact_edit_admission import artifact_comment_message
+    from rcp.runs.chat import _append_chat_exchange
+    from rcp.service import ArtifactContextRequest
+
+    app, store, origin = edit_origin
+    artifact = _stored_artifact(app, origin.operation_id, "report.html", b"<p>Original</p>")
+    box = {
+        "rect": {"x": 0.1, "y": 0.1, "width": 0.5, "height": 0.5},
+        "viewport": {"width": 800, "height": 600},
+    }
+    context = ArtifactContextRequest.model_validate(
+        {
+            "operation_id": origin.operation_id,
+            "artifact_id": artifact.artifact_id,
+            "selections": [
+                {"kind": "text", "text": "Nine  in\nten", "comment": "What is ten?"},
+                {
+                    **box,
+                    "kind": "box",
+                    "elements": [{"path": "figure", "label": "Figure 3"}],
+                    "comment": "Why two checkpoints?",
+                },
+                {**box, "kind": "box", "elements": [], "comment": "Unreadable axis."},
+            ],
+        }
+    )
+    chat_id = origin.request["chat_id"]
+    request = RunRequest(
+        chat_id=chat_id,
+        chat_scope="project",
+        message=artifact_comment_message("Overall unclear.", context),
+        artifact_context=context,
+    )
+    turn = _task(store, origin.project_id, request=request.model_dump(mode="json"))
+    execution = SimpleNamespace(operation_id=turn.operation_id, store=store)
+    _append_chat_exchange(app.state.service, request, "Fixed.", None, None, execution=execution)
+
+    response = signed_in_client(app).get(f"/api/projects/{origin.project_id}/chats/{chat_id}")
+    assert response.status_code == 200, response.text
+    question, answer = response.json()["messages"]
+    assert answer["artifact_comments"] is None
+    assert question["artifact_comments"] == {
+        "artifact_id": artifact.artifact_id,
+        "name": "report.html",
+        "quotes": [
+            {"kind": "text", "quote": "Nine in ten", "comment": "What is ten?"},
+            {"kind": "box", "quote": "Figure 3", "comment": "Why two checkpoints?"},
+            {"kind": "box", "quote": "", "comment": "Unreadable axis."},
+        ],
+    }

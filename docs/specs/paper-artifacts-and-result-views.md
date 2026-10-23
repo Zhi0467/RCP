@@ -303,7 +303,10 @@ once from the staged version and retained for recovery; animation uses its first
 frame and says so. SVG/over-pixel-limit images carry positions only. Legacy viewer-
 area boxes keep sampled text and are never cropped. Turns allow 50 annotations.
 Both routes number human `Comment N:` text and prompt regions identically;
-`edit_now` adds only the immediate-edit request. The editable item also gives the
+`edit_now` adds only the immediate-edit request. The chat route joins each human
+turn's selections to its message, so the bubble names the artifact and quotes what
+each numbered comment was drawn on: the text, the boxed elements' names, or a plain
+area for an image. The editable item also gives the
 URL-encoded Markdown embed of its tracked path, so a reply that changed the file in
 place can show it there. All input is bounded/untrusted.
 

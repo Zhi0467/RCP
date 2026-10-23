@@ -285,6 +285,26 @@ class SteeringReceipt(BaseModel):
     reason: str | None = None
 
 
+class ChatArtifactQuote(BaseModel):
+    """What one numbered comment was drawn on, in the order the message numbers them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["text", "box"]
+    #: The selected text or the boxed elements' names; empty for an area of an image.
+    quote: str
+    comment: str
+
+
+class ChatArtifactComments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_id: str
+    #: None once the artifact is gone.
+    name: str | None
+    quotes: list[ChatArtifactQuote]
+
+
 class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -295,6 +315,8 @@ class ChatMessage(BaseModel):
     )
     #: The turn's live agent status, joined by the chat route; display only.
     agent_status: AgentStatus | None = None
+    #: The artifact comments a human turn carries, joined by the chat route; display only.
+    artifact_comments: ChatArtifactComments | None = None
     role: Literal["user", "assistant"]
     text: str
     timestamp: str

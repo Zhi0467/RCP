@@ -3007,11 +3007,28 @@ export interface SteerRequest {
   message: string;
 }
 
+/** What one numbered artifact comment was drawn on, in the order the message numbers them. */
+export interface ChatArtifactQuote {
+  kind: "text" | "box";
+  /** The selected text or the boxed elements' names; empty for an area of an image. */
+  quote: string;
+  comment: string;
+}
+
+export interface ChatArtifactComments {
+  artifact_id: string;
+  /** Null once the artifact is gone. */
+  name: string | null;
+  quotes: ChatArtifactQuote[];
+}
+
 export interface ChatMessage {
   turn_outcome: TurnOutcome | null;
   browser_status?: BrowserTurnStatus | null;
   /** The turn's live agent status, joined by the chat route; display only. */
   agent_status?: AgentStatus | null;
+  /** The artifact comments a human turn carries, joined by the chat route; display only. */
+  artifact_comments?: ChatArtifactComments | null;
   message_id: string;
   steering?: SteerReceipt | null;
   operation_id?: string | null;

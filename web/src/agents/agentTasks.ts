@@ -5,6 +5,7 @@ import type {
   ArtifactEditOutcome,
   ArtifactOmissions,
   AgentTask,
+  ChatArtifactComments,
   AgentTaskKind,
   ChatMessage,
   BrowserTurnStatus,
@@ -27,6 +28,7 @@ export interface TaskTranscriptLine {
   artifactOmissions?: ArtifactOmissions;
   artifactEditOutcomes?: ArtifactEditOutcome[];
   attachments?: ChatAttachmentDescriptor[];
+  artifactComments?: ChatArtifactComments | null;
   mode?: ConversationMode | null;
   trigger?: TaskTrigger;
   graphUpdate?: GraphUpdateResult | null;
@@ -194,6 +196,7 @@ export function chatMessageTranscriptLine(message: ChatMessage): TaskTranscriptL
     graphUpdate: message.graph_update,
     turnOutcome: message.turn_outcome,
     attachments: message.attachments,
+    artifactComments: message.artifact_comments,
     steering: message.steering,
     browserStatus: message.steering ? null : message.browser_status,
   };

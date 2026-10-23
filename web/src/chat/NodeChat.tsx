@@ -6,6 +6,7 @@ import { memberDraftKey } from "../core/draftStorage";
 import { MAIN_GRAPH } from "../core/graphTarget";
 import { ProjectReferencePicker } from "./ProjectReferencePicker";
 import { ReferenceChip } from "../core/ReferenceChip";
+import { ArtifactCommentQuotes, artifactCommentLead } from "./ArtifactCommentQuotes";
 import {
   MAX_CHAT_ATTACHMENTS,
   extractReferences,
@@ -2610,6 +2611,10 @@ export function NodeChat({
           const collapsible =
             line.role === "human" && line.text.length > CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD;
           const expanded = expandedHumanMessageIds.has(messageId);
+          const artifactComments = line.artifactComments;
+          const commentLead = artifactComments
+            ? artifactCommentLead(line.text, artifactComments)
+            : null;
           const compaction = compactionByLine.get(line.lineId);
           return (
             <Fragment key={line.lineId}>
@@ -2689,7 +2694,20 @@ export function NodeChat({
                     <div
                       className={`chat-human-message${collapsible && !expanded ? " collapsed" : ""}`}
                     >
-                      <span className="node-chat-text">{line.text}</span>
+                      {artifactComments && commentLead !== null ? (
+                        <ArtifactCommentQuotes
+                          lead={commentLead}
+                          comments={artifactComments}
+                          onOpen={() =>
+                            openArtifactPanel({
+                              projectId: project.id,
+                              artifactId: artifactComments.artifact_id,
+                            })
+                          }
+                        />
+                      ) : (
+                        <span className="node-chat-text">{line.text}</span>
+                      )}
                     </div>
                     {collapsible && (
                       <button
