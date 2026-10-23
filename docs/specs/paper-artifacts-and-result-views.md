@@ -194,7 +194,16 @@ nonblocking. The panel shows current version and Download, without repository co
 
 Artifacts lists kept outputs and undeleted reports across history, including
 archives, independent of task/episode windows. Temporary outputs stay in their
-chats until kept. Reports appear when captured. Revisits paint cached lists first.
+chats until kept. Reports appear when captured, except an Auto-research child
+Experiment's report, which offers Keep like a temporary output and is listed once
+kept. Revisits paint cached lists first.
+
+**Why:** a chain can start many child Experiments, and listing every child report
+buried the outputs a member chose to keep; the chain's own report summarizes them.
+
+Rows group under their branch, the branch with the newest output first; each
+header folds, and the device remembers which branches are folded. With one branch
+there is no header and each row keeps its branch tag.
 
 Rows lead with title, a separate Source chat link when verified, and a node title
 link when the displayed graph holds the origin node. Episode outputs have one

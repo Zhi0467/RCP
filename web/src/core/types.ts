@@ -3574,7 +3574,8 @@ export interface ProjectArtifact {
   download_url: string | null;
   can_open: boolean;
   unavailable_reason: string | null;
-  /** The owning branch's name, resolved by the server. */
+  /** The owning branch, resolved by the server; null is main. */
+  graph_branch_id: string | null;
   graph_branch_name: string;
   can_delete: boolean;
 }
