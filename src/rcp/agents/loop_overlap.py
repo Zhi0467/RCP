@@ -13,12 +13,14 @@ def render_loop_interference_rule(*, ask_allowed: bool) -> str:
     rule = {
         "id": "ask_human" if ask_allowed else "escalate_to_orchestrator",
         "instruction": (
-            "Ask the human if your work could interfere with episodes on another branch, "
-            "for example on the same node and in the same checkout."
+            "Ask the human if your work could interfere with RCP episodes on another branch, "
+            "for example on the same node and in the same checkout. Queueing jobs on a "
+            "shared scheduler is ordinary use, not interference."
             if ask_allowed
-            else "If your work could interfere with episodes on another branch, for example "
+            else "If your work could interfere with RCP episodes on another branch, for example "
             "on the same node and in the same checkout, pause that work and report the "
-            "conflict in your answer; your orchestrator asks the human."
+            "conflict in your answer; your orchestrator asks the human. Queueing jobs on a "
+            "shared scheduler is ordinary use, not interference."
         ),
     }
     return json.dumps({"interference_rule": rule}, ensure_ascii=False)

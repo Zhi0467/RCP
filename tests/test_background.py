@@ -783,7 +783,7 @@ def test_reserved_auto_research_root_reconciles_branch_before_provider_dispatch(
     assert store.agent_task(root.operation_id).status == "queued"  # type: ignore[union-attr]
 
 
-def test_spawned_child_uses_ordinary_node_work_and_atomically_spends_b(tmp_path: Path) -> None:
+def test_spawned_child_uses_ordinary_node_work_and_does_not_spend_b(tmp_path: Path) -> None:
     store = _store(tmp_path)
     seen: list[tuple[str, object]] = []
 
@@ -823,7 +823,7 @@ def test_spawned_child_uses_ordinary_node_work_and_atomically_spends_b(tmp_path:
     assert current.dispatch_authority is not None
     assert current.dispatch_authority.profile == "ordinary"
     assert current.dispatch_authority.task_contract == "work_auto"
-    assert store.episode_budget_meter(episode.episode_id).invocations_used == 2
+    assert store.episode_budget_meter(episode.episode_id).invocations_used == 1
     assert isinstance(seen[-1][1], RunRequest)
     assert seen[-1][0] == "node_chat"
 
@@ -1003,7 +1003,9 @@ def test_restart_dispatches_committed_child_work_resume_without_respending_b(
     assert store.episode_budget_meter(episode.episode_id) == before
 
 
-def test_spawned_child_message_wake_reuses_exact_work_session_and_spends_b(tmp_path: Path) -> None:
+def test_spawned_child_message_wake_reuses_exact_work_session_and_does_not_spend_b(
+    tmp_path: Path,
+) -> None:
     store = _store(tmp_path)
     stage = tmp_path / "spawned-work-mail-stage"
     stage.mkdir()
@@ -1067,7 +1069,7 @@ def test_spawned_child_message_wake_reuses_exact_work_session_and_spends_b(tmp_p
     assert wake.stage_root == child.stage_root == str(stage)
     assert wake.request["message"] is None
     assert delivered is not None and delivered.delivery_operation_id == wake_id
-    assert store.episode_budget_meter(episode.episode_id).invocations_used == 3
+    assert store.episode_budget_meter(episode.episode_id).invocations_used == 1
     assert seen_continuations == ["fresh", "message_wake"]
 
 

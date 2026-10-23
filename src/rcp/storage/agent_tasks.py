@@ -669,10 +669,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
     def _reserve_merge_invocation(
         self, connection, episode: EpisodeRecord, record: AgentTaskRecord
     ):
-        pending = cast("AppStore", self)._pending_child_budget_reservations(
-            connection, episode.episode_id, "work"
-        )
-        if episode.invocations_used + pending >= episode.invocation_ceiling:
+        if episode.invocations_used >= episode.invocation_ceiling:
             raise ValueError("merge_budget_exhausted")
         connection.execute(
             "INSERT INTO episode_invocations (episode_id, operation_id, invocation_number, created_at) VALUES (?, ?, ?, ?)",

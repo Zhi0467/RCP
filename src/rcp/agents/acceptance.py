@@ -669,32 +669,10 @@ async def _accept_campaign_turn(
                     control=control,
                 )
                 return "Finished the reauthorized acceptance turn after human Stop."
-            command_prefix = _campaign_command_prefix_for_orchestrator(contract)
-            if command_prefix is None:
-                raise ValueError("Acceptance campaign exhaustion fixture has no command prefix.")
-            seat_node_id = _campaign_seat_node(contract)
-            instruction_path = _campaign_worker_instruction(
-                cwd,
-                "exhaustion-probe.md",
-                "This worker must not be admitted after the research pot is empty.",
-            )
-            exhausted = await _run_campaign_client(
-                command_prefix,
-                "spawn",
-                "--key",
-                "acceptance-exhaustion-probe",
-                "--seat-node",
-                seat_node_id,
-                "--instruction-file",
-                str(instruction_path),
-                allow_invalid=True,
-            )
-            if exhausted.get("status") != "invalid":
-                raise ValueError("Acceptance exhaustion probe did not hit the one-pot fence.")
             fixture_state["exhausted_once"] = True
             updated_state[_CAMPAIGN_FIXTURE_STATE_KEY] = fixture_state
             _write_state(cwd, updated_state)
-            return "Completed the sole acceptance research allocation and exhausted the one pot."
+            return "Completed the sole acceptance research allocation."
         if directive == "stop":
             updated_state[_CAMPAIGN_FIXTURE_STATE_KEY] = fixture_state
             _write_state(cwd, updated_state)

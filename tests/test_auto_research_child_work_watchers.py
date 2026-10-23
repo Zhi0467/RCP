@@ -140,7 +140,7 @@ def test_child_watcher_wake_preserves_route_session_payload_and_spends_once(tmp_
         store.auto_research_child_work(watchers[0].worker_id).current_operation_id
         == wake.operation_id
     )
-    assert store.episode_budget_meter(episode.episode_id).invocations_used == before + 1
+    assert store.episode_budget_meter(episode.episode_id).invocations_used == before
     payload = wake.request["message"]
     for watcher in watchers:
         assert watcher.watcher_id in payload
@@ -155,7 +155,7 @@ def test_child_watcher_wake_preserves_route_session_payload_and_spends_once(tmp_
     assert '"job_id"' not in payload
     assert '"exit_status"' not in payload
     assert _deliver(tasks, episode, watchers) is None
-    assert store.episode_budget_meter(episode.episode_id).invocations_used == before + 1
+    assert store.episode_budget_meter(episode.episode_id).invocations_used == before
     assert [item[1:3] for item in seen] == [
         ("auto_research", "fresh"),
         ("node_chat", "fresh"),
@@ -163,11 +163,9 @@ def test_child_watcher_wake_preserves_route_session_payload_and_spends_once(tmp_
     ]
 
 
-@pytest.mark.parametrize("fence", ["budget", "route_stop", "episode_stop"])
+@pytest.mark.parametrize("fence", ["route_stop", "episode_stop"])
 def test_child_watcher_completion_stays_unclaimed_when_fenced(tmp_path, fence):
-    tasks, episode, child, watchers, _seen = _waiting_child(
-        tmp_path, ceiling=2 if fence == "budget" else 6
-    )
+    tasks, episode, child, watchers, _seen = _waiting_child(tmp_path, ceiling=6)
     store = tasks.store
     before = store.episode_budget_meter(episode.episode_id).invocations_used
     if fence == "route_stop":
@@ -183,10 +181,7 @@ def test_child_watcher_completion_stays_unclaimed_when_fenced(tmp_path, fence):
     for watcher in watchers:
         retained = store.watcher(watcher.watcher_id)
         assert retained.notification_operation_id is None
-        if fence == "budget":
-            assert retained.status == "completed" and not retained.notified
-        else:
-            assert retained.status == "stopped" and retained.notified
+        assert retained.status == "stopped" and retained.notified
     assert all(store.watcher(item.watcher_id).cancel_requested_at is None for item in watchers)
 
 
@@ -208,7 +203,7 @@ def test_child_watcher_wake_reconciles_paid_dispatch_after_crash(tmp_path, monke
     ]
     wake = wait_for_task(tasks.store, wake_id, expect="succeeded")
     assert wake.native_session_id == child.native_session_id
-    assert tasks.store.episode_budget_meter(episode.episode_id).invocations_used == before + 1
+    assert tasks.store.episode_budget_meter(episode.episode_id).invocations_used == before
     assert sum(item[0] == wake_id for item in seen) == 1
 
 

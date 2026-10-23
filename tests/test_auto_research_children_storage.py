@@ -480,8 +480,9 @@ def _completed_child_project_rows(
     return parent, work_route, experiment_route, admission
 
 
-def test_child_work_admission_spends_b_and_reflects_route_atomically(tmp_path) -> None:
-    store, episode, root = _setup_parent(tmp_path, ceiling=2)
+def test_child_work_admission_does_not_spend_b_and_reflects_route_atomically(tmp_path) -> None:
+    store, episode, root = _setup_parent(tmp_path, ceiling=1)
+    before = store.episode_budget_meter(episode.episode_id).invocations_used
     route, task = _work_pair(store, episode, root, worker_id="worker-one")
     admission = store.record_auto_research_child_admission(
         _admission(
@@ -501,37 +502,47 @@ def test_child_work_admission_spends_b_and_reflects_route_atomically(tmp_path) -
 
     assert stored == route
     assert stored_task.kind == "node_chat"
-    assert store.episode_budget_meter(episode.episode_id).invocations_used == 2
+    assert store.episode_budget_meter(episode.episode_id).invocations_used == before
     assert [item.operation_id for item in store.episode_invocations(episode.episode_id)] == [
         root.operation_id,
-        task.operation_id,
     ]
     assert store.auto_research_child_admission(admission.admission_id).state == "reflected"  # type: ignore[union-attr]
 
+    store.checkpoint_agent_task(
+        task.operation_id, native_session_id="worker-session", stage_root="/tmp/worker-stage"
+    )
     store.complete_agent_task(task.operation_id, applied_revision=None, result={})
     notices = store.auto_research_lifecycle_notices(episode.episode_id)
     assert [(notice.source_kind, notice.source_id, notice.source_event) for notice in notices] == [
         ("worker", route.worker_id, "succeeded")
     ]
 
-
-def test_concurrent_child_work_admission_cannot_overspend_b(tmp_path) -> None:
-    store, episode, root = _setup_parent(tmp_path, ceiling=2)
-    pairs = [_work_pair(store, episode, root, worker_id=f"worker-{index}") for index in range(2)]
-
-    def admit(pair: tuple[AutoResearchChildWorkRecord, AgentTaskRecord]) -> str:
-        try:
-            store.create_auto_research_child_work(*pair)
-        except EpisodeInvocationCeilingReached:
-            return "exhausted"
-        return "admitted"
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        results = sorted(executor.map(admit, pairs))
-
-    assert results == ["admitted", "exhausted"]
-    assert store.episode_budget_meter(episode.episode_id).invocations_used == 2
-    assert len(store.auto_research_child_works(episode.episode_id)) == 1
+    current = store.agent_task(task.operation_id)
+    assert current is not None
+    message = store.record_auto_research_message(
+        AutoResearchMessageRecord(
+            message_id="wake-mail",
+            episode_id=episode.episode_id,
+            sender_role="orchestrator",
+            sender_task_id=root.operation_id,
+            recipient_task_id=route.worker_id,
+            body="Continue the check.",
+            created_at=store.now(),
+        )
+    )
+    wake = _child_work_mail_wake(store, current)
+    meter = store.episode_budget_meter(episode.episode_id)
+    assert meter.invocations_used == meter.invocation_ceiling
+    assert (
+        store.create_auto_research_child_work_message_wake_task(
+            wake, worker_id=route.worker_id, message_ids=[message.message_id]
+        )
+        is not None
+    )
+    assert store.episode_budget_meter(episode.episode_id).invocations_used == before
+    assert [item.operation_id for item in store.episode_invocations(episode.episode_id)] == [
+        root.operation_id,
+    ]
 
 
 @pytest.mark.parametrize("fork", [False, True])
@@ -581,8 +592,8 @@ def test_exact_child_work_recovery_reuses_allocation_and_binding(tmp_path, fork)
         ).fetchone()
     assert allocation is not None
     assert allocation["allocation_operation_id"] == task.operation_id
-    assert store.episode_budget_meter(episode.episode_id).invocations_used == 2
-    assert len(store.episode_invocations(episode.episode_id)) == 2
+    assert store.episode_budget_meter(episode.episode_id).invocations_used == 1
+    assert len(store.episode_invocations(episode.episode_id)) == 1
 
 
 def test_child_work_recovery_inherits_a_message_wake_allocation(tmp_path) -> None:
@@ -724,7 +735,7 @@ def test_ordinary_child_work_mail_preserves_parent_worker_star_topology(tmp_path
 
 
 @pytest.mark.parametrize("fork", [False, True])
-def test_child_work_mail_wake_spends_b_updates_route_and_claims_exact_prefix(
+def test_child_work_mail_wake_does_not_spend_b_updates_route_and_claims_exact_prefix(
     tmp_path,
     fork,
 ) -> None:
@@ -791,7 +802,7 @@ def test_child_work_mail_wake_spends_b_updates_route_and_claims_exact_prefix(
     assert updated_route.current_operation_id == wake.operation_id
     assert store.auto_research_child_work_for_operation(wake.operation_id) == updated_route
     assert store.episode_budget_meter(parent.episode_id).invocations_used == (
-        meter_before.invocations_used + 1
+        meter_before.invocations_used
     )
     assert store.auto_research_message(first.message_id).delivery_operation_id == (  # type: ignore[union-attr]
         wake.operation_id
@@ -894,7 +905,7 @@ def test_concurrent_child_work_mail_wakes_claim_once_and_admit_one_lineage(tmp_p
     assert len(winner_ids) == 1
     winner_id = winner_ids[0]
     assert store.auto_research_child_work(route.worker_id).current_operation_id == winner_id  # type: ignore[union-attr]
-    assert store.episode_budget_meter(parent.episode_id).invocations_used == 3
+    assert store.episode_budget_meter(parent.episode_id).invocations_used == 1
     assert [
         candidate.operation_id
         for candidate in candidates
@@ -2777,7 +2788,7 @@ def test_fork_child_target_is_owned_and_continuations_cannot_apply_to_parent(tmp
     route2, task2 = _work_pair(store, other, root, worker_id="foreign-child")
     with pytest.raises(ValueError):
         store.validate_agent_task_graph_target(task2.model_copy(update={"graph_target": target}))
-    assert store.episode_budget_meter(parent.episode_id).invocations_used == 2
+    assert store.episode_budget_meter(parent.episode_id).invocations_used == 1
 
 
 def test_empty_fork_archive_waits_for_all_writers_admissions_and_known_commit(tmp_path):

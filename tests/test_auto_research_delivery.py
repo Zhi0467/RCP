@@ -869,7 +869,7 @@ def test_root_mail_wakes_the_exact_routed_ordinary_child_work_session(tmp_path) 
     assert wake.request["message"] is None
     assert store.agent_task_continuation_cause(wake.operation_id) == "message_wake"
     assert store.episode_budget_meter(auto_research.episode_id).invocations_used == (
-        before.invocations_used + 1
+        before.invocations_used
     )
     assert observed[-1] == ("node_chat", "message_wake", "child-session")
 
@@ -999,7 +999,7 @@ def test_committed_child_work_mail_wake_reconciles_the_same_operation(
     route = store.auto_research_child_work(worker_id)
     assert route is not None and route.current_operation_id == wake_id
     after_claim = store.episode_budget_meter(auto_research.episode_id)
-    assert after_claim.invocations_used == before.invocations_used + 1
+    assert after_claim.invocations_used == before.invocations_used
 
     assert reconcile_pending_auto_research_mail(
         tasks,
@@ -1099,7 +1099,7 @@ def test_child_work_mail_claims_only_the_bounded_wire_prefix(tmp_path) -> None:
         message.message_id for message in messages[len(claimed) :]
     ]
     assert store.episode_budget_meter(auto_research.episode_id).invocations_used == (
-        before.invocations_used + 1
+        before.invocations_used
     )
 
 

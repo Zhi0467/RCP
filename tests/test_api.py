@@ -5595,6 +5595,52 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
     assert len(list(inputs.glob("rcp-agent-client-*.py"))) == 3
 
 
+def test_chat_in_a_copied_data_directory_retries_in_a_fresh_session(manifest, tmp_path) -> None:
+    app, service = _seeded_project(manifest, tmp_path)
+    project_id = app.state.default_project_id
+    launcher = ScriptedLauncher([{}], message="Work answered.")
+    data_dirs = [tmp_path / "old-data"]
+
+    async def stream(_project_id, _kind, request, execution):
+        async for frame in stream_work_run(
+            service, launcher, request, data_dirs[-1], execution=execution
+        ):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    client = signed_in_client(app)
+    turn = {
+        "chat_id": str(uuid.uuid4()),
+        "message": "Go.",
+        "run_truth_scope": ["repo-a"],
+        "mode": "work",
+    }
+    first = client.post(f"/api/projects/{project_id}/tasks/project_chat", json=turn)
+    assert _wait_for_run(client, project_id, first.json()["operation_id"])["status"] == "succeeded"
+    # The old directory stays behind, as after a copy; its saved stage path still exists.
+    shutil.copytree(data_dirs[0], tmp_path / "new-data")
+    data_dirs.append(tmp_path / "new-data")
+
+    second = client.post(
+        f"/api/projects/{project_id}/tasks/project_chat",
+        json={**turn, "session_id": launcher.native_session_id},
+    )
+    failed = _wait_for_run(client, project_id, second.json()["operation_id"])
+    assert failed["status"] == "failed"
+    assert launcher.calls == 1
+    launcher.native_session_id = str(uuid.uuid4())  # A fresh provider session has a new id.
+    retried = client.post(
+        f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry", json={}
+    )
+    completed = _wait_for_run(client, project_id, retried.json()["operation_id"])
+
+    assert completed["status"] == "succeeded"
+    assert launcher.resumed_sessions == [None, None]
+    assert launcher.workspaces[1].is_relative_to(data_dirs[1])
+    receipts = {item["category"] for item in completed["debug_receipts"]}
+    assert "native_resume_unavailable" in receipts
+
+
 @pytest.mark.parametrize(
     "provider",
     ["codex", "claude"],

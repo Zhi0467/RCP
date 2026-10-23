@@ -273,7 +273,7 @@ def test_restart_reconciles_spawn_from_immutable_snapshot_once(tmp_path, fork) -
     assert admission is not None and admission.state == "reflected"
     assert invocation is not None and invocation.status == "ok"
     assert store.episode_budget_meter(episode.episode_id).invocations_used == (
-        before.invocations_used + 1
+        before.invocations_used
     )
     wait_for_task(store, child_id)
 
@@ -364,7 +364,7 @@ def test_transient_recovery_failure_keeps_admission_for_exact_later_retry(tmp_pa
     assert route is not None and route.instruction == instruction
     assert command is not None and command.status == "ok"
     assert store.episode_budget_meter(episode.episode_id).invocations_used == (
-        before.invocations_used + 1
+        before.invocations_used
     )
     wait_for_task(store, child_id)
 
@@ -467,7 +467,7 @@ def test_restart_recovers_completed_unavailable_spawn_owner_without_rewriting_it
     assert command.exit_payload["diagnostic"] == "The first dispatch boundary was unavailable."
     assert admission is not None and admission.state == "reflected"
     assert store.episode_budget_meter(episode.episode_id).invocations_used == (
-        before.invocations_used + 1
+        before.invocations_used
     )
     wait_for_task(store, child_id, expect="succeeded")
 

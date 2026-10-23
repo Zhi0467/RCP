@@ -293,6 +293,10 @@ record removal likewise never deletes repository worktrees.
 ## Conversation scratch and human input
 
 A conversation retains one scratch stage because native resume needs its cwd.
+So a saved stage outside the current data directory, after the directory moved
+or was copied, cannot resume: that turn fails and records
+`continuation_context_unavailable`, and Retry or the next message starts a
+fresh session with that recorded reason.
 Each logical turn owns `turns/<turn-id>/artifacts`. New turns clear stale
 `patch.json` and `watch.json` fail-closed. Committed native context retains its
 stage and master even while idle.
@@ -713,10 +717,9 @@ round repairs it without another invocation; jobs already exited need no
 observer, and a turn that launched nothing is unaffected. Child Work uses the
 ordinary Work reader, validator, and arming path for its final `watch.json`.
 
-A child watcher claim creates one continuation and spends one parent B unit
-atomically. It requires a running parent, a route without a Stop fence, and a
-succeeded current child task. A repeated delivery cannot create a second wake;
-exhausted B leaves the completion pending. A succeeded child with an armed,
+A child watcher claim creates one continuation atomically and spends no parent
+budget. It requires a running parent, a route without a Stop fence, and a
+succeeded current child task. A repeated delivery cannot create a second wake. A succeeded child with an armed,
 undelivered watcher is waiting, which blocks the root's guarded finish. Episode
 Stop and the root's child `stop` verb retire the child's watchers within their
 admission fence. They never cancel the observed jobs.

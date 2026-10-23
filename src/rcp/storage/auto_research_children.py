@@ -33,7 +33,6 @@ from rcp.storage.models import (
     AutoResearchInboxReceiptRecord,
     AutoResearchLifecycleNoticeRecord,
     AutoResearchMessageRecord,
-    EpisodeInvocationCeilingReached,
     EpisodeNotRunning,
     EpisodeReportConflict,
     _required_timestamp,
@@ -375,24 +374,23 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
         return stored
 
     @staticmethod
-    def _pending_child_budget_reservations(
+    def _pending_child_experiment_reservations(
         connection: sqlite3.Connection,
         episode_id: str,
-        child_kind: str,
         *,
         exclude_child_id: str | None = None,
     ) -> int:
-        """Accepted intents reserve one first allocation until reflected or cancelled."""
+        """Accepted Experiment intents reserve one first allocation until spent or cancelled.
+
+        Workers are unmetered ordinary Work, so their intents reserve nothing.
+        """
         row = connection.execute(
             "SELECT COUNT(*) FROM auto_research_child_admissions AS admission "
             "WHERE episode_id=? AND child_kind=? AND state='accepted' "
             "AND (? IS NULL OR child_id != ?) "
-            "AND NOT EXISTS (SELECT 1 FROM auto_research_child_work AS worker "
-            "WHERE worker.worker_id=admission.child_id AND admission.child_kind='work') "
             "AND NOT EXISTS (SELECT 1 FROM auto_research_experiment_invocations AS spend "
-            "WHERE spend.child_episode_id=admission.child_id "
-            "AND admission.child_kind='experiment')",
-            (episode_id, child_kind, exclude_child_id, exclude_child_id),
+            "WHERE spend.child_episode_id=admission.child_id)",
+            (episode_id, _EXPERIMENT_CHILD, exclude_child_id, exclude_child_id),
         ).fetchone()
         assert row is not None
         return int(row[0])
@@ -417,17 +415,11 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 raise ValueError("the child admission identity already names another intent")
             return stored
         self._validate_auto_research_parent_admission(episode)
-        pending = self._pending_child_budget_reservations(
-            connection, episode.episode_id, record.child_kind
-        )
-        if record.child_kind == "work":
-            if episode.invocations_used + pending >= episode.invocation_ceiling:
-                raise EpisodeInvocationCeilingReached(
-                    "the Auto-research operational invocation ceiling is exhausted"
-                )
-        else:
+        if record.child_kind == _EXPERIMENT_CHILD:
             allowance = self._auto_research_experiment_allowance(connection, episode.episode_id)
-            if allowance.remaining <= pending:
+            if allowance.remaining <= self._pending_child_experiment_reservations(
+                connection, episode.episode_id
+            ):
                 raise AutoResearchExperimentAllowanceReached(allowance)
         connection.execute(
             """
@@ -589,7 +581,7 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
         *,
         admission_id: str | None = None,
     ) -> tuple[AutoResearchChildWorkRecord, AgentTaskRecord]:
-        """Atomically spend one B unit, insert ordinary Work, and route it to its parent."""
+        """Atomically insert unmetered ordinary Work and route it to its parent."""
 
         if (
             record.root_operation_id != task.operation_id
@@ -631,16 +623,6 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 ).fetchone()
                 if actor is None or actor["role"] != "orchestrator":
                     raise ValueError("only the canonical orchestrator may admit ordinary Work")
-                if (
-                    episode.invocations_used
-                    + self._pending_child_budget_reservations(
-                        connection, episode.episode_id, "work", exclude_child_id=record.worker_id
-                    )
-                    >= episode.invocation_ceiling
-                ):
-                    raise EpisodeInvocationCeilingReached(
-                        "the Auto-research operational invocation ceiling is exhausted"
-                    )
                 if self._has_active_chat_overlap(connection, task):
                     raise ValueError("Another task is already active in this conversation.")
                 self._insert_agent_task(connection, task, continuation_cause="fresh")
@@ -676,31 +658,6 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                     """,
                     (task.operation_id, record.worker_id, task.operation_id, task.created_at),
                 )
-                invocation_number = episode.invocations_used + 1
-                connection.execute(
-                    """
-                    INSERT INTO episode_invocations (
-                        episode_id, operation_id, invocation_number, created_at
-                    ) VALUES (?, ?, ?, ?)
-                    """,
-                    (record.episode_id, task.operation_id, invocation_number, task.created_at),
-                )
-                changed = connection.execute(
-                    """
-                    UPDATE episodes
-                    SET invocations_used = ?, updated_at = ?
-                    WHERE episode_id = ? AND invocations_used = ? AND status = 'running'
-                      AND ending IS NULL AND stop_requested_at IS NULL
-                    """,
-                    (
-                        invocation_number,
-                        task.created_at,
-                        record.episode_id,
-                        episode.invocations_used,
-                    ),
-                )
-                if changed.rowcount != 1:
-                    raise ValueError("the episode budget changed during child admission")
                 self._reflect_auto_research_child_admission(
                     connection,
                     admission_id=admission_id,
@@ -721,7 +678,7 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
         worker_id: str,
         task: AgentTaskRecord,
     ) -> tuple[AutoResearchChildWorkRecord, AgentTaskRecord]:
-        """Insert one exact saved-session recovery without spending B again."""
+        """Insert one exact saved-session recovery of an unmetered worker."""
 
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -827,7 +784,7 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
         worker_id: str,
         watcher_ids: list[str],
     ) -> AgentTaskRecord | None:
-        """Claim child observations, spend B, and bind their saved Work continuation."""
+        """Claim child observations and bind their saved Work continuation."""
 
         return self._create_auto_research_child_work_wake_task(
             record, worker_id=worker_id, message_ids=[], watcher_ids=watcher_ids
@@ -841,7 +798,7 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
         message_ids: list[str],
         watcher_ids: list[str],
     ) -> AgentTaskRecord | None:
-        """Claim child mail or watchers and spend B on the same saved Work route."""
+        """Claim child mail or watchers on the same saved Work route; workers are unmetered."""
 
         ids = watcher_ids or message_ids
         if not worker_id or not ids or len(ids) != len(set(ids)) or (message_ids and watcher_ids):
@@ -991,16 +948,6 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                     )
                 if self._has_active_chat_overlap(connection, record):
                     return None
-                if (
-                    episode.invocations_used
-                    + self._pending_child_budget_reservations(
-                        connection, episode.episode_id, "work"
-                    )
-                    >= episode.invocation_ceiling
-                ):
-                    raise EpisodeInvocationCeilingReached(
-                        "the Auto-research operational invocation ceiling is exhausted"
-                    )
                 self._insert_agent_task(
                     connection,
                     record,
@@ -1014,34 +961,6 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                     """,
                     (record.operation_id, worker_id, record.operation_id, record.created_at),
                 )
-                invocation_number = episode.invocations_used + 1
-                connection.execute(
-                    """
-                    INSERT INTO episode_invocations (
-                        episode_id, operation_id, invocation_number, created_at
-                    ) VALUES (?, ?, ?, ?)
-                    """,
-                    (
-                        route.episode_id,
-                        record.operation_id,
-                        invocation_number,
-                        record.created_at,
-                    ),
-                )
-                budget_changed = connection.execute(
-                    """
-                    UPDATE episodes
-                    SET invocations_used = ?, updated_at = ?
-                    WHERE episode_id = ? AND invocations_used = ? AND status = 'running'
-                      AND ending IS NULL AND stop_requested_at IS NULL
-                    """,
-                    (
-                        invocation_number,
-                        record.created_at,
-                        route.episode_id,
-                        episode.invocations_used,
-                    ),
-                ).rowcount
                 route_changed = connection.execute(
                     """
                     UPDATE auto_research_child_work
@@ -1056,7 +975,7 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                         current.operation_id,
                     ),
                 ).rowcount
-                if budget_changed != 1 or route_changed != 1:
+                if route_changed != 1:
                     raise ValueError("child Work wake admission changed during its transaction")
                 if watcher_ids:
                     claimed = connection.execute(
@@ -1362,11 +1281,8 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
         if route is None or route["state"] != "running":
             raise ValueError("the child Experiment invocation has no live parent route")
         allowance = self._auto_research_experiment_allowance(connection, auto_research_episode_id)
-        pending = self._pending_child_budget_reservations(
-            connection,
-            auto_research_episode_id,
-            _EXPERIMENT_CHILD,
-            exclude_child_id=child_episode_id,
+        pending = self._pending_child_experiment_reservations(
+            connection, auto_research_episode_id, exclude_child_id=child_episode_id
         )
         if allowance.remaining <= pending:
             raise AutoResearchExperimentAllowanceReached(allowance)

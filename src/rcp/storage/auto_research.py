@@ -904,13 +904,7 @@ class AutoResearchStoreMixin(StoreMixinBase):
             raise EpisodeNotRunning("the Auto-research episode is not accepting new work")
         if episode.stop_requested_at is not None:
             raise EpisodeNotRunning("the Auto-research episode is stopping")
-        if (
-            episode.invocations_used
-            + cast("AppStore", self)._pending_child_budget_reservations(
-                connection, episode.episode_id, "work"
-            )
-            >= episode.invocation_ceiling
-        ):
+        if episode.invocations_used >= episode.invocation_ceiling:
             raise EpisodeInvocationCeilingReached(
                 "the Auto-research operational invocation ceiling is exhausted"
             )

@@ -2,7 +2,7 @@
 id: experiment-causality
 kind: skill
 label: Experiment causality
-version: 1.4.0
+version: 1.5.0
 description: Plan, repair, or audit experiment dependencies by tracing input gates and separating intended empirical handoffs from observed Evidence.
 dependencies:
 ---
@@ -44,18 +44,16 @@ repair is authorized, contribute only to that task's Patch.
    their resolution sources, and repeat only for empirical gates. Never move a gate that the
    precursor will settle backward into that precursor's inputs.
 6. **Stop at a real resolution source.** Do not invent Experiments for choices, external
-   outages, repository access, implementation tasks, ordinary retries, or already sufficient
-   Evidence.
+   outages, repository access, implementation tasks, smoke or integration runs, ordinary
+   retries, or already sufficient Evidence.
 
-## Smoke and validation Experiments
+## Smoke and validation runs
 
-A smoke Experiment verifies infrastructure, integration, or recovery, so its own setup steps are
-never its gates; it carries `blocked_by` only for a constraint the run cannot remove. The
-unverified infrastructure remains a genuine gate for any downstream main Experiment that depends
-on it. Keep that Blocker on
-the main Experiment, name the smoke as the precursor in the Blocker's `resolution_condition`, and
-connect the smoke's Evidence to it with `addresses` once the smoke has run. The gate moves off the
-precursor, not out of the graph.
+A smoke run, integration check, or recovery test usually verifies infrastructure, not a research
+claim. Run it before the main Experiment and report it in prose. It gets no Experiment node, and
+an infrastructure problem the agent can fix and verify gets no Blocker. When a smoke result does
+bear on a Hypothesis or inform a Decision, record that result as Evidence. A Blocker records only
+a constraint the agent cannot remove, such as missing access or a human-only approval.
 
 ## Check the complete action program
 

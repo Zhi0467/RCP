@@ -645,7 +645,7 @@ def test_status_and_controls_resolve_the_latest_canonical_worker_leaf(
     paused = effects.pause(context, worker.operation_id)
 
     assert status.result["episode"]["status"] == "running"  # type: ignore[index]
-    assert status.result["budget"]["invocations_used"] == 2  # type: ignore[index]
+    assert status.result["budget"]["invocations_used"] == 1  # type: ignore[index]
     assert "report_units_reserved" not in status.result["budget"]  # type: ignore[operator]
     assert status.result["worker"] == {
         "worker_id": worker.operation_id,
@@ -1207,7 +1207,7 @@ def test_transient_spawn_failure_keeps_admission_for_same_key_recovery(
     admission = store.auto_research_child_admission(worker_id)
     assert admission is not None and admission.state == "reflected"
     assert store.episode_budget_meter(auto_research.episode_id).invocations_used == (
-        before.invocations_used + 1
+        before.invocations_used
     )
     assert executions == ["fresh"]
 
@@ -1269,7 +1269,7 @@ def test_spawn_uses_the_planned_id_and_ordinary_work_route(tmp_path) -> None:
     assert route.instruction_sha256 == digest
     assert store.auto_research_invocation_role(worker.operation_id) is None
     assert store.episode_budget_meter(auto_research.episode_id).invocations_used == (
-        before.invocations_used + 1
+        before.invocations_used
     )
     wait_for_task(store, worker.operation_id)
 

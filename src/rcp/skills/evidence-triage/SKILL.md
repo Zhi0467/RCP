@@ -2,7 +2,7 @@
 id: evidence-triage
 kind: skill
 label: Evidence triage
-version: 3.4.0
+version: 3.5.0
 description: Triage Evidence before creating or materially updating it, or audit load bearing Evidence for provenance, methodological role, validity, claim-relative assessments, and action handoffs to Decisions or Blockers.
 dependencies:
 ---
