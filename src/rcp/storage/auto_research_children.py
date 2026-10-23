@@ -386,11 +386,11 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
         """
         row = connection.execute(
             "SELECT COUNT(*) FROM auto_research_child_admissions AS admission "
-            "WHERE episode_id=? AND child_kind='experiment' AND state='accepted' "
+            "WHERE episode_id=? AND child_kind=? AND state='accepted' "
             "AND (? IS NULL OR child_id != ?) "
             "AND NOT EXISTS (SELECT 1 FROM auto_research_experiment_invocations AS spend "
             "WHERE spend.child_episode_id=admission.child_id)",
-            (episode_id, exclude_child_id, exclude_child_id),
+            (episode_id, _EXPERIMENT_CHILD, exclude_child_id, exclude_child_id),
         ).fetchone()
         assert row is not None
         return int(row[0])
@@ -415,7 +415,7 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 raise ValueError("the child admission identity already names another intent")
             return stored
         self._validate_auto_research_parent_admission(episode)
-        if record.child_kind == "experiment":
+        if record.child_kind == _EXPERIMENT_CHILD:
             allowance = self._auto_research_experiment_allowance(connection, episode.episode_id)
             if allowance.remaining <= self._pending_child_experiment_reservations(
                 connection, episode.episode_id

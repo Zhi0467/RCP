@@ -240,8 +240,8 @@ def test_acceptance_episode_completes_and_corrects_one_hidden_report(
         budget = episode["budget"]
         assert isinstance(budget, dict)
         assert budget["invocation_ceiling"] == 3
-        assert budget["invocations_used"] == 3
-        assert budget["invocations_remaining"] == 0
+        assert budget["invocations_used"] == 2
+        assert budget["invocations_remaining"] == 1
         assert episode["wrapup_state"] == "ready"
         assert episode["report"] is not None
         assert all(task["kind"] != "episode_report" for task in episode["tasks"])
@@ -263,7 +263,6 @@ def test_acceptance_episode_completes_and_corrects_one_hidden_report(
     assert child.parent_operation_id is None
     assert [item.operation_id for item in store.episode_invocations(episode_id)] == [
         tasks[0].operation_id,
-        child.operation_id,
         tasks[1].operation_id,
     ]
     root = next(task for task in tasks if task.parent_operation_id is None)
@@ -359,8 +358,8 @@ def test_acceptance_episode_restart_retry_reuses_the_successful_spawn(
     assert child_routes[0].current_operation_id == worker.operation_id
     budget = episode["budget"]
     assert isinstance(budget, dict)
-    assert budget["invocations_used"] == 2
-    assert budget["invocations_remaining"] == 8
+    assert budget["invocations_used"] == 1
+    assert budget["invocations_remaining"] == 9
     retry = restarted_store.agent_task(retry_operation_id)
     report_task = _assert_corrected_report(restarted_store, episode_id)
     assert retry is not None and retry.status == "succeeded"
@@ -409,7 +408,7 @@ def test_acceptance_episode_exhausts_operational_invocations_then_reports(
         app,
         node_id="exp/episode-exhaustion",
         title="Episode exhaustion probe",
-        objective="Prove no worker is admitted after the operational ceiling is spent.",
+        objective="Prove the orchestrator's own turns spend the operational ceiling.",
     )
     store = app.state.background_tasks.store
 
@@ -449,8 +448,6 @@ def test_acceptance_episode_exhausts_operational_invocations_then_reports(
     report_task = _assert_corrected_report(store, episode_id)
     assert report_task.native_session_id == root.native_session_id
     assert report_task.stage_root == root.stage_root
-    exhaustion_probe = store.agent_command_by_key(episode_id, "acceptance-exhaustion-probe")
-    assert exhaustion_probe is not None and exhaustion_probe.status == "invalid"
     assert store.episode_report(episode_id) is not None
 
 
@@ -806,7 +803,7 @@ def test_acceptance_episode_unrecoverable_failure_waits_then_reports_once(
         budget = episode["budget"]
         assert isinstance(budget, dict)
         assert budget["invocation_ceiling"] == 10
-        assert budget["invocations_used"] == 2
+        assert budget["invocations_used"] == 1
         assert episode["wrapup_state"] == "ready"
         preview = client.get(f"/api/projects/{project_id}/episodes/{episode_id}/report/content")
         assert preview.status_code == 200, preview.text

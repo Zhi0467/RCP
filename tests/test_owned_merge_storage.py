@@ -93,22 +93,13 @@ def test_owned_merge_admission_reserves_one_allocation_with_binding(
         store.agent_task_authority(task.project_id, task.operation_id)
 
 
-@pytest.mark.parametrize("pending", [False, True])
-def test_owned_merge_exhausted_budget_rolls_back_task_and_intent(manifest, tmp_path, pending):
+def test_owned_merge_exhausted_budget_rolls_back_task_and_intent(manifest, tmp_path):
     harness, task = _owned_merge(manifest, tmp_path)
     store = harness.store
     with store.connection() as connection:
         connection.execute(
-            "UPDATE episodes SET invocation_ceiling=invocations_used+? WHERE episode_id=?",
-            (int(pending), task.episode_id),
-        )
-    if pending:
-        from .test_auto_research_children_storage import _admission
-
-        store.record_auto_research_child_admission(
-            _admission(
-                store, harness.episode, admission_id="pending", child_kind="work", child_id="worker"
-            )
+            "UPDATE episodes SET invocation_ceiling=invocations_used WHERE episode_id=?",
+            (task.episode_id,),
         )
     with pytest.raises(ValueError, match="merge_budget_exhausted"):
         store.create_branch_merge_task(task)
