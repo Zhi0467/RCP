@@ -2077,9 +2077,16 @@
 .chat-reference-picker ul {
   list-style: none;
   margin: 0;
+  padding: 0;
+}
+.chat-reference-list {
   max-height: 240px;
   overflow: auto;
-  padding: 0;
+}
+.chat-reference-picker .artifacts-branch > summary {
+  border-bottom: 1px solid var(--line);
+  border-top: 0;
+  padding: 6px 10px;
 }
 .chat-reference-picker li button span {
   flex: 1;

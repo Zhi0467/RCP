@@ -3,6 +3,7 @@ import { api } from "../core/api";
 import { ArrowLeft, Check, ChevronRight, Folder, RotateCw, Search, X } from "lucide-react";
 import { referenceKey, type DraftReference } from "../core/projectReferences";
 import { ReferenceIcon } from "../core/ReferenceChip";
+import { BranchGroupSection, branchGroups, useFoldedBranches } from "../artifacts/BranchGroups";
 import type { GraphNode, GraphTargetRef, PaperSnapshot, ProjectArtifact } from "../core/types";
 
 type FolderId = "reports" | "artifacts" | "nodes";
@@ -14,6 +15,8 @@ const FOLDER_LABEL: Record<FolderId, string> = {
 interface Entry {
   folder: FolderId | null;
   reference: DraftReference;
+  /** Set for a report or artifact, which an open folder groups by branch. */
+  artifact?: ProjectArtifact;
 }
 
 /** RCP's records as a small file browser: folders first, then items; search spans all. */
@@ -69,6 +72,7 @@ export function ProjectReferencePicker({
       .filter((item) => item.available && item.artifact_id)
       .map((item): Entry => ({
         folder: item.kind === "report" ? "reports" : "artifacts",
+        artifact: item,
         reference: {
           selector: { kind: "artifact", artifact_id: item.artifact_id! },
           label: item.name,
@@ -115,6 +119,29 @@ export function ProjectReferencePicker({
       id,
       count: entries.filter((entry) => entry.folder === id).length,
     }));
+  // An open Reports or Artifacts folder groups like the Artifacts page, folds included.
+  const { folded, fold } = useFoldedBranches(projectId);
+  const groups =
+    folder === "reports" || folder === "artifacts"
+      ? branchGroups(shown, (entry) => entry.artifact!)
+      : [];
+  const grouped = groups.length > 1;
+  const row = ({ folder: entryFolder, reference }: Entry) => {
+    const added = selectedKeys.has(referenceKey(reference.selector));
+    return (
+      <li key={referenceKey(reference.selector)}>
+        <button type="button" disabled={added} onClick={() => onPick(reference)}>
+          <ReferenceIcon kind={reference.selector.kind} />
+          <span>{reference.label}</span>
+          {added ? (
+            <Check size={14} aria-label="Added" />
+          ) : (
+            searching && !folder && entryFolder && <small>{FOLDER_LABEL[entryFolder]}</small>
+          )}
+        </button>
+      </li>
+    );
+  };
   const back = () => {
     setFolder(null);
     setQuery("");
@@ -161,39 +188,38 @@ export function ProjectReferencePicker({
       </div>
       {folder && <div className="chat-reference-path">RCP / {FOLDER_LABEL[folder]}</div>}
       {loading && <span role="status">Loading…</span>}
-      <ul>
-        {!searching &&
-          !folder &&
-          folders.map(({ id, count }) => (
-            <li key={id}>
-              <button type="button" disabled={count === 0} onClick={() => setFolder(id)}>
-                <Folder size={14} aria-hidden="true" />
-                <span>{FOLDER_LABEL[id]}</span>
-                <small>{count}</small>
-                <ChevronRight size={14} aria-hidden="true" />
-              </button>
-            </li>
+      <div className="chat-reference-list">
+        <ul>
+          {!searching &&
+            !folder &&
+            folders.map(({ id, count }) => (
+              <li key={id}>
+                <button type="button" disabled={count === 0} onClick={() => setFolder(id)}>
+                  <Folder size={14} aria-hidden="true" />
+                  <span>{FOLDER_LABEL[id]}</span>
+                  <small>{count}</small>
+                  <ChevronRight size={14} aria-hidden="true" />
+                </button>
+              </li>
+            ))}
+          {!grouped && shown.map(row)}
+          {!loading && !error && searching && shown.length === 0 && (
+            <li className="chat-reference-empty">No matches.</li>
+          )}
+        </ul>
+        {grouped &&
+          groups.map((group) => (
+            <BranchGroupSection
+              key={group.key}
+              group={group}
+              refs={null}
+              open={!folded.has(group.key)}
+              onFold={(closed) => fold(group.key, closed)}
+            >
+              <ul>{group.items.map(row)}</ul>
+            </BranchGroupSection>
           ))}
-        {shown.map(({ folder: entryFolder, reference }) => {
-          const added = selectedKeys.has(referenceKey(reference.selector));
-          return (
-            <li key={referenceKey(reference.selector)}>
-              <button type="button" disabled={added} onClick={() => onPick(reference)}>
-                <ReferenceIcon kind={reference.selector.kind} />
-                <span>{reference.label}</span>
-                {added ? (
-                  <Check size={14} aria-label="Added" />
-                ) : (
-                  searching && !folder && entryFolder && <small>{FOLDER_LABEL[entryFolder]}</small>
-                )}
-              </button>
-            </li>
-          );
-        })}
-        {!loading && !error && searching && shown.length === 0 && (
-          <li className="chat-reference-empty">No matches.</li>
-        )}
-      </ul>
+      </div>
     </section>
   );
 }

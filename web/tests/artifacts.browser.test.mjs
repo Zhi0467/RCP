@@ -65,6 +65,7 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
         episode_mode: "experiment_loop",
         source_chat_href:
           "#/projects/project?view=runs&experiment=experiment%2Ftransfer&episode=old-episode&target=branch&branch=branch-one&parent=parent-episode",
+        graph_branch_id: "branch-one",
         graph_branch_name: "transfer-sweep",
       }),
       entry("plot", "Saved plot", {
@@ -72,6 +73,7 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
         episode_mode: "experiment_loop",
         path: "artifacts/plot.html",
         source_chat_href: "#/projects/project?view=chats&branch_id=branch-one&chat=plot-chat",
+        graph_branch_id: "branch-one",
         graph_branch_name: "transfer-sweep",
         source_node_id: "exp/transfer",
         can_download: true,
@@ -88,7 +90,8 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
         kind: "report",
         episode_id: "no-chat",
         episode_mode: "auto_research",
-        // A branch report with no source link still names its branch.
+        // A branch report with no source link still sits under its branch.
+        graph_branch_id: "branch-night",
         graph_branch_name: "night-run",
       }),
     ];
@@ -120,19 +123,32 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
       0,
     );
     await page.getByRole("link", { name: "Open Report", exact: true }).waitFor();
-    // Every row names its branch, main included.
-    assert.equal(
-      await page.locator(".artifact-entry .branch-tag").count(),
-      await page.locator(".artifact-entry").count(),
-    );
-    const tag = (name) =>
+    // Rows sit under their branch, each branch where its newest output first appears.
+    const headers = page.locator(".artifacts-branch > summary .branch-tag");
+    assert.deepEqual(await headers.evaluateAll((tags) => tags.map((tag) => tag.title)), [
+      "transfer-sweep",
+      "main",
+      "night-run",
+    ]);
+    assert.equal(await page.locator(".artifact-entry .branch-tag").count(), 0);
+    const branchOf = (name) =>
       page
-        .locator(".artifact-entry")
+        .locator(".artifacts-branch")
         .filter({ has: page.getByRole("heading", { name, exact: true }) })
-        .locator(".branch-tag")
+        .locator("summary .branch-tag")
         .getAttribute("title");
-    assert.equal(await tag("Validation report"), "transfer-sweep");
-    assert.equal(await tag("Report"), "night-run");
+    assert.equal(await branchOf("Saved plot"), "transfer-sweep");
+    assert.equal(await branchOf("Report"), "night-run");
+    // A folded branch hides its rows and stays folded on this device.
+    await page.locator(".artifacts-branch > summary").nth(2).click();
+    await page.getByRole("heading", { name: "Report", exact: true }).waitFor({ state: "hidden" });
+    assert.deepEqual(
+      await page.evaluate(() =>
+        JSON.parse(localStorage.getItem("rcp:artifacts-folded-branches:project")),
+      ),
+      ["branch-night"],
+    );
+    await page.locator(".artifacts-branch > summary").nth(2).click();
     const layout = await page.evaluate(() => {
       const panel = document.querySelector(".artifacts-view");
       const heading = panel.querySelector("h2");

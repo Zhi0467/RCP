@@ -4,7 +4,6 @@ import { setReferenceDrag } from "../core/projectReferences";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
 import { useState, type MouseEvent } from "react";
 import {
-  ChevronRight,
   Download,
   ExternalLink,
   GitCommitHorizontal,
@@ -22,6 +21,7 @@ import { StoredArtifactDownload } from "./StoredArtifactDownload";
 import { EpisodeAuthor } from "../experiments/EpisodeRunControls";
 import type { GraphRef, ProjectArtifact } from "../core/types";
 import { BranchTag } from "../core/BranchTag";
+import { BranchGroupSection, branchGroups, useFoldedBranches } from "./BranchGroups";
 
 export function Artifacts({
   projectId,
@@ -42,20 +42,9 @@ export function Artifacts({
   const loading = resource.loading;
   const [actionError, setError] = useState<string | null>(null);
   const error = actionError || (resource.error ? String(resource.error) : null);
-  const groups = branchGroups(entries ?? []);
-  const [folded, setFolded] = useState(() => readFolded(projectId));
-  const fold = (key: string, closed: boolean) => {
-    if (folded.has(key) === closed) return;
-    const next = new Set(folded);
-    if (closed) next.add(key);
-    else next.delete(key);
-    setFolded(next);
-    try {
-      localStorage.setItem(foldedStorageKey(projectId), JSON.stringify([...next]));
-    } catch {
-      // Folding still works for this visit when the device keeps no storage.
-    }
-  };
+  // Grouped as the server orders entries, so the branch with the newest output leads.
+  const groups = branchGroups(entries ?? [], (entry) => entry);
+  const { folded, fold } = useFoldedBranches(projectId);
 
   const open = async (
     event: MouseEvent<HTMLAnchorElement | HTMLButtonElement>,
@@ -217,54 +206,17 @@ export function Artifacts({
         <ul className="artifacts-list">{entries.map((entry) => row(entry, false))}</ul>
       ) : (
         groups.map((group) => (
-          <details
+          <BranchGroupSection
             key={group.key}
-            className="artifacts-branch"
+            group={group}
+            refs={graphRefs}
             open={!folded.has(group.key)}
-            onToggle={(event) => fold(group.key, !event.currentTarget.open)}
+            onFold={(closed) => fold(group.key, closed)}
           >
-            <summary>
-              <ChevronRight className="artifacts-branch-chevron" size={14} aria-hidden="true" />
-              <BranchTag
-                refs={graphRefs}
-                target={
-                  group.key === MAIN ? { kind: "main" } : { kind: "branch", branch_id: group.key }
-                }
-                name={group.name}
-              />
-              <span className="artifacts-branch-count">{group.entries.length}</span>
-            </summary>
-            <ul className="artifacts-list">{group.entries.map((entry) => row(entry, true))}</ul>
-          </details>
+            <ul className="artifacts-list">{group.items.map((entry) => row(entry, true))}</ul>
+          </BranchGroupSection>
         ))
       )}
     </section>
   );
-}
-
-const MAIN = "main";
-
-/** Entries under their branch, the branch with the newest artifact first. */
-function branchGroups(entries: ProjectArtifact[]) {
-  const groups = new Map<string, { key: string; name: string; entries: ProjectArtifact[] }>();
-  for (const entry of entries) {
-    const key = entry.graph_branch_id ?? MAIN;
-    const group = groups.get(key) ?? { key, name: entry.graph_branch_name, entries: [] };
-    group.entries.push(entry);
-    groups.set(key, group);
-  }
-  return [...groups.values()];
-}
-
-function foldedStorageKey(projectId: string): string {
-  return `rcp:artifacts-folded-branches:${projectId}`;
-}
-
-function readFolded(projectId: string): Set<string> {
-  try {
-    const keys: unknown = JSON.parse(localStorage.getItem(foldedStorageKey(projectId)) ?? "[]");
-    return new Set(Array.isArray(keys) ? keys.filter((key) => typeof key === "string") : []);
-  } catch {
-    return new Set();
-  }
 }
