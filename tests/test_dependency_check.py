@@ -303,11 +303,15 @@ def test_cold_refusal_checks_once() -> None:
 
 
 @pytest.mark.parametrize("space_kind", ["personal", "team"])
-def test_refusal_install_line_is_operator_routed(space_kind: str) -> None:
-    refusal = _checker(FakeRunner(MISSING), space_kind=space_kind).launch_refusal("gpu")
+def test_status_and_refusal_share_operator_routed_install_line(space_kind: str) -> None:
+    checker = _checker(FakeRunner(MISSING), space_kind=space_kind)
+    status = checker.status("gpu")
+    refusal = checker.launch_refusal("gpu")
     route = operator_route(space_kind, "gpu")
+    assert status.install_command == route.command(install_argv(["rsync"]), root=True)
+    assert status.install_command is not None
     assert refusal is not None
-    assert route.command(install_argv(["rsync"]), root=True) in refusal
+    assert status.install_command in refusal
 
 
 def test_cached_missing_is_rechecked_before_refusing() -> None:

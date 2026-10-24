@@ -20,7 +20,6 @@ from rcp.api.identity import IdentityAccess
 from rcp.browser import BrowserReadiness, enable_linger, install_browser, readiness
 from rcp.config import MachineConfig, load_manifest
 from rcp.core.models import MachineHiddenReadProjection
-from rcp.dependency_check import install_argv
 from rcp.limits import HIDDEN_READ_PATH_MAX_COUNT
 from rcp.machine_login import MachineLoginFailure, login_account, trust_host_key
 from rcp.operator_commands import operator_route
@@ -657,10 +656,6 @@ def machine_dependencies(
     machine = _machine_or_404(store, machine_id)
     checker = request.app.state.dependency_checker
     status = checker.status(machine.host, refresh=refresh)
-    if status.install_command:
-        route = operator_route(store.space_kind, machine.host)
-        command = route.command(install_argv(p.name for p in status.missing), root=True)
-        status = status.model_copy(update={"install_command": command})
     return status.model_dump(mode="json")
 
 

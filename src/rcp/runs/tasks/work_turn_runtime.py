@@ -176,6 +176,7 @@ class WorkTurn:
 
     service: ProjectService
     request: RunRequest
+    compute_profiles: list[dict[str, str]]
     execution: AgentTaskExecution | None
     context: ChatContext
     workspace: Path
@@ -241,6 +242,7 @@ class WorkTurn:
 @dataclass(frozen=True)
 class ResolvedWorkExecution:
     request: RunRequest
+    compute_profiles: list[dict[str, str]]
     execution_machine_alias: str
     execution_host: str
     provider_binary: str | None

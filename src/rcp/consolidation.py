@@ -206,7 +206,6 @@ class ConsolidationPoller:
         request = request.model_copy(
             update={"resolved_skill_packages": selection.resolved_skill_packages}
         )
-        request = service.resolve_compute_request(request)
         operation_id = str(uuid4())
         authority = resolved_dispatch_authority(
             self.store,

@@ -39,7 +39,6 @@ from rcp.config import (
     MachineComputeConfig,
     MachineConfig,
     Manifest,
-    ResolvedComputeContext,
     launches_work_like,
     load_manifest,
 )
@@ -113,7 +112,7 @@ from rcp.providers.browser_grant import BrowserTurnStatus
 from rcp.providers.live_status import AgentStatus
 from rcp.provisioning_repositories import team_repository_sources
 from rcp.runs.auto_research import AutoResearchRunRequest
-from rcp.runs.provider_login import provider_login_host
+from rcp.runs.provider_login import parked_provider_work, provider_login_host
 from rcp.skill_registry import (
     SkillDefaults,
     SkillReference,
@@ -949,13 +948,6 @@ class RunRequest(BaseModel):
     references: list[ProjectReferenceSelector] = Field(
         default_factory=list, max_length=CHAT_ATTACHMENT_MAX_COUNT
     )
-    # Every project machine seen from `run_on`, accepted only from RCP's own
-    # admission and durable rows. HTTP admission discards any client copy, and each
-    # launch re-resolves it from the current manifest. A retired client or row
-    # field, `active_compute_ids`, is ignored like any other unknown key.
-    resolved_compute_context: ResolvedComputeContext = Field(
-        default_factory=ResolvedComputeContext,
-    )
 
 
 class CoachRequest(BaseModel):
@@ -1135,54 +1127,7 @@ def agent_login_accounts(
         for profile in map(manifest.agent_profile, AGENT_EXECUTION_PROFILES)
     }
     if store is not None and project_id is not None:
-        accounts |= _parked_login_accounts(store, project_id, manifest)
-    return accounts
-
-
-def _parked_login_accounts(
-    store: AppStore, project_id: str, manifest: Manifest
-) -> set[tuple[str, str]]:
-    """(provider, host) pairs holding this project's work until a sign-in.
-
-    Mirrors what `resume_provider_account` releases: queued tasks, provider-auth
-    failures a sign-in retries, and undelivered watcher continuations. Each
-    froze its account at admission, so it can differ from today's profiles.
-    """
-    tasks = [store.agent_task(item) for item in store.queued_agent_task_ids(project_id)]
-    tasks += [
-        store.agent_task(recovery.operation_id)
-        for recovery in store.blocked_provider_auth_recoveries()
-    ]
-    for episode in store.live_episodes(project_id):
-        if (
-            episode.mode != "experiment_loop"
-            or episode.status != "running"
-            or not episode.control_node_id
-        ):
-            continue
-        runtime = store.experiment_loop_runtime(
-            project_id, episode.control_node_id, graph_target=episode.graph_target
-        )
-        tasks.append(store.agent_task(runtime.current_operation_id or ""))
-    accounts: set[tuple[str, str]] = set()
-    for task in tasks:
-        if task is None or task.project_id != project_id:
-            continue
-        if task.status != "queued" and task.failure_kind != "provider_auth":
-            continue
-        if task.stage_host is not None or task.stage_root is not None:
-            host = task.stage_host or ""
-        else:
-            try:
-                host = provider_login_host(manifest, str(task.request.get("run_on") or "local"))
-            except ValueError:
-                # Its machine left the project; resumption skips it the same way.
-                continue
-        accounts.add((str(task.request["provider"]), host))
-    for group in store.completed_watcher_groups():
-        first = group[0]
-        if first.project_id == project_id:
-            accounts.add((first.continuation.provider, first.execution_host or ""))
+        accounts |= parked_provider_work(store, project_id, lambda: manifest).keys()
     return accounts
 
 
@@ -2045,22 +1990,10 @@ class ProjectService:
         self.paper.manifest = self.manifest
         self.invalidate_source_index()
 
-    def resolve_compute_request(self, request: RunRequest) -> RunRequest:
-        """Freeze every project machine, seen from this turn's machine, into the request."""
-        if not request.run_on:
-            raise ValueError("compute context needs the turn's execution machine")
-        context = machine_compute_context(self.manifest, execution_machine=request.run_on)
-        return request.model_copy(update={"resolved_compute_context": context})
-
-    @staticmethod
-    def compute_prompt_profiles(context: ResolvedComputeContext) -> list[dict[str, str]]:
-        return [profile.model_dump(mode="json") for profile in context.active]
-
     def machine_prompt_profiles(self, run_on: str) -> list[dict[str, str]]:
         """Every project machine as seen from `run_on`, read from the manifest now."""
-        return self.compute_prompt_profiles(
-            machine_compute_context(self.manifest, execution_machine=run_on)
-        )
+        context = machine_compute_context(self.manifest, execution_machine=run_on)
+        return [profile.model_dump(mode="json") for profile in context.active]
 
     def resolve_provider_path(
         self,

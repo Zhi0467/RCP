@@ -478,7 +478,6 @@ def continue_experiment_episode(
             "invoked_skill_ids": [],
         }
     )
-    request = target_service.resolve_compute_request(request)
     # The saved stage is frozen on one machine; the worker checks the alias
     # against it. A repointed alias must refuse here, before the source is chained.
     try:

@@ -183,7 +183,7 @@ class DependencyChecker:
         sleep: Callable[[float], None] = time.sleep,
         local: Callable[[Collection[Role]], DependencyStatus] = local_check,
     ) -> None:
-        # Read per refusal: the install line is written for the space's operator route.
+        # Read per projection: the install line is written for the space's operator route.
         self._space_kind = space_kind
         self._runner = runner
         self._clock = clock
@@ -198,7 +198,14 @@ class DependencyChecker:
 
     def status(self, host: str, *, refresh: bool = False) -> DependencyStatus:
         """The cached result when fresh, otherwise a new check."""
-        return self._lookup(host, refresh=refresh)[0]
+        return self._project(self._lookup(host, refresh=refresh)[0], host)
+
+    def _project(self, result: DependencyStatus, host: str) -> DependencyStatus:
+        if result.install_command:
+            route = operator_route(self._space_kind(), host)
+            command = route.command(install_argv(p.name for p in result.missing), root=True)
+            return result.model_copy(update={"install_command": command})
+        return result
 
     def launch_refusal(self, host: str) -> str | None:
         """A reason to refuse an agent run on `host`, or None to admit it.
@@ -223,11 +230,8 @@ class DependencyChecker:
         if result.outcome != "missing":
             return None
         names = ", ".join(p.name for p in result.missing if p.required)
-        install = ""
-        if result.install_command:
-            route = operator_route(self._space_kind(), host)
-            command = route.command(install_argv(p.name for p in result.missing), root=True)
-            install = f" Install with: {command}"
+        command = self._project(result, host).install_command
+        install = f" Install with: {command}" if command else ""
         return f"{machine} is missing required programs: {names}.{install}"
 
     def _lookup(self, host: str, *, refresh: bool) -> tuple[DependencyStatus, bool]:
@@ -335,8 +339,8 @@ def _status(
     install_command = None
     notes: tuple[str, ...] = ()
     if lost and apt and all(d.apt for d in lost):
-        # Rendered for this machine's own prompt; a machine card re-renders it
-        # for the route its viewer types from.
+        # Standalone checks describe this machine's shell; the checker projects
+        # that guidance through the space's operator route.
         install_command = OperatorRoute().command(install_argv(d.name for d in lost), root=True)
     elif lost:
         notes = tuple(dict.fromkeys(d.note or f"Install {d.apt or d.name}." for d in lost))

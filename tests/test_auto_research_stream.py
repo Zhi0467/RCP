@@ -3402,32 +3402,6 @@ def _with_gpu_machine(manifest):
     return load_manifest(manifest.path)
 
 
-def test_a_spawned_child_freezes_the_machines_seen_from_its_own_run_on(manifest, tmp_path) -> None:
-    from rcp.agents.command_protocol import SpawnArguments
-    from rcp.api.app import _auto_research_worker_request
-    from rcp.compute import machine_compute_context
-
-    service = _service(_with_gpu_machine(manifest), tmp_path)
-    context = SimpleNamespace(
-        child_graph_target=None, episode=SimpleNamespace(graph_target=GraphTargetRef())
-    )
-    child = _auto_research_worker_request(
-        service,
-        cast(Any, context),
-        SpawnArguments(seat_node_id="blk/check-result", instruction_file="task.md"),
-        "Run the check.",
-        "worker-1",
-    )
-    assert child.run_on is not None
-    assert child.resolved_compute_context == machine_compute_context(
-        service.manifest, execution_machine=child.run_on
-    )
-    assert {item.id: item.kind for item in child.resolved_compute_context.active} == {
-        "laptop": "local",
-        "gpu": "ssh",
-    }
-
-
 def test_child_profile_choices_list_at_most_the_capped_models_per_provider():
     from rcp.agents.auto_research_prompt import render_child_profile_choices
     from rcp.limits import CHILD_PROFILE_PROMPT_MAX_MODELS
