@@ -142,13 +142,15 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
     // A folded branch hides its rows and stays folded on this device.
     await page.locator(".artifacts-branch > summary").nth(2).click();
     await page.getByRole("heading", { name: "Report", exact: true }).waitFor({ state: "hidden" });
-    assert.deepEqual(
-      await page.evaluate(() =>
-        JSON.parse(localStorage.getItem("rcp:artifacts-folded-branches:project")),
-      ),
-      ["branch-night"],
+    // The details element closes before its toggle event saves the fold.
+    await page.waitForFunction(
+      () => localStorage.getItem("rcp:artifacts-folded-branches:project") === '["branch-night"]',
     );
     await page.locator(".artifacts-branch > summary").nth(2).click();
+    await page.waitForFunction(
+      () => localStorage.getItem("rcp:artifacts-folded-branches:project") === "[]",
+    );
+    await page.getByRole("heading", { name: "Report", exact: true }).waitFor();
     const layout = await page.evaluate(() => {
       const panel = document.querySelector(".artifacts-view");
       const heading = panel.querySelector("h2");
