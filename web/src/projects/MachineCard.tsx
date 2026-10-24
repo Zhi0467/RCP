@@ -637,19 +637,20 @@ export function NewMachineForm({
       )}
       <div className="new-machine-actions">
         <button
-          className="button primary compact"
+          className={retrying ? "icon-button primary" : "button primary compact"}
           type="button"
           data-machine-action={retrying ? "retry-login" : "create"}
           title={retrying ? shown?.label : undefined}
+          aria-label={retrying ? `${shown?.label}. Try again` : undefined}
           disabled={writesDisabled || saving || !valid}
           onClick={() => void submit()}
         >
           {saving ? (
             <LoaderCircle className="spin" size={14} />
           ) : retrying ? (
-            <RotateCw size={14} />
+            <RotateCw size={14} aria-hidden="true" />
           ) : null}
-          {retrying ? "Try again" : "Create machine"}
+          {retrying ? null : "Create machine"}
         </button>
         <button className="button secondary compact" type="button" onClick={onCancel}>
           Cancel
