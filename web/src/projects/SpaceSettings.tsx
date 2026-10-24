@@ -136,7 +136,7 @@ function SpaceMachineList({
           >
             {machine.projects.length > 0 && (
               <p className="machine-card-projects">
-                {machine.projects.map((project) => project.project_name).join(", ")}
+                {[...new Set(machine.projects.map((project) => project.project_name))].join(", ")}
               </p>
             )}
           </MachineCard>

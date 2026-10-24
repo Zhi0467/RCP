@@ -3301,6 +3301,7 @@ button.agent-provider-label {
 .machine-alias-settings > strong {
   color: var(--muted);
   font: var(--type-2xs)/1 var(--mono);
+  padding: 0 12px;
 }
 .fold > summary {
   align-items: baseline;
