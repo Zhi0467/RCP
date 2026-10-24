@@ -1599,7 +1599,6 @@ def project_chat_question_answer(
                         "operationId": task.operation_id,
                         "mode": request.mode,
                         "trigger": request.trigger,
-                        "activeComputeIds": request.active_compute_ids,
                         "type": "user",
                         "role": "user",
                         "text": request.message,
@@ -1772,7 +1771,6 @@ def _append_chat_exchange(
             "operationId": execution.operation_id if execution is not None else None,
             "mode": request.mode,
             "trigger": request.trigger,
-            "activeComputeIds": request.active_compute_ids,
         }
         records = []
         if request.trigger != "watcher":
@@ -1840,7 +1838,6 @@ def _append_chat_graph_receipt(
             "operationId": operation_id,
             "mode": "work",
             "trigger": request.trigger,
-            "activeComputeIds": request.active_compute_ids,
             "uuid": str(uuid.uuid4()),
             "type": "assistant",
             "role": "assistant",

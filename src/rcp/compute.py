@@ -12,20 +12,16 @@ from pydantic import BaseModel, ConfigDict
 from rcp.compute_jobs.text import safe_compute_diagnostic
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,
-    ComputeConnectionConfig,
     Manifest,
     ResolvedComputeContext,
     ResolvedComputeProfile,
 )
-from rcp.limits import ACTIVE_COMPUTE_ID_MAX_COUNT
 from rcp.transport.remote_compute_probe import probe_connection
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import _remote_script
 
-ComputeProbeCacheKey = tuple[
-    tuple[tuple[str, str], ...],
-    tuple[tuple[str, str, str, str, str], ...],
-]
+#: Each execution machine with the routes it probes; hints never change reachability.
+ComputeProbeCacheKey = tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...]
 
 
 class ComputeConnectionProbe(BaseModel):
@@ -59,7 +55,7 @@ def _safe_probe_diagnostic(value: object) -> str:
 
 
 def _probe_one(
-    connection: ComputeConnectionConfig,
+    connection: ResolvedComputeProfile,
     *,
     execution_machine: str,
     execution_host: str,
@@ -154,38 +150,48 @@ def _probe_one(
     )
 
 
+def _probe_targets(manifest: Manifest) -> dict[str, list[ResolvedComputeProfile]]:
+    """Every other project machine an agent profile's machine can route to."""
+
+    execution_aliases = sorted(
+        {manifest.agent_profile(profile).run_on for profile in AGENT_EXECUTION_PROFILES}
+    )
+    return {
+        alias: [
+            profile
+            for profile in machine_compute_context(manifest, execution_machine=alias).active
+            if profile.kind == "ssh"
+        ]
+        for alias in execution_aliases
+    }
+
+
 def probe_compute_connections(
     manifest: Manifest,
     *,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> dict[str, dict[str, dict[str, object]]]:
-    """Probe each resource from every machine currently used by an agent profile."""
+    """Probe every other project machine from each machine an agent profile runs on."""
 
-    execution_aliases = sorted(
-        {manifest.agent_profile(profile).run_on for profile in AGENT_EXECUTION_PROFILES}
-    )
-    targets = [
-        (alias, connection)
-        for alias in execution_aliases
-        for connection in manifest.compute_connections
-    ]
-    result: dict[str, dict[str, dict[str, object]]] = {alias: {} for alias in execution_aliases}
+    by_execution = _probe_targets(manifest)
+    targets = [(alias, target) for alias, profiles in by_execution.items() for target in profiles]
+    result: dict[str, dict[str, dict[str, object]]] = {alias: {} for alias in by_execution}
     if not targets:
         return result
     with ThreadPoolExecutor(max_workers=min(len(targets), 8)) as executor:
         futures = [
             (
                 alias,
-                connection.id,
+                target.id,
                 executor.submit(
                     _probe_one,
-                    connection,
+                    target,
                     execution_machine=alias,
                     execution_host=manifest.machine_map[alias].host,
                     runner=runner,
                 ),
             )
-            for alias, connection in targets
+            for alias, target in targets
         ]
         for alias, compute_id, future in futures:
             result[alias][compute_id] = future.result().model_dump(mode="json")
@@ -193,36 +199,14 @@ def probe_compute_connections(
 
 
 def compute_probe_cache_key(manifest: Manifest) -> ComputeProbeCacheKey:
-    execution_aliases = sorted(
-        {manifest.agent_profile(profile).run_on for profile in AGENT_EXECUTION_PROFILES}
-    )
-    machines = tuple((alias, manifest.machine_map[alias].host) for alias in execution_aliases)
-    connections = tuple(
+    return tuple(
         (
-            connection.id,
-            connection.name,
-            connection.kind,
-            connection.ssh_target,
-            connection.access_hint,
+            alias,
+            manifest.machine_map[alias].host,
+            tuple((target.id, target.ssh_target) for target in targets),
         )
-        for connection in manifest.compute_connections
+        for alias, targets in _probe_targets(manifest).items()
     )
-    return machines, connections
-
-
-def selected_compute_connections(
-    manifest: Manifest,
-    ids: list[str],
-) -> list[ComputeConnectionConfig]:
-    if len(ids) > ACTIVE_COMPUTE_ID_MAX_COUNT:
-        raise ValueError(
-            f"active compute connections exceed the limit of {ACTIVE_COMPUTE_ID_MAX_COUNT}"
-        )
-    by_id = {connection.id: connection for connection in manifest.compute_connections}
-    unknown = sorted(set(ids) - set(by_id))
-    if unknown:
-        raise ValueError(f"unknown compute connections: {unknown}")
-    return [by_id[compute_id] for compute_id in ids]
 
 
 def machine_compute_context(

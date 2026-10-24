@@ -17,9 +17,8 @@ from rcp.agents.prompts import (
     COMMAND_CLIENT,
     chat_master_contract_key,
 )
-from rcp.api.tasks import _validate_stored_task_request
 from rcp.background import AgentTaskExecution
-from rcp.config import ComputeConnectionConfig
+from rcp.config import MachineComputeConfig
 from rcp.core.models import AuthorizedHuman
 from rcp.providers import ProviderSkillReference
 from rcp.runs.tasks.discuss import stream_discuss_run
@@ -140,15 +139,12 @@ def _enable_graph_audit(service) -> None:
     )
 
 
-def _configure_compute_connections(
-    service,
-    connections: list[ComputeConnectionConfig],
-) -> None:
+def _set_access_hint(service, alias: str, hint: str) -> None:
     surfaces = ("seed", "refresh", "node_chat", "project_chat", "paper_coach")
     service.history.update_agent_settings(
         service.manifest.agent.default_run_truth_scope,
         {surface: service.manifest.agent_profile(surface) for surface in surfaces},
-        compute_connections=connections,
+        machine_compute={alias: MachineComputeConfig(access_hint=hint)},
     )
 
 
@@ -442,7 +438,7 @@ async def test_fresh_discuss_stages_one_master_and_turn_inputs(manifest, tmp_pat
         project_id, f"chat:{request.chat_id}", session_id, service.history.graph_target
     )
     assert seen is not None and seen.revision == service.graph_snapshot()["revision"]
-    assert snapshot["values"]["compute"] == {"active": []}
+    assert [item["id"] for item in snapshot["values"]["compute"]["active"]] == ["laptop"]
     assert "artifacts" not in snapshot["values"]
     launch_receipt = next(
         item
@@ -455,25 +451,14 @@ async def test_fresh_discuss_stages_one_master_and_turn_inputs(manifest, tmp_pat
 
 
 @pytest.mark.parametrize("mode", ["discuss", "work"])
-def test_fresh_chat_master_contains_only_selected_nonsecret_compute_metadata(
+def test_fresh_chat_master_names_every_project_machine_and_ignores_client_selection(
     manifest, tmp_path, mode: str
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
-    _configure_compute_connections(
-        service,
-        [
-            ComputeConnectionConfig(id="current", name="Current machine", kind="local"),
-            ComputeConnectionConfig(
-                id="gpu",
-                name="GPU VM",
-                kind="ssh",
-                ssh_target="alice@gpu.example",
-                access_hint="Use /scratch/shared for temporary outputs",
-            ),
-        ],
-    )
+    service.add_machine("gpu", "gpu.example", "alice")
+    _set_access_hint(service, "gpu", "Use /scratch/shared for temporary outputs")
     project_id = app.state.default_project_id
     chat_id = "3f3eea3f-0e1d-4c92-a1c2-71c877be342d"
     session_id = f"native-compute-{mode}"
@@ -496,10 +481,10 @@ def test_fresh_chat_master_contains_only_selected_nonsecret_compute_metadata(
         f"/api/projects/{project_id}/tasks/project_chat",
         json={
             "chat_id": chat_id,
-            "message": "Use the attached compute resource.",
+            "message": "Use the project machines.",
             "run_truth_scope": ["repo-a"],
             "mode": mode,
-            "active_compute_ids": ["gpu"],
+            "active_compute_ids": [],
             "resolved_compute_context": {
                 "active": [{"id": "forged", "name": "Client forged", "kind": "local"}]
             },
@@ -509,69 +494,49 @@ def test_fresh_chat_master_contains_only_selected_nonsecret_compute_metadata(
     operation_id = response.json()["operation_id"]
     assert wait_for_task_response(client, project_id, operation_id)["status"] == "succeeded"
 
-    task = app.state.background_tasks.store.agent_task(operation_id)
-    assert task is not None
-    assert task.request["provider"] == "codex"
-    assert task.request["run_on"] == "laptop"
-    assert task.request["active_compute_ids"] == ["gpu"]
-    assert task.request["resolved_compute_context"] == {
+    expected = {
         "active": [
             {
+                "id": "laptop",
+                "name": "laptop",
+                "kind": "local",
+                "ssh_target": "",
+                "access_hint": "",
+            },
+            {
                 "id": "gpu",
-                "name": "GPU VM",
+                "name": "gpu",
                 "kind": "ssh",
                 "ssh_target": "alice@gpu.example",
                 "access_hint": "Use /scratch/shared for temporary outputs",
-            }
+            },
         ]
     }
-    assert launcher.sessions == [None]
+    task = app.state.background_tasks.store.agent_task(operation_id)
+    assert task is not None
+    assert task.request["run_on"] == "laptop"
+    assert "active_compute_ids" not in task.request
+    assert task.request["resolved_compute_context"] == expected
     assert launcher.launch_kwargs[0].get("host", "") == ""
 
-    master_path = Path(launcher.prompts[0].splitlines()[1])
-    master = master_path.read_text(encoding="utf-8")
+    master = Path(launcher.prompts[0].splitlines()[1]).read_text(encoding="utf-8")
     assert "alice@gpu.example" in master
     assert "Use /scratch/shared for temporary outputs" in master
-    assert '"id": "laptop"' not in master
+    assert "forged" not in master
     assert ".ssh/" not in master
-    assert "identity_file" not in master
-    assert "private_key" not in master
 
     baseline = app.state.background_tasks.store.chat_session_context("codex", "laptop", session_id)
     assert baseline is not None
-    compute = json.loads(baseline.snapshot_json)["values"]["compute"]
-    assert compute == {
-        "active": [
-            {
-                "id": "gpu",
-                "name": "GPU VM",
-                "kind": "ssh",
-                "ssh_target": "alice@gpu.example",
-                "access_hint": "Use /scratch/shared for temporary outputs",
-            }
-        ]
-    }
+    assert json.loads(baseline.snapshot_json)["values"]["compute"] == expected
 
 
-@pytest.mark.parametrize("manifest_change", ["retarget", "delete"])
-def test_admitted_compute_snapshot_survives_manifest_change_before_launch(
-    manifest,
-    tmp_path,
-    manifest_change: str,
-) -> None:
+def test_launch_states_the_machines_current_at_launch_not_at_admission(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
-    gpu = ComputeConnectionConfig(
-        id="gpu",
-        name="Admission GPU",
-        kind="ssh",
-        ssh_target="alice@admitted.example",
-        access_hint="Use /scratch/admitted",
-    )
-    _configure_compute_connections(service, [gpu])
+    service.add_machine("gpu", "gpu.example", "alice")
+    _set_access_hint(service, "gpu", "Use /scratch/admitted")
     project_id = app.state.default_project_id
-    chat_id = "757241ec-60af-4784-b315-44003a93c1dd"
     launch_gate = threading.Event()
     launcher = _RecordingLauncher("admission-native-session")
 
@@ -591,52 +556,29 @@ def test_admitted_compute_snapshot_survives_manifest_change_before_launch(
     response = client.post(
         f"/api/projects/{project_id}/tasks/project_chat",
         json={
-            "chat_id": chat_id,
-            "message": "Use the admitted GPU.",
+            "chat_id": "757241ec-60af-4784-b315-44003a93c1dd",
+            "message": "Use the GPU.",
             "mode": "discuss",
-            "active_compute_ids": ["gpu"],
         },
     )
     assert response.status_code == 202, response.text
     operation_id = response.json()["operation_id"]
-    admitted = app.state.background_tasks.store.agent_task(operation_id)
-    assert admitted is not None
-    assert admitted.request["resolved_compute_context"]["active"][0]["ssh_target"] == (
-        "alice@admitted.example"
-    )
 
-    if manifest_change == "retarget":
-        _configure_compute_connections(
-            service,
-            [gpu.model_copy(update={"ssh_target": "alice@changed.example"})],
-        )
-    else:
-        _configure_compute_connections(service, [])
-    _validate_stored_task_request(service, "project_chat", admitted.request)
+    _set_access_hint(service, "gpu", "Use /scratch/current")
     launch_gate.set()
     assert wait_for_task_response(client, project_id, operation_id)["status"] == "succeeded"
 
     master = Path(launcher.prompts[0].splitlines()[1]).read_text(encoding="utf-8")
-    assert "alice@admitted.example" in master
-    assert "Use /scratch/admitted" in master
-    assert "alice@changed.example" not in master
+    assert "Use /scratch/current" in master
+    assert "Use /scratch/admitted" not in master
 
 
-def test_resumed_chat_delivers_changed_compute_metadata_in_the_same_session(
-    manifest, tmp_path
-) -> None:
+def test_resumed_chat_delivers_changed_machines_in_the_same_session(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
-    current = ComputeConnectionConfig(id="current", name="Current machine", kind="local")
-    gpu = ComputeConnectionConfig(
-        id="gpu",
-        name="GPU VM",
-        kind="ssh",
-        ssh_target="alice@gpu.example",
-        access_hint="Use /scratch/old",
-    )
-    _configure_compute_connections(service, [current, gpu])
+    service.add_machine("gpu", "gpu.example", "alice")
+    _set_access_hint(service, "gpu", "Use /scratch/old")
     project_id = app.state.default_project_id
     chat_id = "943025d2-e23d-4a6c-a48e-6d16ded8d870"
     session_id = "native-compute-delta"
@@ -655,13 +597,12 @@ def test_resumed_chat_delivers_changed_compute_metadata_in_the_same_session(
     app.state.background_tasks.stream = stream
     client = signed_in_client(app)
 
-    def turn(message: str, active_compute_ids: list[str], *, first: bool = False) -> None:
+    def turn(message: str, *, first: bool = False) -> None:
         body: dict[str, object] = {
             "chat_id": chat_id,
             "message": message,
             "run_truth_scope": ["repo-a"],
             "mode": "discuss",
-            "active_compute_ids": active_compute_ids,
         }
         if not first:
             body["session_id"] = session_id
@@ -673,33 +614,86 @@ def test_resumed_chat_delivers_changed_compute_metadata_in_the_same_session(
         operation_id = response.json()["operation_id"]
         assert wait_for_task_response(client, project_id, operation_id)["status"] == "succeeded"
 
-    turn("Start with local compute.", ["current"], first=True)
-    turn("Keep the same compute.", ["current"])
+    turn("Start.", first=True)
+    turn("Nothing changed.")
+    assert "alice@gpu.example" not in launcher.prompts[1]
 
-    turn("Switch to the GPU.", ["gpu"])
-    assert gpu.ssh_target in launcher.prompts[2]
-    assert gpu.access_hint in launcher.prompts[2]
-    assert ".ssh/" not in launcher.prompts[2]
-    assert "private_key" not in launcher.prompts[2]
+    _set_access_hint(service, "gpu", "Use /scratch/new")
+    turn("The hint changed.")
+    assert "Use /scratch/new" in launcher.prompts[2]
 
-    renamed_gpu = gpu.model_copy(
-        update={
-            "name": "GPU Accelerator",
-            "ssh_target": "alice@gpu-v2.example",
-            "access_hint": "Use /scratch/new",
-        }
+    service.add_machine("cluster", "cluster.example", "alice")
+    turn("A machine was added.")
+    assert "alice@cluster.example" in launcher.prompts[3]
+    assert ".ssh/" not in launcher.prompts[3]
+    assert launcher.sessions == [None, session_id, session_id, session_id]
+
+
+def test_old_task_row_with_a_frozen_compute_selection_loads_and_retries(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    service.add_machine("gpu", "gpu.example", "alice")
+    project_id = app.state.default_project_id
+    launcher = _RecordingLauncher("legacy-retry-session")
+
+    async def stream(_project_id, kind, request, execution):
+        async for frame in stream_discuss_run(
+            service, launcher, request, tmp_path / "data", execution=execution
+        ):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    store = app.state.catalog.store
+    legacy = RunRequest(
+        provider="codex",
+        run_on="laptop",
+        chat_scope="project",
+        chat_id="0c6f2d0e-5d43-4f4e-9d5b-6f1d8c1d2a11",
+        message="Use the old GPU.",
+        run_truth_scope=["repo-a"],
+        mode="discuss",
+    ).model_dump(mode="json")
+    # What a release with per-turn compute selection persisted.
+    legacy["active_compute_ids"] = ["old-gpu"]
+    legacy["resolved_compute_context"] = {
+        "active": [
+            {
+                "id": "old-gpu",
+                "name": "Old GPU VM",
+                "kind": "ssh",
+                "ssh_target": "alice@retired.example",
+                "access_hint": "",
+            }
+        ]
+    }
+    now = store.now()
+    failed = store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="legacy-compute-turn",
+            project_id=project_id,
+            kind="project_chat",
+            status="failed",
+            request=legacy,
+            created_at=now,
+            updated_at=now,
+            status_message="failed",
+            dispatch_authority=resolve_dispatch_authority(
+                "project_chat", RunRequest.model_validate(legacy)
+            ),
+        )
     )
-    _configure_compute_connections(service, [current, renamed_gpu])
-    turn("Use the renamed resource.", ["gpu"])
-    assert renamed_gpu.ssh_target in launcher.prompts[3]
-    assert renamed_gpu.access_hint in launcher.prompts[3]
+    client = signed_in_client(app)
 
-    turn("Detach compute.", [])
-    assert launcher.sessions == [None, session_id, session_id, session_id, session_id]
+    assert client.get(f"/api/projects/{project_id}/tasks/{failed.operation_id}").status_code == 200
+    retried = client.post(f"/api/projects/{project_id}/tasks/{failed.operation_id}/retry", json={})
+    assert retried.status_code == 202, retried.text
+    done = wait_for_task_response(client, project_id, retried.json()["operation_id"])
 
-    transcript = service.chat_transcript(chat_id)
-    assert transcript is not None
-    assert transcript.messages[-1].active_compute_ids == []
+    assert done["status"] == "succeeded"
+    master = Path(launcher.prompts[0].splitlines()[1]).read_text(encoding="utf-8")
+    assert "alice@gpu.example" in master
+    assert "retired.example" not in master
 
 
 @pytest.mark.asyncio

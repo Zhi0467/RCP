@@ -26,7 +26,6 @@ from pydantic import (
 from rcp.config import (
     DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING,
     AgentExecutionProfile,
-    ResolvedComputeContext,
 )
 from rcp.core.authority import (
     AgentDispatchAuthority,
@@ -40,7 +39,6 @@ from rcp.core.models import (
 )
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import (
-    ACTIVE_COMPUTE_ID_MAX_COUNT,
     AUTO_RESEARCH_MAIL_BODY_MAX_LENGTH,
     CHAT_ARTIFACT_MAX_FILE_BYTES,
     HIDDEN_READ_MACHINE_FOLDER_MAX_COUNT,
@@ -3245,13 +3243,19 @@ class WatcherContinuation(BaseModel):
     invoked_workflow_ids: list[str] = Field(default_factory=list)
     invoked_skill_ids: list[str] = Field(default_factory=list)
     resolved_skill_packages: list[SkillReference] = Field(default_factory=list)
-    active_compute_ids: list[str] = Field(
-        default_factory=list,
-        max_length=ACTIVE_COMPUTE_ID_MAX_COUNT,
-    )
-    resolved_compute_context: ResolvedComputeContext = Field(
-        default_factory=ResolvedComputeContext,
-    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def ignore_retired_compute_fields(cls, value: object) -> object:
+        # A wake resolves every project machine when it launches. Rows written while
+        # a turn froze its own compute selection still load; the selection is ignored.
+        if isinstance(value, dict):
+            return {
+                key: item
+                for key, item in value.items()
+                if key not in {"active_compute_ids", "resolved_compute_context"}
+            }
+        return value
 
 
 class NodeStatusGraphCondition(BaseModel):

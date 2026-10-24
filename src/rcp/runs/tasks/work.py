@@ -507,7 +507,9 @@ def _resolve_work_execution(
         reasoning=request.reasoning,
         run_on=request.run_on,
     )
-    request = _pinned_to_profile(request, profile)
+    # Every launch, including Resume, Retry, recovery, and wakes, tells the agent
+    # the project's current machines as seen from where it now runs.
+    request = service.resolve_compute_request(_pinned_to_profile(request, profile))
     execution_machine = service.manifest.machine_map[profile.run_on]
     # Read once per turn: the ask hold, the prompt, and the provider all use this value.
     shell_timeout = (
@@ -2765,7 +2767,7 @@ async def _stream_work_graph_repair(
             reasoning=request.reasoning,
             run_on=request.run_on,
         )
-        request = _pinned_to_profile(request, profile)
+        request = service.resolve_compute_request(_pinned_to_profile(request, profile))
         execution_machine = service.manifest.machine_map[profile.run_on]
         execution_host = execution_machine.host
         provider_binary = execution_machine.provider_paths.get(profile.provider)

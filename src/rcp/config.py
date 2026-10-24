@@ -9,7 +9,7 @@ import tomlkit
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from rcp.compute_jobs.text import COMPUTE_CREDENTIAL_PATH, validate_compute_metadata
-from rcp.limits import COMPUTE_CONNECTION_MAX_COUNT
+from rcp.limits import COMPUTE_PROFILE_MAX_COUNT
 from rcp.providers import (
     DEFAULT_PROVIDER,
     AgentCapability,
@@ -21,6 +21,8 @@ from rcp.skill_registry import SkillDefaults
 from rcp.ssh_validation import validate_ssh_destination
 
 DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING = 10
+#: A retired top-level manifest table. Loads ignore it; every manifest write drops it.
+LEGACY_COMPUTE_CONNECTIONS_KEY = "compute_connections"
 COMPUTE_SSH_TARGET = re.compile(
     r"(?:[A-Za-z0-9_][A-Za-z0-9_.-]*@)?[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}"
 )
@@ -89,62 +91,8 @@ class MachineConfig(BaseModel):
         return self
 
 
-class ComputeConnectionConfig(BaseModel):
-    """A project resource reachable from an agent's execution machine.
-
-    This is intentionally not a ``MachineConfig``. It never selects where a
-    provider launches, owns a repository, or supplies an execution identity.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-    name: str = Field(min_length=1, max_length=80)
-    kind: Literal["local", "ssh"]
-    ssh_target: str = Field(default="", max_length=255)
-    access_hint: str = Field(default="", max_length=512)
-
-    @model_validator(mode="after")
-    def validate_connection(self) -> ComputeConnectionConfig:
-        self.name = self.name.strip()
-        self.ssh_target = self.ssh_target.strip()
-        self.access_hint = self.access_hint.strip()
-        if any(
-            ord(character) < 32 or ord(character) == 127
-            for value in (self.name, self.ssh_target, self.access_hint)
-            for character in value
-        ):
-            raise ValueError("compute connection metadata must be one line")
-        # These fields are deliberately metadata, not credential channels. Reuse
-        # the server's bounded redactor as a validator so credential-shaped text
-        # is refused before it reaches the manifest or a provider prompt.
-        if redact_server_text(self.name) != self.name:
-            raise ValueError("compute connection name cannot contain credential-shaped text")
-        if redact_server_text(self.ssh_target) != self.ssh_target:
-            raise ValueError("compute SSH target cannot contain credential-shaped text")
-        if redact_server_text(self.access_hint) != self.access_hint:
-            raise ValueError("compute access hint cannot contain credential-shaped text")
-        if any(
-            COMPUTE_CREDENTIAL_PATH.search(value)
-            for value in (self.name, self.ssh_target, self.access_hint)
-        ):
-            raise ValueError("compute connection metadata cannot contain SSH credential paths")
-        if not self.name:
-            raise ValueError("compute connection name must not be blank")
-        if self.kind == "local":
-            if self.ssh_target:
-                raise ValueError("local compute cannot define an SSH target")
-        elif not self.ssh_target:
-            raise ValueError("remote compute requires an SSH target")
-        else:
-            validate_ssh_destination(self.ssh_target)
-        if self.kind == "ssh" and COMPUTE_SSH_TARGET.fullmatch(self.ssh_target) is None:
-            raise ValueError("compute SSH target contains unsupported characters")
-        return self
-
-
 class ResolvedComputeProfile(BaseModel):
-    """One immutable, non-secret compute profile captured at task admission."""
+    """One immutable, non-secret project machine as seen from an agent's machine."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -156,11 +104,41 @@ class ResolvedComputeProfile(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def validate_profile(cls, value: object) -> dict[str, object]:
-        if isinstance(value, BaseModel):
-            value = value.model_dump(mode="python")
-        validated = ComputeConnectionConfig.model_validate(value)
-        return validated.model_dump(mode="python")
+    def strip_metadata(cls, value: object) -> object:
+        if isinstance(value, dict):
+            return {
+                key: item.strip() if key in _PROFILE_TEXT_FIELDS and isinstance(item, str) else item
+                for key, item in value.items()
+            }
+        return value
+
+    @model_validator(mode="after")
+    def validate_profile(self) -> ResolvedComputeProfile:
+        values = (self.name, self.ssh_target, self.access_hint)
+        if any(ord(character) < 32 or ord(character) == 127 for v in values for character in v):
+            raise ValueError("compute metadata must be one line")
+        # These fields are metadata, not credential channels. Reuse the server's
+        # bounded redactor as a validator so credential-shaped text is refused
+        # before it reaches a provider prompt.
+        if any(redact_server_text(value) != value for value in values):
+            raise ValueError("compute metadata cannot contain credential-shaped text")
+        if any(COMPUTE_CREDENTIAL_PATH.search(value) for value in values):
+            raise ValueError("compute metadata cannot contain SSH credential paths")
+        if not self.name:
+            raise ValueError("compute profile name must not be blank")
+        if self.kind == "local":
+            if self.ssh_target:
+                raise ValueError("local compute cannot define an SSH target")
+        elif not self.ssh_target:
+            raise ValueError("remote compute requires an SSH target")
+        else:
+            validate_ssh_destination(self.ssh_target)
+            if COMPUTE_SSH_TARGET.fullmatch(self.ssh_target) is None:
+                raise ValueError("compute SSH target contains unsupported characters")
+        return self
+
+
+_PROFILE_TEXT_FIELDS = frozenset({"name", "ssh_target", "access_hint"})
 
 
 class ResolvedComputeContext(BaseModel):
@@ -170,7 +148,7 @@ class ResolvedComputeContext(BaseModel):
 
     active: tuple[ResolvedComputeProfile, ...] = Field(
         default_factory=tuple,
-        max_length=COMPUTE_CONNECTION_MAX_COUNT,
+        max_length=COMPUTE_PROFILE_MAX_COUNT,
     )
 
     @model_validator(mode="after")
@@ -287,10 +265,6 @@ class PaperCoachConfig(BaseModel):
 class Manifest(BaseModel):
     name: str
     machines: list[MachineConfig]
-    compute_connections: list[ComputeConnectionConfig] = Field(
-        default_factory=list,
-        max_length=COMPUTE_CONNECTION_MAX_COUNT,
-    )
     repositories: list[RepositoryConfig]
     project: ProjectConfig
     state: StateConfig
@@ -300,6 +274,15 @@ class Manifest(BaseModel):
     paper: dict[str, Any] = Field(default_factory=dict)
     _path: Path = PrivateAttr()
 
+    @model_validator(mode="before")
+    @classmethod
+    def ignore_legacy_compute_connections(cls, value: Any) -> Any:
+        # Compute connections were retired when every project machine became a
+        # compute resource. An older manifest still loads; the next write drops it.
+        if isinstance(value, dict) and LEGACY_COMPUTE_CONNECTIONS_KEY in value:
+            value = {k: v for k, v in value.items() if k != LEGACY_COMPUTE_CONNECTIONS_KEY}
+        return value
+
     @model_validator(mode="after")
     def validate_references(self) -> Manifest:
         machine_aliases = [item.alias for item in self.machines]
@@ -308,9 +291,6 @@ class Manifest(BaseModel):
             raise ValueError("machine aliases must be unique")
         if len(repository_aliases) != len(set(repository_aliases)):
             raise ValueError("repository aliases must be unique")
-        compute_ids = [item.id for item in self.compute_connections]
-        if len(compute_ids) != len(set(compute_ids)):
-            raise ValueError("compute connection ids must be unique")
         machines = set(machine_aliases)
         repositories = set(repository_aliases)
         missing_machines = {item.machine for item in self.repositories} - machines
@@ -605,6 +585,7 @@ def _project_scope_content(
                 document.add("repositories", repositories)
             repositories.append(repository)
     document["project"]["truth_scope"] = list(truth_scope)
+    document.pop(LEGACY_COMPUTE_CONNECTIONS_KEY, None)
     content = tomlkit.dumps(document)
     Manifest.model_validate(tomlkit.parse(content).unwrap())
     return content
@@ -617,7 +598,6 @@ def write_agent_settings(
     provider_path_updates: dict[str, dict[ProviderId, str]] | None = None,
     skill_defaults: SkillDefaults | None = None,
     default_auto_research_invocation_ceiling: int | None = None,
-    compute_connections: list[ComputeConnectionConfig] | None = None,
     machine_compute: dict[str, MachineComputeConfig | None] | None = None,
 ) -> Manifest:
     document = tomlkit.parse(manifest.path.read_text(encoding="utf-8"))
@@ -667,21 +647,7 @@ def write_agent_settings(
 
     _apply_machine_provider_path_updates(document, provider_path_updates or {})
     _apply_machine_compute_updates(document, machine_compute or {})
-    if compute_connections is not None:
-        document.pop("compute_connections", None)
-        if compute_connections:
-            connections = tomlkit.aot()
-            for connection in compute_connections:
-                table = tomlkit.table()
-                table.add("id", connection.id)
-                table.add("name", connection.name)
-                table.add("kind", connection.kind)
-                if connection.ssh_target:
-                    table.add("ssh_target", connection.ssh_target)
-                if connection.access_hint:
-                    table.add("access_hint", connection.access_hint)
-                connections.append(table)
-            document["compute_connections"] = connections
+    document.pop(LEGACY_COMPUTE_CONNECTIONS_KEY, None)
 
     content = tomlkit.dumps(document)
     Manifest.model_validate(tomlkit.parse(content).unwrap())
@@ -695,6 +661,7 @@ def write_machine_provider_paths(
 ) -> Manifest:
     document = tomlkit.parse(manifest.path.read_text(encoding="utf-8"))
     _apply_machine_provider_path_updates(document, provider_path_updates)
+    document.pop(LEGACY_COMPUTE_CONNECTIONS_KEY, None)
     content = tomlkit.dumps(document)
     Manifest.model_validate(tomlkit.parse(content).unwrap())
     _atomic_write(manifest.path, content)
@@ -714,6 +681,7 @@ def write_added_machine(manifest: Manifest, machine: MachineConfig) -> Manifest:
     table.add("host", machine.host)
     table.add("os_account", machine.os_account)
     document.setdefault("machines", tomlkit.aot()).append(table)
+    document.pop(LEGACY_COMPUTE_CONNECTIONS_KEY, None)
     content = tomlkit.dumps(document)
     Manifest.model_validate(tomlkit.parse(content).unwrap())
     _atomic_write(manifest.path, content)

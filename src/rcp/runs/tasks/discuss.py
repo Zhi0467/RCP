@@ -619,7 +619,9 @@ async def stream_discuss_run(
     except ValueError as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
         return
-    request = _pinned_to_profile(request, profile)
+    # Every launch, including Resume, Retry, and recovery, tells the agent the
+    # project's current machines as seen from where it now runs.
+    request = service.resolve_compute_request(_pinned_to_profile(request, profile))
     local_stage: Path | None = None
     execution_machine = service.manifest.machine_map[profile.run_on]
     execution_host = execution_machine.host
