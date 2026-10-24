@@ -485,6 +485,51 @@ def test_archive_with_retired_compute_connections_keeps_its_digest_and_restores(
         assert "compute_connections" not in tomlkit.parse(content).unwrap()
 
 
+def test_machine_access_hint_and_compute_survive_backup_and_restore(tmp_path: Path) -> None:
+    from rcp.projects import _render_restored_manifest
+
+    record, _ = _completed_registration(tmp_path)
+    path = Path(record.locator)
+    document = tomlkit.parse(path.read_text(encoding="utf-8"))
+    document["machines"][0]["access_hint"] = "Use /scratch/shared"
+    document["machines"][0]["compute"] = {"job_manager": "slurm", "jobs_root": "/jobs"}
+    path.write_text(tomlkit.dumps(document), encoding="utf-8")
+    manifest = load_manifest(path)
+    encoded = BackupManifestConfiguration.from_manifest(manifest).model_dump_json()
+
+    archived = BackupManifestConfiguration.model_validate_json(encoded)
+    paths = {repository.alias: repository.path for repository in archived.repositories}
+    restored = Manifest.model_validate(
+        tomlkit.parse(_render_restored_manifest(archived, paths)).unwrap()
+    )
+
+    assert restored.machines[0].access_hint == "Use /scratch/shared"
+    assert restored.machines[0].compute == manifest.machines[0].compute
+
+
+def test_archive_without_machine_hints_keeps_its_bytes_and_restores(tmp_path: Path) -> None:
+    from rcp.projects import _render_restored_manifest
+
+    record, _ = _completed_registration(tmp_path)
+    manifest = load_manifest(record.locator)
+    payload = BackupManifestConfiguration.from_manifest(manifest).model_dump(mode="json")
+    # The machine shape every earlier archive recorded.
+    assert {frozenset(machine) for machine in payload["machines"]} == {
+        frozenset({"alias", "host", "os_account", "provider_paths"})
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    archived = BackupManifestConfiguration.model_validate_json(encoded)
+    paths = {repository.alias: repository.path for repository in archived.repositories}
+    restored = Manifest.model_validate(
+        tomlkit.parse(_render_restored_manifest(archived, paths)).unwrap()
+    )
+
+    assert archived.sha256 == hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    assert restored.machines[0].access_hint == ""
+    assert restored.machines[0].compute is None
+
+
 def test_legacy_backup_configuration_keeps_its_payload_and_digest(tmp_path: Path) -> None:
     record, _ = _completed_registration(tmp_path)
     payload = BackupManifestConfiguration.from_manifest(load_manifest(record.locator)).model_dump(

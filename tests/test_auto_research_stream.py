@@ -3397,7 +3397,7 @@ def _with_gpu_machine(manifest):
     with manifest.path.open("a") as handle:
         handle.write(
             '\n[[machines]]\nalias = "gpu"\nhost = "gpu.example"\n'
-            '[machines.compute]\naccess_hint = "submit with srun"\n'
+            'access_hint = "submit with srun"\n'
         )
     return load_manifest(manifest.path)
 

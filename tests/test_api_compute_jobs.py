@@ -123,7 +123,6 @@ def test_machine_compute_settings_write_invalidate_and_preserve_omitted(compute_
     compute = {
         "job_manager": "slurm",
         "jobs_root": "/shared/jobs",
-        "access_hint": "",
     }
     response = client.put(f"{url}/settings", json={**body, "machine_compute": {"laptop": compute}})
     assert response.status_code == 200, response.text
@@ -134,11 +133,10 @@ def test_machine_compute_settings_write_invalidate_and_preserve_omitted(compute_
     assert store.compute_backend_probe(project_id, "laptop", "scheduler") is None
     store.record_compute_backend_probe(project_id, probe, "helper")
     store.record_compute_backend_probe(project_id, scheduler, "scheduler")
-    hinted = {**compute, "access_hint": "Use /shared/jobs for outputs"}
     for extra in (
         {},
         {"machine_compute": {"laptop": compute}},
-        {"machine_compute": {"laptop": hinted}},
+        {"machine_access_hints": {"laptop": "Use /shared/jobs for outputs"}},
     ):
         assert client.put(f"{url}/settings", json={**body, **extra}).status_code == 200
         assert store.compute_backend_probe(project_id, "laptop", "helper") == probe

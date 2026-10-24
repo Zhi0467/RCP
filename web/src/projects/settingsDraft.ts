@@ -17,6 +17,7 @@ export interface SettingsDraft {
   autoResearchInvocationCeiling?: number;
   providerPaths?: MachineProviderPaths;
   machineComputeEdits?: MachineComputeSettings;
+  accessHintEdits?: MachineAccessHints;
   skillDefaults?: SkillDefaults;
 }
 
@@ -98,10 +99,12 @@ export function deserializeSettingsDraft(value: string | null): SettingsDraft | 
     delete parsed.machineCompute;
     if (parsed.machineComputeEdits !== undefined) {
       if (!isMachineComputeSettings(parsed.machineComputeEdits)) return null;
-      // Edits staged before access hints existed carry none.
+      // A hint once staged inside compute edits; it moved to the machine.
       for (const config of Object.values(parsed.machineComputeEdits))
-        if (config) config.access_hint ??= "";
+        if (config) delete config.access_hint;
     }
+    if (parsed.accessHintEdits !== undefined && !isStringRecord(parsed.accessHintEdits))
+      return null;
     if (parsed.skillDefaults !== undefined && !isSkillDefaults(parsed.skillDefaults)) return null;
     // v3 briefly persisted compute connections, a concept machines replaced.
     // Drop it on read, regardless of shape.
@@ -211,6 +214,10 @@ function isSkillDefaults(value: unknown): value is SkillDefaults {
   );
 }
 
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.values(value).every((item) => typeof item === "string");
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -219,6 +226,22 @@ export type MachineComputeSettings = Record<string, MachineComputeConfig | null>
 
 export function machineComputeFrom(machines: Machine[]): MachineComputeSettings {
   return Object.fromEntries(machines.map((machine) => [machine.alias, machine.compute ?? null]));
+}
+
+export type MachineAccessHints = Record<string, string>;
+
+export function machineAccessHintsFrom(machines: Machine[]): MachineAccessHints {
+  return Object.fromEntries(machines.map((machine) => [machine.alias, machine.access_hint]));
+}
+
+export function machineAccessHintUpdates(
+  saved: MachineAccessHints,
+  current: MachineAccessHints,
+): MachineAccessHints | undefined {
+  const updates = Object.fromEntries(
+    Object.entries(current).filter(([alias, hint]) => saved[alias] !== hint),
+  );
+  return Object.keys(updates).length ? updates : undefined;
 }
 
 export function machineComputeUpdates(
@@ -236,10 +259,7 @@ export function machineComputeUpdates(
 
 function isMachineComputeSettings(
   value: unknown,
-): value is Record<
-  string,
-  (Omit<MachineComputeConfig, "access_hint"> & { access_hint?: string }) | null
-> {
+): value is Record<string, (MachineComputeConfig & { access_hint?: string }) | null> {
   if (!isRecord(value)) return false;
   return Object.values(value).every(
     (config) =>

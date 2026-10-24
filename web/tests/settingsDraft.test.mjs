@@ -230,7 +230,7 @@ test("moving one profile to an unused machine changes the compute probe cache ke
   );
 });
 
-test("machine compute edits staged before access hints load with an empty hint", () => {
+test("compute edits that staged an access hint load without it", () => {
   const draft = deserializeSettingsDraft(
     JSON.stringify({
       version: 4,
@@ -244,10 +244,27 @@ test("machine compute edits staged before access hints load with an empty hint",
     }),
   );
   assert.deepEqual(draft?.machineComputeEdits, {
-    old: { job_manager: "slurm", jobs_root: "/scratch", access_hint: "" },
-    hinted: { job_manager: null, jobs_root: "", access_hint: "module load cuda" },
+    old: { job_manager: "slurm", jobs_root: "/scratch" },
+    hinted: { job_manager: null, jobs_root: "" },
     reset: null,
   });
+});
+
+test("access hint edits stage, restore, and save only changed aliases", async () => {
+  const { machineAccessHintsFrom, machineAccessHintUpdates } =
+    await import("../src/projects/settingsDraft.ts");
+  const saved = machineAccessHintsFrom([
+    { alias: "local", access_hint: "" },
+    { alias: "cluster", access_hint: "module load cuda" },
+  ]);
+  assert.equal(machineAccessHintUpdates(saved, saved), undefined);
+  assert.deepEqual(machineAccessHintUpdates(saved, { ...saved, cluster: "" }), { cluster: "" });
+  const draft = { version: 4, scope: ["repo"], profiles: {}, accessHintEdits: { cluster: "" } };
+  assert.deepEqual(deserializeSettingsDraft(serializeSettingsDraft(draft)), draft);
+  assert.equal(
+    deserializeSettingsDraft(JSON.stringify({ ...draft, accessHintEdits: { cluster: 1 } })),
+    null,
+  );
 });
 
 test("a migrated five-profile v1 draft keeps the saved orchestrator profile", () => {
@@ -307,7 +324,7 @@ test("settings compare keeps list order, which the researcher chose", () => {
 test("machine compute edits stage, restore, and save only changed aliases", async () => {
   const { machineComputeFrom, machineComputeUpdates } =
     await import("../src/projects/settingsDraft.ts");
-  const slurm = { job_manager: "slurm", jobs_root: "/jobs", access_hint: "" };
+  const slurm = { job_manager: "slurm", jobs_root: "/jobs" };
   const saved = machineComputeFrom([
     { alias: "local", compute: null },
     { alias: "cluster", compute: slurm },
@@ -334,8 +351,8 @@ test("machine compute edits stage, restore, and save only changed aliases", asyn
 
 test("compute drafts cannot restore untouched stale machine settings", async () => {
   const { machineComputeUpdates } = await import("../src/projects/settingsDraft.ts");
-  const original = { job_manager: null, jobs_root: "/old", access_hint: "" };
-  const fresh = { job_manager: null, jobs_root: "/new", access_hint: "" };
+  const original = { job_manager: null, jobs_root: "/old" };
+  const fresh = { job_manager: null, jobs_root: "/new" };
   const saved = { local: fresh, cluster: null };
   const unrelatedDraft = deserializeSettingsDraft(
     JSON.stringify({
@@ -347,7 +364,7 @@ test("compute drafts cannot restore untouched stale machine settings", async () 
   );
   assert.equal(unrelatedDraft.machineCompute, undefined);
   assert.equal(machineComputeUpdates(saved, unrelatedDraft.machineComputeEdits ?? {}), undefined);
-  const edits = { cluster: { job_manager: "slurm", jobs_root: "", access_hint: "" } };
+  const edits = { cluster: { job_manager: "slurm", jobs_root: "" } };
   const staged = deserializeSettingsDraft(
     serializeSettingsDraft({
       version: 4,

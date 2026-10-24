@@ -33,20 +33,10 @@ class MachineComputeConfig(BaseModel):
 
     job_manager: Literal["slurm"] | None = None
     jobs_root: str = ""
-    # What every agent is told about this machine, beside its route. Like the
-    # rest of this block it is metadata, never a credential channel.
-    access_hint: str = Field(default="", max_length=512)
 
     @model_validator(mode="after")
     def validate_compute(self) -> MachineComputeConfig:
         validate_compute_metadata(self.jobs_root)
-        self.access_hint = self.access_hint.strip()
-        if any(ord(character) < 32 or ord(character) == 127 for character in self.access_hint):
-            raise ValueError("compute access hint must be one line")
-        if redact_server_text(self.access_hint) != self.access_hint:
-            raise ValueError("compute access hint cannot contain credential-shaped text")
-        if COMPUTE_CREDENTIAL_PATH.search(self.access_hint):
-            raise ValueError("compute access hint cannot contain SSH credential paths")
         if self.jobs_root and not PurePosixPath(self.jobs_root).is_absolute():
             raise ValueError("compute jobs_root must be absolute when configured")
         return self
@@ -58,12 +48,28 @@ class MachineConfig(BaseModel):
     os_account: str = ""
     provider_paths: dict[ProviderId, str] = Field(default_factory=dict)
     compute: MachineComputeConfig | None = None
+    # What every agent is told about this machine, beside its route: metadata,
+    # never a credential channel. It sits on the machine rather than in
+    # `compute`, whose released model forbids unknown keys, so an older build
+    # ignores it, and resetting compute keeps it.
+    access_hint: str = Field(default="", max_length=512)
 
     @model_validator(mode="after")
     def validate_host(self) -> MachineConfig:
         self.host = self.host.strip()
         if self.host:
             validate_ssh_destination(self.host)
+        return self
+
+    @model_validator(mode="after")
+    def validate_access_hint(self) -> MachineConfig:
+        self.access_hint = self.access_hint.strip()
+        if any(ord(character) < 32 or ord(character) == 127 for character in self.access_hint):
+            raise ValueError("machine access hint must be one line")
+        if redact_server_text(self.access_hint) != self.access_hint:
+            raise ValueError("machine access hint cannot contain credential-shaped text")
+        if COMPUTE_CREDENTIAL_PATH.search(self.access_hint):
+            raise ValueError("machine access hint cannot contain SSH credential paths")
         return self
 
     @model_validator(mode="after")
@@ -599,6 +605,7 @@ def write_agent_settings(
     skill_defaults: SkillDefaults | None = None,
     default_auto_research_invocation_ceiling: int | None = None,
     machine_compute: dict[str, MachineComputeConfig | None] | None = None,
+    machine_access_hints: dict[str, str] | None = None,
 ) -> Manifest:
     document = tomlkit.parse(manifest.path.read_text(encoding="utf-8"))
     agent = document.get("agent")
@@ -647,6 +654,7 @@ def write_agent_settings(
 
     _apply_machine_provider_path_updates(document, provider_path_updates or {})
     _apply_machine_compute_updates(document, machine_compute or {})
+    _apply_machine_access_hint_updates(document, machine_access_hints or {})
     document.pop(LEGACY_COMPUTE_CONNECTIONS_KEY, None)
 
     content = tomlkit.dumps(document)
@@ -709,6 +717,26 @@ def _apply_machine_compute_updates(
             for key, value in compute.model_dump(mode="json", exclude_defaults=True).items():
                 table.add(key, value)
             machine["compute"] = table
+
+
+def _apply_machine_access_hint_updates(
+    document: tomlkit.TOMLDocument,
+    updates: dict[str, str],
+) -> None:
+    if not updates:
+        return
+    machine_tables = {
+        str(machine.get("alias")): machine for machine in document.get("machines", [])
+    }
+    unknown = set(updates) - set(machine_tables)
+    if unknown:
+        raise ValueError(f"access hints use unknown machines: {sorted(unknown)}")
+    for alias, raw_hint in updates.items():
+        hint = raw_hint.strip()
+        if hint:
+            machine_tables[alias]["access_hint"] = hint
+        else:
+            machine_tables[alias].pop("access_hint", None)
 
 
 def _apply_machine_provider_path_updates(

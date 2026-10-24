@@ -1,6 +1,12 @@
 import { useState } from "react";
+import { X } from "lucide-react";
 import { verifyProviderLogin } from "../core/api";
-import { signedOutNote, signedOutSummary } from "./providerLoginsModel";
+import {
+  dismissLoginNotice,
+  isLoginNoticeDismissed,
+  signedOutNote,
+  signedOutSummary,
+} from "./providerLoginsModel";
 import { CompactNotice } from "../ui/CompactNotice";
 import type { ProviderLoginState } from "../core/types";
 import { formatServerTimestamp } from "./ServerSettings";
@@ -35,8 +41,9 @@ function AccountNotice({
 }) {
   const [pending, setPending] = useState(false);
   const [verified, setVerified] = useState(false);
+  const [dismissed, setDismissed] = useState(() => isLoginNoticeDismissed(state));
   const [error, setError] = useState<string | null>(null);
-  if (verified) return null;
+  if (verified || dismissed) return null;
   async function verify() {
     setPending(true);
     setError(null);
@@ -75,6 +82,17 @@ function AccountNotice({
           {pending ? "Checking…" : "Already signed in? Check again"}
         </button>
       </CompactNotice>
+      <button
+        className="provider-login-notice-dismiss"
+        type="button"
+        aria-label="Dismiss"
+        onClick={() => {
+          dismissLoginNotice(state);
+          setDismissed(true);
+        }}
+      >
+        <X size={14} aria-hidden="true" />
+      </button>
     </div>
   );
 }

@@ -1969,6 +1969,8 @@ export interface Machine {
   os_account: string;
   provider_paths: Record<ProviderId, string>;
   compute: MachineComputeConfig | null;
+  /** Non-secret guidance every agent receives about this machine. */
+  access_hint: string;
   // Absent from a project cached by a version before split readiness.
   compute_probes?: Record<ComputeRoute, ComputeBackendProbe | null>;
 }
@@ -1980,8 +1982,6 @@ export type ComputeContainment = "mirrored" | "cooperative";
 export interface MachineComputeConfig {
   job_manager: "slurm" | null;
   jobs_root: string;
-  /** Non-secret guidance every agent receives about this machine. */
-  access_hint: string;
 }
 
 export interface ComputeBackendProbe {
@@ -3471,6 +3471,7 @@ export interface ProjectSettingsRequest {
   skill_defaults: SkillDefaults;
   machine_provider_paths?: Record<string, Record<ProviderId, string>>;
   machine_compute?: Record<string, MachineComputeConfig | null>;
+  machine_access_hints?: Record<string, string>;
 }
 
 export interface ProviderPathResolution {
