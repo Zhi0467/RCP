@@ -880,6 +880,7 @@ async def stream_graph_run(
                 if request.message
                 else None
             )
+            compute_profiles = service.machine_prompt_profiles(profile.run_on)
             base_contract_content = service.graph_task_contract(
                 kind,
                 project_name=context.project_name,
@@ -900,6 +901,7 @@ async def stream_graph_run(
                 source_errors=context.source_errors,
                 validator_command=validator_command,
                 skill_pointers=skill_pointers,
+                compute_profiles=compute_profiles,
             )
             base_contract_content = graph_read_contract(
                 base_contract_content, graph_read_scope, validator_staged.client_command()
@@ -931,6 +933,7 @@ async def stream_graph_run(
                 skill_pointers=skill_pointers,
             )
             graph_master_values["history_client"] = validator_staged.client_command()
+            graph_master_values["compute"] = {"active": compute_profiles}
             graph_master_key = master_key(
                 PromptFactory.GRAPH_TASK_POLICY_VERSION,
                 ontology_extensions=context.ontology_extensions,

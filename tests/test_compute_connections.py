@@ -13,6 +13,7 @@ from rcp.config import (
     ResolvedComputeProfile,
 )
 from rcp.limits import COMPUTE_PROFILE_MAX_COUNT
+from rcp.operator_commands import operator_route
 from rcp.transport.remote_compute_probe import classify_ssh_failure, probe_connection
 
 
@@ -45,7 +46,17 @@ def test_ssh_probe_uses_existing_credentials_and_strict_host_key_checking() -> N
     assert "alice@gpu.example" in seen
 
 
-def test_authentication_failure_names_the_agent_execution_machine() -> None:
+@pytest.mark.parametrize("space_kind", ["personal", "team"])
+@pytest.mark.parametrize(
+    ("stderr", "state"),
+    [
+        ("Permission denied (publickey).", "authentication_failed"),
+        ("Host key verification failed.", "host_key_failed"),
+    ],
+)
+def test_ssh_failure_action_carries_the_operator_routed_check(
+    space_kind: str, stderr: str, state: str
+) -> None:
     connection = ResolvedComputeProfile(
         id="gpu",
         name="gpu",
@@ -54,18 +65,21 @@ def test_authentication_failure_names_the_agent_execution_machine() -> None:
     )
 
     def runner(command, **kwargs):
-        return subprocess.CompletedProcess(command, 255, "", "Permission denied (publickey).")
+        return subprocess.CompletedProcess(command, 255, "", stderr)
 
     result = _probe_one(
         connection,
         execution_machine="lab-mac",
         execution_host="",
+        space_kind=space_kind,
         runner=runner,
     )
 
-    assert result.state == "authentication_failed"
+    assert result.state == state
     assert result.reachable is False
     assert result.status_tone == "error"
+    check = operator_route(space_kind).command(["ssh", "alice@gpu.example"])
+    assert result.required_action is not None and check in result.required_action
 
 
 def test_probe_redacts_and_normalizes_remote_payload_diagnostics() -> None:
@@ -93,6 +107,7 @@ def test_probe_redacts_and_normalizes_remote_payload_diagnostics() -> None:
         connection,
         execution_machine="remote-agent",
         execution_host="agent.example",
+        space_kind="personal",
         runner=runner,
     )
 
@@ -124,6 +139,7 @@ def test_probe_redacts_credential_shaped_remote_stderr() -> None:
         connection,
         execution_machine="remote-agent",
         execution_host="agent.example",
+        space_kind="personal",
         runner=runner,
     )
 
@@ -151,6 +167,7 @@ def test_probe_redacts_runtime_errors_from_ssh_setup(monkeypatch) -> None:
         connection,
         execution_machine="remote-agent",
         execution_host="agent.example",
+        space_kind="personal",
         runner=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not run")),
     )
 
@@ -184,7 +201,7 @@ def test_probe_matrix_covers_other_routable_machines_from_each_agent_machine(man
             "",
         )
 
-    status = probe_compute_connections(configured, runner=runner)
+    status = probe_compute_connections(configured, space_kind="personal", runner=runner)
 
     assert {alias: set(row) for alias, row in status.items()} == {
         "laptop": {"remote-agent", "gpu"},

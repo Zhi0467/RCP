@@ -23,9 +23,9 @@ from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.invocation_broker import ProviderInvocationGate
-from rcp.agents.prompts import PromptFactory, compute_connection_section, render_graph_history
+from rcp.agents.prompts import PromptFactory, render_graph_history
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
-from rcp.config import ResolvedComputeContext, ResolvedComputeProfile, load_manifest
+from rcp.config import load_manifest
 from rcp.core.authority import (
     AgentDispatchAuthority,
     AgentDispatchScope,
@@ -3305,12 +3305,7 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
     stage_path.mkdir()
     execution = _execution(store, root)
     execution.checkpoint_stage("", str(stage_path))
-    machines = ResolvedComputeContext(
-        active=(ResolvedComputeProfile(id="gpu", name="gpu", kind="ssh", ssh_target="gpu.example"),)
-    )
-    request = AutoResearchRunRequest.model_validate(root.request).model_copy(
-        update={"resolved_compute_context": machines}
-    )
+    request = AutoResearchRunRequest.model_validate(root.request)
     stage = auto_research_stream_module._WorkerStage(
         local=stage_path, remote=None, workspace=stage_path, execution_host="", provider_binary=None
     )
@@ -3347,6 +3342,8 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
             store.checkpoint_agent_task(root.operation_id, native_session_id="orchestrator-session")
             execution.continuation = "resume"
             overlap = LoopOverlap()
+            # A machine added between wakes: the resumed turn states it.
+            service.history.manifest = _with_gpu_machine(manifest)
         binding = store.auto_research_actor_binding(root.operation_id)
         turn = auto_research_stream_module._CanonicalOrchestratorTurn(
             task=root,
@@ -3357,6 +3354,7 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
             clean_session_retry=False,
         )
         _path, prompt, master, values = auto_research_stream_module._orchestrator_prompt(
+            service,
             execution,
             turn,
             context=context,
@@ -3385,10 +3383,12 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
         assert (
             not {"parent_graph_path", "shared_repositories", "other_branch_loops"} & values.keys()
         )
-        # The admitted machines are stable master values, not per-launch context.
-        profiles = ProjectService.compute_prompt_profiles(machines)
-        assert values["compute"] == {"active": profiles}
-        assert compute_connection_section(profiles) in master_text
+        # Each launch states the project machines as they are now.
+        assert [item["id"] for item in values["compute"]["active"]] == (
+            ["laptop", "gpu"] if index else ["laptop"]
+        )
+        # A resumed session learns the added machine from the launch delta.
+        assert ("gpu.example" in prompt) == bool(index)
 
 
 def _with_gpu_machine(manifest):
@@ -3400,22 +3400,6 @@ def _with_gpu_machine(manifest):
             'access_hint = "submit with srun"\n'
         )
     return load_manifest(manifest.path)
-
-
-def test_an_episode_admits_the_machines_seen_from_the_orchestrator(manifest, tmp_path) -> None:
-    from rcp.api.episode_routes import _resolved_auto_research_start_request
-    from rcp.api.episodes import StartEpisodeBody
-    from rcp.runs.auto_research import auto_research_root_request
-
-    service = _service(_with_gpu_machine(manifest), tmp_path)
-    start = _resolved_auto_research_start_request(
-        service, StartEpisodeBody(mode="auto_research", invocation_ceiling=2)
-    )
-    root = auto_research_root_request(start, episode_id="any")
-    assert [(item.id, item.kind) for item in root.resolved_compute_context.active] == [
-        ("laptop", "local"),
-        ("gpu", "ssh"),
-    ]
 
 
 def test_a_spawned_child_freezes_the_machines_seen_from_its_own_run_on(manifest, tmp_path) -> None:

@@ -41,7 +41,6 @@ from rcp.artifact_comments import comment_panel, selection_frame_addon
 from rcp.artifact_views import artifact_viewer_document
 from rcp.artifacts import AgentArtifactDescriptor, html_preview_document
 from rcp.background import BackgroundAgentTasks
-from rcp.compute import machine_compute_context
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history.queries import parse_head
 from rcp.keyed_locks import KeyedLocks
@@ -1166,9 +1165,6 @@ def _resolved_auto_research_start_request(
         reasoning=profile.reasoning,
         run_on=profile.run_on,
         run_truth_scope=list(service.manifest.agent.default_run_truth_scope),
-        resolved_compute_context=machine_compute_context(
-            service.manifest, execution_machine=profile.run_on
-        ),
     )
     resolved = service.resolve_skill_request(cast(RunRequest, request))
     if not isinstance(resolved, AutoResearchStartRequest):

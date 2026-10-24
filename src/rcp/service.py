@@ -2022,6 +2022,12 @@ class ProjectService:
     def compute_prompt_profiles(context: ResolvedComputeContext) -> list[dict[str, str]]:
         return [profile.model_dump(mode="json") for profile in context.active]
 
+    def machine_prompt_profiles(self, run_on: str) -> list[dict[str, str]]:
+        """Every project machine as seen from `run_on`, read from the manifest now."""
+        return self.compute_prompt_profiles(
+            machine_compute_context(self.manifest, execution_machine=run_on)
+        )
+
     def resolve_provider_path(
         self,
         machine_alias: str,
@@ -2816,6 +2822,7 @@ class ProjectService:
         retry_diagnostics_path: str | None = None,
         source_errors: list[str] | None = None,
         skill_pointers: list[dict[str, object]] | None = None,
+        compute_profiles: list[dict[str, str]] | None = None,
     ) -> str:
         return PromptFactory.graph_task_contract(
             kind,
@@ -2834,6 +2841,7 @@ class ProjectService:
             source_errors=source_errors or [],
             validator_command=validator_command,
             skill_pointers=skill_pointers,
+            compute_profiles=compute_profiles,
         )
 
     def assemble_chat(self, request: RunRequest) -> ChatContext:

@@ -879,7 +879,7 @@ def test_project_readiness_does_not_open_or_materialize_project(
     monkeypatch.setattr(app.state.catalog.launcher, "readiness", readiness)
     monkeypatch.setattr(
         "rcp.projects.probe_compute_connections",
-        lambda probed_manifest: (
+        lambda probed_manifest, **_: (
             compute_calls.append(_routed_machines(probed_manifest)) or {"laptop": {}}
         ),
     )
@@ -962,7 +962,7 @@ def test_loaded_project_compute_readiness_probes_only_on_refresh_and_invalidates
         }
     }
 
-    def probe(probed_manifest):
+    def probe(probed_manifest, **_):
         compute_calls.append(_routed_machines(probed_manifest))
         return status
 
@@ -985,7 +985,7 @@ def test_loaded_project_compute_readiness_probes_only_on_refresh_and_invalidates
 
     failed_refreshes: list[list[str]] = []
 
-    def failed_probe(probed_manifest):
+    def failed_probe(probed_manifest, **_):
         failed_refreshes.append(_routed_machines(probed_manifest))
         raise RuntimeError("compute probe refresh failed")
 
@@ -1031,7 +1031,7 @@ def test_stale_compute_refresh_does_not_overwrite_fresher_status(
     }
     probe_order: list[str] = []
 
-    def probe(probed_manifest):
+    def probe(probed_manifest, **_):
         target = _routed_machines(probed_manifest)[-1]
         probe_order.append(target)
         return statuses[target]
@@ -1068,14 +1068,16 @@ def test_cached_compute_readiness_does_not_wait_behind_a_slow_refresh(
     current_manifest = app.state.service.manifest
     last_matrix = {"laptop": {"gpu": {"status_label": "Reachable"}}}
     slow_matrix = {"laptop": {"gpu": {"status_label": "Unreachable"}}}
-    monkeypatch.setattr("rcp.projects.probe_compute_connections", lambda _manifest: last_matrix)
+    monkeypatch.setattr(
+        "rcp.projects.probe_compute_connections", lambda _manifest, **_: last_matrix
+    )
     seeded = client.get(f"/api/projects/{project_id}/readiness?refresh=true")
     assert seeded.json()["compute_status"] == last_matrix
 
     probing = threading.Event()
     unblock_probe = threading.Barrier(2)
 
-    def slow_probe(_manifest):
+    def slow_probe(_manifest, **_):
         probing.set()
         unblock_probe.wait(timeout=10)
         return slow_matrix
@@ -1121,7 +1123,7 @@ def test_unopened_compute_readiness_cache_survives_project_open(
     calls: list[str] = []
     monkeypatch.setattr(
         "rcp.projects.probe_compute_connections",
-        lambda _manifest: calls.append("probe") or status,
+        lambda _manifest, **_: calls.append("probe") or status,
     )
 
     refreshed = client.get(f"/api/projects/{project_id}/readiness?refresh=true")
