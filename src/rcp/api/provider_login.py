@@ -18,6 +18,7 @@ from rcp.api.dependencies import (
     get_provider_sign_ins,
     get_store,
 )
+from rcp.config import load_manifest
 from rcp.limits import PROVIDER_TOKEN_MAX_CHARS
 from rcp.projects import ProjectCatalog
 from rcp.providers import PROVIDER_IDS, ProviderId, profile_for
@@ -28,6 +29,7 @@ from rcp.runs.provider_sign_in import (
     ProviderSignInStatus,
     provider_path_sources,
 )
+from rcp.service import agent_login_accounts
 from rcp.storage import AppStore
 
 
@@ -100,6 +102,8 @@ class ProviderLoginAccount(BaseModel):
     sign_in: ProviderSignInStatus | None = None
     #: The project path sign-in launches; None means the machine's PATH resolves it.
     provider_path: ProviderPathSource | None = None
+    #: Some visible project's agents launch on, or hold work parked on, this account.
+    agent_used: bool = False
 
 
 def _refused(exc: ProviderLoginRefused) -> HTTPException:
@@ -136,6 +140,7 @@ def provider_login_accounts(
         if not state.host or state.host in machines
     )
     paths = provider_path_sources(store)
+    used = _agent_used_accounts(store, visible)
     accounts = []
     for provider, host in sorted(pairs):
         state = sign_ins.account_state(provider, host)
@@ -159,9 +164,23 @@ def provider_login_accounts(
                 provider_path=provider_path,
                 token=token,
                 sign_in=sign_ins.running_sign_in(provider, host),
+                agent_used=(provider, host) in used,
             )
         )
     return accounts
+
+
+def _agent_used_accounts(store: AppStore, visible: set[str]) -> set[tuple[str, str]]:
+    used: set[tuple[str, str]] = set()
+    for record in store.projects():
+        if record.project_id not in visible:
+            continue
+        try:
+            manifest = load_manifest(record.locator)
+        except (FileNotFoundError, OSError, ValueError):
+            continue
+        used |= agent_login_accounts(manifest, store, record.project_id)
+    return used
 
 
 @router.get("/api/providers/logins")

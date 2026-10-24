@@ -3599,6 +3599,8 @@ export interface ProviderSignInStatus {
 /** One `(provider, execution account)` pair every project on this server may launch on. */
 export interface ProviderLoginAccount extends ProviderLoginState {
   label: string;
+  /** Some visible project's agents launch on, or have work parked on, this account. */
+  agent_used: boolean;
   sign_in_methods: string[];
   /** False when the CLI's own login applies; RCP only says how to run it. */
   managed: boolean;

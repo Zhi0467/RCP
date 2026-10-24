@@ -387,3 +387,41 @@ def test_an_unmanaged_login_note_names_the_saved_executable(tmp_path, monkeypatc
 
     assert note({"p"}) == "'/opt/oc bin/opencode' providers login"
     assert note(set()) == "opencode providers login"
+
+
+def test_only_accounts_an_agent_launches_on_are_marked_agent_used(tmp_path, monkeypatch, manifest):
+    with manifest.path.open("a", encoding="utf-8") as handle:
+        handle.write('\n[[machines]]\nalias = "gpu"\nhost = "gpu.example"\n')
+    store = AppStore(tmp_path / "login.sqlite3")
+    monkeypatch.setattr(
+        store,
+        "projects",
+        lambda: [SimpleNamespace(project_id="p", locator=str(manifest.path))],
+    )
+    monkeypatch.setattr(store, "member_project_ids", lambda _member: {"p"})
+    credentials = ProviderCredentialStore(tmp_path / "providers")
+    accounts = ProviderAccounts(store, credentials)
+    launcher = AgentLauncher(accounts=accounts)
+    monkeypatch.setattr(
+        provider_login,
+        "get_identity_access",
+        lambda _: SimpleNamespace(acting_user=lambda _: SimpleNamespace(user_id="member")),
+    )
+    app = FastAPI()
+    app.include_router(provider_login.router)
+    app.dependency_overrides[get_store] = lambda: store
+    app.dependency_overrides[get_launcher] = lambda: launcher
+    app.dependency_overrides[get_catalog] = lambda: SimpleNamespace(
+        provider_targets=lambda: [
+            (provider, host, None) for provider in PROVIDER_IDS for host in ("", "gpu.example")
+        ]
+    )
+    app.dependency_overrides[get_provider_credentials] = lambda: credentials
+    app.dependency_overrides[get_provider_sign_ins] = lambda: ProviderSignInRunner(
+        store, launcher, accounts
+    )
+    listed = TestClient(app).get("/api/providers/logins").json()
+    used = {(a["provider"], a["host"]) for a in listed if a["agent_used"]}
+    # Settings still lists the compute-only machine; only its agent flag is off.
+    assert {a["host"] for a in listed} == {"", "gpu.example"}
+    assert used and all(host == "" for _provider, host in used)

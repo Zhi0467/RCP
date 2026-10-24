@@ -439,7 +439,7 @@ export function ProjectLanding({
     loadProviderLogins().then(
       (states) => {
         if (active) {
-          setProviderLogins(states);
+          setProviderLogins(states.filter((state) => state.agent_used));
           setLoginError(null);
         }
       },

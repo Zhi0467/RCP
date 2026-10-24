@@ -1101,6 +1101,22 @@ def project_repository_descriptors(
     return result
 
 
+def agent_login_accounts(
+    manifest: Manifest, store: AppStore | None, project_id: str | None
+) -> set[tuple[str, str]]:
+    """(provider, host) accounts this project's agents launch on or have work parked on.
+
+    A machine that is only a compute target needs no agent login.
+    """
+    accounts = {
+        (profile.provider, provider_login_host(manifest, profile.run_on))
+        for profile in map(manifest.agent_profile, AGENT_EXECUTION_PROFILES)
+    }
+    if store is not None and project_id is not None:
+        accounts |= _parked_login_accounts(store, project_id, manifest)
+    return accounts
+
+
 def _parked_login_accounts(
     store: AppStore, project_id: str, manifest: Manifest
 ) -> set[tuple[str, str]]:
@@ -1809,12 +1825,8 @@ class ProjectService:
         login_state = launcher.login_state
         if login_state is None:
             return []
-        accounts = {
-            (profile.provider, provider_login_host(manifest, profile.run_on))
-            for profile in map(manifest.agent_profile, AGENT_EXECUTION_PROFILES)
-        }
-        if launcher.accounts is not None and project_id is not None:
-            accounts |= _parked_login_accounts(launcher.accounts.store, project_id, manifest)
+        store = launcher.accounts.store if launcher.accounts is not None else None
+        accounts = agent_login_accounts(manifest, store, project_id)
         return [
             {
                 **(
