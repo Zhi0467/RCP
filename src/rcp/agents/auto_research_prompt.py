@@ -470,7 +470,6 @@ def auto_research_prompt_values(
         "patch": patch_path,
         "patch_schema": output_schema_path,
         "command_prefix": command_client,
-        "history_client": command_client,
         "repositories": {
             item["alias"]: (
                 {"host": item["host"], "path": item["path"]} if item["host"] else item["path"]

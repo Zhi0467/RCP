@@ -2287,7 +2287,6 @@ async def _settle_worker_patch(
                 "graph": context.graph_path,
                 "research": context.research_md_path,
                 "command_prefix": correction_mailbox.client_command(),
-                "history_client": correction_mailbox.client_command(),
                 "browser": correction_grant.model_dump(
                     include={"status", "reason_code", "session_name", "invocation_dir"}
                 ),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 from typing import Literal
 
 from rcp.agents.artifact_contract import artifact_contract
@@ -10,8 +11,10 @@ from rcp.agents.prompts import (
     _EXTERNAL_WATCHER_FORMS,
     _TASK_AUTHORITY_BOUNDARY,
     _WHAT_IS_RCP_CONVERSATION,
+    COMMAND_CLIENT,
     PROVIDER_NATIVE_SUBAGENT_LIFETIME,
     REPLY_STYLE,
+    _command_client_rule,
     _invoked_package_section,
     _patch_validator_rules,
     _pointer,
@@ -28,7 +31,7 @@ from rcp.loop_status import LoopOverlap
 
 # Bumped by hand whenever the Experiment-loop policy prose in this module changes, so a live
 # session re-opens its master contract once instead of keeping the old policy.
-EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v9"
+EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v10"
 
 
 def experiment_loop_read_context(
@@ -152,6 +155,12 @@ cause a new external side effect.
 """
 
 
+def experiment_validate_command(patch_path: str) -> str:
+    """The validator as the master states it, relative to its one command client."""
+
+    return f"{COMMAND_CLIENT} {shlex.join(['validate', patch_path])}"
+
+
 def experiment_loop_task_contract(
     *,
     project_name: str,
@@ -169,7 +178,7 @@ def experiment_loop_task_contract(
     watch_path: str,
     artifact_path: str,
     output_schema_path: str,
-    validator_command: str,
+    command_client: str,
     execution_instructions: str,
     write_scope: ProjectWriteScope | None = None,
     execution_host: str = "",
@@ -191,7 +200,7 @@ def experiment_loop_task_contract(
         "Patch path": patch_path,
         "watch path": watch_path,
         "Patch schema path": output_schema_path,
-        "validator command": validator_command,
+        "command client": command_client,
     }
     missing = [label for label, value in required.items() if not value]
     if missing:
@@ -439,7 +448,9 @@ Graph reflection and authority:
   independent: report operational truth, and do not state whether RCP applied the Patch; RCP
   shows that beside the reply.
 
-{_patch_validator_rules(validator_command)}
+{_command_client_rule(command_client)}
+
+{_patch_validator_rules(experiment_validate_command(patch_path))}
 {_EXPERIMENT_HANDOFF_CORRECTIONS}
 {REPLY_STYLE}
 
