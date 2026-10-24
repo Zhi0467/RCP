@@ -258,3 +258,30 @@ test("space loop metadata exposes starter parent and checkout outside the open b
   assert.equal(parseProjectHash(href).autoResearchEpisodeId, "parent-1");
   assert.doesNotMatch(html.match(/<button[^]*?<\/button>/)[0], /<a /);
 });
+
+test("a Work-started loop links to the chat that started it on the episode's branch", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(SpaceRunRow, {
+      entry: run({
+        graph_target: { kind: "branch", branch_id: "branch-1" },
+        started_by: {
+          kind: "chat",
+          human: null,
+          auto_research_episode_id: null,
+          chat_id: "chat-1",
+          chat_name: "Warmup ablation",
+        },
+      }),
+      theme: "classic-light",
+      onOpen() {},
+      onArchive() {},
+    }),
+  );
+  assert.match(html, /data-starter-kind="chat"/);
+  const href = html.match(/<a href="([^"]+)"/)[1].replaceAll("&amp;", "&");
+  const params = new URLSearchParams(href.slice(href.indexOf("?") + 1));
+  assert.deepEqual(
+    [params.get("view"), params.get("chat"), params.get("branch_id")],
+    ["chats", "chat-1", "branch-1"],
+  );
+});

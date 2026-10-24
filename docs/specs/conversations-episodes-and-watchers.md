@@ -153,9 +153,13 @@ text cannot select it; resolution never skips an unusable current binding.
 - Human model changes keep the session. Provider or machine changes start fresh
   with a recorded reason. The composer offers provider/model/reasoning, defaulting
   to the last turn then Settings, but not machine selection.
-- Wakes require their recorded provider/model/machine to match. Mismatch claims
-  completion once and records a failed notification task without provider launch
-  or Retry. Deferred wakes replace one visible reason until admitted.
+- A wake continues the chat's current agent: it takes the provider, model,
+  reasoning and runtime of the chat's latest session, so a human's provider or
+  model switch after arming does not strand it. Only a recorded machine that
+  differs from that session's claims completion once and records a failed
+  notification task without provider launch or Retry. Deferred wakes replace one
+  visible reason until admitted.
+  **Why:** the watcher belongs to the conversation, and the human chose its agent.
 
 Every resolution records `chat_session_resolution`. Fresh-session reasons are
 `no_session_yet`, `session_history_only`, `session_recovery_abandoned`,
@@ -505,6 +509,29 @@ or admission. Nonblank initial goals remain exact; blank input gets a fallback.
 Only the newest unresolved task in the newest same-target episode may Resume or
 Retry operationally. Patch-only repair may reflect completed work, never repeat
 effects or reopen an old episode.
+
+### Work-started Experiments
+
+A member's ordinary Work chat, including its wakes, may start an Experiment with
+`episode --kick-off-experiment --node <id> --goal-file <file>`, as that member's
+Run would: the turn's authorizer authorizes the episode, and it runs on the chat's
+own graph target. Experiment turns, Auto-research child Work, consolidation and
+artifact edits do not get the verb. A human Run, this command and an orchestrator
+kickoff share one readiness rule, so the node must already be on the graph and
+ready. `--invocation-limit` may shorten the episode but never exceed the node's
+limit, and the goal file is required. Provider, model and effort are the agent's
+pick from the ready profiles, otherwise Settings. The episode id derives from the
+turn and the command key, so Resume or Retry replays the same episode. The episode
+records the starting turn, and Runs shows **Started from** that chat.
+
+The prompt starts one only when the member asks, after auditing the Experiment and
+its neighbors. When the audit finds something to fix, the agent writes the fix and
+does not start, because its Patch lands only after the turn. After a start it arms
+a node-status watcher on the Experiment's closed statuses.
+
+**Why:** the member's Work message is the authorization a Run click would be, and
+the node's limit, which only a visible graph edit changes, still bounds the spend.
+An Experiment turn starting another would chain episodes nobody authorized.
 
 ## Experiment-loop graph authority
 

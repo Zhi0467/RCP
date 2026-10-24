@@ -899,6 +899,10 @@ class RunRequest(BaseModel):
     fork_source_host: str | None = None
     # The source chat's latest turn when the first message forked; no launch reads it.
     fork_source_operation_id: str | None = None
+    # The Work turn that started this Experiment episode; never accepted from HTTP clients.
+    started_from_operation_id: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     mode: ConversationMode = "discuss"
     isolation_owner_episode_id: str | None = None
     code_worktree: bool = False

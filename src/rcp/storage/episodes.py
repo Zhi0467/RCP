@@ -43,6 +43,7 @@ from rcp.storage.models import (
     EpisodeReportConflict,
     EpisodeReportRecord,
     EpisodeReportSummary,
+    EpisodeStartedFromChat,
     EpisodeWrapupRecord,
     _required_timestamp,
 )
@@ -122,7 +123,47 @@ class EpisodeStoreMixin(StoreMixinBase):
                 snapshots[episode_id].launch_receipts.append(
                     AgentTaskReceiptRecord.model_validate(data)
                 )
+            for episode_id, started_from in self._episode_started_from_chats(
+                connection, episode_ids
+            ).items():
+                snapshots[episode_id].started_from = started_from
         return snapshots
+
+    def episode_started_from_chat(self, episode_id: str) -> EpisodeStartedFromChat | None:
+        with self.connection() as connection:
+            return self._episode_started_from_chats(connection, [episode_id]).get(episode_id)
+
+    @staticmethod
+    def _episode_started_from_chats(
+        connection: sqlite3.Connection, episode_ids: Sequence[str]
+    ) -> dict[str, EpisodeStartedFromChat]:
+        """Each episode whose root names the Work turn that started it, with that chat."""
+
+        placeholders = ",".join("?" for _ in episode_ids)
+        return {
+            row["episode_id"]: EpisodeStartedFromChat(
+                chat_id=row["chat_id"], chat_name=row["chat_name"]
+            )
+            for row in connection.execute(
+                f"""
+                SELECT episode.episode_id,
+                       json_extract(source.request_json, '$.chat_id') AS chat_id,
+                       display.title AS chat_name
+                FROM episodes AS episode
+                JOIN graph_runs AS root ON root.operation_id = episode.root_operation_id
+                JOIN graph_runs AS source
+                  ON source.operation_id = json_extract(
+                      root.request_json, '$.started_from_operation_id'
+                  )
+                LEFT JOIN chat_display AS display
+                  ON display.project_id = source.project_id
+                 AND display.chat_id = json_extract(source.request_json, '$.chat_id')
+                WHERE episode.episode_id IN ({placeholders})
+                  AND json_extract(source.request_json, '$.chat_id') IS NOT NULL
+                """,
+                list(episode_ids),
+            )
+        }
 
     def create_episode(self, record: EpisodeRecord) -> EpisodeRecord:
         self._validate_new_episode(record)

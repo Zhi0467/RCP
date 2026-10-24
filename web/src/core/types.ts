@@ -2633,9 +2633,12 @@ export interface AutoResearchRecoverySummary {
 }
 
 export interface EpisodeStarter {
-  kind: "human" | "auto_research" | "unknown";
+  kind: "human" | "auto_research" | "chat" | "unknown";
   human: AuthorizedHuman | null;
   auto_research_episode_id: string | null;
+  /** For `chat`: the conversation whose Work turn started it, on the episode's target. */
+  chat_id?: string | null;
+  chat_name?: string | null;
 }
 
 export interface LoopCheckout {

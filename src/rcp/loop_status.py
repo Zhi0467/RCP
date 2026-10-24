@@ -33,9 +33,12 @@ if TYPE_CHECKING:
 class EpisodeStarter(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["human", "auto_research", "unknown"]
+    kind: Literal["human", "auto_research", "chat", "unknown"]
     human: AuthorizedHuman | None = None
     auto_research_episode_id: str | None = None
+    #: For ``chat``: the conversation whose Work turn started it, on the episode's target.
+    chat_id: str | None = None
+    chat_name: str | None = None
 
 
 class LoopCheckout(BaseModel):
@@ -62,7 +65,7 @@ class EpisodeLoopMetadata(BaseModel):
 class LoopStarter(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["human", "auto_research", "unknown"]
+    kind: Literal["human", "auto_research", "chat", "unknown"]
     id: str | None = None
     display_name: str | None = None
 
@@ -152,6 +155,7 @@ def episode_loop_metadata(
     owner_id = episode.isolation_owner_episode_id or episode.episode_id
     snapshot = EpisodeLoopMetadataSnapshot(
         route=store.auto_research_child_experiment(episode.episode_id),
+        started_from=store.episode_started_from_chat(episode.episode_id),
         isolation=store.episode_isolation(episode.project_id, owner_id),
     )
     if snapshot.isolation is None or snapshot.isolation.worktree is None:
@@ -177,10 +181,21 @@ def episode_loop_metadata_from_snapshot(
 
     route = snapshot.route
     parent_id = route.auto_research_episode_id if route is not None else None
+    chat = snapshot.started_from if parent_id is None else None
     starter = EpisodeStarter(
-        kind="auto_research" if parent_id else "human" if episode.authorized_by else "unknown",
+        kind=(
+            "auto_research"
+            if parent_id
+            else "chat"
+            if chat
+            else "human"
+            if episode.authorized_by
+            else "unknown"
+        ),
         human=episode.authorized_by if parent_id is None else None,
         auto_research_episode_id=parent_id,
+        chat_id=chat.chat_id if chat else None,
+        chat_name=chat.chat_name if chat else None,
     )
     isolation = snapshot.isolation
     checkout = LoopCheckout(
@@ -350,6 +365,8 @@ def _fill_within_budget(
 
 
 def _loop_starter(starter: EpisodeStarter) -> LoopStarter:
+    if starter.kind == "chat":
+        return LoopStarter(kind="chat", id=starter.chat_id, display_name=starter.chat_name)
     return LoopStarter(
         kind=starter.kind,
         id=(starter.human.user_id if starter.human else starter.auto_research_episode_id),

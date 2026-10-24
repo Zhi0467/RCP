@@ -25,6 +25,7 @@ from rcp.agents.staged_command_client import (
     branch_usage,
     bulletin_usages,
     child_target_usage,
+    experiment_kickoff_usage,
     merge_usage,
     name_usage,
     spawn_seat_usage,
@@ -137,10 +138,8 @@ def _command_invocations(
         ),
         "watch_graph": ("watch-graph --key <key> --condition-json <json> --reason <text>",),
         "episode": (
-            "episode --key <key> --kick-off-experiment --node <node-id> "
-            f"{child_target_usage()} "
-            "[--goal-file <filename>] [--invocation-limit <positive-int>] "
-            "[--provider <provider>] [--model <model>] [--effort <effort>]",
+            "episode --key <key> "
+            + experiment_kickoff_usage(goal_required=False, child_targets=True),
             "episode --key <key> --stop <episode-id>",
             "episode --key <key> --resume <episode-id>",
         ),
@@ -473,7 +472,6 @@ def auto_research_prompt_values(
         "patch": patch_path,
         "patch_schema": output_schema_path,
         "command_prefix": command_client,
-        "history_client": command_client,
         "repositories": {
             item["alias"]: (
                 {"host": item["host"], "path": item["path"]} if item["host"] else item["path"]

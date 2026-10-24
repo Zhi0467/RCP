@@ -3142,7 +3142,9 @@ def test_orchestrator_receives_the_project_settings_package_paths() -> None:
     assert "/stage/inputs/original.md" in continued
     values = auto_research_prompt_values(group_context=None, **common)
     assert "other_branch_loops" not in values
-    assert values["history_client"] == common["command_client"]
+    # The turn-bound client travels once; `command_prefix` replaces every command prefix.
+    assert values["command_prefix"] == common["command_client"]
+    assert "history_client" not in values
     assert package_path in fresh
     assert graph_rules(edits=True, ontology_extensions=False) in fresh
     # A continuation sends the packages again only when one of them changed.

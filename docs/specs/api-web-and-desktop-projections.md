@@ -1280,8 +1280,9 @@ user-set flag, and uninstall has no independent lock if the backend dies.
 These controls do not guarantee network, provider, or remote-host availability.
 
 Each Experiment target contributes only the current episode chosen by its control;
-older episodes stay in History. Cards identify target, checkout, starter, and
-historical human authorizer; missing attribution never borrows the viewer.
+older episodes stay in History. Cards identify target, checkout, starter (a member,
+Auto-research, or the Work chat that started it, linked), and historical human
+authorizer; missing attribution never borrows the viewer.
 Selection, Stop, and busy state bind the exact episode. Other live target loops
 are informational in Run, not a launch veto. Main-loop chat opened from a branch
 is read-only. Chat watcher strips show only their own/live target rows; ended

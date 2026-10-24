@@ -1623,6 +1623,7 @@ export function ExecutionView({
                 <BranchTag refs={graphRefs} target={episode.graph_target} />
                 <ExperimentLoopMetadata
                   projectId={episode.project_id}
+                  graphTarget={episode.graph_target}
                   metadata={episode}
                   author={episode.authorized_by}
                 />
@@ -1841,6 +1842,7 @@ function ExperimentEpisodeCard({
             <BranchTag refs={graphRefs} target={episode.graph_target} />
             <ExperimentLoopMetadata
               projectId={episode.project_id}
+              graphTarget={episode.graph_target}
               metadata={episode}
               author={episode.authorized_by}
             />

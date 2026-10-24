@@ -53,14 +53,21 @@ export function experimentStartOverlap(
         episode_id: episode.episode_id,
         graph_target,
         state: "live",
-        started_by: {
-          kind: episode.started_by.kind,
-          id:
-            episode.started_by.kind === "auto_research"
-              ? episode.auto_research_parent_episode_id
-              : episode.started_by.human?.user_id,
-          display_name: episode.started_by.human?.display_name ?? null,
-        },
+        started_by:
+          episode.started_by.kind === "chat"
+            ? {
+                kind: "chat",
+                id: episode.started_by.chat_id,
+                display_name: episode.started_by.chat_name ?? null,
+              }
+            : {
+                kind: episode.started_by.kind,
+                id:
+                  episode.started_by.kind === "auto_research"
+                    ? episode.auto_research_parent_episode_id
+                    : episode.started_by.human?.user_id,
+                display_name: episode.started_by.human?.display_name ?? null,
+              },
         checkout: episode.checkout,
       })),
     omitted: 0,

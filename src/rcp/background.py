@@ -62,6 +62,7 @@ from rcp.runs.auto_research_recovery import (
 )
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.episodes.report import restart_interrupted_episode_reports
+from rcp.runs.experiment_admission import WorkExperimentStarter
 from rcp.runs.experiment_recovery import (
     experiment_rerun_continuation,
     preflight_experiment_episode_recovery,
@@ -277,6 +278,9 @@ class AgentTaskExecution:
     #: This process's work admission. A question waits for the human only while
     #: it is open; maintenance closes it and locks the human out.
     admission: RuntimeAdmissionGate | None = field(default=None, repr=False)
+    #: Starts the Experiment a Work turn's ``episode --kick-off-experiment`` names;
+    #: the app provides it, a bare engine (tests) leaves the verb unavailable.
+    experiment_starter: WorkExperimentStarter | None = field(default=None, repr=False)
 
     @property
     def reuses_native_checkpoint(self) -> bool:
@@ -412,8 +416,10 @@ class BackgroundAgentTasks:
         resume_command_mailbox: Callable[[AgentTaskExecution], TaskCommandMailbox | None]
         | None = None,
         dependency_checker: DependencyChecker | None = None,
+        experiment_starter: WorkExperimentStarter | None = None,
     ) -> None:
         self.store = store
+        self.experiment_starter = experiment_starter
         # The app passes its one checker; a bare engine (tests) skips the check.
         self.dependency_checker = dependency_checker
         self.stream = stream
@@ -2148,6 +2154,7 @@ class BackgroundAgentTasks:
                 self._retry_feedback(record) if continuation in {"retry", "handoff"} else ()
             ),
             admission=self.runtime_admission_gate,
+            experiment_starter=self.experiment_starter,
         )
         awaiting_remote_result = False
         try:
@@ -2486,6 +2493,7 @@ class BackgroundAgentTasks:
             stage_root=record.stage_root,
             write_scope_fingerprint=record.write_scope_fingerprint,
             continuation=cast(AgentTaskContinuation, continuation),
+            experiment_starter=self.experiment_starter,
         )
 
     def _settle_stale_detached_mailboxes(self) -> bool:

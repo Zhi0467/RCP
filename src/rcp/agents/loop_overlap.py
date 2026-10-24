@@ -26,14 +26,10 @@ def render_loop_interference_rule(*, ask_allowed: bool) -> str:
     return json.dumps({"interference_rule": rule}, ensure_ascii=False)
 
 
-def render_loop_overlap(loops: LoopOverlap, *, ask_allowed: bool) -> str:
-    """Render read-only evidence beside capability-specific interference guidance."""
+def render_loop_overlap(loops: LoopOverlap) -> str:
+    """Read-only evidence of live loops elsewhere; the master states the interference rule."""
 
-    return (
-        render_loop_interference_rule(ask_allowed=ask_allowed)
-        + "\n"
-        + json.dumps(loops.model_dump(mode="json", exclude_none=True), ensure_ascii=False)
-    )
+    return json.dumps(loops.model_dump(mode="json", exclude_none=True), ensure_ascii=False)
 
 
 def render_auto_research_overlap(runs: AutoResearchOverlap) -> str:

@@ -15,6 +15,7 @@ from rcp.agents.command_protocol import (
     BulletinCommandRequest,
     CommandRequest,
     CommandResponse,
+    EpisodeCommandRequest,
     FlagCommandRequest,
     GraphDiffCommandRequest,
     GraphLogCommandRequest,
@@ -26,6 +27,10 @@ from rcp.limits import ASK_MAX_ATTEMPTS
 from rcp.runs.evidence_flag_commands import handle_flag
 from rcp.runs.graph_history_queries import handle_graph_history_command
 from rcp.runs.lesson_commands import handle_lesson
+from rcp.runs.work_experiment_commands import (
+    handle_work_experiment_kickoff,
+    work_experiment_allowed,
+)
 from rcp.storage import AppStore
 from rcp.storage.question_models import QuestionArgumentConflict, QuestionOrigin
 
@@ -395,6 +400,15 @@ class WorkCommandHandler:
             return handle_lesson(execution.store, execution.operation_id, request)
         if isinstance(request, ApplyCommandRequest) and self.consolidation_apply is not None:
             return self.consolidation_apply(request, identity)
+        if isinstance(request, EpisodeCommandRequest):
+            execution = self.execution
+            if (
+                execution is None
+                or identity.authority != "broker"
+                or identity.task_id != execution.operation_id
+            ):
+                return refuse("Experiment kickoff requires this Work turn's broker authority.")
+            return handle_work_experiment_kickoff(execution, self.mailbox, request)
         if isinstance(request, AskCommandRequest):
             execution = self.execution
             if (
@@ -565,6 +579,8 @@ def work_command_handler(
                 verbs.add("bulletin")
     if work_ask_authorized(execution):
         verbs.add("ask")
+    if work_experiment_allowed(execution):
+        verbs.add("episode")
     return WorkCommandHandler(
         execution,
         compute_commands,

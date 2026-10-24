@@ -154,7 +154,8 @@ def compose(
     next operational launch reopens the master. A continuation never carries master text.
     """
 
-    sections = list(parts)
+    # An optional part an owner left empty would only leave a run of blank lines.
+    sections = [part for part in parts if part.strip()]
     if node == "session_start":
         if delta:
             raise ValueError("a session start has no earlier context to update")

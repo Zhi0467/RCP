@@ -117,7 +117,8 @@ number here.
   belief standing, resolve Proposals, change project truth membership, authorize
   a bounded episode, or dispatch a branch merge into main. A member's own
   authenticated page authorizes episodes, including through an agent the member
-  runs there; every other protected action stays a visible control. Agents may
+  runs there, and the member's ordinary Work chat may start an Experiment they
+  asked for; every other protected action stays a visible control. Agents may
   assert new work and must propose changes to an existing ResearchQuestion or
   Hypothesis. The one
   deliberate Decision exception is the human-authorized Auto-research

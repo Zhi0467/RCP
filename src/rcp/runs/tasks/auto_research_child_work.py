@@ -335,10 +335,18 @@ def _child_prompt_values(
     staged: _StagedWorkInputs,
     route: AutoResearchChildWorkRecord,
 ) -> dict[str, object]:
-    """The child's stable values: an ordinary Work turn's, and its route and commands."""
+    """The child's stable values: an ordinary Work turn's, and its route and commands.
 
+    The child's staged commands are the verbs its mailbox enforces, so Work's own verb
+    list would only repeat them.
+    """
+
+    values = _work_prompt_values(turn, staged)
+    work = values["work"]
+    assert isinstance(work, dict)
     return {
-        **_work_prompt_values(turn, staged),
+        **values,
+        "work": {key: value for key, value in work.items() if key != "allowed_verbs"},
         "auto_research_child": {
             "episode_id": route.episode_id,
             "worker_id": route.worker_id,

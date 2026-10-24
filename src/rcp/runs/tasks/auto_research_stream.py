@@ -1517,7 +1517,15 @@ def _actor_launch_prompt(
     holds none under the current key. The returned master is the one the session now holds.
     """
 
-    browser_line = browser_prompt_line(browser_grant)
+    # A launch that never asked for the browser has nothing to state or revoke; its values
+    # still record the status, so a change from a granted launch travels as a change.
+    browser_line = (
+        "" if browser_grant.status == "not_requested" else browser_prompt_line(browser_grant)
+    )
+
+    def with_browser(text: str) -> str:
+        return f"{text}\n\n{browser_line}" if browser_line else text
+
     values["browser"] = browser_grant.model_dump(
         include={"status", "reason_code", "session_name", "invocation_dir"}
     )
@@ -1534,7 +1542,7 @@ def _actor_launch_prompt(
         LaunchPhase(session_id=session_id, phase=_LAUNCH_PHASES[execution.continuation])
     )
     if node == "session_start":
-        contract = start_contract() + "\n\n" + browser_line
+        contract = with_browser(start_contract())
         contract_path, prompt = _stage_task_contract(
             local_stage, remote_stage, label, contract, execution=execution, role=role
         )
@@ -1551,7 +1559,7 @@ def _actor_launch_prompt(
         native_session_id=session_id,
         label_prefix=master_label_prefix,
         key=key,
-        render=lambda: render_master() + "\n\n" + browser_line,
+        render=lambda: with_browser(render_master()),
         values=values,
         force_bootstrap=after_report,
     )
@@ -1744,7 +1752,7 @@ def _orchestrator_prompt(
                 branch_name=context.branch_name,
                 branch_parent=context.branch_parent,
             ),
-            render_loop_overlap(loops, ask_allowed="ask" in allowed_verbs),
+            render_loop_overlap(loops),
             render_auto_research_overlap(other_runs),
         ),
         report_pending=lambda session_id: execution.store.episode_report_rebootstrap_pending(
@@ -2295,7 +2303,6 @@ async def _settle_worker_patch(
                 "graph": context.graph_path,
                 "research": context.research_md_path,
                 "command_prefix": correction_mailbox.client_command(),
-                "history_client": correction_mailbox.client_command(),
                 "browser": correction_grant.model_dump(
                     include={"status", "reason_code", "session_name", "invocation_dir"}
                 ),

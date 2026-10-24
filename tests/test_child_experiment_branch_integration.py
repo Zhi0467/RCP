@@ -9,6 +9,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 from rcp.agents import AgentEvent
+from rcp.agents.prompts import COMMAND_CLIENT
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.config import Manifest
 from rcp.core.models import GraphState
@@ -56,6 +57,8 @@ class _CompletingExperimentProvider:
             '{"external": [], "graph": []}', encoding="utf-8"
         )
         (validator,) = set(re.findall(r"`([^`]*\svalidate\s[^`]*)`", contract))
+        client = re.search(r"^- Command client: `([^`]+)`$", contract, re.MULTILINE)[1]  # type: ignore[index]
+        validator = validator.replace(COMMAND_CLIENT, client, 1)
         async with kwargs["invocation_gate"].serve_current_session():
             process = await asyncio.create_subprocess_exec(
                 *shlex.split(validator),

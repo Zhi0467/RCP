@@ -41,11 +41,14 @@ from rcp.agents.experiment_loop_prompt import (
     experiment_loop_turn_message,
     experiment_loop_wake_message,
     experiment_loop_watcher_correction_contract,
+    experiment_validate_command,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.group_context import build_group_context, group_prompt_value
+from rcp.agents.loop_overlap import render_loop_interference_rule
 from rcp.agents.prompts import (
+    COMMAND_CLIENT,
     _invoked_package_section,
     graph_read_contract,
     invoked_package_pointers,
@@ -538,7 +541,7 @@ def _handoff_values(turn: WorkTurn) -> dict[str, dict[str, object]]:
             "watch": turn.patch_inputs.watch_path,
             "patch_schema": turn.patch_inputs.schema_path,
         },
-        "commands": {"validate": turn.patch_inputs.validator_command},
+        "commands": {"validate": experiment_validate_command(turn.patch_inputs.patch_path)},
         "patch": {"command_client": turn.patch_inputs.command_client},
     }
     if turn.write_scope is not None:
@@ -597,14 +600,11 @@ def _experiment_values(
         "allowed_verbs": sorted(_work_turn_command_handler(turn).allowed_verbs),
     }
     if compute is not None:
-        values["commands"]["launch"] = turn.patch_inputs.validator_staged.client_command(
-            *_LAUNCH_EXAMPLE_ARGS
-        )
+        values["commands"]["launch"] = f"{COMMAND_CLIENT} {shlex.join(_LAUNCH_EXAMPLE_ARGS)}"
         backend = compute.helper_backend
         execution["helper_owner"] = backend.id if backend is not None else None
     return {
         **values,
-        "history_client": turn.patch_inputs.command_client,
         "group": group_prompt_value(turn.context.group_context),
         "execution": execution,
         "compute": {"active": turn.compute_profiles},
@@ -866,8 +866,14 @@ def _loop_read_context(turn: WorkTurn) -> str:
         if execution is not None and task is not None
         else LoopOverlap()
     )
-    return experiment_loop_read_context(
-        turn.context, loops, ask_allowed="ask" in _work_turn_command_handler(turn).allowed_verbs
+    return experiment_loop_read_context(turn.context, loops)
+
+
+def _loop_interference_rule(turn: WorkTurn) -> str:
+    """The master's interference rule, chosen by the verbs this launch's mailbox enforces."""
+
+    return render_loop_interference_rule(
+        ask_allowed="ask" in _work_turn_command_handler(turn).allowed_verbs
     )
 
 
@@ -1136,7 +1142,8 @@ def _experiment_start_contract(
         human_request,
     )
     contract = experiment_loop_task_contract(
-        execution_instructions=_work_execution_instructions(turn),
+        execution_instructions=_work_execution_instructions(turn, COMMAND_CLIENT),
+        interference_rule=_loop_interference_rule(turn),
         project_name=turn.context.project_name,
         ontology_path=f"{turn.context.graph_path}#ontology",
         ontology_extensions=turn.context.ontology_extensions,
@@ -1152,7 +1159,7 @@ def _experiment_start_contract(
         watch_path=turn.patch_inputs.watch_path,
         artifact_path=str(staged.artifact_directory),
         output_schema_path=turn.patch_inputs.schema_path,
-        validator_command=turn.patch_inputs.validator_command,
+        command_client=turn.patch_inputs.command_client,
         write_scope=turn.write_scope,
         execution_host=turn.execution_host,
         recovery_diagnostics_path=(
@@ -1495,7 +1502,7 @@ def _correction_prompt(
     session_id: str | None,
     parts: list[str],
     *,
-    validator_command: str,
+    command_client: str,
     label: str,
     role: str,
 ) -> tuple[str, str]:
@@ -1503,20 +1510,16 @@ def _correction_prompt(
 
     The provider already answered this operation's launch, so the master it opened or
     was pointed to is the one it holds; the correction never re-opens it. The session
-    already holds this launch's values, so only the correction's own validator is new.
+    already holds this launch's values, so only the correction's own command client is new.
     """
 
     previous_head = _refresh_work_snapshot(launch_turn)
     _prepare_experiment_observation(launch_turn, previous_head)
     launched = composed.values or {}
-    commands = launched.get("commands")
+    patch = launched.get("patch")
     current = {
         **launched,
-        "history_client": shlex.join(shlex.split(validator_command)[:-2]),
-        "commands": {
-            **(commands if isinstance(commands, dict) else {}),
-            "validate": validator_command,
-        },
+        "patch": {**(patch if isinstance(patch, dict) else {}), "command_client": command_client},
     }
     master = MasterRef(path=composed.base_contract_path, bootstrap=False, values=composed.values)
     return _record_continuation_prompt(
@@ -1640,7 +1643,6 @@ async def _settle_watch_deliverable(
         correction_validator: StagedCommandMailbox | None = None
         correction_lifecycle: _WorkValidatorMailboxLifecycle | None = None
         try:
-            validator_command = launch_turn.patch_inputs.validator_command
             correction_validator = stage_patch_validation_mailbox(
                 authority="broker",
                 episode_id=turn.request.control_episode_id,
@@ -1663,16 +1665,12 @@ async def _settle_watch_deliverable(
                 control_node_id=turn.request.control_node_id,
                 control_decision_bundle=turn.request.control_decision_bundle,
             )
-            validator_command = correction_validator.client_command(
-                "validate",
-                launch_turn.patch_inputs.patch_path,
-            )
             correction_path, correction_prompt = _correction_prompt(
                 launch_turn,
                 composed,
                 settled.native_session_id,
                 experiment_loop_watcher_correction_contract(diagnostics_path=diagnostics_path),
-                validator_command=validator_command,
+                command_client=correction_validator.client_command(),
                 label=f"task-{staged.token}-watch-correction-{correction_rounds}.md",
                 role=f"watch_correction_{correction_rounds}",
             )
@@ -1955,16 +1953,12 @@ async def _apply_experiment_loop_turn(
                 control_decision_bundle=turn.request.control_decision_bundle,
             )
             try:
-                loop_validator_command = loop_validator.client_command(
-                    "validate",
-                    launch_turn.patch_inputs.patch_path,
-                )
                 correction_path, correction_prompt = _correction_prompt(
                     launch_turn,
                     composed,
                     applied.native_session_id,
                     experiment_loop_patch_correction_contract(diagnostics_path=diagnostics_path),
-                    validator_command=loop_validator_command,
+                    command_client=loop_validator.client_command(),
                     label=(
                         f"task-{staged.token}-loop-patch-correction-"
                         f"{loop_patch_correction_rounds}.md"

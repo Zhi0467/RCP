@@ -68,6 +68,9 @@ _PROFILE_PICK_FLAGS = (("provider", "--provider"), ("model", "--model"), ("reaso
 SPAWN_SEAT_OPTIONS = (("seat_node", "--seat-node", "<node-id>"), ("project", "--project", None))
 CHILD_TARGET_OPTIONS = (("at", "--at", "<ref@R>"), ("target", "--target", "<branch>"))
 CHILD_SEED_OPTION = ("seed_file", "--seed-file", "<filename>")
+KICKOFF_NODE = ("node", "--node", "<node-id>")
+KICKOFF_GOAL = ("goal_file", "--goal-file", "<filename>")
+KICKOFF_LIMIT = ("invocation_limit", "--invocation-limit", "<positive-int>")
 # Parser enforcement and every usage renderer share these option records.
 KEY_OPTION = ("key", "--key", "<key>")
 MERGE_SOURCE = ("branch_id", "<branch-id>")
@@ -121,6 +124,24 @@ def child_target_usage():
     alternatives = " | ".join(f"{flag} {value}" for _, flag, value in CHILD_TARGET_OPTIONS)
     _, seed_flag, seed_value = CHILD_SEED_OPTION
     return f"[{alternatives}] [{seed_flag} {seed_value} (requires --at)]"
+
+
+def experiment_kickoff_usage(*, goal_required, child_targets):
+    """The ``--kick-off-experiment`` arguments, as the orchestrator or a Work turn may use them."""
+
+    _, node_flag, node_value = KICKOFF_NODE
+    _, goal_flag, goal_value = KICKOFF_GOAL
+    _, limit_flag, limit_value = KICKOFF_LIMIT
+    goal = f"{goal_flag} {goal_value}"
+    parts = [
+        "--kick-off-experiment",
+        f"{node_flag} {node_value}",
+        *([child_target_usage()] if child_targets else []),
+        goal if goal_required else f"[{goal}]",
+        f"[{limit_flag} {limit_value}]",
+        *(f"[{flag} <{flag[2:]}>]" for _, flag in _PROFILE_PICK_FLAGS),
+    ]
+    return " ".join(parts)
 
 
 def spawn_seat_usage():
@@ -385,9 +406,9 @@ def _parser():
     episode_action.add_argument("--kick-off-experiment", action="store_true")
     episode_action.add_argument("--stop", metavar="EPISODE_ID")
     episode_action.add_argument("--resume", metavar="EPISODE_ID")
-    episode.add_argument("--node")
-    episode.add_argument("--goal-file")
-    episode.add_argument("--invocation-limit", type=int)
+    episode.add_argument(KICKOFF_NODE[1])
+    episode.add_argument(KICKOFF_GOAL[1])
+    episode.add_argument(KICKOFF_LIMIT[1], type=int)
     _add_profile_pick_arguments(episode)
     _add_child_target_arguments(episode)
 
