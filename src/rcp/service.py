@@ -1113,7 +1113,7 @@ def _parked_login_accounts(
         store.agent_task(recovery.operation_id)
         for recovery in store.blocked_provider_auth_recoveries()
     ]
-    for episode in store.episodes(project_id, limit=None):
+    for episode in store.live_episodes(project_id):
         if (
             episode.mode != "experiment_loop"
             or episode.status != "running"
