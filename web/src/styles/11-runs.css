@@ -774,10 +774,12 @@
   gap: 9px;
   min-width: 0;
 }
-.experiment-starter[data-starter-kind="chat"] a {
+/* A starter link stays clickable above the run card's whole-heading toggle. */
+.experiment-starter a {
   align-items: center;
   display: inline-flex;
   gap: 4px;
+  pointer-events: auto;
 }
 .campaign-run-meta time {
   color: var(--muted);
