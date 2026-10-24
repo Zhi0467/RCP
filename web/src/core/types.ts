@@ -89,7 +89,7 @@ export interface ServerReleaseStatus {
   candidate_commit: string | null;
   update_available: boolean;
   last_update_failure: string | null;
-  command: "rcp server update";
+  command: string;
 }
 
 export interface ServerBackupStatus {
@@ -104,22 +104,22 @@ export interface ServerBackupStatus {
   protected_projects: number | null;
   uncaptured_projects: number | null;
   last_failure: string | null;
-  configure_command: "rcp server backup configure";
-  run_command: "rcp server backup run";
+  configure_command: string;
+  run_command: string;
 }
 
 export interface ServerRestoreStatus {
   status: ServerStatusSummary;
   last_completed_at: string | null;
   drill_age_days: number | null;
-  command: "rcp server restore";
+  command: string;
 }
 
 export interface ServerExecutionReadiness {
   machine: ServerStatusSummary;
   provider_checks: ServerStatusSummary;
   dependency_versions: string;
-  provider_command: "rcp server provider check";
+  provider_command: string;
 }
 
 export interface ServerStatus {

@@ -1555,7 +1555,9 @@ installed machine-tool readiness, and private provider-check availability. The
 browser formats timestamps, byte counts, and commit abbreviations only; it does
 not reconstruct operational state from raw status vocabularies. An unsafe
 concrete doctor, backup-receipt, or restore read fails visibly instead of
-becoming an empty or healthy panel.
+becoming an empty or healthy panel. Each `rcp server` command it shows is the
+operator's own line (`rcp.operator_commands`): `sudo` for root work and
+`sudo -u <service account> -H` for the rest.
 
 That route is GET-only and available only to an authenticated team member.
 `?refresh=true`, sent by the panel's refresh button, only shortens the release

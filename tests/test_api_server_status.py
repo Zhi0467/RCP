@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 from rcp.api.app import create_app
 from rcp.api.server_status import project_server_status
+from rcp.operator_commands import operator_route
 from rcp.release_check import UpdateNotice
 from rcp.server_ops.backup import BackupArchiveReceipt, BackupRunRefused
 from rcp.server_ops.doctor import ServerDoctorReport
@@ -128,7 +129,7 @@ def test_server_status_projects_concrete_read_models_without_mutation(tmp_path) 
         "candidate_commit": None,
         "update_available": False,
         "last_update_failure": None,
-        "command": "rcp server update",
+        "command": operator_route("team").command(["rcp", "server", "update"], root=True),
     }
     payload["backup"]["status"].pop("label")
     assert payload["backup"]["status"] == {"tone": "bad"}
@@ -141,7 +142,7 @@ def test_server_status_projects_concrete_read_models_without_mutation(tmp_path) 
         "status": {"tone": "good"},
         "last_completed_at": "2026-08-13T09:00:00Z",
         "drill_age_days": 17,
-        "command": "rcp server restore",
+        "command": operator_route("team").command(["rcp", "server", "restore"], root=True),
     }
     payload["execution"]["machine"].pop("label")
     assert payload["execution"]["machine"] == {"tone": "good"}

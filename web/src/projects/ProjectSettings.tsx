@@ -453,7 +453,11 @@ export function ProjectSettings({
         currentPaths === providerPaths ? machineProviderPathsFrom(saved.machines) : currentPaths,
       );
       setMachineComputeEdits({});
-      setAccessHintEdits({});
+      // Like provider paths, hold the saved hints until the project refresh lands,
+      // or the field blanks while readiness reloads.
+      setAccessHintEdits((currentEdits) =>
+        currentEdits === accessHintEdits ? machineAccessHintsFrom(saved.machines) : currentEdits,
+      );
       // The save response intentionally carries no live probe. Preserve each
       // readiness slice whose own inputs this save left alone.
       onSaved(saved, {
