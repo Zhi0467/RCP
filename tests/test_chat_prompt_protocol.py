@@ -501,6 +501,7 @@ def test_fresh_chat_master_names_every_project_machine_and_ignores_client_select
                 "kind": "local",
                 "ssh_target": "",
                 "access_hint": "",
+                "job_manager": "",
             },
             {
                 "id": "gpu",
@@ -508,6 +509,7 @@ def test_fresh_chat_master_names_every_project_machine_and_ignores_client_select
                 "kind": "ssh",
                 "ssh_target": "alice@gpu.example",
                 "access_hint": "Use /scratch/shared for temporary outputs",
+                "job_manager": "",
             },
         ]
     }

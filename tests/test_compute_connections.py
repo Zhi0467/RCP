@@ -243,6 +243,29 @@ def test_every_machine_the_manifest_accepts_resolves(manifest) -> None:
     assert ("old box", "alice@fe80::1") in {(p.id, p.ssh_target) for p in context.active}
 
 
+def test_each_machine_carries_its_own_job_manager_into_the_prompt(manifest) -> None:
+    from rcp.agents.continuation_prompt import _compute_delta_section
+    from rcp.agents.prompts import compute_connection_section
+    from rcp.compute_jobs.job_managers import JOB_MANAGERS
+
+    payload = manifest.model_dump(mode="python")
+    payload["machines"].append(
+        {"alias": "cluster", "host": "cluster.example", "compute": {"job_manager": "slurm"}}
+    )
+    profiles = [
+        profile.model_dump(mode="json")
+        for profile in machine_compute_context(
+            Manifest.model_validate(payload), execution_machine=manifest.machines[0].alias
+        ).active
+    ]
+    rules = JOB_MANAGERS["slurm"].instructions
+
+    assert [p["job_manager"] for p in profiles] == [""] * (len(profiles) - 1) + ["slurm"]
+    assert compute_connection_section(profiles).count(rules) == 1
+    assert rules not in compute_connection_section(profiles[:-1])
+    assert rules in _compute_delta_section({"updated": [profiles[-1]]})
+
+
 @pytest.mark.parametrize(
     "fields",
     [

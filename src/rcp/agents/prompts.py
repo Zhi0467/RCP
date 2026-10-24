@@ -26,6 +26,7 @@ from rcp.agents.write_scope import ProjectWriteScope
 
 if TYPE_CHECKING:
     from rcp.core.models import HiddenReadScope, HiddenReadStatus
+from rcp.compute_jobs.job_managers import job_manager_rules
 from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import GraphTargetRef
@@ -459,8 +460,10 @@ def compute_connection_section(connections: list[dict[str, str]] | None) -> str:
             else f"`ssh {connection['ssh_target']}`"
         )
         hint = connection.get("access_hint", "")
-        suffix = f"; {hint}" if hint else ""
+        manager = connection.get("job_manager", "")
+        suffix = (f"; jobs: `{manager}`" if manager else "") + (f"; {hint}" if hint else "")
         lines.append(f"- `{connection['id']}`: {route}{suffix}")
+    lines.extend(job_manager_rules(item.get("job_manager", "") for item in connections))
     return """Project machines:
 {}
 - Reaching a machine does not change where you run or widen your write boundary.

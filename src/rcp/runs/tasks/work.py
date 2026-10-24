@@ -48,7 +48,6 @@ from rcp.agents.prompts import (
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.background import AgentTaskExecution, persisted_request_roundtrips
-from rcp.compute_jobs.job_managers import JOB_MANAGERS
 from rcp.config import AgentSurface, Manifest
 from rcp.conversation_worktrees import conversation_worktree_context
 from rcp.core.authority import AgentProfile
@@ -429,18 +428,13 @@ def _work_launch_values(turn: WorkTurn) -> dict[str, object]:
     """What a Work turn resolves for itself: its write roots and its launch facts."""
 
     commands = turn.compute_commands
-    machine = turn.service.manifest.machine_map[turn.write_scope.execution_machine]
-    manager = JOB_MANAGERS.get(machine.compute.job_manager) if machine.compute else None
     helper = commands.helper_backend if commands is not None else None
-    values: dict[str, object] = {
+    return {
         "allowed_verbs": sorted(_work_turn_command_handler(turn).allowed_verbs),
         "write_roots": list(turn.write_scope.writable_roots),
         "denied_paths": list(turn.write_scope.protected_write_paths),
         "helper_owner": helper.id if helper is not None else None,
     }
-    if manager is not None:
-        values["job_manager_rules"] = manager.instructions
-    return values
 
 
 def _prepare_work_observation(turn: WorkTurn, previous_head: GraphHeadRef | None = None) -> None:

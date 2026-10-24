@@ -780,6 +780,7 @@ def test_compute_context_delta_tracks_added_removed_and_updated_connections() ->
                     "kind": "ssh",
                     "ssh_target": "alice@gpu.example",
                     "access_hint": "Use /scratch/shared",
+                    "job_manager": "",
                 }
             ],
             "removed": ["Old VM"],
@@ -811,6 +812,7 @@ def test_compute_context_delta_tracks_added_removed_and_updated_connections() ->
                     "kind": "ssh",
                     "ssh_target": "alice@gpu.example",
                     "access_hint": "Use /scratch/new",
+                    "job_manager": "",
                 }
             ],
         }

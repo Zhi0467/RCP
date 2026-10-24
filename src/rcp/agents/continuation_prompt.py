@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from rcp.agents.graph_rules import GRAPH_RULES_VERSION
+from rcp.compute_jobs.job_managers import job_manager_rules
 from rcp.core.transition_models import GraphHeadRef
 from rcp.history.queries import format_head
 
@@ -233,7 +234,7 @@ def _compute_profiles(value: object) -> dict[str, dict[str, str]]:
             continue
         profiles[item["id"]] = {
             key: str(item.get(key, ""))
-            for key in ("id", "name", "kind", "ssh_target", "access_hint")
+            for key in ("id", "name", "kind", "ssh_target", "access_hint", "job_manager")
         }
     return profiles
 
@@ -273,18 +274,25 @@ def _compute_delta_section(delta: object) -> str:
     if not isinstance(delta, dict):
         return ""
     actions = []
+    changed: list[dict[object, object]] = []
     for key, verb in (("added", "added"), ("updated", "updated")):
         profiles = delta.get(key)
         if isinstance(profiles, list):
-            rendered = [
-                _compute_profile_delta(profile) for profile in profiles if isinstance(profile, dict)
-            ]
-            if rendered:
-                actions.append(f"{verb} " + ", ".join(rendered))
+            current = [profile for profile in profiles if isinstance(profile, dict)]
+            changed.extend(current)
+            if current:
+                actions.append(f"{verb} " + ", ".join(map(_compute_profile_delta, current)))
     removed = delta.get("removed")
     if isinstance(removed, list) and removed:
         actions.append("removed " + ", ".join(f"`{value}`" for value in removed))
-    return "RCP compute update: " + "; ".join(actions) + "." if actions else ""
+    if not actions:
+        return ""
+    return "\n".join(
+        [
+            "RCP compute update: " + "; ".join(actions) + ".",
+            *job_manager_rules(str(item.get("job_manager", "")) for item in changed),
+        ]
+    )
 
 
 def _compute_profile_delta(profile: dict[object, object]) -> str:
@@ -295,6 +303,9 @@ def _compute_profile_delta(profile: dict[object, object]) -> str:
         location = "kind: local; this agent execution machine"
     else:
         location = f"kind: SSH; target: `{profile.get('ssh_target', '')}`"
+    manager = str(profile.get("job_manager", ""))
+    if manager:
+        location += f"; jobs: `{manager}`"
     hint = str(profile.get("access_hint", ""))
     if hint:
         location += f"; access hint: {hint}"

@@ -915,8 +915,10 @@ there, which is its host, prefixed by its account when the host names none. A
 host-less (server-local) machine has no route from an agent running elsewhere,
 so that agent is not told about it. Each machine's optional `access_hint`
 (`machines[].access_hint`) is non-secret, single-line guidance shown
-beside its route. Compute context never supplies `run_on`, never relaunches or
-moves a provider, and never widens repository or write scope.
+beside its route, after the machine's job manager when it has one. The list
+states each named manager's rules once, from the job-manager registry. Compute
+context never supplies `run_on`, never relaunches or moves a provider, and never
+widens repository or write scope.
 
 **Why:** a separate compute list repeated hosts the machine cards already held,
 and agents that were not told a machine's route guessed a raw address and
@@ -926,12 +928,12 @@ Chat Discuss and Work, Seed and Refresh, Experiment Runs and continuations,
 Auto-research orchestrators and their children (each from its own `run_on`),
 watcher wakes, Retry and recovery all state the machines as they are at launch.
 Paper coach and the branch-merge agent run no commands and get none. The first
-master/task context lists each machine's alias, route and hint. A resumed native
-session receives a concise delta for added or changed machines, and only the
-alias of a removed one. Compute metadata
-never grants authority and never includes credential contents or paths. Older
-rows that carry `active_compute_ids` keep loading; the field no longer selects
-anything.
+master/task context lists each machine's alias, route, job manager and hint. A
+resumed native session receives a concise delta for added or changed machines,
+with the rules of any manager they name, and only the alias of a removed one.
+Compute metadata never grants authority and never includes credential contents
+or paths. Older rows that carry `active_compute_ids` keep loading; the field no
+longer selects anything.
 
 The backend probes every project machine from every machine currently selected
 by an agent execution profile. Readiness is therefore keyed by

@@ -23,7 +23,6 @@ from rcp.compute_jobs.backend_context import (
     ComputeProbeStaleError,
     resolve_context,
 )
-from rcp.compute_jobs.job_managers import JOB_MANAGERS
 from rcp.compute_jobs.jobs import (
     helper_startup_state,
     helper_watch_spec,
@@ -186,13 +185,7 @@ class WorkComputeCommands:
             if "launch" in self.allowed_verbs
             else "No helper owner resolves on this machine; launch is unavailable."
         )
-        machine = self.manifest.machine_map[self.write_scope.execution_machine]
-        manager = JOB_MANAGERS.get(machine.compute.job_manager) if machine.compute else None
-        return "\n\n".join(
-            part
-            for part in (waiting + helper, availability, manager.instructions if manager else "")
-            if part
-        )
+        return waiting + helper + "\n\n" + availability
 
     def _execute(self, request: LaunchCommandRequest) -> CommandResponse:
         launch = ComputeLaunchRequest.model_validate(request.arguments.model_dump())

@@ -596,7 +596,6 @@ def test_compute_uncertain_launch_never_repeats_backend_submission(commands, mon
 
 
 def test_slurm_keeps_helper_submission_and_separate_readiness(commands):
-    from rcp.compute_jobs.job_managers import JOB_MANAGERS
     from rcp.config import MachineComputeConfig
 
     manifest = commands.handler.manifest.model_copy(deep=True)
@@ -605,9 +604,7 @@ def test_slurm_keeps_helper_submission_and_separate_readiness(commands):
     commands.store.record_compute_backend_probe("project", scheduler, "scheduler")
     handler = replace(commands.handler, manifest=manifest)
     assert handler.allowed_verbs == {"launch"}
-    prose = handler.execution_instructions("helper-command")
-    assert "helper-command" in prose
-    assert JOB_MANAGERS["slurm"].instructions in prose
+    assert "helper-command" in handler.execution_instructions("helper-command")
     response = handler(
         _request("launch", "key", cwd=str(commands.workspace), argv=["true"]), commands.identity
     )

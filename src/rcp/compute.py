@@ -233,10 +233,15 @@ def machine_compute_context(
     profiles = []
     for machine in manifest.machines:
         hint = machine.access_hint
+        manager = (machine.compute.job_manager if machine.compute else None) or ""
         if machine.alias == execution_machine:
             profiles.append(
                 ResolvedComputeProfile(
-                    id=machine.alias, name=machine.alias, kind="local", access_hint=hint
+                    id=machine.alias,
+                    name=machine.alias,
+                    kind="local",
+                    access_hint=hint,
+                    job_manager=manager,
                 )
             )
         elif machine.host:
@@ -252,6 +257,7 @@ def machine_compute_context(
                     kind="ssh",
                     ssh_target=route,
                     access_hint=hint,
+                    job_manager=manager,
                 )
             )
     return ResolvedComputeContext(active=tuple(profiles))

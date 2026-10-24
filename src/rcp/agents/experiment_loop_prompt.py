@@ -18,6 +18,7 @@ from rcp.agents.prompts import (
     _repository_pointers,
     _watcher_execution_host,
     _work_experiment_watcher_resource_section,
+    compute_connection_section,
     render_chat_read_context,
     selected_skill_section,
     write_scope_section,
@@ -176,6 +177,7 @@ def experiment_loop_task_contract(
     recovery_diagnostics_path: str | None = None,
     skill_pointers: list[dict[str, object]] | None = None,
     invoked_skill_pointers: list[dict[str, object]] | None = None,
+    compute_profiles: list[dict[str, str]] | None = None,
 ) -> str:
     """Build the self-contained contract for one bounded Experiment-loop invocation."""
 
@@ -243,7 +245,7 @@ Required current inputs:
 {_pointer("Ontology extensions", ontology_path if ontology_extensions else None)}
 {_pointer("Human introduction", introduction_path)}
 Repository pointers and expected operational targets:
-{_repository_pointers(repositories)}{selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}
+{_repository_pointers(repositories)}{compute_connection_section(compute_profiles)}{selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}
 Exact outputs and RCP tooling:
 - Optional semantic graph Patch: `{patch_path}`
 - Existing Patch JSON Schema, including `AgentExperimentAttempt`: `{output_schema_path}`

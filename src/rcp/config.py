@@ -104,6 +104,7 @@ class ResolvedComputeProfile(BaseModel):
     kind: Literal["local", "ssh"]
     ssh_target: str = ""
     access_hint: str = Field(default="", max_length=512)
+    job_manager: Literal["", "slurm"] = ""
 
     @model_validator(mode="before")
     @classmethod
