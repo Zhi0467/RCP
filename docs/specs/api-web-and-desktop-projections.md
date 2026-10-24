@@ -1479,7 +1479,7 @@ server status (team spaces), machine cards with their names (renamed in place) a
 writable paths, provider logins, and the
 personal space's clear-all-caches. Project Settings owns repositories, this
 project's machine cards (provider paths, compute, and the same writable-path
-record), execution profiles, compute connections, packages, caches, project
+record and access hint), execution profiles, packages, caches, project
 membership, and prospective episode limits, not ontology authoring. Display
 preferences live in the identity menu.
 
@@ -1520,9 +1520,9 @@ explicit, bounded install. `POST /api/projects/{id}/machines` appends a machine
 alias to the project manifest through the state workspace. Existing projects
 fill the machine list at startup and on registration. Project
 snapshots expose non-secret compute metadata; readiness exposes a backend-owned
-execution-machine/connection matrix with distinct unreachable, authentication,
+execution-machine/target-machine matrix with distinct unreachable, authentication,
 and host-key states. Normal readiness reads reuse the last result; only an
-explicit refresh runs network probes, and a connection or execution-binding
+explicit refresh runs network probes, and a machine route or execution-binding
 change invalidates the cached matrix. Settings writes never accept private keys
 or passwords.
 History and task detail own

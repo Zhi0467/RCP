@@ -232,9 +232,10 @@ after mechanical success and bind provider, host, session, project, target,
 conversation and focus. A legacy master without a durable record is reusable
 only when its bytes match its filename digest.
 
-Compute selections persist on task and chat records. Added/updated entries send
-bounded access metadata; removals send names. They change no execution or graph
-scope. Branch composers work during and after an episode with independent human
+Every turn carries all project machines as compute (see
+[project machines](providers-and-containment.md#project-machines-are-every-agents-compute)).
+Added/updated machines send bounded access metadata; removals send aliases. They
+change no execution or graph scope. Branch composers work during and after an episode with independent human
 authorization, sessions and budgets. Older chat records resolve their target from
 durable task/session bindings. Branch chats and their recovery preserve that
 target. A human may start a separate Experiment episode on the branch without an

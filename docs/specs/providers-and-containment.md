@@ -78,7 +78,13 @@ Backend selection is per machine, independent of space and compute readiness:
 The mirrored profile uses `systemd-run --user --pty`, `ProtectHome=tmpfs`,
 `ProtectSystem=strict`, writable binds for the checkout and machine grants,
 and read-only Git configuration/credentials not covered by grants. It shares
-the host's `/tmp`. `protected_repository_paths` protects declared and resolved
+the host's `/tmp`. The account's real `~/.ssh` and `~/.config/gcloud` are bound
+writable and persist, created with mode 0700 when missing, so a member can run
+`gcloud auth login` and `gcloud compute config-ssh` in the terminal. RCP-owned
+files inside them stay read-only, `~/.ssh/known_hosts` among them.
+**Why:** members set up machine routes from the terminal; a throwaway home
+discarded the keys and the sign-in. A Google sign-in saved there is readable by
+agents running as the same account, which members accept. `protected_repository_paths` protects declared and resolved
 `.research` paths, including read-only empty mounts for absent directories.
 Overlapping or canonical-state repository roots are refused.
 
@@ -893,58 +899,57 @@ work's route, so OpenSSH can reopen it. Finished-work sockets are removed only
 after probing liveness; another RCP instance may own them in the account's shared
 socket directory. This limits connection coupling, not host-wide network outages.
 
-### Compute connections are resources, not execution profiles
+### Project machines are every agent's compute
 
-A project may configure named local or SSH compute connections as non-secret
-resource metadata. A compute connection is not a `MachineConfig`, never supplies
-`run_on`, and never changes where a provider launches. Local compute means the
-machine on which the current agent is already running; an SSH compute target is
-reached from that same machine. Attaching or detaching one does not relaunch,
-move, or replace the provider, and it does not expand repository or write scope.
+Every project machine is a compute resource for every agent. No launch selects
+compute, and no picker or default narrows the set. Each turn's admission
+resolves all project machines, as seen from that turn's execution machine, into
+a bounded, immutable, server-owned snapshot stored with the task. The execution
+machine itself is `local`. Any other machine is reached over its SSH route from
+there, which is its host, prefixed by its account when the host names none. A
+host-less (server-local) machine has no route from an agent running elsewhere,
+so that agent is not told about it. Each machine's optional `access_hint`
+(`machines[].compute.access_hint`) is non-secret, single-line guidance shown
+beside its route. Compute context never supplies `run_on`, never relaunches or
+moves a provider, and never widens repository or write scope.
 
-The backend probes every configured connection from every machine currently
-selected by an agent execution profile. Readiness is therefore keyed by
-`(agent execution machine, compute connection)`, not stored as one global fact.
+**Why:** a separate compute list repeated hosts the machine cards already held,
+and agents that were not told a machine's route guessed a raw address and
+failed. Giving every agent every machine keeps one source of truth.
+
+Every launch path except paper coach carries the snapshot: chat Discuss and
+Work, Seed and Refresh, Experiment Runs and continuations, Auto-research
+orchestrators and their children (each resolved from its own `run_on`), watcher
+wakes, Retry and recovery. Resumed prompts reuse the stored snapshot rather than
+re-reading a later manifest. The first master/task context lists each machine's
+alias, route and hint. A resumed native session receives a concise delta for
+added or changed machines, and only the alias of a removed one. Compute metadata
+never grants authority and never includes credential contents or paths. Older
+rows that carry `active_compute_ids` keep loading; the field no longer selects
+anything.
+
+The backend probes every project machine from every machine currently selected
+by an agent execution profile. Readiness is therefore keyed by
+`(agent execution machine, target machine)`, not stored as one global fact.
 SSH probes use the ordinary OpenSSH credentials already configured for the
 execution account, batch mode, a bounded connection timeout, and strict host-key
 checking. Strict host-key probes use a direct OpenSSH transport with connection
 sharing disabled, so an existing multiplexed master cannot bypass the check.
 Results distinguish reachable, unreachable, authentication failure, and host-key
 failure. An authentication or host-key action names the exact agent machine on
-which the operator must repair ordinary SSH state. RCP has no key or password field
-and never imports, stores, stages, or transmits those credentials.
+which the operator must repair ordinary SSH state. RCP has no key or password
+field and never imports, stores, stages, or transmits those credentials.
 Only explicit readiness refresh runs these SSH probes. Normal readiness polling
 returns the last authoritative matrix without network work and without waiting
-behind an explicit refresh of a slow target, and any connection or
+behind an explicit refresh of a slow target, and any machine route or
 execution-binding change invalidates that matrix. Provider readiness and compute
-status invalidate independently: resolving one provider path leaves an in-flight
-compute probe free to apply, and a compute change leaves recorded provider
-readiness in place. Probe diagnostics cross one redacting, single-line boundary
-before projection, and the backend exports the status label and tone consumed by
-every UI surface. A changed connection never inherits the old target's status;
-if the post-save refresh fails, Settings keeps the saved metadata, leaves status
-empty, and reports that the refresh failed.
+status invalidate independently. Probe diagnostics cross one redacting,
+single-line boundary before projection, and the backend exports the status label
+and tone consumed by every UI surface. A changed route never inherits the old
+target's status.
 
-Projects configure at most 32 compute connections and a turn selects at most 32
-ids. These shared schema limits apply before manifest persistence, probing, chat
-record storage, or prompt assembly. Unsaved compute form metadata remains only in
-the live Settings component; local settings drafts deliberately omit it and
-discard the v3 field during migration.
-
-The human attaches configured computes through the conversation composer. The
-task request and canonical chat record persist the selected ids so reload and
-recovery render the last truthful active set. Only selected profiles are eligible
-for agent context. Admission resolves those ids once into a bounded, immutable,
-server-owned non-secret profile snapshot stored with the task; client-supplied
-resolved metadata is ignored. Fresh and resumed prompts, Retry, recovery, and
-generic or Experiment watcher wakes use that snapshot rather than re-reading a
-later manifest. Watcher continuations persist both the selected ids and resolved
-snapshot; older rows default to an empty selection. The first master/task context
-describes the names, local or SSH access route, and optional non-secret access
-hint. Later ordinary additions and updates send the same bounded profile metadata
-in a concise delta so a resumed native session can use a newly attached or
-retargeted resource; removals send only the display name. Compute metadata never
-grants authority and never includes credential contents or paths.
+A manifest or backup that still holds the retired `compute_connections` list
+loads with the list ignored, and the next manifest write drops it.
 
 ### Team execution accounts and credentials
 

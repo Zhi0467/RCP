@@ -434,6 +434,38 @@ project**. RCP creates canonical `.research/` state only after this final human
 action. That state is not silently committed to the repository's human Git
 history.
 
+## Add another machine, such as a cloud VM
+
+Agents reach every other machine over the service account's own SSH settings.
+RCP collects no keys. Give the service account a route first, then add the
+machine.
+
+For a Google Compute Engine VM, open a terminal in RCP and run:
+
+```bash
+gcloud auth login
+gcloud compute config-ssh --project <gcp-project>
+```
+
+`config-ssh` creates the service account's key, uploads it to the project's
+VMs, and writes one `Host` entry per VM to `~/.ssh/config`, named
+`<vm>.<zone>.<gcp-project>`. The terminal keeps `~/.ssh` and the gcloud sign-in
+between sessions. That sign-in is readable by agents running as the same
+account. For any other host, add a key and a `Host` entry the same way you would
+for any SSH user.
+
+In **Space Settings → Machines**, choose **Add machine** and enter the `Host`
+name as the SSH host. RCP fills in the account from the login, and the first
+connection shows the machine's host-key fingerprint with **Trust**. Then add the
+machine to the project. Its **Compute** block takes an access hint, such as
+where code lives or how to run jobs. Every agent in the project is told every
+machine's SSH name and hint.
+
+A spot or preemptible VM may get a new external IP when it restarts. Rerun
+`gcloud compute config-ssh` to rewrite the address, or reserve a static IP so it
+never changes. Set the VM's termination action to **Stop**: **Delete** replaces
+the VM, along with its host key, at every preemption.
+
 ## Opt into Slurm for long-running work
 
 After creating the project, open **Project Settings → Long-running jobs** for

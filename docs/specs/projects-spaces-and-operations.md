@@ -38,7 +38,15 @@ fresh personal sign-in.
 ### Space machines
 
 One machine card per unique host records name, account and writable paths. SSH
-selects account through the route; a second account on one host refuses. Project
+selects account through the route; a second account on one host refuses. A
+blank account on Add machine is filled from a batch-mode login as the service
+account. An unknown host key shows its SHA256 fingerprint with **Trust**, which
+rescans the host, refuses if the key changed since it was shown, and appends it
+to the service account's `known_hosts`. RCP never trusts a key on its own, and a
+changed host key cannot be overridden from the UI. Every command a card asks a
+human to run is rendered by `operator_commands` as typed from that human's own
+shell: on a team server that is their own login, with `sudo -u <service> -H` and
+the service account's SSH route to reach another machine. Project
 manifests own machine configuration: setup/Add machine copies card host/account
 and rechecks account even when the route omits user. Space card creation never
 writes manifests. Startup, registration and Add machine fill cards from accepted

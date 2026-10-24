@@ -283,14 +283,14 @@ Escape dismisses. Settings owns defaults; selections apply to one turn. Fresh
 conversations use Settings defaults; existing sessions retain their last profile.
 Seed/Refresh has launch controls; Raw truth inputs choose context.
 
-The + menu holds Upload file, From RCP, and configured Compute connections with
-execution-machine reachability. Selection does not change provider or `run_on`,
-restores from the latest persisted turn, survives Send, and drops removed settings.
-Compute Settings takes names, optional SSH targets, and nonsecret hints, never
-keys/passwords. Its matrix distinguishes reachability/auth/host-key failures and
-names the machine needing repair. Explicit Probe runs checks; routine refresh
-uses cache. Unsaved edits mask results, disable Probe with Save first, and are
-not stored in settings drafts. Saves fence older in-flight probe responses.
+The + menu holds Upload file and From RCP. Compute has no picker: each project
+machine card's Compute block takes a nonsecret access hint, never keys/passwords,
+and shows whether each agent machine reaches it, distinguishing
+reachability/auth/host-key failures and naming the machine needing repair.
+Explicit Probe runs checks; routine refresh uses cache. Unsaved edits mask
+results, disable Probe with Save first, and are not stored in settings drafts.
+Saves fence older in-flight probe responses. Start episode's launch picker takes
+an optional starting message.
 
 Machine tiles show name, host, provider/job status, and writable-path count.
 One card opens at a time below them. Dashed Add machine opens other space machines;
