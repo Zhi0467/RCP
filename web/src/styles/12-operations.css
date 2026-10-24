@@ -157,17 +157,25 @@
   justify-content: center;
   width: 28px;
 }
-.server-settings h2,
-.server-settings h3 {
+.server-settings h2 {
   font-family: var(--editorial);
+  font-size: var(--type-2xl);
   font-weight: 550;
   margin: 0;
 }
-.server-settings h2 {
-  font-size: var(--type-2xl);
+.server-settings-body > .fold > summary {
+  align-items: center;
 }
-.server-settings h3 {
+.server-settings-body > .fold > summary > strong {
+  align-items: center;
+  display: inline-flex;
+  font-family: var(--editorial);
   font-size: var(--type-lg);
+  font-weight: 550;
+  gap: 8px;
+}
+.server-settings-body > .fold > summary > .fold-status {
+  margin-left: auto;
 }
 .server-settings-loading,
 .server-settings-error {
@@ -219,15 +227,6 @@
   border: 1px solid var(--line);
   padding: 14px;
 }
-.server-settings-section-title,
-.server-status-card > header {
-  align-items: center;
-  display: flex;
-  gap: 8px;
-}
-.server-settings-section-title > .server-status-mark {
-  margin-left: auto;
-}
 .server-commit-rail {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -261,11 +260,6 @@
   font: var(--type-3xs)/1.4 var(--mono);
   padding: 5px 7px;
 }
-.server-status-card-grid {
-  display: grid;
-  gap: 12px;
-  grid-template-columns: minmax(0, 1.5fr) repeat(2, minmax(0, 1fr));
-}
 .server-status-card {
   display: flex;
   flex-direction: column;
@@ -285,17 +279,14 @@
   margin: 2px 0 0;
   overflow-wrap: anywhere;
 }
-.server-status-card > code,
-.server-status-commands {
-  margin-top: auto;
-}
 .server-status-commands {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 .server-readiness-list {
-  display: grid;
+  display: inline-flex;
+  flex-wrap: wrap;
   gap: 7px;
 }
 .server-dependency-versions {
@@ -316,9 +307,6 @@
 }
 
 @media (max-width: 920px) {
-  .server-status-card-grid {
-    grid-template-columns: 1fr;
-  }
   .server-commit-rail {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     row-gap: 12px;

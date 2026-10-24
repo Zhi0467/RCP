@@ -96,6 +96,7 @@ interface Props {
     invocationCeiling?: number,
     browserRequested?: boolean,
     launchConfig?: AgentRunConfig,
+    message?: string,
   ) => void;
   /** Add turns to the ended episode in its own session; absent where no episode can continue. */
   onContinue?: (episodeId: string, invocationCeiling: number) => void;
@@ -138,9 +139,11 @@ export function ExperimentRunDetail({
   // Only an explicit pick is state; untouched, the picker follows the current profile.
   const [pickedConfig, setLaunchConfig] = useState<AgentRunConfig | null>(null);
   const [launchOpen, setLaunchOpen] = useState(false);
+  const [startMessage, setStartMessage] = useState("");
   useEffect(() => {
     setLaunchConfig(null);
     setLaunchOpen(false);
+    setStartMessage("");
   }, [run.node.id]);
   const launchConfig =
     pickedConfig ?? (launchProfile ? profileRunConfig(launchProfile) : undefined);
@@ -328,7 +331,7 @@ export function ExperimentRunDetail({
               disabled={runDisabled || startDisabled || runBusy}
               label="Experiment agent"
               workLike={launchProfile?.work_like_capable}
-              optionCount={Number(browserRequested)}
+              optionCount={Number(browserRequested) + Number(Boolean(startMessage.trim()))}
               onToggle={() => setLaunchOpen((open) => !open)}
             />
           )}
@@ -350,6 +353,7 @@ export function ExperimentRunDetail({
                   reauthorizing ? (authorizedCeiling ?? undefined) : undefined,
                   browserRequested,
                   launchConfig,
+                  startMessage,
                 )
               }
               aria-describedby={control.reasons.length ? `${node.id}-run-requirements` : undefined}
@@ -384,6 +388,15 @@ export function ExperimentRunDetail({
                 onChange={setBrowserRequested}
               />
             </div>
+            <textarea
+              className="experiment-start-message"
+              aria-label="Starting message"
+              placeholder="Starting message (optional)"
+              rows={3}
+              value={startMessage}
+              disabled={runDisabled || startDisabled || runBusy}
+              onChange={(event) => setStartMessage(event.target.value)}
+            />
           </AgentConfigControls>
         )}
 

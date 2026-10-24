@@ -717,7 +717,7 @@ def test_discuss_turn_rejects_work_launch_instructions() -> None:
         )
 
 
-def test_compute_resources_preserve_selected_connection_metadata() -> None:
+def test_project_machines_section_states_each_route_and_hint() -> None:
     master = PromptFactory.chat_master_context(
         project_name="Example",
         graph_target=GraphTargetRef(),
@@ -734,17 +734,18 @@ def test_compute_resources_preserve_selected_connection_metadata() -> None:
         output_schema_path="/stage/inputs/schema.json",
         command_client="python3 /stage/inputs/validate.py",
         compute_connections=[
+            {"id": "laptop", "name": "laptop", "kind": "local"},
             {
                 "id": "gpu",
-                "name": "GPU VM",
+                "name": "gpu",
                 "kind": "ssh",
                 "ssh_target": "alice@gpu.example",
                 "access_hint": "Use /scratch/shared",
-            }
+            },
         ],
     )
 
-    assert "GPU VM" in master
+    assert "`laptop`" in master
     assert "alice@gpu.example" in master
     assert "Use /scratch/shared" in master
 
@@ -788,6 +789,7 @@ def test_compute_context_delta_tracks_added_removed_and_updated_connections() ->
                     "kind": "ssh",
                     "ssh_target": "alice@gpu.example",
                     "access_hint": "Use /scratch/shared",
+                    "job_manager": "",
                 }
             ],
             "removed": ["Old VM"],
@@ -819,6 +821,7 @@ def test_compute_context_delta_tracks_added_removed_and_updated_connections() ->
                     "kind": "ssh",
                     "ssh_target": "alice@gpu.example",
                     "access_hint": "Use /scratch/new",
+                    "job_manager": "",
                 }
             ],
         }

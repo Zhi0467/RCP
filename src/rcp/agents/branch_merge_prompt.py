@@ -17,7 +17,7 @@ from rcp.runs.merge_contract import (
 )
 
 # Bumped when the branch-merge task contract's stable policy prose changes.
-BRANCH_MERGE_POLICY_VERSION = "branch-merge-v6"
+BRANCH_MERGE_POLICY_VERSION = "branch-merge-v7"
 
 
 def branch_merge_task_contract(

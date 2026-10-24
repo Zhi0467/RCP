@@ -28,6 +28,7 @@ from pathlib import Path
 from rcp.core.models import DependencyStatus, MissingProgram
 from rcp.dependencies import (
     APT_DISTRIBUTIONS,
+    BY_NAME,
     TESTED_LINUX_DISTRIBUTIONS,
     Dependency,
     Platform,
@@ -42,6 +43,7 @@ from rcp.limits import (
     DEPENDENCY_CHECK_TTL_SECONDS,
     STATE_TRANSFER_STDERR_BYTES,
 )
+from rcp.operator_commands import OperatorRoute, operator_route
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state_transfer import retrying
 
@@ -53,6 +55,23 @@ Route = Callable[[list[str]], list[str]]
 _FRAME = "rcp-dependency-check"
 _COMMAND_NOT_FOUND = 127
 _PLATFORMS: dict[str, Platform] = {"Linux": "linux", "Darwin": "darwin"}
+
+
+def install_argv(names: Iterable[str]) -> list[str]:
+    """The root apt install for these registry programs, on the machine that lacks them.
+
+    A package from an added apt source (Node.js from NodeSource) installs after
+    the plain packages, which may include the `curl` its setup step needs.
+    """
+    lost = [BY_NAME[name] for name in names]
+    plain = sorted({d.apt for d in lost if d.apt and not d.apt_setup})
+    sourced = sorted({d.apt for d in lost if d.apt and d.apt_setup})
+    if not sourced:
+        return ["apt-get", "install", "--yes", *plain]
+    steps = [shlex.join(["apt-get", "install", "--yes", *plain])] if plain else []
+    steps.extend(sorted({d.apt_setup for d in lost if d.apt_setup}))
+    steps.append(shlex.join(["apt-get", "install", "--yes", *sourced]))
+    return ["sh", "-c", " && ".join(steps)]
 
 
 def staged_check_script() -> str:
@@ -158,11 +177,14 @@ class DependencyChecker:
     def __init__(
         self,
         *,
+        space_kind: Callable[[], str],
         runner: Runner | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         local: Callable[[Collection[Role]], DependencyStatus] = local_check,
     ) -> None:
+        # Read per projection: the install line is written for the space's operator route.
+        self._space_kind = space_kind
         self._runner = runner
         self._clock = clock
         self._sleep = sleep
@@ -176,7 +198,14 @@ class DependencyChecker:
 
     def status(self, host: str, *, refresh: bool = False) -> DependencyStatus:
         """The cached result when fresh, otherwise a new check."""
-        return self._lookup(host, refresh=refresh)[0]
+        return self._project(self._lookup(host, refresh=refresh)[0], host)
+
+    def _project(self, result: DependencyStatus, host: str) -> DependencyStatus:
+        if result.install_command:
+            route = operator_route(self._space_kind(), host)
+            command = route.command(install_argv(p.name for p in result.missing), root=True)
+            return result.model_copy(update={"install_command": command})
+        return result
 
     def launch_refusal(self, host: str) -> str | None:
         """A reason to refuse an agent run on `host`, or None to admit it.
@@ -201,7 +230,8 @@ class DependencyChecker:
         if result.outcome != "missing":
             return None
         names = ", ".join(p.name for p in result.missing if p.required)
-        install = f" Install with: {result.install_command}" if result.install_command else ""
+        command = self._project(result, host).install_command
+        install = f" Install with: {command}" if command else ""
         return f"{machine} is missing required programs: {names}.{install}"
 
     def _lookup(self, host: str, *, refresh: bool) -> tuple[DependencyStatus, bool]:
@@ -309,8 +339,9 @@ def _status(
     install_command = None
     notes: tuple[str, ...] = ()
     if lost and apt and all(d.apt for d in lost):
-        packages = " ".join(sorted({d.apt for d in lost if d.apt}))
-        install_command = f"sudo apt-get install --yes {packages}"
+        # Standalone checks describe this machine's shell; the checker projects
+        # that guidance through the space's operator route.
+        install_command = OperatorRoute().command(install_argv(d.name for d in lost), root=True)
     elif lost:
         notes = tuple(dict.fromkeys(d.note or f"Install {d.apt or d.name}." for d in lost))
     return DependencyStatus(

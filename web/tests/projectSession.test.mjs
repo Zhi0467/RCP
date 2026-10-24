@@ -618,18 +618,7 @@ test("a changed compute configuration does not preserve stale readiness", () => 
       },
     },
   });
-  const saved = snapshot(1, {
-    compute_connections: [
-      {
-        id: "gpu",
-        name: "GPU",
-        kind: "ssh",
-        ssh_target: "alice@gpu-2.example",
-        access_hint: "",
-      },
-    ],
-    compute_status: {},
-  });
+  const saved = snapshot(1, { compute_status: {} });
 
   assert.deepEqual(
     projectSettingsSavedProject(saved, current, { provider: true, compute: false }).compute_status,

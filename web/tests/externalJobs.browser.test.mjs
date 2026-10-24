@@ -173,7 +173,7 @@ test("external job Cancel and machine setup use one watcher and preserve newer s
     assert.equal(await cluster.getByRole("button", { name: "Probe", exact: true }).count(), 0);
     await open("local");
     assert.deepEqual(
-      await local.locator(".compute-probe strong").allTextContents(),
+      await local.locator(".compute-probe:not(.compute-reach) strong").allTextContents(),
       ["Helper"],
       "A machine without a job manager offers only the helper route",
     );

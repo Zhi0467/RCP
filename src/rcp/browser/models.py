@@ -57,5 +57,7 @@ class BrowserReadiness(BaseModel):
 
     status: str
     detail: str | None = None
+    # Root commands on the browser's machine, unelevated and with no route: a
+    # caller renders them with `rcp.operator_commands` for the human's prompt.
     apt_command: str | None = None
     admin_command: str | None = None

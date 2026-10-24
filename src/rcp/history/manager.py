@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING
 from rcp.config import (
     AgentExecutionProfile,
     AgentSurfaceConfig,
-    ComputeConnectionConfig,
     MachineComputeConfig,
     MachineConfig,
     Manifest,
@@ -1434,8 +1433,8 @@ class HistoryManager:
         provider_path_updates: dict[str, dict[ProviderId, str]] | None = None,
         skill_defaults: SkillDefaults | None = None,
         default_auto_research_invocation_ceiling: int | None = None,
-        compute_connections: list[ComputeConnectionConfig] | None = None,
         machine_compute: dict[str, MachineComputeConfig | None] | None = None,
+        machine_access_hints: dict[str, str] | None = None,
     ) -> Manifest:
         with self.workspace.transaction(), self._append_lock():
             self._reload_manifest()
@@ -1443,7 +1442,9 @@ class HistoryManager:
             self.require_writable(current.state)
             self._require_writable_home_locked(current)
             self._repair_materializations_locked()
-            unknown = set(machine_compute or {}) - self.manifest.machine_map.keys()
+            unknown = {*(machine_compute or {}), *(machine_access_hints or {})} - (
+                self.manifest.machine_map.keys()
+            )
             if unknown:
                 raise ValueError(f"compute configuration uses unknown machines: {sorted(unknown)}")
             self.manifest = write_agent_settings(
@@ -1453,8 +1454,8 @@ class HistoryManager:
                 provider_path_updates,
                 skill_defaults,
                 default_auto_research_invocation_ceiling,
-                compute_connections,
                 machine_compute,
+                machine_access_hints,
             )
             self.workspace.publish([Path("manifest.toml")])
         return self.manifest

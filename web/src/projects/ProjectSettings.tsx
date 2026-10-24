@@ -1,11 +1,9 @@
 import {
   BookOpen,
   Check,
-  Cpu,
   GitBranch,
   HardDrive,
   LoaderCircle,
-  Plus,
   RotateCcw,
   ScanSearch,
   Save,
@@ -32,9 +30,11 @@ import { AgentConfigControls, profileRunConfig } from "../core/AgentConfigContro
 import { AgentUsageWidgets } from "../agents/AgentUsageWidgets";
 import { SkillPackageInspector } from "../agents/SkillPackageInspector";
 import {
-  computeConnectionNeedsSave,
   computeProbeConfigurationChanged,
   deserializeSettingsDraft,
+  machineAccessHintUpdates,
+  machineAccessHintsFrom,
+  type MachineAccessHints,
   machineComputeFrom,
   machineComputeUpdates,
   type MachineComputeSettings,
@@ -54,7 +54,6 @@ import type {
   AgentUsageSnapshot,
   CacheMetric,
   ConsolidationView,
-  ComputeConnection,
   MachineComputeConfig,
   ProjectCacheMetrics,
   ProjectSettingsRequest,
@@ -144,8 +143,8 @@ function stagedOrSaved(project: ProjectSnapshot, actorId: string | null) {
     profiles: profilesFrom(project),
     providerPaths: machineProviderPathsFrom(project.machines),
     machineComputeEdits: {} as MachineComputeSettings,
+    accessHintEdits: {} as MachineAccessHints,
     skillDefaults: skillDefaultsFrom(project),
-    computeConnections: project.compute_connections ?? [],
   };
   let staged: ReturnType<typeof deserializeSettingsDraft> = null;
   const key = settingsDraftStorageKey(actorId, project.id);
@@ -164,8 +163,8 @@ function stagedOrSaved(project: ProjectSnapshot, actorId: string | null) {
     profiles: mergeAgentProfiles(saved.profiles, staged.profiles),
     providerPaths: mergeMachineProviderPaths(saved.providerPaths, staged.providerPaths),
     machineComputeEdits: staged.machineComputeEdits ?? {},
+    accessHintEdits: staged.accessHintEdits ?? {},
     skillDefaults: staged.skillDefaults ?? saved.skillDefaults,
-    computeConnections: saved.computeConnections,
   };
 }
 
@@ -208,6 +207,21 @@ export function ProjectSettings({
     () => restoredSettings.machineComputeEdits,
   );
   const machineCompute = { ...machineComputeFrom(project.machines), ...machineComputeEdits };
+  const [accessHintEdits, setAccessHintEdits] = useState<MachineAccessHints>(
+    () => restoredSettings.accessHintEdits,
+  );
+  const accessHints = { ...machineAccessHintsFrom(project.machines), ...accessHintEdits };
+  // A hint the project now has is no longer an edit, so a later refresh with
+  // someone else's newer hint shows theirs.
+  useEffect(() => {
+    setAccessHintEdits((edits) => {
+      const saved = machineAccessHintsFrom(project.machines);
+      const kept = Object.fromEntries(
+        Object.entries(edits).filter(([alias, hint]) => saved[alias] !== hint),
+      );
+      return Object.keys(kept).length === Object.keys(edits).length ? edits : kept;
+    });
+  }, [project.machines]);
   // A return to the same project is a new visit: requests from the previous
   // visit must not overwrite the restored form or publish into another view.
   const requestOwner = useMemo(() => ({ projectId: project.id }), [project.id]);
@@ -216,9 +230,6 @@ export function ProjectSettings({
   const requestIsCurrent = () => currentRequestOwner.current === requestOwner;
   const [skillDefaults, setSkillDefaults] = useState<SkillDefaults>(
     () => restoredSettings.skillDefaults,
-  );
-  const [computeConnections, setComputeConnections] = useState<ComputeConnection[]>(
-    () => restoredSettings.computeConnections,
   );
   const [inspectedPackage, setInspectedPackage] = useState<SkillCatalogEntry | null>(null);
   const [saving, setSaving] = useState(false);
@@ -249,8 +260,8 @@ export function ProjectSettings({
     setProfiles(restoredSettings.profiles);
     setProviderPaths(restoredSettings.providerPaths);
     setMachineComputeEdits(restoredSettings.machineComputeEdits);
+    setAccessHintEdits(restoredSettings.accessHintEdits);
     setSkillDefaults(restoredSettings.skillDefaults);
-    setComputeConnections(restoredSettings.computeConnections);
     setSaving(false);
     setClearingCaches(false);
     setResolvingProvider(null);
@@ -275,8 +286,8 @@ export function ProjectSettings({
         profiles: profilesFrom(project),
         providerPaths: machineProviderPathsFrom(project.machines),
         machineCompute: machineComputeFrom(project.machines),
+        accessHints: machineAccessHintsFrom(project.machines),
         skillDefaults: skillDefaultsFrom(project),
-        computeConnections: project.compute_connections ?? [],
       }),
     [project],
   );
@@ -286,15 +297,15 @@ export function ProjectSettings({
     profiles,
     providerPaths,
     machineCompute,
+    accessHints,
     skillDefaults,
-    computeConnections,
   });
   const dirty = current !== baseline;
   const autoResearchInvocationCeilingIsValid =
     Number.isSafeInteger(autoResearchInvocationCeiling) && autoResearchInvocationCeiling >= 1;
 
-  // Stage machine settings alongside provider paths. Compute connection metadata
-  // stays in memory until Save; clearing a clean form drops the staged copy.
+  // Stage machine settings alongside provider paths; clearing a clean form
+  // drops the staged copy.
   useEffect(() => {
     const key = settingsDraftStorageKey(actorId, project.id);
     if (!key) return;
@@ -312,6 +323,10 @@ export function ProjectSettings({
               machineComputeFrom(project.machines),
               machineComputeEdits,
             ),
+            accessHintEdits: machineAccessHintUpdates(
+              machineAccessHintsFrom(project.machines),
+              accessHintEdits,
+            ),
             skillDefaults,
           }),
         );
@@ -326,6 +341,17 @@ export function ProjectSettings({
   const machineByAlias = Object.fromEntries(
     project.machines.map((machine) => [machine.alias, machine]),
   );
+  // Aliases that reach the same machine account, such as a laptop and its
+  // remote that both became the team server on a move, share one tile and card.
+  const machineGroups: { key: string; machines: typeof project.machines }[] = [];
+  for (const machine of project.machines) {
+    const group = machineGroups.find(
+      ({ machines: [first] }) =>
+        first.host === machine.host && first.os_account === machine.os_account,
+    );
+    if (group) group.machines.push(machine);
+    else machineGroups.push({ key: machine.alias, machines: [machine] });
+  }
   const providerCatalog = Object.values(project.providers).sort((left, right) =>
     (left.label || left.provider).localeCompare(right.label || right.provider),
   );
@@ -334,17 +360,9 @@ export function ProjectSettings({
   const executionMachines = Array.from(
     new Set(Object.values(profiles).map((profile) => profile.run_on)),
   );
-  const computeConnectionsAreValid = computeConnections.every(
-    (connection) =>
-      connection.name.trim().length > 0 &&
-      (connection.kind === "local" || connection.ssh_target.trim().length > 0),
-  );
   const computeConfigurationIsDirty = computeProbeConfigurationChanged(
-    {
-      connections: project.compute_connections ?? [],
-      executionMachines: Object.values(profilesFrom(project)).map((profile) => profile.run_on),
-    },
-    { connections: computeConnections, executionMachines },
+    Object.values(profilesFrom(project)).map((profile) => profile.run_on),
+    executionMachines,
   );
 
   const toggleRepository = (alias: string) => {
@@ -417,20 +435,13 @@ export function ProjectSettings({
     setProfiles(profilesFrom(project));
     setProviderPaths(machineProviderPathsFrom(project.machines));
     setMachineComputeEdits({});
+    setAccessHintEdits({});
     setSkillDefaults(savedSkillDefaults);
-    setComputeConnections(project.compute_connections ?? []);
     setStatus(null);
   };
 
   const save = async () => {
-    if (
-      !dirty ||
-      saving ||
-      writesDisabled ||
-      !autoResearchInvocationCeilingIsValid ||
-      !computeConnectionsAreValid
-    )
-      return;
+    if (!dirty || saving || writesDisabled || !autoResearchInvocationCeilingIsValid) return;
     setSaving(true);
     setStatus(null);
     const body: ProjectSettingsRequest = {
@@ -438,7 +449,6 @@ export function ProjectSettings({
       default_auto_research_invocation_ceiling: autoResearchInvocationCeiling,
       agent_profiles: profiles,
       skill_defaults: skillDefaults,
-      compute_connections: computeConnections,
     };
     const pathUpdates = machineProviderPathUpdates(
       machineProviderPathsFrom(project.machines),
@@ -450,6 +460,11 @@ export function ProjectSettings({
       machineCompute,
     );
     if (computeUpdates) body.machine_compute = computeUpdates;
+    const hintUpdates = machineAccessHintUpdates(
+      machineAccessHintsFrom(project.machines),
+      accessHints,
+    );
+    if (hintUpdates) body.machine_access_hints = hintUpdates;
     try {
       const saved = await api<ProjectSnapshot>(`${apiBase}/settings`, {
         method: "PUT",
@@ -460,8 +475,10 @@ export function ProjectSettings({
         currentPaths === providerPaths ? machineProviderPathsFrom(saved.machines) : currentPaths,
       );
       setMachineComputeEdits({});
-      setComputeConnections((currentConnections) =>
-        currentConnections === computeConnections ? saved.compute_connections : currentConnections,
+      // Like provider paths, hold the saved hints until the project refresh lands,
+      // or the field blanks while readiness reloads.
+      setAccessHintEdits((currentEdits) =>
+        currentEdits === accessHintEdits ? machineAccessHintsFrom(saved.machines) : currentEdits,
       );
       // The save response intentionally carries no live probe. Preserve each
       // readiness slice whose own inputs this save left alone.
@@ -700,19 +717,41 @@ export function ProjectSettings({
             <Server size={16} />
           </span>
           <h2>Machines</h2>
+          <button
+            className="button secondary compact"
+            type="button"
+            disabled={writesDisabled || readinessRequest?.pending || computeConfigurationIsDirty}
+            title={
+              computeConfigurationIsDirty
+                ? "Save agent machines before probing"
+                : "Probe machine reachability"
+            }
+            onClick={() => void onRefreshReadiness().catch(() => {})}
+          >
+            {readinessRequest?.pending ? (
+              <LoaderCircle className="spin" size={14} />
+            ) : (
+              <ScanSearch size={14} />
+            )}
+            {computeConfigurationIsDirty ? "Save first" : "Probe"}
+          </button>
         </header>
         <div className="machine-tiles" role="group" aria-label="Machines">
-          {project.machines.map((machine) => (
+          {machineGroups.map(({ key, machines }) => (
             <MachineTile
-              key={machine.alias}
-              name={machine.alias}
-              hostLabel={machineHostLabel(machine.host, spaceKind)}
-              account={machine.os_account}
-              signals={machineSignals(machine)}
-              selected={openMachine === machine.alias}
+              key={key}
+              name={machines.map((machine) => machine.alias).join(", ")}
+              hostLabel={machineHostLabel(machines[0].host, spaceKind)}
+              account={machines[0].os_account}
+              signals={[
+                ...new Map(
+                  machines.flatMap(machineSignals).map((signal) => [signal.label, signal]),
+                ).values(),
+              ]}
+              selected={openMachine === key}
               onSelect={() => {
                 setAddingMachine(false);
-                setOpenMachine((current) => (current === machine.alias ? null : machine.alias));
+                setOpenMachine((current) => (current === key ? null : key));
               }}
             />
           ))}
@@ -727,148 +766,204 @@ export function ProjectSettings({
           />
         </div>
         <div className="provider-machine-list">
-          {project.machines
-            .filter((machine) => machine.alias === openMachine)
-            .map((machine) => {
-              const config = machineCompute[machine.alias] ?? {
-                job_manager: null,
-                jobs_root: "",
-              };
-              const needsSave = Boolean(
-                machineComputeUpdates(
-                  { [machine.alias]: machine.compute ?? null },
-                  { [machine.alias]: machineCompute[machine.alias] ?? null },
-                ),
-              );
-              const computeDisabled = writesDisabled || saving;
-              return (
-                <MachineCard
-                  key={machine.alias}
-                  title={machine.alias}
-                  hostLabel={machineHostLabel(machine.host, spaceKind)}
-                  osAccount={machine.os_account}
-                  record={
-                    spaceMachines.machines
-                      ? spaceMachineForProject(spaceMachines.machines, project.id, machine)
-                      : null
-                  }
-                  level="project"
-                  writesDisabled={writesDisabled}
-                  onRecordChange={spaceMachines.replace}
-                >
-                  <div className="provider-path-list">
-                    {providerCatalog.map((provider) => {
-                      const recorded = machine.provider_paths[provider.provider] ?? "";
-                      const value = providerPaths[machine.alias]?.[provider.provider] ?? "";
-                      const readiness =
-                        project.provider_readiness[machine.alias]?.[provider.provider];
-                      const state = providerPathPresentation(readiness, value, recorded);
-                      const resolveKey = `${machine.alias}:${provider.provider}`;
-                      return (
-                        <div className="provider-path-row" key={provider.provider}>
-                          <strong>{provider.label || provider.provider}</strong>
-                          <input
-                            type="text"
-                            aria-label={`${provider.label || provider.provider} executable on ${machine.alias}`}
-                            value={value}
-                            disabled={writesDisabled}
-                            onChange={(event) => {
-                              const path = event.target.value;
-                              setProviderPaths((currentPaths) => ({
-                                ...currentPaths,
-                                [machine.alias]: {
-                                  ...currentPaths[machine.alias],
-                                  [provider.provider]: path,
-                                },
-                              }));
-                              setStatus(null);
-                            }}
-                          />
-                          <span className={`provider-path-state ${state.kind}`}>{state.label}</span>
+          {machineGroups
+            .filter((group) => group.key === openMachine)
+            .map(({ key, machines: group }) => (
+              <MachineCard
+                key={key}
+                title={group.map((item) => item.alias).join(", ")}
+                hostLabel={machineHostLabel(group[0].host, spaceKind)}
+                osAccount={group[0].os_account}
+                record={
+                  spaceMachines.machines
+                    ? spaceMachineForProject(spaceMachines.machines, project.id, group[0])
+                    : null
+                }
+                level="project"
+                writesDisabled={writesDisabled}
+                onRecordChange={spaceMachines.replace}
+              >
+                {group.map((machine) => {
+                  const config = machineCompute[machine.alias] ?? {
+                    job_manager: null,
+                    jobs_root: "",
+                  };
+                  const needsSave = Boolean(
+                    machineComputeUpdates(
+                      { [machine.alias]: machine.compute ?? null },
+                      { [machine.alias]: machineCompute[machine.alias] ?? null },
+                    ),
+                  );
+                  const computeDisabled = writesDisabled || saving;
+                  return (
+                    <div className="machine-alias-settings" key={machine.alias}>
+                      {group.length > 1 && <strong>{machine.alias}</strong>}
+                      <div className="provider-path-list">
+                        {providerCatalog.map((provider) => {
+                          const recorded = machine.provider_paths[provider.provider] ?? "";
+                          const value = providerPaths[machine.alias]?.[provider.provider] ?? "";
+                          const readiness =
+                            project.provider_readiness[machine.alias]?.[provider.provider];
+                          const state = providerPathPresentation(readiness, value, recorded);
+                          const resolveKey = `${machine.alias}:${provider.provider}`;
+                          return (
+                            <div className="provider-path-row" key={provider.provider}>
+                              <strong>{provider.label || provider.provider}</strong>
+                              <input
+                                type="text"
+                                aria-label={`${provider.label || provider.provider} executable on ${machine.alias}`}
+                                value={value}
+                                disabled={writesDisabled}
+                                onChange={(event) => {
+                                  const path = event.target.value;
+                                  setProviderPaths((currentPaths) => ({
+                                    ...currentPaths,
+                                    [machine.alias]: {
+                                      ...currentPaths[machine.alias],
+                                      [provider.provider]: path,
+                                    },
+                                  }));
+                                  setStatus(null);
+                                }}
+                              />
+                              <span className={`provider-path-state ${state.kind}`}>
+                                {state.label}
+                              </span>
+                              <button
+                                className="button secondary compact"
+                                type="button"
+                                disabled={writesDisabled || Boolean(resolvingProvider)}
+                                onClick={() =>
+                                  void resolveProviderPath(machine.alias, provider.provider)
+                                }
+                              >
+                                {resolvingProvider === resolveKey ? (
+                                  <LoaderCircle className="spin" size={14} />
+                                ) : (
+                                  <ScanSearch size={14} />
+                                )}
+                                Resolve
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <fieldset className="machine-compute" disabled={computeDisabled}>
+                        <legend>Compute</legend>
+                        <div className="compute-connection-fields">
+                          <label>
+                            <span>Use Slurm</span>
+                            <input
+                              type="checkbox"
+                              checked={config.job_manager === "slurm"}
+                              onChange={(event) =>
+                                updateMachineCompute(machine.alias, {
+                                  ...config,
+                                  job_manager: event.target.checked ? "slurm" : null,
+                                })
+                              }
+                            />
+                          </label>
+                          <label>
+                            <span>Jobs root</span>
+                            <input
+                              value={config.jobs_root}
+                              onChange={(event) =>
+                                updateMachineCompute(machine.alias, {
+                                  ...config,
+                                  jobs_root: event.target.value,
+                                })
+                              }
+                            />
+                          </label>
+                          <label>
+                            <span>Access hint</span>
+                            <input
+                              maxLength={512}
+                              value={accessHints[machine.alias] ?? ""}
+                              onChange={(event) => {
+                                const hint = event.target.value;
+                                setAccessHintEdits((currentEdits) => {
+                                  const next = { ...currentEdits, [machine.alias]: hint };
+                                  if (hint === machine.access_hint) delete next[machine.alias];
+                                  return next;
+                                });
+                                setStatus(null);
+                              }}
+                            />
+                          </label>
                           <button
                             className="button secondary compact"
                             type="button"
-                            disabled={writesDisabled || Boolean(resolvingProvider)}
-                            onClick={() =>
-                              void resolveProviderPath(machine.alias, provider.provider)
-                            }
+                            onClick={() => updateMachineCompute(machine.alias, null)}
                           >
-                            {resolvingProvider === resolveKey ? (
-                              <LoaderCircle className="spin" size={14} />
-                            ) : (
-                              <ScanSearch size={14} />
-                            )}
-                            Resolve
+                            Reset compute
                           </button>
                         </div>
-                      );
-                    })}
-                  </div>
-                  <fieldset className="machine-compute" disabled={computeDisabled}>
-                    <legend>Long-running jobs</legend>
-                    <div className="compute-connection-fields">
-                      <label>
-                        <span>Use Slurm</span>
-                        <input
-                          type="checkbox"
-                          checked={config.job_manager === "slurm"}
-                          onChange={(event) =>
-                            updateMachineCompute(machine.alias, {
-                              ...config,
-                              job_manager: event.target.checked ? "slurm" : null,
-                            })
-                          }
-                        />
-                      </label>
-                      <label>
-                        <span>Jobs root</span>
-                        <input
-                          value={config.jobs_root}
-                          onChange={(event) =>
-                            updateMachineCompute(machine.alias, {
-                              ...config,
-                              jobs_root: event.target.value,
-                            })
-                          }
-                        />
-                      </label>
-                      <button
-                        className="button secondary compact"
-                        type="button"
-                        onClick={() => updateMachineCompute(machine.alias, null)}
-                      >
-                        Reset compute
-                      </button>
+                        {(machine.compute?.job_manager
+                          ? (["scheduler", "helper"] as const)
+                          : (["helper"] as const)
+                        ).map((route) => {
+                          // RCP checks each route at startup and after a compute save.
+                          const probe = needsSave
+                            ? null
+                            : (machine.compute_probes?.[route] ?? null);
+                          const presentation = probe
+                            ? computeProbePresentation(probe)
+                            : {
+                                label: needsSave ? "Checked after save" : "Not checked yet",
+                                tone: "pending" as const,
+                              };
+                          return (
+                            <div className={`compute-probe ${presentation.tone}`} key={route}>
+                              <strong>{route === "scheduler" ? "Scheduler" : "Helper"}</strong>
+                              <span className="compute-probe-dot" aria-hidden="true" />
+                              <span>{presentation.label}</span>
+                              {probe?.backend_id && <span>{probe.backend_id}</span>}
+                              {probe?.diagnostic && <span>{probe.diagnostic}</span>}
+                              {probe?.required_action && <em>{probe.required_action}</em>}
+                            </div>
+                          );
+                        })}
+                        {executionMachines
+                          // An agent's own machine is local to it, and a host-less machine has
+                          // no route from any other: RCP probes neither.
+                          .filter(
+                            (executionMachine) =>
+                              executionMachine !== machine.alias && machine.host,
+                          )
+                          .map((executionMachine) => {
+                            const probe =
+                              project.compute_status?.[executionMachine]?.[machine.alias];
+                            const presentation = computeProbePresentation(probe);
+                            return (
+                              <div
+                                className={`compute-probe compute-reach ${presentation.tone}`}
+                                key={`reach:${executionMachine}`}
+                              >
+                                <strong>From {executionMachine}</strong>
+                                <span className="compute-probe-dot" aria-hidden="true" />
+                                <span>{presentation.label}</span>
+                                {probe?.required_action ? <em>{probe.required_action}</em> : null}
+                                {probe &&
+                                presentation.tone === "error" &&
+                                !probe.required_action ? (
+                                  <em>{probe.diagnostic}</em>
+                                ) : null}
+                              </div>
+                            );
+                          })}
+                      </fieldset>
                     </div>
-                    {(machine.compute?.job_manager
-                      ? (["scheduler", "helper"] as const)
-                      : (["helper"] as const)
-                    ).map((route) => {
-                      // RCP checks each route at startup and after a compute save.
-                      const probe = needsSave ? null : (machine.compute_probes?.[route] ?? null);
-                      const presentation = probe
-                        ? computeProbePresentation(probe)
-                        : {
-                            label: needsSave ? "Checked after save" : "Not checked yet",
-                            tone: "pending" as const,
-                          };
-                      return (
-                        <div className={`compute-probe ${presentation.tone}`} key={route}>
-                          <strong>{route === "scheduler" ? "Scheduler" : "Helper"}</strong>
-                          <span className="compute-probe-dot" aria-hidden="true" />
-                          <span>{presentation.label}</span>
-                          {probe?.backend_id && <span>{probe.backend_id}</span>}
-                          {probe?.diagnostic && <span>{probe.diagnostic}</span>}
-                          {probe?.required_action && <em>{probe.required_action}</em>}
-                        </div>
-                      );
-                    })}
-                  </fieldset>
-                </MachineCard>
-              );
-            })}
+                  );
+                })}
+              </MachineCard>
+            ))}
         </div>
         {spaceMachines.error && <div className="settings-error">{spaceMachines.error}</div>}
+        {readinessRequest?.computeError ? (
+          <div className="settings-error">{readinessRequest.computeError}</div>
+        ) : null}
         {addingMachine && (
           <AddProjectMachine
             projectId={project.id}
@@ -911,213 +1006,6 @@ export function ProjectSettings({
         apiBase={apiBase}
         writesDisabled={!consolidation?.can_write}
       />
-
-      <section className="settings-section compute-settings">
-        <header>
-          <span>
-            <Cpu size={16} />
-          </span>
-          <h2>Compute connections</h2>
-          <div className="compute-settings-actions">
-            <button
-              className="button secondary compact"
-              type="button"
-              disabled={writesDisabled || readinessRequest?.pending || computeConfigurationIsDirty}
-              title={
-                computeConfigurationIsDirty
-                  ? "Save compute changes before probing"
-                  : "Probe compute connections"
-              }
-              onClick={() => void onRefreshReadiness().catch(() => {})}
-            >
-              {readinessRequest?.pending ? (
-                <LoaderCircle className="spin" size={14} />
-              ) : (
-                <ScanSearch size={14} />
-              )}
-              {computeConfigurationIsDirty ? "Save first" : "Probe"}
-            </button>
-            <button
-              className="button secondary compact"
-              type="button"
-              disabled={writesDisabled}
-              onClick={() => {
-                setComputeConnections((currentConnections) => [
-                  ...currentConnections,
-                  {
-                    id: crypto.randomUUID(),
-                    name: "Local compute",
-                    kind: "local",
-                    ssh_target: "",
-                    access_hint: "",
-                  },
-                ]);
-                setStatus(null);
-              }}
-            >
-              <Plus size={14} /> Local
-            </button>
-            <button
-              className="button secondary compact"
-              type="button"
-              disabled={writesDisabled}
-              onClick={() => {
-                setComputeConnections((currentConnections) => [
-                  ...currentConnections,
-                  {
-                    id: crypto.randomUUID(),
-                    name: "Remote compute",
-                    kind: "ssh",
-                    ssh_target: "",
-                    access_hint: "",
-                  },
-                ]);
-                setStatus(null);
-              }}
-            >
-              <Plus size={14} /> SSH
-            </button>
-          </div>
-        </header>
-        <div className="compute-connection-list">
-          {computeConnections.map((connection) => {
-            const connectionNeedsSave = computeConnectionNeedsSave(
-              project.compute_connections ?? [],
-              connection,
-            );
-            return (
-              <article className="compute-connection" key={connection.id}>
-                <div className="compute-connection-fields">
-                  <label>
-                    <span>Name</span>
-                    <input
-                      type="text"
-                      maxLength={80}
-                      value={connection.name}
-                      disabled={writesDisabled}
-                      onChange={(event) => {
-                        const name = event.target.value;
-                        setComputeConnections((currentConnections) =>
-                          currentConnections.map((item) =>
-                            item.id === connection.id ? { ...item, name } : item,
-                          ),
-                        );
-                        setStatus(null);
-                      }}
-                    />
-                  </label>
-                  <label>
-                    <span>Type</span>
-                    <select
-                      value={connection.kind}
-                      disabled={writesDisabled}
-                      onChange={(event) => {
-                        const kind = event.target.value as ComputeConnection["kind"];
-                        setComputeConnections((currentConnections) =>
-                          currentConnections.map((item) =>
-                            item.id === connection.id
-                              ? {
-                                  ...item,
-                                  kind,
-                                  ssh_target: kind === "local" ? "" : item.ssh_target,
-                                }
-                              : item,
-                          ),
-                        );
-                        setStatus(null);
-                      }}
-                    >
-                      <option value="local">Local</option>
-                      <option value="ssh">SSH</option>
-                    </select>
-                  </label>
-                  {connection.kind === "ssh" ? (
-                    <label>
-                      <span>SSH target</span>
-                      <input
-                        type="text"
-                        placeholder="user@host"
-                        maxLength={255}
-                        value={connection.ssh_target}
-                        disabled={writesDisabled}
-                        onChange={(event) => {
-                          const ssh_target = event.target.value;
-                          setComputeConnections((currentConnections) =>
-                            currentConnections.map((item) =>
-                              item.id === connection.id ? { ...item, ssh_target } : item,
-                            ),
-                          );
-                          setStatus(null);
-                        }}
-                      />
-                    </label>
-                  ) : null}
-                  <label className="compute-access-hint">
-                    <span>Access hint (no credentials)</span>
-                    <input
-                      type="text"
-                      maxLength={512}
-                      placeholder="Optional path, scheduler, or environment"
-                      value={connection.access_hint}
-                      disabled={writesDisabled}
-                      onChange={(event) => {
-                        const access_hint = event.target.value;
-                        setComputeConnections((currentConnections) =>
-                          currentConnections.map((item) =>
-                            item.id === connection.id ? { ...item, access_hint } : item,
-                          ),
-                        );
-                        setStatus(null);
-                      }}
-                    />
-                  </label>
-                  <button
-                    className="icon-button"
-                    type="button"
-                    aria-label={`Remove ${connection.name || "compute connection"}`}
-                    disabled={writesDisabled}
-                    onClick={() => {
-                      setComputeConnections((currentConnections) =>
-                        currentConnections.filter((item) => item.id !== connection.id),
-                      );
-                      setStatus(null);
-                    }}
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-                <div className="compute-probe-list">
-                  {executionMachines.map((machine) => {
-                    const probe = connectionNeedsSave
-                      ? undefined
-                      : project.compute_status?.[machine]?.[connection.id];
-                    const presentation = connectionNeedsSave
-                      ? { label: "Save before probing", tone: "pending" as const }
-                      : computeProbePresentation(probe);
-                    return (
-                      <div className={`compute-probe ${presentation.tone}`} key={machine}>
-                        <span className="compute-probe-dot" aria-hidden="true" />
-                        <strong>{machine}</strong>
-                        <span>{presentation.label}</span>
-                        {probe?.required_action ? <em>{probe.required_action}</em> : null}
-                        {probe && presentation.tone === "error" && !probe.required_action ? (
-                          <em>{probe.diagnostic}</em>
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              </article>
-            );
-          })}
-          {!computeConnections.length ? (
-            <div className="settings-empty">No compute connections configured.</div>
-          ) : null}
-        </div>
-        {readinessRequest?.computeError ? (
-          <div className="settings-error">{readinessRequest.computeError}</div>
-        ) : null}
-      </section>
 
       <div className="settings-section agent-defaults">
         <header className="agent-defaults-heading">
@@ -1251,13 +1139,7 @@ export function ProjectSettings({
         </button>
         <button
           className="button primary"
-          disabled={
-            writesDisabled ||
-            !dirty ||
-            saving ||
-            !autoResearchInvocationCeilingIsValid ||
-            !computeConnectionsAreValid
-          }
+          disabled={writesDisabled || !dirty || saving || !autoResearchInvocationCeilingIsValid}
           onClick={() => void save()}
         >
           {saving ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}

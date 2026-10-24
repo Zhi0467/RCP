@@ -70,7 +70,6 @@ const longMessages = (chatId: string) =>
     graph_update: null,
     trigger: "human",
     attachments: [],
-    active_compute_ids: [],
   }));
 
 const conversations: ChatConversation[] = ["First chat", "Second chat"].map((title) => ({

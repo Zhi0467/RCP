@@ -17,6 +17,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 
 from rcp import limits
+from rcp.operator_commands import OperatorRoute
 from rcp.source_checkout import source_checkout_root
 
 _LOG = logging.getLogger(__name__)
@@ -237,16 +238,19 @@ class ReleaseCheck:
             status = "unknown"
         command = None
         if status == "update_available":
+            # Both are typed at the human's own prompt on this machine.
+            route = OperatorRoute()
             if notice.space == "team":
-                command = "sudo rcp server update"
+                command = route.command(["rcp", "server", "update"], root=True)
                 # The update refuses until the supervisor is at least the release's.
                 if release_supervisor is not None and (
                     self._installed_supervisor is None
                     or _numbers(release_supervisor) > _numbers(self._installed_supervisor)
                 ):
-                    command = f"sudo rcp server supervisor update && {command}"
+                    supervisor = route.command(["rcp", "server", "supervisor", "update"], root=True)
+                    command = f"{supervisor} && {command}"
             elif notice.source_checkout:
-                command = f"scripts/update-from-source v{notice.latest_version}"
+                command = route.command(["scripts/update-from-source", f"v{notice.latest_version}"])
         return notice.model_copy(update={"status": status, "update_command": command})
 
     def check(self, *, companion: bool = True) -> UpdateNotice:

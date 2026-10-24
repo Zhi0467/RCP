@@ -1190,6 +1190,7 @@ interface ExecutionProps {
     invocationCeiling?: number,
     browserRequested?: boolean,
     launchConfig?: AgentRunConfig,
+    message?: string,
   ) => void;
   onStopExperiment: (nodeId: string, episodeId: string) => void;
   onCheckExperimentWatcher: (watcherId: string) => void;
@@ -1781,6 +1782,7 @@ function ExperimentEpisodeCard({
     invocationCeiling?: number,
     browserRequested?: boolean,
     launchConfig?: AgentRunConfig,
+    message?: string,
   ) => void;
   onStopExperiment: (nodeId: string, episodeId: string) => void;
   onCheckExperimentWatcher: (watcherId: string) => void;
@@ -1874,8 +1876,8 @@ function ExperimentEpisodeCard({
             watchedByParentAutoResearch={watchedByParentAutoResearch}
             allowStart={!isExactBranchEpisode}
             project={project}
-            onRun={(invocationCeiling, browserRequested, launchConfig) =>
-              onRunExperiment(run.node, invocationCeiling, browserRequested, launchConfig)
+            onRun={(invocationCeiling, browserRequested, launchConfig, message) =>
+              onRunExperiment(run.node, invocationCeiling, browserRequested, launchConfig, message)
             }
             onContinue={(episodeId, invocationCeiling) =>
               void onContinueEpisode(episodeId, invocationCeiling)

@@ -98,7 +98,6 @@ def _message(record: _StoredChatRecord) -> ChatMessage:
         execution_machine=record.execution_machine,
         mode=record.mode,
         trigger=record.trigger,
-        active_compute_ids=record.active_compute_ids,
         steering=record.steering,
     )
 
@@ -149,7 +148,6 @@ def _record_steer(
         "operationId": record.operation_id,
         "mode": request.mode,
         "trigger": "human",
-        "activeComputeIds": request.active_compute_ids,
         "type": "user",
         "role": "user",
     }

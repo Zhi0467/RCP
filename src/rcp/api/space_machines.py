@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
 import threading
 from pathlib import Path, PurePosixPath
 from typing import Annotated
@@ -16,10 +17,12 @@ from rcp.agents.hidden_read import cached_hidden_read_readiness, hidden_read_def
 from rcp.agents.write_scope import rcp_owned_paths
 from rcp.api.dependencies import get_catalog, get_identity_access, get_store
 from rcp.api.identity import IdentityAccess
-from rcp.browser import enable_linger, install_browser, readiness
+from rcp.browser import BrowserReadiness, enable_linger, install_browser, readiness
 from rcp.config import MachineConfig, load_manifest
 from rcp.core.models import MachineHiddenReadProjection
 from rcp.limits import HIDDEN_READ_PATH_MAX_COUNT
+from rcp.machine_login import MachineLoginFailure, login_account, trust_host_key
+from rcp.operator_commands import operator_route
 from rcp.projects import ProjectCatalog
 from rcp.providers import PROVIDER_IDS, profile_for
 from rcp.rcp_home import command_socket_directory
@@ -63,6 +66,14 @@ class CreateSpaceMachineRequest(BaseModel):
     @classmethod
     def validate_name(cls, value: str) -> str:
         return _one_line(value, label="machine name", maximum=80)
+
+
+class TrustHostKeyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    host: str = Field(max_length=255)
+    #: The SHA256 fingerprint the human was shown and compared.
+    fingerprint: str = Field(max_length=128)
 
 
 class UpdateSpaceMachineRequest(BaseModel):
@@ -426,9 +437,6 @@ def create_space_machine(
     store: StoreDependency,
 ) -> dict[str, object]:
     identity_access.acting_user(request)
-    if store.space_kind == "team" and not body.os_account:
-        # Team projects are backed up, and a backup records each machine's account.
-        raise HTTPException(status_code=422, detail="A team machine needs its account.")
     try:
         machine = MachineConfig(alias="card", host=body.host, os_account=body.os_account)
     except ValidationError as exc:
@@ -439,6 +447,22 @@ def create_space_machine(
     # filled from the running server's own account.
     if not machine.host or any(card.host == machine.host for card in store.space_machines()):
         raise HTTPException(status_code=409, detail="This space already has that machine.")
+    if store.space_kind == "team" and not machine.os_account:
+        # Team projects are backed up, and a backup records each machine's
+        # account: a blank one is the account this server's login lands on.
+        try:
+            account = login_account(machine.host)
+        except MachineLoginFailure as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": exc.code, "message": exc.code, "fingerprint": exc.fingerprint},
+            ) from None
+        try:
+            machine = MachineConfig(alias="card", host=machine.host, os_account=account)
+        except ValidationError:
+            raise HTTPException(
+                status_code=422, detail={"code": "unreachable", "message": "unreachable"}
+            ) from None
     try:
         created = store.create_space_machine(
             name=body.name, host=machine.host, os_account=machine.os_account
@@ -446,6 +470,40 @@ def create_space_machine(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _one_machine_view(store, created, _visible_project_ids(request, identity_access, store))
+
+
+@router.post("/api/space/machines/host-key")
+def trust_machine_host_key(
+    body: TrustHostKeyRequest,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+) -> dict[str, object]:
+    """The member's click is the consent to record exactly the key they compared."""
+    identity_access.acting_user(request)
+    try:
+        trust_host_key(body.host, body.fingerprint)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except MachineLoginFailure as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": exc.code, "message": exc.code}
+        ) from None
+    return {"trusted": body.host}
+
+
+def _operator_readiness(
+    store: AppStore, machine: SpaceMachineRecord, result: BrowserReadiness
+) -> dict[str, object]:
+    """Browser readiness with its root fix commands written for the viewer's prompt."""
+    route = operator_route(store.space_kind, machine.host)
+    return result.model_copy(
+        update={
+            name: route.command(shlex.split(value), root=True)
+            for name in ("apt_command", "admin_command")
+            if (value := getattr(result, name))
+        }
+    ).model_dump()
 
 
 @router.patch("/api/space/machines/{machine_id}")
@@ -577,9 +635,11 @@ def machine_browser(
     """Readiness reaches the host, so cards load it per machine, not with the list."""
     identity_access.acting_user(request)
     machine = _machine_or_404(store, machine_id)
-    return readiness(
-        host=machine.host, os_account=machine.os_account, data_dir=catalog.data_dir
-    ).model_dump()
+    return _operator_readiness(
+        store,
+        machine,
+        readiness(host=machine.host, os_account=machine.os_account, data_dir=catalog.data_dir),
+    )
 
 
 @router.get("/api/space/machines/{machine_id}/dependencies")
@@ -595,7 +655,8 @@ def machine_dependencies(
     identity_access.acting_user(request)
     machine = _machine_or_404(store, machine_id)
     checker = request.app.state.dependency_checker
-    return checker.status(machine.host, refresh=refresh).model_dump(mode="json")
+    status = checker.status(machine.host, refresh=refresh)
+    return status.model_dump(mode="json")
 
 
 @router.post("/api/space/machines/{machine_id}/browser/install")
@@ -610,9 +671,13 @@ def install_machine_browser(
     """Explicit bounded install on the authenticated member's selected machine."""
     identity_access.acting_user(request)
     machine = _machine_or_404(store, machine_id)
-    return install_browser(
-        host=machine.host, os_account=machine.os_account, data_dir=catalog.data_dir
-    ).model_dump()
+    return _operator_readiness(
+        store,
+        machine,
+        install_browser(
+            host=machine.host, os_account=machine.os_account, data_dir=catalog.data_dir
+        ),
+    )
 
 
 @router.post("/api/space/machines/{machine_id}/linger")
@@ -627,6 +692,8 @@ def enable_machine_linger(
     """The member's explicit consent to keep this account's background processes running."""
     identity_access.acting_user(request)
     machine = _machine_or_404(store, machine_id)
-    return enable_linger(
-        host=machine.host, os_account=machine.os_account, data_dir=catalog.data_dir
-    ).model_dump()
+    return _operator_readiness(
+        store,
+        machine,
+        enable_linger(host=machine.host, os_account=machine.os_account, data_dir=catalog.data_dir),
+    )

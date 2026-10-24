@@ -192,6 +192,10 @@ test("both Settings levels render the same machine card with one remove per path
     assert.match(timeoutInputs[0], /value="30"/);
     assert.match(timeoutInputs[1], /placeholder="2"/);
     assert.match(timeoutInputs[1], /value=""/);
+    // Browser, dependencies, provider limits, writable paths and hidden folders start folded.
+    const folds = html.match(/<details[^>]*class="fold[ "][^>]*>/g);
+    assert.equal(folds?.length, 5);
+    assert.ok(folds.every((tag) => !/\sopen/.test(tag)));
   }
   // The card's own name is renamed on the space page; a project names its machines itself.
   assert.equal(render("space").match(/data-machine-action="rename"/g)?.length, 1);
@@ -250,7 +254,6 @@ const sectionClasses = (html) =>
     "space-cache-settings",
     "display-settings",
     "provider-path-settings",
-    "compute-settings",
     "boundary-settings",
     "skill-settings",
     "agent-defaults",
@@ -303,7 +306,6 @@ test("space-wide sections render on space Settings and project sections on proje
     assert.match(html, /data-settings-level="project"/);
     assert.deepEqual(sectionClasses(html), [
       "provider-path-settings",
-      "compute-settings",
       "boundary-settings",
       "skill-settings",
       "agent-defaults",

@@ -202,3 +202,39 @@ test("declared provider controls invoke the matching provider operations", async
     await server.close();
   }
 });
+
+test("a dismissed sign-in notice stays hidden until that account signs out again", async () => {
+  const stored = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => stored.get(key) ?? null,
+    setItem: (key, value) => stored.set(key, String(value)),
+  };
+  const model = "../src/projects/providerLoginsModel.ts";
+  const signOut = { provider: "claude", host: "gpu.example", generation: 3, changed_at: "t1" };
+  try {
+    const first = await import(`${model}?tab=1`);
+    assert.equal(first.isLoginNoticeDismissed(signOut), false);
+    first.dismissLoginNotice(signOut);
+    // A new page load reads the device's record.
+    const reloaded = await import(`${model}?tab=2`);
+    assert.equal(reloaded.isLoginNoticeDismissed(signOut), true);
+    // Another failure of the same sign-out moves only its time.
+    assert.equal(reloaded.isLoginNoticeDismissed({ ...signOut, changed_at: "t2" }), true);
+    assert.equal(reloaded.isLoginNoticeDismissed({ ...signOut, generation: 5 }), false);
+    assert.equal(reloaded.isLoginNoticeDismissed({ ...signOut, host: "" }), false);
+    globalThis.localStorage = {
+      getItem: () => {
+        throw new Error("unavailable");
+      },
+      setItem: () => {
+        throw new Error("unavailable");
+      },
+    };
+    const blocked = { ...signOut, generation: 4 };
+    assert.equal(reloaded.isLoginNoticeDismissed(blocked), false);
+    reloaded.dismissLoginNotice(blocked);
+    assert.equal(reloaded.isLoginNoticeDismissed(blocked), true);
+  } finally {
+    delete globalThis.localStorage;
+  }
+});

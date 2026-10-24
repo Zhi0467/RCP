@@ -1,22 +1,23 @@
 from __future__ import annotations
 
 import os
-from typing import get_args
+import tomllib
+from typing import Literal, get_args
 
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 import rcp.config as config_module
 from rcp.config import (
     AgentExecutionProfile,
     AgentSurface,
-    ComputeConnectionConfig,
+    MachineComputeConfig,
     MachineConfig,
     Manifest,
     load_manifest,
     permissions_for,
     write_agent_settings,
 )
-from rcp.limits import COMPUTE_CONNECTION_MAX_COUNT
 from rcp.providers import AgentCapability
 
 
@@ -179,112 +180,87 @@ def test_write_agent_settings_persists_all_six_execution_profiles(manifest) -> N
     assert "default_campaign_invocation_ceiling" not in content
 
 
-def test_compute_connections_persist_without_changing_execution_profiles(manifest) -> None:
-    profiles = {
-        surface: manifest.agent_profile(surface).model_copy(deep=True)
-        for surface in (
-            "seed",
-            "refresh",
-            "node_chat",
-            "project_chat",
-            "paper_coach",
-            "orchestrator",
-        )
-    }
-    original_run_on = {surface: profile.run_on for surface, profile in profiles.items()}
+def test_legacy_compute_connections_load_and_the_next_write_drops_them(manifest) -> None:
+    legacy = manifest.path.read_text(encoding="utf-8") + (
+        '\n[[compute_connections]]\nid = "gpu"\nname = "GPU VM"\nkind = "ssh"\n'
+        'ssh_target = "alice@gpu.example"\naccess_hint = "Use /scratch"\n'
+    )
+    manifest.path.write_text(legacy, encoding="utf-8")
 
+    loaded = load_manifest(manifest.path)
+
+    assert manifest.path.read_text(encoding="utf-8") == legacy
+    assert [machine.alias for machine in loaded.machines] == ["laptop"]
+    profiles = {surface: loaded.agent_profile(surface) for surface in ("seed", "node_chat")}
     updated = write_agent_settings(
+        loaded,
+        list(loaded.agent.default_run_truth_scope),
+        profiles,
+        machine_access_hints={"laptop": "Use /scratch"},
+    )
+
+    assert "compute_connections" not in updated.path.read_text(encoding="utf-8")
+    assert updated.machine_map["laptop"].access_hint == "Use /scratch"
+    assert updated.agent_profile("node_chat").run_on == loaded.agent_profile("node_chat").run_on
+
+
+class _ReleasedMachineCompute(BaseModel):
+    """`machines[].compute` as released builds read it: unknown keys refuse the project."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_manager: Literal["slurm"] | None = None
+    jobs_root: str = ""
+
+
+class _ReleasedMachine(BaseModel):
+    """`machines[]` as released builds read it: pydantic's default ignores unknown keys."""
+
+    alias: str
+    host: str = ""
+    os_account: str = ""
+    provider_paths: dict[str, str] = {}
+    compute: _ReleasedMachineCompute | None = None
+
+
+def _save_machine(manifest, **updates):
+    profiles = {surface: manifest.agent_profile(surface) for surface in ("seed", "node_chat")}
+    return write_agent_settings(
+        manifest, list(manifest.agent.default_run_truth_scope), profiles, **updates
+    )
+
+
+def test_a_released_build_reads_a_machine_with_an_access_hint(manifest) -> None:
+    updated = _save_machine(
         manifest,
-        list(manifest.agent.default_run_truth_scope),
-        profiles,
-        compute_connections=[
-            ComputeConnectionConfig(
-                id="gpu-vm",
-                name="GPU VM",
-                kind="ssh",
-                ssh_target="researcher@gpu.example",
-                access_hint="Use the shared scratch directory",
-            )
-        ],
+        machine_compute={"laptop": MachineComputeConfig(job_manager="slurm", jobs_root="/jobs")},
+        machine_access_hints={"laptop": "Use /scratch"},
     )
 
-    assert updated.compute_connections[0].ssh_target == "researcher@gpu.example"
-    assert {
-        surface: updated.agent_profile(surface).run_on for surface in original_run_on
-    } == original_run_on
-    content = updated.path.read_text(encoding="utf-8")
-    assert "[[compute_connections]]" in content
-    assert "password" not in content.casefold()
+    written = tomllib.loads(updated.path.read_text(encoding="utf-8"))
+    released = [_ReleasedMachine.model_validate(machine) for machine in written["machines"]]
 
-    removed = write_agent_settings(
-        updated,
-        list(updated.agent.default_run_truth_scope),
-        profiles,
-        compute_connections=[],
+    assert updated.machine_map["laptop"].access_hint == "Use /scratch"
+    assert released[0].compute == _ReleasedMachineCompute(job_manager="slurm", jobs_root="/jobs")
+
+
+def test_resetting_compute_keeps_the_access_hint(manifest) -> None:
+    hinted = _save_machine(
+        manifest,
+        machine_compute={"laptop": MachineComputeConfig(jobs_root="/jobs")},
+        machine_access_hints={"laptop": "Use /scratch"},
     )
-    assert removed.compute_connections == []
-    assert "[[compute_connections]]" not in removed.path.read_text(encoding="utf-8")
 
+    reset = _save_machine(hinted, machine_compute={"laptop": None})
 
-def test_compute_connection_is_not_a_machine_or_execution_selector(manifest) -> None:
-    payload = manifest.model_dump(mode="python")
-    payload["compute_connections"] = [
-        {
-            "id": "gpu",
-            "name": "GPU",
-            "kind": "ssh",
-            "ssh_target": "alice@gpu.example",
-            "access_hint": "",
-            "run_on": "laptop",
-        }
-    ]
-
-    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
-        Manifest.model_validate(payload)
-
-    payload["compute_connections"][0].pop("run_on")
-    payload["compute_connections"][0]["access_hint"] = "password=hunter2"
-    with pytest.raises(ValueError, match="cannot contain credential-shaped text"):
-        Manifest.model_validate(payload)
-
-    payload["compute_connections"][0]["access_hint"] = ""
-    payload["compute_connections"][0]["name"] = "password=hunter2"
-    with pytest.raises(ValueError, match="name cannot contain credential-shaped text"):
-        Manifest.model_validate(payload)
-
-    payload["compute_connections"][0]["name"] = "GPU"
-    payload["compute_connections"][0]["ssh_target"] = "sk-ant-secret123@gpu.example"
-    with pytest.raises(ValueError, match="SSH target cannot contain credential-shaped text"):
-        Manifest.model_validate(payload)
-
-    payload["compute_connections"][0]["access_hint"] = ""
-    payload["compute_connections"][0]["ssh_target"] = "-ProxyCommand"
-    with pytest.raises(ValueError, match="SSH destination contains unsupported characters"):
-        Manifest.model_validate(payload)
-
-    payload["compute_connections"][0]["ssh_target"] = "alice@gpu.example"
-    payload["compute_connections"][0]["access_hint"] = "Use ~/.ssh/id_ed25519"
-    with pytest.raises(ValueError, match="cannot contain SSH credential paths"):
-        Manifest.model_validate(payload)
+    assert reset.machine_map["laptop"].compute is None
+    assert reset.machine_map["laptop"].access_hint == "Use /scratch"
 
 
 @pytest.mark.parametrize("host", ["-Ffoo", "-oProxyCommand=sh"])
-def test_machine_and_compute_connections_reject_option_shaped_ssh_hosts(host: str) -> None:
+def test_machine_rejects_option_shaped_ssh_hosts(host: str) -> None:
     with pytest.raises(ValueError, match="SSH destination contains unsupported characters"):
         MachineConfig(alias="remote", host=host)
-    with pytest.raises(ValueError, match="SSH destination contains unsupported characters"):
-        ComputeConnectionConfig(id="gpu", name="GPU", kind="ssh", ssh_target=host)
-
-
-def test_manifest_bounds_compute_connections_before_they_can_be_used(manifest) -> None:
-    payload = manifest.model_dump(mode="python")
-    payload["compute_connections"] = [
-        {"id": f"compute-{index}", "name": f"Compute {index}", "kind": "local"}
-        for index in range(COMPUTE_CONNECTION_MAX_COUNT + 1)
-    ]
-
-    with pytest.raises(ValueError, match="at most 32 items"):
-        Manifest.model_validate(payload)
 
 
 def test_exact_legacy_chat_permissions_normalize_without_widening(manifest) -> None:

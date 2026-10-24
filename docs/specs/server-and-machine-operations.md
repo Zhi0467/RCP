@@ -118,8 +118,9 @@ It enables linger and requires `Linger=yes`; doctor diagnoses missing linger.
 CI builds Web assets with Node.js 24; servers need Node/npm only for optional
 features such as the agent browser. Root install/update best-effort installs the
 fixed Ubuntu Chromium library set (t64 on 24.04), without adding apt repositories.
-Failure is a warning. Browser readiness names the needed apt command; browser
-installation itself never elevates.
+Failure is a warning. Browser readiness names the needed apt command, rendered
+for the viewer's own shell by `operator_commands`; browser installation itself
+never elevates.
 
 Service-owned releases, data, central checkouts, keys and checkpoint payloads
 live under `/home/rcp/rcp-server/`. Root owns `/etc/rcp/supervisor/`, its runtime,
@@ -914,11 +915,14 @@ absolute locators. CLI/doctor report these causes; pre-update failures become
 without changing strict older receipts; absent sidecars are not reconstructed.
 
 Each protected team project also binds a nonsecret recovery descriptor: current
-manifest settings/machines, effective repository sources/aliases, resolved checkout
+manifest settings/machines (including each machine's access hint and compute
+block), effective repository sources/aliases, resolved checkout
 paths/routes, and public old key labels/fingerprints. Completed provisioning proves
 checkout location and grants; it does not freeze later Settings edits or machines
 without repositories. Missing, credential-bearing or inconsistent descriptors
-make the project uncaptured. [Effective repositories](projects-spaces-and-operations.md#repository-and-truth-scope)
+make the project uncaptured. A descriptor omits an empty hint or compute block,
+so an older descriptor, which never recorded them, still matches its manifest;
+an older release refuses a descriptor that carries either. [Effective repositories](projects-spaces-and-operations.md#repository-and-truth-scope)
 fold completed create/add/connect requests.
 
 GitHub checkouts retain origin/commit checks. Server-only checkouts have no remote;

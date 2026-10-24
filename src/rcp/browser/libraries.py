@@ -70,7 +70,8 @@ def missing_library_packages(ldd_output: str, ubuntu_release: str) -> tuple[str,
 
 
 def apt_install_command(packages: tuple[str, ...]) -> str:
-    return shlex.join(("sudo", "apt-get", "install", "-y", "--no-install-recommends", *packages))
+    """The root install line on the browser's machine, before any operator route."""
+    return shlex.join(("apt-get", "install", "-y", "--no-install-recommends", *packages))
 
 
 def install_system_libraries() -> None:

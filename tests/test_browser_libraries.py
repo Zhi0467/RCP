@@ -13,7 +13,6 @@ def test_library_mapping_and_exact_repair_command() -> None:
     packages = libraries.missing_library_packages(misses, "24.04")
     assert packages == ("libasound2t64", "libnss3")
     assert libraries.apt_install_command(packages).split() == [
-        "sudo",
         "apt-get",
         "install",
         "-y",

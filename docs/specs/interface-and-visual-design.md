@@ -283,22 +283,32 @@ Escape dismisses. Settings owns defaults; selections apply to one turn. Fresh
 conversations use Settings defaults; existing sessions retain their last profile.
 Seed/Refresh has launch controls; Raw truth inputs choose context.
 
-The + menu holds Upload file, From RCP, and configured Compute connections with
-execution-machine reachability. Selection does not change provider or `run_on`,
-restores from the latest persisted turn, survives Send, and drops removed settings.
-Compute Settings takes names, optional SSH targets, and nonsecret hints, never
-keys/passwords. Its matrix distinguishes reachability/auth/host-key failures and
-names the machine needing repair. Explicit Probe runs checks; routine refresh
-uses cache. Unsaved edits mask results, disable Probe with Save first, and are
-not stored in settings drafts. Saves fence older in-flight probe responses.
+The + menu holds Upload file and From RCP. Compute has no picker: each project
+machine card's Compute block takes a nonsecret access hint, never keys/passwords,
+and shows whether each agent machine reaches it, distinguishing
+reachability/auth/host-key failures and naming the machine needing repair.
+Explicit Probe runs checks; routine refresh uses cache. Unsaved route edits mask
+results and disable Probe with Save first; an unsaved hint does neither and stays
+in the settings draft.
+Saves fence older in-flight probe responses. Start episode's launch picker takes
+an optional starting message.
 
-Machine tiles show name, host, provider/job status, and writable-path count.
+Machine tiles show name, host, provider/job status, and writable-path count. Aliases that reach the same machine account, as a move can leave a laptop and
+its remote both on the team server, share one tile and one card; each alias's own
+settings sit under its name.
 One card opens at a time below them. Dashed Add machine opens other space machines;
 selection derives an alias and opens it. Setup shares these tiles and New machine.
 Cards group provider paths, Long-running jobs, and shared writable paths. Folder
 pickers have breadcrumbs, one-level/filter/paging, protected entries, and Use this
 folder. Use Slurm opts into scheduler submission; Jobs root sets helper storage;
 Reset compute removes the block through Save. No scheduler resource form exists.
+
+Card sections and server status sections share one fold, closed by default: a
++/− summary with a bold title and a short state (count, badge, or status word);
+actions sit in the body, never the summary. Browser and Dependencies show their
+status label, red when bad. The Team server header keeps title, overall badge,
+and refresh; Release, Protected backup, Restore drill, and Execution readiness
+fold with their badges, and Needs attention folds with a red count.
 
 Hidden folders sits beside writable paths: code defaults cannot be removed;
 user additions use the folder picker and save immediately for all projects.

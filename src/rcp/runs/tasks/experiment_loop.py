@@ -55,7 +55,6 @@ from rcp.agents.prompts import (
     invoked_provider_skill_section,
 )
 from rcp.background import AgentTaskExecution
-from rcp.compute_jobs.job_managers import JOB_MANAGERS
 from rcp.config import AgentSurface
 from rcp.core.authority import AgentProfile
 from rcp.core.models import ExperimentDecisionPin
@@ -602,15 +601,13 @@ def _experiment_values(
     }
     if compute is not None:
         values["commands"]["launch"] = f"{COMMAND_CLIENT} {shlex.join(_LAUNCH_EXAMPLE_ARGS)}"
-        machine = turn.service.manifest.machine_map[compute.write_scope.execution_machine]
-        manager = JOB_MANAGERS.get(machine.compute.job_manager) if machine.compute else None
         backend = compute.helper_backend
         execution["helper_owner"] = backend.id if backend is not None else None
-        execution["job_manager_rules"] = manager.instructions if manager is not None else None
     return {
         **values,
         "group": group_prompt_value(turn.context.group_context),
         "execution": execution,
+        "compute": {"active": turn.compute_profiles},
         "repositories": {
             item["alias"]: {"host": item["host"], "path": item["path"]}
             for item in staged.repositories
@@ -1169,6 +1166,7 @@ def _experiment_start_contract(
             retry_diagnostics_path if prepared.provider_switch_recovery else None
         ),
         skill_pointers=staged.skill_pointers,
+        compute_profiles=turn.compute_profiles,
         invoked_skill_pointers=(
             invoked_package_pointers(
                 staged.skill_pointers,
@@ -2906,6 +2904,7 @@ async def _stream_work_graph_repair(
         assert validator_lifecycle is not None
         outcome = _ProviderOutcome(session_id=request.session_id)
         turn = WorkTurn(
+            compute_profiles=service.machine_prompt_profiles(execution_machine.alias),
             graph_read_scope=graph_read_scope,
             data_dir=data_dir,
             service=service,

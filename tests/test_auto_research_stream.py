@@ -3344,6 +3344,8 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
             store.checkpoint_agent_task(root.operation_id, native_session_id="orchestrator-session")
             execution.continuation = "resume"
             overlap = LoopOverlap()
+            # A machine added between wakes: the resumed turn states it.
+            service.history.manifest = _with_gpu_machine(manifest)
         binding = store.auto_research_actor_binding(root.operation_id)
         turn = auto_research_stream_module._CanonicalOrchestratorTurn(
             task=root,
@@ -3354,6 +3356,7 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
             clean_session_retry=False,
         )
         _path, prompt, master, values = auto_research_stream_module._orchestrator_prompt(
+            service,
             execution,
             turn,
             context=context,
@@ -3382,6 +3385,23 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
         assert (
             not {"parent_graph_path", "shared_repositories", "other_branch_loops"} & values.keys()
         )
+        # Each launch states the project machines as they are now.
+        assert [item["id"] for item in values["compute"]["active"]] == (
+            ["laptop", "gpu"] if index else ["laptop"]
+        )
+        # A resumed session learns the added machine from the launch delta.
+        assert ("gpu.example" in prompt) == bool(index)
+
+
+def _with_gpu_machine(manifest):
+    """The fixture project plus a remote machine, saved the way Settings saves it."""
+
+    with manifest.path.open("a") as handle:
+        handle.write(
+            '\n[[machines]]\nalias = "gpu"\nhost = "gpu.example"\n'
+            'access_hint = "submit with srun"\n'
+        )
+    return load_manifest(manifest.path)
 
 
 def test_child_profile_choices_list_at_most_the_capped_models_per_provider():

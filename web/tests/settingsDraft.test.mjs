@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  computeConnectionNeedsSave,
   computeProbeConfigurationChanged,
   deserializeSettingsDraft,
   machineProviderPathUpdates,
@@ -217,80 +216,54 @@ test("v3 settings drafts discard previously persisted compute metadata", () => {
   assert.equal(Object.hasOwn(malformed, "computeConnections"), false);
 });
 
-test("settings draft serialization excludes unsaved compute metadata defensively", () => {
-  const serialized = serializeSettingsDraft({
-    version: 4,
-    scope: ["repo"],
-    profiles: {},
-    computeConnections: [
-      {
-        id: "gpu",
-        name: "Unsaved GPU",
-        kind: "ssh",
-        ssh_target: "researcher@gpu.example",
-        access_hint: "Unsaved access hint",
-      },
-    ],
-  });
-
-  assert.doesNotMatch(serialized, /computeConnections|Unsaved GPU|researcher@gpu|access hint/);
-});
-
-test("compute changes compare complete non-secret connection metadata", () => {
-  const saved = [
-    {
-      id: "gpu",
-      name: "GPU",
-      kind: "ssh",
-      ssh_target: "alice@gpu.example",
-      access_hint: "Use scratch",
-    },
-  ];
-
-  const machines = ["laptop"];
-
-  assert.equal(
-    computeProbeConfigurationChanged(
-      { connections: saved, executionMachines: machines },
-      { connections: structuredClone(saved), executionMachines: ["laptop", "laptop"] },
-    ),
-    false,
-  );
-  assert.equal(computeConnectionNeedsSave(saved, structuredClone(saved[0])), false);
-  assert.equal(
-    computeProbeConfigurationChanged(
-      { connections: saved, executionMachines: machines },
-      {
-        connections: [{ ...saved[0], ssh_target: "alice@gpu-2.example" }],
-        executionMachines: machines,
-      },
-    ),
-    true,
-  );
-  assert.equal(
-    computeConnectionNeedsSave(saved, { ...saved[0], ssh_target: "alice@gpu-2.example" }),
-    true,
-  );
-});
-
 test("moving one profile to an unused machine changes the compute probe cache key", () => {
-  const connections = [
-    { id: "gpu", name: "GPU", kind: "ssh", ssh_target: "alice@gpu.example", access_hint: "" },
-  ];
-
   assert.equal(
     computeProbeConfigurationChanged(
-      { connections, executionMachines: ["laptop", "laptop", "laptop"] },
-      { connections, executionMachines: ["laptop", "laptop", "cluster"] },
+      ["laptop", "laptop", "laptop"],
+      ["laptop", "laptop", "cluster"],
     ),
     true,
   );
   assert.equal(
-    computeProbeConfigurationChanged(
-      { connections, executionMachines: ["laptop", "cluster"] },
-      { connections, executionMachines: ["cluster", "laptop"] },
-    ),
+    computeProbeConfigurationChanged(["laptop", "cluster"], ["cluster", "laptop"]),
     false,
+  );
+});
+
+test("compute edits that staged an access hint load without it", () => {
+  const draft = deserializeSettingsDraft(
+    JSON.stringify({
+      version: 4,
+      scope: ["repo"],
+      profiles: {},
+      machineComputeEdits: {
+        old: { job_manager: "slurm", jobs_root: "/scratch" },
+        hinted: { job_manager: null, jobs_root: "", access_hint: "module load cuda" },
+        reset: null,
+      },
+    }),
+  );
+  assert.deepEqual(draft?.machineComputeEdits, {
+    old: { job_manager: "slurm", jobs_root: "/scratch" },
+    hinted: { job_manager: null, jobs_root: "" },
+    reset: null,
+  });
+});
+
+test("access hint edits stage, restore, and save only changed aliases", async () => {
+  const { machineAccessHintsFrom, machineAccessHintUpdates } =
+    await import("../src/projects/settingsDraft.ts");
+  const saved = machineAccessHintsFrom([
+    { alias: "local", access_hint: "" },
+    { alias: "cluster", access_hint: "module load cuda" },
+  ]);
+  assert.equal(machineAccessHintUpdates(saved, saved), undefined);
+  assert.deepEqual(machineAccessHintUpdates(saved, { ...saved, cluster: "" }), { cluster: "" });
+  const draft = { version: 4, scope: ["repo"], profiles: {}, accessHintEdits: { cluster: "" } };
+  assert.deepEqual(deserializeSettingsDraft(serializeSettingsDraft(draft)), draft);
+  assert.equal(
+    deserializeSettingsDraft(JSON.stringify({ ...draft, accessHintEdits: { cluster: 1 } })),
+    null,
   );
 });
 

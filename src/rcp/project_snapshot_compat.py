@@ -8,9 +8,14 @@ from rcp.skill_registry import SkillDefaults
 def migrate_display_snapshot_settings(snapshot: dict[str, object]) -> bool:
     """Decode explicitly supported settings from an older display snapshot."""
 
-    # Snapshots cached before compute connections existed carry neither field.
-    snapshot.setdefault("compute_connections", [])
+    # Retired compute connections are dropped; machines carry compute hints now.
+    snapshot.pop("compute_connections", None)
     snapshot.setdefault("compute_status", {})
+    machines = snapshot.get("machines")
+    if isinstance(machines, list):
+        for machine in machines:
+            if isinstance(machine, dict):
+                machine.setdefault("access_hint", "")
     if not _migrate_agent_profile_runtimes(snapshot):
         return False
     skill_defaults = snapshot.get("skill_defaults")

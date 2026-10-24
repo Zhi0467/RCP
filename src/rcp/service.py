@@ -30,17 +30,15 @@ from rcp.agents import (
 )
 from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_repository_roots
 from rcp.attachments import ChatAttachmentDescriptor, ProjectReferenceSelector
-from rcp.compute import selected_compute_connections
+from rcp.compute import machine_compute_context
 from rcp.config import (
+    AGENT_EXECUTION_PROFILES,
     AgentExecutionProfile,
     AgentSurface,
     AgentSurfaceConfig,
-    ComputeConnectionConfig,
     MachineComputeConfig,
     MachineConfig,
     Manifest,
-    ResolvedComputeContext,
-    ResolvedComputeProfile,
     launches_work_like,
     load_manifest,
 )
@@ -91,14 +89,12 @@ from rcp.history import HistoryManager
 from rcp.history.branches import BranchHistoryManager
 from rcp.history.queries import HistoryEngine
 from rcp.limits import (
-    ACTIVE_COMPUTE_ID_MAX_COUNT,
     ARTIFACT_CONTEXT_MAX_SELECTIONS,
     BACKUP_INVENTORY_MAX_ENTRIES,
     CHAT_ATTACHMENT_MAX_COUNT,
     CHAT_PAGE_DEFAULT_LIMIT,
     CHAT_PAGE_MAX_LIMIT,
     CHAT_PREVIEW_MAX_CHARS,
-    COMPUTE_CONNECTION_MAX_COUNT,
     REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 )
 from rcp.operation_ids import canonical_operation_uuid
@@ -116,6 +112,7 @@ from rcp.providers.browser_grant import BrowserTurnStatus
 from rcp.providers.live_status import AgentStatus
 from rcp.provisioning_repositories import team_repository_sources
 from rcp.runs.auto_research import AutoResearchRunRequest
+from rcp.runs.provider_login import parked_provider_work, provider_login_host
 from rcp.skill_registry import (
     SkillDefaults,
     SkillReference,
@@ -332,10 +329,6 @@ class ChatMessage(BaseModel):
     trigger: TaskTrigger = "human"
     steering: SteeringReceipt | None = None
     attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
-    active_compute_ids: list[str] = Field(
-        default_factory=list,
-        max_length=ACTIVE_COMPUTE_ID_MAX_COUNT,
-    )
 
 
 class ChatOriginView(ChatForkOrigin):
@@ -405,11 +398,6 @@ class _StoredChatRecord(BaseModel):
     trigger: TaskTrigger = "human"
     steering: SteeringReceipt | None = None
     attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
-    active_compute_ids: list[str] = Field(
-        default_factory=list,
-        alias="activeComputeIds",
-        max_length=ACTIVE_COMPUTE_ID_MAX_COUNT,
-    )
 
 
 def _fold_chat_receipts(records: list[_StoredChatRecord]) -> list[_StoredChatRecord]:
@@ -964,15 +952,6 @@ class RunRequest(BaseModel):
     references: list[ProjectReferenceSelector] = Field(
         default_factory=list, max_length=CHAT_ATTACHMENT_MAX_COUNT
     )
-    active_compute_ids: list[str] = Field(
-        default_factory=list,
-        max_length=ACTIVE_COMPUTE_ID_MAX_COUNT,
-    )
-    # This value is accepted only from RCP's own admission and durable rows.
-    # HTTP admission discards any client copy before resolving the selected ids.
-    resolved_compute_context: ResolvedComputeContext = Field(
-        default_factory=ResolvedComputeContext,
-    )
 
 
 class CoachRequest(BaseModel):
@@ -1080,12 +1059,8 @@ class ProjectSettingsRequest(BaseModel):
     machine_provider_paths: dict[str, dict[ProviderId, str]] | None = None
     # Omitted machines are preserved; null removes one machine compute block.
     machine_compute: dict[str, MachineComputeConfig | None] | None = None
-    # Omission preserves the manifest for older clients; an empty list removes
-    # all project compute resources.
-    compute_connections: list[ComputeConnectionConfig] | None = Field(
-        default=None,
-        max_length=COMPUTE_CONNECTION_MAX_COUNT,
-    )
+    # Omitted machines are preserved; an empty string clears one machine's hint.
+    machine_access_hints: dict[str, str] | None = None
 
     @model_validator(mode="after")
     def require_every_surface(self) -> ProjectSettingsRequest:
@@ -1142,6 +1117,22 @@ def project_repository_descriptors(
             }
         )
     return result
+
+
+def agent_login_accounts(
+    manifest: Manifest, store: AppStore | None, project_id: str | None
+) -> set[tuple[str, str]]:
+    """(provider, host) accounts this project's agents launch on or have work parked on.
+
+    A machine that is only a compute target needs no agent login.
+    """
+    accounts = {
+        (profile.provider, provider_login_host(manifest, profile.run_on))
+        for profile in map(manifest.agent_profile, AGENT_EXECUTION_PROFILES)
+    }
+    if store is not None and project_id is not None:
+        accounts |= parked_provider_work(store, project_id, lambda: manifest).keys()
+    return accounts
 
 
 class ProjectService:
@@ -1607,7 +1598,6 @@ class ProjectService:
                     trigger=record.trigger,
                     steering=record.steering,
                     attachments=record.attachments,
-                    active_compute_ids=record.active_compute_ids,
                 )
             )
         first_message = next((message.text for message in messages if message.role == "user"), "")
@@ -1702,10 +1692,6 @@ class ProjectService:
                     repository.model_dump() for repository in self.manifest.repositories
                 ],
                 "machines": [machine.model_dump() for machine in self.manifest.machines],
-                "compute_connections": [
-                    connection.model_dump(mode="json")
-                    for connection in self.manifest.compute_connections
-                ],
                 "compute_status": {},
                 "primary_question": (
                     primary.model_dump(mode="json") if primary is not None else None
@@ -1726,7 +1712,9 @@ class ProjectService:
                 "skill_defaults_declared": sorted(
                     self.manifest.agent.skill_defaults.model_fields_set
                 ),
-                "provider_logins": self.provider_logins_for(self.manifest, self.launcher),
+                "provider_logins": self.provider_logins_for(
+                    self.manifest, self.launcher, self._project_id
+                ),
                 "provider_readiness": {},
                 "provider_skill_inventories": self.provider_skill_inventory_snapshot(),
                 "providers": {},
@@ -1797,10 +1785,19 @@ class ProjectService:
         }
 
     @staticmethod
-    def provider_logins_for(manifest: Manifest, launcher: AgentLauncher) -> list[dict[str, object]]:
+    def provider_logins_for(
+        manifest: Manifest, launcher: AgentLauncher, project_id: str | None
+    ) -> list[dict[str, object]]:
+        """The accounts this project's agents launch on, plus any holding its parked work.
+
+        A machine that is only a compute target has no agent login to need, so
+        it gets no entry; Settings, Provider logins still lists every account.
+        """
         login_state = launcher.login_state
         if login_state is None:
             return []
+        store = launcher.accounts.store if launcher.accounts is not None else None
+        accounts = agent_login_accounts(manifest, store, project_id)
         return [
             {
                 **(
@@ -1810,14 +1807,8 @@ class ProjectService:
                 ).model_dump(mode="json"),
                 "label": profile_for(provider).label,
             }
-            for provider, host in sorted(
-                {
-                    (provider, machine.host)
-                    for machine in manifest.machines
-                    for provider in PROVIDER_IDS
-                    if profile_for(provider).authentication.manages_login
-                }
-            )
+            for provider, host in sorted(accounts)
+            if profile_for(provider).authentication.manages_login
         ]
 
     @staticmethod
@@ -1888,7 +1879,6 @@ class ProjectService:
                 readiness_by_machine[alias][provider] = probe.result()
         coach_machine = manifest.agent_profile("paper_coach").run_on
         return {
-            "provider_logins": ProjectService.provider_logins_for(manifest, launcher),
             "provider_readiness": readiness_by_machine,
             "state_transfers": {
                 machine.alias: state_transfer_diagnostics(machine.host)
@@ -1969,8 +1959,8 @@ class ProjectService:
             provider_path_updates,
             request.skill_defaults,
             request.default_auto_research_invocation_ceiling,
-            request.compute_connections,
             request.machine_compute,
+            request.machine_access_hints,
         )
         for (alias, provider), prior_path in prior_paths.items():
             machine = self.manifest.machine_map[alias]
@@ -2004,23 +1994,9 @@ class ProjectService:
         self.paper.manifest = self.manifest
         self.invalidate_source_index()
 
-    def resolve_compute_request(self, request: RunRequest) -> RunRequest:
-        ids = list(dict.fromkeys(request.active_compute_ids))
-        selected = selected_compute_connections(self.manifest, ids)
-        context = ResolvedComputeContext(
-            active=tuple(
-                ResolvedComputeProfile.model_validate(connection) for connection in selected
-            )
-        )
-        return request.model_copy(
-            update={
-                "active_compute_ids": ids,
-                "resolved_compute_context": context,
-            }
-        )
-
-    @staticmethod
-    def compute_prompt_profiles(context: ResolvedComputeContext) -> list[dict[str, str]]:
+    def machine_prompt_profiles(self, run_on: str) -> list[dict[str, str]]:
+        """Every project machine as seen from `run_on`, read from the manifest now."""
+        context = machine_compute_context(self.manifest, execution_machine=run_on)
         return [profile.model_dump(mode="json") for profile in context.active]
 
     def resolve_provider_path(
@@ -2817,6 +2793,7 @@ class ProjectService:
         retry_diagnostics_path: str | None = None,
         source_errors: list[str] | None = None,
         skill_pointers: list[dict[str, object]] | None = None,
+        compute_profiles: list[dict[str, str]] | None = None,
     ) -> str:
         return PromptFactory.graph_task_contract(
             kind,
@@ -2835,6 +2812,7 @@ class ProjectService:
             source_errors=source_errors or [],
             validator_command=validator_command,
             skill_pointers=skill_pointers,
+            compute_profiles=compute_profiles,
         )
 
     def assemble_chat(self, request: RunRequest) -> ChatContext:

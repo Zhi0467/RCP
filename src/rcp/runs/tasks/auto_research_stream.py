@@ -407,6 +407,7 @@ async def stream_auto_research_orchestrator_run(
                 episode_request=turn.request,
             )
             contract_path, prompt, master, values = _orchestrator_prompt(
+                service,
                 execution,
                 turn,
                 context=context,
@@ -1581,6 +1582,7 @@ def _actor_launch_prompt(
 
 
 def _orchestrator_prompt(
+    service: ProjectService,
     execution: AgentTaskExecution,
     turn: _CanonicalOrchestratorTurn,
     *,
@@ -1604,6 +1606,7 @@ def _orchestrator_prompt(
     repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path} for item in context.repositories
     ]
+    compute_profiles = service.machine_prompt_profiles(turn.request.run_on or "")
     shared_repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path}
         for item in context.shared_repositories
@@ -1626,6 +1629,7 @@ def _orchestrator_prompt(
         skill_pointers=skill_pointers,
         allowed_verbs=allowed_verbs,
         child_profiles=child_profiles,
+        compute_profiles=compute_profiles,
     )
 
     snapshot, dismissal_ids = auto_research_question_snapshot(
@@ -1674,6 +1678,7 @@ def _orchestrator_prompt(
             ontology_extensions=context.ontology_extensions,
             graph_read_scope=graph_read_scope,
             child_profiles=child_profiles,
+            compute_profiles=compute_profiles,
         )
 
     def start_contract() -> str:
@@ -1799,6 +1804,7 @@ def _worker_prompt(
     repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path} for item in context.repositories
     ]
+    compute_profiles = service.machine_prompt_profiles(turn.request.run_on or "")
     values = auto_research_prompt_values(
         graph_path=context.graph_path,
         research_path=context.research_md_path,
@@ -1810,6 +1816,7 @@ def _worker_prompt(
         group_context=context.group_context,
         reply_key=reply_key,
         allowed_verbs=allowed_verbs,
+        compute_profiles=compute_profiles,
     )
 
     def render_master() -> str:
@@ -1831,6 +1838,7 @@ def _worker_prompt(
             write_scope=write_scope,
             ontology_extensions=context.ontology_extensions,
             graph_read_scope=graph_read_scope,
+            compute_profiles=compute_profiles,
         )
 
     def continuation_parts() -> list[str]:

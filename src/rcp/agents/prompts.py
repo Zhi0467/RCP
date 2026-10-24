@@ -26,6 +26,7 @@ from rcp.agents.write_scope import ProjectWriteScope
 
 if TYPE_CHECKING:
     from rcp.core.models import HiddenReadScope, HiddenReadStatus
+from rcp.compute_jobs.job_managers import job_manager_rules
 from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import GraphTargetRef
@@ -129,7 +130,7 @@ REPLY_STYLE = """Writing the reply:
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
 
-CHAT_MASTER_CONTEXT_VERSION = 23
+CHAT_MASTER_CONTEXT_VERSION = 25
 
 # Staged RCP commands are written against this placeholder; the contract names the current
 # command client once, and a continuation that changes it sends `patch.command_client`.
@@ -233,6 +234,14 @@ Relations one hop from this node:
 """
 
 
+# Where a human widens the boundary: the space machine card's writable paths,
+# which every launch resolves afresh. Only a scope that writes repositories
+# receives them, so only that scope is told.
+_GRANT_REQUEST_RULE = """- If the work needs a folder outside the roots, such as a CLI's own config folder that it writes
+  on every command, ask the human to add that exact path under Space Settings -> Machines ->
+  this machine's card -> Writable paths. It applies from your next launch."""
+
+
 def _episode_worktree_rule(scope: ProjectWriteScope) -> str:
     worktree = scope.episode_worktree
     if worktree is None:
@@ -260,21 +269,23 @@ def write_scope_section(scope: ProjectWriteScope) -> str:
     lines += [f"- writable, machine grant: `{path}`" for path in scope.granted_roots]
     lines += [f"- denied inside the roots above: `{path}`" for path in scope.protected_write_paths]
     roots = "\n".join(lines)
+    grant_rule = _GRANT_REQUEST_RULE + "\n" if scope.repositories else ""
     return f"""
 Enforced write boundary on the machine this turn runs on:
 {roots}
 {_episode_worktree_rule(scope)}- Every other path on this machine is readable but not writable. A write outside the roots above
-  fails as a provider denial. That denial is this boundary, not a broken tool and not a permission
-  you can request, so do not retry it through another command.
-- A repository pointer whose host is non-empty lives on another machine and is outside this
+  fails as a provider denial. That denial is this boundary, not a broken tool, so do not retry it
+  through another command or copy files elsewhere to get around it.
+{grant_rule}- A repository pointer whose host is non-empty lives on another machine and is outside this
   boundary. Reach it by SSH and stay inside the human's requested objective there.
 """
 
 
-_TURN_WRITE_BOUNDARY = """- A Work turn's writable roots arrive with it as `work.write_roots`, with `work.denied_paths`
+_TURN_WRITE_BOUNDARY = f"""- A Work turn's writable roots arrive with it as `work.write_roots`, with `work.denied_paths`
   unwritable inside them. They are the only writable paths on the machine that turn runs on. A
-  write outside them fails as a provider denial. That denial is this boundary, not a broken tool
-  and not a permission you can request, so do not retry it through another command.
+  write outside them fails as a provider denial. That denial is this boundary, not a broken tool,
+  so do not retry it through another command or copy files elsewhere to get around it.
+{_GRANT_REQUEST_RULE}
 - A repository pointer whose host is non-empty lives on another machine and is outside this
   boundary. Reach it by SSH and stay inside the human's requested objective there."""
 
@@ -437,23 +448,26 @@ Repositories:
 
 
 def compute_connection_section(connections: list[dict[str, str]] | None) -> str:
+    """The project's machines, each as reached from this agent's own machine."""
+
     if not connections:
         return ""
     lines = []
     for connection in connections:
-        location = (
-            "kind: local (this agent execution machine)"
+        route = (
+            "local (this agent's machine)"
             if connection["kind"] == "local"
-            else f"kind: SSH; target: `{connection['ssh_target']}`"
+            else f"`ssh {connection['ssh_target']}`"
         )
         hint = connection.get("access_hint", "")
-        suffix = f"; access hint: {hint}" if hint else ""
-        lines.append(f"- `{connection['id']}` — {connection['name']}: {location}{suffix}")
-    return """Compute resources attached to this turn:
+        manager = connection.get("job_manager", "")
+        suffix = (f"; jobs: `{manager}`" if manager else "") + (f"; {hint}" if hint else "")
+        lines.append(f"- `{connection['id']}`: {route}{suffix}")
+    lines.extend(job_manager_rules(item.get("job_manager", "") for item in connections))
+    return """Project machines:
 {}
-- These are resources the running agent may use; they do not change the provider, execution
-  machine, `run_on`, repository pointers, or enforced write boundary.
-- Use only credentials already configured on this agent execution machine. Never request, print,
+- Reaching a machine does not change where you run or widen your write boundary.
+- Use only credentials already configured on this agent's machine. Never request, print,
   copy, or store a private key or password. Keep SSH host-key verification enabled.
 """.format("\n".join(lines))
 
@@ -891,9 +905,9 @@ _INLINE_CONTINUATION_RULES = {
 
 
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
-DISCUSS_POLICY_VERSION = "discuss-v7"
+DISCUSS_POLICY_VERSION = "discuss-v8"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v12"
+WORK_POLICY_VERSION = "work-v13"
 
 
 class PromptFactory:
@@ -1144,7 +1158,7 @@ name arrives with each turn's branch read pointers. A later value is `current.gr
         )
 
     # Bumped when the Seed and Refresh task contract's stable policy prose changes.
-    GRAPH_TASK_POLICY_VERSION = "ingestion-v3"
+    GRAPH_TASK_POLICY_VERSION = "ingestion-v4"
 
     @staticmethod
     def graph_task_contract(
@@ -1165,6 +1179,7 @@ name arrives with each turn's branch read pointers. A later value is `current.gr
         retry_diagnostics_path: str | None = None,
         source_errors: list[str] | None = None,
         skill_pointers: list[dict[str, object]] | None = None,
+        compute_profiles: list[dict[str, str]] | None = None,
     ) -> str:
         task = {
             "seed": (
@@ -1202,6 +1217,7 @@ What to read — the content is at these locations, never in a launch message:
 
 Repositories:
 {_repository_pointers(repositories)}
+{compute_connection_section(compute_profiles)}
 Provider log roots on this machine — inspect them in place:
 {_provider_log_pointers(provider_log_roots)}- Project ingestion watermark: `{_ingestion_watermark(ingestion_watermark)}`
 

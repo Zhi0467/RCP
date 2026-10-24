@@ -13,6 +13,7 @@ from rcp.api.dependencies import (
     get_server_status_composition,
     get_store,
 )
+from rcp.operator_commands import operator_route
 from rcp.release_check import ReleaseCheck, UpdateNotice
 from rcp.server_ops.backup import BackupArchiveReceipt
 from rcp.server_ops.doctor import ServerDoctorReport
@@ -50,7 +51,7 @@ class ServerReleaseStatus(_StrictModel):
     candidate_commit: str | None
     update_available: bool
     last_update_failure: str | None
-    command: Literal["rcp server update"] = "rcp server update"
+    command: str
 
 
 class ServerBackupStatus(_StrictModel):
@@ -65,22 +66,22 @@ class ServerBackupStatus(_StrictModel):
     protected_projects: int | None
     uncaptured_projects: int | None
     last_failure: str | None
-    configure_command: Literal["rcp server backup configure"] = "rcp server backup configure"
-    run_command: Literal["rcp server backup run"] = "rcp server backup run"
+    configure_command: str
+    run_command: str
 
 
 class ServerRestoreStatus(_StrictModel):
     status: ServerStatusSummary
     last_completed_at: datetime | None
     drill_age_days: int | None = Field(default=None, ge=0)
-    command: Literal["rcp server restore"] = "rcp server restore"
+    command: str
 
 
 class ServerExecutionReadiness(_StrictModel):
     machine: ServerStatusSummary
     provider_checks: ServerStatusSummary
     dependency_versions: str
-    provider_command: Literal["rcp server provider check"] = "rcp server provider check"
+    provider_command: str
 
 
 class ServerStatusResponse(_StrictModel):
@@ -122,8 +123,16 @@ def server_status(
     except (OSError, RuntimeError, ValueError) as exc:
         raise HTTPException(
             status_code=503,
-            detail=("Server status could not be read safely. Run rcp server doctor on the server."),
+            detail=(
+                "Server status could not be read safely. Run "
+                f"{_server_command('doctor')} on the server."
+            ),
         ) from exc
+
+
+def _server_command(*argv: str, root: bool = False) -> str:
+    """An `rcp server` line from the operator's own login on this team server."""
+    return operator_route("team").command(["rcp", "server", *argv], root=root)
 
 
 def project_server_status(
@@ -153,6 +162,7 @@ def project_server_status(
             candidate_commit=report.candidate_commit,
             update_available=release_check.status == "update_available",
             last_update_failure=report.update_failure,
+            command=_server_command("update", root=True),
         ),
         backup=ServerBackupStatus(
             status=_backup_status(report),
@@ -174,6 +184,8 @@ def project_server_status(
                 protected_backup.uncaptured_project_count if protected_backup is not None else None
             ),
             last_failure=report.last_backup_failure,
+            configure_command=_server_command("backup", "configure", root=True),
+            run_command=_server_command("backup", "run"),
         ),
         restore=restore,
         execution=ServerExecutionReadiness(
@@ -194,6 +206,7 @@ def project_server_status(
                 tone="good" if report.provider_check_status == "available" else "bad",
             ),
             dependency_versions=report.dependency_versions,
+            provider_command=_server_command("provider", "check"),
         ),
         problems=report.problems,
     )
@@ -261,6 +274,7 @@ def _restore_status(restored_at: datetime | None, now: datetime) -> ServerRestor
             status=ServerStatusSummary(label="Restore history is unavailable", tone="neutral"),
             last_completed_at=None,
             drill_age_days=None,
+            command=_server_command("restore", root=True),
         )
     if restored_at.utcoffset() is None or restored_at > now:
         raise ValueError("completed restore time is invalid")
@@ -275,6 +289,7 @@ def _restore_status(restored_at: datetime | None, now: datetime) -> ServerRestor
         status=ServerStatusSummary(label=label, tone="good"),
         last_completed_at=restored_at,
         drill_age_days=age_days,
+        command=_server_command("restore", root=True),
     )
 
 

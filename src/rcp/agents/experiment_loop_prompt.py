@@ -21,6 +21,7 @@ from rcp.agents.prompts import (
     _repository_pointers,
     _watcher_execution_host,
     _work_experiment_watcher_resource_section,
+    compute_connection_section,
     message_part,
     render_chat_read_context,
     selected_skill_section,
@@ -32,7 +33,7 @@ from rcp.loop_status import LoopOverlap
 
 # Bumped by hand whenever the Experiment-loop policy prose in this module changes, so a live
 # session re-opens its master contract once instead of keeping the old policy.
-EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v10"
+EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v11"
 
 
 def experiment_loop_read_context(context: ChatContext, loops: LoopOverlap) -> str:
@@ -182,6 +183,7 @@ def experiment_loop_task_contract(
     recovery_diagnostics_path: str | None = None,
     skill_pointers: list[dict[str, object]] | None = None,
     invoked_skill_pointers: list[dict[str, object]] | None = None,
+    compute_profiles: list[dict[str, str]] | None = None,
 ) -> str:
     """Build the self-contained contract for one bounded Experiment-loop invocation."""
 
@@ -249,7 +251,7 @@ Required current inputs:
 {_pointer("Ontology extensions", ontology_path if ontology_extensions else None)}
 {_pointer("Human introduction", introduction_path)}
 Repository pointers and expected operational targets:
-{_repository_pointers(repositories)}{selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}
+{_repository_pointers(repositories)}{compute_connection_section(compute_profiles)}{selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}
 Exact outputs and RCP tooling:
 - Optional semantic graph Patch: `{patch_path}`
 - Existing Patch JSON Schema, including `AgentExperimentAttempt`: `{output_schema_path}`

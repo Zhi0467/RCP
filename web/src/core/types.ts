@@ -89,7 +89,7 @@ export interface ServerReleaseStatus {
   candidate_commit: string | null;
   update_available: boolean;
   last_update_failure: string | null;
-  command: "rcp server update";
+  command: string;
 }
 
 export interface ServerBackupStatus {
@@ -104,22 +104,22 @@ export interface ServerBackupStatus {
   protected_projects: number | null;
   uncaptured_projects: number | null;
   last_failure: string | null;
-  configure_command: "rcp server backup configure";
-  run_command: "rcp server backup run";
+  configure_command: string;
+  run_command: string;
 }
 
 export interface ServerRestoreStatus {
   status: ServerStatusSummary;
   last_completed_at: string | null;
   drill_age_days: number | null;
-  command: "rcp server restore";
+  command: string;
 }
 
 export interface ServerExecutionReadiness {
   machine: ServerStatusSummary;
   provider_checks: ServerStatusSummary;
   dependency_versions: string;
-  provider_command: "rcp server provider check";
+  provider_command: string;
 }
 
 export interface ServerStatus {
@@ -1969,6 +1969,8 @@ export interface Machine {
   os_account: string;
   provider_paths: Record<ProviderId, string>;
   compute: MachineComputeConfig | null;
+  /** Non-secret guidance every agent receives about this machine. */
+  access_hint: string;
   // Absent from a project cached by a version before split readiness.
   compute_probes?: Record<ComputeRoute, ComputeBackendProbe | null>;
 }
@@ -1995,19 +1997,12 @@ export interface ComputeBackendProbe {
   status_tone: "ready" | "error";
 }
 
-export interface ComputeConnection {
-  id: string;
-  name: string;
-  kind: "local" | "ssh";
-  ssh_target: string;
-  access_hint: string;
-}
-
 declare const OPAQUE_COMPUTE_PROBE_STATE: unique symbol;
 export type ComputeProbeState = {
   readonly [OPAQUE_COMPUTE_PROBE_STATE]: "ComputeProbeState";
 };
 
+/** Whether an agent on `execution_machine` reaches project machine `compute_id` (an alias). */
 export interface ComputeConnectionProbe {
   compute_id: string;
   execution_machine: string;
@@ -2137,7 +2132,6 @@ export interface AgentTaskRequest {
   invoked_provider_skill_names?: string[];
   resolved_provider_skills?: ProviderSkillReference[];
   resolved_skill_packages?: SkillReference[] | null;
-  active_compute_ids?: string[];
   [key: string]: unknown;
 }
 
@@ -3048,7 +3042,6 @@ export interface ChatMessage {
   graph_update: GraphUpdateResult | null;
   trigger: TaskTrigger;
   attachments: ChatAttachmentDescriptor[];
-  active_compute_ids: string[];
 }
 
 export interface ChatAttachmentDescriptor {
@@ -3182,7 +3175,7 @@ export interface ProjectSnapshot {
   default_auto_research_invocation_ceiling: number;
   repositories: Repository[];
   machines: Machine[];
-  compute_connections: ComputeConnection[];
+  /** Execution machine alias, then attached machine alias. */
   compute_status: Record<string, Record<string, ComputeConnectionProbe>>;
   primary_question?: GraphNode | null;
   last_refresh_at?: string | null;
@@ -3429,6 +3422,10 @@ export interface SpaceMachineCreateRequest {
   os_account: string;
 }
 
+/** Why a team server's first SSH login to a new machine failed (the create route's 422 code). */
+export type MachineLoginFailureCode =
+  "authentication_failed" | "host_key_unknown" | "host_key_changed" | "unreachable";
+
 export interface SpaceMachineUpdateRequest {
   name?: string;
   writable_paths?: string[];
@@ -3492,7 +3489,7 @@ export interface ProjectSettingsRequest {
   skill_defaults: SkillDefaults;
   machine_provider_paths?: Record<string, Record<ProviderId, string>>;
   machine_compute?: Record<string, MachineComputeConfig | null>;
-  compute_connections?: ComputeConnection[];
+  machine_access_hints?: Record<string, string>;
 }
 
 export interface ProviderPathResolution {
@@ -3621,6 +3618,8 @@ export interface ProviderSignInStatus {
 /** One `(provider, execution account)` pair every project on this server may launch on. */
 export interface ProviderLoginAccount extends ProviderLoginState {
   label: string;
+  /** Some visible project's agents launch on, or have work parked on, this account. */
+  agent_used: boolean;
   sign_in_methods: string[];
   /** False when the CLI's own login applies; RCP only says how to run it. */
   managed: boolean;

@@ -16,7 +16,6 @@ from rcp.config import (
     AGENT_EXECUTION_PROFILES,
     AgentExecutionProfile,
     AgentPermissions,
-    ComputeConnectionConfig,
     MachineConfig,
     Manifest,
 )
@@ -563,29 +562,44 @@ class BackupAppDataCapturePlan(_StrictBackupModel):
         )
 
 
+class BackupManifestMachineCompute(_StrictBackupModel):
+    job_manager: Literal["slurm"] | None = None
+    jobs_root: str = ""
+
+
 class BackupManifestMachine(_StrictBackupModel):
     alias: str
     host: str
     os_account: str
     provider_paths: dict[ProviderId, str]
+    # Added without a format bump, like `declared_skill_defaults`: omitted when
+    # empty, so an archive without them keeps its exact bytes and digest.
+    access_hint: str = Field(default="", exclude_if=lambda value: not value)
+    compute: BackupManifestMachineCompute | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def validate_machine(self) -> BackupManifestMachine:
         MachineConfig.model_validate(self.model_dump())
         return self
 
+    def matches(self, current: BackupManifestMachine) -> bool:
+        """Compare what this record states; an older one never recorded hint or compute."""
+        # An omitted field makes no claim, like a legacy receipt's skill defaults:
+        # an empty value and an older descriptor both leave the manifest's own.
+        omitted = {"access_hint", "compute"} - self.model_fields_set
+        return self.model_dump(exclude=omitted) == current.model_dump(exclude=omitted)
+
 
 class BackupManifestComputeConnection(_StrictBackupModel):
+    """A retired compute connection an older archive recorded; kept only for its digest."""
+
     id: str
     name: str
     kind: Literal["local", "ssh"]
     ssh_target: str = Field(max_length=255)
     access_hint: str
-
-    @model_validator(mode="after")
-    def validate_connection(self) -> BackupManifestComputeConnection:
-        ComputeConnectionConfig.model_validate(self.model_dump())
-        return self
 
 
 class BackupManifestRepository(_StrictBackupModel):
@@ -649,6 +663,8 @@ class BackupManifestConfiguration(_StrictBackupModel):
     )
     agent_profiles: tuple[BackupManifestAgentProfile, ...]
     sources: BackupManifestSources
+    # Retired with compute connections. An older archive keeps its exact payload and
+    # digest; restore, matching, and rendering ignore it, and new archives omit it.
     compute_connections: tuple[BackupManifestComputeConnection, ...] = Field(
         default=(), exclude_if=lambda value: not value
     )
@@ -683,9 +699,6 @@ class BackupManifestConfiguration(_StrictBackupModel):
             raise ValueError("backup manifest must carry every agent profile exactly once")
         if any(profile.run_on not in machines for profile in self.agent_profiles):
             raise ValueError("backup agent profile names an unknown machine")
-        compute_ids = [connection.id for connection in self.compute_connections]
-        if len(compute_ids) != len(set(compute_ids)):
-            raise ValueError("backup compute connection ids must be unique")
         return self
 
     @classmethod
@@ -698,6 +711,15 @@ class BackupManifestConfiguration(_StrictBackupModel):
                     host=machine.host,
                     os_account=machine.os_account,
                     provider_paths=dict(machine.provider_paths),
+                    access_hint=machine.access_hint,
+                    compute=(
+                        None
+                        if machine.compute is None
+                        else BackupManifestMachineCompute(
+                            job_manager=machine.compute.job_manager,
+                            jobs_root=machine.compute.jobs_root,
+                        )
+                    ),
                 )
                 for machine in manifest.machines
             ),
@@ -735,16 +757,6 @@ class BackupManifestConfiguration(_StrictBackupModel):
                 remote_claude_roots=tuple(manifest.sources.remote_claude_roots),
                 remote_codex_roots=tuple(manifest.sources.remote_codex_roots),
             ),
-            compute_connections=tuple(
-                BackupManifestComputeConnection(
-                    id=connection.id,
-                    name=connection.name,
-                    kind=connection.kind,
-                    ssh_target=connection.ssh_target,
-                    access_hint=connection.access_hint,
-                )
-                for connection in manifest.compute_connections
-            ),
         )
 
     @property
@@ -756,8 +768,13 @@ class BackupManifestConfiguration(_StrictBackupModel):
 
     def matches_configuration(self, current: BackupManifestConfiguration) -> bool:
         """Compare human configuration, retaining old receipts' exact integrity hashes."""
-        exclude = {"skill_defaults", "declared_skill_defaults"}
+        exclude = {"skill_defaults", "declared_skill_defaults", "compute_connections", "machines"}
         if self.model_dump(exclude=exclude) != current.model_dump(exclude=exclude):
+            return False
+        if len(self.machines) != len(current.machines) or not all(
+            recorded.matches(machine)
+            for recorded, machine in zip(self.machines, current.machines, strict=True)
+        ):
             return False
         if self.declared_skill_defaults is None:
             # A legacy receipt has only resolved values. Check every setting the
@@ -1372,6 +1389,7 @@ __all__ = [
     "BackupImportedProviderSourceCapture",
     "BackupManifestConfiguration",
     "BackupManifestComputeConnection",
+    "BackupManifestMachineCompute",
     "BackupProjectCapture",
     "BackupRecoveryMachine",
     "BackupRecoveryRepository",

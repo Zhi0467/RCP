@@ -27,7 +27,6 @@ const reasons: Record<string, { label: string; reason: string; fix?: string }> =
   system_libraries_missing: {
     label: "Libraries missing",
     reason: "Browser system libraries are missing.",
-    fix: "Run the installation command shown on the machine card.",
   },
   unsupported_platform: {
     label: "Unsupported platform",

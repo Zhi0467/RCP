@@ -26,9 +26,7 @@ import { questionIsOpen, questionTranscript } from "./questions";
 import { ExternalJobRow } from "../experiments/ExternalJobRow";
 import {
   TriangleAlert,
-  ChevronDown,
   ChevronUp,
-  Cpu,
   Download,
   ExternalLink,
   File,
@@ -134,11 +132,6 @@ import {
   type StagedArtifactTarget,
   type StagedChatAnnotation,
 } from "./chatInput";
-import {
-  computeProbePresentation,
-  latestPersistedComputeIds,
-  reconcileActiveComputeIds,
-} from "../experiments/compute";
 import {
   chooseRecordingFormat,
   liveDictationSpan,
@@ -400,10 +393,6 @@ export function NodeChat({
   onRefreshTask,
 }: Props) {
   const surface = node ? "node_chat" : "project_chat";
-  const computeConnections = useMemo(
-    () => project.compute_connections ?? [],
-    [project.compute_connections],
-  );
   const skillCatalog = project.skill_catalog ?? [];
   const skillDefaults = project.skill_defaults ?? { workflow_ids: [], skill_ids: [] };
   const relatedTasks = useMemo(
@@ -530,10 +519,6 @@ export function NodeChat({
     () => latestPersistedConversationMode(historyMessages, relatedTasks),
     [historyMessages, relatedTasks],
   );
-  const derivedComputeIds = useMemo(
-    () => latestPersistedComputeIds(historyMessages, relatedTasks, computeConnections),
-    [computeConnections, historyMessages, relatedTasks],
-  );
   const [message, setMessage] = useState(() => readStorage(draftKey) ?? "");
   const [annotations, setAnnotations] = useState<StagedChatAnnotation[]>(() =>
     readStagedChatAnnotations(annotationsKey),
@@ -557,12 +542,6 @@ export function NodeChat({
     const storedMode = parseConversationMode(readStorage(modeKey));
     return { value: storedMode ?? derivedMode, pinned: Boolean(storedMode) };
   });
-  const [computeState, setComputeState] = useState<{ ids: string[]; pinned: boolean }>(() => ({
-    ids: derivedComputeIds,
-    pinned: false,
-  }));
-  const computeIdentityRef = useRef(`${project.id}\0${chatId}`);
-  const [computeMenuOpen, setComputeMenuOpen] = useState(false);
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [browserOn, setBrowserOn] = useState(false);
   const optionCount = Number(browserOn) + Number(worktree.chosen);
@@ -777,7 +756,6 @@ export function NodeChat({
     item.status === "ready" && item.descriptor ? [item.descriptor] : [],
   );
   const attachmentsPreparing = attachments.some((item) => item.status === "preparing");
-  // Compute stays choosable in the + menu while files cannot be added.
   const attachDisabled =
     attachments.length + references.length >= MAX_CHAT_ATTACHMENTS ||
     attachmentsPreparing ||
@@ -834,21 +812,8 @@ export function NodeChat({
   }, [derivedMode]);
 
   useEffect(() => {
-    const identity = `${project.id}\0${chatId}`;
-    const reset = computeIdentityRef.current !== identity;
-    computeIdentityRef.current = identity;
-    setComputeState((current) => {
-      const next =
-        reset || !current.pinned
-          ? { ids: derivedComputeIds, pinned: false }
-          : { ...current, ids: reconcileActiveComputeIds(current.ids, computeConnections) };
-      return next.pinned === current.pinned && sameIds(next.ids, current.ids) ? current : next;
-    });
-    if (reset) {
-      setComputeMenuOpen(false);
-      setOptionsOpen(false);
-    }
-  }, [chatId, computeConnections, derivedComputeIds, project.id]);
+    setOptionsOpen(false);
+  }, [chatId, project.id]);
 
   useEffect(() => {
     skills.reset();
@@ -1986,7 +1951,6 @@ export function NodeChat({
       mode,
       config,
       scope,
-      computeState.ids,
       artifactContext,
       references.map((item) => item.selector),
       attachments.map((item) => `${item.localId}:${item.status}`),
@@ -2053,7 +2017,6 @@ export function NodeChat({
         chatId,
         sessionId,
         mode,
-        activeComputeIds: computeState.ids,
         artifactContext,
         references: references.map((item) => item.selector),
         attachmentSetId: readyAttachments.length ? attachmentSetId : null,
@@ -2146,7 +2109,6 @@ export function NodeChat({
         chatId,
         sessionId,
         mode: "work",
-        activeComputeIds: computeState.ids,
         worktreeIntegration: option.id,
       });
       selectMode("work");
@@ -3220,16 +3182,13 @@ export function NodeChat({
                   type="button"
                   aria-label="Add"
                   aria-expanded={addMenuOpen}
-                  disabled={attachDisabled && computeConnections.length === 0}
+                  disabled={attachDisabled}
                   onClick={() => {
                     setReferencePickerOpen(false);
                     setAddMenuOpen((open) => !open);
                   }}
                 >
                   <Plus size={16} />
-                  {computeState.ids.length ? (
-                    <strong className="chat-add-count">{computeState.ids.length}</strong>
-                  ) : null}
                 </button>
                 {addMenuOpen && (
                   <div className="chat-add-menu" role="menu">
@@ -3257,58 +3216,6 @@ export function NodeChat({
                       <FolderOpen size={14} />
                       From RCP…
                     </button>
-                    {computeConnections.length > 0 && (
-                      <>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          aria-expanded={computeMenuOpen}
-                          onClick={() => setComputeMenuOpen((open) => !open)}
-                        >
-                          <Cpu size={14} />
-                          Compute
-                          {computeState.ids.length ? (
-                            <strong>{computeState.ids.length}</strong>
-                          ) : null}
-                          {computeMenuOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                        </button>
-                        {computeMenuOpen ? (
-                          <fieldset className="chat-compute-menu" aria-label="Compute connections">
-                            {computeConnections.map((connection) => {
-                              const selected = computeState.ids.includes(connection.id);
-                              const probe =
-                                project.compute_status?.[config.run_on]?.[connection.id];
-                              const presentation = computeProbePresentation(probe);
-                              return (
-                                <label
-                                  aria-label={`${connection.name}, ${presentation.label}`}
-                                  key={connection.id}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={selected}
-                                    onChange={() => {
-                                      setComputeState((current) => ({
-                                        ids: selected
-                                          ? current.ids.filter((id) => id !== connection.id)
-                                          : [...current.ids, connection.id],
-                                        pinned: true,
-                                      }));
-                                      setSubmitError(null);
-                                    }}
-                                  />
-                                  <span
-                                    className={`chat-compute-dot ${presentation.tone}`}
-                                    aria-hidden="true"
-                                  />
-                                  <strong>{connection.name}</strong>
-                                </label>
-                              );
-                            })}
-                          </fieldset>
-                        ) : null}
-                      </>
-                    )}
                   </div>
                 )}
                 {referencePickerOpen && (
@@ -4068,8 +3975,4 @@ function withoutMapKey(map: Map<string, string>, key: string): Map<string, strin
   const next = new Map(map);
   next.delete(key);
   return next;
-}
-
-function sameIds(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((id, index) => id === right[index]);
 }

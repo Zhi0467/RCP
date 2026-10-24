@@ -17,8 +17,10 @@ or SSH-session fallback exists.
 Each job manager owns instructions and readiness. Slurm comes first for compute;
 the helper also owns dashboards and other services. Agents choose; RCP never
 reroutes scheduler submissions. RCP supplies no scheduler resource arguments,
-users or associations. The route belongs to the turn's execution machine, not
-an attached compute connection.
+users or associations. A job manager belongs to its machine: the agent's list of
+project machines marks each machine's manager and states each manager's rules
+once, so a reachable cluster's Slurm reads the same as the agent's own. The
+helper belongs to the turn's execution machine only.
 
 **Why:** A scheduler adds compute rules without removing OS ownership for
 non-compute services. Keeping both avoids consuming scheduler slots for a

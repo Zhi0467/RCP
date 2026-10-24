@@ -131,7 +131,6 @@ export type SettingsResource = Pick<
   | "default_auto_research_invocation_ceiling"
   | "repositories"
   | "machines"
-  | "compute_connections"
   | "paper_coach"
   | "skill_catalog"
   | "skill_defaults"
@@ -169,7 +168,6 @@ export function settingsProfile(projectId: string): ResourceProfile<SettingsReso
         default_auto_research_invocation_ceiling: project.default_auto_research_invocation_ceiling,
         repositories: project.repositories,
         machines: project.machines,
-        compute_connections: project.compute_connections,
         paper_coach: project.paper_coach,
         skill_catalog: project.skill_catalog,
         skill_defaults: project.skill_defaults,

@@ -10,16 +10,19 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from rcp.compute_jobs.text import safe_compute_diagnostic
-from rcp.config import AGENT_EXECUTION_PROFILES, ComputeConnectionConfig, Manifest
-from rcp.limits import ACTIVE_COMPUTE_ID_MAX_COUNT
+from rcp.config import (
+    AGENT_EXECUTION_PROFILES,
+    Manifest,
+    ResolvedComputeContext,
+    ResolvedComputeProfile,
+)
+from rcp.operator_commands import operator_route
 from rcp.transport.remote_compute_probe import probe_connection
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import _remote_script
 
-ComputeProbeCacheKey = tuple[
-    tuple[tuple[str, str], ...],
-    tuple[tuple[str, str, str, str, str], ...],
-]
+#: Each execution machine with the routes it probes; hints never change reachability.
+ComputeProbeCacheKey = tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...]
 
 
 class ComputeConnectionProbe(BaseModel):
@@ -53,10 +56,11 @@ def _safe_probe_diagnostic(value: object) -> str:
 
 
 def _probe_one(
-    connection: ComputeConnectionConfig,
+    connection: ResolvedComputeProfile,
     *,
     execution_machine: str,
     execution_host: str,
+    space_kind: str,
     runner: Callable[..., subprocess.CompletedProcess[str]],
 ) -> ComputeConnectionProbe:
     if execution_host:
@@ -122,18 +126,20 @@ def _probe_one(
     )
     diagnostic = _safe_probe_diagnostic(payload.get("diagnostic"))
     required_action = None
+    # The check runs as the account RCP probes with, typed from the human's own prompt.
+    check = operator_route(space_kind, execution_host).command(["ssh", connection.ssh_target])
     if state == "authentication_failed":
         location = f'agent machine "{execution_machine}"'
         if execution_host:
             location += f" ({execution_host})"
         required_action = (
-            f"Add SSH credentials for {connection.name} on {location}, then probe again. "
-            "RCP does not collect keys or passwords."
+            f"Add SSH credentials for {connection.name} on {location}, check with `{check}`, "
+            "then probe again. RCP does not collect keys or passwords."
         )
     elif state == "host_key_failed":
         required_action = (
             f"Verify and add the SSH host key for {connection.name} on agent machine "
-            f'"{execution_machine}", then probe again.'
+            f'"{execution_machine}" by running `{check}`, then probe again.'
         )
     status_label, status_tone = _PROBE_PRESENTATION[state]
     return ComputeConnectionProbe(
@@ -148,38 +154,50 @@ def _probe_one(
     )
 
 
-def probe_compute_connections(
-    manifest: Manifest,
-    *,
-    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-) -> dict[str, dict[str, dict[str, object]]]:
-    """Probe each resource from every machine currently used by an agent profile."""
+def _probe_targets(manifest: Manifest) -> dict[str, list[ResolvedComputeProfile]]:
+    """Every other project machine an agent profile's machine can route to."""
 
     execution_aliases = sorted(
         {manifest.agent_profile(profile).run_on for profile in AGENT_EXECUTION_PROFILES}
     )
-    targets = [
-        (alias, connection)
+    return {
+        alias: [
+            profile
+            for profile in machine_compute_context(manifest, execution_machine=alias).active
+            if profile.kind == "ssh"
+        ]
         for alias in execution_aliases
-        for connection in manifest.compute_connections
-    ]
-    result: dict[str, dict[str, dict[str, object]]] = {alias: {} for alias in execution_aliases}
+    }
+
+
+def probe_compute_connections(
+    manifest: Manifest,
+    *,
+    space_kind: str,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> dict[str, dict[str, dict[str, object]]]:
+    """Probe every other project machine from each machine an agent profile runs on."""
+
+    by_execution = _probe_targets(manifest)
+    targets = [(alias, target) for alias, profiles in by_execution.items() for target in profiles]
+    result: dict[str, dict[str, dict[str, object]]] = {alias: {} for alias in by_execution}
     if not targets:
         return result
     with ThreadPoolExecutor(max_workers=min(len(targets), 8)) as executor:
         futures = [
             (
                 alias,
-                connection.id,
+                target.id,
                 executor.submit(
                     _probe_one,
-                    connection,
+                    target,
                     execution_machine=alias,
                     execution_host=manifest.machine_map[alias].host,
+                    space_kind=space_kind,
                     runner=runner,
                 ),
             )
-            for alias, connection in targets
+            for alias, target in targets
         ]
         for alias, compute_id, future in futures:
             result[alias][compute_id] = future.result().model_dump(mode="json")
@@ -187,33 +205,59 @@ def probe_compute_connections(
 
 
 def compute_probe_cache_key(manifest: Manifest) -> ComputeProbeCacheKey:
-    execution_aliases = sorted(
-        {manifest.agent_profile(profile).run_on for profile in AGENT_EXECUTION_PROFILES}
-    )
-    machines = tuple((alias, manifest.machine_map[alias].host) for alias in execution_aliases)
-    connections = tuple(
+    return tuple(
         (
-            connection.id,
-            connection.name,
-            connection.kind,
-            connection.ssh_target,
-            connection.access_hint,
+            alias,
+            manifest.machine_map[alias].host,
+            tuple((target.id, target.ssh_target) for target in targets),
         )
-        for connection in manifest.compute_connections
+        for alias, targets in _probe_targets(manifest).items()
     )
-    return machines, connections
 
 
-def selected_compute_connections(
+def machine_compute_context(
     manifest: Manifest,
-    ids: list[str],
-) -> list[ComputeConnectionConfig]:
-    if len(ids) > ACTIVE_COMPUTE_ID_MAX_COUNT:
-        raise ValueError(
-            f"active compute connections exceed the limit of {ACTIVE_COMPUTE_ID_MAX_COUNT}"
-        )
-    by_id = {connection.id: connection for connection in manifest.compute_connections}
-    unknown = sorted(set(ids) - set(by_id))
-    if unknown:
-        raise ValueError(f"unknown compute connections: {unknown}")
-    return [by_id[compute_id] for compute_id in ids]
+    *,
+    execution_machine: str,
+) -> ResolvedComputeContext:
+    """Every project machine as seen from the agent's own machine.
+
+    The machine the agent runs on is local; any other machine is reached over its
+    SSH route from there. A host-less (server-local) machine has no route from an
+    agent running elsewhere, so that agent is not told about it.
+    """
+
+    machines = manifest.machine_map
+    if execution_machine not in machines:
+        raise ValueError(f"unknown execution machine: {execution_machine}")
+    profiles = []
+    for machine in manifest.machines:
+        hint = machine.access_hint
+        manager = (machine.compute.job_manager if machine.compute else None) or ""
+        if machine.alias == execution_machine:
+            profiles.append(
+                ResolvedComputeProfile(
+                    id=machine.alias,
+                    name=machine.alias,
+                    kind="local",
+                    access_hint=hint,
+                    job_manager=manager,
+                )
+            )
+        elif machine.host:
+            route = (
+                f"{machine.os_account}@{machine.host}"
+                if machine.os_account and "@" not in machine.host
+                else machine.host
+            )
+            profiles.append(
+                ResolvedComputeProfile(
+                    id=machine.alias,
+                    name=machine.alias,
+                    kind="ssh",
+                    ssh_target=route,
+                    access_hint=hint,
+                    job_manager=manager,
+                )
+            )
+    return ResolvedComputeContext(active=tuple(profiles))

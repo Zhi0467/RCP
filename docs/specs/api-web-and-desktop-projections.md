@@ -517,7 +517,10 @@ read from storage even when the graph snapshot is cached. Settings updates
 accept `machine_compute`, a partial alias-to-`MachineComputeConfig` map; null
 removes a block, omission preserves it. Validation and TOML persistence belong
 to the machine configuration owner. A changed block invalidates its stored
-probes and schedules a fresh background check of that machine.
+probes and schedules a fresh background check of that machine. Entries also
+expose `access_hint`, updated through `machine_access_hints`, a partial
+alias-to-string map where omission preserves and an empty string clears; it
+lives on the machine, survives a compute reset, and invalidates no probe.
 `POST /api/projects/{project_id}/machines/{machine_alias}/compute/check` uses
 project write admission, re-probes every route that machine offers, and
 returns both route slots.
@@ -1243,9 +1246,14 @@ wrap-up means no report was needed; sign-in-blocked reports remain wrapping up.
 
 `GET /api/providers/logins` lists machine accounts, dependent project machines,
 secret-free credential summaries, labels, supported sign-in methods, and active
-sign-ins. Project readiness includes its relevant `provider_logins`. Signed-out
-accounts get one notice on Runs/landing with provider, machine, time, bounded
-reason, Verify sign-in, and a Settings link. Space Settings offers only the
+sign-ins. The project snapshot's `provider_logins` lists only accounts an agent
+uses: each execution profile's provider on its `run_on` machine, plus any
+account holding this project's parked work (queued tasks, provider-auth
+recoveries, the current failed Experiment turn, undelivered watcher groups). A
+machine no profile runs on raises no notice. Signed-out accounts get one notice
+on Runs/landing with provider, machine, time, bounded reason, Verify sign-in, a
+Settings link, and an icon-only dismiss that hides that sign-out on this device
+until the account signs out again. Space Settings offers only the
 backend's methods: device-code flow with polling, one-shot token entry verified
 by a real request, Verify, and Sign out. Verify is hidden while a token is unsent
 or a token-only account has none saved. Provider names never select UI behavior.
@@ -1480,7 +1488,7 @@ server status (team spaces), machine cards with their names (renamed in place) a
 writable paths, provider logins, and the
 personal space's clear-all-caches. Project Settings owns repositories, this
 project's machine cards (provider paths, compute, and the same writable-path
-record), execution profiles, compute connections, packages, caches, project
+record and access hint), execution profiles, packages, caches, project
 membership, and prospective episode limits, not ontology authoring. Display
 preferences live in the identity menu.
 
@@ -1496,7 +1504,13 @@ discovery of a personal checkout's Git remotes.
 
 `/api/space/machines` lists, creates, renames, and deletes machine cards; a card
 in use by any project, or whose use cannot be established, cannot be deleted,
-and host and account never change. A `PATCH` of `writable_paths` validates each
+and host and account never change. A team create with a blank account fills it
+from the login check or refuses with 422 and a `detail.code` of
+`authentication_failed`, `host_key_unknown` (with the fingerprint),
+`host_key_changed`, or `unreachable`. `POST /api/space/machines/host-key` takes
+`{host, fingerprint}`, rescans, and appends the key to the route's first
+`UserKnownHostsFile` only when the fingerprint still matches and no key for that
+name is recorded. A `PATCH` of `writable_paths` validates each
 path on its machine: absolute, an existing directory, no `:` or `$` or control
 characters, not `/`, and not inside RCP's own storage.
 A `PATCH` of `provider_autocompact` merges the given providers into the card's
@@ -1521,9 +1535,9 @@ explicit, bounded install. `POST /api/projects/{id}/machines` appends a machine
 alias to the project manifest through the state workspace. Existing projects
 fill the machine list at startup and on registration. Project
 snapshots expose non-secret compute metadata; readiness exposes a backend-owned
-execution-machine/connection matrix with distinct unreachable, authentication,
+execution-machine/target-machine matrix with distinct unreachable, authentication,
 and host-key states. Normal readiness reads reuse the last result; only an
-explicit refresh runs network probes, and a connection or execution-binding
+explicit refresh runs network probes, and a machine route or execution-binding
 change invalidates the cached matrix. Settings writes never accept private keys
 or passwords.
 History and task detail own
@@ -1542,7 +1556,9 @@ installed machine-tool readiness, and private provider-check availability. The
 browser formats timestamps, byte counts, and commit abbreviations only; it does
 not reconstruct operational state from raw status vocabularies. An unsafe
 concrete doctor, backup-receipt, or restore read fails visibly instead of
-becoming an empty or healthy panel.
+becoming an empty or healthy panel. Each `rcp server` command it shows is the
+operator's own line (`rcp.operator_commands`): `sudo` for root work and
+`sudo -u <service account> -H` for the rest.
 
 That route is GET-only and available only to an authenticated team member.
 `?refresh=true`, sent by the panel's refresh button, only shortens the release

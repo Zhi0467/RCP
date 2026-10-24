@@ -49,7 +49,6 @@ from rcp.agents.prompts import (
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.background import AgentTaskExecution, persisted_request_roundtrips
-from rcp.compute_jobs.job_managers import JOB_MANAGERS
 from rcp.config import AgentSurface, Manifest
 from rcp.conversation_worktrees import conversation_worktree_context
 from rcp.core.authority import AgentProfile
@@ -447,18 +446,13 @@ def _work_launch_values(turn: WorkTurn) -> dict[str, object]:
     """What a Work turn resolves for itself: its write roots and its launch facts."""
 
     commands = turn.compute_commands
-    machine = turn.service.manifest.machine_map[turn.write_scope.execution_machine]
-    manager = JOB_MANAGERS.get(machine.compute.job_manager) if machine.compute else None
     helper = commands.helper_backend if commands is not None else None
-    values: dict[str, object] = {
+    return {
         "allowed_verbs": sorted(_work_turn_command_handler(turn).allowed_verbs),
         "write_roots": list(turn.write_scope.writable_roots),
         "denied_paths": list(turn.write_scope.protected_write_paths),
         "helper_owner": helper.id if helper is not None else None,
     }
-    if manager is not None:
-        values["job_manager_rules"] = manager.instructions
-    return values
 
 
 def _prepare_work_observation(turn: WorkTurn, previous_head: GraphHeadRef | None = None) -> None:
@@ -501,9 +495,7 @@ def _work_prompt_values(turn: WorkTurn, staged: _StagedWorkInputs) -> dict[str, 
         turn.context,
         turn.request,
         repositories=staged.repositories,
-        compute_profiles=turn.service.compute_prompt_profiles(
-            turn.request.resolved_compute_context
-        ),
+        compute_profiles=turn.compute_profiles,
         skill_pointers=staged.skill_pointers,
         experiment_watcher_resources=staged.experiment_resource_pointers,
         patch=turn.patch_inputs.prompt_values(),
@@ -525,6 +517,8 @@ def _resolve_work_execution(
         reasoning=request.reasoning,
         run_on=request.run_on,
     )
+    # Every launch, including Resume, Retry, recovery, and wakes, tells the agent
+    # the project's current machines as seen from where it now runs.
     request = _pinned_to_profile(request, profile)
     execution_machine = service.manifest.machine_map[profile.run_on]
     # Read once per turn: the ask hold, the prompt, and the provider all use this value.
@@ -535,6 +529,7 @@ def _resolve_work_execution(
     )
     return _ResolvedWorkExecution(
         request=request,
+        compute_profiles=service.machine_prompt_profiles(profile.run_on),
         execution_machine_alias=execution_machine.alias,
         execution_host=execution_machine.host,
         provider_binary=execution_machine.provider_paths.get(profile.provider),
@@ -868,7 +863,7 @@ def _work_contract_text(
     """
 
     focused_node_id = str(turn.context.node["id"]) if turn.context.node else None
-    compute_profiles = turn.service.compute_prompt_profiles(turn.request.resolved_compute_context)
+    compute_profiles = turn.compute_profiles
     if human_request_path is None:
         assert turn.request.message is not None
         human_request_path = _stage_or_reuse_task_input(
@@ -1124,9 +1119,7 @@ def _work_chat_master_context(
         execution_host=turn.execution_host,
         experiment_watcher_resources=staged.experiment_resource_pointers,
         skill_pointers=staged.skill_pointers,
-        compute_connections=turn.service.compute_prompt_profiles(
-            turn.request.resolved_compute_context
-        ),
+        compute_connections=turn.compute_profiles,
         write_scope=turn.write_scope,
         execution_instructions=_work_execution_instructions(turn, COMMAND_CLIENT),
         auto_research_child_boundary=auto_research_child_boundary,
@@ -2901,6 +2894,7 @@ async def _stream_work_graph_repair(
         assert validator_lifecycle is not None
         outcome = _ProviderOutcome(session_id=request.session_id)
         turn = WorkTurn(
+            compute_profiles=service.machine_prompt_profiles(profile.run_on),
             graph_read_scope=graph_read_scope,
             data_dir=data_dir,
             service=service,

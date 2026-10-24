@@ -619,7 +619,10 @@ async def stream_discuss_run(
     except ValueError as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
         return
+    # Every launch, including Resume, Retry, and recovery, tells the agent the
+    # project's current machines as seen from where it now runs.
     request = _pinned_to_profile(request, profile)
+    compute_profiles = service.machine_prompt_profiles(profile.run_on)
     local_stage: Path | None = None
     execution_machine = service.manifest.machine_map[profile.run_on]
     execution_host = execution_machine.host
@@ -857,7 +860,6 @@ async def stream_discuss_run(
                 {"alias": item.alias, "host": item.host, "path": item.path}
                 for item in context.repositories
             ]
-            compute_profiles = service.compute_prompt_profiles(request.resolved_compute_context)
             graph_read_scope = (
                 read_scope
                 if request.artifact_edit is None or not request.artifact_edit.origin_bound

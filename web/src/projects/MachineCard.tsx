@@ -1,6 +1,18 @@
-import { Check, FolderPlus, LoaderCircle, Pencil, Trash2, X } from "lucide-react";
+import {
+  Check,
+  FolderPlus,
+  KeyRound,
+  LoaderCircle,
+  Pencil,
+  RotateCw,
+  ShieldAlert,
+  ShieldQuestion,
+  Trash2,
+  WifiOff,
+  X,
+} from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
-import { createSpaceMachine, updateSpaceMachine } from "../core/api";
+import { ApiError, createSpaceMachine, trustMachineHostKey, updateSpaceMachine } from "../core/api";
 import { errorMessage } from "../core/errors";
 import {
   createPathEditor,
@@ -8,11 +20,16 @@ import {
   type MachineSave,
   type WritablePathEdit,
 } from "./spaceMachines";
-import type { SpaceMachine, SpaceMachineCreateRequest } from "../core/types";
+import type {
+  MachineLoginFailureCode,
+  SpaceMachine,
+  SpaceMachineCreateRequest,
+} from "../core/types";
 import { MachineProviderSettingRow } from "./MachineProviderSettingRow";
 import { MachineBrowserRow } from "./MachineBrowserRow";
 import { MachineDependenciesRow } from "./MachineDependenciesRow";
 import { PathPicker } from "./PathPicker";
+import { Fold } from "../core/Fold";
 
 interface Props {
   title: string;
@@ -110,34 +127,42 @@ export function MachineCard({
           machineId={record.machine_id}
         />
       )}
-      {record?.autocompact_providers.map((option) => (
-        <MachineProviderSettingRow
-          key={`${record.machine_id}:${option.provider}:autocompact`}
-          record={record}
-          provider={option.provider}
-          setting="provider_autocompact"
-          label={`${option.label} auto-compact`}
-          placeholder="CLI default"
-          hint={`Accepts ${option.hint}. Empty keeps the CLI's default.`}
-          writesDisabled={writesDisabled}
-          save={save}
-          onRecordChange={onRecordChange}
-        />
-      ))}
-      {record?.shell_timeout_providers.map((option) => (
-        <MachineProviderSettingRow
-          key={`${record.machine_id}:${option.provider}:shell-timeout`}
-          record={record}
-          provider={option.provider}
-          setting="provider_shell_timeout"
-          label={`${option.label} shell timeout (minutes)`}
-          placeholder={String(option.default_minutes)}
-          hint="Whole minutes, 2–120. Empty keeps the provider default."
-          writesDisabled={writesDisabled}
-          save={save}
-          onRecordChange={onRecordChange}
-        />
-      ))}
+      {record && (
+        <Fold
+          className="machine-writable-paths"
+          title="Provider limits"
+          data-machine-fold="provider-limits"
+        >
+          {record.autocompact_providers.map((option) => (
+            <MachineProviderSettingRow
+              key={`${record.machine_id}:${option.provider}:autocompact`}
+              record={record}
+              provider={option.provider}
+              setting="provider_autocompact"
+              label={`${option.label} auto-compact`}
+              placeholder="CLI default"
+              hint={`Accepts ${option.hint}. Empty keeps the CLI's default.`}
+              writesDisabled={writesDisabled}
+              save={save}
+              onRecordChange={onRecordChange}
+            />
+          ))}
+          {record.shell_timeout_providers.map((option) => (
+            <MachineProviderSettingRow
+              key={`${record.machine_id}:${option.provider}:shell-timeout`}
+              record={record}
+              provider={option.provider}
+              setting="provider_shell_timeout"
+              label={`${option.label} shell timeout (minutes)`}
+              placeholder={String(option.default_minutes)}
+              hint="Whole minutes, 2–120. Empty keeps the provider default."
+              writesDisabled={writesDisabled}
+              save={save}
+              onRecordChange={onRecordChange}
+            />
+          ))}
+        </Fold>
+      )}
       <WritablePaths
         record={record}
         level={level}
@@ -197,9 +222,13 @@ export function WritablePaths({
   };
 
   return (
-    <section className="machine-writable-paths" data-machine-writable-paths={level}>
+    <Fold
+      className="machine-writable-paths"
+      title="Writable paths"
+      status={record?.writable_paths.length ?? 0}
+      data-machine-writable-paths={level}
+    >
       <header>
-        <strong>Writable paths</strong>
         {record && (
           <button
             className="button secondary compact"
@@ -259,7 +288,7 @@ export function WritablePaths({
           }}
         />
       )}
-    </section>
+    </Fold>
   );
 }
 
@@ -293,9 +322,23 @@ export function HiddenFolders({
     }
   };
   return (
-    <section className="machine-writable-paths" data-machine-hidden-folders="">
+    <Fold
+      className="machine-writable-paths"
+      title="Hidden folders"
+      status={
+        <>
+          {(record.hidden_folders ?? []).length}
+          {status && status.status !== "enforced" && (
+            <span data-hidden-read-status="unhidden" data-tone="bad">
+              {" "}
+              Unhidden
+            </span>
+          )}
+        </>
+      }
+      data-machine-hidden-folders=""
+    >
       <header>
-        <strong>Hidden folders</strong>
         <button
           type="button"
           className="button secondary compact"
@@ -367,7 +410,7 @@ export function HiddenFolders({
           }}
         />
       )}
-    </section>
+    </Fold>
   );
 }
 
@@ -470,19 +513,44 @@ function MachineName({
   );
 }
 
+const LOGIN_FAILURES: Record<MachineLoginFailureCode, { label: string; icon: typeof KeyRound }> = {
+  authentication_failed: { label: "SSH login refused", icon: KeyRound },
+  host_key_unknown: { label: "Unknown host key", icon: ShieldQuestion },
+  host_key_changed: { label: "Host key changed", icon: ShieldAlert },
+  unreachable: { label: "Machine unreachable", icon: WifiOff },
+};
+
+function loginFailure(
+  failure: unknown,
+): { code: MachineLoginFailureCode; fingerprint: string | null } | null {
+  if (
+    !(failure instanceof ApiError) ||
+    !failure.code ||
+    !Object.hasOwn(LOGIN_FAILURES, failure.code)
+  )
+    return null;
+  const fingerprint = failure.detail?.fingerprint;
+  return {
+    code: failure.code as MachineLoginFailureCode,
+    fingerprint: typeof fingerprint === "string" ? fingerprint : null,
+  };
+}
+
 export function NewMachineForm({
   writesDisabled = false,
   accountRequired = false,
   onCreated,
   onCancel,
   create = createSpaceMachine,
+  trust = trustMachineHostKey,
 }: {
   writesDisabled?: boolean;
-  /** Team spaces back up each machine's account, so the server requires it. */
+  /** Team spaces record each machine's account; a blank one is filled from the server's login. */
   accountRequired?: boolean;
   onCreated: (machine: SpaceMachine) => void;
   onCancel: () => void;
   create?: (request: SpaceMachineCreateRequest) => Promise<SpaceMachine>;
+  trust?: (host: string, fingerprint: string) => Promise<unknown>;
 }) {
   const [draft, setDraft] = useState<SpaceMachineCreateRequest>({
     name: "",
@@ -491,12 +559,35 @@ export function NewMachineForm({
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const valid =
-    draft.name.trim() !== "" &&
-    draft.host.trim() !== "" &&
-    (!accountRequired || draft.os_account.trim() !== "");
+  const [failure, setFailure] = useState<ReturnType<typeof loginFailure>>(null);
+  const valid = draft.name.trim() !== "" && draft.host.trim() !== "";
+  const submit = async (before?: () => Promise<unknown>) => {
+    setSaving(true);
+    setError(null);
+    try {
+      await before?.();
+      setFailure(null);
+      onCreated(
+        await create({
+          name: draft.name.trim(),
+          host: draft.host.trim(),
+          os_account: draft.os_account.trim(),
+        }),
+      );
+    } catch (caught) {
+      const login = loginFailure(caught);
+      if (login) setFailure(login);
+      else setError(errorMessage(caught));
+    } finally {
+      setSaving(false);
+    }
+  };
+  const shown = failure ? LOGIN_FAILURES[failure.code] : null;
+  const FailureIcon = shown?.icon;
+  // Trust is the host-key recovery; any other failure turns Create into one retry.
+  const retrying = failure !== null && failure.code !== "host_key_unknown";
   return (
-    <div className="new-machine-form" data-new-machine-form="">
+    <div className="new-machine-form" data-new-machine-form="" data-login-failure={failure?.code}>
       <label>
         <span>Name</span>
         <input
@@ -511,45 +602,55 @@ export function NewMachineForm({
         <input
           value={draft.host}
           placeholder="gpu.example.edu"
-          onChange={(event) => setDraft({ ...draft, host: event.target.value })}
+          aria-invalid={failure ? true : undefined}
+          onChange={(event) => {
+            setFailure(null);
+            setDraft({ ...draft, host: event.target.value });
+          }}
         />
       </label>
       <label>
         <span>Account</span>
         <input
           value={draft.os_account}
-          placeholder={accountRequired ? "Required" : "Optional"}
+          placeholder={accountRequired ? "From login" : "Optional"}
           onChange={(event) => setDraft({ ...draft, os_account: event.target.value })}
         />
       </label>
+      {failure?.code === "host_key_unknown" && failure.fingerprint && FailureIcon && shown && (
+        <div className="new-machine-login" role="alert" aria-label={shown.label}>
+          <FailureIcon size={14} aria-hidden="true" />
+          <code data-host-key-fingerprint="">{failure.fingerprint}</code>
+          <button
+            className="button secondary compact"
+            type="button"
+            data-machine-action="trust-host-key"
+            disabled={writesDisabled || saving}
+            onClick={() => {
+              const { fingerprint } = failure;
+              void submit(() => trust(draft.host.trim(), fingerprint!));
+            }}
+          >
+            Trust
+          </button>
+        </div>
+      )}
       <div className="new-machine-actions">
         <button
-          className="button primary compact"
+          className={retrying ? "icon-button primary" : "button primary compact"}
           type="button"
-          data-machine-action="create"
+          data-machine-action={retrying ? "retry-login" : "create"}
+          title={retrying ? shown?.label : undefined}
+          aria-label={retrying ? `${shown?.label}. Try again` : undefined}
           disabled={writesDisabled || saving || !valid}
-          onClick={() =>
-            void (async () => {
-              setSaving(true);
-              setError(null);
-              try {
-                onCreated(
-                  await create({
-                    name: draft.name.trim(),
-                    host: draft.host.trim(),
-                    os_account: draft.os_account.trim(),
-                  }),
-                );
-              } catch (failure) {
-                setError(errorMessage(failure));
-              } finally {
-                setSaving(false);
-              }
-            })()
-          }
+          onClick={() => void submit()}
         >
-          {saving ? <LoaderCircle className="spin" size={14} /> : null}
-          Create machine
+          {saving ? (
+            <LoaderCircle className="spin" size={14} />
+          ) : retrying ? (
+            <RotateCw size={14} aria-hidden="true" />
+          ) : null}
+          {retrying ? null : "Create machine"}
         </button>
         <button className="button secondary compact" type="button" onClick={onCancel}>
           Cancel

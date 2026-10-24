@@ -3766,14 +3766,6 @@
                     "endColumn": 45,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 62,
-                    "endColumn": 88,
-                    "lineCount": 1
-                }
             }
         ],
         "./src/rcp/runs/questions.py": [
@@ -4088,14 +4080,6 @@
                     "endColumn": 51,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 35,
-                    "endColumn": 62,
-                    "lineCount": 1
-                }
             }
         ],
         "./src/rcp/runs/tasks/discuss.py": [
@@ -4202,14 +4186,6 @@
                 "range": {
                     "startColumn": 24,
                     "endColumn": 51,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 35,
-                    "endColumn": 62,
                     "lineCount": 1
                 }
             },
@@ -4568,14 +4544,6 @@
                 "range": {
                     "startColumn": 57,
                     "endColumn": 69,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 31,
-                    "endColumn": 58,
                     "lineCount": 1
                 }
             },

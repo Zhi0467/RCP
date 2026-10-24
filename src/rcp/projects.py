@@ -127,7 +127,6 @@ _DISPLAY_SNAPSHOT_FIELDS = {
     "default_auto_research_invocation_ceiling",
     "repositories",
     "machines",
-    "compute_connections",
     "compute_status",
     "primary_question",
     "last_refresh_at",
@@ -561,21 +560,15 @@ def _render_restored_manifest(
                 if provider in item.provider_paths:
                     paths.append(provider, item.provider_paths[provider])
             machine.add("provider_paths", paths)
+        if item.access_hint:
+            machine.add("access_hint", item.access_hint)
+        if item.compute is not None:
+            compute = tomlkit.table()
+            for key, value in item.compute.model_dump(exclude_defaults=True).items():
+                compute.add(key, value)
+            machine.add("compute", compute)
         machines.append(machine)
     document.add("machines", machines)
-    if configuration.compute_connections:
-        connections = tomlkit.aot()
-        for item in configuration.compute_connections:
-            connection = tomlkit.table()
-            connection.add("id", item.id)
-            connection.add("name", item.name)
-            connection.add("kind", item.kind)
-            if item.ssh_target:
-                connection.add("ssh_target", item.ssh_target)
-            if item.access_hint:
-                connection.add("access_hint", item.access_hint)
-            connections.append(connection)
-        document.add("compute_connections", connections)
     repositories = tomlkit.aot()
     for item in configuration.repositories:
         repository = tomlkit.table()
@@ -742,7 +735,6 @@ _SETTINGS_SIGNAL_KEYS = (
     "skill_defaults",
     "repositories",
     "machines",
-    "compute_connections",
     "provider_readiness",
 )
 # Lifecycle fields only: progress inside a running episode must not make every
@@ -1890,7 +1882,7 @@ class ProjectCatalog:
             generation = self._compute_probe_generations.get(project_id, 0)
             lock = self._compute_probe_locks.setdefault(project_id, threading.Lock())
         with lock:
-            status = probe_compute_connections(manifest)
+            status = probe_compute_connections(manifest, space_kind=self.store.space_kind)
             with self._services_lock:
                 if self._compute_probe_generations.get(project_id, 0) == generation:
                     self._compute_status_cache[project_id] = (key, status)
@@ -2651,12 +2643,7 @@ class ProjectCatalog:
                 # Fail closed even if manifest publication fails partway through.
                 self.store.delete_compute_backend_probe(project_id, alias)
         service.update_settings(request)
-        if compute_probe_cache_key(service.manifest) != prior_compute_key:
-            with self._services_lock:
-                self._compute_status_cache.pop(project_id, None)
-                self._compute_probe_generations[project_id] = (
-                    self._compute_probe_generations.get(project_id, 0) + 1
-                )
+        self._retire_compute_status(project_id, prior_compute_key, service.manifest)
         self._persist_bootstrap_locator(project_id, service)
         snapshot = _snapshot_payload(service.project_snapshot())
         self._stamp_snapshot_identity(snapshot, project_id)
@@ -2711,7 +2698,10 @@ class ProjectCatalog:
         generation = self.reserve_cached_snapshot_generation(project_id)
         service = self.open(project_id)
         project_id = self._canonical_project_id(project_id)
+        prior_compute_key = compute_probe_cache_key(service.manifest)
         service.add_machine(alias, card.host, card.os_account)
+        # A new machine is a new probe target for every agent machine.
+        self._retire_compute_status(project_id, prior_compute_key, service.manifest)
         self._persist_bootstrap_locator(project_id, service)
         record_space_machines(self.store, service.manifest)
         snapshot = _snapshot_payload(service.project_snapshot())
@@ -2724,6 +2714,19 @@ class ProjectCatalog:
             patch_log_head=service.history.workspace.cached_patch_log_head(),
         )
         return _ProjectSnapshotDraft(snapshot)
+
+    def _retire_compute_status(
+        self, project_id: str, prior_key: ComputeProbeCacheKey, manifest: Manifest
+    ) -> None:
+        """Drop the probe matrix, and fence any refresh in flight, once its routes changed."""
+
+        if compute_probe_cache_key(manifest) == prior_key:
+            return
+        with self._services_lock:
+            self._compute_status_cache.pop(project_id, None)
+            self._compute_probe_generations[project_id] = (
+                self._compute_probe_generations.get(project_id, 0) + 1
+            )
 
     def _persist_bootstrap_locator(
         self,
@@ -3414,7 +3417,6 @@ def _valid_display_snapshot(
             "default_run_truth_scope",
             "repositories",
             "machines",
-            "compute_connections",
             "validation_messages",
         )
     ):

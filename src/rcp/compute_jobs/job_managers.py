@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from rcp.compute_jobs.models import ComputeBackendProbe
@@ -35,3 +35,13 @@ JOB_MANAGERS = {
         ),
     )
 }
+
+
+def job_manager_rules(managers: Iterable[str]) -> list[str]:
+    """One rule line for each distinct named job manager, first named first."""
+
+    return [
+        f"- On machines marked `{manager}`: {JOB_MANAGERS[manager].instructions}"
+        for manager in dict.fromkeys(managers)
+        if manager in JOB_MANAGERS
+    ]

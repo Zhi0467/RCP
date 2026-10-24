@@ -338,6 +338,7 @@ async def stage_work_turn(
             for item in context.repositories
         ]
         turn = WorkTurn(
+            compute_profiles=resolved.compute_profiles,
             graph_read_scope=graph_read_scope,
             data_dir=data_dir,
             service=service,

@@ -1168,6 +1168,7 @@ def test_final_review_creates_exact_reserved_project_once(
             "os_account": "rcp",
             "provider_paths": {"codex": "/usr/local/bin/codex"},
             "compute": None,
+            "access_hint": "",
         }
     ]
     assert manifest.repository_paths == {"paper": str(repository_path)}

@@ -166,6 +166,36 @@ def launch_command(
     return command
 
 
+# Account setup a member does in the terminal, such as `gcloud auth login` and
+# `gcloud compute config-ssh`: the real folders are bound writable, so the
+# setup persists and the account's own SSH routes use it.
+ACCOUNT_CONFIG_ROOTS = (".ssh", ".config/gcloud")
+# Inside `~/.ssh`, the host keys RCP checks against, the account's login keys and
+# its identities stay read-only.
+_SSH_READ_ONLY = ("known_hosts", "known_hosts2", "authorized_keys", "authorized_keys2")
+
+
+def account_config_paths(home: Path) -> tuple[list[str], list[str]]:
+    """The writable account configuration roots, and the files inside kept read-only.
+
+    Missing roots are created private (0700). Each protected file is created
+    empty if absent, so the terminal cannot create it through the writable
+    folder, and its read-only mount needs no stand-in.
+    """
+    roots = []
+    for relative in ACCOUNT_CONFIG_ROOTS:
+        root = home / relative
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        roots.append(root.resolve())
+    ssh = roots[0]
+    kept = [ssh / name for name in _SSH_READ_ONLY]
+    for path in kept:
+        if not path.exists():
+            path.touch(mode=0o600)
+    kept.extend(ssh.glob("id_*"))
+    return [str(root) for root in roots], sorted(str(path) for path in kept if path.is_file())
+
+
 def resolve_grants(
     declared: list[str], owned: list[str], rules: dict[str, Any]
 ) -> tuple[list[str], list[str]]:

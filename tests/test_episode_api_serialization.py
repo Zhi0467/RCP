@@ -1020,21 +1020,58 @@ def test_report_account_without_its_managed_token_blocks_the_serialized_wrapup(t
     )
 
 
-def test_project_readiness_includes_only_its_machine_account_logins(manifest, tmp_path) -> None:
+def _login_accounts(store, manifest) -> dict[tuple[str, str], str]:
     from rcp.agents import AgentLauncher
+    from rcp.agents.provider_accounts import ProviderAccounts
     from rcp.service import ProjectService
 
+    launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
+    states = ProjectService.provider_logins_for(manifest, launcher, "project")
+    return {(state["provider"], state["host"]): state["state"] for state in states}
+
+
+def test_provider_logins_cover_only_profile_machines(manifest, tmp_path) -> None:
+    from rcp.config import MachineConfig
+
     store = AppStore(tmp_path / "rcp.sqlite3")
-    store.mark_provider_login_failed("codex", "", generation=0, detail="Sign in", source="turn")
-    store.mark_provider_login_failed(
-        "codex", "other.example", generation=0, detail="Sign in", source="turn"
+    _project(store)
+    manifest.machines.append(MachineConfig(alias="gpu", host="gpu.example"))
+    manifest.machines.append(MachineConfig(alias="agent-box", host="agent.example"))
+    manifest.agent.project_chat = manifest.agent_profile("project_chat").model_copy(
+        update={"provider": "claude", "run_on": "agent-box"}
     )
-    states = ProjectService.provider_logins_for(manifest, AgentLauncher(store.provider_login_state))
-    assert {(state["provider"], state["host"]) for state in states} == {
-        ("codex", ""),
-        ("claude", ""),
-    }
-    assert next(state for state in states if state["provider"] == "codex")["state"] == "signed_out"
+    for provider, host in (("codex", "gpu.example"), ("claude", "agent.example")):
+        store.mark_provider_login_failed(
+            provider, host, generation=0, detail="Sign in", source="turn"
+        )
+    accounts = _login_accounts(store, manifest)
+    assert ("codex", "gpu.example") not in accounts
+    assert accounts[("claude", "agent.example")] == "signed_out"
+
+
+def test_provider_logins_keep_an_account_holding_queued_work(manifest, tmp_path) -> None:
+    from rcp.config import MachineConfig
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    manifest.machines.append(MachineConfig(alias="gpu", host="gpu.example"))
+    store.mark_provider_login_failed(
+        "claude", "gpu.example", generation=0, detail="Sign in", source="turn"
+    )
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id=str(uuid.uuid4()),
+            project_id="project",
+            kind="project_chat",
+            status="queued",
+            request={"provider": "claude", "run_on": "gpu", "message": "go"},
+            created_at=store.now(),
+            updated_at=store.now(),
+            status_message="",
+            authorized_by=_authorizer(store),
+        )
+    )
+    assert _login_accounts(store, manifest)[("claude", "gpu.example")] == "signed_out"
 
 
 def test_graph_archive_hides_default_list_but_keeps_explicit_reads(tmp_path) -> None:

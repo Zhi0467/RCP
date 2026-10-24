@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { enableMachineLinger, installMachineBrowser, loadMachineBrowser } from "../core/api";
 import { browserReason } from "../core/browserStatus";
+import { CopyCommand } from "../core/CopyCommand";
 import { errorMessage } from "../core/errors";
+import { Fold } from "../core/Fold";
 import type { MachineBrowserReadiness } from "../core/types";
 
 const INSTALL_POLL_MS = 15_000;
@@ -16,7 +18,6 @@ export function MachineBrowserRow({
   const [readiness, setReadiness] = useState<MachineBrowserReadiness | null>(null);
   const [pending, setPending] = useState<"check" | "install" | "linger" | null>("check");
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
   const [failedPolls, setFailedPolls] = useState(0);
   useEffect(() => {
     let cancelled = false;
@@ -63,7 +64,6 @@ export function MachineBrowserRow({
   async function run(action: "check" | "install" | "linger") {
     setPending(action);
     setError(null);
-    setCopied(false);
     try {
       setReadiness(
         await (action === "install"
@@ -79,16 +79,20 @@ export function MachineBrowserRow({
     }
   }
   const reason = readiness ? browserReason(readiness.status) : null;
-  // A command the member must hand to an administrator, when RCP cannot run it itself.
+  // A command the member runs from their own prompt, when RCP cannot run it itself.
   const command =
     (readiness?.status === "system_libraries_missing" && readiness.apt_command) ||
     (readiness?.status === "linger_disabled" && readiness.admin_command) ||
     null;
+  const bad =
+    pending === null &&
+    (error !== null || (readiness !== null && !["ready", "installing"].includes(readiness.status)));
   return (
-    <section className="machine-browser-row" aria-label="Browser" aria-busy={pending !== null}>
-      <header>
-        <strong>Browser</strong>
-        <span role="status">
+    <Fold
+      className="machine-browser-row"
+      title="Browser"
+      status={
+        <span role="status" data-tone={bad ? "bad" : undefined}>
           {pending === "install"
             ? "Installing… This can take up to 15 minutes."
             : pending === "linger"
@@ -97,31 +101,15 @@ export function MachineBrowserRow({
                 ? "Checking…"
                 : reason?.label}
         </span>
-      </header>
+      }
+      aria-label="Browser"
+      aria-busy={pending !== null}
+    >
       {readiness?.detail && <p>{readiness.detail}</p>}
       {reason?.fix && !["not_installed", "linger_disabled"].includes(readiness!.status) && (
         <p>{reason.fix}</p>
       )}
-      {command && (
-        <div className="browser-install-command">
-          <code>{command}</code>
-          <button
-            type="button"
-            className="button secondary compact"
-            onClick={async () => {
-              setError(null);
-              try {
-                await navigator.clipboard.writeText(command);
-                setCopied(true);
-              } catch {
-                setError("Could not copy the command. Select it and copy it manually.");
-              }
-            }}
-          >
-            {copied ? "Copied" : "Copy command"}
-          </button>
-        </div>
-      )}
+      {command && <CopyCommand key={command} command={command} />}
       <div className="provider-login-notice-actions">
         {readiness?.status === "linger_disabled" && !readiness.admin_command && (
           <button
@@ -153,6 +141,6 @@ export function MachineBrowserRow({
         </button>
       </div>
       {error && <p role="alert">{error}</p>}
-    </section>
+    </Fold>
   );
 }

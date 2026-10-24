@@ -10,7 +10,14 @@ import pytest
 from rcp import dependency_check
 from rcp.core.models import DependencyStatus, MissingProgram
 from rcp.dependencies import BY_NAME, optional, required
-from rcp.dependency_check import DependencyChecker, parse_output, script_check, staged_check_script
+from rcp.dependency_check import (
+    DependencyChecker,
+    install_argv,
+    parse_output,
+    script_check,
+    staged_check_script,
+)
+from rcp.operator_commands import operator_route
 
 NONCE = "n0nce"
 
@@ -191,11 +198,18 @@ def _local(outcome: str = "ready") -> DependencyStatus:
 
 
 def _checker(
-    runner: FakeRunner, now: list[float] | None = None, local: str = "ready"
+    runner: FakeRunner,
+    now: list[float] | None = None,
+    local: str = "ready",
+    space_kind: str = "personal",
 ) -> DependencyChecker:
     clock = now or [0.0]
     return DependencyChecker(
-        runner=runner, clock=lambda: clock[0], sleep=lambda _s: None, local=lambda _r: _local(local)
+        space_kind=lambda: space_kind,
+        runner=runner,
+        clock=lambda: clock[0],
+        sleep=lambda _s: None,
+        local=lambda _r: _local(local),
     )
 
 
@@ -254,7 +268,7 @@ def test_one_slow_host_does_not_block_another() -> None:
             release.wait(5)
         return ready(argv, script, timeout)
 
-    checker = DependencyChecker(runner=runner, sleep=lambda _s: None)
+    checker = DependencyChecker(space_kind=lambda: "personal", runner=runner, sleep=lambda _s: None)
     slow = threading.Thread(target=checker.status, args=("slow",))
     slow.start()
     assert checker.status("fast").outcome == "ready"
@@ -286,6 +300,18 @@ def test_cold_refusal_checks_once() -> None:
     runner = FakeRunner(MISSING)
     assert _checker(runner).launch_refusal("gpu") is not None
     assert runner.calls == 1
+
+
+@pytest.mark.parametrize("space_kind", ["personal", "team"])
+def test_status_and_refusal_share_operator_routed_install_line(space_kind: str) -> None:
+    checker = _checker(FakeRunner(MISSING), space_kind=space_kind)
+    status = checker.status("gpu")
+    refusal = checker.launch_refusal("gpu")
+    route = operator_route(space_kind, "gpu")
+    assert status.install_command == route.command(install_argv(["rsync"]), root=True)
+    assert status.install_command is not None
+    assert refusal is not None
+    assert status.install_command in refusal
 
 
 def test_cached_missing_is_rechecked_before_refusing() -> None:

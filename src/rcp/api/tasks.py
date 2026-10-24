@@ -1381,8 +1381,6 @@ def _validated_task_request(
     if kind in {"seed", "refresh"}:
         if request.worktree or request.worktree_integration:
             raise ValueError("Only ordinary conversations can use worktrees.")
-        if request.active_compute_ids:
-            raise ValueError("Compute connections can be attached only to a chat turn.")
         service.history.require_writable()
         if request.session_id:
             raise ValueError(
@@ -1445,7 +1443,6 @@ def _validate_stored_task_request(
         service,
         kind,
         request,
-        admit_compute_context=False,
     )
     return service.resolve_skill_selection(resolved_run)
 
