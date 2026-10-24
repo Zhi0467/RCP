@@ -112,6 +112,7 @@ interface Props {
     isolation: EpisodeIsolationChoice,
     browserRequested: boolean,
     launchConfig?: AgentRunConfig,
+    message?: string,
   ) => void;
   /** The server's branch-name refusal code from the last Experiment start, if any. */
   experimentBranchNameRefusal?: string | null;
@@ -214,9 +215,11 @@ export function DetailDrawer({
   // Only an explicit pick is state; untouched, the picker follows the current profile.
   const [pickedConfig, setLaunchConfig] = useState<AgentRunConfig | null>(null);
   const [launchOpen, setLaunchOpen] = useState(false);
+  const [startMessage, setStartMessage] = useState("");
   useEffect(() => {
     setLaunchConfig(null);
     setLaunchOpen(false);
+    setStartMessage("");
   }, [node.id]);
   const launchConfig =
     pickedConfig ?? (launchProfile ? profileRunConfig(launchProfile) : undefined);
@@ -762,6 +765,7 @@ export function DetailDrawer({
                         workLike={launchProfile?.work_like_capable}
                         optionCount={
                           Number(browserRequested) +
+                          Number(Boolean(startMessage.trim())) +
                           Number((inheritedIsolation ?? isolation).code_worktree) +
                           Number(graphTarget.kind === "main" && isolation.graph_isolation)
                         }
@@ -793,6 +797,7 @@ export function DetailDrawer({
                               : isolation),
                           browserRequested,
                           launchConfig,
+                          startMessage,
                         )
                       }
                     >
@@ -857,6 +862,14 @@ export function DetailDrawer({
                             onChange={setExperimentBranch}
                           />
                         )}
+                        <textarea
+                          className="experiment-start-message"
+                          aria-label="Starting message"
+                          rows={3}
+                          value={startMessage}
+                          disabled={nodeMutationDisabled || experimentRunBusy}
+                          onChange={(event) => setStartMessage(event.target.value)}
+                        />
                       </AgentConfigControls>
                     )}
                   {startReasons.length > 0 && (

@@ -2,7 +2,6 @@ import { memberDraftKey } from "../core/draftStorage.ts";
 import type {
   AgentExecutionProfile,
   AgentProfileSettings,
-  ComputeConnection,
   Machine,
   MachineComputeConfig,
   ProviderId,
@@ -40,41 +39,25 @@ export function settingsFingerprint(state: unknown): string {
   return JSON.stringify(withSortedKeys(state));
 }
 
-/** The inputs of the backend compute probe cache key that Settings can edit. */
-export interface ComputeProbeConfiguration {
-  connections: readonly ComputeConnection[];
-  executionMachines: readonly string[];
-}
-
 /**
  * Whether a save changes the backend compute probe cache key.
  *
- * `compute_probe_cache_key` covers the connection rows and the set of machines
- * currently selected by an agent execution profile, so pointing one profile at
- * a machine no other profile uses invalidates the matrix as surely as editing
- * an SSH target does.
+ * Of that key's inputs, Settings edits only the set of machines selected by an
+ * agent execution profile, so pointing one profile at a machine no other
+ * profile uses invalidates the reachability matrix.
  */
 export function computeProbeConfigurationChanged(
-  saved: ComputeProbeConfiguration,
-  current: ComputeProbeConfiguration,
+  savedExecutionMachines: readonly string[],
+  currentExecutionMachines: readonly string[],
 ): boolean {
   return (
-    settingsFingerprint(saved.connections) !== settingsFingerprint(current.connections) ||
-    settingsFingerprint(executionMachineSet(saved.executionMachines)) !==
-      settingsFingerprint(executionMachineSet(current.executionMachines))
+    settingsFingerprint(executionMachineSet(savedExecutionMachines)) !==
+    settingsFingerprint(executionMachineSet(currentExecutionMachines))
   );
 }
 
 function executionMachineSet(machines: readonly string[]): string[] {
   return [...new Set(machines)].sort();
-}
-
-export function computeConnectionNeedsSave(
-  saved: readonly ComputeConnection[],
-  current: ComputeConnection,
-): boolean {
-  const persisted = saved.find((connection) => connection.id === current.id);
-  return persisted === undefined || settingsFingerprint(persisted) !== settingsFingerprint(current);
 }
 
 function withSortedKeys(value: unknown): unknown {
@@ -92,9 +75,7 @@ export function settingsDraftStorageKey(actorId: string | null, projectId: strin
 }
 
 export function serializeSettingsDraft(draft: SettingsDraft): string {
-  const safeDraft = { ...draft } as SettingsDraft & { computeConnections?: unknown };
-  delete safeDraft.computeConnections;
-  return JSON.stringify(safeDraft);
+  return JSON.stringify(draft);
 }
 
 export function deserializeSettingsDraft(value: string | null): SettingsDraft | null {
@@ -115,14 +96,15 @@ export function deserializeSettingsDraft(value: string | null): SettingsDraft | 
     // Earlier drafts stored the entire map, including untouched machines. It cannot
     // safely override newer saved configuration; retain only explicit edits.
     delete parsed.machineCompute;
-    if (
-      parsed.machineComputeEdits !== undefined &&
-      !isMachineComputeSettings(parsed.machineComputeEdits)
-    )
-      return null;
+    if (parsed.machineComputeEdits !== undefined) {
+      if (!isMachineComputeSettings(parsed.machineComputeEdits)) return null;
+      // Edits staged before access hints existed carry none.
+      for (const config of Object.values(parsed.machineComputeEdits))
+        if (config) config.access_hint ??= "";
+    }
     if (parsed.skillDefaults !== undefined && !isSkillDefaults(parsed.skillDefaults)) return null;
-    // v3 briefly persisted unsaved compute metadata per keystroke. Drop it on
-    // read, regardless of shape; only backend-saved manifest metadata reloads.
+    // v3 briefly persisted compute connections, a concept machines replaced.
+    // Drop it on read, regardless of shape.
     delete parsed.computeConnections;
 
     if (parsed.version === 4) {
@@ -252,7 +234,12 @@ export function machineComputeUpdates(
   return Object.keys(updates).length ? updates : undefined;
 }
 
-function isMachineComputeSettings(value: unknown): value is MachineComputeSettings {
+function isMachineComputeSettings(
+  value: unknown,
+): value is Record<
+  string,
+  (Omit<MachineComputeConfig, "access_hint"> & { access_hint?: string }) | null
+> {
   if (!isRecord(value)) return false;
   return Object.values(value).every(
     (config) =>
@@ -260,6 +247,9 @@ function isMachineComputeSettings(value: unknown): value is MachineComputeSettin
       (isRecord(config) &&
         (config.job_manager === null || config.job_manager === "slurm") &&
         typeof config.jobs_root === "string" &&
-        Object.keys(config).every((key) => key === "job_manager" || key === "jobs_root")),
+        (config.access_hint === undefined || typeof config.access_hint === "string") &&
+        Object.keys(config).every(
+          (key) => key === "job_manager" || key === "jobs_root" || key === "access_hint",
+        )),
   );
 }

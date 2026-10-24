@@ -51,9 +51,6 @@ function projectFor(id: string): ProjectSnapshot {
         compute_probes: { scheduler: null, helper: null },
       },
     ],
-    compute_connections: [
-      { id: "local", name: `${id} compute`, kind: "local", ssh_target: "", access_hint: "" },
-    ],
     compute_status: {},
     cache_metrics: {
       remote_sources: {

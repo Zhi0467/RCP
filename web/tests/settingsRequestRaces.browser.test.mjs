@@ -231,31 +231,24 @@ test("a Save response cannot publish after Settings has closed", async (t) => {
   assert.deepEqual(await page.evaluate(() => window.settingsPublications), []);
 });
 
-test("Save preserves provider and compute edits typed while its response is pending", async (t) => {
+test("Save preserves provider edits typed while its response is pending", async (t) => {
   const page = await openFixture(t);
   const editor = page.getByLabel("Codex executable on local");
-  const compute = page.getByRole("textbox", { name: "Name", exact: true });
   await editor.fill("/alpha/sent-codex");
-  await compute.fill("Sent compute name");
   const first = await holdRequest(page, "settings");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   const firstRoute = await first.started;
   await editor.fill("/alpha/newer-codex");
-  await compute.fill("Newer compute name");
   const saved = await savedProject(page, "/alpha/sent-codex");
-  saved.compute_connections[0].name = "Sent compute name";
   await respond(page, firstRoute, { json: saved });
   assert.equal(await editor.inputValue(), "/alpha/newer-codex");
-  assert.equal(await compute.inputValue(), "Newer compute name");
 
   const second = await holdRequest(page, "settings");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   const secondRoute = await second.started;
   const body = secondRoute.request().postDataJSON();
   assert.equal(body.machine_provider_paths.local.codex, "/alpha/newer-codex");
-  assert.equal(body.compute_connections[0].name, "Newer compute name");
   saved.machines[0].provider_paths.codex = "/alpha/newer-codex";
-  saved.compute_connections[0].name = "Newer compute name";
   await respond(page, secondRoute, { json: saved });
   await page.getByText("Saved.", { exact: true }).waitFor();
 });

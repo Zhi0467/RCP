@@ -1,11 +1,9 @@
 import {
   BookOpen,
   Check,
-  Cpu,
   GitBranch,
   HardDrive,
   LoaderCircle,
-  Plus,
   RotateCcw,
   ScanSearch,
   Save,
@@ -32,7 +30,6 @@ import { AgentConfigControls, profileRunConfig } from "../core/AgentConfigContro
 import { AgentUsageWidgets } from "../agents/AgentUsageWidgets";
 import { SkillPackageInspector } from "../agents/SkillPackageInspector";
 import {
-  computeConnectionNeedsSave,
   computeProbeConfigurationChanged,
   deserializeSettingsDraft,
   machineComputeFrom,
@@ -54,7 +51,6 @@ import type {
   AgentUsageSnapshot,
   CacheMetric,
   ConsolidationView,
-  ComputeConnection,
   MachineComputeConfig,
   ProjectCacheMetrics,
   ProjectSettingsRequest,
@@ -145,7 +141,6 @@ function stagedOrSaved(project: ProjectSnapshot, actorId: string | null) {
     providerPaths: machineProviderPathsFrom(project.machines),
     machineComputeEdits: {} as MachineComputeSettings,
     skillDefaults: skillDefaultsFrom(project),
-    computeConnections: project.compute_connections ?? [],
   };
   let staged: ReturnType<typeof deserializeSettingsDraft> = null;
   const key = settingsDraftStorageKey(actorId, project.id);
@@ -165,7 +160,6 @@ function stagedOrSaved(project: ProjectSnapshot, actorId: string | null) {
     providerPaths: mergeMachineProviderPaths(saved.providerPaths, staged.providerPaths),
     machineComputeEdits: staged.machineComputeEdits ?? {},
     skillDefaults: staged.skillDefaults ?? saved.skillDefaults,
-    computeConnections: saved.computeConnections,
   };
 }
 
@@ -217,9 +211,6 @@ export function ProjectSettings({
   const [skillDefaults, setSkillDefaults] = useState<SkillDefaults>(
     () => restoredSettings.skillDefaults,
   );
-  const [computeConnections, setComputeConnections] = useState<ComputeConnection[]>(
-    () => restoredSettings.computeConnections,
-  );
   const [inspectedPackage, setInspectedPackage] = useState<SkillCatalogEntry | null>(null);
   const [saving, setSaving] = useState(false);
   const [clearingCaches, setClearingCaches] = useState(false);
@@ -250,7 +241,6 @@ export function ProjectSettings({
     setProviderPaths(restoredSettings.providerPaths);
     setMachineComputeEdits(restoredSettings.machineComputeEdits);
     setSkillDefaults(restoredSettings.skillDefaults);
-    setComputeConnections(restoredSettings.computeConnections);
     setSaving(false);
     setClearingCaches(false);
     setResolvingProvider(null);
@@ -276,7 +266,6 @@ export function ProjectSettings({
         providerPaths: machineProviderPathsFrom(project.machines),
         machineCompute: machineComputeFrom(project.machines),
         skillDefaults: skillDefaultsFrom(project),
-        computeConnections: project.compute_connections ?? [],
       }),
     [project],
   );
@@ -287,14 +276,13 @@ export function ProjectSettings({
     providerPaths,
     machineCompute,
     skillDefaults,
-    computeConnections,
   });
   const dirty = current !== baseline;
   const autoResearchInvocationCeilingIsValid =
     Number.isSafeInteger(autoResearchInvocationCeiling) && autoResearchInvocationCeiling >= 1;
 
-  // Stage machine settings alongside provider paths. Compute connection metadata
-  // stays in memory until Save; clearing a clean form drops the staged copy.
+  // Stage machine settings alongside provider paths; clearing a clean form
+  // drops the staged copy.
   useEffect(() => {
     const key = settingsDraftStorageKey(actorId, project.id);
     if (!key) return;
@@ -334,17 +322,9 @@ export function ProjectSettings({
   const executionMachines = Array.from(
     new Set(Object.values(profiles).map((profile) => profile.run_on)),
   );
-  const computeConnectionsAreValid = computeConnections.every(
-    (connection) =>
-      connection.name.trim().length > 0 &&
-      (connection.kind === "local" || connection.ssh_target.trim().length > 0),
-  );
   const computeConfigurationIsDirty = computeProbeConfigurationChanged(
-    {
-      connections: project.compute_connections ?? [],
-      executionMachines: Object.values(profilesFrom(project)).map((profile) => profile.run_on),
-    },
-    { connections: computeConnections, executionMachines },
+    Object.values(profilesFrom(project)).map((profile) => profile.run_on),
+    executionMachines,
   );
 
   const toggleRepository = (alias: string) => {
@@ -418,19 +398,11 @@ export function ProjectSettings({
     setProviderPaths(machineProviderPathsFrom(project.machines));
     setMachineComputeEdits({});
     setSkillDefaults(savedSkillDefaults);
-    setComputeConnections(project.compute_connections ?? []);
     setStatus(null);
   };
 
   const save = async () => {
-    if (
-      !dirty ||
-      saving ||
-      writesDisabled ||
-      !autoResearchInvocationCeilingIsValid ||
-      !computeConnectionsAreValid
-    )
-      return;
+    if (!dirty || saving || writesDisabled || !autoResearchInvocationCeilingIsValid) return;
     setSaving(true);
     setStatus(null);
     const body: ProjectSettingsRequest = {
@@ -438,7 +410,6 @@ export function ProjectSettings({
       default_auto_research_invocation_ceiling: autoResearchInvocationCeiling,
       agent_profiles: profiles,
       skill_defaults: skillDefaults,
-      compute_connections: computeConnections,
     };
     const pathUpdates = machineProviderPathUpdates(
       machineProviderPathsFrom(project.machines),
@@ -460,9 +431,6 @@ export function ProjectSettings({
         currentPaths === providerPaths ? machineProviderPathsFrom(saved.machines) : currentPaths,
       );
       setMachineComputeEdits({});
-      setComputeConnections((currentConnections) =>
-        currentConnections === computeConnections ? saved.compute_connections : currentConnections,
-      );
       // The save response intentionally carries no live probe. Preserve each
       // readiness slice whose own inputs this save left alone.
       onSaved(saved, {
@@ -700,6 +668,24 @@ export function ProjectSettings({
             <Server size={16} />
           </span>
           <h2>Machines</h2>
+          <button
+            className="button secondary compact"
+            type="button"
+            disabled={writesDisabled || readinessRequest?.pending || computeConfigurationIsDirty}
+            title={
+              computeConfigurationIsDirty
+                ? "Save agent machines before probing"
+                : "Probe machine reachability"
+            }
+            onClick={() => void onRefreshReadiness().catch(() => {})}
+          >
+            {readinessRequest?.pending ? (
+              <LoaderCircle className="spin" size={14} />
+            ) : (
+              <ScanSearch size={14} />
+            )}
+            {computeConfigurationIsDirty ? "Save first" : "Probe"}
+          </button>
         </header>
         <div className="machine-tiles" role="group" aria-label="Machines">
           {project.machines.map((machine) => (
@@ -733,6 +719,7 @@ export function ProjectSettings({
               const config = machineCompute[machine.alias] ?? {
                 job_manager: null,
                 jobs_root: "",
+                access_hint: "",
               };
               const needsSave = Boolean(
                 machineComputeUpdates(
@@ -805,7 +792,7 @@ export function ProjectSettings({
                     })}
                   </div>
                   <fieldset className="machine-compute" disabled={computeDisabled}>
-                    <legend>Long-running jobs</legend>
+                    <legend>Compute</legend>
                     <div className="compute-connection-fields">
                       <label>
                         <span>Use Slurm</span>
@@ -828,6 +815,19 @@ export function ProjectSettings({
                             updateMachineCompute(machine.alias, {
                               ...config,
                               jobs_root: event.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>Access hint</span>
+                        <input
+                          maxLength={512}
+                          value={config.access_hint}
+                          onChange={(event) =>
+                            updateMachineCompute(machine.alias, {
+                              ...config,
+                              access_hint: event.target.value,
                             })
                           }
                         />
@@ -863,12 +863,33 @@ export function ProjectSettings({
                         </div>
                       );
                     })}
+                    {executionMachines.map((executionMachine) => {
+                      const probe = project.compute_status?.[executionMachine]?.[machine.alias];
+                      const presentation = computeProbePresentation(probe);
+                      return (
+                        <div
+                          className={`compute-probe compute-reach ${presentation.tone}`}
+                          key={`reach:${executionMachine}`}
+                        >
+                          <strong>From {executionMachine}</strong>
+                          <span className="compute-probe-dot" aria-hidden="true" />
+                          <span>{presentation.label}</span>
+                          {probe?.required_action ? <em>{probe.required_action}</em> : null}
+                          {probe && presentation.tone === "error" && !probe.required_action ? (
+                            <em>{probe.diagnostic}</em>
+                          ) : null}
+                        </div>
+                      );
+                    })}
                   </fieldset>
                 </MachineCard>
               );
             })}
         </div>
         {spaceMachines.error && <div className="settings-error">{spaceMachines.error}</div>}
+        {readinessRequest?.computeError ? (
+          <div className="settings-error">{readinessRequest.computeError}</div>
+        ) : null}
         {addingMachine && (
           <AddProjectMachine
             projectId={project.id}
@@ -911,213 +932,6 @@ export function ProjectSettings({
         apiBase={apiBase}
         writesDisabled={!consolidation?.can_write}
       />
-
-      <section className="settings-section compute-settings">
-        <header>
-          <span>
-            <Cpu size={16} />
-          </span>
-          <h2>Compute connections</h2>
-          <div className="compute-settings-actions">
-            <button
-              className="button secondary compact"
-              type="button"
-              disabled={writesDisabled || readinessRequest?.pending || computeConfigurationIsDirty}
-              title={
-                computeConfigurationIsDirty
-                  ? "Save compute changes before probing"
-                  : "Probe compute connections"
-              }
-              onClick={() => void onRefreshReadiness().catch(() => {})}
-            >
-              {readinessRequest?.pending ? (
-                <LoaderCircle className="spin" size={14} />
-              ) : (
-                <ScanSearch size={14} />
-              )}
-              {computeConfigurationIsDirty ? "Save first" : "Probe"}
-            </button>
-            <button
-              className="button secondary compact"
-              type="button"
-              disabled={writesDisabled}
-              onClick={() => {
-                setComputeConnections((currentConnections) => [
-                  ...currentConnections,
-                  {
-                    id: crypto.randomUUID(),
-                    name: "Local compute",
-                    kind: "local",
-                    ssh_target: "",
-                    access_hint: "",
-                  },
-                ]);
-                setStatus(null);
-              }}
-            >
-              <Plus size={14} /> Local
-            </button>
-            <button
-              className="button secondary compact"
-              type="button"
-              disabled={writesDisabled}
-              onClick={() => {
-                setComputeConnections((currentConnections) => [
-                  ...currentConnections,
-                  {
-                    id: crypto.randomUUID(),
-                    name: "Remote compute",
-                    kind: "ssh",
-                    ssh_target: "",
-                    access_hint: "",
-                  },
-                ]);
-                setStatus(null);
-              }}
-            >
-              <Plus size={14} /> SSH
-            </button>
-          </div>
-        </header>
-        <div className="compute-connection-list">
-          {computeConnections.map((connection) => {
-            const connectionNeedsSave = computeConnectionNeedsSave(
-              project.compute_connections ?? [],
-              connection,
-            );
-            return (
-              <article className="compute-connection" key={connection.id}>
-                <div className="compute-connection-fields">
-                  <label>
-                    <span>Name</span>
-                    <input
-                      type="text"
-                      maxLength={80}
-                      value={connection.name}
-                      disabled={writesDisabled}
-                      onChange={(event) => {
-                        const name = event.target.value;
-                        setComputeConnections((currentConnections) =>
-                          currentConnections.map((item) =>
-                            item.id === connection.id ? { ...item, name } : item,
-                          ),
-                        );
-                        setStatus(null);
-                      }}
-                    />
-                  </label>
-                  <label>
-                    <span>Type</span>
-                    <select
-                      value={connection.kind}
-                      disabled={writesDisabled}
-                      onChange={(event) => {
-                        const kind = event.target.value as ComputeConnection["kind"];
-                        setComputeConnections((currentConnections) =>
-                          currentConnections.map((item) =>
-                            item.id === connection.id
-                              ? {
-                                  ...item,
-                                  kind,
-                                  ssh_target: kind === "local" ? "" : item.ssh_target,
-                                }
-                              : item,
-                          ),
-                        );
-                        setStatus(null);
-                      }}
-                    >
-                      <option value="local">Local</option>
-                      <option value="ssh">SSH</option>
-                    </select>
-                  </label>
-                  {connection.kind === "ssh" ? (
-                    <label>
-                      <span>SSH target</span>
-                      <input
-                        type="text"
-                        placeholder="user@host"
-                        maxLength={255}
-                        value={connection.ssh_target}
-                        disabled={writesDisabled}
-                        onChange={(event) => {
-                          const ssh_target = event.target.value;
-                          setComputeConnections((currentConnections) =>
-                            currentConnections.map((item) =>
-                              item.id === connection.id ? { ...item, ssh_target } : item,
-                            ),
-                          );
-                          setStatus(null);
-                        }}
-                      />
-                    </label>
-                  ) : null}
-                  <label className="compute-access-hint">
-                    <span>Access hint (no credentials)</span>
-                    <input
-                      type="text"
-                      maxLength={512}
-                      placeholder="Optional path, scheduler, or environment"
-                      value={connection.access_hint}
-                      disabled={writesDisabled}
-                      onChange={(event) => {
-                        const access_hint = event.target.value;
-                        setComputeConnections((currentConnections) =>
-                          currentConnections.map((item) =>
-                            item.id === connection.id ? { ...item, access_hint } : item,
-                          ),
-                        );
-                        setStatus(null);
-                      }}
-                    />
-                  </label>
-                  <button
-                    className="icon-button"
-                    type="button"
-                    aria-label={`Remove ${connection.name || "compute connection"}`}
-                    disabled={writesDisabled}
-                    onClick={() => {
-                      setComputeConnections((currentConnections) =>
-                        currentConnections.filter((item) => item.id !== connection.id),
-                      );
-                      setStatus(null);
-                    }}
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-                <div className="compute-probe-list">
-                  {executionMachines.map((machine) => {
-                    const probe = connectionNeedsSave
-                      ? undefined
-                      : project.compute_status?.[machine]?.[connection.id];
-                    const presentation = connectionNeedsSave
-                      ? { label: "Save before probing", tone: "pending" as const }
-                      : computeProbePresentation(probe);
-                    return (
-                      <div className={`compute-probe ${presentation.tone}`} key={machine}>
-                        <span className="compute-probe-dot" aria-hidden="true" />
-                        <strong>{machine}</strong>
-                        <span>{presentation.label}</span>
-                        {probe?.required_action ? <em>{probe.required_action}</em> : null}
-                        {probe && presentation.tone === "error" && !probe.required_action ? (
-                          <em>{probe.diagnostic}</em>
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              </article>
-            );
-          })}
-          {!computeConnections.length ? (
-            <div className="settings-empty">No compute connections configured.</div>
-          ) : null}
-        </div>
-        {readinessRequest?.computeError ? (
-          <div className="settings-error">{readinessRequest.computeError}</div>
-        ) : null}
-      </section>
 
       <div className="settings-section agent-defaults">
         <header className="agent-defaults-heading">
@@ -1251,13 +1065,7 @@ export function ProjectSettings({
         </button>
         <button
           className="button primary"
-          disabled={
-            writesDisabled ||
-            !dirty ||
-            saving ||
-            !autoResearchInvocationCeilingIsValid ||
-            !computeConnectionsAreValid
-          }
+          disabled={writesDisabled || !dirty || saving || !autoResearchInvocationCeilingIsValid}
           onClick={() => void save()}
         >
           {saving ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}

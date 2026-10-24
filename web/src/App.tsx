@@ -3036,6 +3036,7 @@ function MemberApp({
       browserRequested = false,
       requestId?: string,
       launchConfig?: AgentRunConfig,
+      message?: string,
     ): Promise<ExperimentStartResponse> => {
       if (!project || !isControlNode(node.type)) {
         throw new Error("The requested Experiment is not present in the open project.");
@@ -3073,6 +3074,8 @@ function MemberApp({
             ...(invocationCeiling === undefined ? {} : { invocation_ceiling: invocationCeiling }),
             ...isolation,
             browser_requested: browserRequested,
+            // A blank message lets the backend write the canonical start goal.
+            ...(message?.trim() ? { message } : {}),
           },
           requestId,
         );
@@ -3149,6 +3152,7 @@ function MemberApp({
       isolation?: EpisodeIsolationChoice,
       browserRequested = false,
       launchConfig?: AgentRunConfig,
+      message?: string,
     ) => {
       setExperimentBranchRefusal(null);
       try {
@@ -3159,6 +3163,7 @@ function MemberApp({
           browserRequested,
           undefined,
           launchConfig,
+          message,
         );
       } catch (caught) {
         setExperimentBranchRefusal({ nodeId: node.id, refusal: branchNameRefusal(caught) });
@@ -5268,13 +5273,20 @@ function MemberApp({
                 onDetailFocused={clearExperimentFocus}
                 onOpenHistory={openProjectHistory}
                 project={project}
-                onRunExperiment={(node, invocationCeiling, browserRequested, launchConfig) =>
+                onRunExperiment={(
+                  node,
+                  invocationCeiling,
+                  browserRequested,
+                  launchConfig,
+                  message,
+                ) =>
                   void runExperiment(
                     node,
                     invocationCeiling,
                     undefined,
                     browserRequested,
                     launchConfig,
+                    message,
                   )
                 }
                 onStopExperiment={(nodeId, episodeId) => void stopExperimentLoop(nodeId, episodeId)}
@@ -5545,8 +5557,15 @@ function MemberApp({
               )
             }
             project={project}
-            onRunExperiment={(isolation, browserRequested, launchConfig) =>
-              void runExperiment(node, undefined, isolation, browserRequested, launchConfig)
+            onRunExperiment={(isolation, browserRequested, launchConfig, message) =>
+              void runExperiment(
+                node,
+                undefined,
+                isolation,
+                browserRequested,
+                launchConfig,
+                message,
+              )
             }
             inheritedIsolation={
               activeBranchEpisode

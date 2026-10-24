@@ -1373,52 +1373,6 @@
   justify-content: center;
   min-width: 15px;
 }
-.chat-compute-menu {
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-  bottom: 34px;
-  box-shadow: var(--shadow);
-  left: 0;
-  margin: 0;
-  max-height: 230px;
-  min-width: min(340px, calc(100vw - 38px));
-  overflow: auto;
-  padding: 0;
-  position: absolute;
-  z-index: 16;
-}
-.chat-compute-menu > label {
-  align-items: center;
-  border-bottom: 1px solid var(--line);
-  color: var(--ink);
-  display: grid;
-  gap: 7px;
-  grid-template-columns: 16px 7px minmax(0, 1fr);
-  padding: 9px 10px;
-  text-align: left;
-  width: 100%;
-}
-.chat-compute-menu > label:last-child {
-  border-bottom: 0;
-}
-.chat-compute-menu > label:hover,
-.chat-compute-menu > label:focus-within {
-  background: var(--cobalt-soft);
-  outline: 0;
-}
-.chat-compute-menu input {
-  accent-color: var(--cobalt);
-  height: 15px;
-  margin: 0;
-  width: 15px;
-}
-.chat-compute-menu strong {
-  font-size: var(--type-xs);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .chat-composer.is-dragging-files {
   background: color-mix(in srgb, var(--chat-mode-soft) 72%, var(--surface));
   box-shadow: inset 0 0 0 2px var(--chat-mode-accent);
@@ -1957,34 +1911,6 @@
 }
 .chat-add-picker {
   position: relative;
-}
-.chat-add-count,
-.chat-add-menu button strong {
-  align-items: center;
-  background: var(--cobalt-soft);
-  border-radius: 50%;
-  color: var(--cobalt-dark);
-  display: inline-flex;
-  font: 700 var(--type-2xs) var(--mono);
-  height: 15px;
-  justify-content: center;
-  min-width: 15px;
-}
-.chat-add-count {
-  position: absolute;
-  right: -5px;
-  top: -5px;
-}
-.chat-add-menu button > svg:last-child:not(:first-child) {
-  margin-left: auto;
-}
-/* Inside the + menu the compute list unfolds in place, not as a popover. */
-.chat-add-menu .chat-compute-menu {
-  border: 0;
-  border-top: 1px solid var(--line);
-  box-shadow: none;
-  min-width: 0;
-  position: static;
 }
 .chat-add-menu,
 .chat-reference-picker {

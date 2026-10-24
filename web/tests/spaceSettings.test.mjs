@@ -250,7 +250,6 @@ const sectionClasses = (html) =>
     "space-cache-settings",
     "display-settings",
     "provider-path-settings",
-    "compute-settings",
     "boundary-settings",
     "skill-settings",
     "agent-defaults",
@@ -303,7 +302,6 @@ test("space-wide sections render on space Settings and project sections on proje
     assert.match(html, /data-settings-level="project"/);
     assert.deepEqual(sectionClasses(html), [
       "provider-path-settings",
-      "compute-settings",
       "boundary-settings",
       "skill-settings",
       "agent-defaults",
