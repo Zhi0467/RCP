@@ -326,6 +326,9 @@ export function HiddenFolders({
       <summary>
         <strong>Hidden folders</strong>
         <span>{(record.hidden_folders ?? []).length}</span>
+        {status && status.status !== "enforced" && (
+          <span data-hidden-read-status="unhidden">Unhidden</span>
+        )}
       </summary>
       <header>
         <button
@@ -573,6 +576,8 @@ export function NewMachineForm({
   };
   const shown = failure ? LOGIN_FAILURES[failure.code] : null;
   const FailureIcon = shown?.icon;
+  // Trust is the host-key recovery; any other failure turns Create into one retry.
+  const retrying = failure !== null && failure.code !== "host_key_unknown";
   return (
     <div className="new-machine-form" data-new-machine-form="" data-login-failure={failure?.code}>
       <label>
@@ -604,50 +609,39 @@ export function NewMachineForm({
           onChange={(event) => setDraft({ ...draft, os_account: event.target.value })}
         />
       </label>
-      {failure && FailureIcon && shown && (
+      {failure?.code === "host_key_unknown" && failure.fingerprint && FailureIcon && shown && (
         <div className="new-machine-login" role="alert" aria-label={shown.label}>
           <FailureIcon size={14} aria-hidden="true" />
-          {failure.code === "host_key_unknown" && failure.fingerprint ? (
-            <>
-              <code data-host-key-fingerprint="">{failure.fingerprint}</code>
-              <button
-                className="button secondary compact"
-                type="button"
-                data-machine-action="trust-host-key"
-                disabled={writesDisabled || saving}
-                onClick={() => {
-                  const { fingerprint } = failure;
-                  void submit(() => trust(draft.host.trim(), fingerprint!));
-                }}
-              >
-                Trust
-              </button>
-            </>
-          ) : (
-            <button
-              className="icon-button"
-              type="button"
-              data-machine-action="retry-login"
-              aria-label="Try again"
-              title={shown.label}
-              disabled={writesDisabled || saving}
-              onClick={() => void submit()}
-            >
-              <RotateCw size={14} />
-            </button>
-          )}
+          <code data-host-key-fingerprint="">{failure.fingerprint}</code>
+          <button
+            className="button secondary compact"
+            type="button"
+            data-machine-action="trust-host-key"
+            disabled={writesDisabled || saving}
+            onClick={() => {
+              const { fingerprint } = failure;
+              void submit(() => trust(draft.host.trim(), fingerprint!));
+            }}
+          >
+            Trust
+          </button>
         </div>
       )}
       <div className="new-machine-actions">
         <button
           className="button primary compact"
           type="button"
-          data-machine-action="create"
+          data-machine-action={retrying ? "retry-login" : "create"}
+          title={retrying ? shown?.label : undefined}
           disabled={writesDisabled || saving || !valid}
           onClick={() => void submit()}
         >
-          {saving ? <LoaderCircle className="spin" size={14} /> : null}
-          Create machine
+          {saving ? (
+            <LoaderCircle className="spin" size={14} />
+          ) : retrying ? (
+            <RotateCw size={14} />
+          ) : null}
+          {retrying ? "Try again" : "Create machine"}
         </button>
         <button className="button secondary compact" type="button" onClick={onCancel}>
           Cancel

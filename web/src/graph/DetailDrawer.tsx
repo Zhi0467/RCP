@@ -865,6 +865,7 @@ export function DetailDrawer({
                         <textarea
                           className="experiment-start-message"
                           aria-label="Starting message"
+                          placeholder="Starting message (optional)"
                           rows={3}
                           value={startMessage}
                           disabled={nodeMutationDisabled || experimentRunBusy}

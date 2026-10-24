@@ -2132,7 +2132,6 @@ export interface AgentTaskRequest {
   invoked_provider_skill_names?: string[];
   resolved_provider_skills?: ProviderSkillReference[];
   resolved_skill_packages?: SkillReference[] | null;
-  active_compute_ids?: string[];
   [key: string]: unknown;
 }
 
@@ -3040,7 +3039,6 @@ export interface ChatMessage {
   graph_update: GraphUpdateResult | null;
   trigger: TaskTrigger;
   attachments: ChatAttachmentDescriptor[];
-  active_compute_ids: string[];
 }
 
 export interface ChatAttachmentDescriptor {

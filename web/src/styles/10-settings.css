@@ -3320,6 +3320,9 @@ button.agent-provider-label {
   font: var(--type-2xs)/1 var(--mono);
   font-variant-numeric: tabular-nums;
 }
+.machine-fold > summary span[data-hidden-read-status="unhidden"] {
+  color: var(--red);
+}
 .machine-fold:not([open]) {
   gap: 0;
 }

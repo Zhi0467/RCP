@@ -89,7 +89,6 @@ export function beginChatSend(
             timestamp,
             mode: request.mode ?? null,
             attachments: request.attachments ?? [],
-            active_compute_ids: [],
             native_session_id: null,
             provider: null,
             model: null,

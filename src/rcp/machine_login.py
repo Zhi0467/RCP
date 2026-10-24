@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from rcp.limits import COMPUTE_PROBE_TIMEOUT_SECONDS
+from rcp.limits import COMPUTE_PROBE_TIMEOUT_SECONDS, HOST_KEY_SCAN_TIMEOUT_SECONDS
 from rcp.ssh_validation import validate_ssh_destination
 from rcp.transport.remote_compute_probe import classify_ssh_failure
 from rcp.transport.ssh import ssh_arguments
@@ -98,7 +98,10 @@ def scan_host_key(host: str, *, runner=subprocess.run) -> HostKey:
     if not hostname or not port.isdigit():
         raise MachineLoginFailure("unreachable")
     name = config.get("hostkeyalias") or (hostname if port == "22" else f"[{hostname}]:{port}")
-    scan = _run(["ssh-keyscan", "-T", "10", "-p", port, "--", hostname], runner)
+    scan = _run(
+        ["ssh-keyscan", "-T", str(HOST_KEY_SCAN_TIMEOUT_SECONDS), "-p", port, "--", hostname],
+        runner,
+    )
     offered: dict[str, str] = {}
     for line in scan.stdout.splitlines():
         parts = line.split()

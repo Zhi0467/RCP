@@ -391,6 +391,7 @@ export function ExperimentRunDetail({
             <textarea
               className="experiment-start-message"
               aria-label="Starting message"
+              placeholder="Starting message (optional)"
               rows={3}
               value={startMessage}
               disabled={runDisabled || startDisabled || runBusy}

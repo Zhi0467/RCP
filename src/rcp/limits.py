@@ -229,6 +229,8 @@ REPOSITORY_PREVIEW_WINDOW_LINES = 100
 COMPUTE_JOB_LAUNCH_TIMEOUT_SECONDS = 20
 COMPUTE_JOB_STATUS_TIMEOUT_SECONDS = 10
 COMPUTE_PROBE_TIMEOUT_SECONDS = 15
+# ssh-keyscan's own connect bound, inside the probe timeout that bounds the whole call.
+HOST_KEY_SCAN_TIMEOUT_SECONDS = 10
 COMPUTE_PROBE_JOB_SECONDS = 0.5
 COMPUTE_JOB_LOG_TAIL_MAX_BYTES = 64 * 1024
 # A helper launch re-checks its job once after this delay so startup failures

@@ -287,8 +287,9 @@ The + menu holds Upload file and From RCP. Compute has no picker: each project
 machine card's Compute block takes a nonsecret access hint, never keys/passwords,
 and shows whether each agent machine reaches it, distinguishing
 reachability/auth/host-key failures and naming the machine needing repair.
-Explicit Probe runs checks; routine refresh uses cache. Unsaved edits mask
-results, disable Probe with Save first, and are not stored in settings drafts.
+Explicit Probe runs checks; routine refresh uses cache. Unsaved route edits mask
+results and disable Probe with Save first; an unsaved hint does neither and stays
+in the settings draft.
 Saves fence older in-flight probe responses. Start episode's launch picker takes
 an optional starting message.
 

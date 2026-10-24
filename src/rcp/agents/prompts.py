@@ -234,7 +234,8 @@ Relations one hop from this node:
 
 
 # Where a human widens the boundary: the space machine card's writable paths,
-# which every launch resolves afresh.
+# which every launch resolves afresh. Only a scope that writes repositories
+# receives them, so only that scope is told.
 _GRANT_REQUEST_RULE = """- If the work needs a folder outside the roots, such as a CLI's own config folder that it writes
   on every command, ask the human to add that exact path under Space Settings -> Machines ->
   this machine's card -> Writable paths. It applies from your next launch."""
@@ -267,14 +268,14 @@ def write_scope_section(scope: ProjectWriteScope) -> str:
     lines += [f"- writable, machine grant: `{path}`" for path in scope.granted_roots]
     lines += [f"- denied inside the roots above: `{path}`" for path in scope.protected_write_paths]
     roots = "\n".join(lines)
+    grant_rule = _GRANT_REQUEST_RULE + "\n" if scope.repositories else ""
     return f"""
 Enforced write boundary on the machine this turn runs on:
 {roots}
 {_episode_worktree_rule(scope)}- Every other path on this machine is readable but not writable. A write outside the roots above
   fails as a provider denial. That denial is this boundary, not a broken tool, so do not retry it
   through another command or copy files elsewhere to get around it.
-{_GRANT_REQUEST_RULE}
-- A repository pointer whose host is non-empty lives on another machine and is outside this
+{grant_rule}- A repository pointer whose host is non-empty lives on another machine and is outside this
   boundary. Reach it by SSH and stay inside the human's requested objective there.
 """
 
