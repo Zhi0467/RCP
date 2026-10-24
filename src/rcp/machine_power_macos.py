@@ -26,6 +26,7 @@ from rcp.limits import (
     MACHINE_POWER_HEARTBEAT_STALE_SECONDS,
     MACHINE_POWER_WATCHDOG_INTERVAL_SECONDS,
 )
+from rcp.operator_commands import OperatorRoute
 
 LABEL = "org.rcp.keep-awake-reset"
 MARKER = "RCP keep-awake v1"
@@ -581,7 +582,10 @@ class MacOSProfile:
 
     @staticmethod
     def cleanup_command(kind: str) -> str:
-        return "pmset sleepnow" if kind == "sleep_failed" else "sudo pmset -a disablesleep 0"
+        # Shown for this Mac, where RCP runs as the human.
+        if kind == "sleep_failed":
+            return OperatorRoute().command(["pmset", "sleepnow"])
+        return OperatorRoute().command(["pmset", "-a", "disablesleep", "0"], root=True)
 
     def read_battery(self) -> tuple[bool, int | None]:
         f = self._frameworks

@@ -3288,6 +3288,45 @@ button.agent-provider-label {
 .machine-writable-paths > header strong {
   font-size: var(--type-2xs);
 }
+/* Card sections start folded, the same +/− disclosure the Experiment page uses. */
+.machine-fold > summary {
+  align-items: baseline;
+  cursor: pointer;
+  display: flex;
+  gap: 8px;
+  list-style: none;
+}
+.machine-fold > summary::-webkit-details-marker {
+  display: none;
+}
+.machine-fold > summary::before {
+  color: var(--muted);
+  content: "+";
+  font: var(--type-2xs)/1 var(--mono);
+  width: 10px;
+}
+.machine-fold[open] > summary::before {
+  content: "−";
+}
+.machine-fold > summary:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
+.machine-fold > summary strong {
+  font-size: var(--type-2xs);
+}
+.machine-fold > summary span {
+  color: var(--muted);
+  font: var(--type-2xs)/1 var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.machine-fold:not([open]) {
+  gap: 0;
+}
+.machine-fold > .machine-browser-row {
+  padding-left: 0;
+  padding-right: 0;
+}
 .machine-writable-paths ul {
   display: grid;
   gap: 4px;
@@ -3373,6 +3412,27 @@ button.agent-provider-label {
   flex-wrap: wrap;
   gap: 6px;
   grid-column: 1 / -1;
+}
+/* A failed first login: a red edge, the kind as an icon, and one recovery action. */
+.new-machine-form[data-login-failure] {
+  border-left: 3px solid var(--red);
+  padding-left: 9px;
+}
+.new-machine-login {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+.new-machine-login > svg {
+  color: var(--red);
+  flex: none;
+}
+.new-machine-login code {
+  font-size: var(--type-3xs);
+  overflow-wrap: anywhere;
 }
 .add-project-machine > p[role="alert"],
 .new-machine-form > p[role="alert"] {
@@ -3831,13 +3891,20 @@ button.agent-provider-label {
 .machine-browser-row p {
   margin: 0;
 }
-.browser-install-command {
+.copy-command {
+  align-items: flex-start;
+  border-left: 3px solid transparent;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
   gap: 8px;
+  min-width: 0;
 }
-.browser-install-command code {
+.copy-command[data-copy-command="failed"] {
+  border-left-color: var(--red);
+  padding-left: 6px;
+}
+.copy-command code {
+  flex: 1;
+  min-width: 0;
   overflow-wrap: anywhere;
   user-select: all;
 }

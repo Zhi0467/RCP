@@ -44,7 +44,7 @@ from rcp.terminals.models import (
     TerminalUnavailable,
 )
 from rcp.terminals.probe import TerminalProbe, TerminalProbeCache
-from rcp.terminals.profile import SHELL_PATH
+from rcp.terminals.profile import SHELL_PATH, account_config_paths
 from rcp.terminals.runtime import (
     end_runtime,
     get_runtime,
@@ -644,7 +644,9 @@ class TerminalManager:
             granted, owned_inside = await asyncio.to_thread(
                 local_grants, machine_writable_paths, self.data_dir, protected
             )
-            protected = sorted({*protected, *owned_inside})
+            account_roots, account_kept = await asyncio.to_thread(account_config_paths, Path.home())
+            granted = [*granted, *account_roots]
+            protected = sorted({*protected, *owned_inside, *account_kept})
         if not machine.host:
             if git_key is not None:
                 resolved = await asyncio.to_thread(

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { enableMachineLinger, installMachineBrowser, loadMachineBrowser } from "../core/api";
 import { browserReason } from "../core/browserStatus";
+import { CopyCommand } from "../core/CopyCommand";
 import { errorMessage } from "../core/errors";
 import type { MachineBrowserReadiness } from "../core/types";
 
@@ -16,7 +17,6 @@ export function MachineBrowserRow({
   const [readiness, setReadiness] = useState<MachineBrowserReadiness | null>(null);
   const [pending, setPending] = useState<"check" | "install" | "linger" | null>("check");
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
   const [failedPolls, setFailedPolls] = useState(0);
   useEffect(() => {
     let cancelled = false;
@@ -63,7 +63,6 @@ export function MachineBrowserRow({
   async function run(action: "check" | "install" | "linger") {
     setPending(action);
     setError(null);
-    setCopied(false);
     try {
       setReadiness(
         await (action === "install"
@@ -79,7 +78,7 @@ export function MachineBrowserRow({
     }
   }
   const reason = readiness ? browserReason(readiness.status) : null;
-  // A command the member must hand to an administrator, when RCP cannot run it itself.
+  // A command the member runs from their own prompt, when RCP cannot run it itself.
   const command =
     (readiness?.status === "system_libraries_missing" && readiness.apt_command) ||
     (readiness?.status === "linger_disabled" && readiness.admin_command) ||
@@ -102,26 +101,7 @@ export function MachineBrowserRow({
       {reason?.fix && !["not_installed", "linger_disabled"].includes(readiness!.status) && (
         <p>{reason.fix}</p>
       )}
-      {command && (
-        <div className="browser-install-command">
-          <code>{command}</code>
-          <button
-            type="button"
-            className="button secondary compact"
-            onClick={async () => {
-              setError(null);
-              try {
-                await navigator.clipboard.writeText(command);
-                setCopied(true);
-              } catch {
-                setError("Could not copy the command. Select it and copy it manually.");
-              }
-            }}
-          >
-            {copied ? "Copied" : "Copy command"}
-          </button>
-        </div>
-      )}
+      {command && <CopyCommand key={command} command={command} />}
       <div className="provider-login-notice-actions">
         {readiness?.status === "linger_disabled" && !readiness.admin_command && (
           <button
