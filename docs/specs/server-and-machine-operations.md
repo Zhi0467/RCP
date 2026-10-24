@@ -915,7 +915,8 @@ absolute locators. CLI/doctor report these causes; pre-update failures become
 without changing strict older receipts; absent sidecars are not reconstructed.
 
 Each protected team project also binds a nonsecret recovery descriptor: current
-manifest settings/machines, effective repository sources/aliases, resolved checkout
+manifest settings/machines (including each machine's access hint and compute
+block), effective repository sources/aliases, resolved checkout
 paths/routes, and public old key labels/fingerprints. Completed provisioning proves
 checkout location and grants; it does not freeze later Settings edits or machines
 without repositories. Missing, credential-bearing or inconsistent descriptors

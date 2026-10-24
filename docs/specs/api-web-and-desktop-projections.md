@@ -517,7 +517,10 @@ read from storage even when the graph snapshot is cached. Settings updates
 accept `machine_compute`, a partial alias-to-`MachineComputeConfig` map; null
 removes a block, omission preserves it. Validation and TOML persistence belong
 to the machine configuration owner. A changed block invalidates its stored
-probes and schedules a fresh background check of that machine.
+probes and schedules a fresh background check of that machine. Entries also
+expose `access_hint`, updated through `machine_access_hints`, a partial
+alias-to-string map where omission preserves and an empty string clears; it
+lives on the machine, survives a compute reset, and invalidates no probe.
 `POST /api/projects/{project_id}/machines/{machine_alias}/compute/check` uses
 project write admission, re-probes every route that machine offers, and
 returns both route slots.
@@ -1243,9 +1246,14 @@ wrap-up means no report was needed; sign-in-blocked reports remain wrapping up.
 
 `GET /api/providers/logins` lists machine accounts, dependent project machines,
 secret-free credential summaries, labels, supported sign-in methods, and active
-sign-ins. Project readiness includes its relevant `provider_logins`. Signed-out
-accounts get one notice on Runs/landing with provider, machine, time, bounded
-reason, Verify sign-in, and a Settings link. Space Settings offers only the
+sign-ins. The project snapshot's `provider_logins` lists only accounts an agent
+uses: each execution profile's provider on its `run_on` machine, plus any
+account holding this project's parked work (queued tasks, provider-auth
+recoveries, the current failed Experiment turn, undelivered watcher groups). A
+machine no profile runs on raises no notice. Signed-out accounts get one notice
+on Runs/landing with provider, machine, time, bounded reason, Verify sign-in, a
+Settings link, and an icon-only dismiss that hides that sign-out on this device
+until the account signs out again. Space Settings offers only the
 backend's methods: device-code flow with polling, one-shot token entry verified
 by a real request, Verify, and Sign out. Verify is hidden while a token is unsent
 or a token-only account has none saved. Provider names never select UI behavior.
