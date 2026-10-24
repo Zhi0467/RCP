@@ -89,7 +89,8 @@ class SavedArtifactResponse(BaseModel):
     download_url: str | None
     can_open: bool
     unavailable_reason: str | None = None
-    # The owning branch's display name, resolved here so the tag never guesses from a link.
+    # The owning branch, resolved here so the page never guesses from a link; None is main.
+    graph_branch_id: str | None = None
     graph_branch_name: str = "main"
     can_delete: bool = False
 
@@ -244,9 +245,19 @@ def _artifact_source_hrefs(
     return destinations
 
 
-def _temporary(artifact: Artifact) -> bool:
-    """An unkept turn artifact; episode reports and kept artifacts are permanent."""
-    return artifact.supplier == "turn" and artifact.kept_at is None
+def _temporary(store: AppStore, artifact: Artifact) -> bool:
+    """Unkept output the Artifacts page leaves out until a human keeps it.
+
+    That is a turn's file or an Auto-research child Experiment's report, so a chain's
+    many children do not crowd the page; its own report and an ordinary Experiment's
+    are saved as they end.
+    """
+    if artifact.kept_at is not None:
+        return False
+    return artifact.supplier == "turn" or (
+        artifact.episode_id is not None
+        and store.auto_research_child_experiment(artifact.episode_id) is not None
+    )
 
 
 @router.get("/api/projects/{project_id}/artifacts", response_model=list[SavedArtifactResponse])
@@ -327,8 +338,10 @@ def saved_artifacts(
         stored_report = store.episode_report(report.episode_id)
         if stored_report is None:
             continue
-        artifact_url = f"{base}/artifacts/{quote(stored_report.artifact_id, safe='')}"
         stored = stored_by_id.get(stored_report.artifact_id)
+        if stored is not None and _temporary(store, stored):
+            continue
+        artifact_url = f"{base}/artifacts/{quote(stored_report.artifact_id, safe='')}"
         entries.append(
             SavedArtifactResponse(
                 id=f"report:{report.report_id}",
@@ -358,7 +371,7 @@ def saved_artifacts(
         if (report := store.episode_report(summary.episode_id)) is not None
     )
     for artifact in stored_artifacts:
-        if artifact.artifact_id in represented or _temporary(artifact):
+        if artifact.artifact_id in represented or _temporary(store, artifact):
             continue
         view = artifact_view(artifact.media_type)
         artifact_url = f"{base}/artifacts/{quote(artifact.artifact_id, safe='')}"
@@ -408,6 +421,7 @@ def _name_artifact_branches(
         else:
             continue
         if target.kind == "branch" and target.branch_id is not None:
+            entry.graph_branch_id = target.branch_id
             entry.graph_branch_name = names.get(target.branch_id, target.branch_id[:8])
 
 
@@ -537,7 +551,7 @@ def stored_artifact_state(
         if artifact_view(artifact.media_type) not in {"pdf", "file"}
         else None,
         download_url=f"{base}/download",
-        can_keep=_temporary(artifact),
+        can_keep=_temporary(store, artifact),
         can_delete=store.artifact_delete_refusal(artifact, store.artifact_deletion_holds()) is None,
         expires_at=artifact.expires_at,
     )
@@ -659,7 +673,7 @@ def stored_artifact_viewer(
             descriptor,
             content_url=f"{base}/content?{urlencode({'version_id': artifact.current_version})}",
             live_url=f"{base}/versions/{quote(artifact.current_version, safe='')}/live",
-            state="temporary" if _temporary(artifact) else "kept",
+            state="temporary" if _temporary(store, artifact) else "kept",
             presentation=presentation,
             selectable=artifact.media_type in COMMENTABLE_MEDIA_TYPES,
             panel=comment_panel(

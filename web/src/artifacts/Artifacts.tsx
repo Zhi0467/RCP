@@ -21,6 +21,7 @@ import { StoredArtifactDownload } from "./StoredArtifactDownload";
 import { EpisodeAuthor } from "../experiments/EpisodeRunControls";
 import type { GraphRef, ProjectArtifact } from "../core/types";
 import { BranchTag } from "../core/BranchTag";
+import { BranchGroupSection, branchGroups, useFoldedBranches } from "./BranchGroups";
 
 export function Artifacts({
   projectId,
@@ -41,6 +42,9 @@ export function Artifacts({
   const loading = resource.loading;
   const [actionError, setError] = useState<string | null>(null);
   const error = actionError || (resource.error ? String(resource.error) : null);
+  // Grouped as the server orders entries, so the branch with the newest output leads.
+  const groups = branchGroups(entries ?? [], (entry) => entry);
+  const { folded, fold } = useFoldedBranches(projectId);
 
   const open = async (
     event: MouseEvent<HTMLAnchorElement | HTMLButtonElement>,
@@ -65,6 +69,112 @@ export function Artifacts({
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
+  };
+
+  const row = (entry: ProjectArtifact, grouped: boolean) => {
+    const sourceNodeTitle = entry.source_node_id ? nodeTitle(entry.source_node_id) : null;
+    const target =
+      parseProjectHash(entry.source_chat_href ?? "").experimentRoute?.graph_target ??
+      graphTargetFromHash(entry.source_chat_href ?? "");
+    return (
+      <li
+        key={entry.id}
+        className="artifact-entry"
+        draggable={Boolean(entry.artifact_id && entry.available)}
+        onDragStart={(event) => {
+          if (!entry.artifact_id || !entry.available) {
+            event.preventDefault();
+            return;
+          }
+          setReferenceDrag(event.dataTransfer, projectId, target, {
+            kind: "artifact",
+            artifact_id: entry.artifact_id,
+          });
+        }}
+      >
+        <div>
+          <div className="artifact-entry-heading">
+            <h3>{entry.name}</h3>
+            <EpisodeAuthor author={entry.authorized_by} />
+            {!grouped && (
+              <BranchTag refs={graphRefs} target={target} name={entry.graph_branch_name} />
+            )}
+          </div>
+          {entry.source_chat_href && (
+            <a
+              className="artifact-entry-chat"
+              href={entry.source_chat_href}
+              aria-label={`Open originating chat for ${entry.name}`}
+            >
+              <MessageCircle size={14} aria-hidden="true" /> Source chat
+            </a>
+          )}
+          {entry.source_node_id && sourceNodeTitle !== null && (
+            <button
+              type="button"
+              className="artifact-entry-chat artifact-entry-node"
+              aria-label={`Open source node for ${entry.name}`}
+              onClick={() => onOpenNode(entry.source_node_id!)}
+            >
+              <GitCommitHorizontal size={14} aria-hidden="true" /> {sourceNodeTitle}
+            </button>
+          )}
+          {!entry.can_open && !entry.can_download && (
+            <p>{entry.unavailable_reason || "Preview unavailable."}</p>
+          )}
+        </div>
+        {!entry.can_open && entry.view === "pdf" && entry.can_download && isDesktopRuntime() && (
+          <button
+            className="button compact secondary artifact-entry-open"
+            aria-label={`Open ${entry.name}`}
+            onClick={(event) => void open(event, entry)}
+          >
+            <ExternalLink size={14} /> Open
+          </button>
+        )}
+        {entry.artifact_id && entry.available && (
+          <CopyReferenceButton
+            projectId={projectId}
+            graphTarget={graphTargetFromHash(entry.source_chat_href ?? "")}
+            reference={{ kind: "artifact", artifact_id: entry.artifact_id }}
+            className="button compact secondary artifact-entry-copy"
+            showLabel
+          />
+        )}
+        {entry.can_download && entry.download_url && entry.artifact_id && (
+          <StoredArtifactDownload
+            projectId={projectId}
+            artifactId={entry.artifact_id}
+            name={entry.name}
+            className="button compact secondary artifact-entry-download"
+            href={entry.download_url}
+          >
+            <Download size={14} /> Download
+          </StoredArtifactDownload>
+        )}
+        {entry.can_open && entry.view !== "pdf" && (
+          <a
+            className="button compact secondary artifact-entry-open"
+            href={entry.viewer_url ?? undefined}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={`Open ${entry.name}`}
+            onClick={(event) => void open(event, entry)}
+          >
+            <ExternalLink size={14} /> Open
+          </a>
+        )}
+        {entry.can_delete && entry.artifact_id && (
+          <DeleteArtifactButton
+            projectId={projectId}
+            artifactId={entry.artifact_id}
+            label={`Delete ${entry.name}`}
+            className="button compact secondary artifact-entry-delete"
+            iconSize={14}
+          />
+        )}
+      </li>
+    );
   };
 
   return (
@@ -92,115 +202,20 @@ export function Artifacts({
         loading && <p role="status">Loading artifacts…</p>
       ) : !error && entries.length === 0 ? (
         <p>No saved artifacts or reports yet.</p>
+      ) : groups.length === 1 ? (
+        <ul className="artifacts-list">{entries.map((entry) => row(entry, false))}</ul>
       ) : (
-        <ul className="artifacts-list">
-          {entries.map((entry) => {
-            const sourceNodeTitle = entry.source_node_id ? nodeTitle(entry.source_node_id) : null;
-            const target =
-              parseProjectHash(entry.source_chat_href ?? "").experimentRoute?.graph_target ??
-              graphTargetFromHash(entry.source_chat_href ?? "");
-            return (
-              <li
-                key={entry.id}
-                className="artifact-entry"
-                draggable={Boolean(entry.artifact_id && entry.available)}
-                onDragStart={(event) => {
-                  if (!entry.artifact_id || !entry.available) {
-                    event.preventDefault();
-                    return;
-                  }
-                  setReferenceDrag(event.dataTransfer, projectId, target, {
-                    kind: "artifact",
-                    artifact_id: entry.artifact_id,
-                  });
-                }}
-              >
-                <div>
-                  <div className="artifact-entry-heading">
-                    <h3>{entry.name}</h3>
-                    <EpisodeAuthor author={entry.authorized_by} />
-                    <BranchTag refs={graphRefs} target={target} name={entry.graph_branch_name} />
-                  </div>
-                  {entry.source_chat_href && (
-                    <a
-                      className="artifact-entry-chat"
-                      href={entry.source_chat_href}
-                      aria-label={`Open originating chat for ${entry.name}`}
-                    >
-                      <MessageCircle size={14} aria-hidden="true" /> Source chat
-                    </a>
-                  )}
-                  {entry.source_node_id && sourceNodeTitle !== null && (
-                    <button
-                      type="button"
-                      className="artifact-entry-chat artifact-entry-node"
-                      aria-label={`Open source node for ${entry.name}`}
-                      onClick={() => onOpenNode(entry.source_node_id!)}
-                    >
-                      <GitCommitHorizontal size={14} aria-hidden="true" /> {sourceNodeTitle}
-                    </button>
-                  )}
-                  {!entry.can_open && !entry.can_download && (
-                    <p>{entry.unavailable_reason || "Preview unavailable."}</p>
-                  )}
-                </div>
-                {!entry.can_open &&
-                  entry.view === "pdf" &&
-                  entry.can_download &&
-                  isDesktopRuntime() && (
-                    <button
-                      className="button compact secondary artifact-entry-open"
-                      aria-label={`Open ${entry.name}`}
-                      onClick={(event) => void open(event, entry)}
-                    >
-                      <ExternalLink size={14} /> Open
-                    </button>
-                  )}
-                {entry.artifact_id && entry.available && (
-                  <CopyReferenceButton
-                    projectId={projectId}
-                    graphTarget={graphTargetFromHash(entry.source_chat_href ?? "")}
-                    reference={{ kind: "artifact", artifact_id: entry.artifact_id }}
-                    className="button compact secondary artifact-entry-copy"
-                    showLabel
-                  />
-                )}
-                {entry.can_download && entry.download_url && entry.artifact_id && (
-                  <StoredArtifactDownload
-                    projectId={projectId}
-                    artifactId={entry.artifact_id}
-                    name={entry.name}
-                    className="button compact secondary artifact-entry-download"
-                    href={entry.download_url}
-                  >
-                    <Download size={14} /> Download
-                  </StoredArtifactDownload>
-                )}
-                {entry.can_open && entry.view !== "pdf" && (
-                  <a
-                    className="button compact secondary artifact-entry-open"
-                    href={entry.viewer_url ?? undefined}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    aria-label={`Open ${entry.name}`}
-                    onClick={(event) => void open(event, entry)}
-                  >
-                    <ExternalLink size={14} /> Open
-                  </a>
-                )}
-                {entry.can_delete && entry.artifact_id && (
-                  <DeleteArtifactButton
-                    projectId={projectId}
-                    artifactId={entry.artifact_id}
-                    label={`Delete ${entry.name}`}
-                    className="button compact secondary artifact-entry-delete"
-                    iconSize={14}
-                  />
-                )}
-              </li>
-            );
-          })}
-        </ul>
+        groups.map((group) => (
+          <BranchGroupSection
+            key={group.key}
+            group={group}
+            refs={graphRefs}
+            open={!folded.has(group.key)}
+            onFold={(closed) => fold(group.key, closed)}
+          >
+            <ul className="artifacts-list">{group.items.map((entry) => row(entry, true))}</ul>
+          </BranchGroupSection>
+        ))
       )}
     </section>
   );

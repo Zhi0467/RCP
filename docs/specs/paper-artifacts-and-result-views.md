@@ -194,7 +194,17 @@ nonblocking. The panel shows current version and Download, without repository co
 
 Artifacts lists kept outputs and undeleted reports across history, including
 archives, independent of task/episode windows. Temporary outputs stay in their
-chats until kept. Reports appear when captured. Revisits paint cached lists first.
+chats until kept. Reports appear when captured, except an Auto-research child
+Experiment's report, which offers Keep like a temporary output and is listed once
+kept. Revisits paint cached lists first.
+
+**Why:** a chain can start many child Experiments, and listing every child report
+buried the outputs a member chose to keep; the chain's own report summarizes them.
+
+Rows group under their branch, the branch with the newest output first; each
+header folds, and the device remembers which branches are folded. With one branch
+there is no header and each row keeps its branch tag. The composer's From RCP
+picker groups its Reports and Artifacts folders the same way, sharing the folds.
 
 Rows lead with title, a separate Source chat link when verified, and a node title
 link when the displayed graph holds the origin node. Episode outputs have one
@@ -303,7 +313,10 @@ once from the staged version and retained for recovery; animation uses its first
 frame and says so. SVG/over-pixel-limit images carry positions only. Legacy viewer-
 area boxes keep sampled text and are never cropped. Turns allow 50 annotations.
 Both routes number human `Comment N:` text and prompt regions identically;
-`edit_now` adds only the immediate-edit request. The editable item also gives the
+`edit_now` adds only the immediate-edit request. The chat route joins each human
+turn's selections to its message, so the bubble names the artifact and quotes what
+each numbered comment was drawn on: the text, the boxed elements' names, or a plain
+area for an image. The editable item also gives the
 URL-encoded Markdown embed of its tracked path, so a reply that changed the file in
 place can show it there. All input is bounded/untrusted.
 
