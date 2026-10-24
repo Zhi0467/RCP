@@ -129,7 +129,7 @@ REPLY_STYLE = """Writing the reply:
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
 
-CHAT_MASTER_CONTEXT_VERSION = 23
+CHAT_MASTER_CONTEXT_VERSION = 24
 
 # Staged RCP commands are written against this placeholder; the contract names the current
 # command client once, and a continuation that changes it sends `patch.command_client`.
@@ -437,23 +437,24 @@ Repositories:
 
 
 def compute_connection_section(connections: list[dict[str, str]] | None) -> str:
+    """The project's machines, each as reached from this agent's own machine."""
+
     if not connections:
         return ""
     lines = []
     for connection in connections:
-        location = (
-            "kind: local (this agent execution machine)"
+        route = (
+            "local (this agent's machine)"
             if connection["kind"] == "local"
-            else f"kind: SSH; target: `{connection['ssh_target']}`"
+            else f"`ssh {connection['ssh_target']}`"
         )
         hint = connection.get("access_hint", "")
-        suffix = f"; access hint: {hint}" if hint else ""
-        lines.append(f"- `{connection['id']}` — {connection['name']}: {location}{suffix}")
-    return """Compute resources attached to this turn:
+        suffix = f"; {hint}" if hint else ""
+        lines.append(f"- `{connection['id']}`: {route}{suffix}")
+    return """Project machines:
 {}
-- These are resources the running agent may use; they do not change the provider, execution
-  machine, `run_on`, repository pointers, or enforced write boundary.
-- Use only credentials already configured on this agent execution machine. Never request, print,
+- Reaching a machine does not change where you run or widen your write boundary.
+- Use only credentials already configured on this agent's machine. Never request, print,
   copy, or store a private key or password. Keep SSH host-key verification enabled.
 """.format("\n".join(lines))
 
@@ -884,9 +885,9 @@ _INLINE_CONTINUATION_RULES = {
 
 
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
-DISCUSS_POLICY_VERSION = "discuss-v7"
+DISCUSS_POLICY_VERSION = "discuss-v8"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v11"
+WORK_POLICY_VERSION = "work-v12"
 
 
 class PromptFactory:

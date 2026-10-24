@@ -450,13 +450,17 @@ def test_completed_provisioning_allows_settings_owned_provider_path_updates(
     }
 
 
-def test_backup_configuration_preserves_secret_free_compute_metadata(manifest) -> None:
-    payload = manifest.model_dump(mode="python")
-    payload["machines"][0]["os_account"] = "alice"
-    empty_manifest = Manifest.model_validate(payload)
-    empty = BackupManifestConfiguration.from_manifest(empty_manifest)
-    assert "compute_connections" not in empty.model_dump(mode="json")
+def test_archive_with_retired_compute_connections_keeps_its_digest_and_restores(
+    tmp_path: Path,
+) -> None:
+    from rcp.projects import _render_restored_manifest
+    from rcp.server_ops.application_validation import _render_overlay_manifest
 
+    record, _ = _completed_registration(tmp_path)
+    manifest = load_manifest(record.locator)
+    current = BackupManifestConfiguration.from_manifest(manifest)
+    assert "compute_connections" not in current.model_dump(mode="json")
+    payload = current.model_dump(mode="json")
     payload["compute_connections"] = [
         {
             "id": "gpu",
@@ -466,13 +470,19 @@ def test_backup_configuration_preserves_secret_free_compute_metadata(manifest) -
             "access_hint": "Use /scratch/shared",
         }
     ]
-    configured = Manifest.model_validate(payload)
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
-    recovery = BackupManifestConfiguration.from_manifest(configured)
+    archived = BackupManifestConfiguration.model_validate_json(encoded)
 
-    assert recovery.compute_connections[0].id == "gpu"
-    assert recovery.compute_connections[0].ssh_target == "alice@gpu.example"
-    assert "password" not in recovery.model_dump_json().casefold()
+    assert archived.sha256 == hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    assert archived.matches_manifest(manifest)
+    paths = {repository.alias: repository.path for repository in archived.repositories}
+    restored = _render_restored_manifest(archived, paths)
+    overlay = _render_overlay_manifest(
+        archived, {alias: Path(root) for alias, root in paths.items()}, tmp_path / "overlay"
+    )
+    for content in (restored, overlay):
+        assert "compute_connections" not in tomlkit.parse(content).unwrap()
 
 
 def test_legacy_backup_configuration_keeps_its_payload_and_digest(tmp_path: Path) -> None:

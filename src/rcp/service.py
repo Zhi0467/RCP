@@ -35,7 +35,6 @@ from rcp.config import (
     AgentExecutionProfile,
     AgentSurface,
     AgentSurfaceConfig,
-    ComputeConnectionConfig,
     MachineComputeConfig,
     MachineConfig,
     Manifest,
@@ -90,14 +89,12 @@ from rcp.history import HistoryManager
 from rcp.history.branches import BranchHistoryManager
 from rcp.history.queries import HistoryEngine
 from rcp.limits import (
-    ACTIVE_COMPUTE_ID_MAX_COUNT,
     ARTIFACT_CONTEXT_MAX_SELECTIONS,
     BACKUP_INVENTORY_MAX_ENTRIES,
     CHAT_ATTACHMENT_MAX_COUNT,
     CHAT_PAGE_DEFAULT_LIMIT,
     CHAT_PAGE_MAX_LIMIT,
     CHAT_PREVIEW_MAX_CHARS,
-    COMPUTE_CONNECTION_MAX_COUNT,
     REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 )
 from rcp.operation_ids import canonical_operation_uuid
@@ -309,10 +306,6 @@ class ChatMessage(BaseModel):
     trigger: TaskTrigger = "human"
     steering: SteeringReceipt | None = None
     attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
-    active_compute_ids: list[str] = Field(
-        default_factory=list,
-        max_length=ACTIVE_COMPUTE_ID_MAX_COUNT,
-    )
 
 
 class ChatOriginView(ChatForkOrigin):
@@ -382,11 +375,6 @@ class _StoredChatRecord(BaseModel):
     trigger: TaskTrigger = "human"
     steering: SteeringReceipt | None = None
     attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
-    active_compute_ids: list[str] = Field(
-        default_factory=list,
-        alias="activeComputeIds",
-        max_length=ACTIVE_COMPUTE_ID_MAX_COUNT,
-    )
 
 
 def _fold_chat_receipts(records: list[_StoredChatRecord]) -> list[_StoredChatRecord]:
@@ -937,12 +925,10 @@ class RunRequest(BaseModel):
     references: list[ProjectReferenceSelector] = Field(
         default_factory=list, max_length=CHAT_ATTACHMENT_MAX_COUNT
     )
-    active_compute_ids: list[str] = Field(
-        default_factory=list,
-        max_length=ACTIVE_COMPUTE_ID_MAX_COUNT,
-    )
-    # This value is accepted only from RCP's own admission and durable rows.
-    # HTTP admission discards any client copy before resolving the selected ids.
+    # Every project machine seen from `run_on`, accepted only from RCP's own
+    # admission and durable rows. HTTP admission discards any client copy, and each
+    # launch re-resolves it from the current manifest. A retired client or row
+    # field, `active_compute_ids`, is ignored like any other unknown key.
     resolved_compute_context: ResolvedComputeContext = Field(
         default_factory=ResolvedComputeContext,
     )
@@ -1053,12 +1039,6 @@ class ProjectSettingsRequest(BaseModel):
     machine_provider_paths: dict[str, dict[ProviderId, str]] | None = None
     # Omitted machines are preserved; null removes one machine compute block.
     machine_compute: dict[str, MachineComputeConfig | None] | None = None
-    # Omission preserves the manifest for older clients; an empty list removes
-    # all project compute resources.
-    compute_connections: list[ComputeConnectionConfig] | None = Field(
-        default=None,
-        max_length=COMPUTE_CONNECTION_MAX_COUNT,
-    )
 
     @model_validator(mode="after")
     def require_every_surface(self) -> ProjectSettingsRequest:
@@ -1580,7 +1560,6 @@ class ProjectService:
                     trigger=record.trigger,
                     steering=record.steering,
                     attachments=record.attachments,
-                    active_compute_ids=record.active_compute_ids,
                 )
             )
         first_message = next((message.text for message in messages if message.role == "user"), "")
@@ -1675,10 +1654,6 @@ class ProjectService:
                     repository.model_dump() for repository in self.manifest.repositories
                 ],
                 "machines": [machine.model_dump() for machine in self.manifest.machines],
-                "compute_connections": [
-                    connection.model_dump(mode="json")
-                    for connection in self.manifest.compute_connections
-                ],
                 "compute_status": {},
                 "primary_question": (
                     primary.model_dump(mode="json") if primary is not None else None
@@ -1942,7 +1917,6 @@ class ProjectService:
             provider_path_updates,
             request.skill_defaults,
             request.default_auto_research_invocation_ceiling,
-            request.compute_connections,
             request.machine_compute,
         )
         for (alias, provider), prior_path in prior_paths.items():
