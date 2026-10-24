@@ -1620,6 +1620,18 @@ class AgentTaskStoreMixin(StoreMixinBase):
             (project_id, kind, chat_id),
         ).fetchone()
 
+    def current_chat_agent(
+        self, project_id: str, kind: str, chat_id: str
+    ) -> dict[str, object] | None:
+        """The machine and agent of the chat's current session, which a wake continues."""
+
+        with self.connection() as connection:
+            row = self._current_chat_session_row(connection, project_id, kind, chat_id)
+        if row is None:
+            return None
+        request = json.loads(row["request_json"])
+        return {key: request.get(key) for key in ("run_on", *_WAKE_FOLLOWS_CHAT)}
+
     @staticmethod
     def _dropped_chat_session_reason(row: sqlite3.Row) -> str | None:
         """Why the provider can no longer continue this row's session, when it cannot.

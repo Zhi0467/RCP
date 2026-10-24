@@ -1649,6 +1649,37 @@ def test_chat_wake_reaches_the_chats_current_agent(store, changed_agent) -> None
     }
 
 
+def test_chat_wake_admits_the_current_agents_provider(store) -> None:
+    from rcp.runs.provider_login import AdmissionRefused
+    from rcp.runs.watcher_admission import start_watcher_notification
+    from rcp.service import RunRequest
+
+    _completed_chat_turn(
+        store, "human-before", "current-session", request_updates={"provider": "claude"}
+    )
+    store.create_watchers([_record("done", status="completed")])
+    tasks = BackgroundAgentTasks(store, None)
+    admitted: list[str | None] = []
+
+    def admit(_project_id, request):
+        admitted.append(request.provider)
+        raise AdmissionRefused("stop here")
+
+    tasks.admit_provider_task = admit
+    request = RunRequest.model_validate(_task(store, "wake", ["done"]).request)
+    start_watcher_notification(
+        tasks,
+        "project",
+        "node_chat",
+        request,
+        ["done"],
+        authorized_by=_identity(store),
+    )
+
+    # The armed provider may be signed out; the wake needs only the chat's current one.
+    assert admitted == ["claude"]
+
+
 def test_chat_wake_refuses_a_machine_change_with_durable_reason(store) -> None:
     _completed_chat_turn(
         store, "human-before", "current-session", request_updates={"run_on": "other-machine"}
