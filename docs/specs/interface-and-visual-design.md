@@ -293,7 +293,9 @@ in the settings draft.
 Saves fence older in-flight probe responses. Start episode's launch picker takes
 an optional starting message.
 
-Machine tiles show name, host, provider/job status, and writable-path count.
+Machine tiles show name, host, provider/job status, and writable-path count. Aliases that reach the same machine account, as a move can leave a laptop and
+its remote both on the team server, share one tile and one card; each alias's own
+settings sit under its name.
 One card opens at a time below them. Dashed Add machine opens other space machines;
 selection derives an alias and opens it. Setup shares these tiles and New machine.
 Cards group provider paths, Long-running jobs, and shared writable paths. Folder
