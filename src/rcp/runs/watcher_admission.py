@@ -141,6 +141,12 @@ def start_watcher_notification(
         raise ValueError("The watcher notification request must name its watcher records.")
     if not isinstance(request, RunRequest):
         raise TypeError(f"{kind} requires a RunRequest")
+    if not experiment_wake and not experiment_reauthorization and request.chat_id:
+        # Provider admission checks the agent the wake reaches, not the one that armed it;
+        # insertion confirms the same session atomically.
+        agent = tasks.store.current_chat_agent(project_id, kind, request.chat_id)
+        if agent is not None and agent.pop("run_on") == request.run_on:
+            request = request.model_copy(update=agent)
     request_data = request.model_dump(mode="json")
     estimate, samples = tasks.store.agent_task_estimate(project_id, kind, request_data)
     dispatch_authority = resolved_dispatch_authority(

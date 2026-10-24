@@ -438,6 +438,7 @@ class TransferRunRequestHistory(_StrictTransferRecord):
     node_id: str | None = None
     message: str | None = None
     chat_id: str | None = None
+    started_from_operation_id: str | None = None
     mode: Literal["discuss", "work"] = "discuss"
     trigger: Literal["human", "orchestrator", "experiment_run", "watcher"] = "human"
     patch_kind: Literal["work", "experiment_loop"] = "work"
@@ -460,6 +461,8 @@ class TransferRunRequestHistory(_StrictTransferRecord):
         data = handler(self)
         if "artifact_edit" not in self.model_fields_set:
             data.pop("artifact_edit", None)
+        if self.started_from_operation_id is None:
+            data.pop("started_from_operation_id", None)
         return data
 
 
@@ -596,6 +599,7 @@ def capture_task_request_history(
         node_id=_optional_string(request.get("node_id")),
         message=_optional_string(request.get("message")),
         chat_id=_optional_string(request.get("chat_id")),
+        started_from_operation_id=_optional_string(request.get("started_from_operation_id")),
         mode=request.get("mode", "discuss"),
         trigger=request.get("trigger", "human"),
         patch_kind=request.get("patch_kind", "work"),

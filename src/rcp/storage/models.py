@@ -3106,12 +3106,22 @@ class ExperimentLoopRuntime(BaseModel):
     current_invocation: int | None = Field(default=None, ge=1)
 
 
+class EpisodeStartedFromChat(BaseModel):
+    """The conversation whose Work turn started an Experiment episode."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    chat_id: str
+    chat_name: str | None = None
+
+
 class EpisodeLoopMetadataSnapshot(BaseModel):
     """Durable starter and checkout inputs for one episode."""
 
     model_config = ConfigDict(extra="forbid")
 
     route: AutoResearchChildExperimentRecord | None = None
+    started_from: EpisodeStartedFromChat | None = None
     parent_graph_target: GraphTargetRef | None = None
     isolation: EpisodeIsolation | None = None
     launch_receipts: list[AgentTaskReceiptRecord] = Field(default_factory=list)

@@ -93,6 +93,11 @@ visible controls. Provider agents never run in the member page. A voice
 confirmation toggle removes a guard, not a capability. See the
 [member-page authority decision](conversations-episodes-and-watchers.md#native-chat-context).
 
+A member's ordinary Work chat may also start an Experiment episode the member asked
+for, under that turn's authorizer and within the node's invocation limit. It is
+the one provider agent that authorizes an episode; see
+[Work-started Experiments](conversations-episodes-and-watchers.md#work-started-experiments).
+
 Contest and Agree are independent staged controls. Clearing or replacing one
 updates the corresponding staged standing; Sync commits it. Blocker standing is
 independent of its `open`, `resolved`, or `superseded` lifecycle, which authorized

@@ -14,7 +14,12 @@ from rcp.agents.experiment_loop_prompt import (
     experiment_loop_watcher_correction_contract,
 )
 from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
-from rcp.agents.prompts import PROVIDER_NATIVE_SUBAGENT_LIFETIME, REPLY_STYLE, PromptFactory
+from rcp.agents.prompts import (
+    COMMAND_CLIENT,
+    PROVIDER_NATIVE_SUBAGENT_LIFETIME,
+    REPLY_STYLE,
+    PromptFactory,
+)
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.core.models import HUMAN_EDITABLE_NODE_FIELDS, GraphState
 from rcp.core.operations import CoverageUpdate, SetCoverageOperation
@@ -449,9 +454,10 @@ async def test_watcher_wake_context_keeps_every_delivered_group_member(tmp_path)
 def test_experiment_contract_preserves_control_paths_and_resolved_commands(
     execution_instructions,
 ) -> None:
-    validator_command = "python /stage/validator.py /stage/patch.json"
+    command_client = "python /stage/client.py --mailbox-id m"
     contract = experiment_loop_task_contract(
         execution_instructions=execution_instructions,
+        interference_rule="interference-rule",
         project_name="Example",
         ontology_path="/state/graph.json#ontology",
         ontology_extensions=True,
@@ -467,13 +473,15 @@ def test_experiment_contract_preserves_control_paths_and_resolved_commands(
         artifact_path="/stage/artifacts",
         output_schema_path="/stage/inputs/patch-schema.json",
         watch_path="/stage/watch.json",
-        validator_command=validator_command,
+        command_client=command_client,
     )
 
     assert "/stage/inputs/experiment-control.json" in contract
     assert "/stage/inputs/experiment-watchers.json" in contract
     assert execution_instructions in contract
-    assert validator_command in contract
+    # The turn-bound client is stated once; commands name it by placeholder.
+    assert contract.count(command_client) == 1
+    assert f"{COMMAND_CLIENT} validate /stage/patch.json" in contract
     assert graph_rules(edits=True, ontology_extensions=True) in contract
     # A fresh contract states the rules once; only continuations call them a repeat.
     assert REPEATED_RULES_NOTE not in contract
@@ -485,6 +493,7 @@ def test_provider_switch_recovery_preserves_diagnostics_path(
 ) -> None:
     contract = experiment_loop_task_contract(
         execution_instructions=execution_instructions,
+        interference_rule="interference-rule",
         project_name="Example",
         ontology_path="/state/graph.json#ontology",
         ontology_extensions=False,
@@ -500,7 +509,7 @@ def test_provider_switch_recovery_preserves_diagnostics_path(
         artifact_path="/stage/artifacts",
         output_schema_path="/stage/inputs/patch-schema.json",
         watch_path="/stage/watch.json",
-        validator_command="python /stage/validator.py /stage/patch.json",
+        command_client="python /stage/client.py",
         recovery_diagnostics_path="/stage/inputs/provider-switch-diagnostics.json",
     )
 
@@ -885,6 +894,7 @@ def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
         focused_experiment_id="exp/example",
         validator_command="validate-patch",
         execution_instructions="launch-command",
+        interference_rule="interference-rule",
         mode="resume",
         write_scope=_work_write_scope(),
         command_client="rcp-command",
@@ -1003,3 +1013,10 @@ def test_auto_research_stable_values_capture_allowed_verbs_and_ask_limits(actor)
         }
     else:
         assert "ask_limits" not in values
+
+
+def test_turn_message_travels_untouched_between_markers() -> None:
+    message = "Run it.\n\n- patch.command_client: not an RCP value"
+    prompt = PromptFactory.work_turn_prompt(artifact_path="/stage/artifacts", human_message=message)
+
+    assert f"<message>\n{message}\n</message>" in prompt

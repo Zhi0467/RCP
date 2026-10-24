@@ -189,6 +189,10 @@ def _completed_graph_status_message(graph_update: object) -> str:
     return "Agent task completed."
 
 
+# The chat's agent a wake continues, taken from its current turn.
+_WAKE_FOLLOWS_CHAT = ("provider", "model", "reasoning")
+
+
 @dataclass(frozen=True)
 class _AgentTaskTransitionResult:
     outcome: Literal["applied", "refused", "missing"]
@@ -1616,6 +1620,18 @@ class AgentTaskStoreMixin(StoreMixinBase):
             (project_id, kind, chat_id),
         ).fetchone()
 
+    def current_chat_agent(
+        self, project_id: str, kind: str, chat_id: str
+    ) -> dict[str, object] | None:
+        """The machine and agent of the chat's current session, which a wake continues."""
+
+        with self.connection() as connection:
+            row = self._current_chat_session_row(connection, project_id, kind, chat_id)
+        if row is None:
+            return None
+        request = json.loads(row["request_json"])
+        return {key: request.get(key) for key in ("run_on", *_WAKE_FOLLOWS_CHAT)}
+
     @staticmethod
     def _dropped_chat_session_reason(row: sqlite3.Row) -> str | None:
         """Why the provider can no longer continue this row's session, when it cannot.
@@ -1951,25 +1967,32 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 if previous.get("node_id") != record.request.get("node_id"):
                     raise ValueError("This native session belongs to another chat node.")
                 reason = "current_session"
-                # A human may switch models within one native session; a wake
-                # replays a recorded policy, so any drift refuses it instead.
-                compared = (
-                    (("provider", "provider_mismatch"), ("model", "model_mismatch"))
-                    if waking
-                    else (("provider", "provider_mismatch"),)
-                )
+                if waking and previous.get("run_on") == record.request.get("run_on"):
+                    # A wake reaches the chat's current agent: the human may have switched
+                    # its provider or model since the watcher was armed. The session it
+                    # continues runs on that turn's runtime.
+                    record = AgentTaskRecord.model_validate(
+                        {
+                            **record.model_dump(),
+                            "runtime_id": current["runtime_id"],
+                            "request": {
+                                **record.request,
+                                **{key: previous.get(key) for key in _WAKE_FOLLOWS_CHAT},
+                            },
+                        }
+                    )
                 for field, code in (
-                    *compared,
+                    ("provider", "provider_mismatch"),
                     ("run_on", "machine_mismatch"),
                 ):
                     if previous.get(field) != record.request.get(field):
                         reason = code
                         break
-                if reason != "current_session" and record.request.get("trigger") == "watcher":
+                if reason != "current_session" and waking:
                     message = (
-                        f"Watcher wake refused: {reason}. The watcher's recorded {field} "
+                        f"Watcher wake refused: {reason}. The watcher's recorded machine "
                         "differs from the chat's current session. Stop this watcher and re-arm it "
-                        "from the current chat with the intended provider, model, and machine."
+                        "from the current chat on the intended machine."
                     )
                     return record.model_copy(
                         update={

@@ -165,7 +165,16 @@ test("a served exhausted card settles from wrapping up to a visible report failu
     const page = await browser.newPage();
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    page.on("requestfailed", (request) => errors.push(request.failure()?.errorText));
+    page.on("requestfailed", (request) => {
+      // Collapsing the card releases the detail reads it opened; those aborts are deliberate.
+      const path = new URL(request.url()).pathname;
+      if (
+        /\/episodes(\/[^/]+\/(messages|timeline|artifacts|questions))?$/.test(path) &&
+        request.failure()?.errorText === "net::ERR_ABORTED"
+      )
+        return;
+      errors.push(request.failure()?.errorText);
+    });
     page.on("response", (response) => {
       if (response.status() >= 400) errors.push(`${response.status()} ${response.url()}`);
     });

@@ -774,6 +774,18 @@
   gap: 9px;
   min-width: 0;
 }
+.experiment-starter {
+  min-width: 0;
+}
+/* A starter link stays clickable above the run card's whole-heading toggle. */
+.experiment-starter a {
+  align-items: center;
+  display: inline-flex;
+  gap: 4px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  pointer-events: auto;
+}
 .campaign-run-meta time {
   color: var(--muted);
   font: var(--type-3xs) var(--mono);

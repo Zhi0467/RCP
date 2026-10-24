@@ -4,6 +4,7 @@ import asyncio
 import dataclasses
 import hashlib
 import json
+import shlex
 import threading
 import uuid
 from pathlib import Path
@@ -17,6 +18,7 @@ import rcp.runs.tasks.work as work_module
 import rcp.runs.tasks.work_staging as staging_module
 from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.agents.continuation_prompt import SECTIONS, MasterRef
+from rcp.agents.prompts import COMMAND_CLIENT
 from rcp.agents.staged_command_client import _broker_socket_path
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.runs.patch_validator import stage_patch_validation_mailbox
@@ -634,7 +636,9 @@ async def test_operational_continuation_renders_current_launch_client(
             scope_context = composed.prompt + "\n" + contract
             for path in scope:
                 assert path in scope_context
-            assert turn.patch_inputs.validator_staged.client_command(*launch_args) in contract
+            # The current client travels once; the launch command names it by placeholder.
+            assert turn.patch_inputs.validator_staged.client_command() in contract
+            assert f"{COMMAND_CLIENT} {shlex.join(launch_args)}" in contract
             assert previous_command not in contract
         else:
             # A Work continuation sends what changed; a master it opens now holds the rest.

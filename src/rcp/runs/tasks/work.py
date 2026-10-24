@@ -22,6 +22,7 @@ from rcp.agents import (
     validate_agent_patch_shape,
     validate_work_patch,
 )
+from rcp.agents.auto_research_prompt import render_child_profile_choices
 from rcp.agents.command_mailbox import (
     StagedCommandMailbox,
 )
@@ -64,6 +65,7 @@ from rcp.limits import (
     ask_hold_seconds,
 )
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
+from rcp.runs.auto_research_admission import auto_research_child_profile_choices
 from rcp.runs.browser_lifecycle import browser_turn
 from rcp.runs.bulletin import bulletin_command_usage
 from rcp.runs.chat import (
@@ -203,6 +205,7 @@ from rcp.runs.tasks.work_turn_runtime import (
 from rcp.runs.tasks.work_turn_runtime import (
     stream_turn_agent_events as _stream_turn_agent_events,
 )
+from rcp.runs.work_experiment_commands import work_experiment_command_usage
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
@@ -337,6 +340,12 @@ def _prepare_work_chat_prompt(
         invoked_provider_skills=request.resolved_provider_skills,
         attachments=attachment_pointers,
         launch_instructions=launch_instructions if first_work_turn else None,
+        message_author=(
+            "orchestrator"
+            if execution is not None
+            and execution.store.auto_research_child_work_for_operation(execution.operation_id)
+            else "human"
+        ),
     )
     if question_part:
         prompt += "\n\n" + question_part
@@ -404,6 +413,15 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
             "Use apply --key <key> patch.json to commit patch.json and read the returned revision before reporting. "
             "If apply returns unavailable, retry the same bytes with the same key. "
             "This turn cannot create watchers."
+        )
+    if "episode" in handler.allowed_verbs:
+        instructions.append(
+            work_experiment_command_usage(
+                client or turn.patch_inputs.validator_staged.client_command(),
+                render_child_profile_choices(
+                    auto_research_child_profile_choices(turn.service, kind="node_chat")
+                ),
+            )
         )
     if turn.compute_commands is None or "launch" not in handler.allowed_verbs:
         return "\n\n".join(instructions)

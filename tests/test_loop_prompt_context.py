@@ -224,9 +224,9 @@ def test_experiment_loop_prompt_receives_other_target_rows_from_shared_renderer(
     rendered = []
     render = experiment_loop_prompt.render_loop_overlap
 
-    def capture(rows, *, ask_allowed):
+    def capture(rows):
         rendered.append([row.model_dump(mode="json") for row in rows.rows])
-        return render(rows, ask_allowed=ask_allowed)
+        return render(rows)
 
     monkeypatch.setattr(experiment_loop_prompt, "render_loop_overlap", capture)
     patch = {
@@ -330,7 +330,7 @@ def test_loop_interference_prompt_uses_resolved_launch_verbs(
     from rcp.loop_status import LoopOverlap
     from rcp.runs.experiment_loop import stage_chat_loop_status
     from rcp.runs.questions import work_command_handler
-    from rcp.runs.tasks.experiment_loop import _loop_read_context
+    from rcp.runs.tasks.experiment_loop import _loop_interference_rule, _loop_read_context
     from rcp.runs.tasks.work import WorkTurn
 
     from .test_experiment_index import _record_branch_target_child_experiment, _seed_indexed_project
@@ -391,11 +391,7 @@ def test_loop_interference_prompt_uses_resolved_launch_verbs(
             graph_read_scope=scope,
         ),
     )
-    prompt = _loop_read_context(turn)
-    rule = next(
-        json.loads(line)["interference_rule"]
-        for line in prompt.splitlines()
-        if line.startswith('{"interference_rule":')
-    )
+    _loop_read_context(turn)
+    rule = json.loads(_loop_interference_rule(turn))["interference_rule"]
     assert rule["id"] == rule_id
     assert ("ask" in work_command_handler(execution, None).allowed_verbs) is (not child)

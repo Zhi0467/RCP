@@ -4727,7 +4727,7 @@ async def test_chat_prompt_carries_the_node_and_not_the_ingest_contract(manifest
     # No project extension was ever defined, so the extension pointer and its
     # authoring rules stay out; the base vocabulary always ships.
     assert "graph.json#ontology" not in contract
-    assert prompt.endswith("\n\nWhat does this claim?")
+    assert prompt.endswith("<message>\nWhat does this claim?\n</message>")
     assert not any(name.endswith("human-request.txt") for name in launcher.input_snapshots[0])
     # None of the ingest machinery: no evidence slices, no cursors, no coverage
     # bookkeeping, no multi-agent synthesis contract.
@@ -5502,7 +5502,7 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
     first_operation_id = first_response.json()["operation_id"]
     assert _wait_for_run(client, project_id, first_operation_id)["status"] == "succeeded"
     first_prompt = launcher.prompts[0]
-    assert f"\n\n{first_message}" in first_prompt
+    assert f"<message>\n{first_message}\n</message>" in first_prompt
     master_path = Path(first_prompt.splitlines()[1])
     workspace = launcher.workspaces[0]
     prompt_candidate = json.loads(
@@ -7179,7 +7179,9 @@ def test_experiment_validation_status_does_not_depend_on_exception_wording(
     def reject_validation(*_args, **_kwargs):
         raise ValueError("A malformed field happens to say already running.")
 
-    monkeypatch.setattr("rcp.api.experiments.fresh_experiment_run_request", reject_validation)
+    monkeypatch.setattr(
+        "rcp.runs.experiment_admission.fresh_experiment_run_request", reject_validation
+    )
     project_id = app.state.default_project_id
 
     response = signed_in_client(app).post(
