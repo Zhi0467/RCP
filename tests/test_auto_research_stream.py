@@ -23,9 +23,9 @@ from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.invocation_broker import ProviderInvocationGate
-from rcp.agents.prompts import PromptFactory, render_graph_history
+from rcp.agents.prompts import PromptFactory, compute_connection_section, render_graph_history
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
-from rcp.config import load_manifest
+from rcp.config import ResolvedComputeContext, ResolvedComputeProfile, load_manifest
 from rcp.core.authority import (
     AgentDispatchAuthority,
     AgentDispatchScope,
@@ -3305,7 +3305,12 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
     stage_path.mkdir()
     execution = _execution(store, root)
     execution.checkpoint_stage("", str(stage_path))
-    request = AutoResearchRunRequest.model_validate(root.request)
+    machines = ResolvedComputeContext(
+        active=(ResolvedComputeProfile(id="gpu", name="gpu", kind="ssh", ssh_target="gpu.example"),)
+    )
+    request = AutoResearchRunRequest.model_validate(root.request).model_copy(
+        update={"resolved_compute_context": machines}
+    )
     stage = auto_research_stream_module._WorkerStage(
         local=stage_path, remote=None, workspace=stage_path, execution_host="", provider_binary=None
     )
@@ -3380,6 +3385,63 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
         assert (
             not {"parent_graph_path", "shared_repositories", "other_branch_loops"} & values.keys()
         )
+        # The admitted machines are stable master values, not per-launch context.
+        profiles = ProjectService.compute_prompt_profiles(machines)
+        assert values["compute"] == {"active": profiles}
+        assert compute_connection_section(profiles) in master_text
+
+
+def _with_gpu_machine(manifest):
+    """The fixture project plus a remote machine, saved the way Settings saves it."""
+
+    with manifest.path.open("a") as handle:
+        handle.write(
+            '\n[[machines]]\nalias = "gpu"\nhost = "gpu.example"\n'
+            '[machines.compute]\naccess_hint = "submit with srun"\n'
+        )
+    return load_manifest(manifest.path)
+
+
+def test_an_episode_admits_the_machines_seen_from_the_orchestrator(manifest, tmp_path) -> None:
+    from rcp.api.episode_routes import _resolved_auto_research_start_request
+    from rcp.api.episodes import StartEpisodeBody
+    from rcp.runs.auto_research import auto_research_root_request
+
+    service = _service(_with_gpu_machine(manifest), tmp_path)
+    start = _resolved_auto_research_start_request(
+        service, StartEpisodeBody(mode="auto_research", invocation_ceiling=2)
+    )
+    root = auto_research_root_request(start, episode_id="any")
+    assert [(item.id, item.kind) for item in root.resolved_compute_context.active] == [
+        ("laptop", "local"),
+        ("gpu", "ssh"),
+    ]
+
+
+def test_a_spawned_child_freezes_the_machines_seen_from_its_own_run_on(manifest, tmp_path) -> None:
+    from rcp.agents.command_protocol import SpawnArguments
+    from rcp.api.app import _auto_research_worker_request
+    from rcp.compute import machine_compute_context
+
+    service = _service(_with_gpu_machine(manifest), tmp_path)
+    context = SimpleNamespace(
+        child_graph_target=None, episode=SimpleNamespace(graph_target=GraphTargetRef())
+    )
+    child = _auto_research_worker_request(
+        service,
+        cast(Any, context),
+        SpawnArguments(seat_node_id="blk/check-result", instruction_file="task.md"),
+        "Run the check.",
+        "worker-1",
+    )
+    assert child.run_on is not None
+    assert child.resolved_compute_context == machine_compute_context(
+        service.manifest, execution_machine=child.run_on
+    )
+    assert {item.id: item.kind for item in child.resolved_compute_context.active} == {
+        "laptop": "local",
+        "gpu": "ssh",
+    }
 
 
 def test_child_profile_choices_list_at_most_the_capped_models_per_provider():

@@ -169,6 +169,7 @@ def test_orchestrator_launch_stages_fresh_store_snapshot_and_retains_dismissals(
     from types import SimpleNamespace
 
     from rcp.agents.auto_research_commands import auto_research_allowed_verbs
+    from rcp.config import ResolvedComputeContext
     from rcp.runs.tasks.auto_research_stream import _orchestrator_prompt
 
     from .test_auto_research_stream import _execution
@@ -192,7 +193,9 @@ def test_orchestrator_launch_stages_fresh_store_snapshot_and_retains_dismissals(
     )
     turn = SimpleNamespace(
         task=root,
-        request=SimpleNamespace(instruction=None),
+        request=SimpleNamespace(
+            instruction=None, resolved_compute_context=ResolvedComputeContext()
+        ),
         binding=SimpleNamespace(
             actor_operation_id=root.operation_id,
             native_session_id=None,
