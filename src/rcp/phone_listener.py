@@ -123,8 +123,11 @@ class PhoneListener:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return
+            # No log settings: uvicorn applies them process-wide, and the desktop
+            # reads the app server's "Application shutdown complete." line to
+            # tell a graceful quit from a crash.
             config = uvicorn.Config(
-                self.app, host=self.host, port=self.port, log_level="warning", lifespan="off"
+                self.app, host=self.host, port=self.port, log_config=None, lifespan="off"
             )
             self._server = uvicorn.Server(config)
             self._thread = threading.Thread(
