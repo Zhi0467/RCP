@@ -32,6 +32,9 @@ import { SkillPackageInspector } from "../agents/SkillPackageInspector";
 import {
   computeProbeConfigurationChanged,
   deserializeSettingsDraft,
+  machineAccessHintUpdates,
+  machineAccessHintsFrom,
+  type MachineAccessHints,
   machineComputeFrom,
   machineComputeUpdates,
   type MachineComputeSettings,
@@ -140,6 +143,7 @@ function stagedOrSaved(project: ProjectSnapshot, actorId: string | null) {
     profiles: profilesFrom(project),
     providerPaths: machineProviderPathsFrom(project.machines),
     machineComputeEdits: {} as MachineComputeSettings,
+    accessHintEdits: {} as MachineAccessHints,
     skillDefaults: skillDefaultsFrom(project),
   };
   let staged: ReturnType<typeof deserializeSettingsDraft> = null;
@@ -159,6 +163,7 @@ function stagedOrSaved(project: ProjectSnapshot, actorId: string | null) {
     profiles: mergeAgentProfiles(saved.profiles, staged.profiles),
     providerPaths: mergeMachineProviderPaths(saved.providerPaths, staged.providerPaths),
     machineComputeEdits: staged.machineComputeEdits ?? {},
+    accessHintEdits: staged.accessHintEdits ?? {},
     skillDefaults: staged.skillDefaults ?? saved.skillDefaults,
   };
 }
@@ -202,6 +207,10 @@ export function ProjectSettings({
     () => restoredSettings.machineComputeEdits,
   );
   const machineCompute = { ...machineComputeFrom(project.machines), ...machineComputeEdits };
+  const [accessHintEdits, setAccessHintEdits] = useState<MachineAccessHints>(
+    () => restoredSettings.accessHintEdits,
+  );
+  const accessHints = { ...machineAccessHintsFrom(project.machines), ...accessHintEdits };
   // A return to the same project is a new visit: requests from the previous
   // visit must not overwrite the restored form or publish into another view.
   const requestOwner = useMemo(() => ({ projectId: project.id }), [project.id]);
@@ -240,6 +249,7 @@ export function ProjectSettings({
     setProfiles(restoredSettings.profiles);
     setProviderPaths(restoredSettings.providerPaths);
     setMachineComputeEdits(restoredSettings.machineComputeEdits);
+    setAccessHintEdits(restoredSettings.accessHintEdits);
     setSkillDefaults(restoredSettings.skillDefaults);
     setSaving(false);
     setClearingCaches(false);
@@ -265,6 +275,7 @@ export function ProjectSettings({
         profiles: profilesFrom(project),
         providerPaths: machineProviderPathsFrom(project.machines),
         machineCompute: machineComputeFrom(project.machines),
+        accessHints: machineAccessHintsFrom(project.machines),
         skillDefaults: skillDefaultsFrom(project),
       }),
     [project],
@@ -275,6 +286,7 @@ export function ProjectSettings({
     profiles,
     providerPaths,
     machineCompute,
+    accessHints,
     skillDefaults,
   });
   const dirty = current !== baseline;
@@ -299,6 +311,10 @@ export function ProjectSettings({
             machineComputeEdits: machineComputeUpdates(
               machineComputeFrom(project.machines),
               machineComputeEdits,
+            ),
+            accessHintEdits: machineAccessHintUpdates(
+              machineAccessHintsFrom(project.machines),
+              accessHintEdits,
             ),
             skillDefaults,
           }),
@@ -397,6 +413,7 @@ export function ProjectSettings({
     setProfiles(profilesFrom(project));
     setProviderPaths(machineProviderPathsFrom(project.machines));
     setMachineComputeEdits({});
+    setAccessHintEdits({});
     setSkillDefaults(savedSkillDefaults);
     setStatus(null);
   };
@@ -421,6 +438,11 @@ export function ProjectSettings({
       machineCompute,
     );
     if (computeUpdates) body.machine_compute = computeUpdates;
+    const hintUpdates = machineAccessHintUpdates(
+      machineAccessHintsFrom(project.machines),
+      accessHints,
+    );
+    if (hintUpdates) body.machine_access_hints = hintUpdates;
     try {
       const saved = await api<ProjectSnapshot>(`${apiBase}/settings`, {
         method: "PUT",
@@ -431,6 +453,7 @@ export function ProjectSettings({
         currentPaths === providerPaths ? machineProviderPathsFrom(saved.machines) : currentPaths,
       );
       setMachineComputeEdits({});
+      setAccessHintEdits({});
       // The save response intentionally carries no live probe. Preserve each
       // readiness slice whose own inputs this save left alone.
       onSaved(saved, {
@@ -719,7 +742,6 @@ export function ProjectSettings({
               const config = machineCompute[machine.alias] ?? {
                 job_manager: null,
                 jobs_root: "",
-                access_hint: "",
               };
               const needsSave = Boolean(
                 machineComputeUpdates(
@@ -823,13 +845,16 @@ export function ProjectSettings({
                         <span>Access hint</span>
                         <input
                           maxLength={512}
-                          value={config.access_hint}
-                          onChange={(event) =>
-                            updateMachineCompute(machine.alias, {
-                              ...config,
-                              access_hint: event.target.value,
-                            })
-                          }
+                          value={accessHints[machine.alias] ?? ""}
+                          onChange={(event) => {
+                            const hint = event.target.value;
+                            setAccessHintEdits((currentEdits) => {
+                              const next = { ...currentEdits, [machine.alias]: hint };
+                              if (hint === machine.access_hint) delete next[machine.alias];
+                              return next;
+                            });
+                            setStatus(null);
+                          }}
                         />
                       </label>
                       <button

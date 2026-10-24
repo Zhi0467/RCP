@@ -1039,6 +1039,8 @@ class ProjectSettingsRequest(BaseModel):
     machine_provider_paths: dict[str, dict[ProviderId, str]] | None = None
     # Omitted machines are preserved; null removes one machine compute block.
     machine_compute: dict[str, MachineComputeConfig | None] | None = None
+    # Omitted machines are preserved; an empty string clears one machine's hint.
+    machine_access_hints: dict[str, str] | None = None
 
     @model_validator(mode="after")
     def require_every_surface(self) -> ProjectSettingsRequest:
@@ -1918,6 +1920,7 @@ class ProjectService:
             request.skill_defaults,
             request.default_auto_research_invocation_ceiling,
             request.machine_compute,
+            request.machine_access_hints,
         )
         for (alias, provider), prior_path in prior_paths.items():
             machine = self.manifest.machine_map[alias]

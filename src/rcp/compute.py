@@ -226,7 +226,7 @@ def machine_compute_context(
         raise ValueError(f"unknown execution machine: {execution_machine}")
     profiles = []
     for machine in manifest.machines:
-        hint = machine.compute.access_hint if machine.compute else ""
+        hint = machine.access_hint
         if machine.alias == execution_machine:
             profiles.append(
                 ResolvedComputeProfile(

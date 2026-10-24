@@ -18,7 +18,6 @@ from rcp.agents.prompts import (
     chat_master_contract_key,
 )
 from rcp.background import AgentTaskExecution
-from rcp.config import MachineComputeConfig
 from rcp.core.models import AuthorizedHuman
 from rcp.providers import ProviderSkillReference
 from rcp.runs.tasks.discuss import stream_discuss_run
@@ -144,7 +143,7 @@ def _set_access_hint(service, alias: str, hint: str) -> None:
     service.history.update_agent_settings(
         service.manifest.agent.default_run_truth_scope,
         {surface: service.manifest.agent_profile(surface) for surface in surfaces},
-        machine_compute={alias: MachineComputeConfig(access_hint=hint)},
+        machine_access_hints={alias: hint},
     )
 
 

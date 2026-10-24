@@ -87,7 +87,7 @@ test("external job Cancel and machine setup use one watcher and preserve newer s
         ...project,
         machines: project.machines.map((machine) =>
           machine.alias === "local"
-            ? { ...machine, compute: { job_manager: null, jobs_root: "/new", access_hint: "" } }
+            ? { ...machine, compute: { job_manager: null, jobs_root: "/new" } }
             : machine,
         ),
       });
@@ -101,7 +101,7 @@ test("external job Cancel and machine setup use one watcher and preserve newer s
       JSON.parse(localStorage.getItem("rcp:member-draft:owner:settings-draft:project")),
     );
     assert.deepEqual(staged.machineComputeEdits, {
-      cluster: { job_manager: "slurm", jobs_root: "/cluster-edited", access_hint: "" },
+      cluster: { job_manager: "slurm", jobs_root: "/cluster-edited" },
     });
     let settingsRequest;
     await page.route("**/api/projects/project/settings", async (route) => {
@@ -121,7 +121,7 @@ test("external job Cancel and machine setup use one watcher and preserve newer s
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await page.getByText("Saved.", { exact: true }).waitFor();
     assert.deepEqual(settingsRequest.machine_compute, {
-      cluster: { job_manager: "slurm", jobs_root: "/cluster-edited", access_hint: "" },
+      cluster: { job_manager: "slurm", jobs_root: "/cluster-edited" },
     });
     assert.equal(await local.getByRole("textbox", { name: "Jobs root" }).inputValue(), "/new");
     assert.equal(await page.getByText("Slurm account", { exact: true }).count(), 0);

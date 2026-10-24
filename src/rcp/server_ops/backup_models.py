@@ -562,11 +562,22 @@ class BackupAppDataCapturePlan(_StrictBackupModel):
         )
 
 
+class BackupManifestMachineCompute(_StrictBackupModel):
+    job_manager: Literal["slurm"] | None = None
+    jobs_root: str = ""
+
+
 class BackupManifestMachine(_StrictBackupModel):
     alias: str
     host: str
     os_account: str
     provider_paths: dict[ProviderId, str]
+    # Added without a format bump, like `declared_skill_defaults`: omitted when
+    # empty, so an archive without them keeps its exact bytes and digest.
+    access_hint: str = Field(default="", exclude_if=lambda value: not value)
+    compute: BackupManifestMachineCompute | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def validate_machine(self) -> BackupManifestMachine:
@@ -693,6 +704,15 @@ class BackupManifestConfiguration(_StrictBackupModel):
                     host=machine.host,
                     os_account=machine.os_account,
                     provider_paths=dict(machine.provider_paths),
+                    access_hint=machine.access_hint,
+                    compute=(
+                        None
+                        if machine.compute is None
+                        else BackupManifestMachineCompute(
+                            job_manager=machine.compute.job_manager,
+                            jobs_root=machine.compute.jobs_root,
+                        )
+                    ),
                 )
                 for machine in manifest.machines
             ),
@@ -1357,6 +1377,7 @@ __all__ = [
     "BackupImportedProviderSourceCapture",
     "BackupManifestConfiguration",
     "BackupManifestComputeConnection",
+    "BackupManifestMachineCompute",
     "BackupProjectCapture",
     "BackupRecoveryMachine",
     "BackupRecoveryRepository",

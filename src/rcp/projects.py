@@ -33,7 +33,6 @@ from rcp.compute import (
 )
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,
-    MachineComputeConfig,
     MachineConfig,
     Manifest,
     load_manifest,
@@ -543,12 +542,6 @@ def complete_restored_project_publication(
     return stored
 
 
-def _backend_settings(compute: MachineComputeConfig | None) -> dict[str, object] | None:
-    """The compute fields a backend probe depends on; an access hint is guidance only."""
-
-    return None if compute is None else compute.model_dump(exclude={"access_hint"})
-
-
 def _render_restored_manifest(
     configuration: BackupManifestConfiguration,
     repository_paths: dict[str, str],
@@ -567,6 +560,13 @@ def _render_restored_manifest(
                 if provider in item.provider_paths:
                     paths.append(provider, item.provider_paths[provider])
             machine.add("provider_paths", paths)
+        if item.access_hint:
+            machine.add("access_hint", item.access_hint)
+        if item.compute is not None:
+            compute = tomlkit.table()
+            for key, value in item.compute.model_dump(exclude_defaults=True).items():
+                compute.add(key, value)
+            machine.add("compute", compute)
         machines.append(machine)
     document.add("machines", machines)
     repositories = tomlkit.aot()
@@ -2639,7 +2639,7 @@ class ProjectCatalog:
             machine = service.manifest.machine_map.get(alias)
             if machine is None:
                 raise ValueError(f"compute configuration uses unknown machine: {alias}")
-            if _backend_settings(machine.compute) != _backend_settings(compute):
+            if machine.compute != compute:
                 # Fail closed even if manifest publication fails partway through.
                 self.store.delete_compute_backend_probe(project_id, alias)
         service.update_settings(request)

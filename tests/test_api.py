@@ -30,7 +30,7 @@ from rcp.api.app import (
 from rcp.api.tasks import _validate_stored_task_request, _validated_task_request
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.background import AgentTaskExecution
-from rcp.config import MachineComputeConfig, MachineConfig
+from rcp.config import MachineConfig
 from rcp.core.attention import decision_awaits_choice
 from rcp.core.materialize import MaterializationResult
 from rcp.core.models import AuthorizedHuman, Blocker, Decision, GraphState, Patch
@@ -8272,7 +8272,7 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
     service.history.update_agent_settings(
         service.manifest.agent.default_run_truth_scope,
         {surface: service.manifest.agent_profile(surface) for surface in surfaces},
-        machine_compute={"gpu": MachineComputeConfig(access_hint="Use /scratch/at-wake")},
+        machine_access_hints={"gpu": "Use /scratch/at-wake"},
     )
     wake = _generic_watcher_delivery_request([external])
     wake_execution = _chat_task_execution(app, wake, "watch-wake")

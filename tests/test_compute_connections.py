@@ -202,7 +202,7 @@ def test_probe_cache_key_follows_routes_but_not_access_hints(manifest) -> None:
     payload["machines"].append({"alias": "gpu", "host": "gpu.example", "os_account": "alice"})
     base = compute_probe_cache_key(Manifest.model_validate(payload))
 
-    payload["machines"][-1]["compute"] = {"access_hint": "Use /scratch"}
+    payload["machines"][-1]["access_hint"] = "Use /scratch"
     assert compute_probe_cache_key(Manifest.model_validate(payload)) == base
     payload["machines"][-1]["os_account"] = "bob"
     assert compute_probe_cache_key(Manifest.model_validate(payload)) != base

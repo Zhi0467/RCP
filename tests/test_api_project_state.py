@@ -1312,34 +1312,37 @@ def test_project_settings_persist_nonsecret_compute_metadata_without_moving_agen
         "default_run_truth_scope": before["default_run_truth_scope"],
         "agent_profiles": profiles,
     }
-    compute = {"job_manager": None, "jobs_root": "", "access_hint": "Use /scratch/shared"}
+    compute = {"job_manager": None, "jobs_root": "/scratch"}
+    hints = {"laptop": "Use /scratch/shared"}
 
     saved = client.put(
         f"/api/projects/{project_id}/settings",
-        json={**body, "machine_compute": {"laptop": compute}},
+        json={**body, "machine_compute": {"laptop": compute}, "machine_access_hints": hints},
     )
     omitted = client.put(f"/api/projects/{project_id}/settings", json=body)
 
     assert saved.status_code == omitted.status_code == 200
     assert "compute_connections" not in omitted.json()
     assert omitted.json()["machines"][0]["compute"] == compute
+    assert omitted.json()["machines"][0]["access_hint"] == hints["laptop"]
     assert omitted.json()["agent_profiles"] == before["agent_profiles"]
-    assert load_manifest(manifest.path).machine_map["laptop"].compute.access_hint == (
-        "Use /scratch/shared"
-    )
 
     credential_hint = client.put(
         f"/api/projects/{project_id}/settings",
-        json={**body, "machine_compute": {"laptop": {"access_hint": "password=hunter2"}}},
+        json={**body, "machine_access_hints": {"laptop": "password=hunter2"}},
     )
     retired_field = client.put(
         f"/api/projects/{project_id}/settings", json={**body, "compute_connections": []}
     )
 
     assert credential_hint.status_code == retired_field.status_code == 422
-    assert load_manifest(manifest.path).machine_map["laptop"].compute.access_hint == (
-        "Use /scratch/shared"
+    assert load_manifest(manifest.path).machine_map["laptop"].access_hint == hints["laptop"]
+    cleared = client.put(
+        f"/api/projects/{project_id}/settings",
+        json={**body, "machine_access_hints": {"laptop": ""}},
     )
+    assert cleared.status_code == 200
+    assert cleared.json()["machines"][0]["access_hint"] == ""
 
 
 def test_invalid_provider_path_update_is_atomic(manifest, tmp_path) -> None:

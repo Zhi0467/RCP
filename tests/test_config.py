@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
-from typing import get_args
+import tomllib
+from typing import Literal, get_args
 
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 import rcp.config as config_module
 from rcp.config import (
@@ -194,12 +196,65 @@ def test_legacy_compute_connections_load_and_the_next_write_drops_them(manifest)
         loaded,
         list(loaded.agent.default_run_truth_scope),
         profiles,
-        machine_compute={"laptop": MachineComputeConfig(access_hint="Use /scratch")},
+        machine_access_hints={"laptop": "Use /scratch"},
     )
 
     assert "compute_connections" not in updated.path.read_text(encoding="utf-8")
-    assert updated.machine_map["laptop"].compute == MachineComputeConfig(access_hint="Use /scratch")
+    assert updated.machine_map["laptop"].access_hint == "Use /scratch"
     assert updated.agent_profile("node_chat").run_on == loaded.agent_profile("node_chat").run_on
+
+
+class _ReleasedMachineCompute(BaseModel):
+    """`machines[].compute` as released builds read it: unknown keys refuse the project."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_manager: Literal["slurm"] | None = None
+    jobs_root: str = ""
+
+
+class _ReleasedMachine(BaseModel):
+    """`machines[]` as released builds read it: pydantic's default ignores unknown keys."""
+
+    alias: str
+    host: str = ""
+    os_account: str = ""
+    provider_paths: dict[str, str] = {}
+    compute: _ReleasedMachineCompute | None = None
+
+
+def _save_machine(manifest, **updates):
+    profiles = {surface: manifest.agent_profile(surface) for surface in ("seed", "node_chat")}
+    return write_agent_settings(
+        manifest, list(manifest.agent.default_run_truth_scope), profiles, **updates
+    )
+
+
+def test_a_released_build_reads_a_machine_with_an_access_hint(manifest) -> None:
+    updated = _save_machine(
+        manifest,
+        machine_compute={"laptop": MachineComputeConfig(job_manager="slurm", jobs_root="/jobs")},
+        machine_access_hints={"laptop": "Use /scratch"},
+    )
+
+    written = tomllib.loads(updated.path.read_text(encoding="utf-8"))
+    released = [_ReleasedMachine.model_validate(machine) for machine in written["machines"]]
+
+    assert updated.machine_map["laptop"].access_hint == "Use /scratch"
+    assert released[0].compute == _ReleasedMachineCompute(job_manager="slurm", jobs_root="/jobs")
+
+
+def test_resetting_compute_keeps_the_access_hint(manifest) -> None:
+    hinted = _save_machine(
+        manifest,
+        machine_compute={"laptop": MachineComputeConfig(jobs_root="/jobs")},
+        machine_access_hints={"laptop": "Use /scratch"},
+    )
+
+    reset = _save_machine(hinted, machine_compute={"laptop": None})
+
+    assert reset.machine_map["laptop"].compute is None
+    assert reset.machine_map["laptop"].access_hint == "Use /scratch"
 
 
 @pytest.mark.parametrize("host", ["-Ffoo", "-oProxyCommand=sh"])
