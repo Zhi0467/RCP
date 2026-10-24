@@ -115,3 +115,25 @@ def test_listener_resumes_for_a_live_code_and_stops_without_one(
     wait_until(lambda: not listener.is_running())
     listener.resume()
     assert not listener.is_running()
+
+
+def test_listener_leaves_the_app_servers_shutdown_log_visible(manifest, tmp_path) -> None:
+    import logging
+
+    from .helpers import wait_until
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    store.notification_vapid_key()
+    store.create_notification_phone_pairing()
+    server_log = logging.getLogger("uvicorn.error")
+    level = server_log.level
+    server_log.setLevel(logging.INFO)
+    listener = PhoneListener(store, lambda _host: [_PUBLIC_ADDRESS], port=0)
+    try:
+        listener.ensure_running()
+        wait_until(listener.is_running)
+        assert server_log.isEnabledFor(logging.INFO)
+    finally:
+        listener.stop()
+        server_log.setLevel(level)
