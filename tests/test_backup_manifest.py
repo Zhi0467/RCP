@@ -511,9 +511,15 @@ def test_archive_without_machine_hints_keeps_its_bytes_and_restores(tmp_path: Pa
     from rcp.projects import _render_restored_manifest
 
     record, _ = _completed_registration(tmp_path)
-    manifest = load_manifest(record.locator)
+    path = Path(record.locator)
+    document = tomlkit.parse(path.read_text(encoding="utf-8"))
+    document["machines"][0]["compute"] = {"job_manager": "slurm", "jobs_root": "/jobs"}
+    path.write_text(tomlkit.dumps(document), encoding="utf-8")
+    manifest = load_manifest(path)
     payload = BackupManifestConfiguration.from_manifest(manifest).model_dump(mode="json")
-    # The machine shape every earlier archive recorded.
+    # The machine shape every earlier archive recorded, even for a Slurm machine.
+    for machine in payload["machines"]:
+        machine.pop("compute", None)
     assert {frozenset(machine) for machine in payload["machines"]} == {
         frozenset({"alias", "host", "os_account", "provider_paths"})
     }
@@ -526,6 +532,7 @@ def test_archive_without_machine_hints_keeps_its_bytes_and_restores(tmp_path: Pa
     )
 
     assert archived.sha256 == hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    assert archived.matches_manifest(manifest)
     assert restored.machines[0].access_hint == ""
     assert restored.machines[0].compute is None
 

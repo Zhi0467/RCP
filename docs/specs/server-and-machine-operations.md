@@ -920,7 +920,9 @@ block), effective repository sources/aliases, resolved checkout
 paths/routes, and public old key labels/fingerprints. Completed provisioning proves
 checkout location and grants; it does not freeze later Settings edits or machines
 without repositories. Missing, credential-bearing or inconsistent descriptors
-make the project uncaptured. [Effective repositories](projects-spaces-and-operations.md#repository-and-truth-scope)
+make the project uncaptured. A descriptor omits an empty hint or compute block,
+so an older descriptor, which never recorded them, still matches its manifest;
+an older release refuses a descriptor that carries either. [Effective repositories](projects-spaces-and-operations.md#repository-and-truth-scope)
 fold completed create/add/connect requests.
 
 GitHub checkouts retain origin/commit checks. Server-only checkouts have no remote;

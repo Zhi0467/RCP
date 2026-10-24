@@ -129,7 +129,7 @@ REPLY_STYLE = """Writing the reply:
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
 
-CHAT_MASTER_CONTEXT_VERSION = 24
+CHAT_MASTER_CONTEXT_VERSION = 25
 
 # Staged RCP commands are written against this placeholder; the contract names the current
 # command client once, and a continuation that changes it sends `patch.command_client`.
@@ -233,6 +233,13 @@ Relations one hop from this node:
 """
 
 
+# Where a human widens the boundary: the space machine card's writable paths,
+# which every launch resolves afresh.
+_GRANT_REQUEST_RULE = """- If the work needs a folder outside the roots, such as a CLI's own config folder that it writes
+  on every command, ask the human to add that exact path under Space Settings -> Machines ->
+  this machine's card -> Writable paths. It applies from your next launch."""
+
+
 def _episode_worktree_rule(scope: ProjectWriteScope) -> str:
     worktree = scope.episode_worktree
     if worktree is None:
@@ -264,17 +271,19 @@ def write_scope_section(scope: ProjectWriteScope) -> str:
 Enforced write boundary on the machine this turn runs on:
 {roots}
 {_episode_worktree_rule(scope)}- Every other path on this machine is readable but not writable. A write outside the roots above
-  fails as a provider denial. That denial is this boundary, not a broken tool and not a permission
-  you can request, so do not retry it through another command.
+  fails as a provider denial. That denial is this boundary, not a broken tool, so do not retry it
+  through another command or copy files elsewhere to get around it.
+{_GRANT_REQUEST_RULE}
 - A repository pointer whose host is non-empty lives on another machine and is outside this
   boundary. Reach it by SSH and stay inside the human's requested objective there.
 """
 
 
-_TURN_WRITE_BOUNDARY = """- A Work turn's writable roots arrive with it as `work.write_roots`, with `work.denied_paths`
+_TURN_WRITE_BOUNDARY = f"""- A Work turn's writable roots arrive with it as `work.write_roots`, with `work.denied_paths`
   unwritable inside them. They are the only writable paths on the machine that turn runs on. A
-  write outside them fails as a provider denial. That denial is this boundary, not a broken tool
-  and not a permission you can request, so do not retry it through another command.
+  write outside them fails as a provider denial. That denial is this boundary, not a broken tool,
+  so do not retry it through another command or copy files elsewhere to get around it.
+{_GRANT_REQUEST_RULE}
 - A repository pointer whose host is non-empty lives on another machine and is outside this
   boundary. Reach it by SSH and stay inside the human's requested objective there."""
 
@@ -887,7 +896,7 @@ _INLINE_CONTINUATION_RULES = {
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
 DISCUSS_POLICY_VERSION = "discuss-v8"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v12"
+WORK_POLICY_VERSION = "work-v13"
 
 
 class PromptFactory:

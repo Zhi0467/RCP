@@ -461,6 +461,13 @@ machine to the project. Its **Compute** block takes an access hint, such as
 where code lives or how to run jobs. Every agent in the project is told every
 machine's SSH name and hint.
 
+Agents reach the VM with plain `ssh <Host name>`; that needs no gcloud. To let
+them run `gcloud` as well, for example to start a stopped spot VM, add
+`/home/rcp/.config/gcloud` to **Writable paths** on the card of the machine the
+agents run on. gcloud writes its token cache there on every command, so a
+read-only folder fails even for a `describe`. Any other cloud CLI works the same
+way with its own folder, such as `/home/rcp/.aws`.
+
 A spot or preemptible VM may get a new external IP when it restarts. Rerun
 `gcloud compute config-ssh` to rewrite the address, or reserve a static IP so it
 never changes. Set the VM's termination action to **Stop**: **Delete** replaces

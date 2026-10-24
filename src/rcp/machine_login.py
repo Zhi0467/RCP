@@ -47,8 +47,11 @@ class HostKey:
     # The known_hosts line, under the name SSH looks the host up by.
     entry: str
     fingerprint: str
+    #: Where a trusted key is added: the first user known-hosts file.
     known_hosts: Path
     name: str
+    #: Every file SSH checks the host against, user and global.
+    checked: tuple[Path, ...]
 
 
 def _run(argv: list[str], runner, *, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -110,7 +113,14 @@ def scan_host_key(host: str, *, runner=subprocess.run) -> HostKey:
     if fingerprint is None:
         raise MachineLoginFailure("unreachable")
     files = config.get("userknownhostsfile", "~/.ssh/known_hosts").split()
-    return HostKey(entry, fingerprint, Path(files[0]).expanduser(), name)
+    checked = [*files, *config.get("globalknownhostsfile", "").split()]
+    return HostKey(
+        entry,
+        fingerprint,
+        Path(files[0]).expanduser(),
+        name,
+        tuple(Path(file).expanduser() for file in checked),
+    )
 
 
 def trust_host_key(host: str, fingerprint: str, *, runner=subprocess.run) -> None:
@@ -118,8 +128,10 @@ def trust_host_key(host: str, fingerprint: str, *, runner=subprocess.run) -> Non
     key = scan_host_key(host, runner=runner)
     if key.fingerprint != fingerprint:
         raise MachineLoginFailure("host_key_changed")
-    if key.known_hosts.exists():
-        known = _run(["ssh-keygen", "-F", key.name, "-f", str(key.known_hosts)], runner)
+    for file in key.checked:
+        if not file.exists():
+            continue
+        known = _run(["ssh-keygen", "-F", key.name, "-f", str(file)], runner)
         if known.returncode == 0:
             # A recorded key that SSH refused is a changed key: never replaced here.
             raise MachineLoginFailure("host_key_changed")

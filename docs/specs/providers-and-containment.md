@@ -296,7 +296,10 @@ roots and lifetime; hostile-agent containment would require a different owner.
 
 Repository-writing scopes receive machine-card `granted_roots`, plus `/tmp` and
 the local temporary directory. Scratch-only/read-only launches receive none.
-Humans choose paths; code fixes eligible capabilities.
+Humans choose paths; code fixes eligible capabilities. Every launch reads the card afresh, so
+a path added mid-episode applies from the next launch. The write-boundary prompt
+tells a blocked agent to ask for the exact path there, rather than copy files out
+of a read-only folder.
 
 Only RCP storage constrains grants: data and installed-server folders, credentials,
 checkpoints/restores, `/etc/rcp`, `/run/rcp`, account `~/.rcp`, remote

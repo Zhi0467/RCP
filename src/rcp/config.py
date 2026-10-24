@@ -9,7 +9,6 @@ import tomlkit
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from rcp.compute_jobs.text import COMPUTE_CREDENTIAL_PATH, validate_compute_metadata
-from rcp.limits import COMPUTE_PROFILE_MAX_COUNT
 from rcp.providers import (
     DEFAULT_PROVIDER,
     AgentCapability,
@@ -23,9 +22,6 @@ from rcp.ssh_validation import validate_ssh_destination
 DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING = 10
 #: A retired top-level manifest table. Loads ignore it; every manifest write drops it.
 LEGACY_COMPUTE_CONNECTIONS_KEY = "compute_connections"
-COMPUTE_SSH_TARGET = re.compile(
-    r"(?:[A-Za-z0-9_][A-Za-z0-9_.-]*@)?[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}"
-)
 
 
 class MachineComputeConfig(BaseModel):
@@ -102,10 +98,11 @@ class ResolvedComputeProfile(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-    name: str = Field(min_length=1, max_length=80)
+    # A machine's alias; any alias and host the manifest accepts resolves.
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
     kind: Literal["local", "ssh"]
-    ssh_target: str = Field(default="", max_length=255)
+    ssh_target: str = ""
     access_hint: str = Field(default="", max_length=512)
 
     @model_validator(mode="before")
@@ -139,8 +136,6 @@ class ResolvedComputeProfile(BaseModel):
             raise ValueError("remote compute requires an SSH target")
         else:
             validate_ssh_destination(self.ssh_target)
-            if COMPUTE_SSH_TARGET.fullmatch(self.ssh_target) is None:
-                raise ValueError("compute SSH target contains unsupported characters")
         return self
 
 
@@ -152,10 +147,7 @@ class ResolvedComputeContext(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    active: tuple[ResolvedComputeProfile, ...] = Field(
-        default_factory=tuple,
-        max_length=COMPUTE_PROFILE_MAX_COUNT,
-    )
+    active: tuple[ResolvedComputeProfile, ...] = ()
 
     @model_validator(mode="after")
     def active_ids_are_unique(self) -> ResolvedComputeContext:

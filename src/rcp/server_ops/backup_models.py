@@ -584,6 +584,13 @@ class BackupManifestMachine(_StrictBackupModel):
         MachineConfig.model_validate(self.model_dump())
         return self
 
+    def matches(self, current: BackupManifestMachine) -> bool:
+        """Compare what this record states; an older one never recorded hint or compute."""
+        # An omitted field makes no claim, like a legacy receipt's skill defaults:
+        # an empty value and an older descriptor both leave the manifest's own.
+        omitted = {"access_hint", "compute"} - self.model_fields_set
+        return self.model_dump(exclude=omitted) == current.model_dump(exclude=omitted)
+
 
 class BackupManifestComputeConnection(_StrictBackupModel):
     """A retired compute connection an older archive recorded; kept only for its digest."""
@@ -761,8 +768,13 @@ class BackupManifestConfiguration(_StrictBackupModel):
 
     def matches_configuration(self, current: BackupManifestConfiguration) -> bool:
         """Compare human configuration, retaining old receipts' exact integrity hashes."""
-        exclude = {"skill_defaults", "declared_skill_defaults", "compute_connections"}
+        exclude = {"skill_defaults", "declared_skill_defaults", "compute_connections", "machines"}
         if self.model_dump(exclude=exclude) != current.model_dump(exclude=exclude):
+            return False
+        if len(self.machines) != len(current.machines) or not all(
+            recorded.matches(machine)
+            for recorded, machine in zip(self.machines, current.machines, strict=True)
+        ):
             return False
         if self.declared_skill_defaults is None:
             # A legacy receipt has only resolved values. Check every setting the

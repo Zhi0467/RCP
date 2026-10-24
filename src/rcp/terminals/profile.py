@@ -178,8 +178,9 @@ _SSH_READ_ONLY = ("known_hosts", "known_hosts2", "authorized_keys", "authorized_
 def account_config_paths(home: Path) -> tuple[list[str], list[str]]:
     """The writable account configuration roots, and the files inside kept read-only.
 
-    Missing roots are created private (0700). `known_hosts` is created empty if
-    absent, so its read-only mount needs no stand-in inside the real folder.
+    Missing roots are created private (0700). Each protected file is created
+    empty if absent, so the terminal cannot create it through the writable
+    folder, and its read-only mount needs no stand-in.
     """
     roots = []
     for relative in ACCOUNT_CONFIG_ROOTS:
@@ -187,8 +188,9 @@ def account_config_paths(home: Path) -> tuple[list[str], list[str]]:
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         roots.append(root.resolve())
     ssh = roots[0]
-    (ssh / "known_hosts").touch(mode=0o600)
     kept = [ssh / name for name in _SSH_READ_ONLY]
+    for path in kept:
+        path.touch(mode=0o600)
     kept.extend(ssh.glob("id_*"))
     return [str(root) for root in roots], sorted(str(path) for path in kept if path.is_file())
 

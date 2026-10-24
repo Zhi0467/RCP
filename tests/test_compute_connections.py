@@ -6,13 +6,17 @@ import subprocess
 import pytest
 from pydantic import ValidationError
 
-from rcp.compute import _probe_one, compute_probe_cache_key, probe_compute_connections
+from rcp.compute import (
+    _probe_one,
+    compute_probe_cache_key,
+    machine_compute_context,
+    probe_compute_connections,
+)
 from rcp.config import (
     Manifest,
     ResolvedComputeContext,
     ResolvedComputeProfile,
 )
-from rcp.limits import COMPUTE_PROFILE_MAX_COUNT
 from rcp.operator_commands import operator_route
 from rcp.transport.remote_compute_probe import classify_ssh_failure, probe_connection
 
@@ -225,13 +229,18 @@ def test_probe_cache_key_follows_routes_but_not_access_hints(manifest) -> None:
     assert compute_probe_cache_key(Manifest.model_validate(payload)) != base
 
 
-def test_resolved_compute_context_is_bounded() -> None:
-    profiles = tuple(
-        ResolvedComputeProfile(id=f"m-{index}", name=f"m-{index}", kind="local")
-        for index in range(COMPUTE_PROFILE_MAX_COUNT + 1)
+def test_every_machine_the_manifest_accepts_resolves(manifest) -> None:
+    payload = manifest.model_dump(mode="python")
+    payload["machines"].extend(
+        [{"alias": "old box", "host": "fe80::1", "os_account": "alice"}]
+        + [{"alias": f"node-{index}", "host": f"node-{index}.example"} for index in range(40)]
     )
-    with pytest.raises(ValidationError, match="at most 32 items"):
-        ResolvedComputeContext(active=profiles)
+    context = machine_compute_context(
+        Manifest.model_validate(payload), execution_machine=manifest.machines[0].alias
+    )
+
+    assert len(context.active) == len(payload["machines"])
+    assert ("old box", "alice@fe80::1") in {(p.id, p.ssh_target) for p in context.active}
 
 
 @pytest.mark.parametrize(

@@ -202,7 +202,8 @@ def test_shipped_profile_uses_remote_existing_paths_and_remote_home(tmp_path, mo
     for root in (ssh, gcloud):
         assert f'BindPaths="{root}"' in command
         assert str(root) in command[command.index("rcp-terminal") + 1 : separator]
-    for kept in (ssh / "known_hosts", ssh / "id_ed25519"):
+    # A protected file the account lacks is created, so the shell cannot create it.
+    for kept in (ssh / "known_hosts", ssh / "authorized_keys", ssh / "id_ed25519"):
         assert f'ReadOnlyPaths="{kept}"' in command
         assert str(kept) in command[separator + 1 :]
     absent = str(tmp_path / ".research")

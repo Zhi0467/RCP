@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -11,10 +12,14 @@ KEY = "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 
 def _runner(tmp_path, *, login_stderr="", key=KEY, fingerprint="SHA256:abc"):
     known_hosts = tmp_path / "ssh" / "known_hosts"
+    global_hosts = tmp_path / "ssh_known_hosts"
 
     def run(argv, **kwargs):
         if argv[:2] == ["ssh", "-G"]:
-            out = f"hostname 10.0.0.5\nport 22\nuserknownhostsfile {known_hosts}\n"
+            out = (
+                f"hostname 10.0.0.5\nport 22\nuserknownhostsfile {known_hosts}\n"
+                f"globalknownhostsfile {global_hosts}\n"
+            )
         elif argv[0] == "ssh":
             code = 255 if login_stderr else 0
             return subprocess.CompletedProcess(argv, code, "" if code else "alice\n", login_stderr)
@@ -23,7 +28,8 @@ def _runner(tmp_path, *, login_stderr="", key=KEY, fingerprint="SHA256:abc"):
         elif argv[:2] == ["ssh-keygen", "-l"]:
             out = f"256 {fingerprint} 10.0.0.5 (ED25519)\n"
         elif argv[:2] == ["ssh-keygen", "-F"]:
-            found = known_hosts.exists() and "10.0.0.5" in known_hosts.read_text()
+            recorded = Path(argv[-1])
+            found = recorded.exists() and "10.0.0.5" in recorded.read_text()
             return subprocess.CompletedProcess(argv, 0 if found else 1, "", "")
         else:
             raise AssertionError(argv)
@@ -68,3 +74,11 @@ def test_trust_records_only_the_compared_key_once(tmp_path) -> None:
     with pytest.raises(MachineLoginFailure, match="host_key_changed"):
         trust_host_key("gpu", "SHA256:abc", runner=run)
     assert known_hosts.read_text().count("\n") == 1
+
+
+def test_trust_refuses_a_host_another_known_hosts_file_records(tmp_path) -> None:
+    run, known_hosts = _runner(tmp_path)
+    (tmp_path / "ssh_known_hosts").write_text("10.0.0.5 ssh-ed25519 OLDKEY\n")
+    with pytest.raises(MachineLoginFailure, match="host_key_changed"):
+        trust_host_key("gpu", "SHA256:abc", runner=run)
+    assert not known_hosts.exists()
