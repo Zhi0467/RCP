@@ -153,9 +153,13 @@ text cannot select it; resolution never skips an unusable current binding.
 - Human model changes keep the session. Provider or machine changes start fresh
   with a recorded reason. The composer offers provider/model/reasoning, defaulting
   to the last turn then Settings, but not machine selection.
-- Wakes require their recorded provider/model/machine to match. Mismatch claims
-  completion once and records a failed notification task without provider launch
-  or Retry. Deferred wakes replace one visible reason until admitted.
+- A wake continues the chat's current agent: it takes the provider, model,
+  reasoning and runtime of the chat's latest session, so a human's provider or
+  model switch after arming does not strand it. Only a recorded machine that
+  differs from that session's claims completion once and records a failed
+  notification task without provider launch or Retry. Deferred wakes replace one
+  visible reason until admitted.
+  **Why:** the watcher belongs to the conversation, and the human chose its agent.
 
 Every resolution records `chat_session_resolution`. Fresh-session reasons are
 `no_session_yet`, `session_history_only`, `session_recovery_abandoned`,

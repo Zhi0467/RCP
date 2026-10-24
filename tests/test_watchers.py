@@ -1633,12 +1633,26 @@ def test_chat_wake_defers_behind_unresolved_turn_without_claiming_watchers(store
         assert store.watcher("done").last_error is None
 
 
-@pytest.mark.parametrize(
-    ("changed_policy", "reason_code"),
-    [({"provider": "claude"}, "provider_mismatch"), ({"model": "other-model"}, "model_mismatch")],
-)
-def test_chat_wake_refuses_policy_mismatch_with_durable_reason(store, changed_policy, reason_code):
-    _completed_chat_turn(store, "human-before", "current-session", request_updates=changed_policy)
+@pytest.mark.parametrize("changed_agent", [{"provider": "claude"}, {"model": "other-model"}])
+def test_chat_wake_reaches_the_chats_current_agent(store, changed_agent) -> None:
+    current = _completed_chat_turn(
+        store, "human-before", "current-session", request_updates=changed_agent
+    )
+    store.create_watchers([_record("done", status="completed")])
+
+    wake = store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"])
+
+    assert wake is not None and wake.status == "queued"
+    assert wake.native_session_id == current.native_session_id
+    assert {key: wake.request.get(key) for key in ("provider", "model", "reasoning")} == {
+        key: current.request.get(key) for key in ("provider", "model", "reasoning")
+    }
+
+
+def test_chat_wake_refuses_a_machine_change_with_durable_reason(store) -> None:
+    _completed_chat_turn(
+        store, "human-before", "current-session", request_updates={"run_on": "other-machine"}
+    )
     store.create_watchers([_record("done", status="completed")])
 
     wake = store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"])
@@ -1649,7 +1663,7 @@ def test_chat_wake_refuses_policy_mismatch_with_durable_reason(store, changed_po
     assert wake.finished_at
     resolution = _session_resolution(store, wake.operation_id)
     assert resolution["outcome"] == "refused"
-    assert resolution["reason_code"] == reason_code
+    assert resolution["reason_code"] == "machine_mismatch"
     assert store.watcher("done").notification_operation_id == wake.operation_id
     assert store.watcher("done").notified is True
     # Retry would replay the refused policy: no offer, and the engine refuses it.
