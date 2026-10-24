@@ -1,37 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  computeProbePresentation,
-  latestPersistedComputeIds,
-  reconcileActiveComputeIds,
-} from "../src/experiments/compute.ts";
+import { computeProbePresentation } from "../src/experiments/compute.ts";
 import { appStylesheet, withResolvedTypeScale } from "./appStylesheet.mjs";
-
-const connections = [
-  { id: "local", name: "Local", kind: "local", ssh_target: "", access_hint: "" },
-  { id: "gpu", name: "GPU", kind: "ssh", ssh_target: "alice@gpu", access_hint: "" },
-];
-
-test("compute selection removes deleted connections and duplicate ids", () => {
-  assert.deepEqual(reconcileActiveComputeIds(["gpu", "missing", "gpu"], connections), ["gpu"]);
-});
-
-test("the newest persisted chat or task selection restores composer state", () => {
-  const messages = [
-    {
-      timestamp: "2026-09-02T10:00:00Z",
-      active_compute_ids: ["local"],
-    },
-  ];
-  const tasks = [
-    {
-      created_at: "2026-09-02T10:01:00Z",
-      request: { active_compute_ids: ["gpu"] },
-    },
-  ];
-  assert.deepEqual(latestPersistedComputeIds(messages, tasks, connections), ["gpu"]);
-});
 
 test("compute probes expose distinct failure labels", () => {
   assert.deepEqual(
@@ -62,7 +33,7 @@ test("compute controls introduce no sub-10px primary or status text", () => {
     styles.indexOf(".chat-composer.is-dragging-files"),
   );
   const settings = styles.slice(
-    styles.indexOf(".compute-settings > header"),
+    styles.indexOf(".machine-compute {"),
     styles.indexOf(".agent-machine-fixed"),
   );
 

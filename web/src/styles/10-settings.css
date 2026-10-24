@@ -789,6 +789,19 @@ details[open] > .view-disclosure-summary > svg:last-child {
   padding: 0 7px;
   text-transform: none;
 }
+.agent-config .experiment-start-message {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--ink);
+  display: block;
+  font: var(--type-xs) var(--body);
+  margin-top: 9px;
+  min-width: 0;
+  padding: 6px 7px;
+  resize: vertical;
+  width: 100%;
+}
 .agent-config-chip-count {
   align-items: center;
   margin-left: auto;
@@ -2051,7 +2064,7 @@ button.agent-provider-label {
   border-bottom: 1px solid var(--line);
   display: grid;
   gap: 12px;
-  grid-template-columns: 28px minmax(0, 1fr);
+  grid-template-columns: 28px minmax(0, 1fr) auto;
   padding: 18px 20px;
 }
 .provider-path-settings > header > span {
@@ -2148,42 +2161,6 @@ button.agent-provider-label {
   border-color: color-mix(in srgb, var(--cobalt) 35%, var(--line));
   color: var(--cobalt-dark);
 }
-.compute-settings > header {
-  align-items: center;
-  border-bottom: 1px solid var(--line);
-  display: grid;
-  gap: 12px;
-  grid-template-columns: 28px minmax(0, 1fr) auto;
-  padding: 18px 20px;
-}
-.compute-settings > header > span {
-  align-items: center;
-  background: var(--cobalt-soft);
-  color: var(--cobalt-dark);
-  display: flex;
-  height: 28px;
-  justify-content: center;
-  width: 28px;
-}
-.compute-settings h2 {
-  font-family: var(--editorial);
-  font-size: var(--type-2xl);
-  font-weight: 550;
-  margin: 0;
-}
-.compute-settings-actions {
-  display: flex;
-  gap: 6px;
-}
-.compute-connection-list {
-  display: grid;
-  gap: 12px;
-  padding: 16px;
-}
-.compute-connection {
-  background: var(--surface);
-  border: 1px solid var(--line);
-}
 .compute-connection-fields {
   align-items: end;
   display: grid;
@@ -2252,19 +2229,16 @@ button.agent-provider-label {
 .compute-probe + .compute-probe {
   border-top: 1px solid var(--line);
 }
-.compute-probe-dot,
-.chat-compute-dot {
+.compute-probe-dot {
   background: var(--muted);
   border-radius: 50%;
   height: 7px;
   width: 7px;
 }
-.compute-probe.ready .compute-probe-dot,
-.chat-compute-dot.ready {
+.compute-probe.ready .compute-probe-dot {
   background: var(--green);
 }
-.compute-probe.error .compute-probe-dot,
-.chat-compute-dot.error {
+.compute-probe.error .compute-probe-dot {
   background: var(--red);
 }
 .compute-probe > span:not(.compute-probe-dot) {
@@ -2688,9 +2662,6 @@ button.agent-provider-label {
   .compute-connection-fields {
     grid-template-columns: minmax(120px, 1fr) minmax(90px, 0.45fr) minmax(180px, 1.2fr) 30px;
   }
-  .compute-access-hint {
-    grid-column: 1 / 4;
-  }
   .cache-meter + .cache-meter {
     border-left: 0;
     border-top: 1px solid var(--line);
@@ -2872,18 +2843,10 @@ button.agent-provider-label {
     grid-column: 2;
     grid-row: auto;
   }
-  .compute-settings > header {
-    grid-template-columns: 28px minmax(0, 1fr);
-  }
-  .compute-settings-actions {
-    flex-wrap: wrap;
-    grid-column: 1 / -1;
-  }
   .compute-connection-fields {
     grid-template-columns: minmax(0, 1fr) 30px;
   }
-  .compute-connection-fields > label,
-  .compute-access-hint {
+  .compute-connection-fields > label {
     grid-column: 1 / -1;
   }
   .compute-connection-fields > label:first-child {

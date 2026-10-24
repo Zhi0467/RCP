@@ -448,7 +448,6 @@ test("the shared conversation-turn owner preserves the visible composer's reques
     chatId: "chat-1",
     sessionId: "session-1",
     mode: "work",
-    activeComputeIds: ["lab-gpu"],
     skills: { workflow_ids: ["analyze"], skill_ids: ["plot"] },
     providerSkillNames: ["browser"],
   };
@@ -463,7 +462,6 @@ test("the shared conversation-turn owner preserves the visible composer's reques
     chat_id: "chat-1",
     session_id: "session-1",
     mode: "work",
-    active_compute_ids: ["lab-gpu"],
     invoked_workflow_ids: ["analyze"],
     invoked_skill_ids: ["plot"],
     invoked_provider_skill_names: ["browser"],

@@ -38,7 +38,7 @@ const initialProject = {
       host: "",
       os_account: "rcp",
       provider_paths: {},
-      compute: { job_manager: null, jobs_root: "/old" },
+      compute: { job_manager: null, jobs_root: "/old", access_hint: "" },
       compute_probes: { scheduler: null, helper: null },
     },
     {
@@ -46,7 +46,7 @@ const initialProject = {
       host: "cluster",
       os_account: "rcp",
       provider_paths: {},
-      compute: { job_manager: null, jobs_root: "/cluster" },
+      compute: { job_manager: null, jobs_root: "/cluster", access_hint: "" },
       compute_probes: { scheduler: null, helper: null },
     },
   ],
@@ -58,7 +58,6 @@ const initialProject = {
   ),
   providers: {},
   provider_readiness: {},
-  compute_connections: [],
   cache_metrics: { remote_sources: metric, session_slices: metric },
 };
 const initialWatcher = {

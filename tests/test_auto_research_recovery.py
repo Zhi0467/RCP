@@ -9,6 +9,7 @@ import pytest
 
 from rcp.agents import AgentEvent
 from rcp.background import BackgroundAgentTasks
+from rcp.config import ResolvedComputeContext, ResolvedComputeProfile
 from rcp.core.transition_models import GraphHeadRef
 from rcp.runs.auto_research import (
     AutoResearchRunRequest,
@@ -48,11 +49,22 @@ def _store(tmp_path: Path) -> AppStore:
     return store
 
 
-def _start(tasks: BackgroundAgentTasks, *, operation_id: str = "root", provider: str = "codex"):
+def _start(
+    tasks: BackgroundAgentTasks,
+    *,
+    operation_id: str = "root",
+    provider: str = "codex",
+    machines: ResolvedComputeContext | None = None,
+):
     episode, root = start_auto_research(
         tasks,
         "project",
-        AutoResearchStartRequest(invocation_ceiling=4, run_truth_scope=["repo"], provider=provider),
+        AutoResearchStartRequest(
+            invocation_ceiling=4,
+            run_truth_scope=["repo"],
+            provider=provider,
+            resolved_compute_context=machines or ResolvedComputeContext(),
+        ),
         authorized_by=fabricated_authorizer(),
         graph_base_head=GraphHeadRef(revision=0),
         ensure_graph_target=lambda _episode: None,
@@ -108,9 +120,15 @@ def test_transient_orchestrator_failure_retries_exact_session_without_spend(tmp_
     stage = tmp_path / "orchestrator-stage"
     stage.mkdir()
     observed: list[tuple[str, str | None]] = []
+    # A machine the current manifest no longer has: recovery must not re-read it.
+    machines = ResolvedComputeContext(
+        active=(ResolvedComputeProfile(id="gpu", name="gpu", kind="ssh", ssh_target="gpu.example"),)
+    )
+    snapshots: list[ResolvedComputeContext] = []
 
     async def stream(_project_id, _kind, request, execution):
         observed.append((execution.continuation, request.session_id))
+        snapshots.append(request.resolved_compute_context)
         if execution.continuation == "fresh":
             execution.checkpoint_stage("", str(stage))
             yield _sse(AgentEvent(event="session", session_id="session-1"))
@@ -121,7 +139,7 @@ def test_transient_orchestrator_failure_retries_exact_session_without_spend(tmp_
 
     tasks = BackgroundAgentTasks(store, stream)
     _install_recovery_callback(tasks)
-    auto_research, root = _start(tasks)
+    auto_research, root = _start(tasks, machines=machines)
     root = wait_for_task(store, root.operation_id, expect="failed")
     recovery = _wait_for_recovery(store, "task:root")
     assert recovery.retry_mode == "exact"
@@ -141,6 +159,14 @@ def test_transient_orchestrator_failure_retries_exact_session_without_spend(tmp_
     assert child.stage_root == root.stage_root == str(stage)
     assert store.episode_budget_meter(auto_research.episode_id).invocations_used == 1
     assert observed == [("fresh", None), ("retry", "session-1")]
+    assert snapshots == [machines, machines]
+
+
+def test_a_row_admitted_before_machine_snapshots_loads_with_none() -> None:
+    legacy = AutoResearchRunRequest(episode_id="e", role="orchestrator").model_dump(mode="json")
+    del legacy["resolved_compute_context"]
+    loaded = AutoResearchRunRequest.model_validate(legacy)
+    assert loaded.resolved_compute_context == ResolvedComputeContext()
 
 
 def test_due_recovery_adopts_existing_human_retry_without_spawning_or_deferring(
