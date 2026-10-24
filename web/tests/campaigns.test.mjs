@@ -835,8 +835,9 @@ test("the login notice names each signed-out account once and offers verificatio
 
   assert.doesNotMatch(html, /remote.example/);
 
-  // One phone disclosure plus the check; the full explanation stays in the DOM.
-  assert.equal((html.match(/<button/g) ?? []).length, 2);
+  // One phone disclosure, the check, and Dismiss; the full explanation stays in the DOM.
+  assert.equal((html.match(/<button/g) ?? []).length, 3);
+  assert.match(html, /aria-label="Dismiss"/);
   assert.match(html, /class="compact-notice-toggle"[^>]*aria-expanded="false"/);
   assert.match(html, /<span>Codex is signed out<\/span>/);
   assert.match(html, /Sign it in from Settings, Provider logins/);

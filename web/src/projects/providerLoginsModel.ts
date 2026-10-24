@@ -1,6 +1,7 @@
 import type {
   ProviderCredentialSummary,
   ProviderLoginAccount,
+  ProviderLoginState,
   ProviderSignInStatus,
   ProviderResumeSummary,
 } from "../core/types";
@@ -67,4 +68,31 @@ export function resumedNote(resumed: ProviderResumeSummary): string {
   return resumed.checked
     ? `Verified. Rechecked ${resumed.checked} ${resumed.checked === 1 ? "item" : "items"} for resumption.`
     : "Verified.";
+}
+
+type SignOut = Pick<ProviderLoginState, "provider" | "host" | "generation" | "changed_at">;
+
+// One sign-out of one account: a later sign-out has a new generation or time.
+const dismissalKey = (state: SignOut) =>
+  `rcp:login-notice-dismissed:${state.provider}:${state.host}:${state.generation}:${state.changed_at}`;
+const dismissed = new Set<string>();
+
+export function isLoginNoticeDismissed(state: SignOut): boolean {
+  const key = dismissalKey(state);
+  if (dismissed.has(key)) return true;
+  try {
+    return localStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function dismissLoginNotice(state: SignOut): void {
+  const key = dismissalKey(state);
+  dismissed.add(key);
+  try {
+    localStorage.setItem(key, "1");
+  } catch {
+    /* Session memory still hides it on this page. */
+  }
 }

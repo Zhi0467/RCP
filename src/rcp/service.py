@@ -32,6 +32,7 @@ from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_reposito
 from rcp.attachments import ChatAttachmentDescriptor, ProjectReferenceSelector
 from rcp.compute import machine_compute_context
 from rcp.config import (
+    AGENT_EXECUTION_PROFILES,
     AgentExecutionProfile,
     AgentSurface,
     AgentSurfaceConfig,
@@ -112,6 +113,7 @@ from rcp.providers.browser_grant import BrowserTurnStatus
 from rcp.providers.live_status import AgentStatus
 from rcp.provisioning_repositories import team_repository_sources
 from rcp.runs.auto_research import AutoResearchRunRequest
+from rcp.runs.provider_login import provider_login_host
 from rcp.skill_registry import (
     SkillDefaults,
     SkillReference,
@@ -1097,6 +1099,53 @@ def project_repository_descriptors(
     return result
 
 
+def _parked_login_accounts(
+    store: AppStore, project_id: str, manifest: Manifest
+) -> set[tuple[str, str]]:
+    """(provider, host) pairs holding this project's work until a sign-in.
+
+    Mirrors what `resume_provider_account` releases: queued tasks, provider-auth
+    failures a sign-in retries, and undelivered watcher continuations. Each
+    froze its account at admission, so it can differ from today's profiles.
+    """
+    tasks = [store.agent_task(item) for item in store.queued_agent_task_ids(project_id)]
+    tasks += [
+        store.agent_task(recovery.operation_id)
+        for recovery in store.blocked_provider_auth_recoveries()
+    ]
+    for episode in store.episodes(project_id, limit=None):
+        if (
+            episode.mode != "experiment_loop"
+            or episode.status != "running"
+            or not episode.control_node_id
+        ):
+            continue
+        runtime = store.experiment_loop_runtime(
+            project_id, episode.control_node_id, graph_target=episode.graph_target
+        )
+        tasks.append(store.agent_task(runtime.current_operation_id or ""))
+    accounts: set[tuple[str, str]] = set()
+    for task in tasks:
+        if task is None or task.project_id != project_id:
+            continue
+        if task.status != "queued" and task.failure_kind != "provider_auth":
+            continue
+        if task.stage_host is not None or task.stage_root is not None:
+            host = task.stage_host or ""
+        else:
+            try:
+                host = provider_login_host(manifest, str(task.request.get("run_on") or "local"))
+            except ValueError:
+                # Its machine left the project; resumption skips it the same way.
+                continue
+        accounts.add((str(task.request["provider"]), host))
+    for group in store.completed_watcher_groups():
+        first = group[0]
+        if first.project_id == project_id:
+            accounts.add((first.continuation.provider, first.execution_host or ""))
+    return accounts
+
+
 class ProjectService:
     def __init__(
         self,
@@ -1674,7 +1723,9 @@ class ProjectService:
                 "skill_defaults_declared": sorted(
                     self.manifest.agent.skill_defaults.model_fields_set
                 ),
-                "provider_logins": self.provider_logins_for(self.manifest, self.launcher),
+                "provider_logins": self.provider_logins_for(
+                    self.manifest, self.launcher, self._project_id
+                ),
                 "provider_readiness": {},
                 "provider_skill_inventories": self.provider_skill_inventory_snapshot(),
                 "providers": {},
@@ -1745,10 +1796,23 @@ class ProjectService:
         }
 
     @staticmethod
-    def provider_logins_for(manifest: Manifest, launcher: AgentLauncher) -> list[dict[str, object]]:
+    def provider_logins_for(
+        manifest: Manifest, launcher: AgentLauncher, project_id: str | None
+    ) -> list[dict[str, object]]:
+        """The accounts this project's agents launch on, plus any holding its parked work.
+
+        A machine that is only a compute target has no agent login to need, so
+        it gets no entry; Settings, Provider logins still lists every account.
+        """
         login_state = launcher.login_state
         if login_state is None:
             return []
+        accounts = {
+            (profile.provider, provider_login_host(manifest, profile.run_on))
+            for profile in map(manifest.agent_profile, AGENT_EXECUTION_PROFILES)
+        }
+        if launcher.accounts is not None and project_id is not None:
+            accounts |= _parked_login_accounts(launcher.accounts.store, project_id, manifest)
         return [
             {
                 **(
@@ -1758,14 +1822,8 @@ class ProjectService:
                 ).model_dump(mode="json"),
                 "label": profile_for(provider).label,
             }
-            for provider, host in sorted(
-                {
-                    (provider, machine.host)
-                    for machine in manifest.machines
-                    for provider in PROVIDER_IDS
-                    if profile_for(provider).authentication.manages_login
-                }
-            )
+            for provider, host in sorted(accounts)
+            if profile_for(provider).authentication.manages_login
         ]
 
     @staticmethod
@@ -1836,7 +1894,6 @@ class ProjectService:
                 readiness_by_machine[alias][provider] = probe.result()
         coach_machine = manifest.agent_profile("paper_coach").run_on
         return {
-            "provider_logins": ProjectService.provider_logins_for(manifest, launcher),
             "provider_readiness": readiness_by_machine,
             "state_transfers": {
                 machine.alias: state_transfer_diagnostics(machine.host)
