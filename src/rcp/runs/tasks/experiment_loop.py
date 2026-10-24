@@ -46,6 +46,7 @@ from rcp.agents.experiment_loop_prompt import (
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.group_context import build_group_context, group_prompt_value
+from rcp.agents.loop_overlap import render_loop_interference_rule
 from rcp.agents.prompts import (
     COMMAND_CLIENT,
     _invoked_package_section,
@@ -868,8 +869,14 @@ def _loop_read_context(turn: WorkTurn) -> str:
         if execution is not None and task is not None
         else LoopOverlap()
     )
-    return experiment_loop_read_context(
-        turn.context, loops, ask_allowed="ask" in _work_turn_command_handler(turn).allowed_verbs
+    return experiment_loop_read_context(turn.context, loops)
+
+
+def _loop_interference_rule(turn: WorkTurn) -> str:
+    """The master's interference rule, chosen by the verbs this launch's mailbox enforces."""
+
+    return render_loop_interference_rule(
+        ask_allowed="ask" in _work_turn_command_handler(turn).allowed_verbs
     )
 
 
@@ -1139,6 +1146,7 @@ def _experiment_start_contract(
     )
     contract = experiment_loop_task_contract(
         execution_instructions=_work_execution_instructions(turn, COMMAND_CLIENT),
+        interference_rule=_loop_interference_rule(turn),
         project_name=turn.context.project_name,
         ontology_path=f"{turn.context.graph_path}#ontology",
         ontology_extensions=turn.context.ontology_extensions,

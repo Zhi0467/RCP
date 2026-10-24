@@ -340,6 +340,12 @@ def _prepare_work_chat_prompt(
         invoked_provider_skills=request.resolved_provider_skills,
         attachments=attachment_pointers,
         launch_instructions=launch_instructions if first_work_turn else None,
+        message_author=(
+            "orchestrator"
+            if execution is not None
+            and execution.store.auto_research_child_work_for_operation(execution.operation_id)
+            else "human"
+        ),
     )
     if question_part:
         prompt += "\n\n" + question_part

@@ -750,6 +750,13 @@ def _percent(fraction: float) -> str:
     return f"{fraction * 100:.1f}".removesuffix(".0") + "%"
 
 
+def message_part(text: str, *, author: Literal["human", "orchestrator"] = "human") -> str:
+    """A message's exact bytes between markers, so no RCP section reads as part of it."""
+
+    label = "The human's message" if author == "human" else "Your orchestrator's instruction"
+    return f"{label}, exactly as written:\n<message>\n{text}\n</message>"
+
+
 def _attachment_items(attachments: list[dict[str, object]] | None) -> str:
     """List a turn's attachments as plain lines."""
 
@@ -943,9 +950,11 @@ class PromptFactory:
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
         attachments: list[dict[str, object]] | None = None,
         launch_instructions: str | None = None,
+        message_author: Literal["human", "orchestrator"] = "human",
     ) -> str:
         return PromptFactory._chat_turn_prompt(
             marker="Work",
+            message_author=message_author,
             artifact_path=artifact_path,
             human_message=human_message,
             node=node,
@@ -974,8 +983,9 @@ class PromptFactory:
         lessons_pointer: str = "",
         read_context: str = "",
         launch_instructions: str | None = None,
+        message_author: Literal["human", "orchestrator"] = "human",
     ) -> str:
-        """Render one chat turn: its marker, what is new for it, and the human's bytes.
+        """Render one chat turn: its marker, what is new for it, and the message's bytes.
 
         The write boundary and launch instructions live in the master. A master rendered
         before the session's first Work turn lacks the launch instructions, so that turn
@@ -1002,9 +1012,9 @@ class PromptFactory:
         attachment_section = _attachment_items(attachments)
         if attachment_section:
             parts.append(attachment_section)
-        # Keep the human-authored bytes as one untouched part. Structured invocation metadata is
-        # rendered beside it; RCP never rewrites or consumes the visible slash token.
-        parts.append(human_message)
+        # Keep the message's bytes untouched inside one marked part. Structured invocation
+        # metadata is rendered beside it; RCP never rewrites or consumes the visible slash token.
+        parts.append(message_part(human_message, author=message_author))
         return compose(node, parts=parts, master=master, delta=context_delta)
 
     @staticmethod

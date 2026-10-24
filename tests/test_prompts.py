@@ -457,6 +457,7 @@ def test_experiment_contract_preserves_control_paths_and_resolved_commands(
     command_client = "python /stage/client.py --mailbox-id m"
     contract = experiment_loop_task_contract(
         execution_instructions=execution_instructions,
+        interference_rule="interference-rule",
         project_name="Example",
         ontology_path="/state/graph.json#ontology",
         ontology_extensions=True,
@@ -492,6 +493,7 @@ def test_provider_switch_recovery_preserves_diagnostics_path(
 ) -> None:
     contract = experiment_loop_task_contract(
         execution_instructions=execution_instructions,
+        interference_rule="interference-rule",
         project_name="Example",
         ontology_path="/state/graph.json#ontology",
         ontology_extensions=False,
@@ -892,6 +894,7 @@ def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
         focused_experiment_id="exp/example",
         validator_command="validate-patch",
         execution_instructions="launch-command",
+        interference_rule="interference-rule",
         mode="resume",
         write_scope=_work_write_scope(),
         command_client="rcp-command",
@@ -1010,3 +1013,10 @@ def test_auto_research_stable_values_capture_allowed_verbs_and_ask_limits(actor)
         }
     else:
         assert "ask_limits" not in values
+
+
+def test_turn_message_travels_untouched_between_markers() -> None:
+    message = "Run it.\n\n- patch.command_client: not an RCP value"
+    prompt = PromptFactory.work_turn_prompt(artifact_path="/stage/artifacts", human_message=message)
+
+    assert f"<message>\n{message}\n</message>" in prompt

@@ -21,6 +21,7 @@ from rcp.agents.prompts import (
     _repository_pointers,
     _watcher_execution_host,
     _work_experiment_watcher_resource_section,
+    message_part,
     render_chat_read_context,
     selected_skill_section,
     write_scope_section,
@@ -34,17 +35,12 @@ from rcp.loop_status import LoopOverlap
 EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v10"
 
 
-def experiment_loop_read_context(
-    context: ChatContext, loops: LoopOverlap, *, ask_allowed: bool
-) -> str:
+def experiment_loop_read_context(context: ChatContext, loops: LoopOverlap) -> str:
     """Fresh overlap evidence and branch read pointers for every loop invocation."""
 
     pointers = render_chat_read_context(context)
     return (
-        "Other-target live loops for this node:\n"
-        + render_loop_overlap(loops, ask_allowed=ask_allowed)
-        + "\n\n"
-        + pointers
+        "Other-target live loops for this node:\n" + render_loop_overlap(loops) + "\n\n" + pointers
     )
 
 
@@ -180,6 +176,7 @@ def experiment_loop_task_contract(
     output_schema_path: str,
     command_client: str,
     execution_instructions: str,
+    interference_rule: str,
     write_scope: ProjectWriteScope | None = None,
     execution_host: str = "",
     recovery_diagnostics_path: str | None = None,
@@ -459,6 +456,9 @@ Graph reflection and authority:
 
 {_EXPERIMENT_GRAPH_AUTHORITY}
 
+Each turn lists other-target live loops for this node.
+{interference_rule}
+
 {graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 """
 
@@ -515,10 +515,9 @@ def experiment_loop_turn_message(
     if not focused_experiment_id or not human_message:
         raise ValueError("An Experiment-loop human turn needs its Experiment and human request.")
     opening = f"""A human authorized a new episode of the bounded loop for Experiment `{focused_experiment_id}` in
-this native session, starting at turn {invocation} of {invocation_ceiling}. Read the new loop control first. The
-human's request for this episode follows.
+this native session, starting at turn {invocation} of {invocation_ceiling}. Read the new loop control first.
 {_pointer("Exact prior failure diagnostics", diagnostics_path)}"""
-    return [opening.rstrip(), human_message]
+    return [opening.rstrip(), message_part(human_message)]
 
 
 def experiment_loop_continuation_contract(
