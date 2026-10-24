@@ -40,6 +40,7 @@ from rcp.runs.experiment_admission import (
     start_experiment_continuation,
     start_fresh_experiment,
 )
+from rcp.runs.membership_fence import fence_episodes_for_departed_member
 from rcp.runs.provider_login import provider_login_host
 from rcp.service import RunRequest
 from rcp.storage import (
@@ -209,10 +210,20 @@ def start_work_experiment(
         raise ValueError("The Work turn that sent this command has no human authorizer.")
     project_id = source.project_id
     target = source.graph_target
+    try:
+        service = get_graph_service(catalog, project_id, target.branch_id, write=True)
+    except HTTPException as exc:
+        raise ValueError(str(exc.detail)) from exc
+    # An uncached pick probes its provider CLI, so it is checked outside the lock.
+    reasoning = require_auto_research_child_profile_pick(
+        service, provider=start.provider, model=start.model, reasoning=start.reasoning
+    )
+    authorizer = source.authorized_by
     with operation_lock(project_id):
         store.require_project_accepts_new_work(project_id)
+        if not store.is_project_member(project_id, authorizer.user_id):
+            raise ValueError("The human who sent this Work turn is no longer a project member.")
         try:
-            service = get_graph_service(catalog, project_id, target.branch_id, write=True)
             require_graph_edit_admission(store, project_id, target)
         except HTTPException as exc:
             raise ValueError(str(exc.detail)) from exc
@@ -225,9 +236,6 @@ def start_work_experiment(
                 "The invocation limit exceeds this Experiment's limit of "
                 f"{node.invocation_ceiling}."
             )
-        reasoning = require_auto_research_child_profile_pick(
-            service, provider=start.provider, model=start.model, reasoning=start.reasoning
-        )
         source_request = RunRequest.model_validate(source.request)
         supplied = RunRequest(
             chat_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:work-experiment:{start.episode_id}")),
@@ -238,7 +246,7 @@ def start_work_experiment(
             run_truth_scope=source_request.run_truth_scope,
             started_from_operation_id=start.source_operation_id,
         )
-        return start_fresh_experiment(
+        record = start_fresh_experiment(
             tasks,
             service,
             project_id,
@@ -246,10 +254,15 @@ def start_work_experiment(
             node=node,
             state=state,
             invocation_ceiling=start.invocation_limit or node.invocation_ceiling,
-            authorized_by=source.authorized_by,
+            authorized_by=authorizer,
             ensure_graph_target=partial(ensure_episode_graph_target, catalog=catalog),
             episode_id=start.episode_id,
         )
+    # Leaving deletes membership and then fences the member's episodes; checking
+    # again after admission fences one that a concurrent leave's sweep missed.
+    if not store.is_project_member(project_id, authorizer.user_id):
+        fence_episodes_for_departed_member(store, tasks, project_id, authorizer.user_id)
+    return record
 
 
 @router.post("/api/projects/{project_id}/experiments/{node_id:path}/watchers/stop")
@@ -440,6 +453,8 @@ def continue_experiment_episode(
             "session_id": experiment.native_session_id,
             "chat_id": experiment.chat_id,
             "trigger": "experiment_run",
+            # The member pressing Add N turns starts this episode, not the source's chat.
+            "started_from_operation_id": None,
             "control_revision": state.revision,
             "control_episode_id": episode_id,
             "control_invocation": 1,

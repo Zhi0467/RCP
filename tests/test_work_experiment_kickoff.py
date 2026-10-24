@@ -65,7 +65,9 @@ def _kickoff(key: str, *, goal_file: str = "goal.md", limit: int | None = None):
     )
 
 
-def test_work_turn_starts_the_experiment_its_human_asked_for(manifest, tmp_path: Path) -> None:
+def test_work_turn_starts_the_experiment_its_human_asked_for(
+    manifest, tmp_path: Path, monkeypatch
+) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -119,6 +121,11 @@ def test_work_turn_starts_the_experiment_its_human_asked_for(manifest, tmp_path:
         episode_id=None, task_id=WORK_TURN, turn_id="turn", authority="broker"
     )
 
+    # A departed member's turn cannot start one.
+    monkeypatch.setattr(store, "is_project_member", lambda *_args: False)
+    assert handler(_kickoff("departed"), identity).status == "invalid"
+    monkeypatch.undo()
+
     # The agent may shorten an episode, never lengthen it past the node's limit.
     assert handler(_kickoff("too-long", limit=4), identity).status == "invalid"
     started = handler(_kickoff("first", limit=2), identity)
@@ -146,6 +153,42 @@ def test_work_turn_starts_the_experiment_its_human_asked_for(manifest, tmp_path:
         episode.episode_id,
     )
     assert handler(_kickoff("first", goal_file="other.md", limit=2), identity).status == "invalid"
+    (workspace / "goal.md").write_text("Rewritten goal.", encoding="utf-8")
+    assert handler(_kickoff("first", limit=2), identity).status == "invalid"
+    (workspace / "goal.md").write_text("Compare warmup schedules at lr 3e-4.", encoding="utf-8")
+
+    # A Retry of the turn replays its key instead of starting a second episode.
+    store.fail_agent_task(WORK_TURN, "The provider stopped.")
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="work-retry",
+            project_id=project_id,
+            kind="project_chat",
+            status="running",
+            request=request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Working.",
+            parent_operation_id=WORK_TURN,
+            authorized_by=human,
+            dispatch_authority=resolve_dispatch_authority("project_chat", request),
+        )
+    )
+    retry = AgentTaskExecution(
+        operation_id="work-retry",
+        store=store,
+        control=AgentProcessControl(),
+        continuation="retry",
+        experiment_starter=background.experiment_starter,
+    )
+    retried = work_command_handler(retry, None, mailbox=RunStageMailbox(workspace, None))(
+        _kickoff("first", limit=2),
+        CommandTurnIdentity(
+            episode_id=None, task_id="work-retry", turn_id="turn", authority="broker"
+        ),
+    )
+    assert (retried.status, retried.result["episode_id"]) == ("ok", episode.episode_id)
+
     assert [
         item.episode_id
         for item in store.episodes(project_id, limit=None)
@@ -160,3 +203,12 @@ def test_work_turn_starts_the_experiment_its_human_asked_for(manifest, tmp_path:
         experiment_starter=background.experiment_starter,
     )
     assert "episode" not in work_command_handler(loop_execution, None).allowed_verbs
+    # A graph repair only fixes its retained Patch.
+    repair = AgentTaskExecution(
+        operation_id=WORK_TURN,
+        store=store,
+        control=AgentProcessControl(),
+        continuation="graph_repair",
+        experiment_starter=background.experiment_starter,
+    )
+    assert "episode" not in work_command_handler(repair, None).allowed_verbs

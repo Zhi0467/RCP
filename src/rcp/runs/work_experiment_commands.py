@@ -12,6 +12,7 @@ from rcp.agents.command_protocol import (
     EpisodeCommandRequest,
     ExperimentKickoffArguments,
 )
+from rcp.agents.staged_command_client import experiment_kickoff_usage
 from rcp.core.models import CLOSED_EXPERIMENT_STATUSES
 from rcp.limits import AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES
 from rcp.runs.experiment_admission import WorkExperimentStart
@@ -27,12 +28,24 @@ def work_experiment_allowed(execution: AgentTaskExecution | None) -> bool:
     """Only a human's ordinary Work chat, or a wake in it, may start an Experiment.
 
     An Experiment turn starting another would chain episodes nobody authorized,
-    and an artifact edit is scoped to its artifact.
+    an artifact edit is scoped to its artifact, and a graph repair to its Patch.
     """
 
     if execution is None or execution.experiment_starter is None:
         return False
-    task = execution.store.agent_task(execution.operation_id)
+    from rcp.runs.tasks.compute_commands import compute_recovery_lineage
+
+    store = execution.store
+    task = store.agent_task(execution.operation_id)
+    lineage = compute_recovery_lineage(
+        store, execution.operation_id, continuation=execution.continuation
+    )
+    # Graph repair only reflects the turn's finished work; it authorizes no new effect.
+    if execution.continuation == "graph_repair" or any(
+        store.agent_task_continuation_cause(operation_id) == "graph_repair"
+        for operation_id in lineage
+    ):
+        return False
     return (
         task is not None
         and task.kind in {"node_chat", "project_chat"}
@@ -135,15 +148,11 @@ def handle_work_experiment_kickoff(
                 request_id=request.request_id, status="unavailable", message=str(exc)
             )
         episode = store.episode(episode_id)
+        # Admission commits the episode with its first task before returning.
+        assert episode is not None
         disposition = "created"
     else:
         disposition = "existing"
-    if episode is None:
-        return CommandResponse(
-            request_id=request.request_id,
-            status="unavailable",
-            message="The Experiment was admitted but its episode is not readable yet.",
-        )
     store.record_agent_task_event(
         execution.operation_id,
         f"Experiment {arguments.node_id} {disposition}: episode {episode_id}.",
@@ -173,9 +182,8 @@ def work_experiment_command_usage(client: str, profile_choices: str) -> str:
         "turn's Patch, do not start, and say so: graph edits land when the turn ends, so the "
         "human's next message starts it on the fixed graph. Only an Experiment already on the "
         "graph and ready can start.\n"
-        f"`{client} episode --key <key> --kick-off-experiment --node <node-id> "
-        "--goal-file <filename> [--invocation-limit <positive-int>] "
-        "[--provider <provider>] [--model <model>] [--effort <effort>]`\n"
+        f"`{client} episode --key <key> "
+        f"{experiment_kickoff_usage(goal_required=True, child_targets=False)}`\n"
         "Write the goal first as a direct regular UTF-8 file in this run workspace, beside "
         "the Patch, never a nested path or symlink: what the human asked to run and the "
         "specifics from this chat (settings, data, what to compare). The limit may not exceed "
