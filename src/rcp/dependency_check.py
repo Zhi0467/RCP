@@ -43,7 +43,7 @@ from rcp.limits import (
     DEPENDENCY_CHECK_TTL_SECONDS,
     STATE_TRANSFER_STDERR_BYTES,
 )
-from rcp.operator_commands import OperatorRoute
+from rcp.operator_commands import OperatorRoute, operator_route
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state_transfer import retrying
 
@@ -177,11 +177,14 @@ class DependencyChecker:
     def __init__(
         self,
         *,
+        space_kind: Callable[[], str],
         runner: Runner | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         local: Callable[[Collection[Role]], DependencyStatus] = local_check,
     ) -> None:
+        # Read per refusal: the install line is written for the space's operator route.
+        self._space_kind = space_kind
         self._runner = runner
         self._clock = clock
         self._sleep = sleep
@@ -220,7 +223,11 @@ class DependencyChecker:
         if result.outcome != "missing":
             return None
         names = ", ".join(p.name for p in result.missing if p.required)
-        install = f" Install with: {result.install_command}" if result.install_command else ""
+        install = ""
+        if result.install_command:
+            route = operator_route(self._space_kind(), host)
+            command = route.command(install_argv(p.name for p in result.missing), root=True)
+            install = f" Install with: {command}"
         return f"{machine} is missing required programs: {names}.{install}"
 
     def _lookup(self, host: str, *, refresh: bool) -> tuple[DependencyStatus, bool]:

@@ -88,7 +88,7 @@ def test_api_refuses_a_run_on_a_machine_missing_dependencies(manifest, tmp_path,
     from .helpers import create_named_app, signed_in_client
 
     checker = _Checker("")
-    monkeypatch.setattr("rcp.api.app.DependencyChecker", lambda: checker)
+    monkeypatch.setattr("rcp.api.app.DependencyChecker", lambda **_: checker)
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     assert app.state.dependency_checker is checker
     store = app.state.background_tasks.store

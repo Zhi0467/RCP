@@ -9,6 +9,7 @@ import pytest
 
 import rcp.runs.tasks.graph as graph_run
 from rcp.agents import AgentEvent
+from rcp.agents.prompts import compute_connection_section
 from rcp.runs.experiment_loop import experiment_loop_semantic_ending
 from rcp.runs.tasks.graph import (
     _agent_read_dirs,
@@ -97,6 +98,12 @@ def test_successful_ingest_answer_is_persisted_and_readable(
     assert completed["status"] == "succeeded"
     assert completed["result"] == {"messages": [answer]}
     assert completed["applied_revision"] == (2 if kind == "seed" else 3)
+    # The contract names the project machines resolved at this launch.
+    contract = app.state.background_tasks.store.agent_task_contract(
+        completed["operation_id"], "base"
+    )
+    machines = compute_connection_section(service.machine_prompt_profiles("laptop"))
+    assert machines and machines in (contract or "")
 
 
 def test_failed_ingest_keeps_its_independent_answer(manifest, tmp_path) -> None:

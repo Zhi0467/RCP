@@ -407,6 +407,7 @@ async def stream_auto_research_orchestrator_run(
                 episode_request=turn.request,
             )
             contract_path, prompt, master, values = _orchestrator_prompt(
+                service,
                 execution,
                 turn,
                 context=context,
@@ -1573,6 +1574,7 @@ def _actor_launch_prompt(
 
 
 def _orchestrator_prompt(
+    service: ProjectService,
     execution: AgentTaskExecution,
     turn: _CanonicalOrchestratorTurn,
     *,
@@ -1596,7 +1598,7 @@ def _orchestrator_prompt(
     repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path} for item in context.repositories
     ]
-    compute_profiles = ProjectService.compute_prompt_profiles(turn.request.resolved_compute_context)
+    compute_profiles = service.machine_prompt_profiles(turn.request.run_on or "")
     shared_repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path}
         for item in context.shared_repositories
@@ -1794,7 +1796,7 @@ def _worker_prompt(
     repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path} for item in context.repositories
     ]
-    compute_profiles = ProjectService.compute_prompt_profiles(turn.request.resolved_compute_context)
+    compute_profiles = service.machine_prompt_profiles(turn.request.run_on or "")
     values = auto_research_prompt_values(
         graph_path=context.graph_path,
         research_path=context.research_md_path,

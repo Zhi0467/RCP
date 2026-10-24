@@ -49,7 +49,6 @@ from rcp.agents.command_protocol import (
     command_requires_idempotency_key,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
-from rcp.config import ResolvedComputeContext
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import (
     AGENT_COMMAND_EVENT_MAX_BYTES,
@@ -115,8 +114,6 @@ class AutoResearchStartRequest(BaseModel):
     invoked_provider_skill_names: list[str] = Field(default_factory=list)
     resolved_provider_skills: list[ProviderSkillReference] = Field(default_factory=list)
     resolved_skill_packages: list[SkillReference] | None = None
-    # Every project machine seen from `run_on`, frozen when the episode is admitted.
-    resolved_compute_context: ResolvedComputeContext = Field(default_factory=ResolvedComputeContext)
 
     @model_validator(mode="after")
     def normalize_starting_instruction(self) -> AutoResearchStartRequest:
@@ -165,9 +162,6 @@ class AutoResearchRunRequest(BaseModel):
     invoked_provider_skill_names: list[str] = Field(default_factory=list)
     resolved_provider_skills: list[ProviderSkillReference] = Field(default_factory=list)
     resolved_skill_packages: list[SkillReference] | None = None
-    # The actor's admission snapshot of the project machines. Wakes, recovery, retry, and
-    # continuation copy the stored request, so they never re-read the manifest.
-    resolved_compute_context: ResolvedComputeContext = Field(default_factory=ResolvedComputeContext)
 
     @model_validator(mode="after")
     def role_fields_are_coherent(self) -> AutoResearchRunRequest:

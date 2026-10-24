@@ -1135,7 +1135,7 @@ name arrives with each turn's branch read pointers. A later value is `current.gr
         )
 
     # Bumped when the Seed and Refresh task contract's stable policy prose changes.
-    GRAPH_TASK_POLICY_VERSION = "ingestion-v3"
+    GRAPH_TASK_POLICY_VERSION = "ingestion-v4"
 
     @staticmethod
     def graph_task_contract(
@@ -1156,6 +1156,7 @@ name arrives with each turn's branch read pointers. A later value is `current.gr
         retry_diagnostics_path: str | None = None,
         source_errors: list[str] | None = None,
         skill_pointers: list[dict[str, object]] | None = None,
+        compute_profiles: list[dict[str, str]] | None = None,
     ) -> str:
         task = {
             "seed": (
@@ -1193,6 +1194,7 @@ What to read — the content is at these locations, never in a launch message:
 
 Repositories:
 {_repository_pointers(repositories)}
+{compute_connection_section(compute_profiles)}
 Provider log roots on this machine — inspect them in place:
 {_provider_log_pointers(provider_log_roots)}- Project ingestion watermark: `{_ingestion_watermark(ingestion_watermark)}`
 

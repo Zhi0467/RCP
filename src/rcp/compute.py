@@ -16,6 +16,7 @@ from rcp.config import (
     ResolvedComputeContext,
     ResolvedComputeProfile,
 )
+from rcp.operator_commands import operator_route
 from rcp.transport.remote_compute_probe import probe_connection
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import _remote_script
@@ -59,6 +60,7 @@ def _probe_one(
     *,
     execution_machine: str,
     execution_host: str,
+    space_kind: str,
     runner: Callable[..., subprocess.CompletedProcess[str]],
 ) -> ComputeConnectionProbe:
     if execution_host:
@@ -124,18 +126,20 @@ def _probe_one(
     )
     diagnostic = _safe_probe_diagnostic(payload.get("diagnostic"))
     required_action = None
+    # The check runs as the account RCP probes with, typed from the human's own prompt.
+    check = operator_route(space_kind, execution_host).command(["ssh", connection.ssh_target])
     if state == "authentication_failed":
         location = f'agent machine "{execution_machine}"'
         if execution_host:
             location += f" ({execution_host})"
         required_action = (
-            f"Add SSH credentials for {connection.name} on {location}, then probe again. "
-            "RCP does not collect keys or passwords."
+            f"Add SSH credentials for {connection.name} on {location}, check with `{check}`, "
+            "then probe again. RCP does not collect keys or passwords."
         )
     elif state == "host_key_failed":
         required_action = (
             f"Verify and add the SSH host key for {connection.name} on agent machine "
-            f'"{execution_machine}", then probe again.'
+            f'"{execution_machine}" by running `{check}`, then probe again.'
         )
     status_label, status_tone = _PROBE_PRESENTATION[state]
     return ComputeConnectionProbe(
@@ -169,6 +173,7 @@ def _probe_targets(manifest: Manifest) -> dict[str, list[ResolvedComputeProfile]
 def probe_compute_connections(
     manifest: Manifest,
     *,
+    space_kind: str,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> dict[str, dict[str, dict[str, object]]]:
     """Probe every other project machine from each machine an agent profile runs on."""
@@ -188,6 +193,7 @@ def probe_compute_connections(
                     target,
                     execution_machine=alias,
                     execution_host=manifest.machine_map[alias].host,
+                    space_kind=space_kind,
                     runner=runner,
                 ),
             )

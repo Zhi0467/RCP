@@ -1882,7 +1882,7 @@ class ProjectCatalog:
             generation = self._compute_probe_generations.get(project_id, 0)
             lock = self._compute_probe_locks.setdefault(project_id, threading.Lock())
         with lock:
-            status = probe_compute_connections(manifest)
+            status = probe_compute_connections(manifest, space_kind=self.store.space_kind)
             with self._services_lock:
                 if self._compute_probe_generations.get(project_id, 0) == generation:
                     self._compute_status_cache[project_id] = (key, status)

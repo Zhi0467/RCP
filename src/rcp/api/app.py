@@ -1143,7 +1143,7 @@ def create_app(
         return resume_recorded_command_mailbox(service_for_validation, execution)
 
     # One per process: admission and the machine card share its cache.
-    dependency_checker = DependencyChecker()
+    dependency_checker = DependencyChecker(space_kind=lambda: store.space_kind)
     background_tasks = BackgroundAgentTasks(
         store,
         background_task_stream,
