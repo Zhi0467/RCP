@@ -118,8 +118,9 @@ It enables linger and requires `Linger=yes`; doctor diagnoses missing linger.
 CI builds Web assets with Node.js 24; servers need Node/npm only for optional
 features such as the agent browser. Root install/update best-effort installs the
 fixed Ubuntu Chromium library set (t64 on 24.04), without adding apt repositories.
-Failure is a warning. Browser readiness names the needed apt command; browser
-installation itself never elevates.
+Failure is a warning. Browser readiness names the needed apt command, rendered
+for the viewer's own shell by `operator_commands`; browser installation itself
+never elevates.
 
 Service-owned releases, data, central checkouts, keys and checkpoint payloads
 live under `/home/rcp/rcp-server/`. Root owns `/etc/rcp/supervisor/`, its runtime,

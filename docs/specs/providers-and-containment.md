@@ -80,8 +80,10 @@ The mirrored profile uses `systemd-run --user --pty`, `ProtectHome=tmpfs`,
 and read-only Git configuration/credentials not covered by grants. It shares
 the host's `/tmp`. The account's real `~/.ssh` and `~/.config/gcloud` are bound
 writable and persist, created with mode 0700 when missing, so a member can run
-`gcloud auth login` and `gcloud compute config-ssh` in the terminal. RCP-owned
-files inside them stay read-only, `~/.ssh/known_hosts` among them.
+`gcloud auth login` and `gcloud compute config-ssh` in the terminal. Inside
+`~/.ssh`, `known_hosts`, `known_hosts2`, `authorized_keys`, `authorized_keys2`
+and existing `id_*` files stay read-only, so a terminal can neither trust a host
+nor grant a login as the service account.
 **Why:** members set up machine routes from the terminal; a throwaway home
 discarded the keys and the sign-in. A Google sign-in saved there is readable by
 agents running as the same account, which members accept. `protected_repository_paths` protects declared and resolved
@@ -901,15 +903,15 @@ socket directory. This limits connection coupling, not host-wide network outages
 
 ### Project machines are every agent's compute
 
-Every project machine is a compute resource for every agent. No launch selects
-compute, and no picker or default narrows the set. Each turn's admission
-resolves all project machines, as seen from that turn's execution machine, into
-a bounded, immutable, server-owned snapshot stored with the task. The execution
+Every project machine is a compute resource for every agent that runs commands.
+No launch selects compute, and no picker or default narrows the set. Each turn
+resolves all project machines, as seen from that turn's execution machine, when
+its prompt is built. The execution
 machine itself is `local`. Any other machine is reached over its SSH route from
 there, which is its host, prefixed by its account when the host names none. A
 host-less (server-local) machine has no route from an agent running elsewhere,
 so that agent is not told about it. Each machine's optional `access_hint`
-(`machines[].compute.access_hint`) is non-secret, single-line guidance shown
+(`machines[].access_hint`) is non-secret, single-line guidance shown
 beside its route. Compute context never supplies `run_on`, never relaunches or
 moves a provider, and never widens repository or write scope.
 
@@ -917,13 +919,13 @@ moves a provider, and never widens repository or write scope.
 and agents that were not told a machine's route guessed a raw address and
 failed. Giving every agent every machine keeps one source of truth.
 
-Every launch path except paper coach carries the snapshot: chat Discuss and
-Work, Seed and Refresh, Experiment Runs and continuations, Auto-research
-orchestrators and their children (each resolved from its own `run_on`), watcher
-wakes, Retry and recovery. Resumed prompts reuse the stored snapshot rather than
-re-reading a later manifest. The first master/task context lists each machine's
-alias, route and hint. A resumed native session receives a concise delta for
-added or changed machines, and only the alias of a removed one. Compute metadata
+Chat Discuss and Work, Seed and Refresh, Experiment Runs and continuations,
+Auto-research orchestrators and their children (each from its own `run_on`),
+watcher wakes, Retry and recovery all state the machines as they are at launch.
+Paper coach and the branch-merge agent run no commands and get none. The first
+master/task context lists each machine's alias, route and hint. A resumed native
+session receives a concise delta for added or changed machines, and only the
+alias of a removed one. Compute metadata
 never grants authority and never includes credential contents or paths. Older
 rows that carry `active_compute_ids` keep loading; the field no longer selects
 anything.

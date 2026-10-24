@@ -1495,7 +1495,13 @@ discovery of a personal checkout's Git remotes.
 
 `/api/space/machines` lists, creates, renames, and deletes machine cards; a card
 in use by any project, or whose use cannot be established, cannot be deleted,
-and host and account never change. A `PATCH` of `writable_paths` validates each
+and host and account never change. A team create with a blank account fills it
+from the login check or refuses with 422 and a `detail.code` of
+`authentication_failed`, `host_key_unknown` (with the fingerprint),
+`host_key_changed`, or `unreachable`. `POST /api/space/machines/host-key` takes
+`{host, fingerprint}`, rescans, and appends the key to the route's first
+`UserKnownHostsFile` only when the fingerprint still matches and no key for that
+name is recorded. A `PATCH` of `writable_paths` validates each
 path on its machine: absolute, an existing directory, no `:` or `$` or control
 characters, not `/`, and not inside RCP's own storage.
 A `PATCH` of `provider_autocompact` merges the given providers into the card's
