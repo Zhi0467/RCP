@@ -752,7 +752,7 @@ class HostRuntime:
                 return self.readiness_result(
                     "linger_disabled",
                     (result.stderr or result.stdout).strip() or None,
-                    admin_command=shlex.join(["sudo", "loginctl", "enable-linger", account]),
+                    admin_command=shlex.join(["loginctl", "enable-linger", account]),
                 )
         return self.readiness()
 

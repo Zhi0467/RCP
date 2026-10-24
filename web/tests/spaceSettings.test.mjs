@@ -192,6 +192,10 @@ test("both Settings levels render the same machine card with one remove per path
     assert.match(timeoutInputs[0], /value="30"/);
     assert.match(timeoutInputs[1], /placeholder="2"/);
     assert.match(timeoutInputs[1], /value=""/);
+    // Provider limits, writable paths and hidden folders start folded.
+    const folds = html.match(/<details[^>]*machine-fold[^>]*>/g);
+    assert.equal(folds?.length, 3);
+    assert.ok(folds.every((tag) => !/\sopen/.test(tag)));
   }
   // The card's own name is renamed on the space page; a project names its machines itself.
   assert.equal(render("space").match(/data-machine-action="rename"/g)?.length, 1);

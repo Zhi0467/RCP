@@ -434,6 +434,17 @@ export async function loadSpaceMachines(): Promise<MachineSettingsRecord[]> {
   return (await api<{ machines: MachineSettingsRecord[] }>("/api/space/machines")).machines;
 }
 
+/** Record the host key the member compared; the route refuses one that moved or is recorded. */
+export function trustMachineHostKey(
+  host: string,
+  fingerprint: string,
+): Promise<{ trusted: string }> {
+  return api("/api/space/machines/host-key", {
+    method: "POST",
+    body: JSON.stringify({ host, fingerprint }),
+  });
+}
+
 export function createSpaceMachine(
   request: SpaceMachineCreateRequest,
 ): Promise<MachineSettingsRecord> {

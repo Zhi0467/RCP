@@ -124,6 +124,10 @@ def run_session(settings: dict[str, Any]) -> int:
             load_source(settings["grant_paths_source"]),
         )
         protected = list(dict.fromkeys([*protected, *owned_inside]))
+    if mirrored:
+        account_roots, account_kept = profile["account_config_paths"](Path.home())
+        granted = [*granted, *account_roots]
+        protected = list(dict.fromkeys([*protected, *account_kept]))
     child: subprocess.Popen[bytes] | None = None
     signal.signal(signal.SIGHUP, hangup)
     signal.signal(signal.SIGTERM, hangup)

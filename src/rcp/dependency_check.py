@@ -28,6 +28,7 @@ from pathlib import Path
 from rcp.core.models import DependencyStatus, MissingProgram
 from rcp.dependencies import (
     APT_DISTRIBUTIONS,
+    BY_NAME,
     TESTED_LINUX_DISTRIBUTIONS,
     Dependency,
     Platform,
@@ -42,6 +43,7 @@ from rcp.limits import (
     DEPENDENCY_CHECK_TTL_SECONDS,
     STATE_TRANSFER_STDERR_BYTES,
 )
+from rcp.operator_commands import OperatorRoute
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state_transfer import retrying
 
@@ -53,6 +55,23 @@ Route = Callable[[list[str]], list[str]]
 _FRAME = "rcp-dependency-check"
 _COMMAND_NOT_FOUND = 127
 _PLATFORMS: dict[str, Platform] = {"Linux": "linux", "Darwin": "darwin"}
+
+
+def install_argv(names: Iterable[str]) -> list[str]:
+    """The root apt install for these registry programs, on the machine that lacks them.
+
+    A package from an added apt source (Node.js from NodeSource) installs after
+    the plain packages, which may include the `curl` its setup step needs.
+    """
+    lost = [BY_NAME[name] for name in names]
+    plain = sorted({d.apt for d in lost if d.apt and not d.apt_setup})
+    sourced = sorted({d.apt for d in lost if d.apt and d.apt_setup})
+    if not sourced:
+        return ["apt-get", "install", "--yes", *plain]
+    steps = [shlex.join(["apt-get", "install", "--yes", *plain])] if plain else []
+    steps.extend(sorted({d.apt_setup for d in lost if d.apt_setup}))
+    steps.append(shlex.join(["apt-get", "install", "--yes", *sourced]))
+    return ["sh", "-c", " && ".join(steps)]
 
 
 def staged_check_script() -> str:
@@ -309,8 +328,9 @@ def _status(
     install_command = None
     notes: tuple[str, ...] = ()
     if lost and apt and all(d.apt for d in lost):
-        packages = " ".join(sorted({d.apt for d in lost if d.apt}))
-        install_command = f"sudo apt-get install --yes {packages}"
+        # Rendered for this machine's own prompt; a machine card re-renders it
+        # for the route its viewer types from.
+        install_command = OperatorRoute().command(install_argv(d.name for d in lost), root=True)
     elif lost:
         notes = tuple(dict.fromkeys(d.note or f"Install {d.apt or d.name}." for d in lost))
     return DependencyStatus(

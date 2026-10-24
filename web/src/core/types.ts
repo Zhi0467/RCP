@@ -3404,6 +3404,10 @@ export interface SpaceMachineCreateRequest {
   os_account: string;
 }
 
+/** Why a team server's first SSH login to a new machine failed (the create route's 422 code). */
+export type MachineLoginFailureCode =
+  "authentication_failed" | "host_key_unknown" | "host_key_changed" | "unreachable";
+
 export interface SpaceMachineUpdateRequest {
   name?: string;
   writable_paths?: string[];

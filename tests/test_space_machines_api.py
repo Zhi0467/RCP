@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import pwd
 import shlex
 import shutil
 import subprocess
@@ -291,7 +293,9 @@ def test_adding_a_space_machine_to_a_project_appends_it_to_the_manifest(app, man
     assert client.post(path, json={"machine_id": "missing", "alias": "x"}).status_code == 404
 
 
-def test_team_machines_name_only_the_viewers_projects_and_need_an_account(tmp_path) -> None:
+def test_team_machines_name_only_the_viewers_projects_and_fill_the_account(
+    tmp_path, monkeypatch
+) -> None:
     _app, client, _store, people, acting = _team_app(tmp_path)
     project_id = _create_project(client, tmp_path / "repo", seat_member=people[0].user_id)
     (machine,) = client.get("/api/space/machines").json()["machines"]
@@ -301,9 +305,34 @@ def test_team_machines_name_only_the_viewers_projects_and_need_an_account(tmp_pa
     (hidden,) = client.get("/api/space/machines").json()["machines"]
     assert hidden["projects"] == [] and hidden["in_use"] is True
 
+    from rcp.machine_login import MachineLoginFailure
+
+    def unknown_key(host):
+        raise MachineLoginFailure("host_key_unknown", "SHA256:abc")
+
+    monkeypatch.setattr("rcp.api.space_machines.login_account", unknown_key)
     body = {"name": "GPU", "host": "gpu.example"}
-    assert client.post("/api/space/machines", json=body).status_code == 422
-    assert client.post("/api/space/machines", json={**body, "os_account": "bob"}).status_code == 200
+    refused = client.post("/api/space/machines", json=body)
+    assert refused.status_code == 422
+    assert refused.json()["detail"]["code"] == "host_key_unknown"
+    assert refused.json()["detail"]["fingerprint"] == "SHA256:abc"
+    monkeypatch.setattr("rcp.api.space_machines.login_account", lambda host: "bob")
+    created = client.post("/api/space/machines", json=body)
+    assert created.status_code == 200 and created.json()["os_account"] == "bob"
+
+    # A fix command for that machine runs through the service account's SSH route.
+    monkeypatch.setattr(
+        "rcp.api.space_machines.readiness",
+        lambda **kwargs: BrowserReadiness(
+            status="system_libraries_missing", apt_command="apt-get install -y libnss3"
+        ),
+    )
+    shown = client.get(f"/api/space/machines/{created.json()['machine_id']}/browser").json()
+    service = pwd.getpwuid(os.getuid()).pw_name
+    assert shlex.split(shown["apt_command"]) == [
+        *("sudo", "-u", service, "-H", "ssh", "-t", "gpu.example"),
+        "sudo apt-get install -y libnss3",
+    ]
 
 
 def test_a_project_machine_finds_its_card_by_host(app) -> None:

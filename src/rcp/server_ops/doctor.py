@@ -24,6 +24,7 @@ from rcp.agents.staged_hidden_read import WrapperReadiness
 from rcp.core.models import DependencyStatus, HiddenReadStatus
 from rcp.dependency_check import script_check
 from rcp.limits import SERVER_INSTALL_PROBE_TIMEOUT_SECONDS, SERVER_SUPERVISOR_PROJECTION_MAX_BYTES
+from rcp.operator_commands import OperatorRoute
 from rcp.release_check import ReleaseCheck, ReleaseStatus
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
 from rcp.server_ops.config import (
@@ -778,7 +779,11 @@ class LinuxServerDoctorMachine:
             hidden_read_warnings=agent_security.hidden_read.reasons,
             browser_status=browser.status,
             browser_detail=browser.detail,
-            browser_apt_command=browser.apt_command,
+            browser_apt_command=(
+                OperatorRoute().command(shlex.split(browser.apt_command), root=True)
+                if browser.apt_command
+                else None
+            ),
             backup_status=backup.status,
             backup_destination=backup.destination,
             backup_schedule=backup.schedule,

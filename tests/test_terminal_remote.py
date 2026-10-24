@@ -173,6 +173,7 @@ def test_shipped_profile_uses_remote_existing_paths_and_remote_home(tmp_path, mo
     home = tmp_path / "remote-home"
     home.mkdir()
     (home / ".ssh").mkdir()
+    (home / ".ssh" / "id_ed25519").write_text("key")
     monkeypatch.setenv("HOME", str(home))
     commands = []
 
@@ -194,7 +195,16 @@ def test_shipped_profile_uses_remote_existing_paths_and_remote_home(tmp_path, mo
     remote_terminal.run_session(settings(tmp_path, "mirrored"))
     command = commands[0]
     assert f"HOME={home}" in command
-    assert f'BindReadOnlyPaths="{home / ".ssh"}"' in command
+    # Account setup persists in the real folders; RCP's host keys and identities stay read-only.
+    ssh, gcloud = home / ".ssh", home / ".config" / "gcloud"
+    assert gcloud.stat().st_mode & 0o777 == 0o700
+    separator = command.index("--", command.index("rcp-terminal"))
+    for root in (ssh, gcloud):
+        assert f'BindPaths="{root}"' in command
+        assert str(root) in command[command.index("rcp-terminal") + 1 : separator]
+    for kept in (ssh / "known_hosts", ssh / "id_ed25519"):
+        assert f'ReadOnlyPaths="{kept}"' in command
+        assert str(kept) in command[separator + 1 :]
     absent = str(tmp_path / ".research")
     assert any(
         arg.startswith("BindReadOnlyPaths=") and arg.endswith(f':"{absent}"') for arg in command

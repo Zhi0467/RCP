@@ -41,6 +41,9 @@ APT_DISTRIBUTIONS = frozenset({"ubuntu", "debian"})
 # Packages every supported Ubuntu server image already has; the server guide's
 # install line need not repeat them.
 UBUNTU_BASE_PACKAGES = frozenset({"bash", "coreutils", "dash", "systemd"})
+# Ubuntu's own Node.js is older than the 20 the agent browser needs, so its
+# package comes from NodeSource; this root step adds that apt source.
+NODESOURCE_NODE_20 = "curl -fsSL https://deb.nodesource.com/setup_20.x | bash -"
 
 
 @dataclass(frozen=True)
@@ -57,6 +60,9 @@ class Dependency:
     platforms: frozenset[Platform] = BOTH
     # Debian/Ubuntu package that provides it.
     apt: str | None = None
+    # A root shell step that adds the apt source `apt` comes from, when the
+    # distribution's own package is not enough.
+    apt_setup: str | None = None
     # Install instruction where apt does not apply or is not enough.
     note: str | None = None
     # Set when the code starts it by this absolute path rather than from PATH.
@@ -263,6 +269,8 @@ DEPENDENCIES: tuple[Dependency, ...] = (
         optional_on=frozenset({"local", "remote"}),
         feature="Agent browser.",
         fallback="Browser use cannot be turned on without Node.js 20 or newer.",
+        apt="nodejs",
+        apt_setup=NODESOURCE_NODE_20,
         note="Install Node.js 20 or newer.",
     ),
     Dependency(
@@ -271,6 +279,8 @@ DEPENDENCIES: tuple[Dependency, ...] = (
         optional_on=frozenset({"local", "remote"}),
         feature="Agent browser install and source web builds.",
         fallback="That operation fails with the reason; the packaged app does not need npm.",
+        apt="nodejs",
+        apt_setup=NODESOURCE_NODE_20,
         note="Install Node.js 20 or newer, which includes npm.",
     ),
     Dependency(
@@ -405,6 +415,14 @@ DEPENDENCIES: tuple[Dependency, ...] = (
         optional_on=frozenset({"local", "remote"}),
         feature="Setting up a repository key on that machine.",
         fallback="Key setup is refused, with the reason.",
+        apt="openssh-client",
+    ),
+    Dependency(
+        "ssh-keyscan",
+        "Read a new machine's host key so a member can compare and trust it.",
+        optional_on=frozenset({"local"}),
+        feature="Trusting a new machine's host key from Settings.",
+        fallback="Adding that machine reports an unknown host key without its fingerprint.",
         apt="openssh-client",
     ),
     Dependency(

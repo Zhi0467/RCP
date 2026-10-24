@@ -466,7 +466,7 @@ def test_missing_linger_is_its_own_reason_and_the_member_can_enable_it(
         assert result["status"] == "ready"
     else:
         assert result["status"] == "linger_disabled"
-        assert shlex.split(result["admin_command"])[:3] == ["sudo", "loginctl", "enable-linger"]
+        assert shlex.split(result["admin_command"])[:2] == ["loginctl", "enable-linger"]
 
 
 def test_agent_cli_runs_with_the_checked_node_not_the_first_on_path(tmp_path, monkeypatch):
