@@ -410,19 +410,12 @@ DEPENDENCIES: tuple[Dependency, ...] = (
     ),
     Dependency(
         "ssh-keygen",
-        "Create repository-scoped keys and derive their public keys.",
+        "Create repository-scoped keys, derive their public keys, and fingerprint and "
+        "look up a new machine's host key for Trust.",
         required_on=frozenset({"server"}),
         optional_on=frozenset({"local", "remote"}),
         feature="Setting up a repository key on that machine.",
         fallback="Key setup is refused, with the reason.",
-        apt="openssh-client",
-    ),
-    Dependency(
-        "ssh-keyscan",
-        "Read a new machine's host key so a member can compare and trust it.",
-        optional_on=frozenset({"local"}),
-        feature="Trusting a new machine's host key from Settings.",
-        fallback="Adding that machine reports an unknown host key without its fingerprint.",
         apt="openssh-client",
     ),
     Dependency(
