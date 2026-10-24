@@ -31,10 +31,20 @@ class MachineComputeConfig(BaseModel):
 
     job_manager: Literal["slurm"] | None = None
     jobs_root: str = ""
+    # What every agent is told about this machine, beside its route. Like the
+    # rest of this block it is metadata, never a credential channel.
+    access_hint: str = Field(default="", max_length=512)
 
     @model_validator(mode="after")
     def validate_compute(self) -> MachineComputeConfig:
         validate_compute_metadata(self.jobs_root)
+        self.access_hint = self.access_hint.strip()
+        if any(ord(character) < 32 or ord(character) == 127 for character in self.access_hint):
+            raise ValueError("compute access hint must be one line")
+        if redact_server_text(self.access_hint) != self.access_hint:
+            raise ValueError("compute access hint cannot contain credential-shaped text")
+        if COMPUTE_CREDENTIAL_PATH.search(self.access_hint):
+            raise ValueError("compute access hint cannot contain SSH credential paths")
         if self.jobs_root and not PurePosixPath(self.jobs_root).is_absolute():
             raise ValueError("compute jobs_root must be absolute when configured")
         return self

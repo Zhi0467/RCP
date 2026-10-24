@@ -30,7 +30,7 @@ from rcp.agents import (
 )
 from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_repository_roots
 from rcp.attachments import ChatAttachmentDescriptor, ProjectReferenceSelector
-from rcp.compute import selected_compute_connections
+from rcp.compute import machine_compute_context
 from rcp.config import (
     AgentExecutionProfile,
     AgentSurface,
@@ -40,7 +40,6 @@ from rcp.config import (
     MachineConfig,
     Manifest,
     ResolvedComputeContext,
-    ResolvedComputeProfile,
     launches_work_like,
     load_manifest,
 )
@@ -1979,19 +1978,11 @@ class ProjectService:
         self.invalidate_source_index()
 
     def resolve_compute_request(self, request: RunRequest) -> RunRequest:
-        ids = list(dict.fromkeys(request.active_compute_ids))
-        selected = selected_compute_connections(self.manifest, ids)
-        context = ResolvedComputeContext(
-            active=tuple(
-                ResolvedComputeProfile.model_validate(connection) for connection in selected
-            )
-        )
-        return request.model_copy(
-            update={
-                "active_compute_ids": ids,
-                "resolved_compute_context": context,
-            }
-        )
+        """Freeze every project machine, seen from this turn's machine, into the request."""
+        if not request.run_on:
+            raise ValueError("compute context needs the turn's execution machine")
+        context = machine_compute_context(self.manifest, execution_machine=request.run_on)
+        return request.model_copy(update={"resolved_compute_context": context})
 
     @staticmethod
     def compute_prompt_profiles(context: ResolvedComputeContext) -> list[dict[str, str]]:

@@ -10,7 +10,13 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from rcp.compute_jobs.text import safe_compute_diagnostic
-from rcp.config import AGENT_EXECUTION_PROFILES, ComputeConnectionConfig, Manifest
+from rcp.config import (
+    AGENT_EXECUTION_PROFILES,
+    ComputeConnectionConfig,
+    Manifest,
+    ResolvedComputeContext,
+    ResolvedComputeProfile,
+)
 from rcp.limits import ACTIVE_COMPUTE_ID_MAX_COUNT
 from rcp.transport.remote_compute_probe import probe_connection
 from rcp.transport.ssh import ssh_arguments
@@ -217,3 +223,45 @@ def selected_compute_connections(
     if unknown:
         raise ValueError(f"unknown compute connections: {unknown}")
     return [by_id[compute_id] for compute_id in ids]
+
+
+def machine_compute_context(
+    manifest: Manifest,
+    *,
+    execution_machine: str,
+) -> ResolvedComputeContext:
+    """Every project machine as seen from the agent's own machine.
+
+    The machine the agent runs on is local; any other machine is reached over its
+    SSH route from there. A host-less (server-local) machine has no route from an
+    agent running elsewhere, so that agent is not told about it.
+    """
+
+    machines = manifest.machine_map
+    if execution_machine not in machines:
+        raise ValueError(f"unknown execution machine: {execution_machine}")
+    profiles = []
+    for machine in manifest.machines:
+        hint = machine.compute.access_hint if machine.compute else ""
+        if machine.alias == execution_machine:
+            profiles.append(
+                ResolvedComputeProfile(
+                    id=machine.alias, name=machine.alias, kind="local", access_hint=hint
+                )
+            )
+        elif machine.host:
+            route = (
+                f"{machine.os_account}@{machine.host}"
+                if machine.os_account and "@" not in machine.host
+                else machine.host
+            )
+            profiles.append(
+                ResolvedComputeProfile(
+                    id=machine.alias,
+                    name=machine.alias,
+                    kind="ssh",
+                    ssh_target=route,
+                    access_hint=hint,
+                )
+            )
+    return ResolvedComputeContext(active=tuple(profiles))

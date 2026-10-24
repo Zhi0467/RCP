@@ -1980,6 +1980,8 @@ export type ComputeContainment = "mirrored" | "cooperative";
 export interface MachineComputeConfig {
   job_manager: "slurm" | null;
   jobs_root: string;
+  /** Non-secret guidance every agent receives about this machine. */
+  access_hint: string;
 }
 
 export interface ComputeBackendProbe {
@@ -1995,19 +1997,12 @@ export interface ComputeBackendProbe {
   status_tone: "ready" | "error";
 }
 
-export interface ComputeConnection {
-  id: string;
-  name: string;
-  kind: "local" | "ssh";
-  ssh_target: string;
-  access_hint: string;
-}
-
 declare const OPAQUE_COMPUTE_PROBE_STATE: unique symbol;
 export type ComputeProbeState = {
   readonly [OPAQUE_COMPUTE_PROBE_STATE]: "ComputeProbeState";
 };
 
+/** Whether an agent on `execution_machine` reaches project machine `compute_id` (an alias). */
 export interface ComputeConnectionProbe {
   compute_id: string;
   execution_machine: string;
@@ -3162,7 +3157,7 @@ export interface ProjectSnapshot {
   default_auto_research_invocation_ceiling: number;
   repositories: Repository[];
   machines: Machine[];
-  compute_connections: ComputeConnection[];
+  /** Execution machine alias, then attached machine alias. */
   compute_status: Record<string, Record<string, ComputeConnectionProbe>>;
   primary_question?: GraphNode | null;
   last_refresh_at?: string | null;
@@ -3472,7 +3467,6 @@ export interface ProjectSettingsRequest {
   skill_defaults: SkillDefaults;
   machine_provider_paths?: Record<string, Record<ProviderId, string>>;
   machine_compute?: Record<string, MachineComputeConfig | null>;
-  compute_connections?: ComputeConnection[];
 }
 
 export interface ProviderPathResolution {
