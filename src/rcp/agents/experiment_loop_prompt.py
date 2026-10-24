@@ -154,7 +154,7 @@ cause a new external side effect.
 def experiment_validate_command(patch_path: str) -> str:
     """The validator as the master states it, relative to its one command client."""
 
-    return f"{COMMAND_CLIENT} {shlex.join(['validate', patch_path])}"
+    return f"{COMMAND_CLIENT} validate {shlex.quote(patch_path)}"
 
 
 def experiment_loop_task_contract(
