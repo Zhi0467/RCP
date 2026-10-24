@@ -407,6 +407,10 @@ def test_saved_origins_use_exact_main_and_branch_chats_in_one_scan_per_target(
     assert sorted(scans) == sorted(["main", branch.graph_target.key])
     entries = {entry["operation_id"]: entry for entry in response.json()}
     assert entries[main_task.operation_id]["graph_branch_name"] == "main"
+    assert [entries[task.operation_id]["graph_branch_id"] for task in [main_task, branch_task]] == [
+        None,
+        branch.graph_target.branch_id,
+    ]
     for task in [main_task, branch_task]:
         url, params = _source_chat_url(project_id, entries[task.operation_id]["source_chat_href"])
         transcript = client.get(url, params=params)
@@ -430,6 +434,8 @@ def test_report_links_to_its_concluding_chat_on_exact_target(
     task, report = _create_chat_report(app, tmp_path, parent=parent, parent_root=parent_root)
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
+    if branch_owned:
+        store.keep_artifact(report.artifact_id)  # A child Experiment's report is listed once kept.
     client = signed_in_client(app)
     # Inventory uses summaries and the concluding operation, never report HTML.
     with monkeypatch.context() as patch:
@@ -589,6 +595,7 @@ def test_child_experiment_report_on_an_owned_fork_links_its_fork_chat(manifest, 
     task, report = _create_chat_report(
         app, tmp_path, parent=parent, parent_root=parent_root, target=fork
     )
+    store.keep_artifact(report.artifact_id)
     entries = signed_in_client(app).get(f"/api/projects/{project_id}/artifacts").json()
     entry = next(entry for entry in entries if entry["id"] == f"report:{report.report_id}")
     query = parse_qs(urlsplit(entry["source_chat_href"].removeprefix("#")).query)

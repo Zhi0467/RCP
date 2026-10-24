@@ -561,6 +561,25 @@
   margin: 0;
 }
 
+.artifacts-branch > summary {
+  align-items: center;
+  border-top: 1px solid var(--rule);
+  cursor: pointer;
+  display: flex;
+  gap: 8px;
+  padding: 0.75rem 0;
+}
+.artifacts-branch > summary::-webkit-details-marker {
+  display: none;
+}
+.artifacts-branch[open] .artifacts-branch-chevron {
+  transform: rotate(90deg);
+}
+.artifacts-branch-count {
+  color: var(--muted);
+  font-size: var(--type-sm);
+}
+
 .artifact-entry {
   padding: 1.25rem 0;
   border-top: 1px solid var(--rule);

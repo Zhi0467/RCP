@@ -2077,9 +2077,16 @@
 .chat-reference-picker ul {
   list-style: none;
   margin: 0;
+  padding: 0;
+}
+.chat-reference-list {
   max-height: 240px;
   overflow: auto;
-  padding: 0;
+}
+.chat-reference-picker .artifacts-branch > summary {
+  border-bottom: 1px solid var(--line);
+  border-top: 0;
+  padding: 6px 10px;
 }
 .chat-reference-picker li button span {
   flex: 1;
@@ -2420,4 +2427,41 @@
   color: var(--ink);
   font-variant-numeric: tabular-nums;
   font-weight: 600;
+}
+.chat-human-message > .chat-input-reference {
+  cursor: pointer;
+  font: inherit;
+  margin-bottom: 8px;
+}
+.chat-artifact-comments {
+  display: grid;
+  gap: 10px;
+  list-style: decimal;
+  margin: 0;
+  padding-left: 20px;
+}
+.chat-artifact-comments li::marker {
+  color: var(--muted);
+  font-size: var(--type-sm);
+}
+.chat-artifact-comments blockquote {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  border-left: 2px solid var(--rule);
+  color: var(--muted);
+  display: -webkit-box;
+  font-size: var(--type-sm);
+  margin: 0 0 3px;
+  overflow: hidden;
+  padding-left: 8px;
+}
+.chat-artifact-comments blockquote svg {
+  display: inline-block;
+  margin-right: 4px;
+  vertical-align: -1px;
+}
+@media (max-width: 640px) {
+  .chat-artifact-comments blockquote {
+    -webkit-line-clamp: 1;
+  }
 }

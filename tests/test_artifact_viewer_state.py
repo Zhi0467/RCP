@@ -265,9 +265,21 @@ def test_run_artifacts_includes_workers_child_experiments_and_retained_reports(v
         child_report.artifact_id,
         kept.artifact_id,
     ]
-    # Only an unkept turn artifact offers Keep; an episode report is permanent.
+    # An unkept turn artifact or child Experiment report offers Keep; the chain's report is saved.
     assert not _state(client, report)["can_keep"]
     assert _state(client, child_artifact)["can_keep"]
+    assert _state(client, child_report)["can_keep"]
+
+    def saved():
+        return {
+            e["artifact_id"] for e in client.get(f"/api/projects/{project_id}/artifacts").json()
+        }
+
+    assert report.artifact_id in saved()
+    assert child_report.artifact_id not in saved()
+    kept_url = f"/api/projects/{project_id}/artifacts/{child_report.artifact_id}/keep"
+    assert client.post(kept_url, json={}).status_code == 200
+    assert child_report.artifact_id in saved()
     assert entries[1]["worker_label"] == "Summarize results"
     assert all(entry["worker_label"] is None for index, entry in enumerate(entries) if index != 1)
     child_response = client.get(f"/api/projects/{project_id}/episodes/{child.episode_id}/artifacts")
