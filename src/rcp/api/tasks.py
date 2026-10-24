@@ -1443,7 +1443,6 @@ def _validate_stored_task_request(
         service,
         kind,
         request,
-        admit_compute_context=False,
     )
     return service.resolve_skill_selection(resolved_run)
 

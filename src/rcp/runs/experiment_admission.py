@@ -89,7 +89,7 @@ def fresh_experiment_run_request(
             "watcher_ids": [],
         }
     )
-    return service.resolve_compute_request(resolve_experiment_node_work_request(service, request))
+    return resolve_experiment_node_work_request(service, request)
 
 
 def start_experiment_continuation(

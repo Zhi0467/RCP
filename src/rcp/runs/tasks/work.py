@@ -483,9 +483,7 @@ def _work_prompt_values(turn: WorkTurn, staged: _StagedWorkInputs) -> dict[str, 
         turn.context,
         turn.request,
         repositories=staged.repositories,
-        compute_profiles=turn.service.compute_prompt_profiles(
-            turn.request.resolved_compute_context
-        ),
+        compute_profiles=turn.compute_profiles,
         skill_pointers=staged.skill_pointers,
         experiment_watcher_resources=staged.experiment_resource_pointers,
         patch=turn.patch_inputs.prompt_values(),
@@ -509,7 +507,7 @@ def _resolve_work_execution(
     )
     # Every launch, including Resume, Retry, recovery, and wakes, tells the agent
     # the project's current machines as seen from where it now runs.
-    request = service.resolve_compute_request(_pinned_to_profile(request, profile))
+    request = _pinned_to_profile(request, profile)
     execution_machine = service.manifest.machine_map[profile.run_on]
     # Read once per turn: the ask hold, the prompt, and the provider all use this value.
     shell_timeout = (
@@ -519,6 +517,7 @@ def _resolve_work_execution(
     )
     return _ResolvedWorkExecution(
         request=request,
+        compute_profiles=service.machine_prompt_profiles(profile.run_on),
         execution_machine_alias=execution_machine.alias,
         execution_host=execution_machine.host,
         provider_binary=execution_machine.provider_paths.get(profile.provider),
@@ -852,7 +851,7 @@ def _work_contract_text(
     """
 
     focused_node_id = str(turn.context.node["id"]) if turn.context.node else None
-    compute_profiles = turn.service.compute_prompt_profiles(turn.request.resolved_compute_context)
+    compute_profiles = turn.compute_profiles
     if human_request_path is None:
         assert turn.request.message is not None
         human_request_path = _stage_or_reuse_task_input(
@@ -1108,9 +1107,7 @@ def _work_chat_master_context(
         execution_host=turn.execution_host,
         experiment_watcher_resources=staged.experiment_resource_pointers,
         skill_pointers=staged.skill_pointers,
-        compute_connections=turn.service.compute_prompt_profiles(
-            turn.request.resolved_compute_context
-        ),
+        compute_connections=turn.compute_profiles,
         write_scope=turn.write_scope,
         execution_instructions=_work_execution_instructions(turn, COMMAND_CLIENT),
         auto_research_child_boundary=auto_research_child_boundary,
@@ -2767,7 +2764,7 @@ async def _stream_work_graph_repair(
             reasoning=request.reasoning,
             run_on=request.run_on,
         )
-        request = service.resolve_compute_request(_pinned_to_profile(request, profile))
+        request = _pinned_to_profile(request, profile)
         execution_machine = service.manifest.machine_map[profile.run_on]
         execution_host = execution_machine.host
         provider_binary = execution_machine.provider_paths.get(profile.provider)
@@ -2885,6 +2882,7 @@ async def _stream_work_graph_repair(
         assert validator_lifecycle is not None
         outcome = _ProviderOutcome(session_id=request.session_id)
         turn = WorkTurn(
+            compute_profiles=service.machine_prompt_profiles(profile.run_on),
             graph_read_scope=graph_read_scope,
             data_dir=data_dir,
             service=service,

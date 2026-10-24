@@ -2912,6 +2912,7 @@ async def _stream_work_graph_repair(
         assert validator_lifecycle is not None
         outcome = _ProviderOutcome(session_id=request.session_id)
         turn = WorkTurn(
+            compute_profiles=service.machine_prompt_profiles(execution_machine.alias),
             graph_read_scope=graph_read_scope,
             data_dir=data_dir,
             service=service,

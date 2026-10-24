@@ -515,7 +515,7 @@ def test_fresh_chat_master_names_every_project_machine_and_ignores_client_select
     assert task is not None
     assert task.request["run_on"] == "laptop"
     assert "active_compute_ids" not in task.request
-    assert task.request["resolved_compute_context"] == expected
+    assert "resolved_compute_context" not in task.request
     assert launcher.launch_kwargs[0].get("host", "") == ""
 
     master = Path(launcher.prompts[0].splitlines()[1]).read_text(encoding="utf-8")

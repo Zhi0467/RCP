@@ -502,9 +502,7 @@ def test_paused_human_chat_creates_occurrence_failure_without_task(runtime):
     assert runtime.store.agent_task(pending.operation_id).can_resume
 
 
-@pytest.mark.parametrize(
-    "failure", ["incomplete", "history", "profile", "compute", "machine", "unexpected"]
-)
+@pytest.mark.parametrize("failure", ["incomplete", "history", "profile", "machine", "unexpected"])
 def test_due_resolution_failure_creates_occurrence_failure_without_task(
     runtime, monkeypatch, caplog, failure
 ):
@@ -539,7 +537,7 @@ def test_due_resolution_failure_creates_occurrence_failure_without_task(
     else:
         monkeypatch.setattr(
             service,
-            "resolve_agent_profile" if failure == "profile" else "resolve_compute_request",
+            "resolve_agent_profile",
             unavailable,
         )
     runtime.poller.poll_once()

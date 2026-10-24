@@ -3766,14 +3766,6 @@
                     "endColumn": 45,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 62,
-                    "endColumn": 88,
-                    "lineCount": 1
-                }
             }
         ],
         "./src/rcp/runs/questions.py": [

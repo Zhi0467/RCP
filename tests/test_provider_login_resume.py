@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import uuid
 from contextlib import nullcontext
+from datetime import UTC, datetime, timedelta
 from threading import Event
 from types import SimpleNamespace
 
@@ -23,6 +25,7 @@ from rcp.runs.auto_research import AutoResearchStartRequest
 from rcp.runs.auto_research_admission import start_auto_research
 from rcp.runs.auto_research_recovery import reconcile_due_auto_research_recoveries
 from rcp.runs.provider_sign_in import ProviderSignInRunner
+from rcp.service import agent_login_accounts
 
 from .helpers import fabricated_authorizer, record_launched_experiment_turn, wait_for_task
 from .test_auto_research_recovery import (
@@ -300,9 +303,10 @@ def test_verify_resumes_parked_report_allocation_once(manifest, tmp_path, monkey
         assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == task_count
 
 
+@pytest.mark.parametrize("expired", [False, True])
 @pytest.mark.parametrize("run_on", ["removed-alias", "laptop"])
 def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
-    manifest, tmp_path, monkeypatch, run_on
+    manifest, tmp_path, monkeypatch, run_on, expired
 ):
     from .helpers import wait_until
     from .test_background import _experiment_request
@@ -353,6 +357,19 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
     store.checkpoint_agent_task(
         roots[1].operation_id, stage_host="other-host", stage_root=str(tmp_path / "other-stage")
     )
+    assert ("codex", "other-host") in agent_login_accounts(manifest, store, "project")
+    if expired:
+        expires_at = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+        with store.connection() as connection:
+            for root in roots:
+                request = {**root.request, "attachments": [{"expires_at": expires_at}]}
+                connection.execute(
+                    "UPDATE graph_runs SET request_json=? WHERE operation_id=?",
+                    (json.dumps(request), root.operation_id),
+                )
+        expired_task = store.agent_task(roots[0].operation_id)
+        assert expired_task is not None and not expired_task.can_retry
+        assert ("codex", "other-host") not in agent_login_accounts(manifest, store, "project")
     client = _verify_client(store, background, monkeypatch)
     response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert response.status_code == 200, response.text
@@ -362,9 +379,10 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
         for task in store.episode_tasks(roots[0].episode_id)
         if task.parent_operation_id == roots[0].operation_id
     ]
-    assert len(children) == 1
-    wait_for_task(store, children[0].operation_id, expect="succeeded")
-    wait_until(lambda: children[0].operation_id not in background._workers)
+    assert len(children) == (0 if expired else 1)
+    for child in children:
+        wait_for_task(store, child.operation_id, expect="succeeded")
+        wait_until(lambda child=child: child.operation_id not in background._workers)
     assert len(store.episode_tasks(roots[1].episode_id)) == 1
 
 
