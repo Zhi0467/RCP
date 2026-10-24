@@ -7179,7 +7179,9 @@ def test_experiment_validation_status_does_not_depend_on_exception_wording(
     def reject_validation(*_args, **_kwargs):
         raise ValueError("A malformed field happens to say already running.")
 
-    monkeypatch.setattr("rcp.api.experiments.fresh_experiment_run_request", reject_validation)
+    monkeypatch.setattr(
+        "rcp.runs.experiment_admission.fresh_experiment_run_request", reject_validation
+    )
     project_id = app.state.default_project_id
 
     response = signed_in_client(app).post(
