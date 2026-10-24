@@ -3,6 +3,7 @@ import { enableMachineLinger, installMachineBrowser, loadMachineBrowser } from "
 import { browserReason } from "../core/browserStatus";
 import { CopyCommand } from "../core/CopyCommand";
 import { errorMessage } from "../core/errors";
+import { Fold } from "../core/Fold";
 import type { MachineBrowserReadiness } from "../core/types";
 
 const INSTALL_POLL_MS = 15_000;
@@ -83,11 +84,15 @@ export function MachineBrowserRow({
     (readiness?.status === "system_libraries_missing" && readiness.apt_command) ||
     (readiness?.status === "linger_disabled" && readiness.admin_command) ||
     null;
+  const bad =
+    pending === null &&
+    (error !== null || (readiness !== null && !["ready", "installing"].includes(readiness.status)));
   return (
-    <section className="machine-browser-row" aria-label="Browser" aria-busy={pending !== null}>
-      <header>
-        <strong>Browser</strong>
-        <span role="status">
+    <Fold
+      className="machine-browser-row"
+      title="Browser"
+      status={
+        <span role="status" data-tone={bad ? "bad" : undefined}>
           {pending === "install"
             ? "Installing… This can take up to 15 minutes."
             : pending === "linger"
@@ -96,7 +101,10 @@ export function MachineBrowserRow({
                 ? "Checking…"
                 : reason?.label}
         </span>
-      </header>
+      }
+      aria-label="Browser"
+      aria-busy={pending !== null}
+    >
       {readiness?.detail && <p>{readiness.detail}</p>}
       {reason?.fix && !["not_installed", "linger_disabled"].includes(readiness!.status) && (
         <p>{reason.fix}</p>
@@ -133,6 +141,6 @@ export function MachineBrowserRow({
         </button>
       </div>
       {error && <p role="alert">{error}</p>}
-    </section>
+    </Fold>
   );
 }

@@ -211,6 +211,17 @@ export function ProjectSettings({
     () => restoredSettings.accessHintEdits,
   );
   const accessHints = { ...machineAccessHintsFrom(project.machines), ...accessHintEdits };
+  // A hint the project now has is no longer an edit, so a later refresh with
+  // someone else's newer hint shows theirs.
+  useEffect(() => {
+    setAccessHintEdits((edits) => {
+      const saved = machineAccessHintsFrom(project.machines);
+      const kept = Object.fromEntries(
+        Object.entries(edits).filter(([alias, hint]) => saved[alias] !== hint),
+      );
+      return Object.keys(kept).length === Object.keys(edits).length ? edits : kept;
+    });
+  }, [project.machines]);
   // A return to the same project is a new visit: requests from the previous
   // visit must not overwrite the restored form or publish into another view.
   const requestOwner = useMemo(() => ({ projectId: project.id }), [project.id]);
@@ -892,24 +903,30 @@ export function ProjectSettings({
                         </div>
                       );
                     })}
-                    {executionMachines.map((executionMachine) => {
-                      const probe = project.compute_status?.[executionMachine]?.[machine.alias];
-                      const presentation = computeProbePresentation(probe);
-                      return (
-                        <div
-                          className={`compute-probe compute-reach ${presentation.tone}`}
-                          key={`reach:${executionMachine}`}
-                        >
-                          <strong>From {executionMachine}</strong>
-                          <span className="compute-probe-dot" aria-hidden="true" />
-                          <span>{presentation.label}</span>
-                          {probe?.required_action ? <em>{probe.required_action}</em> : null}
-                          {probe && presentation.tone === "error" && !probe.required_action ? (
-                            <em>{probe.diagnostic}</em>
-                          ) : null}
-                        </div>
-                      );
-                    })}
+                    {executionMachines
+                      // An agent's own machine is local to it, and a host-less machine has
+                      // no route from any other: RCP probes neither.
+                      .filter(
+                        (executionMachine) => executionMachine !== machine.alias && machine.host,
+                      )
+                      .map((executionMachine) => {
+                        const probe = project.compute_status?.[executionMachine]?.[machine.alias];
+                        const presentation = computeProbePresentation(probe);
+                        return (
+                          <div
+                            className={`compute-probe compute-reach ${presentation.tone}`}
+                            key={`reach:${executionMachine}`}
+                          >
+                            <strong>From {executionMachine}</strong>
+                            <span className="compute-probe-dot" aria-hidden="true" />
+                            <span>{presentation.label}</span>
+                            {probe?.required_action ? <em>{probe.required_action}</em> : null}
+                            {probe && presentation.tone === "error" && !probe.required_action ? (
+                              <em>{probe.diagnostic}</em>
+                            ) : null}
+                          </div>
+                        );
+                      })}
                   </fieldset>
                 </MachineCard>
               );

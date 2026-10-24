@@ -70,11 +70,12 @@ export function resumedNote(resumed: ProviderResumeSummary): string {
     : "Verified.";
 }
 
-type SignOut = Pick<ProviderLoginState, "provider" | "host" | "generation" | "changed_at">;
+type SignOut = Pick<ProviderLoginState, "provider" | "host" | "generation">;
 
-// One sign-out of one account: a later sign-out has a new generation or time.
-const dismissalKey = (state: SignOut) =>
-  `rcp:login-notice-dismissed:${state.provider}:${state.host}:${state.generation}:${state.changed_at}`;
+// One sign-out of one account. Only a sign-in or sign-out starts a new
+// generation; another failure of the same sign-out keeps it, so a dismissal holds.
+export const signOutKey = (state: SignOut) => `${state.provider}:${state.host}:${state.generation}`;
+const dismissalKey = (state: SignOut) => `rcp:login-notice-dismissed:${signOutKey(state)}`;
 const dismissed = new Set<string>();
 
 export function isLoginNoticeDismissed(state: SignOut): boolean {

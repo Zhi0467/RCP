@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { loadServerStatus } from "../core/api";
+import { Fold } from "../core/Fold";
 import type { ServerStatus, ServerStatusSummary, UpdateNotice } from "../core/types";
 
 interface Props {
@@ -144,12 +145,17 @@ export function ServerSettings({ loadStatus = loadServerStatus, onReleaseCheck }
 
       {status ? (
         <div className="server-settings-body">
-          <section className="server-release-ledger" aria-label="Server release">
-            <div className="server-settings-section-title">
-              <GitCompareArrows size={16} />
-              <h3>Release</h3>
-              <StatusMark summary={status.releases.status} />
-            </div>
+          <Fold
+            className="server-release-ledger"
+            title={
+              <>
+                <GitCompareArrows size={16} />
+                Release
+              </>
+            }
+            status={<StatusMark summary={status.releases.status} />}
+            aria-label="Server release"
+          >
             <dl className="server-commit-rail">
               <ReleaseRow
                 label="Running"
@@ -189,109 +195,126 @@ export function ServerSettings({ loadStatus = loadServerStatus, onReleaseCheck }
             {status.releases.status.tone !== "good" ? (
               <code>{status.release_check.update_command ?? status.releases.command}</code>
             ) : null}
-          </section>
+          </Fold>
 
-          <div className="server-status-card-grid">
-            <article className="server-status-card">
-              <header>
+          <Fold
+            className="server-status-card"
+            title={
+              <>
                 <DatabaseBackup size={16} />
-                <h3>Protected backup</h3>
-              </header>
-              <StatusMark summary={status.backup.status} />
-              <dl>
-                <div>
-                  <dt>Last protected</dt>
-                  <dd>{formatServerTimestamp(status.backup.last_protected_at)}</dd>
-                </div>
-                <div>
-                  <dt>Last attempt</dt>
-                  <dd>{formatServerTimestamp(status.backup.last_attempt_at)}</dd>
-                </div>
-                <div>
-                  <dt>Projects</dt>
-                  <dd>
-                    {formatServerProjectCounts(
-                      status.backup.protected_projects,
-                      status.backup.uncaptured_projects,
-                    )}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Captured</dt>
-                  <dd>{formatServerBytes(status.backup.captured_bytes)}</dd>
-                </div>
-                <div>
-                  <dt>Schedule</dt>
-                  <dd>
-                    {status.backup.schedule ?? "Not configured"}
-                    {status.backup.retention !== null ? ` · keep ${status.backup.retention}` : ""}
-                  </dd>
-                </div>
-                <div className="wide">
-                  <dt>Destination</dt>
-                  <dd className="mono">{status.backup.destination ?? "Not configured"}</dd>
-                </div>
-              </dl>
-              {status.backup.last_failure ? (
-                <p className="server-status-problem">{status.backup.last_failure}</p>
-              ) : null}
-              <div className="server-status-commands">
-                <code>{status.backup.configure_command}</code>
-                <code>{status.backup.run_command}</code>
+                Protected backup
+              </>
+            }
+            status={<StatusMark summary={status.backup.status} />}
+          >
+            <dl>
+              <div>
+                <dt>Last protected</dt>
+                <dd>{formatServerTimestamp(status.backup.last_protected_at)}</dd>
               </div>
-            </article>
+              <div>
+                <dt>Last attempt</dt>
+                <dd>{formatServerTimestamp(status.backup.last_attempt_at)}</dd>
+              </div>
+              <div>
+                <dt>Projects</dt>
+                <dd>
+                  {formatServerProjectCounts(
+                    status.backup.protected_projects,
+                    status.backup.uncaptured_projects,
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>Captured</dt>
+                <dd>{formatServerBytes(status.backup.captured_bytes)}</dd>
+              </div>
+              <div>
+                <dt>Schedule</dt>
+                <dd>
+                  {status.backup.schedule ?? "Not configured"}
+                  {status.backup.retention !== null ? ` · keep ${status.backup.retention}` : ""}
+                </dd>
+              </div>
+              <div className="wide">
+                <dt>Destination</dt>
+                <dd className="mono">{status.backup.destination ?? "Not configured"}</dd>
+              </div>
+            </dl>
+            {status.backup.last_failure ? (
+              <p className="server-status-problem">{status.backup.last_failure}</p>
+            ) : null}
+            <div className="server-status-commands">
+              <code>{status.backup.configure_command}</code>
+              <code>{status.backup.run_command}</code>
+            </div>
+          </Fold>
 
-            <article className="server-status-card">
-              <header>
+          <Fold
+            className="server-status-card"
+            title={
+              <>
                 <ArchiveRestore size={16} />
-                <h3>Restore drill</h3>
-              </header>
-              <StatusMark summary={status.restore.status} />
-              <dl>
-                <div>
-                  <dt>Completed</dt>
-                  <dd>{formatServerTimestamp(status.restore.last_completed_at)}</dd>
-                </div>
-                <div>
-                  <dt>Age</dt>
-                  <dd>
-                    {status.restore.drill_age_days === null
-                      ? "Not recorded"
-                      : `${status.restore.drill_age_days} days`}
-                  </dd>
-                </div>
-              </dl>
-              <code>{status.restore.command}</code>
-            </article>
+                Restore drill
+              </>
+            }
+            status={<StatusMark summary={status.restore.status} />}
+          >
+            <dl>
+              <div>
+                <dt>Completed</dt>
+                <dd>{formatServerTimestamp(status.restore.last_completed_at)}</dd>
+              </div>
+              <div>
+                <dt>Age</dt>
+                <dd>
+                  {status.restore.drill_age_days === null
+                    ? "Not recorded"
+                    : `${status.restore.drill_age_days} days`}
+                </dd>
+              </div>
+            </dl>
+            <code>{status.restore.command}</code>
+          </Fold>
 
-            <article className="server-status-card">
-              <header>
+          <Fold
+            className="server-status-card"
+            title={
+              <>
                 <ShieldCheck size={16} />
-                <h3>Execution readiness</h3>
-              </header>
-              <div className="server-readiness-list">
+                Execution readiness
+              </>
+            }
+            status={
+              <span className="server-readiness-list">
                 <StatusMark summary={status.execution.machine} />
                 <StatusMark summary={status.execution.provider_checks} />
-              </div>
-              <p className="server-dependency-versions mono">
-                {status.execution.dependency_versions}
-              </p>
-              <code>{status.execution.provider_command}</code>
-            </article>
-          </div>
+              </span>
+            }
+          >
+            <p className="server-dependency-versions mono">
+              {status.execution.dependency_versions}
+            </p>
+            <code>{status.execution.provider_command}</code>
+          </Fold>
 
           {status.problems.length > 0 ? (
-            <section className="server-problem-ledger" aria-labelledby="server-problems-title">
-              <div className="server-settings-section-title">
-                <TriangleAlert size={16} />
-                <h3 id="server-problems-title">Needs attention</h3>
-              </div>
+            <Fold
+              className="server-problem-ledger"
+              title={
+                <>
+                  <TriangleAlert size={16} />
+                  Needs attention
+                </>
+              }
+              status={<span data-tone="bad">{status.problems.length}</span>}
+            >
               <ul>
                 {status.problems.map((problem) => (
                   <li key={problem}>{problem}</li>
                 ))}
               </ul>
-            </section>
+            </Fold>
           ) : null}
         </div>
       ) : null}

@@ -381,6 +381,7 @@ test("an open space landing refreshes login notices with its Runs poll", async (
         generation: 0,
         changed_at: "2026-09-14T00:00:00Z",
         detail: "Please sign in again",
+        agent_used: true,
       },
     ];
     await page.evaluate(() => window.refreshSpaceRuns());

@@ -301,6 +301,13 @@ pickers have breadcrumbs, one-level/filter/paging, protected entries, and Use th
 folder. Use Slurm opts into scheduler submission; Jobs root sets helper storage;
 Reset compute removes the block through Save. No scheduler resource form exists.
 
+Card sections and server status sections share one fold, closed by default: a
++/− summary with a bold title and a short state (count, badge, or status word);
+actions sit in the body, never the summary. Browser and Dependencies show their
+status label, red when bad. The Team server header keeps title, overall badge,
+and refresh; Release, Protected backup, Restore drill, and Execution readiness
+fold with their badges, and Needs attention folds with a red count.
+
 Hidden folders sits beside writable paths: code defaults cannot be removed;
 user additions use the folder picker and save immediately for all projects.
 Show Enforced/Unhidden and reason, never imply enforcement without a projection.

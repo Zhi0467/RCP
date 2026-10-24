@@ -29,6 +29,7 @@ import { MachineProviderSettingRow } from "./MachineProviderSettingRow";
 import { MachineBrowserRow } from "./MachineBrowserRow";
 import { MachineDependenciesRow } from "./MachineDependenciesRow";
 import { PathPicker } from "./PathPicker";
+import { Fold } from "../core/Fold";
 
 interface Props {
   title: string;
@@ -127,13 +128,11 @@ export function MachineCard({
         />
       )}
       {record && (
-        <details
-          className="machine-writable-paths machine-fold"
+        <Fold
+          className="machine-writable-paths"
+          title="Provider limits"
           data-machine-fold="provider-limits"
         >
-          <summary>
-            <strong>Provider limits</strong>
-          </summary>
           {record.autocompact_providers.map((option) => (
             <MachineProviderSettingRow
               key={`${record.machine_id}:${option.provider}:autocompact`}
@@ -162,7 +161,7 @@ export function MachineCard({
               onRecordChange={onRecordChange}
             />
           ))}
-        </details>
+        </Fold>
       )}
       <WritablePaths
         record={record}
@@ -223,11 +222,12 @@ export function WritablePaths({
   };
 
   return (
-    <details className="machine-writable-paths machine-fold" data-machine-writable-paths={level}>
-      <summary>
-        <strong>Writable paths</strong>
-        <span>{record?.writable_paths.length ?? 0}</span>
-      </summary>
+    <Fold
+      className="machine-writable-paths"
+      title="Writable paths"
+      status={record?.writable_paths.length ?? 0}
+      data-machine-writable-paths={level}
+    >
       <header>
         {record && (
           <button
@@ -288,7 +288,7 @@ export function WritablePaths({
           }}
         />
       )}
-    </details>
+    </Fold>
   );
 }
 
@@ -322,14 +322,22 @@ export function HiddenFolders({
     }
   };
   return (
-    <details className="machine-writable-paths machine-fold" data-machine-hidden-folders="">
-      <summary>
-        <strong>Hidden folders</strong>
-        <span>{(record.hidden_folders ?? []).length}</span>
-        {status && status.status !== "enforced" && (
-          <span data-hidden-read-status="unhidden">Unhidden</span>
-        )}
-      </summary>
+    <Fold
+      className="machine-writable-paths"
+      title="Hidden folders"
+      status={
+        <>
+          {(record.hidden_folders ?? []).length}
+          {status && status.status !== "enforced" && (
+            <span data-hidden-read-status="unhidden" data-tone="bad">
+              {" "}
+              Unhidden
+            </span>
+          )}
+        </>
+      }
+      data-machine-hidden-folders=""
+    >
       <header>
         <button
           type="button"
@@ -402,7 +410,7 @@ export function HiddenFolders({
           }}
         />
       )}
-    </details>
+    </Fold>
   );
 }
 

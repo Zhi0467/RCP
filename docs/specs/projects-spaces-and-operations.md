@@ -40,9 +40,11 @@ fresh personal sign-in.
 One machine card per unique host records name, account and writable paths. SSH
 selects account through the route; a second account on one host refuses. A
 blank account on Add machine is filled from a batch-mode login as the service
-account. An unknown host key shows its SHA256 fingerprint with **Trust**, which
-rescans the host, refuses if the key changed since it was shown, and appends it
-to the service account's `known_hosts`. RCP never trusts a key on its own, and a
+account. An unknown host key shows its SHA256 fingerprint with **Trust**. SSH
+itself fetches the key over the account's own route (proxy, port, algorithms,
+host-key alias) into a scratch file, offering no credential. Trust rescans,
+refuses if the key changed since it was shown or any user or global known-hosts
+file already names the host, and appends it to the first user `known_hosts`. RCP never trusts a key on its own, and a
 changed host key cannot be overridden from the UI. Every command a card asks a
 human to run is rendered by `operator_commands` as typed from that human's own
 shell: on a team server that is their own login, with `sudo -u <service> -H` and

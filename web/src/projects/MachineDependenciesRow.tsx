@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { loadMachineDependencies } from "../core/api";
 import { CopyCommand } from "../core/CopyCommand";
 import { errorMessage } from "../core/errors";
+import { Fold } from "../core/Fold";
 import type { DependencyStatus } from "../core/types";
 import { dependencyLabel, dependencyView } from "./machineDependenciesModel";
 
@@ -40,28 +41,32 @@ export function MachineDependenciesRow({ machineId }: { machineId: string }) {
   }
   const view = status ? dependencyView(status) : null;
   const command = view?.command ?? null;
+  const bad =
+    !pending && (error !== null || view?.outcome === "missing" || view?.outcome === "unsupported");
   return (
-    <section
+    <Fold
       className="machine-browser-row machine-dependencies-row"
+      title="Dependencies"
+      status={
+        <span role="status" data-tone={bad ? "bad" : undefined}>
+          {pending ? "Checking…" : view && dependencyLabel(view)}
+        </span>
+      }
       aria-label="Dependencies"
       aria-busy={pending}
       data-dependency-outcome={view?.outcome}
     >
-      <header>
-        <strong>Dependencies</strong>
-        <span role="status">{pending ? "Checking…" : view && dependencyLabel(view)}</span>
-        {view?.system && (
-          <span className="machine-dependencies-system">
-            {view.system}
-            {view.untested && (
-              <span className="machine-dependencies-untested" data-dependency-untested="">
-                {" "}
-                (not tested)
-              </span>
-            )}
-          </span>
-        )}
-      </header>
+      {view?.system && (
+        <p className="machine-dependencies-system">
+          {view.system}
+          {view.untested && (
+            <span className="machine-dependencies-untested" data-dependency-untested="">
+              {" "}
+              (not tested)
+            </span>
+          )}
+        </p>
+      )}
       {view?.reason && <p>{view.reason}</p>}
       {view && view.required.length > 0 && (
         <ul className="machine-dependencies-required" data-dependency-list="required">
@@ -100,6 +105,6 @@ export function MachineDependenciesRow({ machineId }: { machineId: string }) {
         </button>
       </div>
       {error && <p role="alert">{error}</p>}
-    </section>
+    </Fold>
   );
 }

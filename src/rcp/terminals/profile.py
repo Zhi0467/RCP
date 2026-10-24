@@ -190,7 +190,8 @@ def account_config_paths(home: Path) -> tuple[list[str], list[str]]:
     ssh = roots[0]
     kept = [ssh / name for name in _SSH_READ_ONLY]
     for path in kept:
-        path.touch(mode=0o600)
+        if not path.exists():
+            path.touch(mode=0o600)
     kept.extend(ssh.glob("id_*"))
     return [str(root) for root in roots], sorted(str(path) for path in kept if path.is_file())
 

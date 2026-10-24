@@ -12,27 +12,23 @@ needs a person at a terminal.
 from __future__ import annotations
 
 import subprocess
+import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from rcp.limits import COMPUTE_PROBE_TIMEOUT_SECONDS, HOST_KEY_SCAN_TIMEOUT_SECONDS
+from rcp.limits import COMPUTE_PROBE_TIMEOUT_SECONDS
 from rcp.ssh_validation import validate_ssh_destination
 from rcp.transport.remote_compute_probe import classify_ssh_failure
-from rcp.transport.ssh import ssh_arguments
+from rcp.transport.ssh import SSH_OPTIONS, ssh_arguments
 
 LoginFailureCode = Literal[
     "authentication_failed", "host_key_unknown", "host_key_changed", "unreachable"
 ]
 
-# The key type SSH prefers, first; one key is shown and recorded, never a set.
-_KEY_TYPES = (
-    "ssh-ed25519",
-    "ecdsa-sha2-nistp256",
-    "ecdsa-sha2-nistp384",
-    "ecdsa-sha2-nistp521",
-    "ssh-rsa",
-)
+# One check-and-append at a time, so two Trusts cannot both record a key.
+_TRUST_LOCK = threading.Lock()
 
 
 class MachineLoginFailure(Exception):
@@ -88,7 +84,12 @@ def login_account(host: str, *, runner=subprocess.run) -> str:
 
 
 def scan_host_key(host: str, *, runner=subprocess.run) -> HostKey:
-    """The key `host` offers now, named and filed as this account's SSH would check it."""
+    """The key `host` offers now, named and filed as this account's SSH would check it.
+
+    SSH itself fetches the key, through the account's own route (ProxyJump, port,
+    key algorithms, HostKeyAlias), into a scratch known-hosts file; it offers no
+    credential, so nothing logs in.
+    """
     validate_ssh_destination(host)
     config: dict[str, str] = {}
     for line in _run(["ssh", "-G", host], runner).stdout.splitlines():
@@ -98,24 +99,46 @@ def scan_host_key(host: str, *, runner=subprocess.run) -> HostKey:
     if not hostname or not port.isdigit():
         raise MachineLoginFailure("unreachable")
     name = config.get("hostkeyalias") or (hostname if port == "22" else f"[{hostname}]:{port}")
-    scan = _run(
-        ["ssh-keyscan", "-T", str(HOST_KEY_SCAN_TIMEOUT_SECONDS), "-p", port, "--", hostname],
-        runner,
-    )
-    offered: dict[str, str] = {}
-    for line in scan.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 3 and not line.startswith("#"):
-            offered.setdefault(parts[1], parts[2])
-    key_type = next((kind for kind in _KEY_TYPES if kind in offered), None)
-    if key_type is None:
+    files = [
+        file
+        for file in config.get("userknownhostsfile", "~/.ssh/known_hosts").split()
+        if file != "none"
+    ]
+    if not files:
         raise MachineLoginFailure("unreachable")
-    entry = f"{name} {key_type} {offered[key_type]}"
+    with tempfile.TemporaryDirectory() as scratch:
+        seen = Path(scratch) / "known_hosts"
+        _run(
+            [
+                "ssh",
+                *SSH_OPTIONS,
+                "-S",
+                "none",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
+                "-o",
+                f"UserKnownHostsFile={seen}",
+                "-o",
+                "GlobalKnownHostsFile=/dev/null",
+                "-o",
+                "HashKnownHosts=no",
+                "-o",
+                "CheckHostIP=no",
+                "-o",
+                "PreferredAuthentications=none",
+                host,
+                "true",
+            ],
+            runner,
+        )
+        found = _run(["ssh-keygen", "-F", name, "-f", str(seen)], runner).stdout.splitlines()
+    entry = next((line for line in found if line and not line.startswith("#")), None)
+    if entry is None:
+        raise MachineLoginFailure("unreachable")
     listed = _run(["ssh-keygen", "-l", "-f", "-"], runner, stdin=entry + "\n").stdout.split()
     fingerprint = next((part for part in listed if part.startswith("SHA256:")), None)
     if fingerprint is None:
         raise MachineLoginFailure("unreachable")
-    files = config.get("userknownhostsfile", "~/.ssh/known_hosts").split()
     checked = [*files, *config.get("globalknownhostsfile", "").split()]
     return HostKey(
         entry,
@@ -131,16 +154,17 @@ def trust_host_key(host: str, fingerprint: str, *, runner=subprocess.run) -> Non
     key = scan_host_key(host, runner=runner)
     if key.fingerprint != fingerprint:
         raise MachineLoginFailure("host_key_changed")
-    for file in key.checked:
-        if not file.exists():
-            continue
-        known = _run(["ssh-keygen", "-F", key.name, "-f", str(file)], runner)
-        if known.returncode == 0:
-            # A recorded key that SSH refused is a changed key: never replaced here.
-            raise MachineLoginFailure("host_key_changed")
-    key.known_hosts.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    key.known_hosts.touch(mode=0o600)
-    with key.known_hosts.open("a+", encoding="utf-8") as stream:
-        stream.seek(0)
-        text = stream.read()
-        stream.write(("\n" if text and not text.endswith("\n") else "") + key.entry + "\n")
+    with _TRUST_LOCK:
+        for file in key.checked:
+            if not file.exists():
+                continue
+            known = _run(["ssh-keygen", "-F", key.name, "-f", str(file)], runner)
+            if known.returncode == 0:
+                # A recorded key that SSH refused is a changed key: never replaced here.
+                raise MachineLoginFailure("host_key_changed")
+        key.known_hosts.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        key.known_hosts.touch(mode=0o600)
+        with key.known_hosts.open("a+", encoding="utf-8") as stream:
+            stream.seek(0)
+            text = stream.read()
+            stream.write(("\n" if text and not text.endswith("\n") else "") + key.entry + "\n")

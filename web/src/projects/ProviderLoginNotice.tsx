@@ -4,6 +4,7 @@ import { verifyProviderLogin } from "../core/api";
 import {
   dismissLoginNotice,
   isLoginNoticeDismissed,
+  signOutKey,
   signedOutNote,
   signedOutSummary,
 } from "./providerLoginsModel";
@@ -22,11 +23,7 @@ export function ProviderLoginNotice({ states, onVerified }: Props) {
       {states
         .filter((state) => state.state === "signed_out")
         .map((state) => (
-          <AccountNotice
-            key={`${state.provider}:${state.host}:${state.generation}:${state.changed_at}`}
-            state={state}
-            onVerified={onVerified}
-          />
+          <AccountNotice key={signOutKey(state)} state={state} onVerified={onVerified} />
         ))}
     </>
   );

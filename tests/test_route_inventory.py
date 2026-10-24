@@ -53,6 +53,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("GET",), "/api/space/users"),
     (("GET",), "/api/space/machines"),
     (("POST",), "/api/space/machines"),
+    (("POST",), "/api/space/machines/host-key"),
     (("PATCH",), "/api/space/machines/{machine_id}"),
     (("GET",), "/api/space/machines/{machine_id}/browser"),
     (("GET",), "/api/space/machines/{machine_id}/dependencies"),

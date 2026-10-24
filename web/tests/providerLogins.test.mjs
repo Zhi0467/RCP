@@ -218,7 +218,9 @@ test("a dismissed sign-in notice stays hidden until that account signs out again
     // A new page load reads the device's record.
     const reloaded = await import(`${model}?tab=2`);
     assert.equal(reloaded.isLoginNoticeDismissed(signOut), true);
-    assert.equal(reloaded.isLoginNoticeDismissed({ ...signOut, changed_at: "t2" }), false);
+    // Another failure of the same sign-out moves only its time.
+    assert.equal(reloaded.isLoginNoticeDismissed({ ...signOut, changed_at: "t2" }), true);
+    assert.equal(reloaded.isLoginNoticeDismissed({ ...signOut, generation: 5 }), false);
     assert.equal(reloaded.isLoginNoticeDismissed({ ...signOut, host: "" }), false);
     globalThis.localStorage = {
       getItem: () => {
