@@ -6,7 +6,6 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
-from rcp.control import derive_experiment_control_state
 from rcp.core.models import Experiment
 from rcp.core.transition_models import GraphTargetRef
 from rcp.loop_status import LoopOverlap, other_branch_loops
@@ -16,7 +15,7 @@ from rcp.runs.auto_research_admission import (
     resume_auto_research_child_experiment,
     start_auto_research_child_experiment,
 )
-from rcp.runs.experiment_admission import fresh_experiment_run_request
+from rcp.runs.experiment_admission import fresh_experiment_run_request, ready_experiment_control
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import (
     AppStore,
@@ -204,6 +203,8 @@ class AutoResearchExperimentCoordinator:
                     raise AutoResearchExperimentAllowanceReached(locked_allowance)
                 request = self._fresh_request(
                     service,
+                    project_id=parent.project_id,
+                    graph_target=target,
                     child_episode_id=child_episode_id,
                     node_id=node_id,
                     goal=goal,
@@ -322,10 +323,12 @@ class AutoResearchExperimentCoordinator:
             replacement_command=result.replacement_command,
         )
 
-    @staticmethod
     def _fresh_request(
+        self,
         service: ProjectService,
         *,
+        project_id: str,
+        graph_target: GraphTargetRef,
         child_episode_id: str,
         node_id: str,
         goal: str | None,
@@ -338,9 +341,14 @@ class AutoResearchExperimentCoordinator:
         node = state.nodes.get(node_id)
         if not isinstance(node, Experiment):
             raise ValueError(f"Node {node_id!r} is not an Experiment.")
-        control = derive_experiment_control_state(state, node_id)
-        if not control.ready:
-            raise ValueError(" ".join(control.reasons))
+        # The same start rule as a human Run; the caller holds the operation lock.
+        _runtime, control = ready_experiment_control(
+            self.store,
+            project_id,
+            state,
+            node_id,
+            graph_target=graph_target,
+        )
         supplied = RunRequest(
             chat_scope="node",
             node_id=node_id,

@@ -302,6 +302,7 @@ export function SpaceRunRow({
         <span className="space-run-loop-metadata">
           <ExperimentLoopMetadata
             projectId={entry.project_id}
+            graphTarget={entry.graph_target}
             metadata={entry}
             author={entry.authorized_by}
           />

@@ -44,10 +44,13 @@ export function ExperimentStartOverlap({
             </a>
             {" · "}
             <span data-starter-kind={loop.started_by.kind}>
-              Started by{" "}
-              {loop.started_by.kind === "auto_research"
-                ? "Auto-research"
-                : loop.started_by.display_name || "a member"}
+              {loop.started_by.kind === "chat"
+                ? `Started from ${loop.started_by.display_name || "a chat"}`
+                : `Started by ${
+                    loop.started_by.kind === "auto_research"
+                      ? "Auto-research"
+                      : loop.started_by.display_name || "a member"
+                  }`}
             </span>
             {" · "}
             <ExperimentCheckout checkout={loop.checkout} detailed />

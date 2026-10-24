@@ -774,6 +774,11 @@
   gap: 9px;
   min-width: 0;
 }
+.experiment-starter[data-starter-kind="chat"] a {
+  align-items: center;
+  display: inline-flex;
+  gap: 4px;
+}
 .campaign-run-meta time {
   color: var(--muted);
   font: var(--type-3xs) var(--mono);
