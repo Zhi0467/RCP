@@ -33,7 +33,7 @@ from rcp.loop_status import LoopOverlap
 
 # Bumped by hand whenever the Experiment-loop policy prose in this module changes, so a live
 # session re-opens its master contract once instead of keeping the old policy.
-EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v11"
+EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v12"
 
 
 def experiment_loop_read_context(context: ChatContext, loops: LoopOverlap) -> str:
@@ -313,10 +313,12 @@ Operational method:
   and repair a mechanical fault, record or close attempts, create Evidence, queue a Decision,
   create a Hypothesis Proposal or Blocker and pause, arm another watcher, or finish. Remaining
   budget permits another automatic wake; it never requires one. A queued Decision, Proposal, or
-  Blocker is a pause for human authority, not an automatic resume point.
+  Blocker is a pause for human authority, not an automatic resume point. When you pause, tell the
+  human exactly what to resolve and to reply in this chat once it is done: their reply resumes
+  this episode with its unused turns.
 - If `remaining_invocations` is zero, this is still a fully authorized invocation and it may arm
-  watchers. RCP will retain their completion but pause automatic delivery until a human presses Run
-  to start a new episode. Do not promise that this provider session will wake itself.
+  watchers. RCP will retain their completion but pause automatic delivery until a human adds turns
+  or starts a new episode. Do not promise that this provider session will wake itself.
 
 ExperimentAttempt reading and recording protocol:
 - Attempts are scientific bookkeeping under your discretion. Do not create, close, or classify one

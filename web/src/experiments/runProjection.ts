@@ -1,5 +1,6 @@
 import type {
   AgentTask,
+  Episode,
   ExternalWatcherRecord,
   ExperimentControlState,
   ExperimentLoopHealth,
@@ -13,6 +14,13 @@ import type {
 import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget.ts";
 import { blockedReasonLead } from "./campaigns.ts";
 import { isControlNode } from "../graph/researchType.ts";
+
+/** Unused turns an episode that paused for its human resumes with; null when it cannot. */
+export function pausedResumeTurns(episode: Episode | null | undefined): number | null {
+  if (!episode?.can_continue || episode.ending !== "human_pause") return null;
+  const turns = episode.budget.invocations_remaining;
+  return turns > 0 ? turns : null;
+}
 
 export interface AgentTaskGroup {
   rootId: string;
@@ -143,8 +151,9 @@ export function experimentRecommendation(run: ExperimentRun): ExperimentRecommen
     retry: "Retry this episode, or switch provider",
     reauthenticate_provider: "Sign in on the machine, verify it above, then retry",
     keep_loop: "Keep loop running; check now if needed",
-    start_episode:
-      run.health === "paused_at_limit" || run.control.episode?.can_continue
+    start_episode: pausedResumeTurns(run.control.episode)
+      ? "Resume or start a new episode"
+      : run.health === "paused_at_limit" || run.control.episode?.can_continue
         ? "Add turns or start a new episode"
         : run.control.episode_id
           ? "Start a new episode"

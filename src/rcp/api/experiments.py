@@ -34,6 +34,7 @@ from rcp.projects import ProjectCatalog
 from rcp.runs.auto_research_admission import require_auto_research_child_profile_pick
 from rcp.runs.experiment_admission import (
     ExperimentNotReady,
+    WorkExperimentResume,
     WorkExperimentStart,
     experiment_control,
     experiment_operational_state,
@@ -42,6 +43,7 @@ from rcp.runs.experiment_admission import (
 )
 from rcp.runs.membership_fence import fence_episodes_for_departed_member
 from rcp.runs.provider_login import provider_login_host
+from rcp.runs.work_experiment_commands import paused_experiment_refusal, unused_turns
 from rcp.service import RunRequest
 from rcp.storage import (
     AgentTaskAdmissionConflict,
@@ -263,6 +265,52 @@ def start_work_experiment(
     if not store.is_project_member(project_id, authorizer.user_id):
         fence_episodes_for_departed_member(store, tasks, project_id, authorizer.user_id)
     return record
+
+
+def resume_work_experiment(
+    catalog: ProjectCatalog,
+    tasks: BackgroundAgentTasks,
+    operation_lock: KeyedLocks,
+    resume: WorkExperimentResume,
+) -> EpisodeRecord:
+    """Resume a paused Experiment with its unused turns for the Work turn's human.
+
+    The same continuation as the human's Resume button, authorized by the
+    member whose Work turn asked for it.
+    """
+
+    store = tasks.store
+    source = store.agent_task(resume.source_operation_id)
+    if source is None or source.authorized_by is None:
+        raise ValueError("The Work turn that asked for this has no human authorizer.")
+    project_id = source.project_id
+    authorizer = source.authorized_by
+    with operation_lock(project_id):
+        episode = store.episode(resume.episode_id)
+        existing = store.episode_continuation(resume.episode_id)
+        if existing is not None and existing.continuation_request_id == resume.request_id:
+            return existing
+        refusal = paused_experiment_refusal(project_id, episode, store)
+        if refusal is not None:
+            raise ValueError(refusal)
+        assert episode is not None
+        store.require_project_accepts_new_work(project_id)
+        if not store.is_project_member(project_id, authorizer.user_id):
+            raise ValueError("The human who sent this Work turn is no longer a project member.")
+        try:
+            get_project_writer(catalog, project_id).history.require_writable()
+            return continue_experiment_episode(
+                project_id,
+                episode,
+                invocation_ceiling=unused_turns(episode),
+                request_id=resume.request_id,
+                authorized_by=authorizer,
+                catalog=catalog,
+                store=store,
+                background_tasks=tasks,
+            )
+        except HTTPException as exc:
+            raise ValueError(str(exc.detail)) from exc
 
 
 @router.post("/api/projects/{project_id}/experiments/{node_id:path}/watchers/stop")

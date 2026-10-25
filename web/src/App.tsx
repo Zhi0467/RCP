@@ -5567,6 +5567,9 @@ function MemberApp({
                 message,
               )
             }
+            onResumeExperiment={(episodeId, turns) =>
+              void requestEpisodeContinuation(episodeId, turns).catch(() => undefined)
+            }
             inheritedIsolation={
               activeBranchEpisode
                 ? { graph_isolation: true, code_worktree: activeBranchEpisode.code_worktree }
