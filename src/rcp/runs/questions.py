@@ -28,7 +28,7 @@ from rcp.runs.evidence_flag_commands import handle_flag
 from rcp.runs.graph_history_queries import handle_graph_history_command
 from rcp.runs.lesson_commands import handle_lesson
 from rcp.runs.work_experiment_commands import (
-    handle_work_experiment_kickoff,
+    handle_work_episode_command,
     work_experiment_allowed,
 )
 from rcp.storage import AppStore
@@ -407,8 +407,8 @@ class WorkCommandHandler:
                 or identity.authority != "broker"
                 or identity.task_id != execution.operation_id
             ):
-                return refuse("Experiment kickoff requires this Work turn's broker authority.")
-            return handle_work_experiment_kickoff(execution, self.mailbox, request)
+                return refuse("Experiment commands require this Work turn's broker authority.")
+            return handle_work_episode_command(execution, self.mailbox, request)
         if isinstance(request, AskCommandRequest):
             execution = self.execution
             if (

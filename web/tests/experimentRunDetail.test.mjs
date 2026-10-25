@@ -1501,6 +1501,45 @@ test("an ended episode with a bound session offers Add N turns beside Start new 
   assert.match(html, /experiment-run-button/);
 });
 
+test("a pause for the human resumes with its unused turns, even on a branch card", () => {
+  const continued = [];
+  const paused = episode({
+    status: "needs_action",
+    ending: "human_pause",
+    can_continue: true,
+    budget: {
+      ...episode().budget,
+      invocation_ceiling: 40,
+      invocations_used: 13,
+      invocations_remaining: 27,
+    },
+  });
+  const html = render(
+    {
+      node: node(),
+      control: control({
+        episode: paused,
+        health: "paused_at_limit",
+        recommendation: "start_episode",
+        can_start: true,
+      }),
+      taskGroup: null,
+      currentTask: null,
+      watchers: [],
+      currentWatchers: [],
+      health: "paused_at_limit",
+    },
+    { onContinue: (episodeId, count) => continued.push([episodeId, count]), allowStart: false },
+  );
+
+  // Resume takes no count, and a branch card that cannot start fresh still resumes.
+  assert.match(html, /experiment-continue-button/);
+  assert.match(html, /\b27\b/);
+  assert.doesNotMatch(html, /experiment-run-recommendation review/);
+  assert.doesNotMatch(html, /class="experiment-reauthorize-count"/);
+  assert.doesNotMatch(html, /experiment-run-button/);
+});
+
 test("without a continuation callback an ended episode only starts fresh", () => {
   const html = render({
     node: node(),

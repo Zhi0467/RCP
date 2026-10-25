@@ -51,8 +51,8 @@ from rcp.api.episodes import (
     serialize_episode,
 )
 from rcp.api.experiment_controls import _experiment_control_response
+from rcp.api.experiments import resume_work_experiment, start_work_experiment
 from rcp.api.experiments import router as experiments_router
-from rcp.api.experiments import start_work_experiment
 from rcp.api.health import router as health_router
 from rcp.api.history import router as history_router
 from rcp.api.host_guard import HostGuard, HostGuardConfig
@@ -143,6 +143,7 @@ from rcp.runs.auto_research_recovery import reconcile_orphaned_auto_research_fai
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.experiment_admission import (
+    WorkExperimentResume,
     WorkExperimentStart,
     reconcile_reserved_experiment_branch_roots,
 )
@@ -231,6 +232,7 @@ from rcp.storage import (
     AgentTaskKind,
     AgentTaskRecord,
     AppStore,
+    EpisodeRecord,
     GraphWatcherRecord,
     StoredWatcherRecord,
     TeamAuthenticationError,
@@ -1149,6 +1151,9 @@ def create_app(
     def start_experiment_from_work(start: WorkExperimentStart) -> AgentTaskRecord:
         return start_work_experiment(catalog, background_tasks, experiment_operation_lock, start)
 
+    def resume_experiment_from_work(resume: WorkExperimentResume) -> EpisodeRecord:
+        return resume_work_experiment(catalog, background_tasks, experiment_operation_lock, resume)
+
     # One per process: admission and the machine card share its cache.
     dependency_checker = DependencyChecker(space_kind=lambda: store.space_kind)
     background_tasks = BackgroundAgentTasks(
@@ -1161,6 +1166,7 @@ def create_app(
         resume_command_mailbox=background_resume_command_mailbox,
         dependency_checker=dependency_checker,
         experiment_starter=start_experiment_from_work,
+        experiment_resumer=resume_experiment_from_work,
     )
     machine_power = (
         MachinePowerController(

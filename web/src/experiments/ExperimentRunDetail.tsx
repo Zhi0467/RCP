@@ -8,7 +8,7 @@ import {
 import { EpisodeQuestions } from "./EpisodeQuestions";
 import { useHiddenWatchers } from "./useHiddenWatchers";
 import { ExternalJobRow } from "./ExternalJobRow";
-import { ExternalLink, FlaskConical, RotateCcw } from "lucide-react";
+import { ExternalLink, FlaskConical, Play, RotateCcw } from "lucide-react";
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { resourceKeyId } from "../core/resourceStore";
 import { useRefreshRuntime, useResource } from "../core/useResource";
@@ -26,6 +26,7 @@ import {
   experimentWatcherDisplayItems,
   graphConditionLabel,
   isExternalWatcherRecord,
+  pausedResumeTurns,
   watcherLastObservedAt,
 } from "./runProjection";
 import { currentExperimentGuidance, experimentGuidanceDetail } from "../core/experimentGuidance";
@@ -201,8 +202,9 @@ export function ExperimentRunDetail({
   const canSwitchProvider = Boolean(currentTask && control.can_switch_provider);
   const showStop = Boolean(control.episode_id && (stopBusy || control.can_stop));
   const baseRecommendation = experimentRecommendation(run);
+  const canContinue = Boolean(episode?.can_continue && onContinue);
   const recommendation =
-    !allowStart && baseRecommendation.step === "start_episode"
+    !allowStart && !canContinue && baseRecommendation.step === "start_episode"
       ? { step: "review" as const, label: "Review the owning Auto-research episode" }
       : startDisabled && baseRecommendation.step === "start_episode"
         ? { step: "review" as const, label: "Sync staged changes before starting" }
@@ -216,7 +218,8 @@ export function ExperimentRunDetail({
   // An ended episode with a bound session continues with the turns the human
   // names here; the count travels with the act and never edits the graph. Where
   // no episode can continue, a Run at the ceiling still carries the count.
-  const canContinue = Boolean(episode?.can_continue && onContinue);
+  // A pause for the human resumes with the turns it left unused; no count to pick.
+  const resumeTurns = canContinue ? pausedResumeTurns(episode) : null;
   const reauthorizing = health === "paused_at_limit" && !canContinue;
   const ceilingInput = editedCeiling ?? String(node.invocation_ceiling);
   const authorizedCeiling = authorizedInvocationCount(ceilingInput);
@@ -286,24 +289,38 @@ export function ExperimentRunDetail({
                 Previous episode report
               </EpisodeReportLink>
             )}
-          {allowStart && !control.node_closed && (reauthorizing || canContinue) && (
-            <label className="experiment-reauthorize-count">
-              <span className="eyebrow">{canContinue ? "Turns to add" : "Invocations"}</span>
-              <input
-                type="number"
-                min={1}
-                step={1}
-                inputMode="numeric"
-                value={ceilingInput}
-                disabled={runDisabled || startDisabled || runBusy || !control.can_start}
-                onChange={(event) => setEditedCeiling(event.target.value)}
-                aria-label={
-                  canContinue ? "Turns to add" : "Invocations to authorize for the next episode"
-                }
-              />
-            </label>
+          {!control.node_closed &&
+            ((allowStart && reauthorizing) || (canContinue && resumeTurns === null)) && (
+              <label className="experiment-reauthorize-count">
+                <span className="eyebrow">{canContinue ? "Turns to add" : "Invocations"}</span>
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  inputMode="numeric"
+                  value={ceilingInput}
+                  disabled={runDisabled || startDisabled || runBusy || !control.can_start}
+                  onChange={(event) => setEditedCeiling(event.target.value)}
+                  aria-label={
+                    canContinue ? "Turns to add" : "Invocations to authorize for the next episode"
+                  }
+                />
+              </label>
+            )}
+          {!control.node_closed && resumeTurns !== null && episode && onContinue && (
+            <button
+              type="button"
+              className="button primary compact experiment-continue-button"
+              disabled={
+                runDisabled || startDisabled || runBusy || stopUnsettled || !control.can_start
+              }
+              onClick={() => onContinue(episode.episode_id, resumeTurns)}
+            >
+              <Play size={12} aria-hidden="true" />
+              Resume · {resumeTurns} {resumeTurns === 1 ? "turn" : "turns"}
+            </button>
           )}
-          {allowStart && !control.node_closed && canContinue && episode && onContinue && (
+          {!control.node_closed && canContinue && resumeTurns === null && episode && onContinue && (
             <button
               type="button"
               className="button primary compact experiment-continue-button"

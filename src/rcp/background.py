@@ -62,7 +62,7 @@ from rcp.runs.auto_research_recovery import (
 )
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.episodes.report import restart_interrupted_episode_reports
-from rcp.runs.experiment_admission import WorkExperimentStarter
+from rcp.runs.experiment_admission import WorkExperimentResumer, WorkExperimentStarter
 from rcp.runs.experiment_recovery import (
     experiment_rerun_continuation,
     preflight_experiment_episode_recovery,
@@ -88,6 +88,7 @@ from rcp.runs.task_policy import (
     task_graph_capable,
 )
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
+from rcp.runs.work_experiment_commands import start_scheduled_experiment_resumes
 from rcp.server_ops.maintenance import MaintenanceAdmissionClosed
 from rcp.service import (
     CoachRequest,
@@ -417,9 +418,13 @@ class BackgroundAgentTasks:
         | None = None,
         dependency_checker: DependencyChecker | None = None,
         experiment_starter: WorkExperimentStarter | None = None,
+        experiment_resumer: WorkExperimentResumer | None = None,
     ) -> None:
         self.store = store
         self.experiment_starter = experiment_starter
+        # Resumes the paused Experiment a Work turn's ``episode --resume`` named,
+        # once that turn has succeeded.
+        self.experiment_resumer = experiment_resumer
         # The app passes its one checker; a bare engine (tests) skips the check.
         self.dependency_checker = dependency_checker
         self.stream = stream
@@ -1513,8 +1518,8 @@ class BackgroundAgentTasks:
                     # have no recoverable authority; a fresh Run does.
                     raise ValueError(
                         "This Experiment-loop turn cannot be resumed or retried because its "
-                        "episode predates the recorded human authorizer. Press Run on the "
-                        "Experiment to start a fresh episode."
+                        "episode predates the recorded human authorizer. Press Start new episode "
+                        "on the Experiment."
                     )
                 authorized_by = stored_episode.authorized_by
                 task_graph_target = stored_episode.graph_target
@@ -2966,6 +2971,19 @@ class BackgroundAgentTasks:
                     {"exception_type": type(exc).__name__},
                     tier="diagnostic",
                 )
+        if self.experiment_resumer is not None:
+            try:
+                start_scheduled_experiment_resumes(
+                    self.store, execution.operation_id, self.experiment_resumer
+                )
+            except Exception as exc:
+                with suppress(Exception):
+                    self.store.record_agent_task_receipt(
+                        execution.operation_id,
+                        "experiment_resume_failed",
+                        {"exception_type": type(exc).__name__},
+                        tier="diagnostic",
+                    )
         if self.on_task_settled is not None:
             try:
                 self.on_task_settled(record.project_id, record.kind, request, execution)

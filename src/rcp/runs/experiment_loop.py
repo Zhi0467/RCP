@@ -253,7 +253,7 @@ def preflight_episode_wake(
             readiness="unavailable",
             diagnostic=(
                 "This episode has no validated native provider session to continue. "
-                "Use Stop loop and press Run to start a fresh episode."
+                "Use Stop loop and press Start new episode."
             ),
         )
     if runtime.episode_id != episode.episode_id:
@@ -261,7 +261,7 @@ def preflight_episode_wake(
             readiness="unavailable",
             diagnostic=(
                 "The completed watcher group no longer belongs to the current Experiment episode. "
-                "Use Stop loop and press Run to start a fresh episode."
+                "Use Stop loop and press Start new episode."
             ),
         )
     mismatched: list[str] = []
@@ -304,7 +304,7 @@ def preflight_episode_wake(
             readiness="unavailable",
             diagnostic=(
                 "The episode's saved provider workspace is gone from its execution machine. "
-                "Use Stop loop and press Run to start a fresh episode."
+                "Use Stop loop and press Start new episode."
             ),
         )
     return EpisodeWakePreflight(
@@ -595,7 +595,7 @@ def experiment_loop_wrapup_spec(
 
 _LAUNCH_FAILURE_DIAGNOSTIC = (
     "This Experiment turn failed before it started its agent session, so the episode has "
-    "no session to continue. Press Run to start a fresh episode."
+    "no session to continue. Press Start new episode."
 )
 
 

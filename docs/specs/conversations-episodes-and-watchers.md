@@ -497,6 +497,9 @@ episode without changing graph state. A terminal episode with no live turn may
 **Add N turns**, creating a continuation on the same node, target and session via
 `continues_episode_id`. The inspector starts against the node's limit; history
 keeps pinned usage while **Next episode limit** shows the current node value.
+An episode that paused for its human (`human_pause`) instead offers
+**Resume · N turns**, on its Runs card on any graph target and in the node's
+drawer: the same continuation, with the turns it left unused.
 
 Fresh human Run may pick provider/model/reasoning, defaulting to node_chat;
 machine stays with that profile. Continuations keep the source binding. Children
@@ -528,6 +531,15 @@ The prompt starts one only when the member asks, after auditing the Experiment a
 its neighbors. When the audit finds something to fix, the agent writes the fix and
 does not start, because its Patch lands only after the turn. After a start it arms
 a node-status watcher on the Experiment's closed statuses.
+
+The same turns may run `episode --resume <episode-id>` on an episode that paused
+for its human, when the member says what it waited for is done or asks to resume
+it. The resume starts only after the turn succeeds: the paused episode usually
+resumes this chat's own session, and the turn's Patch, such as a resolved
+Blocker, lands at its end. It continues with the unused turns, authorized by the
+turn's member; a failure is recorded on the turn and **Resume** stays offered.
+A paused Experiment tells its human to reply in its chat once the pause is
+resolved, and an Experiment-node chat's loop status carries the episode's ending.
 
 **Why:** the member's Work message is the authorization a Run click would be, and
 the node's limit, which only a visible graph edit changes, still bounds the spend.

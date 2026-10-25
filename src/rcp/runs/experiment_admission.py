@@ -218,6 +218,20 @@ class WorkExperimentStart:
 WorkExperimentStarter = Callable[[WorkExperimentStart], AgentTaskRecord]
 
 
+@dataclass(frozen=True)
+class WorkExperimentResume:
+    """A paused Experiment episode a finished Work turn resumes for its human."""
+
+    #: The Work task that scheduled it; it supplies the authorizer.
+    source_operation_id: str
+    episode_id: str
+    #: Derived from the turn and the command key, so a replay names the same continuation.
+    request_id: str
+
+
+WorkExperimentResumer = Callable[[WorkExperimentResume], EpisodeRecord]
+
+
 class ExperimentNotReady(ValueError):
     """The Experiment's graph or operational state refuses a fresh episode."""
 

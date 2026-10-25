@@ -403,7 +403,13 @@ def chat_loop_status(status: LoopStatusProjection) -> dict[str, object]:
         compact_loop_status(current).model_dump(mode="json", exclude_none=True) if current else None
     )
     if current is not None and row is not None:
-        for field in ("stop_initiated_by", "stop_requested_at", "stop_settled_at", "ended_at"):
+        for field in (
+            "ending",
+            "stop_initiated_by",
+            "stop_requested_at",
+            "stop_settled_at",
+            "ended_at",
+        ):
             value = getattr(current, field)
             if value is not None:
                 row[field] = value

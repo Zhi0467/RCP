@@ -30,7 +30,7 @@ from rcp.storage import (
     WatcherRecord,
 )
 from rcp.storage.episodes import compact_episode_receipt
-from rcp.storage.models import NodeStatusGraphCondition
+from rcp.storage.models import EpisodeEnding, NodeStatusGraphCondition
 from rcp.watchers import WatcherBinding
 from tests.helpers import signed_in_client
 
@@ -330,7 +330,9 @@ class _Loop:
         base.update(overrides)
         return WatcherContinuation.model_validate(base)
 
-    def settle_exhausted_ending(self, *, report: bool = False) -> None:
+    def settle_exhausted_ending(
+        self, *, report: bool = False, ending: EpisodeEnding = "exhausted"
+    ) -> None:
         """Put the episode where a spent ceiling leaves it: ended and settled.
 
         Fencing alone leaves the episode wrapping up, which is still live. The
@@ -339,9 +341,9 @@ class _Loop:
         """
 
         diagnostic = "The authorized operational invocation ceiling was exhausted."
-        self.store.fence_episode_ending(self.episode_id, "exhausted", diagnostic=diagnostic)
+        self.store.fence_episode_ending(self.episode_id, ending, diagnostic=diagnostic)
         receipt_json, receipt_sha256 = compact_episode_receipt(
-            {"ending": "exhausted", "episode_id": self.episode_id}
+            {"ending": ending, "episode_id": self.episode_id}
         )
         now = self.store.now()
         if not report:
@@ -349,7 +351,7 @@ class _Loop:
                 self.episode_id,
                 EpisodeWrapupRecord(
                     episode_id=self.episode_id,
-                    ending="exhausted",
+                    ending=ending,
                     partial=True,
                     concluding_operation_id="loop-root",
                     receipt_json=receipt_json,

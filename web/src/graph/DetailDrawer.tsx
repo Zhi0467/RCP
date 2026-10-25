@@ -18,7 +18,18 @@ import { BranchNameField, branchNameRequest, branchNameValid } from "./BranchNam
 import type { AgentRunConfig, GraphRef, GraphTargetRef, ProjectSnapshot } from "../core/types";
 import { BranchChangeDetail } from "./BranchChangeDetail";
 import type { GraphBranchChanges, MergeDiffPath } from "../core/types";
-import { Check, Flag, FlaskConical, MessageCircle, Minus, Pencil, Trash2, X } from "lucide-react";
+import {
+  Check,
+  Flag,
+  FlaskConical,
+  MessageCircle,
+  Minus,
+  Pencil,
+  Play,
+  Trash2,
+  X,
+} from "lucide-react";
+import { pausedResumeTurns } from "../experiments/runProjection";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { experimentGuidanceDetail } from "../core/experimentGuidance";
@@ -114,6 +125,8 @@ interface Props {
     launchConfig?: AgentRunConfig,
     message?: string,
   ) => void;
+  /** Resumes an Experiment episode that paused for its human, with its unused turns. */
+  onResumeExperiment?: (episodeId: string, turns: number) => void;
   /** The server's branch-name refusal code from the last Experiment start, if any. */
   experimentBranchNameRefusal?: string | null;
   /** The project's branches, for the branch field's placeholder and overlap tags. */
@@ -196,6 +209,7 @@ export function DetailDrawer({
   onDecisionChoice,
   project,
   onRunExperiment,
+  onResumeExperiment,
   experimentBranchNameRefusal = null,
   graphRefs = null,
   inheritedIsolation,
@@ -300,6 +314,7 @@ export function DetailDrawer({
   // flags locally let this panel and Runs disagree about the same Experiment.
   const experimentControlActive = Boolean(experimentControl?.active);
   const experimentPausedAtLimit = Boolean(experimentControl?.paused && !experimentControlActive);
+  const resumeTurns = pausedResumeTurns(experimentControl?.episode);
 
   useEffect(() => {
     if (!editing) {
@@ -753,6 +768,22 @@ export function DetailDrawer({
                     )}
                     {experimentPausedAtLimit && (
                       <span className="experiment-loop-marker paused">Paused at limit</span>
+                    )}
+                    {onResumeExperiment && experimentControl.episode && resumeTurns !== null && (
+                      <button
+                        className="button primary compact experiment-continue-button"
+                        type="button"
+                        disabled={
+                          nodeMutationDisabled || experimentRunBusy || !experimentControl.can_start
+                        }
+                        onClick={() =>
+                          experimentControl.episode &&
+                          onResumeExperiment(experimentControl.episode.episode_id, resumeTurns)
+                        }
+                      >
+                        <Play size={14} aria-hidden="true" /> Resume · {resumeTurns}{" "}
+                        {resumeTurns === 1 ? "turn" : "turns"}
+                      </button>
                     )}
                     {project && launchProfile && launchConfig && (
                       <AgentConfigChip
