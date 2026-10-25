@@ -21,6 +21,21 @@ if TYPE_CHECKING:
     from rcp.storage import AppStore
 
 
+def chat_agent_setup(request: dict[str, Any], selected_at: str) -> dict[str, Any] | None:
+    """A turn's provider, model, effort, and machine as its chat summary shows them."""
+    if not request.get("provider"):
+        return None
+    model = request.get("model")
+    return {
+        "provider": request["provider"],
+        # A transcript spells "the provider's default model" as a sentinel.
+        "model": None if model in (None, "", "provider-default") else model,
+        "reasoning": request.get("reasoning") or None,
+        "run_on": request.get("run_on") or None,
+        "selected_at": selected_at,
+    }
+
+
 class ChatDisplayStoreMixin(StoreMixinBase):
     def chat_inventory(self, project_id: str, chat_id: str | None = None) -> list[dict[str, Any]]:
         """Project-wide newest chat tasks, with durable episode ownership and no recency cap."""
@@ -28,8 +43,8 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             rows = connection.execute(
                 """
                 WITH chats AS (
-                    SELECT project_id, kind, request_json, graph_target_json, updated_at,
-                           json_extract(request_json, '$.chat_id') AS chat_id,
+                    SELECT project_id, kind, request_json, graph_target_json, created_at,
+                           updated_at, json_extract(request_json, '$.chat_id') AS chat_id,
                            ROW_NUMBER() OVER (
                                PARTITION BY json_extract(request_json, '$.chat_id')
                                ORDER BY created_at DESC, operation_id DESC
@@ -59,6 +74,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                 )
                 -- An artifact edit only refreshes a conversation its turns already hold.
                 SELECT display.title, chats.chat_id, chats.kind, chats.request_json, chats.graph_target_json,
+                       chats.created_at,
                        MAX(chats.updated_at, COALESCE(edits.updated_at, '')) AS updated_at,
                        episode_chats.chat_id IS NOT NULL AS is_episode,
                        COALESCE(worker.episode_id, child.auto_research_episode_id)
@@ -117,6 +133,8 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                         "human_turn_refusal": cast("AppStore", self)._child_human_turn_refusal(
                             connection, project_id, row["chat_id"]
                         ),
+                        # Artifact edits never set it: an origin-bound one runs the artifact's agent.
+                        "agent_setup": chat_agent_setup(request, row["created_at"]),
                     }
                 )
             summaries.extend(orchestrators.values())
@@ -175,7 +193,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
         ).fetchall()
         summaries = []
         for root in roots:
-            updated_at, messages = self._orchestrator_chat_turns(
+            updated_at, messages, agent_setup = self._orchestrator_chat_turns(
                 connection, project_id, root["episode_id"]
             )
             if updated_at is None:
@@ -197,6 +215,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                     "human_turn_refusal": cast("AppStore", self)._child_human_turn_refusal(
                         connection, project_id, root["episode_id"]
                     ),
+                    "agent_setup": agent_setup,
                 }
             )
         return summaries
@@ -210,8 +229,9 @@ class ChatDisplayStoreMixin(StoreMixinBase):
 
     def _orchestrator_chat_turns(
         self, connection: Any, project_id: str, root_episode_id: str
-    ) -> tuple[str | None, list[dict[str, Any]]]:
-        """The chain's newest turn update, and each orchestrator turn's human input and answers.
+    ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
+        """The chain's newest turn update, each orchestrator turn's human input and
+        answers, and the newest orchestrator turn's setup.
 
         Every chain member writes the root's branch and shares its conversation.
         An artifact edit replying to the chain is one of its turns. The human input
@@ -219,7 +239,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
         neither has no human line.
         """
         runs = connection.execute(
-            "SELECT run.operation_id, run.request_json, run.result_json, run.created_at, "
+            "SELECT run.operation_id, run.kind, run.request_json, run.result_json, run.created_at, "
             "run.updated_at, run.finished_at FROM episodes AS root "
             "JOIN graph_branches b ON b.project_id=root.project_id AND b.owner_episode_id=root.episode_id "
             "AND b.branch_id=json_extract(root.graph_target_json, '$.branch_id') "
@@ -245,8 +265,11 @@ class ChatDisplayStoreMixin(StoreMixinBase):
         ):
             mail.setdefault(row["delivery_operation_id"], []).append(row["body"])
         messages: list[dict[str, Any]] = []
+        agent_setup = None
         for run in runs:
             request = json.loads(run["request_json"])
+            if run["kind"] == "auto_research":
+                agent_setup = chat_agent_setup(request, run["created_at"])
             result = json.loads(run["result_json"]) if run["result_json"] else {}
             human = [request["instruction"]] if request.get("instruction") else []
             human += mail.get(run["operation_id"], [])
@@ -277,7 +300,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                 }
                 for index, (role, text, timestamp) in enumerate(lines)
             ]
-        return max((run["updated_at"] for run in runs), default=None), messages
+        return max((run["updated_at"] for run in runs), default=None), messages, agent_setup
 
     def chat_browser_requested(self, project_id: str, chat_id: str) -> bool:
         with self.connection() as connection:

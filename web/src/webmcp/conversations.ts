@@ -17,6 +17,7 @@ import {
 } from "../agents/agentTasks";
 import {
   latestPersistedChatConfig,
+  originRunConfig,
   type ChatKind,
   type ConversationTurnSubmission,
 } from "../chat/chatWorkspace";
@@ -179,7 +180,13 @@ async function resolveProjectConversationContext(
     reasoning: profile.reasoning,
     run_on: profile.run_on,
   };
-  const config = latestPersistedChatConfig(transcript.messages, relatedTasks, fallbackConfig);
+  // The same reading as the visible composer: a branched chat starts on its origin's agent.
+  const config = latestPersistedChatConfig(
+    transcript.messages,
+    relatedTasks,
+    originRunConfig(transcript.origin, fallbackConfig),
+    transcript.agent_setup,
+  );
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const providerReady =
     readiness === undefined || Boolean(readiness.installed && readiness.authenticated);

@@ -265,7 +265,11 @@ ownership follow [Agents](api-web-and-desktop-projections.md#agents).
 Entry opens a board unless a link selects a chat; the board icon returns there.
 Leaving Agents resets it. Columns are Needs you (New reply/Failed/Stopped),
 Working, Done, Archived. Cards show logo/spinner, title, provider/model/effort/task
-type, state/age, and offered recovery. Click opens chat with list folded and
+type, a branched chat's source chat, state/age, and offered recovery. A card, its
+list row, the composer and WebMCP read an agent's setup one way: the newer of its
+loaded turns and the chat summary's newest turn (from task records, else history),
+since most agents' turns are older than the bounded task list. An artifact edit
+never sets it. "Draft" means no message yet. Click opens chat with list folded and
 composer focused. Mouse dragging reorders within columns in per-project browser
 storage, with pins first. Dropping into/out of Archived archives/restores; other
 state moves and working-agent archive are refused. Branch episode cards open Runs
