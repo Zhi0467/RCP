@@ -306,8 +306,17 @@ def work_experiment_command_usage(client: str, profile_choices: str) -> str:
 
     closed = json.dumps(sorted(CLOSED_EXPERIMENT_STATUSES))
     return (
-        "Experiment kickoff: only when the human asks you to run or start an Experiment "
-        "(in a chat on that Experiment, 'run it' counts). Otherwise suggest one in your reply. "
+        'Experiment resume: when this chat\'s loop status shows ending "human_pause", that '
+        "episode stopped to wait for its human. If the human's message says what it waited "
+        'for is done ("done" counts) or asks to continue, resolve what it waited for in your '
+        "Patch, then run "
+        f"`{client} episode --key <key> --resume <episode-id>` with the loop status's "
+        "episode_id. Never tell the human to press a button for it: the episode resumes its "
+        "own session with its unused turns once this reply ends, after your Patch lands. Say "
+        "so in your reply.\n"
+        "Experiment kickoff starts a new episode: only when the human asks you to run or start "
+        "an Experiment (in a chat on that Experiment, 'run it' counts) and no paused episode "
+        "should resume instead. Otherwise suggest one in your reply. "
         "Before starting, audit the Experiment and every node one edge away (its Hypotheses, "
         "Decisions, Blockers, and Evidence). If anything is wrong or missing, fix it in this "
         "turn's Patch, do not start, and say so: graph edits land when the turn ends, so the "
@@ -324,11 +333,5 @@ def work_experiment_command_usage(client: str, profile_choices: str) -> str:
         "The same key and arguments replay the same episode after a Resume or Retry. After it "
         "starts, tell the human what you started (node, goal, limit, profile) and arm a "
         f'watch.json graph item {{"node_id":"<node-id>","status_in":{closed}}} so this chat '
-        "resumes when the Experiment closes.\n"
-        "Experiment resume: an Experiment episode whose loop status shows ending "
-        '"human_pause" stopped to wait for its human. When the human says what it waited for '
-        "is done, or asks to resume it, run "
-        f"`{client} episode --key <key> --resume <episode-id>`. It resumes that episode's own "
-        "session with its unused turns once this reply ends, after your Patch lands. Tell the "
-        "human it resumes when this reply finishes."
+        "resumes when the Experiment closes."
     )
