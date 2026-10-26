@@ -53,7 +53,6 @@ from rcp.service import (
     ChatSummaryPage,
     ChatTranscript,
     RunRequest,
-    newer_agent_setup,
 )
 from rcp.storage import AppStore
 from rcp.storage.chat_names import ChatNameError
@@ -526,14 +525,11 @@ def chat(
             if transcript.graph_target.kind == "main"
             else (transcript.graph_target.branch_id or "")[:8],
             # The same setup the chat list shows, so every client sends on one agent.
-            "agent_setup": newer_agent_setup(
-                transcript.agent_setup,
-                ChatAgentSetup.model_validate(summary["agent_setup"])
-                if summary is not None
-                and summary.get("agent_setup") is not None
-                and summary["graph_target"] == transcript.graph_target.model_dump()
-                else None,
-            ),
+            "agent_setup": ChatAgentSetup.model_validate(summary["agent_setup"])
+            if summary is not None
+            and summary.get("agent_setup") is not None
+            and summary["graph_target"] == transcript.graph_target.model_dump()
+            else transcript.agent_setup,
             **(
                 {
                     key: ChatOriginView.model_validate(summary[key])

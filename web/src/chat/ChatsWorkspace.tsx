@@ -1204,6 +1204,7 @@ export function ChatsWorkspace({
             runScope={runScope}
             tasks={selectedOrchestratorTurns?.tasks ?? []}
             historyMessages={selectedOrchestratorTurns?.history}
+            agentSetup={selected.agentSetup}
             chatId={selected.chatId}
             presentation="workspace"
             // While the chain runs its turns are the orchestrator's; once it ends,

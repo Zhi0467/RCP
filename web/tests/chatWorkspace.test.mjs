@@ -387,6 +387,9 @@ test("an agent's setup is its newest turn, loaded or only in the chat summary", 
   assert.deepEqual(agent([turn(opus, "2026-10-25T03:00:00Z")]), opus);
   // An artifact edit may run the artifact's own older agent; it is not the chat's.
   assert.deepEqual(agent([turn(opus, "2026-10-25T03:00:00Z", "artifact_edit")]), astra);
+  // History cannot tell an artifact edit from a turn, so a summary setup replaces it.
+  const editMessage = { ...opus, execution_machine: "gpu", timestamp: "2026-10-25T04:00:00Z" };
+  assert.deepEqual(latestPersistedChatConfig([editMessage], [], profile, summary), astra);
   // An unstarted branch runs on the setup it was branched with.
   assert.deepEqual(agent([], null, { ...astra, model: null, reasoning: null }), {
     ...astra,

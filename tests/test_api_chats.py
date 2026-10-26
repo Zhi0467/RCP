@@ -75,6 +75,8 @@ def test_chat_summary_carries_the_newest_turns_setup(manifest, tmp_path):
             authorized_by=_identity(store),
         )
     )
+    # An origin-bound artifact edit writes history on the artifact's older agent.
+    _append_chat_exchange(service, request, "edited", None, None)
     row = next(
         item
         for item in client.get(f"/api/projects/{project_id}/chats").json()["items"]

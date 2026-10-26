@@ -125,11 +125,12 @@ export function providerSwitchStartsFreshSession(
 }
 
 /**
- * What a chat's agent runs on: its newest turn among the transcript, the loaded
- * turns, and the chat summary's newest turn, else `fallback` (the chat it was
- * branched from, or the project default). A turn that names no machine or effort
- * keeps the fallback's. An artifact edit never sets it: an origin-bound one runs
- * the artifact's own agent, and any other runs the chat's.
+ * What a chat's agent runs on: the newer of its loaded turns and the chat
+ * summary's newest turn, else `fallback` (the chat it was branched from, or the
+ * project default). A turn that names no machine or effort keeps the fallback's.
+ * An artifact edit never sets it: an origin-bound one runs the artifact's own
+ * agent, and any other runs the chat's. History is read only without a summary
+ * setup, since its records cannot tell such an edit from a turn.
  */
 export function latestPersistedChatConfig(
   messages: ChatMessage[],
@@ -159,9 +160,10 @@ export function latestPersistedChatConfig(
       order,
     });
   };
-  messages.forEach((message) =>
-    add({ ...message, run_on: message.execution_machine }, message.timestamp),
-  );
+  if (!setup)
+    messages.forEach((message) =>
+      add({ ...message, run_on: message.execution_machine }, message.timestamp),
+    );
   tasks.forEach((task) => {
     if (task.kind !== "artifact_edit") add(task.request, task.created_at);
   });

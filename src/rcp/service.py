@@ -349,15 +349,6 @@ class ChatAgentSetup(BaseModel):
     selected_at: str
 
 
-def newer_agent_setup(*setups: ChatAgentSetup | None) -> ChatAgentSetup | None:
-    """The newest of a chat's setups; task records can run ahead of its history."""
-    return max(
-        (setup for setup in setups if setup is not None),
-        key=lambda setup: datetime.fromisoformat(setup.selected_at),
-        default=None,
-    )
-
-
 class ChatSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1377,7 +1368,8 @@ class ProjectService:
                         "orchestrator_episode_id": task.orchestrator_episode_id,
                         "human_turn_refusal": task.human_turn_refusal,
                         "graph_title": task.graph_title,
-                        "agent_setup": newer_agent_setup(task.agent_setup, canonical.agent_setup),
+                        # Task records know which turns were artifact edits; history does not.
+                        "agent_setup": task.agent_setup or canonical.agent_setup,
                         # Human turns after an Auto-research chain ends join its one card.
                         **(
                             {
@@ -1632,7 +1624,8 @@ class ProjectService:
         )
         preview = " ".join(preview_source.split())[:CHAT_PREVIEW_MAX_CHARS]
         updated_at = records[max(range(len(records)), key=timestamps.__getitem__)].timestamp
-        # Chats without task records (older or transferred ones) recover it from history.
+        # Only for chats without task records (older or transferred ones): history
+        # cannot tell an artifact edit, which may run an older agent, from a turn.
         newest = max(
             (index for index, record in enumerate(records) if record.provider),
             key=lambda index: (timestamps[index], index),
