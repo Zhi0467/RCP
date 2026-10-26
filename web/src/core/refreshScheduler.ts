@@ -50,8 +50,6 @@ export interface WatermarkResponse {
 }
 
 export interface RefreshHealth {
-  /** Last time the backend answered a watermark request. */
-  lastContactAt: number | null;
   /** The latest watermark request failed. */
   failing: boolean;
   sync: ReadonlyMap<string, ProjectSyncHealth>;
@@ -108,7 +106,7 @@ export class RefreshScheduler {
   private activated: string | null = null;
   private readonly validUntil = new Map<string, number>();
   private stopVisibility: (() => void) | null = null;
-  private health: RefreshHealth = { lastContactAt: null, failing: false, sync: new Map() };
+  private health: RefreshHealth = { failing: false, sync: new Map() };
 
   constructor(options: RefreshSchedulerOptions) {
     this.options = options;
@@ -155,7 +153,9 @@ export class RefreshScheduler {
 
   getHealth = (): RefreshHealth => this.health;
 
+  // Subscribers re-render the whole app shell, so an unchanged beat publishes nothing.
   private setHealth(next: RefreshHealth): void {
+    if (next.failing === this.health.failing && sameSync(next.sync, this.health.sync)) return;
     this.health = next;
     for (const listener of this.listeners) listener();
   }
@@ -218,6 +218,7 @@ export class RefreshScheduler {
     };
     const controller = new AbortController();
     this.inFlight = controller;
+    let activatedDuringFailure = false;
     const timeout = this.clock.setTimeout(() => controller.abort(), WATERMARK_REQUEST_TIMEOUT_MS);
     try {
       const response = await this.options.send(request, controller.signal);
@@ -245,11 +246,13 @@ export class RefreshScheduler {
         store.dropProject(id);
         this.options.onLostAccess(id);
       }
-      this.setHealth({ lastContactAt: this.clock.now(), failing: false, sync });
+      this.setHealth({ failing: false, sync });
     } catch {
       if (this.inFlight !== controller) return;
       this.failures += 1;
-      // A newer activation made during the request wins over the retried one.
+      // A newer activation made during the request wins over the retried one,
+      // and runs at once instead of waiting out the failure backoff.
+      activatedDuringFailure = this.activated !== null;
       if (activated && this.activated === null) this.activated = activated;
       this.setHealth({ ...this.health, failing: true });
     } finally {
@@ -260,7 +263,9 @@ export class RefreshScheduler {
         const retry = store.nextRetryAt();
         // An activation queued during this request runs at once, not next beat.
         const beatMs = this.failures
-          ? retryBackoffMs(this.failures)
+          ? activatedDuringFailure
+            ? 0
+            : retryBackoffMs(this.failures)
           : this.activated || this.newlyAwaiting(open, due)
             ? 0
             : REFRESH_BEAT_MS;
@@ -278,4 +283,22 @@ export class RefreshScheduler {
       }
     }
   }
+}
+
+function sameSync(
+  a: ReadonlyMap<string, ProjectSyncHealth>,
+  b: ReadonlyMap<string, ProjectSyncHealth>,
+): boolean {
+  if (a.size !== b.size) return false;
+  for (const [id, health] of a) {
+    const other = b.get(id);
+    if (
+      !other ||
+      other.status !== health.status ||
+      other.last_completed_at !== health.last_completed_at ||
+      other.error !== health.error
+    )
+      return false;
+  }
+  return true;
 }

@@ -384,6 +384,9 @@ STATE_LOCK_HOLDER_HEARTBEAT_TIMEOUT_SECONDS = 60.0
 SERVER_SHUTDOWN_TIMEOUT_SECONDS = 60.0
 # Request grace leaves room for lifespan teardown within the replacement window.
 SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS = 10
+# Idle connections outlive the client's own idle timeout, so WebKit never sends a
+# POST on a socket the server just closed; it reports that as an outage.
+SERVER_KEEP_ALIVE_TIMEOUT_SECONDS = 75
 # After uvicorn returns, request threads still in a bounded remote call get this
 # long; then the process ends while it still holds its instance lock.
 SERVER_THREAD_DRAIN_TIMEOUT_SECONDS = 5.0

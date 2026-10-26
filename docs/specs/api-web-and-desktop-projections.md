@@ -799,6 +799,9 @@ lifecycle work reopens admission only on return to service; unconfirmed cleanup
 retains ownership for retry/diagnostics. Personal pages can connect any saved row;
 a team page can reconnect only its own. Native Reconnect is single-flight with
 capped backoff, then rechecks identity without restarting the remote service.
+A recovered tunnel, Dock reopen, or notification revalidates the shown project
+through one immediate watermark beat; the page stays interactive, and only a ref
+switch holds it inert.
 
 Backend contact failure keeps the rendered page beneath a blocking overlay,
 preserving panels, scroll, and text. Same version/instance/data-directory/space

@@ -343,6 +343,8 @@ const SYSTEM_DICTATION_ELSEWHERE =
   "Your dictation service is macOS, which works only in the desktop app. Choose a connection in Space settings, under Dictation and voice.";
 
 const INLINE_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
+// One empty map, so a chat without graph nodes keeps its answers' parse memoized.
+const NO_NODES: Readonly<Record<string, GraphNode>> = {};
 
 export function reconcileChatRunScope(
   current: string[],
@@ -362,7 +364,7 @@ export function NodeChat({
   actorId,
   graphTarget,
   node,
-  nodes = {},
+  nodes = NO_NODES,
   glossaryIndex,
   conversationTitle,
   header,

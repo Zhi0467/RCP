@@ -192,6 +192,18 @@ test("a new epoch ends a resource's read backoff", async () => {
   assert.equal(reads.length, 2);
 });
 
+test("a recovered backend ends a failed read's backoff", async () => {
+  const store = new ResourceStore();
+  const { reads, profile } = manualProfile("graph");
+  store.register("tab", profile);
+  reads[0].reject(new Error("offline"));
+  await settle();
+  store.pump();
+  assert.equal(reads.length, 1);
+  store.endBackoff();
+  assert.equal(reads.length, 2);
+});
+
 test("hidden projects use one background slot", async () => {
   const store = new ResourceStore();
   store.setActiveProject("active");
@@ -377,6 +389,78 @@ test("hidden projects are due every third beat and failures back off", async () 
     requests.slice(before).map((request) => request.at - requests[before - 1].at),
     [1000, 4000, 10_000],
   );
+  scheduler.stop();
+});
+
+test("health is published only when it changes, not on every beat", async () => {
+  const time = fakeClock();
+  let sync = { last_completed_at: null, status: "ok", error: null };
+  let fail = false;
+  const scheduler = new RefreshScheduler({
+    store: new ResourceStore(() => time.clock.now()),
+    clientId: "c",
+    openProjects: () => [{ projectId: "p", currentRef: "main" }],
+    activeProjectId: () => "p",
+    send: async () => {
+      if (fail) throw new Error("down");
+      return {
+        epoch: "e",
+        as_of: "",
+        projects: [{ requested_id: "p", resources: [], sync: { ...sync } }],
+        unavailable: [],
+      };
+    },
+    onLostAccess: () => {},
+    clock: time.clock,
+    visibility: { isHidden: () => false, listen: () => () => {} },
+  });
+  let published = 0;
+  scheduler.subscribe(() => published++);
+  scheduler.start();
+  await time.advance(5500);
+  // The first answer is news; five identical beats after it are not.
+  assert.equal(published, 1);
+  sync = { ...sync, status: "syncing" };
+  await time.advance(1000);
+  assert.equal(published, 2);
+  fail = true;
+  await time.advance(1000);
+  assert.equal(published, 3);
+  assert.equal(scheduler.getHealth().failing, true);
+  scheduler.stop();
+});
+
+test("an activation during a failing watermark runs at once, not after the backoff", async () => {
+  const time = fakeClock();
+  const requests = [];
+  const pending = [];
+  const scheduler = new RefreshScheduler({
+    store: new ResourceStore(() => time.clock.now()),
+    clientId: "c",
+    openProjects: () => [{ projectId: "p", currentRef: "main" }],
+    activeProjectId: () => "p",
+    send: (request) => {
+      requests.push({ at: time.clock.now(), activated: request.activated });
+      const reply = deferred();
+      pending.push(reply);
+      return reply.promise;
+    },
+    onLostAccess: () => {},
+    clock: time.clock,
+    visibility: { isHidden: () => false, listen: () => () => {} },
+  });
+  scheduler.start();
+  await time.advance(0);
+  scheduler.activate("p");
+  pending[0].reject(new Error("down"));
+  await settle();
+  await time.advance(0);
+  assert.deepEqual(requests.at(-1), { at: 0, activated: "p" });
+  // Failing again with nothing new queued backs off as before.
+  pending[1].reject(new Error("down"));
+  await settle();
+  await time.advance(2999);
+  assert.equal(requests.length, 2);
   scheduler.stop();
 });
 

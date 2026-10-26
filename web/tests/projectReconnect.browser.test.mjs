@@ -280,6 +280,18 @@ async function openDemoProject(t, initialFreshness, options = {}) {
   // A test that never reaches these reads must not fail when its page closes.
   readinessLoaded.catch(() => {});
   authoritativeLoaded.catch(() => {});
+  if (options.desktop)
+    await page.addInitScript((health) => {
+      // The native shell, reduced to what the window's refresh path asks of it.
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+      window.__TAURI_INTERNALS__ = {
+        transformCallback: () => 1,
+        invoke: async (command) =>
+          command === "desktop_status" || command === "desktop_reconnect_backend"
+            ? { ...health, base_url: location.origin }
+            : null,
+      };
+    }, state.health);
   await page.goto(`${origin}/#/projects/demo?view=overview`);
   return { page, errors, state, readinessLoaded, authoritativeLoaded };
 }
@@ -583,6 +595,41 @@ test(
     assert.equal(await shellStillMounted(page), true);
   },
 );
+
+test("a desktop refresh revalidates the shown project without holding it inert", async (t) => {
+  const { page, state } = await openedShell(t, {
+    desktop: true,
+    health: { ...HEALTH, project_creation: { intents: [] } },
+  });
+  await page.evaluate(() => {
+    window.__sawInert = false;
+    new MutationObserver(() => {
+      if (document.querySelector(".project-panel[inert]")) window.__sawInert = true;
+    }).observe(document.body, { attributes: true, subtree: true, attributeFilter: ["inert"] });
+  });
+  const projectReads = () => state.requests.filter((path) => path === "/api/projects/demo").length;
+  const readsBefore = projectReads();
+  const revalidated = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/resource-watermarks" &&
+      request.postDataJSON().activated === "demo",
+  );
+  // A recovered team tunnel revalidates the window's project, as a Dock reopen does.
+  await page.evaluate(
+    (health) =>
+      window.dispatchEvent(
+        new CustomEvent("rcp:backend-identity", {
+          detail: { ok: true, health, message: null, reason: "team-transport-recovered" },
+        }),
+      ),
+    HEALTH,
+  );
+  await revalidated;
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  assert.equal(await page.evaluate(() => window.__sawInert), false);
+  // Nothing changed, so nothing is downloaded again.
+  assert.equal(projectReads(), readsBefore);
+});
 
 test("switching project tabs returns to the panel each project was left on", async (t) => {
   const { page, errors } = await openedShell(t);
