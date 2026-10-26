@@ -1577,13 +1577,15 @@ function MemberApp({
     let stopped = false;
     const cleanups: Array<() => void> = [];
     // Revalidate what the window shows: the active project, or the project index.
-    // The project stays interactive; the watermark beat this starts refetches
-    // whatever changed, and the store retries reads that failed meanwhile.
+    // The project stays interactive; reads that failed meanwhile retry now, and
+    // the watermark beat this starts refetches whatever changed.
     const reloadVisibleState = async () => {
       if (stopped || !backendSessionReadyRef.current) return;
       const activeId = getActiveProjectId();
-      if (activeId) scheduler.activate(activeId);
-      else await loadProjectIndex();
+      if (activeId) {
+        store.endBackoff();
+        scheduler.activate(activeId);
+      } else await loadProjectIndex();
     };
     const prepareShow = async () => {
       try {
@@ -1661,6 +1663,7 @@ function MemberApp({
     reportIdentityIssue,
     reverifyIdentity,
     scheduler,
+    store,
   ]);
 
   const loginResource = useProjectResource(

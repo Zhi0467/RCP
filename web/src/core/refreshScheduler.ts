@@ -218,6 +218,7 @@ export class RefreshScheduler {
     };
     const controller = new AbortController();
     this.inFlight = controller;
+    let activatedDuringFailure = false;
     const timeout = this.clock.setTimeout(() => controller.abort(), WATERMARK_REQUEST_TIMEOUT_MS);
     try {
       const response = await this.options.send(request, controller.signal);
@@ -249,7 +250,9 @@ export class RefreshScheduler {
     } catch {
       if (this.inFlight !== controller) return;
       this.failures += 1;
-      // A newer activation made during the request wins over the retried one.
+      // A newer activation made during the request wins over the retried one,
+      // and runs at once instead of waiting out the failure backoff.
+      activatedDuringFailure = this.activated !== null;
       if (activated && this.activated === null) this.activated = activated;
       this.setHealth({ ...this.health, failing: true });
     } finally {
@@ -260,7 +263,9 @@ export class RefreshScheduler {
         const retry = store.nextRetryAt();
         // An activation queued during this request runs at once, not next beat.
         const beatMs = this.failures
-          ? retryBackoffMs(this.failures)
+          ? activatedDuringFailure
+            ? 0
+            : retryBackoffMs(this.failures)
           : this.activated || this.newlyAwaiting(open, due)
             ? 0
             : REFRESH_BEAT_MS;

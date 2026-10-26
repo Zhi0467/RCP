@@ -555,6 +555,15 @@ export class ResourceStore {
     this.pump();
   }
 
+  /** The backend is reachable again: reads that failed while it was away retry now. */
+  endBackoff(): void {
+    for (const state of this.states.values()) {
+      state.failures = 0;
+      state.retryAt = 0;
+    }
+    this.pump();
+  }
+
   /** Marks `id` as owing a read without waiting for its token to move. */
   invalidate(id: string): void {
     const state = this.states.get(id);
