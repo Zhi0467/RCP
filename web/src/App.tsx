@@ -1576,37 +1576,14 @@ function MemberApp({
     if (!desktop) return;
     let stopped = false;
     const cleanups: Array<() => void> = [];
-    // Reload what the window shows: the active project, or the project index.
+    // Revalidate what the window shows: the active project, or the project index.
+    // The project stays interactive; the watermark beat this starts refetches
+    // whatever changed, and the store retries reads that failed meanwhile.
     const reloadVisibleState = async () => {
       if (stopped || !backendSessionReadyRef.current) return;
       const activeId = getActiveProjectId();
-      if (activeId) {
-        const visibleProjectId = activeId;
-        const visibleTarget = activeGraphTargetRef.current;
-        scheduler.activate(visibleProjectId);
-        setProjectReconciliation("reconciling");
-        // An unchanged read keeps the snapshot's identity, so no effect settles it.
-        void reloadRef.current(false).then(
-          () => {
-            if (
-              isActiveProject(visibleProjectId) &&
-              sameGraphTarget(visibleTarget, activeGraphTargetRef.current) &&
-              !stopped
-            )
-              setProjectReconciliation("authoritative");
-          },
-          (error) => {
-            if (!isActiveProject(visibleProjectId) || stopped) return;
-            setProjectReconciliation("failed");
-            setNotice({
-              kind: "error",
-              text: error instanceof Error ? error.message : String(error),
-            });
-          },
-        );
-      } else {
-        await loadProjectIndex();
-      }
+      if (activeId) scheduler.activate(activeId);
+      else await loadProjectIndex();
     };
     const prepareShow = async () => {
       try {
@@ -1653,7 +1630,7 @@ function MemberApp({
         }
       }
     });
-    // Loads that failed while the team tunnel was down are not polled again.
+    // A recovered tunnel revalidates now rather than at the next backoff beat.
     const onTeamTransportRecovered = (event: Event) => {
       const detail = (event as CustomEvent<BackendIdentityEventDetail>).detail;
       if (stopped || !detail.ok || detail.reason !== TEAM_TRANSPORT_RECOVERED) return;
@@ -1678,7 +1655,6 @@ function MemberApp({
     currentActiveAgentTasks,
     desktop,
     getActiveProjectId,
-    isActiveProject,
     recordDesktopUpdateReady,
     loadProjectIndex,
     refreshDesktopUpdate,

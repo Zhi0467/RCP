@@ -32,6 +32,7 @@ from rcp.limits import (
     BROWSER_OPEN_DELAY_SECONDS,
     SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS,
     SERVER_HEALTH_REQUEST_TIMEOUT_SECONDS,
+    SERVER_KEEP_ALIVE_TIMEOUT_SECONDS,
     SERVER_LOCK_DEFAULT_TIMEOUT_SECONDS,
     SERVER_LOCK_OWNER_READ_ATTEMPTS,
     SERVER_LOCK_POLL_INTERVAL_SECONDS,
@@ -528,6 +529,7 @@ def _run_server(
                 "host": args.host,
                 "port": args.port,
                 "timeout_graceful_shutdown": SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS,
+                "timeout_keep_alive": SERVER_KEEP_ALIVE_TIMEOUT_SECONDS,
             }
             if server_fd is not None:
                 uvicorn_options["fd"] = server_fd
