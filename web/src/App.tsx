@@ -4403,6 +4403,7 @@ function MemberApp({
           tasks={selectedExperimentExecution.tasks}
           watchers={selectedExperimentExecution.watchers}
           historyMessages={chatTranscripts.get(selectedExperimentChatId)?.messages}
+          agentSetup={chatTranscripts.get(selectedExperimentChatId)?.agent_setup}
           chatId={selectedExperimentChatId}
           presentation="workspace"
           fixedConversation
@@ -5610,6 +5611,7 @@ function MemberApp({
               tasks={tasks}
               watchers={watchers}
               historyMessages={chatTranscripts.get(floatingChat.chatId)?.messages}
+              agentSetup={chatTranscripts.get(floatingChat.chatId)?.agent_setup}
               chatId={floatingChat.chatId}
               presentation="floating"
               graphChangesDisabled={mutationsDisabled}

@@ -34,6 +34,66 @@ def test_chat_append_and_projection_preserve_unicode_line_separators(manifest, t
     ]
 
 
+def test_chat_summary_carries_the_newest_turns_setup(manifest, tmp_path):
+    # Cards read an agent's setup from its summary; most agents' turns are not loaded.
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = signed_in_client(app)
+    service = app.state.service
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    chat_id = str(uuid.uuid4())
+    request = RunRequest(
+        chat_id=chat_id,
+        chat_scope="project",
+        message="go",
+        provider="codex",
+        model="gpt-6-astra",
+        reasoning="high",
+        run_on="laptop",
+    )
+    _append_chat_exchange(service, request, "done", None, None)
+    # History alone still names the agent, for chats without task records.
+    summary = next(item for item in service.chat_summaries().items if item.chat_id == chat_id)
+    assert summary.agent_setup is not None
+    assert (summary.agent_setup.provider, summary.agent_setup.model) == ("codex", "gpt-6-astra")
+
+    from rcp.storage import AgentTaskRecord
+    from tests.test_auto_research_children_storage import _identity
+
+    # The human switched agents; the new turn has no history yet.
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id=str(uuid.uuid4()),
+            project_id=project_id,
+            kind="project_chat",
+            status="running",
+            request={**request.model_dump(mode="json"), "provider": "claude", "model": None},
+            created_at=now,
+            updated_at=now,
+            status_message="",
+            authorized_by=_identity(store),
+        )
+    )
+    # An origin-bound artifact edit writes history on the artifact's older agent.
+    _append_chat_exchange(service, request, "edited", None, None)
+    row = next(
+        item
+        for item in client.get(f"/api/projects/{project_id}/chats").json()["items"]
+        if item["chat_id"] == chat_id
+    )
+    assert row["agent_setup"] == {
+        "provider": "claude",
+        "model": None,
+        "reasoning": "high",
+        "run_on": "laptop",
+        "selected_at": now,
+    }
+    # The open chat, which WebMCP reads, names the same agent.
+    chat = client.get(f"/api/projects/{project_id}/chats/{chat_id}").json()
+    assert chat["agent_setup"] == row["agent_setup"]
+
+
 def test_batch_chat_reader_preserves_single_chat_validation_and_ambiguity(
     manifest, tmp_path, monkeypatch
 ):
@@ -612,6 +672,7 @@ def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
             "UPDATE episodes SET status = 'completed' WHERE episode_id = ?",
             (continuation.episode_id,),
         )
+    # The human may pick another agent; the card follows it.
     chat_turn = root_task.model_copy(
         update={
             "operation_id": "orchestrator-chat-turn",
@@ -620,6 +681,7 @@ def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
             "dispatch_authority": None,
             "request": {
                 "provider": root_task.request["provider"],
+                "model": "human-pick",
                 "chat_id": root.episode_id,
                 "message": "Follow up.",
             },
@@ -643,6 +705,7 @@ def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
     assert cards[0]["human_turn_refusal"] is None
     assert cards[0]["graph_target"] == root.graph_target.model_dump()
     assert cards[0]["message_count"] == 7
+    assert cards[0]["agent_setup"]["model"] == "human-pick"
 
     branch = client.get(f"{url}/{root.episode_id}?branch_id={root.episode_id}")
     assert branch.status_code == 200, branch.text

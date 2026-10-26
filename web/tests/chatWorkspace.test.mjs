@@ -20,6 +20,7 @@ import {
   groupConversationAgents,
   isConversationModeShortcut,
   latestConversation,
+  conversationAgentConfig,
   latestPersistedChatConfig,
   latestPersistedConversationMode,
   newlyFinishedChatTaskIds,
@@ -368,6 +369,33 @@ test("chat provider configuration follows the persisted conversation over the pr
     ),
     claude,
   );
+});
+
+test("an agent's setup is its newest turn, loaded or only in the chat summary", () => {
+  const profile = { provider: "claude", model: "", reasoning: "medium", run_on: "local" };
+  const astra = { provider: "codex", model: "gpt-6-astra", reasoning: "high", run_on: "gpu" };
+  const summary = { ...astra, selected_at: "2026-10-25T02:00:00Z" };
+  const turn = (request, created_at, kind = "project_chat") =>
+    task({ operation_id: created_at, kind, created_at, request });
+  const opus = { provider: "claude", model: "opus", reasoning: "low", run_on: "gpu" };
+  const agent = (tasks, agentSetup = summary, origin = null) =>
+    conversationAgentConfig({ tasks, agentSetup, origin }, profile);
+  // No loaded turn: the summary's newest turn, not the project default.
+  assert.deepEqual(agent([]), astra);
+  // Whichever is newer wins, since tasks and summaries refresh apart.
+  assert.deepEqual(agent([turn(opus, "2026-10-25T01:00:00Z")]), astra);
+  assert.deepEqual(agent([turn(opus, "2026-10-25T03:00:00Z")]), opus);
+  // An artifact edit may run the artifact's own older agent; it is not the chat's.
+  assert.deepEqual(agent([turn(opus, "2026-10-25T03:00:00Z", "artifact_edit")]), astra);
+  // History cannot tell an artifact edit from a turn, so a summary setup replaces it.
+  const editMessage = { ...opus, execution_machine: "gpu", timestamp: "2026-10-25T04:00:00Z" };
+  assert.deepEqual(latestPersistedChatConfig([editMessage], [], profile, summary), astra);
+  // An unstarted branch runs on the setup it was branched with.
+  assert.deepEqual(agent([], null, { ...astra, model: null, reasoning: null }), {
+    ...astra,
+    model: "",
+    reasoning: "",
+  });
 });
 
 test("only a provider switch away from the session's holder starts a fresh session", () => {

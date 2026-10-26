@@ -1,4 +1,4 @@
-import { ChatBranchPicker } from "./ChatBranchPicker";
+import { ChatBranchPicker, ChatOriginLink } from "./ChatBranchPicker";
 import {
   Circle,
   Ellipsis,
@@ -15,6 +15,7 @@ import {
   AGENT_LIST_SECTIONS,
   AGENT_NAME_MAX_CHARS,
   CONVERSATION_AGENT_GROUPS,
+  conversationAgentConfig,
   conversationAgentStatus,
   listedAgentConversations,
   groupConversationAgents,
@@ -51,6 +52,7 @@ import {
   type ChatListWidthBounds,
 } from "./chatLayout";
 import type {
+  AgentRunConfig,
   AgentTask,
   ChatDisplay,
   ChatTranscript,
@@ -67,6 +69,7 @@ import { ProviderMark, hasProviderLogo } from "../projects/ProviderMark";
 import { EpisodeAuthor } from "../experiments/EpisodeRunControls";
 import { loadChatDisplay, setChatArchived, setChatPinned, setChatTitle } from "../core/api";
 import { NodeChat } from "./NodeChat";
+import { profileRunConfig } from "../core/AgentConfigControls";
 import { sameGraphTarget, MAIN_GRAPH, projectViewHash } from "../core/graphTarget";
 import { useNarrowViewport } from "../ui/useNarrowViewport";
 
@@ -190,14 +193,18 @@ function phaseText(phase: string): string {
 
 /** Everything after the provider, which renders as its own mark: model, effort,
  *  task type, then what the latest turn needs. */
-function agentMeta(status: ConversationAgentStatus, conversation: ChatConversation): string {
+function agentMeta(
+  status: ConversationAgentStatus,
+  conversation: ChatConversation,
+  config: AgentRunConfig,
+): string {
   const latest = status.latest;
-  if (!latest) return "";
   const parts: (string | null | undefined)[] = [
-    latest.request.model,
-    latest.request.reasoning,
+    config.model,
+    config.reasoning,
     agentTypeLabel(conversation),
   ];
+  if (!latest) return parts.filter(Boolean).join(" · ");
   if (status.state === "working") {
     parts.push(phaseText(latest.phase), `${Math.max(1, Math.round(latest.elapsed_seconds / 60))}m`);
   } else {
@@ -211,6 +218,7 @@ function agentMeta(status: ConversationAgentStatus, conversation: ChatConversati
 }
 
 const NO_EPISODES: readonly Episode[] = [];
+const NO_RUN_CONFIG: AgentRunConfig = { provider: "", model: "", reasoning: "", run_on: "" };
 const NO_NODES: Record<string, GraphNode> = {};
 const NO_GLOSSARY = buildGlossaryIndex({});
 
@@ -225,17 +233,11 @@ function agentTypeLabel(conversation: ChatConversation): string {
 
 /** A board card's provider line: provider, model, effort, task type. */
 function agentCardMeta(
-  status: ConversationAgentStatus,
   conversation: ChatConversation,
-  fallbackProvider: string | undefined,
+  config: AgentRunConfig,
+  providerLabel: string,
 ): string {
-  const latest = status.latest;
-  return [
-    latest?.provider_label ?? fallbackProvider,
-    latest?.request.model,
-    latest?.request.reasoning,
-    agentTypeLabel(conversation),
-  ]
+  return [providerLabel, config.model, config.reasoning, agentTypeLabel(conversation)]
     .filter(Boolean)
     .join(" · ");
 }
@@ -243,8 +245,8 @@ function agentCardMeta(
 /** A board card's state line: what the agent is doing, or since when it is idle. */
 function agentCardState(status: ConversationAgentStatus, since: string): string {
   const latest = status.latest;
-  if (!latest) return "Draft";
-  if (status.state === "working")
+  if (status.state === "draft") return "Draft";
+  if (status.state === "working" && latest)
     return [phaseText(latest.phase), `${Math.max(1, Math.round(latest.elapsed_seconds / 60))}m`]
       .filter(Boolean)
       .join(" · ");
@@ -827,13 +829,25 @@ export function ChatsWorkspace({
       </>
     ) : null;
 
+  // One reading of what an agent runs on, for both its card and its list row.
+  const agentSetup = (conversation: ChatConversation, latest: AgentTask | null) => {
+    const profile = project.agent_profiles?.[conversation.kind];
+    const config = conversationAgentConfig(
+      conversation,
+      profile ? profileRunConfig(profile) : NO_RUN_CONFIG,
+    );
+    const label =
+      (latest?.request.provider === config.provider ? latest.provider_label : null) ||
+      project.providers?.[config.provider]?.label ||
+      config.provider;
+    return { config, label };
+  };
+
   const renderBoardCard = (card: BoardCard) => {
     const { conversation, status } = card;
     const latest = status.latest;
-    const provider =
-      latest?.request.provider ?? project.agent_profiles?.[conversation.kind]?.provider ?? "";
-    const providerLabel =
-      latest?.provider_label ?? project.providers?.[provider]?.label ?? provider;
+    const { config, label: providerLabel } = agentSetup(conversation, latest);
+    const provider = config.provider;
     const renaming = renamingChatId === conversation.chatId;
     const action =
       !conversation.humanTurnRefusal && needsHuman(status) && latest
@@ -874,8 +888,13 @@ export function ChatsWorkspace({
           {!renaming && agentMenu(conversation, status, card.column === "archived")}
         </div>
         <span className="agent-card-meta">
-          {agentCardMeta(status, conversation, providerLabel)}
+          {agentCardMeta(conversation, config, providerLabel)}
         </span>
+        {conversation.origin && (
+          <span className="agent-card-origin">
+            <ChatOriginLink projectId={project.id} origin={conversation.origin} />
+          </span>
+        )}
         <div className="agent-card-foot">
           <span className="agent-card-state" data-state={status.state}>
             {agentCardState(
@@ -1039,6 +1058,8 @@ export function ChatsWorkspace({
                   const selectedConversation = conversation.chatId === selected?.chatId;
                   const unread = status.unread;
                   const latest = status.latest;
+                  const setup = agentSetup(conversation, latest);
+                  const meta = agentMeta(status, conversation, setup.config);
                   const archived = archivedChatIds.has(conversation.chatId);
                   const menuOpen = menuChatId === conversation.chatId;
                   return (
@@ -1074,17 +1095,16 @@ export function ChatsWorkspace({
                               {conversation.title}
                             </span>
                             <span className="agent-row-meta">
-                              {latest ? (
+                              {setup.config.provider ? (
                                 <>
                                   <ProviderMark
-                                    provider={latest.request.provider ?? ""}
-                                    label={latest.provider_label}
+                                    provider={setup.config.provider}
+                                    label={setup.label}
                                   />
-                                  {agentMeta(status, conversation) &&
-                                    `${latest.provider_label || latest.request.provider ? " · " : ""}${agentMeta(status, conversation)}`}
+                                  {meta && ` · ${meta}`}
                                 </>
                               ) : (
-                                "\u00a0"
+                                meta || "\u00a0"
                               )}
                             </span>
                           </span>
@@ -1184,6 +1204,7 @@ export function ChatsWorkspace({
             runScope={runScope}
             tasks={selectedOrchestratorTurns?.tasks ?? []}
             historyMessages={selectedOrchestratorTurns?.history}
+            agentSetup={selected.agentSetup}
             chatId={selected.chatId}
             presentation="workspace"
             // While the chain runs its turns are the orchestrator's; once it ends,
@@ -1232,6 +1253,7 @@ export function ChatsWorkspace({
             watchers={watchers}
             historyMessages={chatTranscripts.get(selected.chatId)?.messages}
             origin={selected.origin}
+            agentSetup={selected.agentSetup}
             chatId={selected.chatId}
             presentation="workspace"
             readOnly={Boolean(selected.humanTurnRefusal) || selectedArchived}

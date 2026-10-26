@@ -9,7 +9,9 @@ import type {
   AgentTaskStatus,
   Episode,
   ArtifactContextRequest,
+  ChatAgentSetup,
   ChatMessage,
+  ChatOrigin,
   ChatReads,
   ChatSummary,
   ConversationMode,
@@ -32,6 +34,8 @@ export interface ChatConversation {
   updatedAt: string;
   /** The latest message's text from the stored summary, for search. */
   preview?: string;
+  /** The newest recorded turn's setup, from the stored summary. */
+  agentSetup?: ChatSummary["agent_setup"];
   graphTarget?: GraphTargetRef;
   origin?: ChatSummary["origin"];
   conversationKind?: ChatSummary["conversation_kind"];
@@ -120,58 +124,80 @@ export function providerSwitchStartsFreshSession(
   return typeof provider === "string" && provider !== nextProvider;
 }
 
+/**
+ * What a chat's agent runs on: the newer of its loaded turns and the chat
+ * summary's newest turn, else `fallback` (the chat it was branched from, or the
+ * project default). A turn that names no machine or effort keeps the fallback's.
+ * An artifact edit never sets it: an origin-bound one runs the artifact's own
+ * agent, and any other runs the chat's. History is read only without a summary
+ * setup, since its records cannot tell such an edit from a turn.
+ */
 export function latestPersistedChatConfig(
   messages: ChatMessage[],
   tasks: AgentTask[],
   fallback: AgentRunConfig,
+  setup?: ChatAgentSetup | null,
 ): AgentRunConfig {
   const candidates: Array<{ config: AgentRunConfig; timestamp: number; order: number }> = [];
-  let order = 0;
-  messages.forEach((message) => {
-    if (
-      typeof message.provider === "string" &&
-      message.provider.trim() &&
-      typeof message.execution_machine === "string" &&
-      message.execution_machine.trim()
-    ) {
-      candidates.push({
-        config: {
-          ...fallback,
-          provider: message.provider,
-          model: persistedModel(message.model),
-          reasoning: message.reasoning ?? fallback.reasoning,
-          run_on: message.execution_machine,
-        },
-        timestamp: comparableTime(message.timestamp),
-        order,
-      });
-    }
-    order += 1;
-  });
+  const add = (
+    turn: { provider?: unknown; model?: unknown; reasoning?: unknown; run_on?: unknown },
+    at: string,
+  ) => {
+    const order = candidates.length;
+    if (typeof turn.provider !== "string" || !turn.provider.trim()) return;
+    candidates.push({
+      config: {
+        provider: turn.provider,
+        model: typeof turn.model === "string" ? persistedModel(turn.model) : "",
+        reasoning:
+          typeof turn.reasoning === "string" && turn.reasoning
+            ? turn.reasoning
+            : fallback.reasoning,
+        run_on:
+          typeof turn.run_on === "string" && turn.run_on.trim() ? turn.run_on : fallback.run_on,
+      },
+      timestamp: comparableTime(at),
+      order,
+    });
+  };
+  if (!setup)
+    messages.forEach((message) =>
+      add({ ...message, run_on: message.execution_machine }, message.timestamp),
+    );
   tasks.forEach((task) => {
-    const request = task.request;
-    if (
-      typeof request.provider === "string" &&
-      request.provider.trim() &&
-      typeof request.run_on === "string" &&
-      request.run_on.trim()
-    ) {
-      candidates.push({
-        config: {
-          ...fallback,
-          provider: request.provider,
-          model: typeof request.model === "string" ? persistedModel(request.model) : "",
-          reasoning: typeof request.reasoning === "string" ? request.reasoning : fallback.reasoning,
-          run_on: request.run_on,
-        },
-        timestamp: comparableTime(task.created_at),
-        order,
-      });
-    }
-    order += 1;
+    if (task.kind !== "artifact_edit") add(task.request, task.created_at);
   });
+  if (setup) add(setup, setup.selected_at);
   candidates.sort((left, right) => left.timestamp - right.timestamp || left.order - right.order);
   return candidates.at(-1)?.config ?? fallback;
+}
+
+/** A branched chat's recorded setup as a run config, else the project default. */
+export function originRunConfig(
+  origin: ChatOrigin | null | undefined,
+  profile: AgentRunConfig,
+): AgentRunConfig {
+  return origin
+    ? {
+        provider: origin.provider,
+        model: origin.model ?? "",
+        reasoning: origin.reasoning ?? "",
+        run_on: origin.run_on,
+      }
+    : profile;
+}
+
+/** What an agent runs on, for its card and list row; the composer reads the same with its full history. */
+export function conversationAgentConfig(
+  conversation: ChatConversation,
+  profile: AgentRunConfig,
+): AgentRunConfig {
+  return latestPersistedChatConfig(
+    [],
+    conversation.tasks,
+    originRunConfig(conversation.origin, profile),
+    conversation.agentSetup,
+  );
 }
 
 export interface ConversationTurnSubmission {
@@ -287,6 +313,7 @@ export function groupChatConversations(
       tasks: [],
       updatedAt: summary.updated_at,
       preview: summary.last_message_preview,
+      agentSetup: summary.agent_setup,
       graphTarget: summary.graph_target,
       origin: summary.origin,
       conversationKind: summary.conversation_kind,
@@ -466,6 +493,9 @@ export function conversationSearchText(conversation: ChatConversation): string {
     conversation.nodeId,
     conversation.kind === "project_chat" ? "project chat" : "node chat",
     conversation.preview,
+    conversation.agentSetup?.provider,
+    conversation.agentSetup?.model,
+    conversation.agentSetup?.reasoning,
   ];
   for (const task of conversation.tasks) {
     const request = task.request;

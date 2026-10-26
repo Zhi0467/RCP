@@ -129,6 +129,7 @@ from rcp.sources import (
     project_cache_roots,
 )
 from rcp.storage import AppStore
+from rcp.storage.chat_display import chat_agent_setup
 from rcp.storage.chat_forks import ChatForkOrigin
 from rcp.transport import repository_access as build_repository_access
 from rcp.transport.state_transfer import diagnostics as state_transfer_diagnostics
@@ -336,6 +337,18 @@ class ChatOriginView(ChatForkOrigin):
     pending: bool
 
 
+class ChatAgentSetup(BaseModel):
+    """The provider, model, effort, and machine of a chat's newest turn, and when it started."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str
+    model: str | None = None
+    reasoning: str | None = None
+    run_on: str | None = None
+    selected_at: str
+
+
 class ChatSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -352,6 +365,8 @@ class ChatSummary(BaseModel):
     human_turn_refusal: dict[str, str] | None = None
     graph_title: str = "Main"
     origin: ChatOriginView | None = None
+    # Every listed agent shows its own setup, not only those whose turns are loaded.
+    agent_setup: ChatAgentSetup | None = None
 
 
 class ChatSummaryPage(BaseModel):
@@ -1353,6 +1368,8 @@ class ProjectService:
                         "orchestrator_episode_id": task.orchestrator_episode_id,
                         "human_turn_refusal": task.human_turn_refusal,
                         "graph_title": task.graph_title,
+                        # Task records know which turns were artifact edits; history does not.
+                        "agent_setup": task.agent_setup or canonical.agent_setup,
                         # Human turns after an Auto-research chain ends join its one card.
                         **(
                             {
@@ -1607,6 +1624,26 @@ class ProjectService:
         )
         preview = " ".join(preview_source.split())[:CHAT_PREVIEW_MAX_CHARS]
         updated_at = records[max(range(len(records)), key=timestamps.__getitem__)].timestamp
+        # Only for chats without task records (older or transferred ones): history
+        # cannot tell an artifact edit, which may run an older agent, from a turn.
+        newest = max(
+            (index for index, record in enumerate(records) if record.provider),
+            key=lambda index: (timestamps[index], index),
+            default=None,
+        )
+        setup = (
+            chat_agent_setup(
+                {
+                    "provider": records[newest].provider,
+                    "model": records[newest].model,
+                    "reasoning": records[newest].reasoning,
+                    "run_on": records[newest].execution_machine,
+                },
+                records[newest].timestamp,
+            )
+            if newest is not None
+            else None
+        )
         return ChatTranscript(
             chat_id=chat_id,
             graph_target=graph_target,
@@ -1621,6 +1658,7 @@ class ProjectService:
             updated_at=updated_at,
             message_count=len(messages),
             last_message_preview=preview,
+            agent_setup=ChatAgentSetup.model_validate(setup) if setup else None,
             messages=messages,
         )
 

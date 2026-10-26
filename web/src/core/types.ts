@@ -2948,8 +2948,18 @@ export interface ChatOrigin {
   pending: boolean;
 }
 
+/** The provider, model, effort, and machine of a chat's newest turn, and when it started. */
+export interface ChatAgentSetup {
+  provider: string;
+  model: string | null;
+  reasoning: string | null;
+  run_on: string | null;
+  selected_at: string;
+}
+
 export interface ChatSummary {
   origin?: ChatOrigin | null;
+  agent_setup?: ChatAgentSetup | null;
   conversation_kind: "chat" | "episode" | "auto_research_child" | "auto_research";
   graph_title: string;
   orchestrator_episode_id: string | null;

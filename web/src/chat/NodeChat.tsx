@@ -1,6 +1,6 @@
 import { ChatOriginLink } from "./ChatBranchPicker";
 import { ChatHeaderMenu, type ChatHeaderAction } from "./ChatHeaderMenu";
-import type { ChatOrigin } from "../core/types";
+import type { ChatAgentSetup, ChatOrigin } from "../core/types";
 import { turnOutcomeChip } from "./turnOutcome";
 import { memberDraftKey } from "../core/draftStorage";
 import { MAIN_GRAPH } from "../core/graphTarget";
@@ -91,6 +91,7 @@ import {
   chatModeStorageKey,
   isConversationModeShortcut,
   latestPersistedChatConfig,
+  originRunConfig,
   latestPersistedConversationMode,
   parseConversationMode,
   providerSwitchStartsFreshSession,
@@ -229,6 +230,8 @@ interface Props {
   watchers?: WatcherRecord[];
   historyMessages?: ChatMessage[];
   origin?: ChatOrigin | null;
+  /** The chat summary's newest turn, which the loaded history may not reach yet. */
+  agentSetup?: ChatAgentSetup | null;
   chatId: string;
   presentation?: "floating" | "workspace";
   fixedConversation?: boolean;
@@ -371,6 +374,7 @@ export function NodeChat({
   watchers = EMPTY_WATCHERS,
   historyMessages = EMPTY_HISTORY,
   origin,
+  agentSetup,
   chatId,
   presentation = "floating",
   fixedConversation = false,
@@ -455,16 +459,10 @@ export function NodeChat({
       latestPersistedChatConfig(
         historyMessages,
         relatedTasks,
-        origin
-          ? {
-              provider: origin.provider,
-              model: origin.model ?? "",
-              reasoning: origin.reasoning ?? "",
-              run_on: origin.run_on,
-            }
-          : profileRunConfig(project.agent_profiles[surface]),
+        originRunConfig(origin, profileRunConfig(project.agent_profiles[surface])),
+        agentSetup,
       ),
-    [historyMessages, origin, project.agent_profiles, relatedTasks, surface],
+    [agentSetup, historyMessages, origin, project.agent_profiles, relatedTasks, surface],
   );
   // The human's pick for this chat's next turns. It is keyed by chat, so another
   // chat starts from its own default; the machine always stays the derived one.

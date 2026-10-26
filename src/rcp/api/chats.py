@@ -44,6 +44,7 @@ from rcp.runs.browser_lifecycle import close_chat_browser_owners
 from rcp.runs.chat_admission import require_chat_graph_target
 from rcp.service import (
     ArtifactContextRequest,
+    ChatAgentSetup,
     ChatArtifactComments,
     ChatArtifactQuote,
     ChatMessage,
@@ -523,6 +524,12 @@ def chat(
             "graph_title": "Main"
             if transcript.graph_target.kind == "main"
             else (transcript.graph_target.branch_id or "")[:8],
+            # The same setup the chat list shows, so every client sends on one agent.
+            "agent_setup": ChatAgentSetup.model_validate(summary["agent_setup"])
+            if summary is not None
+            and summary.get("agent_setup") is not None
+            and summary["graph_target"] == transcript.graph_target.model_dump()
+            else transcript.agent_setup,
             **(
                 {
                     key: ChatOriginView.model_validate(summary[key])
