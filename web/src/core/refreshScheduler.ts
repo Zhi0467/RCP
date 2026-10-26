@@ -50,8 +50,6 @@ export interface WatermarkResponse {
 }
 
 export interface RefreshHealth {
-  /** Last time the backend answered a watermark request. */
-  lastContactAt: number | null;
   /** The latest watermark request failed. */
   failing: boolean;
   sync: ReadonlyMap<string, ProjectSyncHealth>;
@@ -108,7 +106,7 @@ export class RefreshScheduler {
   private activated: string | null = null;
   private readonly validUntil = new Map<string, number>();
   private stopVisibility: (() => void) | null = null;
-  private health: RefreshHealth = { lastContactAt: null, failing: false, sync: new Map() };
+  private health: RefreshHealth = { failing: false, sync: new Map() };
 
   constructor(options: RefreshSchedulerOptions) {
     this.options = options;
@@ -155,7 +153,9 @@ export class RefreshScheduler {
 
   getHealth = (): RefreshHealth => this.health;
 
+  // Subscribers re-render the whole app shell, so an unchanged beat publishes nothing.
   private setHealth(next: RefreshHealth): void {
+    if (next.failing === this.health.failing && sameSync(next.sync, this.health.sync)) return;
     this.health = next;
     for (const listener of this.listeners) listener();
   }
@@ -245,7 +245,7 @@ export class RefreshScheduler {
         store.dropProject(id);
         this.options.onLostAccess(id);
       }
-      this.setHealth({ lastContactAt: this.clock.now(), failing: false, sync });
+      this.setHealth({ failing: false, sync });
     } catch {
       if (this.inFlight !== controller) return;
       this.failures += 1;
@@ -278,4 +278,22 @@ export class RefreshScheduler {
       }
     }
   }
+}
+
+function sameSync(
+  a: ReadonlyMap<string, ProjectSyncHealth>,
+  b: ReadonlyMap<string, ProjectSyncHealth>,
+): boolean {
+  if (a.size !== b.size) return false;
+  for (const [id, health] of a) {
+    const other = b.get(id);
+    if (
+      !other ||
+      other.status !== health.status ||
+      other.last_completed_at !== health.last_completed_at ||
+      other.error !== health.error
+    )
+      return false;
+  }
+  return true;
 }

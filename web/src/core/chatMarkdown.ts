@@ -2,6 +2,7 @@ import {
   createContext,
   createElement,
   Fragment,
+  memo,
   useContext,
   type ComponentProps,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -320,26 +321,41 @@ interface MarkdownAnswerProps {
 
 export function MarkdownAnswer({
   text,
-  nodes = {},
+  nodes,
   onOpenNode,
   glossaryIndex,
   onOpenRepositoryFileLink,
   renderEmbed,
 }: MarkdownAnswerProps) {
-  const nodeIds = onOpenNode ? new Set(Object.keys(nodes)) : new Set<string>();
-  const markdown = createElement(ReactMarkdown, {
+  const linkedNodes = onOpenNode && nodes ? nodes : null;
+  const nodeIds = new Set(linkedNodes ? Object.keys(linkedNodes) : []);
+  return createElement(
+    MarkdownLinkContext.Provider,
+    { value: { nodeIds, onOpenNode, onOpenRepositoryFileLink, renderEmbed } },
+    createElement(MarkdownBody, { text, linkedNodes, glossaryIndex }),
+  );
+}
+
+// Parsing is the costly part, and callers pass fresh callbacks on every render
+// (each keystroke in a composer). The parse depends only on these props; the
+// callbacks reach links and images through the context above.
+const MarkdownBody = memo(function MarkdownBody({
+  text,
+  linkedNodes,
+  glossaryIndex,
+}: {
+  text: string;
+  linkedNodes: Readonly<Record<string, GraphNode>> | null;
+  glossaryIndex?: GlossaryIndex;
+}) {
+  return createElement(ReactMarkdown, {
     children: text,
     remarkPlugins: [
       ...ANSWER_SYNTAX_PLUGINS,
-      nodeReferencePlugin(nodeIds),
+      nodeReferencePlugin(new Set(linkedNodes ? Object.keys(linkedNodes) : [])),
       glossaryDefinitionPlugin(glossaryIndex),
     ],
     rehypePlugins: [[rehypeKatex, { strict: false, trust: false }]],
     components: MARKDOWN_COMPONENTS,
   });
-  return createElement(
-    MarkdownLinkContext.Provider,
-    { value: { nodeIds, onOpenNode, onOpenRepositoryFileLink, renderEmbed } },
-    markdown,
-  );
-}
+});
