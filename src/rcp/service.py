@@ -349,6 +349,15 @@ class ChatAgentSetup(BaseModel):
     selected_at: str
 
 
+def newer_agent_setup(*setups: ChatAgentSetup | None) -> ChatAgentSetup | None:
+    """The newest of a chat's setups; task records can run ahead of its history."""
+    return max(
+        (setup for setup in setups if setup is not None),
+        key=lambda setup: datetime.fromisoformat(setup.selected_at),
+        default=None,
+    )
+
+
 class ChatSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1368,8 +1377,7 @@ class ProjectService:
                         "orchestrator_episode_id": task.orchestrator_episode_id,
                         "human_turn_refusal": task.human_turn_refusal,
                         "graph_title": task.graph_title,
-                        # Task records know the newest turn even before its transcript lands.
-                        "agent_setup": task.agent_setup or canonical.agent_setup,
+                        "agent_setup": newer_agent_setup(task.agent_setup, canonical.agent_setup),
                         # Human turns after an Auto-research chain ends join its one card.
                         **(
                             {

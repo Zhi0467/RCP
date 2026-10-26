@@ -87,6 +87,9 @@ def test_chat_summary_carries_the_newest_turns_setup(manifest, tmp_path):
         "run_on": "laptop",
         "selected_at": now,
     }
+    # The open chat, which WebMCP reads, names the same agent.
+    chat = client.get(f"/api/projects/{project_id}/chats/{chat_id}").json()
+    assert chat["agent_setup"] == row["agent_setup"]
 
 
 def test_batch_chat_reader_preserves_single_chat_validation_and_ambiguity(
@@ -667,6 +670,7 @@ def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
             "UPDATE episodes SET status = 'completed' WHERE episode_id = ?",
             (continuation.episode_id,),
         )
+    # The human may pick another agent; the card follows it.
     chat_turn = root_task.model_copy(
         update={
             "operation_id": "orchestrator-chat-turn",
@@ -675,6 +679,7 @@ def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
             "dispatch_authority": None,
             "request": {
                 "provider": root_task.request["provider"],
+                "model": "human-pick",
                 "chat_id": root.episode_id,
                 "message": "Follow up.",
             },
@@ -698,6 +703,7 @@ def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
     assert cards[0]["human_turn_refusal"] is None
     assert cards[0]["graph_target"] == root.graph_target.model_dump()
     assert cards[0]["message_count"] == 7
+    assert cards[0]["agent_setup"]["model"] == "human-pick"
 
     branch = client.get(f"{url}/{root.episode_id}?branch_id={root.episode_id}")
     assert branch.status_code == 200, branch.text

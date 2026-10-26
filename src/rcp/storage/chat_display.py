@@ -100,13 +100,22 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             }
             summaries = []
             for row in rows:
+                request = json.loads(row["request_json"])
                 if (orchestrator_card := orchestrators.get(row["chat_id"])) is not None:
-                    # A human turn after the chain ends continues the orchestrator's one card.
+                    # A human turn after the chain ends continues the orchestrator's one card,
+                    # on whichever agent that human picked.
                     orchestrator_card["updated_at"] = max(
                         orchestrator_card["updated_at"], row["updated_at"]
                     )
+                    setup = chat_agent_setup(request, row["created_at"])
+                    current = orchestrator_card["agent_setup"]
+                    if setup is not None and (
+                        current is None
+                        or datetime.fromisoformat(setup["selected_at"])
+                        > datetime.fromisoformat(current["selected_at"])
+                    ):
+                        orchestrator_card["agent_setup"] = setup
                     continue
-                request = json.loads(row["request_json"])
                 target = json.loads(row["graph_target_json"])
                 orchestrator = row["orchestrator_episode_id"]
                 summaries.append(
