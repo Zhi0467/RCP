@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from rcp.agents import ProviderReadiness
 from rcp.browser import BrowserReadiness
 from rcp.config import load_manifest
-from rcp.projects import fill_space_machines
+from rcp.projects import fill_space_machines, record_space_machines
 from tests.helpers import create_named_app, signed_in_client
 from tests.storage_helpers import downgrade_resource_watermarks
 from tests.test_project_membership import _create_project, _team_app
@@ -664,6 +664,10 @@ def test_older_manifest_machine_settings_move_onto_the_card_once(manifest, tmp_p
         projects.append(SimpleNamespace(project_id=name, locator=str(path)))
     monkeypatch.setattr(store, "projects", lambda: projects)
 
+    # Startup registers the default project before the sweep; that read alone
+    # must not settle a card another project shares.
+    record_space_machines(store, load_manifest(projects[0].locator))
+    assert store.space_machine_for("gpu.example").legacy_settings_pending
     fill_space_machines(store)
 
     card = store.space_machine_for("gpu.example")

@@ -309,11 +309,12 @@ def _backup_recovery_machine(
     )
 
 
-def record_space_machines(store: AppStore, manifest: Manifest, *, settle: bool = True) -> None:
+def record_space_machines(store: AppStore, manifest: Manifest) -> None:
     """Give the space a card for every machine account this manifest names.
 
     Settings an older build kept in the manifest are copied into cards still
-    pending import; with `settle`, those cards then own them for good.
+    pending import. Only the startup sweep (`fill_space_machines`) settles a
+    card, since a registration reads one project and the card may be shared.
     """
 
     conflicts = store.ensure_space_machines(
@@ -332,8 +333,6 @@ def record_space_machines(store: AppStore, manifest: Manifest, *, settle: bool =
             access_hint=machine.legacy_access_hint,
             provider_paths=machine.legacy_provider_paths,
         )
-    if settle:
-        store.settle_legacy_machine_settings(machine.host for machine in manifest.machines)
 
 
 def fill_space_machines(store: AppStore) -> None:
@@ -351,7 +350,7 @@ def fill_space_machines(store: AppStore) -> None:
         except (OSError, ValueError) as exc:
             _LOGGER.warning("Could not read machines for project %s: %s", project.project_id, exc)
             continue
-        record_space_machines(store, manifest, settle=False)
+        record_space_machines(store, manifest)
         hosts.update(machine.host for machine in manifest.machines)
     store.settle_legacy_machine_settings(hosts)
 
