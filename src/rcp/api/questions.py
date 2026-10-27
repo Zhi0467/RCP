@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -190,6 +191,16 @@ def answer_question(
         # failed still carries its turns.
         newest = _newest_episode(store, current)
         continues = _answer_continues(store, current, newest)
+        if (
+            continues == "turns"
+            and newest is not None
+            and current.resolved_at is not None
+            and datetime.fromisoformat(newest.created_at)
+            > datetime.fromisoformat(current.resolved_at)
+        ):
+            # A continuation began after this answer and has received it; a
+            # retry replays the answer rather than adding turns again.
+            continues = None
         if continues == "ending":
             raise HTTPException(
                 status_code=409,

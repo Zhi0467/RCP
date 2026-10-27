@@ -446,7 +446,8 @@ as `parked`.
 `POST /api/projects/{project_id}/questions/{question_id}/answer` accepts
 `answer` text and `choices`, plus `invocation_ceiling` and a `request_id` that a
 `turns` card requires: the answer then creates the episode's continuation, as
-**Add turns** does, and a retry with the same id returns it. A card whose
+**Add turns** does. A retry once a continuation began after the answer replays
+the answer and adds no turns. A card whose
 episode still settles refuses with `episode_still_ending`. The store validates
 the answer and records the authenticated human. An exact retry is idempotent; a conflicting resolution or
 a withdrawn question returns 409. The endpoint enforces the store's resolution
@@ -470,8 +471,9 @@ control, matching the asking turn's capability.
 Experiment and Auto-research detail show the same cards; a `turns` card adds an
 **Add turns** field beside Answer, and cards a Stop withdrew retain their history
 with an **Episode ended** state. Chat and episode views select
-questions from the shared project resource, refreshed by its watermark and
-invalidated by question commands. Fresh pending rounds show a cobalt **Agent is waiting**
+questions from the shared project resource, refreshed by its watermark,
+including an episode's status or ending change, and invalidated by question
+commands. Fresh pending rounds show a cobalt **Agent is waiting**
 pill; otherwise the open card shows **Needs you**.
 Question notifications open the corresponding chat or expanded episode view.
 

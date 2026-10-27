@@ -61,6 +61,25 @@ def test_only_stop_endings_withdraw_questions(tmp_path, path, withdrawn):
     assert store.get_question(question.question_id).withdrawn_readonly is withdrawn
 
 
+def test_episode_lifecycle_refreshes_question_cards(tmp_path):
+    # A card's offer reads its episode's lifecycle, so ending it must refresh cards.
+    store = AppStore(tmp_path / "app.sqlite3")
+    episode = store.create_episode(_episode(store, "episode"))
+    _question(store, episode)
+
+    def generation() -> int:
+        with store.connection() as connection:
+            return connection.execute(
+                "SELECT generation FROM resource_versions "
+                "WHERE scope=? AND resource='questions' AND entity=''",
+                (episode.project_id,),
+            ).fetchone()[0]
+
+    before = generation()
+    store.fence_episode_ending("episode", "exhausted")
+    assert generation() > before
+
+
 def test_continuations_reopen_ancestor_questions_without_changing_origins(tmp_path):
     store = AppStore(tmp_path / "app.sqlite3")
     episode = store.create_episode(_episode(store, "original", mode="auto_research"))
