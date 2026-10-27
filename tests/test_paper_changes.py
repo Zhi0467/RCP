@@ -6,6 +6,7 @@ from contextlib import nullcontext
 
 import pytest
 
+from rcp.paper import PaperFile, PaperLive, PaperOp, PaperSnapshot
 from rcp.paper.changes import (
     InvalidChanges,
     OutdatedChange,
@@ -14,17 +15,17 @@ from rcp.paper.changes import (
     map_range,
     validate_output,
 )
-from rcp.paper.coach_seam import SavedPaperFile, SavedPaperSnapshot
 from rcp.storage import AppStore
-from tests.paper_fakes import FakePaperLive
+from rcp.transport import LocalStateWorkspace
+from tests.paper_helpers import apply, human_edit, receipts, saved, start_paper
 
 
 @pytest.fixture
 def setup(tmp_path):
-    snapshot = SavedPaperSnapshot(
+    snapshot = PaperSnapshot(
         revision=1,
         files=[
-            SavedPaperFile(
+            PaperFile(
                 file_id="f1",
                 path="section.md",
                 kind="text",
@@ -32,8 +33,14 @@ def setup(tmp_path):
             )
         ],
     )
-    live = FakePaperLive(snapshot)
     store = AppStore(tmp_path / "state.sqlite")
+    root = tmp_path / "state"
+    root.mkdir()
+    live = start_paper(PaperLive(store, lambda _: LocalStateWorkspace(root, str(root))))
+    apply(
+        live, [PaperOp(kind="create", file_id="f1", path="section.md", text=snapshot.files[0].text)]
+    )
+    snapshot = saved(live)
     changes = PaperChanges(store, live, lambda _: nullcontext())
     output = tmp_path / "changes"
     (output / "files").mkdir(parents=True)
@@ -123,14 +130,14 @@ def test_accept_idempotency_rebase_and_guarded_undo(setup):
     before = snapshot.files[0].text
     (output / "files/section.md").write_text(before.replace("line 10\n", "improved 10\n"))
     group = changes.collect("p", "t", snapshot, output)[0]
-    live.human_edit("f1", "prefix\n" + before)
+    human_edit(live, "f1", "prefix\n" + before)
     assert changes.accept("p", group.group_id, "human").state == "accepted"
     assert changes.accept("p", group.group_id, "human").state == "accepted"
-    assert len(live.applied) == 1
-    live.human_edit("f1", (live.current.files[0].text or "") + "later\n")
+    assert len(receipts(live)) == 1
+    human_edit(live, "f1", (saved(live).files[0].text or "") + "later\n")
     with pytest.raises(OutdatedChange):
         changes.undo("p", group.group_id, "human")
-    assert "improved 10" in live.current.files[0].text
+    assert "improved 10" in saved(live).files[0].text
 
 
 def test_rename_and_dependent_edits_are_atomic(setup):
@@ -140,30 +147,39 @@ def test_rename_and_dependent_edits_are_atomic(setup):
     (output / "files/includes.tex").write_text("\\input{renamed.md}\n")
     groups = changes.collect("p", "t", snapshot, output)
     assert len(groups) == 1 and len(groups[0].changes) == 3
-    live.human_edit("f1", "human changed source\n")
+    human_edit(live, "f1", "human changed source\n")
     with pytest.raises(OutdatedChange):
         changes.accept("p", groups[0].group_id, "human")
-    assert live.current.files[0].path == "section.md"
-    assert not live.applied
+    assert saved(live).files[0].path == "section.md"
+    assert not receipts(live)
 
 
 def test_binary_delete_undo_retains_bytes(setup):
     snapshot, live, changes, output = setup
     body = b"\x89PNG\xff\x00"
     digest = hashlib.sha256(body).hexdigest()
-    binary = SavedPaperFile(file_id="b", path="fig.png", kind="binary", blob_sha256=digest)
-    snapshot.files.append(binary)
-    live.current = snapshot.model_copy(deep=True)
-    live.history[1] = snapshot.model_copy(deep=True)
-    live.blobs[digest] = body
+    binary = PaperFile(file_id="b", path="fig.png", kind="binary", blob_sha256=digest)
+    apply(
+        live,
+        [
+            PaperOp(
+                kind="create",
+                file_id=binary.file_id,
+                path=binary.path,
+                file_kind="binary",
+                data=body,
+            )
+        ],
+    )
+    snapshot = saved(live)
     (output / "moves.json").write_text('{"delete":["fig.png"]}')
     group = changes.collect("p", "t", snapshot, output)[0]
     changes.accept("p", group.group_id, "human")
-    live.blobs.clear()
+    # Undo uses retained bytes after the live file was deleted.
     changes.undo("p", group.group_id, "human")
     changes.undo("p", group.group_id, "human")
-    assert live.blobs[digest] == body
-    assert len(live.applied) == 2
+    assert live.blob(digest) == body
+    assert len(receipts(live)) == 2
 
 
 def test_direct_mode_admission_and_receipt_recovery(setup, monkeypatch):
@@ -181,7 +197,7 @@ def test_direct_mode_admission_and_receipt_recovery(setup, monkeypatch):
         changes.accept("p", group.group_id, "Coach, applied directly", directly=True).state
         == "applied"
     )
-    assert len(live.applied) == 1
+    assert len(receipts(live)) == 1
 
     def deny(_project):
         raise ValueError("admission closed")
@@ -197,15 +213,15 @@ def test_refresh_replaces_only_selected_groups(setup):
     (output / "files/section.md").write_text(original.replace("line 10\n", "coach\n"))
     (output / "files/new.md").write_text("independent\n")
     groups = changes.collect("p", "t", snapshot, output)
-    live.human_edit("f1", original.replace("line 10\n", "human\n"))
+    human_edit(live, "f1", original.replace("line 10\n", "human\n"))
     stale = changes.stale_group_ids("p", "t")
     assert len(stale) == 1
     assert changes.stale_file_ids("p", "t") == {"f1"}
     (output / "files/new.md").unlink()
     (output / "files/section.md").write_text(
-        live.current.files[0].text.replace("human\n", "refreshed\n")
+        saved(live).files[0].text.replace("human\n", "refreshed\n")
     )
-    refreshed = changes.collect("p", "t", live.snapshot("p"), output, replace_group_ids=stale)
+    refreshed = changes.collect("p", "t", saved(live), output, replace_group_ids=stale)
     assert len(refreshed) == 2
     assert {g.group_id for g in groups} - stale <= {g.group_id for g in refreshed}
 
@@ -213,14 +229,10 @@ def test_refresh_replaces_only_selected_groups(setup):
 def test_routes_enforce_project_scope_accept_and_undo(manifest, tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
-    from rcp.api.paper_changes import router
     from tests.helpers import create_named_app, signed_in_client
-    from tests.paper_fakes import wire_saved_paper
+    from tests.paper_helpers import wire_saved_paper
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    existing_routes = list(app.router.routes)
-    app.include_router(router)
-    app.router.routes[:] = app.router.routes[len(existing_routes) :] + existing_routes
     catalog = app.state.catalog
     project_id = app.state.default_project_id
     service = catalog.open(project_id)
@@ -228,7 +240,7 @@ def test_routes_enforce_project_scope_accept_and_undo(manifest, tmp_path, monkey
     output = tmp_path / "output"
     (output / "files").mkdir(parents=True)
     (output / "files/new.md").write_text("new file")
-    group = service.paper_changes.collect(project_id, "task", live.snapshot(project_id), output)[0]
+    group = service.paper_changes.collect(project_id, "task", saved(live, project_id), output)[0]
     base = f"/api/projects/{project_id}/paper/changes"
     from rcp.storage import AgentTaskRecord
 
@@ -275,9 +287,9 @@ def test_routes_enforce_project_scope_accept_and_undo(manifest, tmp_path, monkey
         for _ in range(2):
             response = client.post(f"{base}/{group.group_id}/accept", json={})
             assert response.status_code == 200, response.text
-        assert len(live.applied) == 1
+        assert len(receipts(live)) == 1
         assert client.post(f"{base}/{group.group_id}/undo", json={}).status_code == 200
-        assert len(live.applied) == 2
+        assert len(receipts(live)) == 2
         assert (
             client.post(
                 f"/api/projects/missing/paper/changes/{group.group_id}/accept", json={}
@@ -296,12 +308,12 @@ def test_undo_all_reverse_order_and_failed_apply_can_refresh(setup, monkeypatch)
     assert len(groups) == 2
     changes.accept_all("p", "t", "human")
     assert all(group.state == "undone" for group in changes.undo_all("p", "t", "human"))
-    assert live.current.files[0].text == before
+    assert saved(live).files[0].text == before
     (output / "files/section.md").write_text(before.replace("line 10\n", "third\n"))
-    group = changes.collect("p", "next", live.snapshot("p"), output)[0]
+    group = changes.collect("p", "next", saved(live), output)[0]
     apply = live.apply
 
-    def refused(*_args, **_kwargs):
+    async def refused(*_args, **_kwargs):
         raise OutdatedChange("atomic precondition refusal")
 
     monkeypatch.setattr(live, "apply", refused)
@@ -312,7 +324,7 @@ def test_undo_all_reverse_order_and_failed_apply_can_refresh(setup, monkeypatch)
     refreshed = changes.collect(
         "p",
         "refreshed-task",
-        live.snapshot("p"),
+        saved(live),
         output,
         replace_group_ids={group.group_id},
         replace_source_task_id="next",
@@ -324,24 +336,23 @@ def test_binary_replacement_and_new_pdf_use_hash_guards(setup):
     snapshot, live, changes, output = setup
     old, replacement = b"old figure", b"replacement figure"
     digest = hashlib.sha256(old).hexdigest()
-    snapshot.files.append(
-        SavedPaperFile(file_id="binary", path="figure.pdf", kind="binary", blob_sha256=digest)
+    apply(
+        live,
+        [PaperOp(kind="create", file_id="binary", path="figure.pdf", file_kind="binary", data=old)],
     )
-    live.current = snapshot.model_copy(deep=True)
-    live.history[1] = snapshot.model_copy(deep=True)
-    live.blobs[digest] = old
+    snapshot = saved(live)
     (output / "files/figure.pdf").write_bytes(replacement)
     (output / "files/new.pdf").write_bytes(b"%PDF ASCII content")
     groups = changes.collect("p", "binary-task", snapshot, output)
     assert {group.changes[0].kind for group in groups} == {"create", "binary"}
     assert all(group.changes[0].file_kind == "binary" for group in groups)
     changes.accept_all("p", "binary-task", "human")
-    assert live.blobs[hashlib.sha256(replacement).hexdigest()] == replacement
+    assert live.blob(hashlib.sha256(replacement).hexdigest()) == replacement
     changes.undo_all("p", "binary-task", "human")
     assert (
-        next(file for file in live.current.files if file.file_id == "binary").blob_sha256 == digest
+        next(file for file in saved(live).files if file.file_id == "binary").blob_sha256 == digest
     )
-    assert all(file.path != "new.pdf" for file in live.current.files)
+    assert all(file.path != "new.pdf" for file in saved(live).files)
 
 
 def test_old_writer_coach_dispatch_migrates_without_rewriting_history(tmp_path):
@@ -370,11 +381,12 @@ def test_old_writer_coach_dispatch_migrates_without_rewriting_history(tmp_path):
             "UPDATE graph_runs SET dispatch_authority_json=? WHERE operation_id=?",
             (json.dumps(legacy), "legacy-coach"),
         )
+        connection.execute(
+            "CREATE TABLE paper_apply_receipts (project_id TEXT, receipt_key TEXT, fingerprint TEXT, receipt TEXT)"
+        )
         for table in ("paper_change_receipts", "paper_changes", "paper_change_groups"):
             connection.execute(f"DROP TABLE {table}")
-        connection.execute(
-            "DELETE FROM storage_schema_migrations WHERE migration_name='paper_changes_v1'"
-        )
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version>=63")
     with pytest.raises(ValidationError):
         store.agent_task("legacy-coach")
     store.close()
@@ -398,19 +410,25 @@ def test_retained_binary_bases_are_subset_materialized_and_bounded(
     deletes = []
     for index, size in enumerate(sizes):
         body = bytes([index]) * size
-        digest = hashlib.sha256(body).hexdigest()
         path = f"figure-{index}.pdf"
-        snapshot.files.append(
-            SavedPaperFile(file_id=f"binary-{index}", path=path, kind="binary", blob_sha256=digest)
+        apply(
+            live,
+            [
+                PaperOp(
+                    kind="create",
+                    file_id=f"binary-{index}",
+                    path=path,
+                    file_kind="binary",
+                    data=body,
+                )
+            ],
         )
-        live.blobs[digest] = body
         deletes.append(path)
-    unrelated = SavedPaperFile(
+    unrelated = PaperFile(
         file_id="unrelated", path="unrelated.pdf", kind="binary", blob_sha256="unmaterialized"
     )
+    snapshot = saved(live)
     snapshot.files.append(unrelated)
-    live.current = snapshot.model_copy(deep=True)
-    live.history[1] = snapshot.model_copy(deep=True)
     (output / "moves.json").write_text(json.dumps({"delete": deletes}))
     monkeypatch.setattr("rcp.paper.changes.PAPER_CHANGES_MAX_FILE_BYTES", file_cap)
     monkeypatch.setattr("rcp.paper.changes.PAPER_CHANGES_MAX_TOTAL_BYTES", total_cap)
@@ -426,3 +444,119 @@ def test_retained_binary_bases_are_subset_materialized_and_bounded(
         changes.collect("p", "bounded", snapshot, output)
     assert set(materialized) == set(deletes)
     assert changes.groups("p", "bounded") == []
+
+
+def test_outstanding_card_keeps_base_past_retention_and_undo_restores_text_identity(
+    setup, monkeypatch
+):
+    from rcp import limits
+
+    snapshot, live, changes, output = setup
+    before = snapshot.files[0].text
+    (output / "files/section.md").write_text(before.replace("line 10\n", "coach\n"))
+    group = changes.collect("p", "t", snapshot, output)[0]
+    monkeypatch.setattr(limits, "PAPER_SAVED_REVISION_LIMIT", 1)
+    for index in range(3):
+        human_edit(live, "f1", before + f"later {index}\n")
+    assert live.run_sync(live.text_at("p", "f1", snapshot.revision)) == before
+    changes.accept("p", group.group_id, "human")
+    assert "coach\n" in saved(live).files[0].text
+    changes.undo("p", group.group_id, "human")
+    assert saved(live).files[0].text == before + "later 2\n"
+    (output / "files/section.md").unlink()
+    (output / "moves.json").write_text('{"delete":["section.md"]}')
+    from pycrdt import Doc, Text, create_update_message
+
+    cached = Doc({"text": Text()})
+    cached.apply_update(live.run_sync(live.connect("p", "f1")).doc.get_update())
+    deletion = changes.collect("p", "delete", saved(live), output)[0]
+    changes.accept("p", deletion.group_id, "human")
+    changes.undo("p", deletion.group_id, "human")
+    assert saved(live).files[0].file_id == "f1"
+    assert saved(live).files[0].text == before + "later 2\n"
+    restored = live.run_sync(live.connect("p", "f1"))
+    cached.apply_update(restored.doc.get_update())
+    assert str(cached["text"]) == before + "later 2\n"
+    live.run_sync(live.receive("p", "f1", create_update_message(cached.get_update()), "human"))
+    assert saved(live).files[0].text == before + "later 2\n"
+
+
+def test_proposed_endpoint_returns_full_text_without_cross_project_access(
+    manifest, tmp_path, monkeypatch
+):
+    from tests.helpers import create_named_app, signed_in_client
+    from tests.paper_helpers import wire_saved_paper
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    live = wire_saved_paper(service)
+    project = service.paper.project_id
+    output = tmp_path / "changes"
+    (output / "files").mkdir(parents=True)
+    proposed = "<script>untrusted</script>\n" * 100
+    (output / "files/paper.md").write_text(proposed)
+    group = service.paper_changes.collect(project, "task", saved(live, project), output)[0]
+    card = group.changes[0]
+    assert card.kind == "rewrite"
+    with signed_in_client(app) as client:
+        response = client.get(f"/api/projects/{project}/paper/changes/{card.change_id}/proposed")
+        assert response.status_code == 200
+        assert response.text == proposed
+        assert response.headers["content-type"].startswith("text/plain")
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert response.headers["content-disposition"] == "attachment"
+        assert (
+            client.get(f"/api/projects/missing/paper/changes/{card.change_id}/proposed").status_code
+            == 404
+        )
+        from fastapi import HTTPException
+
+        def revoked(*_args):
+            raise HTTPException(status_code=403, detail="Membership revoked")
+
+        monkeypatch.setattr("rcp.api.paper_changes.require_project_membership", revoked)
+        assert (
+            client.post(
+                f"/api/projects/{project}/paper/changes/{group.group_id}/accept", json={}
+            ).status_code
+            == 403
+        )
+        assert saved(live, project).files[0].text == "Saved paper text.\n"
+
+
+def test_active_coach_base_is_retained_before_collection(setup, monkeypatch):
+    from rcp import limits
+    from rcp.storage import AgentTaskRecord
+
+    snapshot, live, changes, output = setup
+    store = live.store
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="active",
+            project_id="p",
+            kind="paper_coach",
+            status="running",
+            request={"message": "Review"},
+            created_at=store.now(),
+            updated_at=store.now(),
+            status_message="running",
+        )
+    )
+    store.record_agent_task_receipt("active", "paper_turn_base", {"revision": snapshot.revision})
+    monkeypatch.setattr(limits, "PAPER_SAVED_REVISION_LIMIT", 1)
+    human_edit(live, "f1", snapshot.files[0].text + "later\n")
+    assert live.run_sync(live.text_at("p", "f1", snapshot.revision)) == snapshot.files[0].text
+    (output / "files/section.md").write_text(snapshot.files[0].text.replace("line 10\n", "coach\n"))
+    assert changes.collect("p", "active", snapshot, output)[0].state == "pending"
+
+
+def test_new_directory_collision_refuses_without_leaving_a_prepared_receipt(setup):
+    snapshot, live, changes, output = setup
+    (output / "files/parts").mkdir()
+    (output / "files/parts/new.md").write_text("proposal")
+    group = changes.collect("p", "t", snapshot, output)[0]
+    apply(live, [PaperOp(kind="create", path="parts", text="human")])
+    with pytest.raises(OutdatedChange):
+        changes.accept("p", group.group_id, "human")
+    assert changes._receipt("p", f"paper:{group.group_id}:accept") is None
+    assert changes.groups("p", "t")[0].state == "outdated"

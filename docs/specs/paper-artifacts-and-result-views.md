@@ -79,7 +79,18 @@ By default each card waits for a member to accept or reject it. In a chat set to
 apply directly, every fresh card is applied when the turn ends, and the cards
 become a log. Either way, applying re-checks the original text, happens once per
 card, and records a receipt that a guarded Undo reverses while the text is still
-what the coach wrote.
+what the coach wrote. The same durable receipt holds the prepared operation,
+its inverse, and the core's committed result; replay returns that result before
+checking preconditions again. Outstanding cards and active coach turns keep their
+base revisions available even beyond the ordinary snapshot retention window.
+Delete receipts also retain the text document state so Undo restores its CRDT
+identity; reconnecting a cached editor cannot duplicate the restored text.
+
+The coach request's `paper_apply_directly` boolean is normalized into its saved
+`mode`. Rewrite Compare fetches the full proposed text from
+`GET /api/projects/{project_id}/paper/changes/{change_id}/proposed`; this
+membership-protected response is plain text, served as an attachment with
+`nosniff`. From RCP can attach the whole saved paper or any file by stable id.
 
 The coach cannot write the paper directly, emit a Patch, approve Proposals, or
 promote paper text to graph state. Prior transcripts and skills cannot widen its

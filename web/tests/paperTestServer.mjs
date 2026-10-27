@@ -101,6 +101,7 @@ export const paperTestCard = {
 export function createPaperFixture({
   room = new PaperTestRoom(),
   cards = [],
+  proposedTexts = {},
   spaceId = "space",
 } = {}) {
   const tree = structuredClone(paperTestTree);
@@ -156,6 +157,9 @@ export function createPaperFixture({
             })),
           },
         };
+      const proposed = path.match(/\/changes\/([^/]+)\/proposed$/);
+      if (proposed && proposed[1] in proposedTexts)
+        return { body: proposedTexts[proposed[1]], contentType: "text/plain" };
       const decision = path.match(/\/changes\/([^/]+)\/(accept|reject|undo|refresh)$/);
       if (decision) {
         for (const change of cards.filter((item) => item.group_id === decision[1])) {

@@ -114,7 +114,7 @@ class _CodexAppServerTurn(ProviderTurn):
         elif request.capability == "paper_suggest":
             if request.write_scope is not None:
                 raise ValueError("paper_suggest cannot carry a project write scope")
-            command.extend(["--disable", "shell_tool"])
+            command.extend(["--enable", "shell_tool"])
             command.extend(
                 [
                     "--config",
@@ -359,7 +359,7 @@ class _CodexAppServerTurn(ProviderTurn):
 
     def _thread_params(self, config: dict[str, object]) -> dict[str, object]:
         if self._request.capability == "paper_suggest":
-            config = {**config, "features": {"shell_tool": False}}
+            config = {**config, "features": {"shell_tool": True}}
         params: dict[str, object] = {
             "approvalPolicy": "never",
             "config": config,

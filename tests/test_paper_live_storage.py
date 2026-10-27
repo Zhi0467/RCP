@@ -7,6 +7,8 @@ import pytest
 from rcp.storage import AppStore
 
 PAPER_TABLES = (
+    "paper_changes",
+    "paper_change_groups",
     "paper_files",
     "paper_updates",
     "paper_doc_states",
@@ -15,7 +17,7 @@ PAPER_TABLES = (
     "paper_publication",
     "paper_versions",
     "paper_version_texts",
-    "paper_apply_receipts",
+    "paper_change_receipts",
     "paper_saved_snapshots",
 )
 
@@ -33,7 +35,7 @@ def test_paper_schema_fresh_and_upgrade_preserve_legacy_rows(tmp_path, upgrade):
         if upgrade:
             for table in PAPER_TABLES:
                 connection.execute(f'DROP TABLE "{table}"')
-            connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=62")
+            connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version>=62")
     store.close()
 
     for _ in range(2):
@@ -79,3 +81,52 @@ def test_paper_live_path_is_unique_but_deleted_paths_can_be_reused(tmp_path):
         )
         assert connection.execute("SELECT COUNT(*) FROM paper_files").fetchone()[0] == 2
     store.close()
+
+
+def test_migration_64_merges_prepared_and_committed_receipts(tmp_path):
+    import json
+
+    from rcp.storage.base import _migrate_paper_changes
+
+    path = tmp_path / "old63.sqlite"
+    store = AppStore(path)
+    with store.connection() as conn:
+        for table in ("paper_change_receipts", "paper_changes", "paper_change_groups"):
+            conn.execute(f"DROP TABLE {table}")
+        _migrate_paper_changes(conn)
+        conn.execute(
+            "CREATE TABLE paper_apply_receipts (project_id TEXT, receipt_key TEXT, fingerprint TEXT, receipt TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO paper_change_groups VALUES ('p','g','t',1,'review','pending',NULL,NULL,'now')"
+        )
+        conn.execute(
+            "INSERT INTO paper_change_receipts VALUES ('p','key','g','accept',?, 'now')",
+            (json.dumps({"inverse": [{"kind": "delete", "file_id": "f"}]}),),
+        )
+        receipt = {"revision": 2, "receipt_key": "key", "file_ids": ["f"]}
+        conn.execute(
+            "INSERT INTO paper_apply_receipts VALUES ('p','key','fingerprint',?)",
+            (json.dumps(receipt),),
+        )
+        conn.execute(
+            "INSERT INTO paper_apply_receipts VALUES ('p','generic','other',?)",
+            (json.dumps({"revision": 1}),),
+        )
+        conn.execute("DELETE FROM storage_schema_migrations WHERE migration_version=64")
+    store.close()
+    upgraded = AppStore(path)
+    with upgraded.connection() as conn:
+        rows = {
+            row["receipt_key"]: row for row in conn.execute("SELECT * FROM paper_change_receipts")
+        }
+        assert len(rows) == 2
+        payload = json.loads(rows["key"]["payload"])
+        assert payload["inverse"] == [{"kind": "delete", "file_id": "f"}]
+        assert payload["receipt"] == receipt
+        assert payload["fingerprint"] == "fingerprint"
+        assert rows["generic"]["group_id"] is None
+        assert not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='paper_apply_receipts'"
+        ).fetchone()
+    upgraded.close()

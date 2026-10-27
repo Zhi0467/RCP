@@ -15,11 +15,11 @@ import tempfile
 import time
 import uuid
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from pycrdt import Doc, Text, create_update_message, handle_sync_message, merge_updates
 
@@ -29,6 +29,7 @@ from rcp.paper.models import (
     PaperFile,
     PaperLimit,
     PaperOp,
+    PaperPrecondition,
     PaperSnapshot,
     PaperTree,
     PaperTreeFile,
@@ -48,6 +49,7 @@ from rcp.storage import AppStore
 from rcp.transport import StateUnavailable, StateWorkspace
 
 _LOG = logging.getLogger(__name__)
+_Result = TypeVar("_Result")
 
 
 def _owned(method):
@@ -106,6 +108,25 @@ class Room:
     awareness: dict[int, tuple[int, str]] = field(default_factory=dict)
 
 
+def _stored_room(conn, key: tuple[str, str]) -> Room:
+    state = conn.execute(
+        "SELECT state,through_seq FROM paper_doc_states WHERE project_id=? AND file_id=?",
+        key,
+    ).fetchone()
+    encoded = state[0] if state else b"\x00\x00"
+    seq = state[1] if state else 0
+    for row in conn.execute(
+        'SELECT seq,"update" FROM paper_updates WHERE project_id=? '
+        "AND file_id=? AND seq>? ORDER BY seq",
+        (*key, seq),
+    ):
+        encoded = merge_updates(encoded, row[1])
+        seq = row[0]
+    if state is None and seq == 0:
+        raise ValueError("Paper document state is missing")
+    return Room(_doc(encoded), seq, encoded)
+
+
 class PaperLive:
     def __init__(self, store: AppStore, workspace_for: Callable[[str], StateWorkspace]):
         self.store = store
@@ -121,6 +142,17 @@ class PaperLive:
         self._publishers: dict[str, asyncio.Task] = {}
         self._compactions: set[asyncio.Task] = set()
         self._rates: dict[str, deque[float]] = {}
+
+    def run_sync(self, action: Coroutine[Any, Any, _Result]) -> _Result:
+        """Marshal a control worker to this room owner without blocking its event loop."""
+        try:
+            current = asyncio.get_running_loop()
+        except RuntimeError:
+            current = None
+        if self.loop is None or not self.loop.is_running() or current is self.loop:
+            action.close()
+            raise RuntimeError("Synchronous Paper access requires a worker and a running owner")
+        return asyncio.run_coroutine_threadsafe(action, self.loop).result()
 
     def _lock(self, project: str) -> asyncio.Lock:
         return self._locks.setdefault(project, asyncio.Lock())
@@ -322,20 +354,7 @@ class PaperLive:
             ).fetchone()
             if file is None or file[0] != "text":
                 raise KeyError(file_id)
-            state = conn.execute(
-                "SELECT state,through_seq FROM paper_doc_states WHERE project_id=? AND file_id=?",
-                key,
-            ).fetchone()
-            encoded = state[0] if state else b"\x00\x00"
-            seq = state[1] if state else 0
-            for row in conn.execute(
-                'SELECT seq,"update" FROM paper_updates WHERE project_id=? '
-                "AND file_id=? AND seq>? ORDER BY seq",
-                (*key, seq),
-            ):
-                encoded = merge_updates(encoded, row[1])
-                seq = row[0]
-        room = Room(_doc(encoded), seq, encoded)
+            room = _stored_room(conn, key)
         self.rooms[key] = room
         return room
 
@@ -438,10 +457,10 @@ class PaperLive:
             raise PaperLimit("Paper file limit reached")
         paths = sorted(paper_path(file.path) for file in files)
         if len(paths) != len(set(paths)):
-            raise PaperConflict("Paper path is occupied")
+            raise PaperPrecondition("Paper path is occupied")
         for path in paths:
             if any(path.startswith(other + "/") for other in paths if other != path):
-                raise PaperConflict("Paper file blocks a directory")
+                raise PaperPrecondition("Paper file blocks a directory")
         size = 0
         for file in files:
             if file.kind == "text":
@@ -468,6 +487,43 @@ class PaperLive:
             raise PaperLimit("Paper project update rate exceeded")
         rate.append(now)
 
+    @staticmethod
+    def _check_snapshot(files: dict[str, PaperFile], checks: list[dict]) -> None:
+        for check in checks:
+            if set(check) - {
+                "file_id",
+                "path",
+                "kind",
+                "text",
+                "start",
+                "end",
+                "blob_sha256",
+                "path_free",
+                "file_id_absent",
+            }:
+                raise ValueError("Unknown Paper snapshot precondition")
+            if "path_free" in check and any(f.path == check["path_free"] for f in files.values()):
+                raise PaperPrecondition("Paper path is occupied")
+            if check.get("file_id_absent") in files:
+                raise PaperPrecondition("Paper identity already exists")
+            if "file_id" not in check:
+                continue
+            file = files.get(check["file_id"])
+            if file is None:
+                raise PaperPrecondition("Paper file no longer exists")
+            for key in ("path", "kind", "blob_sha256"):
+                if key in check and getattr(file, key) != check[key]:
+                    raise PaperPrecondition(f"Paper {key} changed")
+            if "text" in check:
+                actual = file.text
+                if "start" in check:
+                    start, end = check["start"], check["end"]
+                    if actual is None or not 0 <= start <= end <= len(actual):
+                        raise PaperPrecondition("Paper region is invalid")
+                    actual = actual[start:end]
+                if actual != check["text"]:
+                    raise PaperPrecondition("Paper text changed")
+
     @_owned
     async def apply(
         self, project_id: str, ops: list[PaperOp], actor: str, expect: dict | None = None
@@ -479,7 +535,7 @@ class PaperLive:
             if not ops:
                 raise ValueError("Paper operations cannot be empty")
             expect = expect or {}
-            if set(expect) - {"receipt_key", "ops"}:
+            if set(expect) - {"receipt_key", "ops", "revision", "checks"}:
                 raise ValueError("Unknown Paper precondition")
             key = expect.get("receipt_key")
             if key is not None and (not isinstance(key, str) or not key or len(key) > 256):
@@ -498,19 +554,26 @@ class PaperLive:
                     sort_keys=True,
                 ).encode()
             )
+            payload = {}
             if key:
                 with self.store.connection() as conn:
                     row = conn.execute(
-                        "SELECT fingerprint,receipt FROM paper_apply_receipts "
+                        "SELECT payload FROM paper_change_receipts "
                         "WHERE project_id=? AND receipt_key=?",
                         (project_id, key),
                     ).fetchone()
-                if row:
-                    if row[0] != fingerprint:
+                payload = json.loads(row[0]) if row else {}
+                if "receipt" in payload:
+                    if payload["fingerprint"] != fingerprint:
                         raise PaperConflict("Receipt key was used for another operation")
-                    return Receipt.model_validate_json(row[1])
+                    return Receipt.model_validate(payload["receipt"])
             snapshot = self._snapshot(project_id)
             files = {file.file_id: file.model_copy() for file in snapshot.files}
+            if "revision" in expect and expect["revision"] != snapshot.revision:
+                raise PaperPrecondition("Paper revision changed")
+            checks = expect.get("checks")
+            if checks is not None:
+                self._check_snapshot(files, checks)
             docs: dict[str, Doc] = {}
             bases: dict[str, Room] = {}
             blobs: dict[str, bytes] = {}
@@ -530,33 +593,44 @@ class PaperLive:
                 file_id = op.file_id or str(uuid.uuid4())
                 file = files.get(file_id)
                 if condition.get("file_id", file_id) != file_id:
-                    raise PaperConflict("Paper identity changed")
+                    raise PaperPrecondition("Paper identity changed")
                 if condition.get("path_free") and any(
                     f.path == condition["path_free"] for f in files.values()
                 ):
-                    raise PaperConflict("Paper path is occupied")
+                    raise PaperPrecondition("Paper path is occupied")
                 if (
                     op.kind != "replace"
                     and "text" in condition
                     and (file is None or file.text != condition["text"])
                 ):
-                    raise PaperConflict("Paper text changed")
+                    raise PaperPrecondition("Paper text changed")
                 if "path" in condition and (file is None or file.path != condition["path"]):
-                    raise PaperConflict("Paper path changed")
+                    raise PaperPrecondition("Paper path changed")
                 if "blob_sha256" in condition and (
                     file is None or file.blob_sha256 != condition["blob_sha256"]
                 ):
-                    raise PaperConflict("Paper binary changed")
+                    raise PaperPrecondition("Paper binary changed")
                 if op.kind == "create":
                     if file is not None:
-                        raise PaperConflict("Paper file already exists")
-                    # Never reuse a tombstoned identity.
+                        raise PaperPrecondition("Paper file already exists")
+                    # A guarded Undo may restore a tombstone, preserving its stable identity.
                     with self.store.connection() as conn:
-                        if conn.execute(
-                            "SELECT 1 FROM paper_files WHERE project_id=? AND file_id=?",
+                        tombstone = conn.execute(
+                            "SELECT kind FROM paper_files WHERE project_id=? AND file_id=?",
                             (project_id, file_id),
-                        ).fetchone():
-                            raise PaperConflict("Paper identity already exists")
+                        ).fetchone()
+                        if tombstone and (
+                            tombstone[0] != op.file_kind
+                            or not any(
+                                check.get("file_id_absent") == file_id for check in checks or []
+                            )
+                        ):
+                            raise PaperPrecondition("Paper identity already exists")
+                        restored = (
+                            _stored_room(conn, (project_id, file_id))
+                            if tombstone and tombstone[0] == "text"
+                            else None
+                        )
                     file = PaperFile(
                         file_id=file_id,
                         path=paper_path(op.path or ""),
@@ -565,18 +639,35 @@ class PaperLive:
                     )
                     files[file_id] = file
                     if file.kind == "text":
-                        docs[file_id] = _doc(text=op.text)
+                        if restored is not None:
+                            if str(restored.doc["text"]) != op.text:
+                                raise PaperPrecondition("Retained Paper document differs from Undo")
+                            bases[file_id] = restored
+                            docs[file_id] = _doc(restored.encoded)
+                        else:
+                            docs[file_id] = _doc(text=op.text)
                 elif file is None:
-                    raise PaperConflict("Paper file no longer exists")
+                    raise PaperPrecondition("Paper file no longer exists")
                 if op.kind == "replace":
                     if file.kind != "text":
                         raise ValueError("Binary files cannot receive text edits")
                     current = file.text or ""
                     start, end = op.start, op.end
                     if start is None or end is None or not 0 <= start <= end <= len(current):
-                        raise PaperConflict("Paper region is invalid")
-                    if "text" not in condition or current[start:end] != condition["text"]:
-                        raise PaperConflict("Paper region changed")
+                        raise PaperPrecondition("Paper region is invalid")
+                    if checks is None:
+                        if "text" not in condition or current[start:end] != condition["text"]:
+                            raise PaperPrecondition("Paper region changed")
+                    elif not any(
+                        check.get("file_id") == file_id
+                        and "text" in check
+                        and (
+                            "start" not in check
+                            or (check["start"] == start and check.get("end") == end)
+                        )
+                        for check in checks
+                    ):
+                        raise ValueError("Paper text replacement requires a text precondition")
                     if file_id not in docs:
                         bases[file_id] = self._room(project_id, file_id)
                         docs[file_id] = _doc(bases[file_id].encoded)
@@ -649,9 +740,11 @@ class PaperLive:
                     conn, project_id, revision, list(files.values()), actor, "apply", now
                 )
                 if key:
+                    payload.update(fingerprint=fingerprint, receipt=receipt.model_dump())
                     conn.execute(
-                        "INSERT INTO paper_apply_receipts VALUES(?,?,?,?)",
-                        (project_id, key, fingerprint, receipt.model_dump_json()),
+                        "INSERT INTO paper_change_receipts VALUES(?,?,NULL,'apply',?,?) "
+                        "ON CONFLICT(project_id,receipt_key) DO UPDATE SET payload=excluded.payload",
+                        (project_id, key, json.dumps(payload), now),
                     )
             for file_id, (doc, seq, update) in updates.items():
                 room = self.rooms.get((project_id, file_id))

@@ -11,6 +11,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -96,9 +97,9 @@ from rcp.limits import (
     REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 )
 from rcp.operation_ids import canonical_operation_uuid
-from rcp.paper import PaperService
+from rcp.paper import PaperLive, PaperService
+from rcp.paper.changes import PaperChanges
 from rcp.paper.projection import publication_badge
-from rcp.paper.coach_seam import get_paper_live
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import (
     PROVIDER_IDS,
@@ -989,6 +990,21 @@ class CoachRequest(BaseModel):
     resolved_provider_skills: list[ProviderSkillReference] = Field(default_factory=list)
     resolved_skill_packages: list[SkillReference] | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def apply_directly_mode(cls, value: object) -> object:
+        if not isinstance(value, dict) or "paper_apply_directly" not in value:
+            return value
+        direct = value["paper_apply_directly"]
+        if not isinstance(direct, bool):
+            raise ValueError("paper_apply_directly must be a boolean")
+        mode = "apply_directly" if direct else "review"
+        if "mode" in value and value["mode"] != mode:
+            raise ValueError("Paper mode and paper_apply_directly disagree")
+        return {key: item for key, item in value.items() if key != "paper_apply_directly"} | {
+            "mode": mode
+        }
+
 
 def resolve_dispatch_authority(
     kind: str,
@@ -1162,9 +1178,14 @@ class ProjectService:
         task_continuation_session: Callable[[str, str], str | None] | None = None,
         chat_graph_target: Callable[[str, str], GraphTargetRef | None] | None = None,
         project_service_resolver: Callable[[str], ProjectService] | None = None,
+        paper_live: PaperLive | None = None,
+        paper_admission: Callable[[str], AbstractContextManager[object]] | None = None,
     ) -> None:
         self.history = history
         self.paper = paper
+        self.paper_live = paper_live or PaperLive(paper.store, lambda _project: paper.workspace)
+        self._paper_admission = paper_admission
+        self.paper_changes = PaperChanges(paper.store, self.paper_live, self._admit_paper_changes)
         self.launcher = launcher or AgentLauncher()
         self.provider_skills = provider_skills
         self._data_dir = data_dir
@@ -1200,6 +1221,12 @@ class ProjectService:
         self._indexes: dict[str, ConversationIndex] = {}
         self._chat_summary_lock = threading.Lock()
         self._chat_summary_cache: dict[Path, _ChatSummaryCacheEntry] = {}
+
+    @contextmanager
+    def _admit_paper_changes(self, project_id: str) -> Iterator[None]:
+        with self._paper_admission(project_id) if self._paper_admission else nullcontext():
+            self.paper.store.require_project_accepts_new_work(project_id)
+            yield
 
     @property
     def history_engine(self) -> HistoryEngine:
@@ -1262,6 +1289,8 @@ class ProjectService:
             task_continuation_session=self._task_continuation_session,
             chat_graph_target=self._chat_graph_target,
             project_service_resolver=self._project_service_resolver,
+            paper_live=self.paper_live,
+            paper_admission=self._paper_admission,
         )
 
     def resolve_project_service(self, project_id: str) -> ProjectService:
@@ -2900,7 +2929,7 @@ class ProjectService:
         return pointers, read_dirs
 
     def pointer_hashes(self) -> tuple[str, int, str]:
-        snapshot = get_paper_live(self).snapshot(self.paper.project_id)
+        snapshot = self.paper_live.run_sync(self.paper_live.snapshot(self.paper.project_id))
         ordered = snapshot.model_copy(
             update={"files": sorted(snapshot.files, key=lambda f: f.file_id)}
         )

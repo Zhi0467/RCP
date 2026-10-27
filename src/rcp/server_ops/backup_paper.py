@@ -296,8 +296,33 @@ def restore_paper_section(
     """Insert exact durable state into the caller's transaction; never publish it."""
     section = PaperSection.model_validate(section.model_dump())
     project_id = project_id or section.project_id
+    tables = dict(section.tables)
+    legacy_receipts = tables.pop("paper_apply_receipts", ())
+    if legacy_receipts:
+        receipts = {
+            str(row["receipt_key"]): dict(row) for row in tables.get("paper_change_receipts", ())
+        }
+        for legacy in legacy_receipts:
+            key = str(legacy["receipt_key"])
+            row = receipts.setdefault(
+                key,
+                {
+                    "project_id": project_id,
+                    "receipt_key": key,
+                    "group_id": None,
+                    "action": "apply",
+                    "payload": "{}",
+                    "created_at": "",
+                },
+            )
+            payload = json.loads(str(row["payload"]))
+            payload.update(
+                fingerprint=legacy["fingerprint"], receipt=json.loads(str(legacy["receipt"]))
+            )
+            row["payload"] = json.dumps(payload)
+        tables["paper_change_receipts"] = tuple(receipts.values())
     for table in (*PAPER_SHARED_TABLES, *PAPER_PROJECT_TABLES):
-        for archived in section.tables.get(table, ()):
+        for archived in tables.get(table, ()):
             row = dict(archived)
             if table in PAPER_PROJECT_TABLES:
                 row["project_id"] = project_id
@@ -335,7 +360,7 @@ def verify_paper_section_records(connection: sqlite3.Connection, section: PaperS
                 raise ValueError("paper section differs from archived SQLite content")
 
 
-# Migration 62 uses identical CREATE statements for fresh and upgraded databases.
+# Paper migrations use identical CREATE statements for fresh and upgraded databases.
 # This exact allowlist is independent of the schema being validated.
 PAPER_RESTORE_SCHEMA_VARIANTS = (
     (
@@ -481,6 +506,77 @@ PAPER_RESTORE_SCHEMA_VARIANTS = (
             "                PRIMARY KEY(project_id, version_id)\n"
             "            )",
         ),
+    ),
+)
+
+
+# Migration 63 adds durable coach cards and prepared mutation receipts.
+_PAPER_CHANGES_SCHEMA = (
+    (
+        "index",
+        "paper_change_groups_task",
+        "paper_change_groups",
+        "CREATE INDEX paper_change_groups_task\n"
+        "            ON paper_change_groups(project_id, task_id, created_at)",
+    ),
+    (
+        "table",
+        "paper_change_groups",
+        "paper_change_groups",
+        "CREATE TABLE paper_change_groups (\n"
+        "            project_id TEXT NOT NULL, group_id TEXT NOT NULL, task_id TEXT NOT NULL,\n"
+        "            base_revision INTEGER NOT NULL, mode TEXT NOT NULL, state TEXT NOT NULL,\n"
+        "            decided_by TEXT, decided_at TEXT, created_at TEXT NOT NULL,\n"
+        "            PRIMARY KEY (project_id, group_id))",
+    ),
+    (
+        "table",
+        "paper_change_receipts",
+        "paper_change_receipts",
+        "CREATE TABLE paper_change_receipts (\n"
+        "            project_id TEXT NOT NULL, receipt_key TEXT NOT NULL, group_id TEXT NOT NULL,\n"
+        "            action TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL,\n"
+        "            PRIMARY KEY (project_id, receipt_key),\n"
+        "            FOREIGN KEY (project_id, group_id)\n"
+        "                REFERENCES paper_change_groups(project_id, group_id) ON DELETE CASCADE)",
+    ),
+    (
+        "table",
+        "paper_changes",
+        "paper_changes",
+        "CREATE TABLE paper_changes (\n"
+        "            project_id TEXT NOT NULL, change_id TEXT NOT NULL, group_id TEXT NOT NULL,\n"
+        "            payload TEXT NOT NULL, PRIMARY KEY (project_id, change_id),\n"
+        "            FOREIGN KEY (project_id, group_id)\n"
+        "                REFERENCES paper_change_groups(project_id, group_id) ON DELETE CASCADE)",
+    ),
+)
+PAPER_RESTORE_SCHEMA_VARIANTS += (
+    tuple(sorted((*PAPER_RESTORE_SCHEMA_VARIANTS[0], *_PAPER_CHANGES_SCHEMA))),
+)
+# Migration 64 unifies live results and prepared coach receipts in one table.
+PAPER_RESTORE_SCHEMA_VARIANTS += (
+    tuple(
+        sorted(
+            (
+                *(
+                    row
+                    for row in PAPER_RESTORE_SCHEMA_VARIANTS[1]
+                    if row[2] not in {"paper_apply_receipts", "paper_change_receipts"}
+                ),
+                (
+                    "table",
+                    "paper_change_receipts",
+                    "paper_change_receipts",
+                    "CREATE TABLE paper_change_receipts (\n"
+                    "        project_id TEXT NOT NULL, receipt_key TEXT NOT NULL, group_id TEXT,\n"
+                    "        action TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL,\n"
+                    "        PRIMARY KEY (project_id, receipt_key),\n"
+                    "        FOREIGN KEY (project_id, group_id)\n"
+                    "            REFERENCES paper_change_groups(project_id, group_id) ON DELETE CASCADE)",
+                ),
+            )
+        )
     ),
 )
 

@@ -24,7 +24,8 @@ from rcp.limits import (
     PAPER_CHANGES_MAX_TOTAL_BYTES,
     PAPER_CHANGES_PREVIEW_LINES,
 )
-from rcp.paper.coach_seam import PaperLive, SavedPaperFile, SavedPaperSnapshot
+from rcp.paper import PaperFile, PaperLive, PaperOp, PaperSnapshot
+from rcp.paper.models import PaperPrecondition
 from rcp.storage import AppStore
 
 
@@ -170,7 +171,7 @@ def _read_output(root: Path) -> dict[str, bytes]:
 
 
 def validate_output(
-    root: Path, snapshot: SavedPaperSnapshot
+    root: Path, snapshot: PaperSnapshot
 ) -> tuple[dict[str, bytes], list[tuple[str, str]], list[str]]:
     output = _read_output(root)
     unknown = [name for name in output if name != "moves.json" and not name.startswith("files/")]
@@ -349,7 +350,7 @@ def _sha(body: bytes) -> str:
 
 
 def build_changes(
-    task_id: str, snapshot: SavedPaperSnapshot, root: Path, live: PaperLive
+    task_id: str, snapshot: PaperSnapshot, root: Path, live: PaperLive
 ) -> list[list[Change]]:
     files, renames, deletes = validate_output(root, snapshot)
     originals = {file.path: file for file in snapshot.files}
@@ -363,7 +364,7 @@ def build_changes(
     if binary_files:
         with tempfile.TemporaryDirectory(prefix="rcp-paper-base-") as temp:
             live.materialize(
-                SavedPaperSnapshot(revision=snapshot.revision, files=binary_files),
+                snapshot.model_copy(update={"files": binary_files}),
                 Path(temp) / "files",
             )
             try:
@@ -498,10 +499,8 @@ class PaperChanges:
         self.live = live
         self.admission = admission
 
-    def _snapshot(self, project_id: str) -> SavedPaperSnapshot:
-        return SavedPaperSnapshot.model_validate(
-            self.live.snapshot(project_id), from_attributes=True
-        )
+    def _snapshot(self, project_id: str) -> PaperSnapshot:
+        return self.live.run_sync(self.live.snapshot(project_id))
 
     def _load(self, project_id: str, group_id: str) -> ChangeGroup:
         with self.store.connection() as connection:
@@ -542,7 +541,7 @@ class PaperChanges:
         self,
         project_id: str,
         task_id: str,
-        snapshot: SavedPaperSnapshot,
+        snapshot: PaperSnapshot,
         changes_dir: Path,
         *,
         mode: Literal["review", "apply_directly"] = "review",
@@ -635,7 +634,7 @@ class PaperChanges:
         return self.affected_file_ids(project_id, self.stale_group_ids(project_id, task_id))
 
     def _prepare(
-        self, project_id: str, group: ChangeGroup, current: SavedPaperSnapshot
+        self, project_id: str, group: ChangeGroup, current: PaperSnapshot
     ) -> tuple[
         list[dict[str, object]],
         list[dict[str, object]],
@@ -646,8 +645,8 @@ class PaperChanges:
         paths = {file.path for file in current.files}
         checks: list[dict[str, object]] = []
         ops: list[dict[str, object]] = []
-        original: dict[str, SavedPaperFile | None] = {}
-        resulting: dict[str, SavedPaperFile] = {}
+        original: dict[str, PaperFile | None] = {}
+        resulting: dict[str, PaperFile] = {}
         retained: dict[str, str | None] = {}
         # Edits are applied from right to left, preserving offsets in CURRENT text.
         ordered = sorted(
@@ -671,7 +670,7 @@ class PaperChanges:
                     }
                 )
                 original[change.file_id] = None
-                resulting[change.file_id] = SavedPaperFile(
+                resulting[change.file_id] = PaperFile(
                     file_id=change.file_id,
                     path=change.path,
                     kind=change.file_kind,
@@ -685,7 +684,9 @@ class PaperChanges:
             resulting.setdefault(file.file_id, file.model_copy(deep=True))
             checks.append({"file_id": file.file_id, "path": file.path, "kind": file.kind})
             if change.kind in {"edit", "rewrite"}:
-                base = self.live.text_at(project_id, file.file_id, change.base_revision)
+                base = self.live.run_sync(
+                    self.live.text_at(project_id, file.file_id, change.base_revision)
+                )
                 start, end = map_range(base, file.text or "", change.start, change.end)
                 if base[change.start : change.end] != change.before:
                     raise OutdatedChange("Stored paper anchor does not match its base")
@@ -694,7 +695,7 @@ class PaperChanges:
                 )
                 ops.append(
                     {
-                        "kind": "text",
+                        "kind": "replace",
                         "file_id": file.file_id,
                         "start": start,
                         "end": end,
@@ -784,7 +785,7 @@ class PaperChanges:
             if old.kind == "text" and old.text != new.text:
                 inverse.append(
                     {
-                        "kind": "text",
+                        "kind": "replace",
                         "file_id": file_id,
                         "start": 0,
                         "end": len(new.text or ""),
@@ -801,6 +802,43 @@ class PaperChanges:
                     }
                 )
         return ops, checks, inverse, guards
+
+    def _apply(self, project_id: str, payload: dict[str, object]) -> None:
+        ops = []
+        for item in cast(list[dict[str, object]], payload["ops"]):
+            data = dict(item)
+            encoded = data.pop("bytes_base64", None)
+            if encoded is not None:
+                data["data"] = base64.b64decode(str(encoded), validate=True)
+            data["text"] = data.get("text") or ""
+            # Prepared receipts from the separate coach slice used this spelling.
+            if data["kind"] == "text":
+                data["kind"] = "replace"
+            ops.append(PaperOp.model_validate(data))
+        try:
+            self.live.run_sync(
+                self.live.apply(
+                    project_id,
+                    ops,
+                    actor=str(payload["actor"]),
+                    expect=cast(dict[str, object], payload["expect"]),
+                )
+            )
+        except PaperPrecondition as exc:
+            raise OutdatedChange(str(exc)) from exc
+
+    def proposed(self, project_id: str, change_id: str) -> str:
+        with self.store.connection() as connection:
+            row = connection.execute(
+                "SELECT payload FROM paper_changes WHERE project_id=? AND change_id=?",
+                (project_id, change_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError(change_id)
+        change = Change.model_validate_json(row[0])
+        if change.kind not in {"rewrite", "create"} or change.file_kind != "text":
+            raise ValueError("This card does not contain a full proposed text file")
+        return change.after
 
     def _receipt(self, project_id: str, key: str) -> dict[str, object] | None:
         with self.store.connection() as connection:
@@ -851,14 +889,9 @@ class PaperChanges:
                 # atomic receipt makes the gap before the final state harmless.
                 self._save_receipt(project_id, group_id, key, "accept", payload)
             try:
-                self.live.apply(
-                    project_id,
-                    cast(list[dict[str, object]], payload["ops"]),
-                    actor=str(payload["actor"]),
-                    expect=cast(dict[str, object], payload["expect"]),
-                )
+                self._apply(project_id, payload)
             except OutdatedChange:
-                # S1's adapter raises this only for an atomic precondition refusal,
+                # The live core raises this only for an atomic precondition refusal,
                 # never for an uncertain transport/result failure.
                 with self.store.connection() as connection:
                     connection.execute(
@@ -901,12 +934,7 @@ class PaperChanges:
                     "actor": actor,
                 }
                 self._save_receipt(project_id, group_id, key, "undo", payload)
-            self.live.apply(
-                project_id,
-                cast(list[dict[str, object]], payload["ops"]),
-                actor=str(payload["actor"]),
-                expect=cast(dict[str, object], payload["expect"]),
-            )
+            self._apply(project_id, payload)
             self._state(project_id, group_id, "undone", str(payload["actor"]))
             return self._load(project_id, group_id)
 
@@ -933,7 +961,7 @@ class PaperChanges:
 
 
 def get_paper_changes(owner: object) -> PaperChanges:
-    """S3 composition seam: the orchestrator installs the durable manager on the service."""
+    """Return the service's durable saved-paper change manager."""
     manager = getattr(owner, "paper_changes", None)
     if not isinstance(manager, PaperChanges):
         raise ValueError("Paper change service is unavailable")

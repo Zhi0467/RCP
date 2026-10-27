@@ -4,13 +4,14 @@ import { ArrowLeft, Check, ChevronRight, Folder, RotateCw, Search, X } from "luc
 import { referenceKey, type DraftReference } from "../core/projectReferences";
 import { ReferenceIcon } from "../core/ReferenceChip";
 import { BranchGroupList, branchGroups } from "../artifacts/BranchGroups";
-import type { GraphNode, GraphTargetRef, PaperSnapshot, ProjectArtifact } from "../core/types";
+import type { GraphNode, GraphTargetRef, PaperTree, ProjectArtifact } from "../core/types";
 
-type FolderId = "reports" | "artifacts" | "nodes";
+type FolderId = "reports" | "artifacts" | "nodes" | "paper";
 const FOLDER_LABEL: Record<FolderId, string> = {
   reports: "Reports",
   artifacts: "Artifacts",
   nodes: "Nodes",
+  paper: "Paper",
 };
 interface Entry {
   folder: FolderId | null;
@@ -40,7 +41,7 @@ export function ProjectReferencePicker({
   const [query, setQuery] = useState("");
   const [folder, setFolder] = useState<FolderId | null>(null);
   const [artifacts, setArtifacts] = useState<ProjectArtifact[]>([]);
-  const [paperAvailable, setPaperAvailable] = useState(false);
+  const [paper, setPaper] = useState<PaperTree | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [retry, setRetry] = useState(0);
@@ -49,13 +50,8 @@ export function ProjectReferencePicker({
     const base = `/api/projects/${encodeURIComponent(projectId)}`;
     void Promise.all([
       api<ProjectArtifact[]>(`${base}/artifacts`, { signal: controller.signal }).then(setArtifacts),
-      // Only a saved introduction can be referenced; a draft or no paper cannot.
       ...(!artifactsOnly
-        ? [
-            api<PaperSnapshot>(`${base}/paper`, { signal: controller.signal }).then((paper) =>
-              setPaperAvailable(paper.canonical_available && Boolean(paper.canonical_hash)),
-            ),
-          ]
+        ? [api<PaperTree>(`${base}/paper/tree`, { signal: controller.signal }).then(setPaper)]
         : []),
     ])
       .catch((failure) => {
@@ -91,16 +87,24 @@ export function ProjectReferencePicker({
         target,
       },
     })),
-    ...(!artifactsOnly && paperAvailable
+    ...(!artifactsOnly && paper?.files.length
       ? [
           {
-            folder: null,
+            folder: "paper" as const,
             reference: {
               selector: { kind: "paper" as const },
-              label: "Paper introduction",
+              label: "Whole paper",
               target,
             },
           },
+          ...paper.files.map((file): Entry => ({
+            folder: "paper",
+            reference: {
+              selector: { kind: "paper", file_id: file.file_id },
+              label: file.path,
+              target,
+            },
+          })),
         ]
       : []),
   ];
@@ -114,7 +118,7 @@ export function ProjectReferencePicker({
       : entry.folder === folder,
   );
   const folders = (Object.keys(FOLDER_LABEL) as FolderId[])
-    .filter((id) => !artifactsOnly || id !== "nodes")
+    .filter((id) => !artifactsOnly || (id !== "nodes" && id !== "paper"))
     .map((id) => ({
       id,
       count: entries.filter((entry) => entry.folder === id).length,

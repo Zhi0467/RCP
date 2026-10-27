@@ -24,7 +24,6 @@ from rcp.limits import (
     CHAT_ATTACHMENT_MAX_TOTAL_BYTES,
     PROJECT_REFERENCE_NODE_MAX_BYTES,
 )
-from rcp.paper.coach_seam import get_paper_live
 from rcp.storage import AppStore
 from rcp.transport import StateUnavailable
 
@@ -147,8 +146,8 @@ def _resolve_paper(
     service: ProjectService, project_id: str, selector: PaperReferenceSelector
 ) -> list[ResolvedProjectReference]:
     """Retain one coherent saved tree, including binary files and relative includes."""
-    live = get_paper_live(service)
-    snapshot = live.snapshot(project_id)
+    live = service.paper_live
+    snapshot = live.run_sync(live.snapshot(project_id))
     files = [item for item in snapshot.files if selector.file_id in (None, item.file_id)]
     if not files:
         raise ValueError("Paper reference source is unavailable.")

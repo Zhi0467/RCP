@@ -2031,6 +2031,9 @@ function MemberApp({
           sourceTarget,
           link.kind === "node" ? "dag" : link.kind === "paper" ? "paper" : "artifacts",
         );
+        if (link.kind === "paper" && !["all", "introduction"].includes(link.itemId)) {
+          next += `&paper_file=${encodeURIComponent(link.itemId)}`;
+        }
         if (link.kind !== "paper") setNotificationNode(link);
       } else if (link.kind === "consolidation") {
         // A consolidation row or schedule notice lives in the Inbox itself.

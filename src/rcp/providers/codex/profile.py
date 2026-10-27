@@ -320,7 +320,7 @@ class CodexProfile(ProviderProfile):
             if write_scope is not None:
                 raise ValueError("paper_suggest cannot carry a project write scope")
             self.validate_readiness_version(provider_version, capability=capability)
-            command.extend(["--disable", "shell_tool"])
+            command.extend(["--enable", "shell_tool"])
             command.extend(
                 [
                     "--config",

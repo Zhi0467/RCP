@@ -28,7 +28,7 @@ from .helpers import (
     wait_for_task_response,
     write_turn_outcome,
 )
-from .paper_fakes import wire_saved_paper
+from .paper_helpers import wire_saved_paper
 from .test_consolidation_work import _apply_request
 from .test_experiment_loop_agent_io import _LoopLauncher
 from .test_graph_history_commands import request as history_request

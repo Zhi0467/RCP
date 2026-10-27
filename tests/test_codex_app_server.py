@@ -931,4 +931,4 @@ def test_skill_probe_disables_the_same_features_as_a_launch(tmp_path: Path):
     )
     assert "plugins" in disabled(launch)
     assert disabled(probe) == disabled(exec_launch)
-    assert set(disabled(launch)) == {*disabled(probe), "shell_tool"}
+    assert disabled(launch) == disabled(probe)

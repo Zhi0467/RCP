@@ -3,7 +3,7 @@
 RCP is a local research control panel for turning agent-assisted research into
 one durable project record: a research graph, a human authority queue,
 operational conversations and bounded episodes, append-only provenance, and a
-human-authored paper introduction with a read-only writing coach.
+human-controlled paper workspace with reviewed writing-coach changes.
 
 The graph is both a research record and a control input. Epistemic structure
 records what is believed and why; Hypotheses may connect to the Decisions their
@@ -36,7 +36,9 @@ bind one repository worktree. That code isolation
 is separate from graph truth and shares one owner across its children and
 continuations. External effects are never rolled back by the graph workflow.
 
-The paper introduction is human-authored and non-authoritative. Agent-created
+The paper workspace is human-controlled and non-authoritative. Its writing coach
+proposes changes against saved snapshots; humans review cards or authorize
+Apply-directly mode for the coach chat. Agent-created
 artifacts and reports help a researcher read work; they do not become graph
 truth. Every artifact, reports and Experiment or Auto-research outputs included,
 may be viewed, commented on, versioned, and kept through one viewer. A comment
@@ -247,7 +249,7 @@ winner by timestamp or silently implement around it.
   mutation envelopes, current application surfaces, revision reconciliation,
   tabs, and shell lifecycle.
 - [Paper, artifacts, and viewing](specs/paper-artifacts-and-result-views.md) —
-  human paper authorship, read-only coaching, previews, reports, unified
+  human paper authorship, reviewed coaching, previews, reports, unified
   artifact interaction, and repository-file reading.
 - [Interface and visual design](specs/interface-and-visual-design.md) — the
   visual grammar, project shell, Research and Runs projections, node detail, DAG

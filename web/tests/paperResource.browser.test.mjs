@@ -30,14 +30,17 @@ function editorMatches(expected) {
   return source?.textContent === expected;
 }
 
-async function openPaper(t, { room = new Room(), width = 1280, cards = [] } = {}) {
+async function openPaper(
+  t,
+  { room = new Room(), width = 1280, cards = [], proposedTexts = {} } = {},
+) {
   const context = await browser.newContext({ viewport: { width, height: 844 } });
   t.after(async () => {
     await context.close();
   });
   const page = await context.newPage();
   const errors = [];
-  const fixture = createPaperFixture({ room, cards });
+  const fixture = createPaperFixture({ room, cards, proposedTexts });
   const posts = fixture.posts;
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => {
@@ -209,4 +212,26 @@ test("Paper refuses editing when local persistence is unavailable and exposes re
   await page.goto(`${origin}/tests/fixtures/paperResource.html`);
   await page.getByRole("button", { name: "Reconnect Paper", exact: true }).waitFor();
   assert.equal(await page.locator(".cm-content").count(), 0);
+});
+
+test("rewrite comparison reads the complete proposed file and fits 390px", async (t) => {
+  const proposed = Array.from({ length: 100 }, (_, index) => `proposed line ${index}`).join("\n");
+  const { page, errors } = await openPaper(t, {
+    width: 390,
+    cards: [
+      {
+        ...card,
+        kind: "rewrite",
+        preview: { removed: ["draft"], added: ["preview only"], more: 99 },
+      },
+    ],
+    proposedTexts: { c1: proposed },
+  });
+  await page.getByRole("button", { name: "Coach", exact: true }).first().click();
+  await page.getByRole("button", { name: "Compare", exact: true }).click();
+  const texts = page.getByRole("dialog", { name: "Compare change" }).locator("pre");
+  await texts.nth(1).waitFor();
+  assert.deepEqual(await texts.allTextContents(), ["draft", proposed]);
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  assert.deepEqual(errors, []);
 });

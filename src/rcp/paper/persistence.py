@@ -145,11 +145,25 @@ def prune(connection: sqlite3.Connection, project: str) -> None:
         "ORDER BY created_at DESC, rowid DESC LIMIT ?)",
         (project, project, limits.PAPER_HISTORY_AUTO_LIMIT),
     )
+    protected = {
+        row[0]
+        for row in connection.execute(
+            "SELECT base_revision FROM paper_change_groups WHERE project_id=? "
+            "AND state IN ('pending','outdated') UNION "
+            "SELECT json_extract(r.payload_json, '$.revision') FROM graph_run_receipts r "
+            "JOIN graph_runs g ON g.operation_id=r.operation_id "
+            "WHERE g.project_id=? AND g.status IN ('queued','running','pausing') "
+            "AND r.category='paper_turn_base'",
+            (project, project),
+        )
+        if row[0] is not None
+    }
+    protected_sql = ",".join("?" for _ in protected) or "SELECT NULL WHERE 0"
     connection.execute(
         "DELETE FROM paper_saved_snapshots WHERE project_id=? AND revision NOT IN "
         "(SELECT revision FROM paper_saved_snapshots WHERE project_id=? ORDER BY revision DESC "
-        "LIMIT ?)",
-        (project, project, limits.PAPER_SAVED_REVISION_LIMIT),
+        f"LIMIT ?) AND revision NOT IN ({protected_sql})",
+        (project, project, limits.PAPER_SAVED_REVISION_LIMIT, *protected),
     )
     while _history_bytes(connection, project) > limits.PAPER_HISTORY_MAX_BYTES:
         row = connection.execute(
@@ -163,10 +177,13 @@ def prune(connection: sqlite3.Connection, project: str) -> None:
             )
             continue
         rows = connection.execute(
-            "SELECT revision FROM paper_saved_snapshots WHERE project_id=? ORDER BY revision LIMIT 2",
-            (project,),
+            "SELECT revision FROM paper_saved_snapshots WHERE project_id=? "
+            f"AND revision NOT IN ({protected_sql}) "
+            "AND revision < (SELECT MAX(revision) FROM paper_saved_snapshots WHERE project_id=?) "
+            "ORDER BY revision LIMIT 1",
+            (project, *protected, project),
         ).fetchall()
-        if len(rows) > 1:
+        if rows:
             connection.execute(
                 "DELETE FROM paper_saved_snapshots WHERE project_id=? AND revision=?",
                 (project, rows[0][0]),
@@ -176,8 +193,10 @@ def prune(connection: sqlite3.Connection, project: str) -> None:
     for table in ("paper_updates", "paper_doc_states"):
         connection.execute(
             f"DELETE FROM {table} WHERE project_id=? AND file_id IN "
-            "(SELECT file_id FROM paper_files WHERE project_id=? AND deleted_at IS NOT NULL)",
-            (project, project),
+            "(SELECT file_id FROM paper_files WHERE project_id=? AND deleted_at IS NOT NULL) "
+            "AND file_id NOT IN (SELECT j.value FROM paper_change_receipts r, json_tree(r.payload) j "
+            "WHERE r.project_id=? AND j.key='file_id' AND j.value IS NOT NULL)",
+            (project, project, project),
         )
     # Bodies are shared across projects and both history collections.
     for table, column in (("paper_version_texts", "text_sha256"), ("paper_blobs", "blob_sha256")):
@@ -192,6 +211,8 @@ def prune(connection: sqlite3.Connection, project: str) -> None:
             + (
                 " AND sha256 NOT IN (SELECT blob_sha256 FROM paper_files "
                 "WHERE blob_sha256 IS NOT NULL AND deleted_at IS NULL)"
+                " AND sha256 NOT IN (SELECT j.value FROM paper_change_receipts r, "
+                "json_tree(r.payload) j WHERE j.key='blob_sha256' AND j.value IS NOT NULL)"
                 if table == "paper_blobs"
                 else ""
             )

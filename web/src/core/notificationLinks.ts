@@ -34,7 +34,7 @@ export function buildNotificationLink(link: NotificationLink): string {
 
 export function parseNotificationLink(hash: string): NotificationLink | null {
   const match = LINK_PATTERN.exec(hash.slice(hash.indexOf("#")));
-  if (!match || (match[3] === "paper" && match[4] !== "introduction")) return null;
+  if (!match) return null;
   try {
     return {
       projectId: decodeURIComponent(match[1]),

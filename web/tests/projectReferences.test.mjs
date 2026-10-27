@@ -46,7 +46,7 @@ test("generic reference links round trip every segment on main and branch", () =
         link,
       );
     }
-  assert.equal(parseNotificationLink(url("p", "paper", "other")), null);
+  assert.equal(parseNotificationLink(url("p", "paper", "file-1")).itemId, "file-1");
 });
 
 test("paste extracts same-project links and preserves all surrounding and foreign text", () => {
@@ -148,6 +148,12 @@ test("copy and drag use the same full address-bar URL and both MIME types", () =
     assert.equal(data.get("text/plain"), full);
     assert.equal(data.get("text/uri-list"), full);
     assert.equal(transfer.effectAllowed, "copy");
+    for (const paper of [{ kind: "paper" }, { kind: "paper", file_id: "file /雪" }]) {
+      assert.deepEqual(
+        extractReferences(referenceUrl("p", main, paper), "p").references[0].selector,
+        paper,
+      );
+    }
   } finally {
     globalThis.window = previous;
   }
@@ -169,4 +175,36 @@ test("pasted artifact chips take their saved name and unknown ids keep the fallb
   assert.deepEqual(unlabeledArtifactIds(labeled), ["temp"]);
   assert.equal(labeled[2], named);
   assert.equal(labelArtifactReferences(labeled, []), labeled);
+});
+
+test("paper files retain distinct identities through selection, drafts, paste, and transcript sources", () => {
+  const items = [null, "file-1", "file-2"].map((file_id) => ({
+    selector: { kind: "paper", file_id },
+    label: file_id ?? "Paper",
+    target: main,
+  }));
+  const selected = mergeReferences([], [...items, items[1]], 0).references;
+  assert.equal(selected.length, 3);
+  assert.deepEqual(parseReferenceDraft(JSON.stringify(selected)), selected);
+  assert.deepEqual(
+    parseReferenceDraft(JSON.stringify([{ ...items[0], selector: { kind: "paper", file_id: 2 } }])),
+    [],
+  );
+  const pasted = extractReferences(
+    `${url("p", "paper", "all")} ${url("p", "paper", "file-1")}`,
+    "p",
+  );
+  assert.deepEqual(
+    pasted.references.map((item) => item.selector),
+    [{ kind: "paper" }, { kind: "paper", file_id: "file-1" }],
+  );
+  const source = sourceReference({
+    kind: "paper",
+    source_id: "file-2",
+    path: "sections/body.tex",
+    version: "5",
+    graph_head: null,
+  });
+  assert.deepEqual(source.selector, { kind: "paper", file_id: "file-2" });
+  assert.equal(source.label, "sections/body.tex");
 });

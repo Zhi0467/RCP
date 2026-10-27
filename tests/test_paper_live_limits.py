@@ -49,7 +49,7 @@ async def test_byte_limits_reject_the_entire_mutation(paper, monkeypatch, limit,
     with store.connection() as connection:
         assert connection.execute("SELECT COUNT(*) FROM paper_revisions").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM paper_files").fetchone()[0] == 1
-        assert connection.execute("SELECT COUNT(*) FROM paper_apply_receipts").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM paper_change_receipts").fetchone()[0] == 0
     await live.close()
 
 

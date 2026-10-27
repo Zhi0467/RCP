@@ -13,7 +13,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterable
 from concurrent.futures import Future
-from contextlib import suppress
+from contextlib import AbstractContextManager, nullcontext, suppress
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
@@ -48,7 +48,7 @@ from rcp.history.store import GRAPH_HISTORY_DIRECTORY
 from rcp.limits import (
     PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES,
 )
-from rcp.paper import PaperService
+from rcp.paper import PaperLive, PaperService
 from rcp.paper.projection import publication_badge
 from rcp.project_snapshot_compat import migrate_display_snapshot_settings
 from rcp.provider_skills import ProviderSkillInventoryManager
@@ -852,6 +852,12 @@ class ProjectCatalog:
         self.store = store
         self.launcher = launcher
         self.provider_skills = provider_skills
+        self.paper_live = PaperLive(
+            store, lambda project_id: self._display_workspace_or_refresh(project_id)[1]
+        )
+        self.paper_admission: Callable[[str], AbstractContextManager[object]] = lambda _project_id: (
+            nullcontext()
+        )
         self.on_accepted_transition: Callable[[str, int], None] | None = None
         self.on_accepted_branch_transition: Callable[[str, str, int], None] | None = None
         self._services: dict[str, ProjectService] = {}
@@ -948,6 +954,8 @@ class ProjectCatalog:
             task_continuation_session=self.store.agent_task_continuation_session_id,
             chat_graph_target=self.store.chat_graph_target,
             project_service_resolver=self.open,
+            paper_live=self.paper_live,
+            paper_admission=lambda project_id: self.paper_admission(project_id),
         )
         if root != workspace.root:
             self._display_services[project_id] = (root, service, materialization)
@@ -1266,6 +1274,8 @@ class ProjectCatalog:
                 task_continuation_session=self.store.agent_task_continuation_session_id,
                 chat_graph_target=self.store.chat_graph_target,
                 project_service_resolver=self.open,
+                paper_live=self.paper_live,
+                paper_admission=lambda project_id: self.paper_admission(project_id),
             )
             snapshot = _snapshot_payload(service.project_snapshot(materialization=materialization))
             self._stamp_snapshot_identity(snapshot, project_id)
@@ -1721,6 +1731,8 @@ class ProjectCatalog:
             task_continuation_session=self.store.agent_task_continuation_session_id,
             chat_graph_target=self.store.chat_graph_target,
             project_service_resolver=self.open,
+            paper_live=self.paper_live,
+            paper_admission=lambda project_id: self.paper_admission(project_id),
         )
 
     def discard_retired_transfer_source(self, request_id: str) -> None:
@@ -2544,6 +2556,8 @@ class ProjectCatalog:
             task_continuation_session=self.store.agent_task_continuation_session_id,
             chat_graph_target=self.store.chat_graph_target,
             project_service_resolver=self.open,
+            paper_live=self.paper_live,
+            paper_admission=lambda project_id: self.paper_admission(project_id),
         )
         return service, initialized
 

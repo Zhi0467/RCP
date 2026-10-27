@@ -9,13 +9,14 @@ import {
   FileX,
   Image,
   Locate,
+  LoaderCircle,
   MoveRight,
   RefreshCw,
   RotateCcw,
   Undo2,
   X,
 } from "lucide-react";
-import { api } from "../core/api";
+import { api, apiReadResponse } from "../core/api";
 
 export interface PaperChange {
   change_id: string;
@@ -129,11 +130,13 @@ export function PaperChangeDiff({ change }: { change: PaperChange }) {
 }
 
 export function PaperChanges({
+  apiBase,
   changes,
   onAction,
   onUndoAll,
   onLocate,
 }: {
+  apiBase: string;
   changes: PaperChange[];
   onAction: (groupId: string, action: PaperChangeAction) => Promise<void>;
   onUndoAll: (taskId: string) => Promise<void>;
@@ -340,9 +343,63 @@ export function PaperChanges({
                 <X size={16} />
               </button>
             </header>
-            <PaperChangeDiff change={comparison} />
+            <PaperRewriteComparison apiBase={apiBase} change={comparison} />
           </section>
         </div>
+      )}
+    </div>
+  );
+}
+
+function PaperRewriteComparison({ apiBase, change }: { apiBase: string; change: PaperChange }) {
+  const [texts, setTexts] = useState<{ current: string; proposed: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    const read = async (path: string) => {
+      const response = await apiReadResponse(path, controller.signal);
+      if (!response.ok) throw new Error(`Paper comparison read failed (${response.status})`);
+      return response.text();
+    };
+    setTexts(null);
+    setError(null);
+    void Promise.all([
+      read(`${apiBase}/paper/files/${encodeURIComponent(change.file_id)}/raw`),
+      read(`${apiBase}/paper/changes/${encodeURIComponent(change.change_id)}/proposed`),
+    ])
+      .then(([current, proposed]) => {
+        if (!controller.signal.aborted) setTexts({ current, proposed });
+      })
+      .catch((cause) => {
+        if (!controller.signal.aborted) setError(String(cause));
+      });
+    return () => controller.abort();
+  }, [apiBase, change.change_id, change.file_id, retry]);
+  return (
+    <div className={`paper-history-content${error ? " paper-failure" : ""}`}>
+      {error ? (
+        <button
+          className="icon-button"
+          aria-label="Retry comparison"
+          title={error}
+          onClick={() => setRetry((value) => value + 1)}
+        >
+          <RotateCcw size={16} />
+        </button>
+      ) : texts ? (
+        <div className="paper-history-comparison">
+          <section>
+            <h3>Current</h3>
+            <pre>{texts.current}</pre>
+          </section>
+          <section>
+            <h3>Proposed</h3>
+            <pre>{texts.proposed}</pre>
+          </section>
+        </div>
+      ) : (
+        <LoaderCircle size={18} className="spin" aria-label="Loading comparison" />
       )}
     </div>
   );

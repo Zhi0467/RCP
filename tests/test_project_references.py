@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from rcp.attachments import NodeReferenceSelector, PaperReferenceSelector
-from rcp.paper.coach_seam import SavedPaperFile, SavedPaperSnapshot
+from rcp.paper import PaperOp
 from rcp.project_references import resolve_project_references
 from tests.test_branch_context import branch_services as branch_services
 
@@ -49,35 +49,37 @@ def test_node_snapshot_keeps_source_branch_and_coherent_head(branch_services, mo
 
 
 def test_paper_reference_retains_saved_tree_paths_ids_and_revision(branch_services, monkeypatch):
-    snapshot = SavedPaperSnapshot(
-        revision=9,
-        files=[
-            SavedPaperFile(file_id="tex", path="main.tex", kind="text", text="include{sections/a}"),
-            SavedPaperFile(
-                file_id="section", path="sections/a.tex", kind="text", text="Saved draft"
-            ),
-            SavedPaperFile(
-                file_id="figure", path="figures/a.png", kind="binary", blob_sha256="a" * 64
+    from tests.paper_helpers import apply, saved, start_paper
+
+    live = start_paper(branch_services[0].paper_live)
+    apply(
+        live,
+        [PaperOp(kind="delete", file_id=f.file_id) for f in saved(live, "project").files],
+        "project",
+    )
+    apply(
+        live,
+        [
+            PaperOp(kind="create", file_id="tex", path="main.tex", text="include{sections/a}"),
+            PaperOp(kind="create", file_id="section", path="sections/a.tex", text="Saved draft"),
+            PaperOp(
+                kind="create",
+                file_id="figure",
+                path="figures/a.png",
+                file_kind="binary",
+                data=b"binary",
             ),
         ],
+        "project",
     )
-
-    def materialize(snapshot, dest):
-        for item in snapshot.files:
-            path = dest / item.path
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(item.text.encode() if item.text is not None else b"binary")
-
-    branch_services[0].paper_live = SimpleNamespace(
-        snapshot=lambda project_id: snapshot, materialize=materialize
-    )
+    snapshot = saved(live, "project")
     items = _resolve(branch_services, [PaperReferenceSelector(kind="paper")])
     assert [item.reference.path for item in items] == [
         "figures/a.png",
         "main.tex",
         "sections/a.tex",
     ]
-    assert {item.reference.version for item in items} == {"9"}
+    assert {item.reference.version for item in items} == {str(snapshot.revision)}
     one = _resolve(branch_services, [PaperReferenceSelector(kind="paper", file_id="section")])
     assert len(one) == 1 and one[0].content == b"Saved draft"
     assert one[0].reference.source_id == "section"

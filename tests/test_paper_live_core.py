@@ -58,7 +58,7 @@ def test_apply_guards_atomicity_unicode_and_receipts(paper):
             await live.apply("p", ops, "human", {"ops": [{"text": "stale"}]})
         assert (await live.snapshot("p")).files[0].text == "aéb"
         with store.connection() as conn:
-            assert conn.execute("SELECT COUNT(*) FROM paper_apply_receipts").fetchone()[0] == 1
+            assert conn.execute("SELECT COUNT(*) FROM paper_change_receipts").fetchone()[0] == 1
         await live.close()
 
     run(scenario())

@@ -118,7 +118,7 @@ from .helpers import (
     write_turn_outcome,
 )
 from .helpers import wait_for_task_response as _wait_for_run
-from .paper_fakes import wire_saved_paper
+from .paper_helpers import wire_saved_paper
 
 
 def _named_test_authorizer(store: AppStore) -> AuthorizedHuman:

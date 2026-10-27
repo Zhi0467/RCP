@@ -6,8 +6,8 @@ import os
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Callable
-from contextlib import aclosing, asynccontextmanager, suppress
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import aclosing, asynccontextmanager, contextmanager, suppress
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -66,6 +66,7 @@ from rcp.api.notifications import router as notifications_router
 from rcp.api.owner import router as owner_router
 from rcp.api.paper import PaperUploadBodyLimit, is_paper_upload
 from rcp.api.paper import router as paper_router
+from rcp.api.paper_changes import router as paper_changes_router
 from rcp.api.paper_compile import assets_router as paper_assets_router
 from rcp.api.paper_compile import router as paper_compile_router
 from rcp.api.paper_live import router as paper_live_router
@@ -116,7 +117,6 @@ from rcp.limits import (
 from rcp.live_artifact_runtime import reconcile_artifact_live_snapshots
 from rcp.machine_power import MachinePowerController, demand_snapshot
 from rcp.notifications import NotificationSender
-from rcp.paper import PaperLive
 from rcp.paper.compile import PaperCompiler
 from rcp.paper.engines import EngineStore
 from rcp.phone_listener import PhoneListener
@@ -725,10 +725,7 @@ def create_app(
     )
     catalog = ProjectCatalog(app_data, store, launcher, provider_skills)
 
-    def paper_workspace(project_id: str):
-        return catalog._display_workspace_or_refresh(project_id)[1]
-
-    paper_live = PaperLive(store, paper_workspace)
+    paper_live = catalog.paper_live
     attachment_store = ChatAttachmentStore(app_data / "chat-attachments")
 
     ensure_episode_graph_target = partial(
@@ -797,6 +794,17 @@ def create_app(
     # different worker threads, so this must remain a primitive Lock, not RLock.
     experiment_operation_lock = KeyedLocks()
     artifact_mutation_locks = KeyedLocks()
+
+    @contextmanager
+    def paper_admission(project_id: str) -> Iterator[None]:
+        with (
+            runtime_admission_gate.mutation("Paper change"),
+            experiment_operation_lock(project_id),
+        ):
+            store.require_project_accepts_new_work(project_id)
+            yield
+
+    catalog.paper_admission = paper_admission
     experiment_admission = ExperimentAdmission(
         experiment_operation_lock,
         _experiment_control_node_id,
@@ -2562,6 +2570,7 @@ def create_app(
     app.include_router(history_router)
     app.include_router(paper_router)
     app.include_router(paper_live_router)
+    app.include_router(paper_changes_router)
     app.include_router(paper_compile_router)
     app.include_router(paper_assets_router)
     app.include_router(result_views_router)

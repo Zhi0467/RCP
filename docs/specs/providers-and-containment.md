@@ -20,7 +20,7 @@ policy. [Authority and Proposals](authority-and-proposals.md) owns graph authori
 | Episode merge | Scratch candidate; code landing additionally admits the episode worktree and shared checkout. |
 | Correction | Retained scratch; Work-like repair retains the session and exact Work scope. |
 | Artifact edit | Discuss scratch-only access on the admitted session, stage and version; no operational commands or master. Chat-master viewer comments use ordinary Discuss; composer comments use that chat turn's mode. |
-| Paper coach | Reads a snapshot of the saved paper; writes only its task's changes folder; no graph, direct paper-write or command channel. |
+| Paper coach | Reads a snapshot of the saved paper; writes only its task's changes folder; no graph mutation or direct paper-write authority. Graph history reads use the protected command client. |
 
 Manifest settings and skills select execution details and methods, not capability.
 
@@ -392,6 +392,12 @@ Home-relative paths resolve on the execution host. Discuss uses a named native
 permission profile so the same denial applies in exec and app-server; the
 app-server checks the activated profile before starting a turn.
 
+Paper coach uses the `rcp_paper` permission profile in exec and app-server,
+for fresh and resumed sessions. Its shell remains enabled to read the saved
+snapshot and write proposed files. The only writable root is the turn's changes
+folder: the workspace and temporary directories receive no implicit write grant.
+App-server verifies that this profile is active before delivering the turn.
+
 ### Browser grants
 
 Browser is a per-chat human grant, off by default, resolved immutably at admission
@@ -436,10 +442,17 @@ client directory is escaped for gitignore matching; intentional hidden-read glob
 keep their glob semantics. These denies merge with the launch's hidden-read
 settings. A browser grant separately adds
 `Bash(playwright-cli:*)`. Public WebSearch and WebFetch remain available under
-the provider contract. Every other launch (Discuss, Seed and Refresh, the paper
-coach) receives its read context as `Read`, `Glob`, and `Grep` allow rules per
-directory, never `--add-dir`: under `acceptEdits` an added directory is also
-editable, which would hand Discuss write access to project files.
+the provider contract. Discuss, Seed and Refresh receive their read context as
+`Read`, `Glob`, and `Grep` allow rules per directory, never `--add-dir`: under
+`acceptEdits` an added directory is also editable, which would hand Discuss
+write access to project files.
+
+Paper coach uses `dontAsk` with empty setting sources and disabled hooks. Its
+native `Read`, `Glob`, and `Grep` tools may read outside the changes folder;
+`Edit` rules confine all file-writing tools, including `Write`, to that folder.
+General shell access is denied. Only the protected graph-history client receives
+a narrow `Bash` allowance when its broker gate is present. WebSearch and WebFetch
+remain available, subject to the resolved hidden-read policy.
 
 **Why:** Claude's OS sandbox is off because its Linux backend always unshares the network
 namespace and remounts a minimal `/dev`, and no setting relaxes either, so a
@@ -481,9 +494,11 @@ The paper coach and every other capability may read outside their folder. OpenCo
 matches them against paths relative to its project root, which is the enclosing
 Git work tree, or `/` outside one. RCP writes them for `/`. A launch that carries
 path rules therefore refuses to start inside a Git work tree, rather than let
-the rules name the wrong paths. Task stages are outside Git. The paper coach runs
-inside the project and denies every edit and the shell outright, so it needs no
-path rules. Discuss and ingestion may edit only their workspace and their own
+the rules name the wrong paths. Task stages, including the paper coach's, are
+outside Git. The coach's native read tools remain available, and its edit rules
+allow only its task's changes folder. General shell access is denied; only the
+protected graph-history client receives a narrow allowance when its broker gate
+is present. Discuss and ingestion may edit only their workspace and their own
 write folders. Ingestion has no shell. Discuss denies `*`, allowing only
 `python3 -I -S <staged-client-path> *` when its broker gate names that client, and
 `playwright-cli *` when the human granted the browser. Final edit denies protect the
@@ -936,8 +951,10 @@ failed. Giving every agent every machine keeps one source of truth.
 Chat Discuss and Work, Seed and Refresh, Experiment Runs and continuations,
 Auto-research orchestrators and their children (each from its own `run_on`),
 watcher wakes, Retry and recovery all state the machines as they are at launch.
-Paper coach and the branch-merge agent run no commands and get none. The first
-master/task context lists each machine's alias, route, job manager and hint. A
+Paper coach and the branch-merge agent receive no compute-machine context;
+they retain their protected graph-history client. The coach's provider-specific
+shell and file rules are described above. The first master/task context lists
+each machine's alias, route, job manager and hint. A
 resumed native session receives a concise delta for added or changed machines,
 with the rules of any manager they name, and only the alias of a removed one.
 Compute metadata never grants authority and never includes credential contents

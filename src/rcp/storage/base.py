@@ -134,6 +134,7 @@ class AppStoreBase:
         (61, "machine_settings_v1"),
         (62, "paper_live_v1"),
         (63, "paper_changes_v1"),
+        (64, "paper_receipts_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -953,6 +954,9 @@ class AppStoreBase:
         )
         self._run_storage_schema_migration(
             connection, version=63, name="paper_changes_v1", migration=_migrate_paper_changes
+        )
+        self._run_storage_schema_migration(
+            connection, version=64, name="paper_receipts_v1", migration=_migrate_paper_receipts
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -4157,3 +4161,29 @@ def _migrate_paper_changes(connection: sqlite3.Connection) -> None:
                 REFERENCES paper_change_groups(project_id, group_id) ON DELETE CASCADE)""",
     ):
         connection.execute(statement)
+
+
+def _migrate_paper_receipts(connection: sqlite3.Connection) -> None:
+    """One receipt holds both the prepared coach inverse and the atomic live result."""
+    connection.execute("ALTER TABLE paper_change_receipts RENAME TO paper_change_receipts_old")
+    connection.execute("""CREATE TABLE paper_change_receipts (
+        project_id TEXT NOT NULL, receipt_key TEXT NOT NULL, group_id TEXT,
+        action TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, receipt_key),
+        FOREIGN KEY (project_id, group_id)
+            REFERENCES paper_change_groups(project_id, group_id) ON DELETE CASCADE)""")
+    connection.execute("INSERT INTO paper_change_receipts SELECT * FROM paper_change_receipts_old")
+    connection.execute("DROP TABLE paper_change_receipts_old")
+    for row in connection.execute("SELECT * FROM paper_apply_receipts").fetchall():
+        previous = connection.execute(
+            "SELECT payload FROM paper_change_receipts WHERE project_id=? AND receipt_key=?",
+            (row["project_id"], row["receipt_key"]),
+        ).fetchone()
+        payload = json.loads(previous[0]) if previous else {}
+        payload.update(fingerprint=row["fingerprint"], receipt=json.loads(row["receipt"]))
+        connection.execute(
+            "INSERT INTO paper_change_receipts VALUES(?,?,NULL,'apply',?,?) "
+            "ON CONFLICT(project_id,receipt_key) DO UPDATE SET payload=excluded.payload",
+            (row["project_id"], row["receipt_key"], json.dumps(payload), ""),
+        )
+    connection.execute("DROP TABLE paper_apply_receipts")

@@ -9,13 +9,13 @@ import pytest
 from rcp.agents import AgentEvent
 from rcp.agents.launcher import AgentProcessControl
 from rcp.background import AgentTaskExecution
-from rcp.paper.coach_seam import SavedPaperFile
+from rcp.paper import PaperOp
 from rcp.runs.tasks.coach import stream_coach
 from rcp.service import CoachRequest
 from rcp.storage.models import AgentTaskRecord
 
 from .helpers import create_named_app
-from .paper_fakes import wire_saved_paper
+from .paper_helpers import apply, human_edit, receipts, saved, wire_saved_paper
 
 
 @pytest.fixture
@@ -65,10 +65,11 @@ async def test_saved_snapshot_refreshes_same_session_only_affected_files(
     coach, keep_editing, expected_turns
 ):
     service, live, data = coach
-    live.current.files.append(
-        SavedPaperFile(file_id="other", path="other.md", kind="text", text="Other\n")
+    apply(
+        live,
+        [PaperOp(kind="create", file_id="other", path="other.md", text="Other\n")],
+        service.paper.project_id,
     )
-    live.history[1] = live.current.model_copy(deep=True)
     paths = []
     sessions = []
 
@@ -86,7 +87,9 @@ async def test_saved_snapshot_refreshes_same_session_only_affected_files(
             output.parent.mkdir()
             output.write_text("Proposed replacement.\n")
             if keep_editing or len(paths) == 1:
-                live.human_edit("paper-file", f"Human version {len(paths)}.\n")
+                human_edit(
+                    live, "paper-file", f"Human version {len(paths)}.\n", service.paper.project_id
+                )
             yield AgentEvent(event="session", session_id="same-native-session")
             yield AgentEvent(event="done")
 
@@ -97,7 +100,7 @@ async def test_saved_snapshot_refreshes_same_session_only_affected_files(
     groups = service.paper_changes.groups(service.paper.project_id)
     assert len(groups) == 1
     assert groups[0].state == ("outdated" if keep_editing else "pending")
-    assert live.applied == []
+    assert receipts(live) == []
 
 
 @pytest.mark.asyncio
@@ -115,10 +118,10 @@ async def test_direct_apply_uses_saved_mode_and_admission(coach):
 
     events = await run_coach(service, Launcher(), data, mode="apply_directly", execution=execution)
     assert not [event for event in events if event.event == "error"]
-    assert live.current.files[0].text == "Applied text\n"
-    assert live.applied[0]["actor"] == "Coach, applied directly"
-    receipts = execution.store.agent_task_receipts(execution.operation_id)
-    base = next(r.payload for r in receipts if r.category == "paper_turn_base")
+    assert saved(live, service.paper.project_id).files[0].text == "Applied text\n"
+    assert receipts(live)[0]["actor"] == "Coach, applied directly"
+    task_receipts = execution.store.agent_task_receipts(execution.operation_id)
+    base = next(r.payload for r in task_receipts if r.category == "paper_turn_base")
     assert base["revision"] == 1
     assert base["file_ids"] == ["paper-file"]
     assert base["mode"] == "apply_directly"
@@ -141,9 +144,9 @@ async def test_invalid_output_records_exact_diagnostics_and_cleans_snapshot(coac
     events = await run_coach(service, Launcher(), data, execution=execution)
     errors = [event.text for event in events if event.event == "error"]
     assert errors
-    receipts = execution.store.agent_task_receipts(execution.operation_id)
+    task_receipts = execution.store.agent_task_receipts(execution.operation_id)
     diagnostic = next(
-        r.payload["diagnostics"] for r in receipts if r.category == "paper_changes_invalid"
+        r.payload["diagnostics"] for r in task_receipts if r.category == "paper_changes_invalid"
     )
     assert errors == ["; ".join(diagnostic)]
     assert service.paper_changes.groups(service.paper.project_id) == []
@@ -169,5 +172,5 @@ async def test_stop_prevents_refresh_and_direct_application(coach):
 
     await run_coach(service, Launcher(), data, mode="apply_directly", execution=execution)
     assert len(calls) == 1
-    assert live.applied == []
+    assert receipts(live) == []
     assert not list((data / "run-stage").glob("*/paper-base-*"))

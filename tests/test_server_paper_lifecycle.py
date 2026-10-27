@@ -97,6 +97,18 @@ def test_real_owner_disposes_reopens_and_deletes_only_project_rows(manifest, tmp
             await asyncio.to_thread(
                 live._compact_bytes, project, receipt.file_ids[0], 1, receipt.revision
             )
+            with store.connection() as connection:
+                connection.execute(
+                    "INSERT INTO paper_change_groups VALUES (?, 'group', 'task', ?, 'review', 'accepted', 'human', ?, ?)",
+                    (project, receipt.revision, store.now(), store.now()),
+                )
+                connection.execute(
+                    "INSERT INTO paper_changes VALUES (?, 'change', 'group', '{}')", (project,)
+                )
+                connection.execute(
+                    "INSERT INTO paper_change_receipts VALUES (?, 'accept', 'group', 'accept', '{}', ?)",
+                    (project, store.now()),
+                )
         await asyncio.to_thread(stop_paper_project, store, record.project_id)
         assert not any(key[0] == record.project_id for key in live.rooms)
         before = await live.tree(record.project_id)
@@ -123,6 +135,14 @@ def test_real_owner_disposes_reopens_and_deletes_only_project_rows(manifest, tmp
                 "SELECT count(*) FROM paper_saved_snapshots WHERE project_id='other'"
             ).fetchone()[0]
             assert connection.execute("SELECT count(*) FROM paper_version_texts").fetchone()[0]
+            for table in ("paper_change_groups", "paper_changes", "paper_change_receipts"):
+                assert (
+                    connection.execute(
+                        f'SELECT count(*) FROM "{table}" WHERE project_id=? AND group_id=?',
+                        ("other", "group"),
+                    ).fetchone()[0]
+                    == 1
+                )
         await live.close()
         paper_lifecycle.unregister_paper_live(store, live)
 

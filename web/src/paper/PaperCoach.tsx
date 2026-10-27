@@ -199,6 +199,7 @@ export function PaperCoach({
   const renderedTasks = new Set<string>();
   const cards = (taskId: string) => (
     <PaperChanges
+      apiBase={apiBase}
       changes={changes.filter((change) => change.task_id === taskId)}
       onAction={onChangeAction}
       onUndoAll={onUndoAll}
@@ -309,6 +310,7 @@ export function PaperCoach({
           ))}
         {!sessionTasks.length && !fresh && (
           <PaperChanges
+            apiBase={apiBase}
             changes={changes}
             onAction={onChangeAction}
             onUndoAll={onUndoAll}

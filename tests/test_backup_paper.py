@@ -17,11 +17,15 @@ from rcp.server_ops.backup_paper import (
 )
 
 
-def _database() -> sqlite3.Connection:
+def _database(*, unified: bool = True) -> sqlite3.Connection:
     connection = sqlite3.connect(":memory:")
-    from rcp.storage.base import AppStoreBase
+    from rcp.storage.base import AppStoreBase, _migrate_paper_changes, _migrate_paper_receipts
 
     AppStoreBase._migrate_paper_live(connection)
+    connection.execute("CREATE TABLE graph_runs(dispatch_authority_json TEXT)")
+    _migrate_paper_changes(connection)
+    if unified:
+        _migrate_paper_receipts(connection)
     return connection
 
 
@@ -75,9 +79,16 @@ def _saved_paper(connection, monkeypatch, project_id="p"):
         "INSERT INTO paper_saved_snapshots VALUES ('p', 4, ?)", (json.dumps(saved_manifest),)
     )
     connection.execute("UPDATE paper_files SET blob_sha256=? WHERE file_id='image'", (digest,))
-    connection.execute("INSERT INTO paper_apply_receipts VALUES ('p','key','hash','{}')")
+    connection.execute(
+        "INSERT INTO paper_change_groups VALUES ('p','group','task',4,'review','accepted','human','now','now')"
+    )
+    connection.execute("INSERT INTO paper_changes VALUES ('p','change','group','{}')")
+    connection.execute(
+        "INSERT INTO paper_change_receipts VALUES ('p','accept','group','accept',?, 'now')",
+        (json.dumps({"fingerprint": "hash", "receipt": {}}),),
+    )
     for table in backup_paper.PAPER_PROJECT_TABLES:
-        if table not in {"paper_change_groups", "paper_changes", "paper_change_receipts"}:
+        if table != "paper_apply_receipts":
             connection.execute(f'UPDATE "{table}" SET project_id=?', (project_id,))
 
     return figure
@@ -100,6 +111,8 @@ def test_saved_section_roundtrips_one_revision_and_all_recovery_state(monkeypatc
         ).fetchone() == (4, 2, "legacy-divergence")
         assert target.execute('SELECT "update" FROM paper_updates').fetchone() == (b"crdt-tail",)
         assert target.execute("SELECT state FROM paper_doc_states").fetchone() == (b"crdt-prefix",)
+        for table in ("paper_change_groups", "paper_changes", "paper_change_receipts"):
+            assert len(section.tables[table]) == 1
         assert capture_paper_section(target, "p") == section
         target.execute("UPDATE paper_publication SET published_revision=4")
         with pytest.raises(ValueError):
@@ -122,6 +135,41 @@ def test_saved_section_refuses_missing_snapshot_or_corrupt_content(monkeypatch):
         assert capture_paper_section(connection, "legacy") is None
     finally:
         connection.close()
+
+
+def test_restore_legacy_receipts_merges_prepared_and_committed_mutation(monkeypatch):
+    source = _database(unified=False)
+    target = _database()
+    try:
+        _saved_paper(source, monkeypatch)
+        source.execute(
+            "UPDATE paper_change_receipts SET payload=?",
+            (json.dumps({"inverse": [{"kind": "delete", "file_id": "text"}]}),),
+        )
+        source.executemany(
+            "INSERT INTO paper_apply_receipts VALUES ('p', ?, 'hash', ?)",
+            [(key, json.dumps({"revision": 4})) for key in ("accept", "generic")],
+        )
+        section = capture_paper_section(source, "p")
+        assert section is not None
+        restore_paper_section(target, section)
+        rows = target.execute(
+            "SELECT receipt_key, group_id, payload FROM paper_change_receipts ORDER BY receipt_key"
+        ).fetchall()
+        assert [(row[0], row[1]) for row in rows] == [("accept", "group"), ("generic", None)]
+        accepted = json.loads(rows[0][2])
+        assert accepted == {
+            "inverse": [{"kind": "delete", "file_id": "text"}],
+            "fingerprint": "hash",
+            "receipt": {"revision": 4},
+        }
+        assert json.loads(rows[1][2])["receipt"] == {"revision": 4}
+        assert not target.execute(
+            "SELECT 1 FROM sqlite_schema WHERE name='paper_apply_receipts'"
+        ).fetchall()
+    finally:
+        source.close()
+        target.close()
 
 
 def test_projection_is_recursive_binary_safe_and_rejects_links(tmp_path):
@@ -227,16 +275,17 @@ def test_backup_binds_saved_sqlite_revision_separately_from_projection(tmp_path,
         store.close()
 
 
-def test_restore_allowlist_matches_fresh_and_upgraded_migration_62(tmp_path):
+def test_restore_allowlist_matches_fresh_and_upgraded_paper_migrations(tmp_path):
     from rcp.storage import AppStore
     from rcp.storage.base import AppStoreBase
 
     fresh = AppStore(tmp_path / "fresh.sqlite3")
     upgraded = sqlite3.connect(":memory:")
     AppStoreBase._migrate_paper_live(upgraded)
+    upgraded_changes = _database(unified=False)
     try:
         with fresh.connection() as connection:
-            for database in (connection, upgraded):
+            for database in (connection, upgraded, upgraded_changes):
                 tables = set(backup_paper.PAPER_PROJECT_TABLES + backup_paper.PAPER_SHARED_TABLES)
                 shape = tuple(
                     tuple(row)
@@ -250,15 +299,17 @@ def test_restore_allowlist_matches_fresh_and_upgraded_migration_62(tmp_path):
     finally:
         fresh.close()
         upgraded.close()
+        upgraded_changes.close()
 
 
-def test_deleted_binary_without_retained_history_does_not_require_pruned_bytes(
-    tmp_path, monkeypatch
-):
+@pytest.mark.parametrize("coached", [False, True])
+def test_deleted_binary_backup_retains_only_required_bytes(tmp_path, monkeypatch, coached):
     import asyncio
+    from contextlib import nullcontext
 
     from rcp import limits
     from rcp.paper import PaperLive, PaperOp
+    from rcp.paper.changes import PaperChanges
     from rcp.storage import AppStore
     from rcp.transport import LocalStateWorkspace
 
@@ -272,11 +323,29 @@ def test_deleted_binary_without_retained_history_does_not_require_pruned_bytes(
         created = await live.apply(
             "p", [PaperOp(kind="create", path="figure.png", file_kind="binary", data=b"image")], "h"
         )
-        await live.apply("p", [PaperOp(kind="delete", file_id=created.file_ids[0])], "h")
+        changes = PaperChanges(store, live, lambda _: nullcontext())
+        if coached:
+            output = tmp_path / "changes"
+            (output / "files").mkdir(parents=True)
+            (output / "moves.json").write_text('{"delete":["figure.png"]}')
+            groups = await asyncio.to_thread(
+                changes.collect, "p", "task", await live.snapshot("p"), output
+            )
+            await asyncio.to_thread(changes.accept, "p", groups[0].group_id, "h")
+            # An accepted card no longer pins the old snapshot, but Undo still needs bytes.
+            await live.apply("p", [PaperOp(kind="create", path="later.md")], "h")
+        else:
+            await live.apply("p", [PaperOp(kind="delete", file_id=created.file_ids[0])], "h")
         with store.connection() as connection:
-            assert connection.execute("SELECT count(*) FROM paper_blobs").fetchone()[0] == 0
+            assert connection.execute("SELECT count(*) FROM paper_blobs").fetchone()[0] == int(
+                coached
+            )
             section = capture_paper_section(connection, "p")
-        assert section is not None and not section.files
+        assert section is not None and all(file.kind == "text" for file in section.files)
+        if coached:
+            await asyncio.to_thread(changes.undo, "p", groups[0].group_id, "h")
+            restored = await live.snapshot("p")
+            assert any(file.file_id == created.file_ids[0] for file in restored.files)
         await live.close()
 
     try:

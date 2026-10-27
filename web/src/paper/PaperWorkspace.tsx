@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Cloud, CloudOff, Copy, History, LoaderCircle, PanelLeft, RotateCcw } from "lucide-react";
 import { api } from "../core/api";
+import { referenceUrl } from "../core/projectReferences";
 import type {
   AgentTask,
   GraphTargetRef,
@@ -267,9 +268,13 @@ export function PaperWorkspace({
             disabled={!file}
             onClick={() =>
               void perform(async () => {
-                const url = new URL(window.location.href);
-                url.hash = `/projects/${encodeURIComponent(project.id)}?view=paper&paper_file=${encodeURIComponent(file!.file_id)}`;
-                await navigator.clipboard.writeText(url.href);
+                await navigator.clipboard.writeText(
+                  referenceUrl(
+                    project.id,
+                    { kind: "main" },
+                    { kind: "paper", file_id: file!.file_id },
+                  ),
+                );
               })
             }
           >

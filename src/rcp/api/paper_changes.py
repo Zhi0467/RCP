@@ -1,10 +1,12 @@
-"""Project-scoped review routes; app.py registers this router during S1 integration."""
+"""Project-scoped review routes for saved Paper changes."""
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from rcp.api.dependencies import (
@@ -17,7 +19,7 @@ from rcp.api.dependencies import (
     project_write_admission,
     require_project_membership,
 )
-from rcp.paper.changes import OutdatedChange, get_paper_changes
+from rcp.paper.changes import OutdatedChange, PaperChanges, get_paper_changes
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
 
@@ -29,7 +31,15 @@ class TaskChangesRequest(BaseModel):
 def _manager(project_id: str, request: Request):
     catalog = get_catalog(request)
     canonical = catalog.resolve_project_id(project_id)
-    return canonical, get_paper_changes(get_project_service(catalog, canonical))
+    manager = get_paper_changes(get_project_service(catalog, canonical))
+
+    @contextmanager
+    def admission(project: str):
+        with manager.admission(project):
+            require_project_membership(project, request)
+            yield
+
+    return canonical, PaperChanges(manager.store, manager.live, admission)
 
 
 @router.get("/api/projects/{project_id}/paper/changes")
@@ -38,34 +48,47 @@ def changes(project_id: str, request: Request, task_id: str | None = None):
     return {"groups": [group.public() for group in manager.groups(canonical, task_id)]}
 
 
+@router.get("/api/projects/{project_id}/paper/changes/{change_id}/proposed")
+def proposed(project_id: str, change_id: str, request: Request):
+    canonical, manager = _manager(project_id, request)
+    try:
+        return PlainTextResponse(
+            manager.proposed(canonical, change_id),
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                "Content-Disposition": "attachment",
+            },
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Paper change not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.post("/api/projects/{project_id}/paper/changes/accept-all")
 def accept_all(project_id: str, body: TaskChangesRequest, request: Request):
     actor = get_identity_access(request).require_patch_capable_identity(request).user_id
-    with project_write_admission(project_id, request) as canonical:
-        _, manager = _manager(canonical, request)
-        try:
-            return {
-                "groups": [
-                    group.public() for group in manager.accept_all(canonical, body.task_id, actor)
-                ]
-            }
-        except (ValueError, KeyError) as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    canonical, manager = _manager(project_id, request)
+    try:
+        return {
+            "groups": [
+                group.public() for group in manager.accept_all(canonical, body.task_id, actor)
+            ]
+        }
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/api/projects/{project_id}/paper/changes/undo-all")
 def undo_all(project_id: str, body: TaskChangesRequest, request: Request):
     actor = get_identity_access(request).require_patch_capable_identity(request).user_id
-    with project_write_admission(project_id, request) as canonical:
-        _, manager = _manager(canonical, request)
-        try:
-            return {
-                "groups": [
-                    group.public() for group in manager.undo_all(canonical, body.task_id, actor)
-                ]
-            }
-        except (ValueError, KeyError) as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    canonical, manager = _manager(project_id, request)
+    try:
+        return {
+            "groups": [group.public() for group in manager.undo_all(canonical, body.task_id, actor)]
+        }
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 def _continue(project_id: str, task_id: str, request: Request, *, group_id: str | None = None):
@@ -110,11 +133,11 @@ def _continue(project_id: str, task_id: str, request: Request, *, group_id: str 
         )
     else:
         _, manager = _manager(project_id, request)
-        group = next(
-            (group for group in manager.groups(project_id, task_id) if group.group_id == group_id),
-            None,
-        )
-        if group is None or group.state not in {"pending", "outdated"}:
+        try:
+            group = manager._load(project_id, group_id)
+        except KeyError:
+            group = None
+        if group is None or group.task_id != task_id or group.state not in {"pending", "outdated"}:
             raise HTTPException(
                 status_code=409, detail="Only undecided paper changes can be refreshed"
             )
@@ -152,19 +175,19 @@ def decide(
     request: Request,
 ):
     actor = get_identity_access(request).require_patch_capable_identity(request).user_id
-    with project_write_admission(project_id, request) as canonical:
-        _, manager = _manager(canonical, request)
-        try:
-            if action == "refresh":
-                group = next(
-                    (group for group in manager.groups(canonical) if group.group_id == group_id),
-                    None,
-                )
-                if group is None:
-                    raise KeyError("Paper change group not found")
+    canonical, manager = _manager(project_id, request)
+    try:
+        if action == "refresh":
+            group = next(
+                (group for group in manager.groups(canonical) if group.group_id == group_id),
+                None,
+            )
+            if group is None:
+                raise KeyError("Paper change group not found")
+            with project_write_admission(project_id, request):
                 return _continue(canonical, group.task_id, request, group_id=group_id)
-            return getattr(manager, action)(canonical, group_id, actor).public()
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Paper change group not found") from exc
-        except (OutdatedChange, ValueError) as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return getattr(manager, action)(canonical, group_id, actor).public()
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Paper change group not found") from exc
+    except (OutdatedChange, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

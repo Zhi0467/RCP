@@ -423,8 +423,8 @@ def _permission(
     base["external_directory"] = "allow"
     if hidden_read_scope is not None:
         # Native read uses worktree-relative paths; the non-Git guard fixes
-        # their base at /. Paper may run inside Git, and grep/glob match
-        # search expressions: the launch reports provider_native_tools_uncovered.
+        # their base at /. Grep/glob match search expressions: the launch
+        # reports provider_native_tools_uncovered.
         patterns = [
             *(path + "/**" for path in hidden_read_scope.hidden_directories),
             *hidden_read_scope.hidden_directories,

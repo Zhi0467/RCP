@@ -28,9 +28,8 @@ from rcp.agents.prompts import (
 from rcp.background import AgentTaskExecution
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import COMMAND_MAILBOX_TIMEOUT_SECONDS, PAPER_COACH_MAX_REFRESH_ROUNDS
-from rcp.paper import PaperService, WritingSession
+from rcp.paper import PaperLive, PaperService, PaperSnapshot, WritingSession
 from rcp.paper.changes import InvalidChanges, get_paper_changes
-from rcp.paper.coach_seam import PaperLive, SavedPaperSnapshot, get_paper_live
 from rcp.providers import ProviderSkillReference, configured_runtime_id
 from rcp.runs.patch_validator import (
     cleanup_patch_validation_mailbox,
@@ -140,7 +139,7 @@ async def stream_coach(
 
 def _stage_saved_paper(
     live: PaperLive,
-    snapshot: SavedPaperSnapshot,
+    snapshot: PaperSnapshot,
     stage: Path,
     snapshots: list[Path],
     round_number: int,
@@ -160,7 +159,7 @@ def _stage_saved_paper(
 
 def _record_paper_base(
     execution: AgentTaskExecution | None,
-    snapshot: SavedPaperSnapshot,
+    snapshot: PaperSnapshot,
     mode: str,
     snapshot_path: Path,
     changes_path: Path,
@@ -305,13 +304,15 @@ async def _stream_coach(
             execution.checkpoint_stage("", str(local_stage))
     token = _task_token(execution)
     try:
-        live = get_paper_live(service)
+        live = service.paper_live
         changes = get_paper_changes(service)
         _validate_paper_continuation(execution, request, paper.project_id)
         if request.refresh_source_task_id:
             selected = [
                 group
-                for group in changes.groups(paper.project_id, request.refresh_source_task_id)
+                for group in await asyncio.to_thread(
+                    changes.groups, paper.project_id, request.refresh_source_task_id
+                )
                 if group.group_id in request.refresh_group_ids
             ]
             if (
@@ -323,13 +324,15 @@ async def _stream_coach(
             request = request.model_copy(
                 update={
                     "refresh_file_ids": sorted(
-                        changes.affected_file_ids(paper.project_id, set(request.refresh_group_ids))
+                        await asyncio.to_thread(
+                            changes.affected_file_ids,
+                            paper.project_id,
+                            set(request.refresh_group_ids),
+                        )
                     )
                 }
             )
-        snapshot = SavedPaperSnapshot.model_validate(
-            live.snapshot(paper.project_id), from_attributes=True
-        )
+        snapshot = await live.snapshot(paper.project_id)
         if request.refresh_file_ids is not None:
             wanted = set(request.refresh_file_ids)
             snapshot = snapshot.model_copy(
@@ -630,7 +633,8 @@ async def _stream_coach(
             if not completed or provider_failed or _coach_stopped(execution):
                 break
             try:
-                changes.collect(
+                await asyncio.to_thread(
+                    changes.collect,
                     paper.project_id,
                     token,
                     snapshot,
@@ -650,7 +654,7 @@ async def _stream_coach(
                 yield _sse(AgentEvent(event="error", text=str(exc)))
                 break
             replace_source_task_id = None
-            stale_files = changes.stale_file_ids(paper.project_id, token)
+            stale_files = await asyncio.to_thread(changes.stale_file_ids, paper.project_id, token)
             if (
                 not stale_files
                 or refresh_round == PAPER_COACH_MAX_REFRESH_ROUNDS
@@ -659,12 +663,12 @@ async def _stream_coach(
                 break
             if _coach_stopped(execution):
                 break
-            newer = SavedPaperSnapshot.model_validate(
-                live.snapshot(paper.project_id), from_attributes=True
-            )
+            newer = await live.snapshot(paper.project_id)
             if newer.revision <= snapshot.revision:
                 break
-            replace_group_ids = changes.stale_group_ids(paper.project_id, token)
+            replace_group_ids = await asyncio.to_thread(
+                changes.stale_group_ids, paper.project_id, token
+            )
             snapshot = newer.model_copy(
                 update={"files": [file for file in newer.files if file.file_id in stale_files]}
             )
@@ -732,8 +736,12 @@ async def _stream_coach(
         if completed and not provider_failed and not _coach_stopped(execution):
             if request.mode == "apply_directly":
                 # PaperChanges holds the live write-admission fence around each apply.
-                changes.accept_all(
-                    paper.project_id, token, "Coach, applied directly", directly=True
+                await asyncio.to_thread(
+                    changes.accept_all,
+                    paper.project_id,
+                    token,
+                    "Coach, applied directly",
+                    directly=True,
                 )
             yield _sse(AgentEvent(event="done"))
     finally:
@@ -745,7 +753,7 @@ async def _stream_coach(
             execution=execution,
         )
     if completed and native_session_id:
-        intro_hash, graph_revision, research_hash = service.pointer_hashes()
+        intro_hash, graph_revision, research_hash = await asyncio.to_thread(service.pointer_hashes)
         now = datetime.now(UTC)
         paper.record_session(
             WritingSession(

@@ -2370,7 +2370,7 @@ fn optional_digest(
 
 /// Every transfer record version this desktop relays. The negotiated
 /// team-shell protocol narrows it to the versions the target server accepts.
-const RELAYED_RECORD_SCHEMA_VERSIONS: [u64; 5] = [2, 3, 4, 5, 6];
+const RELAYED_RECORD_SCHEMA_VERSIONS: [u64; 6] = [2, 3, 4, 5, 6, 7];
 
 fn target_record_schema_versions(protocol: u32) -> &'static [u64] {
     match protocol {
@@ -4313,7 +4313,7 @@ mod tests {
             validate_source_configuration(&parsed).unwrap();
             assert_eq!(serde_json::to_value(parsed).unwrap(), included);
         }
-        for unsupported in [1, 7] {
+        for unsupported in [1, 8] {
             included["record_schema_version"] = serde_json::json!(unsupported);
             let parsed = serde_json::from_value(included.clone()).unwrap();
             assert!(validate_source_configuration(&parsed).is_err());
@@ -4368,7 +4368,7 @@ mod tests {
                 .unwrap()
                 .record_schema_version = None;
             validate_source_for_prepare(&source, &request, TARGET_SPACE_ID, protocol).unwrap();
-            for version in 2..=6 {
+            for version in 2..=7 {
                 source
                     .source_configuration
                     .as_mut()

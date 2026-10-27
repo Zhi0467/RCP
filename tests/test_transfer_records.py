@@ -1107,14 +1107,23 @@ def test_saved_paper_records_roundtrip_preserves_revision_history_and_hold(
             (project_id, json.dumps(snapshot["files"])),
         )
         connection.execute(
-            "INSERT INTO paper_apply_receipts VALUES (?, 'card', 'fingerprint', '{}')",
-            (project_id,),
+            "INSERT INTO paper_change_groups VALUES (?, 'group', 'task', 4, 'review', 'accepted', 'human', ?, ?)",
+            (project_id, source.now(), source.now()),
+        )
+        connection.execute(
+            "INSERT INTO paper_changes VALUES (?, 'change', 'group', '{}')", (project_id,)
+        )
+        connection.execute(
+            "INSERT INTO paper_change_receipts VALUES (?, 'accept', 'group', 'accept', '{}', ?)",
+            (project_id, source.now()),
         )
     exported = source.export_project_transfer_records(project_id, attributions=attributions)
     restored = TransferRecordBundle.model_validate_json(exported.model_dump_json())
     assert restored.schema_version == 7
     assert restored.paper is not None
     assert restored.paper == exported.paper
+    for table in ("paper_change_groups", "paper_changes", "paper_change_receipts"):
+        assert len(restored.paper.tables[table]) == 1
     with target.connection() as connection:
         target._insert_transfer_paper(connection, restored)
         assert backup_paper.capture_paper_section(connection, project_id) == exported.paper

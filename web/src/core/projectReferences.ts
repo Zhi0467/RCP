@@ -18,7 +18,10 @@ export function referenceKey(selector: ProjectReferenceSelector): string {
   return JSON.stringify(
     selector.kind === "node"
       ? [selector.kind, selector.branch_id, selector.node_id]
-      : [selector.kind, selector.kind === "artifact" ? selector.artifact_id : "introduction"],
+      : [
+          selector.kind,
+          selector.kind === "artifact" ? selector.artifact_id : (selector.file_id ?? null),
+        ],
   );
 }
 
@@ -42,7 +45,7 @@ export function referenceUrl(
         ? selector.node_id
         : selector.kind === "artifact"
           ? selector.artifact_id
-          : "introduction",
+          : (selector.file_id ?? "all"),
   });
   return `${window.location.href.split("#")[0]}${hash}`;
 }
@@ -113,7 +116,12 @@ export function extractReferences(
                 node_id: link.itemId,
                 branch_id: link.target === "main" ? null : link.target,
               }
-            : { kind: "paper" };
+            : {
+                kind: "paper",
+                ...(link.itemId === "all" || link.itemId === "introduction"
+                  ? {}
+                  : { file_id: link.itemId }),
+              };
       const result = mergeReferences(
         references,
         [{ selector, target, label: labelFor(selector) }],
@@ -129,7 +137,8 @@ export function extractReferences(
 
 /** A link names no title; the sent turn shows the server's display name. */
 export function referenceFallbackLabel(selector: ProjectReferenceSelector): string {
-  if (selector.kind === "paper") return "Paper introduction";
+  if (selector.kind === "paper")
+    return selector.file_id ? `Paper ${selector.file_id.slice(0, 6)}` : "Whole paper";
   if (selector.kind === "node") return selector.node_id;
   return `Artifact ${selector.artifact_id.slice(0, 6)}`;
 }
@@ -184,7 +193,8 @@ export function parseReferenceDraft(value: string | null): DraftReference[] {
         typeof item?.label === "string" &&
         (item?.target?.kind === "main" ||
           (item?.target?.kind === "branch" && typeof item.target.branch_id === "string")) &&
-        (s?.kind === "paper" ||
+        ((s?.kind === "paper" &&
+          (s.file_id == null || (typeof s.file_id === "string" && s.file_id.length > 0))) ||
           (s?.kind === "artifact" && typeof s.artifact_id === "string") ||
           (s?.kind === "node" &&
             typeof s.node_id === "string" &&
@@ -201,7 +211,7 @@ export function sourceReference(source: ProjectReferenceSource): DraftReference 
   const target = source.graph_head?.target ?? { kind: "main" as const };
   return {
     target,
-    label: source.source_id,
+    label: source.path ?? source.source_id,
     selector:
       source.kind === "artifact"
         ? { kind: "artifact", artifact_id: source.source_id }
@@ -211,6 +221,9 @@ export function sourceReference(source: ProjectReferenceSource): DraftReference 
               node_id: source.source_id,
               branch_id: target.kind === "branch" ? target.branch_id : null,
             }
-          : { kind: "paper" },
+          : {
+              kind: "paper",
+              ...(source.source_id === "introduction" ? {} : { file_id: source.source_id }),
+            },
   };
 }

@@ -11,6 +11,10 @@ class PaperConflict(ValueError):
     """A guarded operation no longer describes the saved tree."""
 
 
+class PaperPrecondition(PaperConflict):
+    """An atomic live mutation definitely refused its saved-tree preconditions."""
+
+
 class PaperLimit(ValueError):
     """A Paper resource budget would be exceeded."""
 

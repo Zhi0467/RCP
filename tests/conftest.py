@@ -45,6 +45,9 @@ def isolated_host(
     yield
     for engine in engines:
         engine.shutdown()
+    from .paper_helpers import close_paper_owners
+
+    close_paper_owners()
 
 
 @pytest.fixture
