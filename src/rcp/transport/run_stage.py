@@ -212,6 +212,23 @@ class RemoteRunStage:
 
         return self._ssh(["python3", "-c", _remote_script("remote_stage_root.py"), "check", root])
 
+    def absent_paths(self, paths: list[str]) -> list[str]:
+        """The paths with nothing behind them on the execution account."""
+        from rcp.agents.hidden_read import staged_hidden_read_source
+
+        result = self._ssh(
+            ["python3", "-c", staged_hidden_read_source(), "--absent-paths", json.dumps(paths)]
+        )
+        if result.returncode == 255:
+            raise _ssh_failure(result, "could not inspect remote protected paths")
+        try:
+            absent = json.loads(result.stdout) if not result.returncode else None
+        except json.JSONDecodeError:
+            absent = None
+        if not isinstance(absent, list) or not set(absent) <= set(paths):
+            raise ValueError("remote protected paths could not be inspected")
+        return absent
+
     def canonical_directories(
         self,
         paths: list[str],

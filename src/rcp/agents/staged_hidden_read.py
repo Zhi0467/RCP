@@ -68,6 +68,13 @@ def probe_hidden_read_wrapper(*, timeout=PROBE_TIMEOUT_SECONDS) -> WrapperReadin
     return result
 
 
+def absent_paths(paths=()):
+    """The declared paths with nothing at their resolved location on this account."""
+    return [
+        path for path in paths if not os.path.lexists(os.path.realpath(os.path.expanduser(path)))
+    ]
+
+
 def host_facts(paths=()):
     """Resolve on the actual account, including absent paths and login overrides."""
     home = os.path.realpath(os.path.expanduser("~"))
@@ -75,6 +82,7 @@ def host_facts(paths=()):
         "home": home,
         "os_account": pwd.getpwuid(os.geteuid()).pw_name,
         "paths": {path: os.path.realpath(os.path.expanduser(path)) for path in paths},
+        "absent": absent_paths(paths),
         "provider_login_files": [
             os.path.realpath(
                 os.path.join(os.environ.get("CODEX_HOME", home + "/.codex"), "auth.json")
@@ -271,6 +279,7 @@ def main(argv=None):
     parser.add_argument("--policy")
     parser.add_argument("--probe", action="store_true")
     parser.add_argument("--host-facts")
+    parser.add_argument("--absent-paths")
     parser.add_argument("--install")
     # argparse interprets -lc as clustered short flags unless normalized.
     arguments = ["-c" if value == "-lc" else value for value in arguments]
@@ -285,6 +294,9 @@ def main(argv=None):
         return 0
     if args.host_facts is not None:
         print(json.dumps(host_facts(json.loads(args.host_facts))))
+        return 0
+    if args.absent_paths is not None:
+        print(json.dumps(absent_paths(json.loads(args.absent_paths))))
         return 0
     if args.install is not None:
         install(args.install, json.load(sys.stdin))

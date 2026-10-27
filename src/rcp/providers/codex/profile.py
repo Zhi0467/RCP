@@ -424,19 +424,23 @@ def _codex_permission_profile(
     roots = ",".join(
         f"{json.dumps(path, ensure_ascii=False)}=true" for path in scope.writable_roots
     )
+    # Every path named here exists: on Linux, Codex makes a stand-in file for a
+    # missing path inside a writable root, and a killed command leaves it behind
+    # to block every later sandbox. Protected paths are "read", never "deny":
+    # Codex reads `deny` as no access at all, which would also revoke the
+    # canonical run context. Invariant 4 protects that state from *writes*.
     protected = ",".join(
-        f'{json.dumps(path, ensure_ascii=False)}="read"' for path in scope.protected_write_paths
+        f'{json.dumps(path, ensure_ascii=False)}="read"'
+        for path in scope.protected_write_paths
+        if path not in scope.absent_protected_paths
     )
     denials = _codex_read_denials(hidden_read_scope)
     # Codex protects `.git` separately, so the writable root alone does not let
-    # Work run ordinary Git commands such as fetch or pull. `.research` is "read",
-    # never "deny": Codex reads `deny` as no access at all, which would also revoke
-    # the canonical run context. Invariant 4 protects that state from *writes*.
+    # Work run ordinary Git commands such as fetch or pull.
     return (
         "permissions={rcp_project={workspace_roots={"
         + roots
-        + '},filesystem={":root"="read",":workspace_roots"={"."="write",'
-        '".git"="write",".research"="read"}'
+        + '},filesystem={":root"="read",":workspace_roots"={"."="write",".git"="write"}'
         + ("," + protected if protected else "")
         + ("," + denials if denials else "")
         + "},network={enabled=true}}}"
@@ -453,7 +457,13 @@ def _codex_read_denials(hidden_read_scope: HiddenReadScope | None = None) -> str
         *hidden_read_scope.hidden_files,
         *hidden_read_scope.hidden_globs,
     )
-    return ",".join(f'{json.dumps(path)}="deny"' for path in paths)
+    # A missing path has nothing to hide, and naming one would make Codex
+    # create a stand-in for it (see `_codex_permission_profile`).
+    return ",".join(
+        f'{json.dumps(path)}="deny"'
+        for path in paths
+        if path not in hidden_read_scope.absent_entries
+    )
 
 
 def _codex_shell_environment_policy(scope: HiddenReadScope | None) -> dict[str, object]:

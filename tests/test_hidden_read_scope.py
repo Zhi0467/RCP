@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import glob
 import os
 from pathlib import Path
 
@@ -138,6 +139,7 @@ def _resolve(manifest, tmp_path, monkeypatch, *, readiness=None, **changes):
             "os_account": "research",
             "provider_login_files": [str(tmp_path / "home/.codex/auth.json")],
             "paths": {path: os.path.realpath(path) for path in paths},
+            "absent": [path for path in paths if not os.path.lexists(os.path.realpath(path))],
             "runtime_paths": ["/opt/python/bin"],
             "readiness": readiness or {"ready": True, "platform": "linux", "reason": None},
         }
@@ -184,6 +186,20 @@ def test_adding_folder_changes_fingerprint(manifest: Manifest, tmp_path: Path, m
     assert first.fingerprint != second.fingerprint
     assert str(tmp_path / "private") in second.hidden_directories
     assert second.enforcement.status == "enforced"
+
+
+def test_entries_missing_on_the_execution_host_are_recorded_absent(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    # Codex is never told about these: its Linux sandbox would make a stand-in.
+    providers = tmp_path / "data/providers/claude"
+    providers.mkdir(parents=True)
+    scope = _resolve(manifest, tmp_path, monkeypatch)
+    assert str(providers) not in scope.absent_entries
+    assert str(tmp_path / "home/.config/rcp/claude-setup-token") in scope.absent_entries
+    assert str(tmp_path / "data/providers/codex") in scope.absent_entries
+    assert glob.escape(str(tmp_path / "data")) + "/rcp.sqlite3*" not in scope.absent_entries
+    assert glob.escape(str(tmp_path / "data/run-stage")) + "/backup-*" in scope.absent_entries
 
 
 def test_tool_wrapper_lives_in_a_hidden_folder(manifest, tmp_path, monkeypatch) -> None:
@@ -284,6 +300,7 @@ def test_remote_canonicalization_uses_shipped_source(manifest, tmp_path, monkeyp
                     "runtime_paths": ["/usr/bin"],
                     "readiness": {"ready": True, "platform": "linux", "reason": None},
                     "paths": {path: path.replace("/alias", "/remote/private") for path in paths},
+                    "absent": [],
                 }
             ),
             "",

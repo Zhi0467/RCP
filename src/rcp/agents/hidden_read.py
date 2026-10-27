@@ -349,15 +349,13 @@ def resolve_hidden_read_scope(
             | {canonical[key.path] for key in key_evidence if key.visibility == "hidden"}
         )
     )
-    globs = tuple(
-        sorted(
-            {
-                glob.escape(canonical[prefix]) + suffix
-                for pattern in globs
-                for prefix, suffix in [_glob_prefix(pattern)]
-            }
-        )
-    )
+    absent = {canonical[path] for path in resolved["absent"]}
+    glob_folders = {
+        glob.escape(canonical[prefix]) + suffix: canonical[prefix]
+        for pattern in globs
+        for prefix, suffix in [_glob_prefix(pattern)]
+    }
+    globs = tuple(sorted(glob_folders))
     # Defaults also yield to a readable key: never mask its containing folder.
     filtered_dirs = tuple(
         path
@@ -391,6 +389,14 @@ def resolve_hidden_read_scope(
         key_evidence=tuple(
             HiddenReadKeyEvidence.model_validate({**key.model_dump(), "path": canonical[key.path]})
             for key in key_evidence
+        ),
+        absent_entries=tuple(
+            sorted(
+                {
+                    *(path for path in (*filtered_dirs, *filtered_files) if path in absent),
+                    *(pattern for pattern in filtered_globs if glob_folders[pattern] in absent),
+                }
+            )
         ),
         enforcement=HiddenReadStatus(
             status="unhidden" if reasons else "enforced", reasons=tuple(sorted(reasons))
