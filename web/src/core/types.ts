@@ -3115,6 +3115,24 @@ export interface ProviderReadiness {
   default_runtime: string;
 }
 
+export interface PaperFile {
+  file_id: string;
+  path: string;
+  kind: "text" | "binary";
+  format: string;
+  size: number;
+  sha256?: string;
+}
+
+export interface PaperTree {
+  revision: number;
+  saved_revision: number;
+  published_revision: number;
+  publish_state: "published" | "pending" | "failed";
+  hold: string | null;
+  files: PaperFile[];
+}
+
 export interface PaperSnapshot {
   draft_version: string | null;
   content: string;
