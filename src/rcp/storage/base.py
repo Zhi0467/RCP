@@ -132,6 +132,7 @@ class AppStoreBase:
         (59, "conversation_names_v1"),
         (60, "chat_forks_v1"),
         (61, "machine_settings_v1"),
+        (62, "paper_live_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -943,11 +944,107 @@ class AppStoreBase:
             name="machine_settings_v1",
             migration=self._migrate_machine_settings,
         )
+        self._run_storage_schema_migration(
+            connection,
+            version=62,
+            name="paper_live_v1",
+            migration=self._migrate_paper_live,
+        )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
         if not schema_template:
             self._validate_storage_schema(connection)
         return bootstrap_code
+
+    @staticmethod
+    def _migrate_paper_live(connection: sqlite3.Connection) -> None:
+        # Execute individually: executescript would commit the migration transaction.
+        statements = (
+            """CREATE TABLE IF NOT EXISTS paper_files (
+                project_id TEXT NOT NULL,
+                file_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK(kind IN ('text', 'binary')),
+                created_at TEXT NOT NULL,
+                deleted_at TEXT,
+                blob_sha256 TEXT,
+                PRIMARY KEY(project_id, file_id)
+            )""",
+            """CREATE UNIQUE INDEX IF NOT EXISTS paper_files_live_path
+                ON paper_files(project_id, path) WHERE deleted_at IS NULL""",
+            """CREATE TABLE IF NOT EXISTS paper_updates (
+                project_id TEXT NOT NULL,
+                file_id TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                "update" BLOB NOT NULL,
+                revision INTEGER NOT NULL,
+                actor TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(project_id, file_id, seq)
+            )""",
+            """CREATE TABLE IF NOT EXISTS paper_doc_states (
+                project_id TEXT NOT NULL,
+                file_id TEXT NOT NULL,
+                state BLOB NOT NULL,
+                through_seq INTEGER NOT NULL,
+                through_revision INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(project_id, file_id)
+            )""",
+            """CREATE TABLE IF NOT EXISTS paper_blobs (
+                sha256 TEXT PRIMARY KEY,
+                bytes BLOB NOT NULL,
+                size INTEGER NOT NULL CHECK(size >= 0)
+            )""",
+            """CREATE TABLE IF NOT EXISTS paper_revisions (
+                project_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                PRIMARY KEY(project_id, revision)
+            )""",
+            """CREATE TABLE IF NOT EXISTS paper_publication (
+                project_id TEXT PRIMARY KEY,
+                saved_revision INTEGER NOT NULL DEFAULT 0,
+                published_revision INTEGER NOT NULL DEFAULT 0,
+                pending_since TEXT,
+                last_error TEXT,
+                hold TEXT,
+                last_edit_at TEXT
+            )""",
+            """CREATE TABLE IF NOT EXISTS paper_versions (
+                project_id TEXT NOT NULL,
+                version_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                kind TEXT NOT NULL CHECK(kind IN ('auto', 'named')),
+                name TEXT,
+                actor TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                manifest TEXT NOT NULL,
+                PRIMARY KEY(project_id, version_id)
+            )""",
+            """CREATE INDEX IF NOT EXISTS paper_versions_revision
+                ON paper_versions(project_id, revision)""",
+            """CREATE TABLE IF NOT EXISTS paper_version_texts (
+                sha256 TEXT PRIMARY KEY,
+                zbody BLOB NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS paper_apply_receipts (
+                project_id TEXT NOT NULL,
+                receipt_key TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                receipt TEXT NOT NULL,
+                PRIMARY KEY(project_id, receipt_key)
+            )""",
+            """CREATE TABLE IF NOT EXISTS paper_saved_snapshots (
+                project_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                manifest TEXT NOT NULL,
+                PRIMARY KEY(project_id, revision)
+            )""",
+        )
+        for statement in statements:
+            connection.execute(statement)
 
     def _migrate_conversation_names(self, connection: sqlite3.Connection) -> None:
         from rcp.storage.bulletin import migrate_bulletin_actor_ids

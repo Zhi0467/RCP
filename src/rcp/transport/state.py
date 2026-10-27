@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import fcntl
 import hashlib
 import importlib.resources
@@ -1011,6 +1012,165 @@ class StateWorkspaceStatus(BaseModel):
     error: str | None = None
 
 
+def _paper_tree_digest(directory: Path) -> str:
+    """Fingerprint a plain tree, rejecting links and special files at every level."""
+    import hashlib
+    import stat
+
+    if not stat.S_ISDIR(directory.lstat().st_mode):
+        raise ValueError("Paper publication source must be a plain directory")
+    digest = hashlib.sha256()
+    for path in sorted(directory.rglob("*")):
+        mode = path.lstat().st_mode
+        if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+            raise ValueError("Paper publication contains a symbolic link or special file")
+        name = path.relative_to(directory).as_posix().encode("utf-8")
+        digest.update(len(name).to_bytes(8, "big"))
+        digest.update(name)
+        digest.update(b"d" if stat.S_ISDIR(mode) else b"f")
+        if stat.S_ISREG(mode):
+            body = hashlib.sha256()
+            with path.open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    body.update(chunk)
+            digest.update(body.digest())
+    return digest.hexdigest()
+
+
+def _select_paper_tree(
+    root: Path,
+    stage: Path,
+    revision: int,
+    digest: str,
+    lock_timeout: float,
+    *,
+    reconcile: bool = False,
+) -> bool:
+    """Select a complete tree with one rename and reconcile a lost commit response.
+
+    This same function runs remotely. Its process owns the advisory lock through
+    selection and marker fsync; a disconnected caller cannot release that lock
+    while a child is still committing. The marker is repaired by comparing the
+    selected tree if interruption occurred between rename and marker persistence.
+    """
+    import ctypes
+    import fcntl
+    import json
+    import os
+    import shutil
+    import stat
+    import sys
+    import time
+
+    def sync_directory(path: Path) -> None:
+        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    root.mkdir(parents=True, exist_ok=True)
+    publish = root / ".publish"
+    publish.mkdir(exist_ok=True)
+    if not stat.S_ISDIR(publish.lstat().st_mode):
+        raise ValueError("Paper staging directory is unsafe")
+    if stage.parent != publish or not stage.name.startswith("paper-stage-"):
+        raise ValueError("Paper stage is outside its owned publication directory")
+    lock_fd = os.open(root / ".refresh.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(lock_fd, "a+") as lock:
+        deadline = time.monotonic() + lock_timeout
+        while True:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Paper publication lock is busy") from None
+                time.sleep(
+                    min(STATE_LOCK_POLL_INTERVAL_SECONDS, max(0, deadline - time.monotonic()))
+                )
+        selected = root / "paper"
+        marker = publish / "paper-current.json"
+        if marker.exists():
+            previous = json.loads(marker.read_text(encoding="utf-8"))
+            if previous["revision"] > revision:
+                raise ValueError("Paper publication revision would move backwards")
+            if previous["revision"] == revision and previous["sha256"] != digest:
+                raise ValueError("Paper publication revision has different content")
+        selected_matches = selected.exists() and _paper_tree_digest(selected) == digest
+        if not selected_matches:
+            if reconcile:
+                return False
+            if _paper_tree_digest(stage) != digest:
+                raise ValueError("Paper staged tree does not match its publication digest")
+            for path in stage.rglob("*"):
+                if path.is_file():
+                    with path.open("rb") as stream:
+                        os.fsync(stream.fileno())
+            for directory in sorted(
+                (path for path in stage.rglob("*") if path.is_dir()),
+                key=lambda path: len(path.parts),
+                reverse=True,
+            ):
+                sync_directory(directory)
+            sync_directory(stage)
+            sync_directory(publish)
+            if selected.exists():
+                libc = ctypes.CDLL(None, use_errno=True)
+                if sys.platform == "darwin":
+                    result = libc.renamex_np(
+                        os.fsencode(stage), os.fsencode(selected), 2
+                    )  # RENAME_SWAP
+                elif sys.platform == "linux":
+                    # AT_FDCWD, RENAME_EXCHANGE: both directory names move atomically.
+                    result = libc.renameat2(
+                        -100, os.fsencode(stage), -100, os.fsencode(selected), 2
+                    )
+                else:
+                    raise OSError("Atomic Paper tree replacement requires Linux or macOS")
+                if result:
+                    error = ctypes.get_errno()
+                    raise OSError(error, os.strerror(error))
+            else:
+                os.replace(stage, selected)
+        # Reconciliation also persists a rename interrupted before directory fsync.
+        sync_directory(root)
+        sync_directory(publish)
+        temporary = publish / "paper-current.tmp"
+        with temporary.open("w", encoding="utf-8") as stream:
+            json.dump({"revision": revision, "sha256": digest}, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, marker)
+        sync_directory(publish)
+        if stage.exists():
+            shutil.rmtree(stage)
+        return True
+
+
+@lru_cache(maxsize=1)
+def _paper_tree_remote_script() -> str:
+    """Ship the actual stdlib-only helpers, including in frozen distributions."""
+    source = _remote_script("state.py")
+    names = {"_paper_tree_digest", "_select_paper_tree"}
+    functions = [
+        ast.get_source_segment(source, node)
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name in names
+    ]
+    return "\n".join(
+        [
+            "from pathlib import Path",
+            "import sys",
+            f"STATE_LOCK_POLL_INTERVAL_SECONDS = {STATE_LOCK_POLL_INTERVAL_SECONDS!r}",
+            *(function for function in functions if function is not None),
+            "sys.exit(0 if _select_paper_tree(Path(sys.argv[1]), Path(sys.argv[2]), "
+            "int(sys.argv[3]), sys.argv[4], float(sys.argv[5]), "
+            "reconcile=sys.argv[6] == 'reconcile') else 3)",
+        ]
+    )
+
+
 class StateWorkspace:
     def __init__(self, root: Path, location: str, *, display_reader: bool = False) -> None:
         self.root = root
@@ -1413,6 +1573,20 @@ class StateWorkspace:
             finally:
                 lease._begin_release()
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def publish_paper_tree(self, source: Path, revision: int) -> None:
+        """Durably replace the complete Paper tree, including removals and renames."""
+        if revision < 0:
+            raise ValueError("Paper revision must be nonnegative")
+        with self.snapshot_lock:
+            digest = _paper_tree_digest(source)
+            stage = self.root / ".publish" / f"paper-stage-{uuid.uuid4().hex}"
+            stage.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source, stage)
+            _select_paper_tree(
+                self.root, stage, revision, digest, STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS
+            )
+            self._generations.bump(["paper"])
 
     def publish(self, relative_paths: list[Path | str]) -> None:
         self._generations.bump(relative_paths)
@@ -2672,18 +2846,62 @@ class SSHStateWorkspace(StateWorkspace):
         raise StateUnavailable(self.error or "canonical state is unreachable")
 
     def _push_state_files(
-        self, stage: PurePosixPath, sources: list[str]
+        self, stage: PurePosixPath, sources: list[str], *, source_root: Path | None = None
     ) -> subprocess.CompletedProcess[str]:
+        source_root = self.root if source_root is None else source_root
         engine = state_transfer.get_engine(self.host)
         if engine.engine == "tar":
-            return state_transfer.push_tar(self.host, stage, self.root, sources)
+            return state_transfer.push_tar(self.host, stage, source_root, sources)
         destination = f"{self.host}:{shlex.quote(str(stage))}/"
         return state_transfer.run_rsync(
             self.host,
             [engine.local_path, "-aR", *rsync_ssh_arguments(), *sources, destination],
             phase="push",
-            cwd=self.root,
+            cwd=source_root,
         )
+
+    def publish_paper_tree(self, source: Path, revision: int) -> None:
+        """Stage remotely, select under a remote process-owned lock, then mirror."""
+        if revision < 0:
+            raise ValueError("Paper revision must be nonnegative")
+        with self.snapshot_lock:
+            digest = _paper_tree_digest(source)
+            stage = self.remote_root / ".publish" / f"paper-stage-{uuid.uuid4().hex}"
+            prepared = self._ssh(["mkdir", "-p", str(stage)])
+            if prepared.returncode:
+                self._mark_unreachable(prepared.stderr)
+                raise BatchPublishFailed("Paper staging is unavailable", commit_status="absent")
+            paths = [path.relative_to(source).as_posix() for path in sorted(source.rglob("*"))]
+            if paths:
+                pushed = self._push_state_files(stage, paths, source_root=source)
+                if pushed.returncode:
+                    self._mark_unreachable(pushed.stderr)
+                    raise BatchPublishFailed("Paper upload failed", commit_status="absent")
+            arguments = [
+                "python3",
+                "-c",
+                _paper_tree_remote_script(),
+                str(self.remote_root),
+                str(stage),
+                str(revision),
+                digest,
+                str(STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS),
+                "select",
+            ]
+            result = self._ssh(arguments)
+            if result.returncode:
+                # A dropped SSH response cannot tell whether rename committed. The
+                # second process reacquires the lock before inspecting or repairing.
+                reconciled = self._ssh([*arguments[:-1], "reconcile"])
+                if reconciled.returncode:
+                    self._mark_unreachable(reconciled.stderr or result.stderr)
+                    raise BatchPublishFailed(
+                        "Paper tree publication could not be confirmed",
+                        commit_status="absent" if reconciled.returncode == 3 else "unknown",
+                    )
+            super().publish_paper_tree(source, revision)
+            self._mark_reachable(synced=True)
+            self._publish_committed_generation()
 
     def _publish(self, relative_paths: list[Path | str], lease: RunLockLease) -> None:
         sources: list[str] = []
