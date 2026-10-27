@@ -191,7 +191,7 @@ class MaintenanceCoordinator:
         self.background_admission.close_and_wait(
             timeout=remaining(), additional_idle=self.background.runtime_is_idle
         )
-        from rcp.server_ops.paper_lifecycle_seam import get_paper_live
+        from rcp.server_ops.paper_lifecycle import get_paper_live
 
         papers = [
             (record.project_id, get_paper_live(self.store, record.project_id))

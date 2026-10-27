@@ -134,6 +134,14 @@ PROJECT_LINKED_TABLES = {
     "notification_project_baselines",
     "notification_question_events",
     "paper_drafts",
+    "paper_files",
+    "paper_updates",
+    "paper_doc_states",
+    "paper_revisions",
+    "paper_publication",
+    "paper_versions",
+    "paper_apply_receipts",
+    "paper_saved_snapshots",
     "project_aliases",
     "project_invitations",
     "project_members",
@@ -331,10 +339,7 @@ def test_project_linked_sqlite_inventory_is_exact_and_follows_child_tables(tmp_p
     with store.connection() as connection:
         inventory = inspect_transfer_table_inventory(connection)
         assert set(inventory.project_linked_tables) == PROJECT_LINKED_TABLES
-        from rcp.server_ops.backup_paper import PAPER_SHARED_TABLES
-
-        # S1 registers its content-addressed tables; legacy schema is still valid.
-        assert set(inventory.global_tables) == TRANSFER_GLOBAL_TABLES - set(PAPER_SHARED_TABLES)
+        assert set(inventory.global_tables) == TRANSFER_GLOBAL_TABLES
         assert inventory.unclassified_tables == ()
         assert inventory.complete is True
         assert set(inspect_project_linked_tables(connection)) == PROJECT_LINKED_TABLES

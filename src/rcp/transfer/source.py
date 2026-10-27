@@ -108,7 +108,7 @@ def advance_source_project_transfer(
 ) -> ProjectTransferRequestRecord:
     """Settle, fence, capture, seal, and bind one confirmed source transfer."""
 
-    from rcp.server_ops.paper_lifecycle_seam import stop_paper_project
+    from rcp.server_ops.paper_lifecycle import stop_paper_project
 
     transfer = _source_transfer(store, request_id)
     if transfer.source_release_receipt is None or transfer.target_admission_receipt is None:

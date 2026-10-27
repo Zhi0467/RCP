@@ -620,8 +620,11 @@ with an accessible stale marker; remote-sync health has its own marker.
 
 All open tabs watch project-wide task status; only the active tab watches progress
 and displayed task details. Other resources have their own tokens/profiles. Task
-completion does not trigger a reload bundle. Paper is an ordinary profile with
-its own [draft-version guard](paper-artifacts-and-result-views.md#human-paper-authorship).
+completion does not trigger a reload bundle. Paper is an ordinary profile reading
+the live tree and writing sessions. The project snapshot carries only its
+publication badge; source text and durable acknowledgements belong to the
+[live editor](paper-artifacts-and-result-views.md#shared-paper). Paper links use
+`paper_file=<stable file id>` to select a file, including in an already-open editor.
 
 Commands fence affected reads and install operation-id pending overlays;
 conflicting commands serialize. Success replaces the overlay with the response;

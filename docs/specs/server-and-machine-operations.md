@@ -882,12 +882,21 @@ owns configuration, capture and restore commands.
 
 Capture uses one immutable online SQLite snapshot and inventories only its
 referenced durable files. It includes main/branch Patch histories and exact heads,
-branch metadata/merge receipts, typed RCP chats, optional Paper introduction,
+branch metadata/merge receipts, typed RCP chats, the saved Paper tree and its
+CRDT records, retained versions, receipts, publication state and referenced bytes,
 safe regular facts, referenced artifact versions/live snapshots and imported
 project-owned provider histories. Artifact capture holds the pruning lock.
 Legacy repository-kept candidates remain capturable while pending import;
 stage-only candidates do not. Restoring bytes never accepts a candidate.
 UUID4 and UUID5 task identities are both valid inventory inputs.
+
+Paper capture reads only the caller-owned SQLite snapshot, including saved
+revisions that have not published. The recursive published `paper/` tree is
+inventoried separately. Restore checks the saved section against the archived
+database before detaching runtime owners; exact migration schema variants are
+accepted only over a supported prior schema. Transfer record schema 7 carries
+the same saved section, while schema 6 remains readable. Transfer sealing,
+delete and maintenance settle the process-owned live documents first.
 
 The app-data inventory is closed. Live SQLite/WAL/SHM, process metadata, bootstrap
 locators, display/source/session caches, temporary chat attachments, run/transfer

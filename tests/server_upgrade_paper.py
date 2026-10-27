@@ -54,12 +54,7 @@ def seed_legacy_paper(data_dir: Path, fixture: dict) -> dict:
 
 
 def seed_current_paper(request, fixture: dict, cookie: str) -> dict:
-    """Exercise the contract REST writer while divergent migration holds publish.
-
-    S1 wire seam: multipart uses the conventional `file` and `path` fields;
-    history creation returns a version record with `version_id`; history lists
-    and manifests may be wrapped as `versions` and `manifest`.
-    """
+    """Exercise the live REST writer while divergent migration holds publication."""
     base = f"/api/projects/{fixture['project_id']}/paper"
 
     def call(path, *, body=None, method="GET", content_type="application/json"):
@@ -89,11 +84,11 @@ def seed_current_paper(request, fixture: dict, cookie: str) -> dict:
     tree = call("/tree")
     assert tree["hold"] is not None, "Divergent legacy paper must retain its publication hold"
     history = call("/history")
-    versions = history if isinstance(history, list) else history["versions"]
+    versions = history
     preserved = set()
     for version in versions:
         manifest = call(f"/history/{version['version_id']}")
-        files = manifest if isinstance(manifest, list) else manifest["manifest"]
+        files = manifest["manifest"]
         preserved.update(file.get("text_sha256") for file in files)
     required = {_sha(DRAFT.encode()), _sha(CANONICAL.encode())}
     if fixture["paper"]["ancestor_stored"]:
@@ -149,8 +144,7 @@ def assert_current_paper(request, fixture: dict, cookie: str, expected: dict) ->
         assert _sha(response.read()) == expected["figure_sha256"]
     with request(f"{base}/history/{expected['version_id']}", cookie=cookie) as response:
         manifest = json.load(response)
-    # Contract manifest itself is a list; some transports wrap it in the version.
-    files = manifest if isinstance(manifest, list) else manifest["manifest"]
+    files = manifest["manifest"]
     assert any(file["path"] == "sections/methods.tex" for file in files)
     assert any(file.get("blob_sha256") == _sha(FIGURE) for file in files)
 

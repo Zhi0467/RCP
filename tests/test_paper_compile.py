@@ -3,13 +3,15 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import os
+import threading
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
+from rcp.paper import PaperSnapshot
 from rcp.paper.compile import PaperCompiler, root_candidates, typst_root_candidates
 from rcp.paper.engines import EngineStore
+from rcp.paper.models import PaperFile
 from tests.helpers import async_wait_until
 
 
@@ -62,22 +64,22 @@ class Live:
     def __init__(self):
         self.revision = 1
 
-    def snapshot(self, project_id, revision=None):
-        return SimpleNamespace(
+    async def snapshot(self, project_id, revision=None):
+        return PaperSnapshot(
             revision=revision or self.revision,
             files=[
-                {
-                    "file_id": "file",
-                    "path": "paper.tex",
-                    "kind": "text",
-                    "text": r"\documentclass{article}\begin{document}Hello\end{document}",
-                }
+                PaperFile(
+                    file_id="file",
+                    path="paper.tex",
+                    kind="text",
+                    text=r"\documentclass{article}\begin{document}Hello\end{document}",
+                )
             ],
         )
 
     def materialize(self, snapshot, dest):
         for entry in snapshot.files:
-            (dest / entry["path"]).write_text(entry["text"])
+            (dest / entry.path).write_text(entry.text)
 
 
 class Engines:
@@ -209,3 +211,40 @@ def test_latex_nested_inputs_resolve_from_document_root():
     files["paper/root.tex"] = r"\documentclass{article}\subfile{sections/a}"
     files["paper/sections/a.tex"] = r"\input{b}"
     assert root_candidates(files, "paper/sections/b.tex", "latex") == ["paper/root.tex"]
+
+
+@pytest.mark.asyncio
+async def test_close_waits_for_materialization_before_removing_tree(tmp_path):
+    entered = threading.Event()
+    release = threading.Event()
+    written = threading.Event()
+    destinations = []
+
+    class BlockingLive(Live):
+        def materialize(self, snapshot, dest):
+            destinations.append(dest)
+            entered.set()
+            if not release.wait(timeout=10):
+                raise TimeoutError("Materialization was not released")
+            super().materialize(snapshot, dest)
+            written.set()
+
+    compiler = PaperCompiler(BlockingLive(), Engines(tmp_path / "unused"), tmp_path)
+    request = asyncio.create_task(compiler.compile("project", "file"))
+    closing = None
+    try:
+        await async_wait_until(entered.is_set)
+        closing = asyncio.create_task(compiler.close())
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(closing), timeout=0.05)
+        assert destinations[0].is_dir()
+    finally:
+        release.set()
+        if closing is not None:
+            await closing
+        else:
+            await compiler.close()
+        result = await request
+    assert result.status == "superseded"
+    assert written.is_set()
+    assert not destinations[0].exists()

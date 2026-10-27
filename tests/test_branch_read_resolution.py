@@ -201,7 +201,7 @@ def test_remote_branch_resolution_and_display_use_pinned_inputs(
     assert pins == 2
 
 
-def test_remote_project_snapshot_reads_published_manifest_graph_and_paper(
+def test_remote_project_snapshot_reads_published_manifest_and_live_paper_badge(
     branch_service, monkeypatch, tmp_path
 ):
     import shutil
@@ -242,7 +242,8 @@ def test_remote_project_snapshot_reads_published_manifest_graph_and_paper(
     assert snapshot["repositories"][0]["path"] == expected_repository
     assert snapshot["name"] == "published"
     assert snapshot["canonical_state"]["remote"] is True
-    assert snapshot["paper"]["content"] == "Published introduction"
+    assert snapshot["paper"]["content"] == ""
+    assert snapshot["paper"]["canonical_available"] is False
     assert service.manifest.name != "published"
 
 

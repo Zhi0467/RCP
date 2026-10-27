@@ -1,174 +1,44 @@
 from __future__ import annotations
 
-import threading
-
-from tests.helpers import signed_in_client
-
-from .helpers import create_named_app
+from tests.helpers import create_named_app, signed_in_client
 
 
-def test_paper_endpoints_cover_snapshot_create_save_and_sessions(manifest, tmp_path) -> None:
+def test_project_paper_badge_tracks_the_saved_tree_and_sessions(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = signed_in_client(app)
-    project_id = app.state.default_project_id
-
-    assert client.get(f"/api/projects/{project_id}").json()["paper"]["sync_state"] == "not_created"
-    initial = client.get(f"/api/projects/{project_id}/paper")
-    assert initial.status_code == 200
-    assert initial.json()["sync_state"] == "not_created"
-
-    created = client.post(f"/api/projects/{project_id}/paper/create", json={})
-    assert created.status_code == 200
-    assert created.json()["sync_state"] == "unsynced"
-
-    saved = client.put(
-        f"/api/projects/{project_id}/paper",
-        json={
-            "content": "# API introduction\n",
-            "base_hash": created.json()["base_hash"],
-            "draft_version": created.json()["draft_version"],
-        },
-    )
-    assert saved.status_code == 200
-    assert saved.json()["content"] == "# API introduction\n"
-    assert saved.json()["sync_state"] == "synced"
-    stale = client.put(
-        f"/api/projects/{project_id}/paper",
-        json={
-            "content": "# Stale editor",
-            "base_hash": created.json()["base_hash"],
-            "draft_version": created.json()["draft_version"],
-        },
-    )
-    assert stale.status_code == 409
-    assert client.get(f"/api/projects/{project_id}/paper").json() == saved.json()
-    # The project snapshot, which a restarted app opens Paper from, follows the save.
-    restarted = signed_in_client(create_named_app(str(manifest.path), data_dir=tmp_path / "data"))
-    assert restarted.get(f"/api/projects/{project_id}").json()["paper"] == saved.json()
-
-    sessions = client.get(f"/api/projects/{project_id}/paper/sessions")
-    assert sessions.status_code == 200
-    assert sessions.json() == []
-
-    removed_conflict_route = client.post(
-        f"/api/projects/{project_id}/paper/conflict",
-        json={"strategy": "use_canonical"},
-    )
-    assert removed_conflict_route.status_code == 405
+    with signed_in_client(app) as client:
+        project = f"/api/projects/{app.state.default_project_id}"
+        assert client.get(project + "/paper/tree").json()["files"] == []
+        initial = client.get(project).json()["paper"]
+        assert initial["canonical_available"] is False
+        created = client.post(project + "/paper/files", json={"path": "sections/start.md"})
+        assert created.status_code == 200, created.text
+        badge = client.get(project).json()["paper"]
+        assert badge == {
+            "content": "",
+            "draft_version": None,
+            "sync_state": "unsynced",
+            "canonical_available": True,
+        }
+        assert client.get(project + "/paper/sessions").json() == []
+        file_id = created.json()["file_ids"][0]
+        assert client.delete(project + f"/paper/files/{file_id}").status_code == 200
+        assert client.get(project).json()["paper"]["canonical_available"] is False
 
 
-def test_paper_cache_update_holds_the_snapshot_lock(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = signed_in_client(app)
-    project_id = app.state.default_project_id
-    catalog = app.state.services.catalog
-    assert client.get(f"/api/projects/{project_id}").json()["paper"]["sync_state"] == "not_created"
-    commit = catalog._commit_cached_snapshot_locked
-    racers: list[threading.Thread] = []
-
-    def commit_while_a_freshness_update_waits(pid, snapshot, **kwargs):
-        if not racers and snapshot["paper"]["sync_state"] != "not_created":
-            racer = threading.Thread(
-                target=catalog.update_cached_snapshot_freshness, args=(pid, "reconciling")
-            )
-            racers.append(racer)
-            racer.start()
-            racer.join(0.2)
-            assert racer.is_alive()  # It cannot read until this update commits.
-        return commit(pid, snapshot, **kwargs)
-
-    catalog._commit_cached_snapshot_locked = commit_while_a_freshness_update_waits
-    created = client.post(f"/api/projects/{project_id}/paper/create", json={}).json()
-    racers[0].join(10)
-
-    cached = catalog.cached_snapshot(project_id)
-    assert cached["paper"] == created
-    assert cached["snapshot_freshness"] == "reconciling"
-
-
-def test_a_failed_cache_refresh_does_not_fail_the_save(manifest, tmp_path, monkeypatch) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = signed_in_client(app)
-    project_id = app.state.default_project_id
-    created = client.post(f"/api/projects/{project_id}/paper/create", json={}).json()
-
-    def too_large(*_args):
-        raise ValueError("Project display snapshot exceeds its size limit")
-
-    monkeypatch.setattr(app.state.services.catalog, "update_cached_snapshot_paper", too_large)
-    saved = client.put(
-        f"/api/projects/{project_id}/paper",
-        json={
-            "content": "# Kept\n",
-            "base_hash": created["base_hash"],
-            "draft_version": created["draft_version"],
-        },
-    )
-    assert saved.status_code == 200
-    assert client.get(f"/api/projects/{project_id}/paper").json()["content"] == "# Kept\n"
-
-
-def test_a_late_cache_refresh_keeps_the_newer_paper(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = signed_in_client(app)
-    project_id = app.state.default_project_id
-    catalog = app.state.services.catalog
-    client.get(f"/api/projects/{project_id}")
-    created = client.post(f"/api/projects/{project_id}/paper/create", json={}).json()
-    refresh = catalog.update_cached_snapshot_paper
-    delayed = []
-
-    def delay_the_first_refresh(*args):
-        if not delayed:
-            delayed.append(args)
-            return True
-        return refresh(*args)
-
-    catalog.update_cached_snapshot_paper = delay_the_first_refresh
-    first = client.put(
-        f"/api/projects/{project_id}/paper",
-        json={
-            "content": "# First\n",
-            "base_hash": created["base_hash"],
-            "draft_version": created["draft_version"],
-        },
-    ).json()
-    second = client.put(
-        f"/api/projects/{project_id}/paper",
-        json={
-            "content": "# Second\n",
-            "base_hash": first["base_hash"],
-            "draft_version": first["draft_version"],
-        },
-    ).json()
-    refresh(*delayed[0])
-
-    assert catalog.cached_snapshot(project_id)["paper"]["content"] == second["content"]
-
-
-def test_paper_writes_do_not_need_a_display_generation(manifest, tmp_path, monkeypatch) -> None:
+def test_live_paper_writes_do_not_need_a_display_generation(manifest, tmp_path, monkeypatch):
     from rcp.transport import StateUnavailable
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = signed_in_client(app)
-    project_id = app.state.default_project_id
+    with signed_in_client(app) as client:
+        prefix = f"/api/projects/{app.state.default_project_id}/paper"
 
-    def no_generation(*_args, **_kwargs):
-        raise StateUnavailable("Remote state is loading; no completed display generation.")
+        def no_generation(*_args, **_kwargs):
+            raise StateUnavailable("Remote state is loading; no completed display generation.")
 
-    monkeypatch.setattr(app.state.services.catalog, "open_display", no_generation)
-    assert client.get(f"/api/projects/{project_id}/paper").status_code == 503
-    created = client.post(f"/api/projects/{project_id}/paper/create", json={})
-    assert created.status_code == 200
-    saved = client.put(
-        f"/api/projects/{project_id}/paper",
-        json={
-            "content": "# Written before any generation\n",
-            "base_hash": created.json()["base_hash"],
-            "draft_version": created.json()["draft_version"],
-        },
-    )
-    assert saved.status_code == 200
+        monkeypatch.setattr(app.state.services.catalog, "open_display", no_generation)
+        created = client.post(prefix + "/files", json={"path": "chapter.md"})
+        assert created.status_code == 200, created.text
+        assert client.get(prefix + "/tree").json()["files"][0]["path"] == "chapter.md"
 
 
 def test_mutating_routes_open_the_authoritative_owner() -> None:

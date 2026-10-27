@@ -1,9 +1,7 @@
 """Versioned saved-paper recovery section, shared by backup and transfer.
 
-S1 seam: bind PAPER_SNAPSHOT_FACTORY to a read-only PaperLive over the supplied
-SQLite transaction. It must not migrate, publish, or read the live database.
-This slice uses the contract's SQLite BLOB variant. External blob storage needs
-an S1-owned retention/export/import adapter before it can replace that variant.
+Saved trees are decoded by the live owner's read-only persistence reader over
+the supplied SQLite transaction. Binary bodies remain in that same snapshot.
 """
 
 from __future__ import annotations
@@ -19,11 +17,15 @@ import zlib
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from rcp.limits import BACKUP_INVENTORY_MAX_ENTRIES
+
+if TYPE_CHECKING:
+    from rcp.paper.models import PaperSnapshot
+
 
 PAPER_PROJECT_TABLES = (
     "paper_files",
@@ -32,6 +34,8 @@ PAPER_PROJECT_TABLES = (
     "paper_revisions",
     "paper_publication",
     "paper_versions",
+    "paper_apply_receipts",
+    "paper_saved_snapshots",
     "paper_change_groups",
     "paper_changes",
     "paper_change_receipts",
@@ -65,12 +69,17 @@ class SavedPaperSnapshot(BaseModel):
 
 
 class PaperSnapshotReader(Protocol):
-    def snapshot(self, project_id: str, revision: int | None = None) -> object: ...
-    def materialize(self, snapshot: object, dest: Path) -> None: ...
+    def snapshot(self, project_id: str, revision: int | None = None) -> PaperSnapshot: ...
+    def materialize(self, snapshot: PaperSnapshot, dest: Path) -> None: ...
 
 
-# Explicit integration seams; no guessed PaperLive constructor or CRDT decoder.
-PAPER_SNAPSHOT_FACTORY: Callable[[sqlite3.Connection], PaperSnapshotReader] | None = None
+def _snapshot_reader(connection: sqlite3.Connection) -> PaperSnapshotReader:
+    from rcp.paper.persistence import PaperSnapshotReader as SavedTreeReader
+
+    return SavedTreeReader(connection)
+
+
+PAPER_SNAPSHOT_FACTORY: Callable[[sqlite3.Connection], PaperSnapshotReader] = _snapshot_reader
 
 
 class PaperSection(BaseModel):
@@ -222,6 +231,10 @@ def _references(files, tables) -> tuple[set[str], set[str]]:
     for table, rows in tables.items():
         if table in PAPER_PROJECT_TABLES:
             for row in rows:
+                # Deleted identities survive after their last retained body expires.
+                # A retained version/snapshot supplies any remaining body reference.
+                if table == "paper_files" and row.get("deleted_at") is not None:
+                    continue
                 visit(row)
     return blobs, texts
 
@@ -238,8 +251,6 @@ def capture_paper_section(connection: sqlite3.Connection, project_id: str) -> Pa
     }
     if not any(tables.values()):
         return None
-    if PAPER_SNAPSHOT_FACTORY is None:
-        raise ValueError("S1 PaperLive snapshot factory is not bound")
     owner = PAPER_SNAPSHOT_FACTORY(connection)
     raw = owner.snapshot(project_id)
     snapshot = SavedPaperSnapshot.model_validate(
@@ -324,9 +335,154 @@ def verify_paper_section_records(connection: sqlite3.Connection, section: PaperS
                 raise ValueError("paper section differs from archived SQLite content")
 
 
-# S1 migration-registry seam: exact sqlite_schema rows for each fresh/upgraded
-# Paper shape, including indexes/triggers. No permissive schema-name exception.
-PAPER_RESTORE_SCHEMA_VARIANTS: tuple[tuple[tuple[str, str, str, str | None], ...], ...] = ()
+# Migration 62 uses identical CREATE statements for fresh and upgraded databases.
+# This exact allowlist is independent of the schema being validated.
+PAPER_RESTORE_SCHEMA_VARIANTS = (
+    (
+        (
+            "index",
+            "paper_files_live_path",
+            "paper_files",
+            "CREATE UNIQUE INDEX paper_files_live_path\n"
+            "                ON paper_files(project_id, path) WHERE deleted_at IS NULL",
+        ),
+        (
+            "index",
+            "paper_versions_revision",
+            "paper_versions",
+            "CREATE INDEX paper_versions_revision\n"
+            "                ON paper_versions(project_id, revision)",
+        ),
+        (
+            "table",
+            "paper_apply_receipts",
+            "paper_apply_receipts",
+            "CREATE TABLE paper_apply_receipts (\n"
+            "                project_id TEXT NOT NULL,\n"
+            "                receipt_key TEXT NOT NULL,\n"
+            "                fingerprint TEXT NOT NULL,\n"
+            "                receipt TEXT NOT NULL,\n"
+            "                PRIMARY KEY(project_id, receipt_key)\n"
+            "            )",
+        ),
+        (
+            "table",
+            "paper_blobs",
+            "paper_blobs",
+            "CREATE TABLE paper_blobs (\n"
+            "                sha256 TEXT PRIMARY KEY,\n"
+            "                bytes BLOB NOT NULL,\n"
+            "                size INTEGER NOT NULL CHECK(size >= 0)\n"
+            "            )",
+        ),
+        (
+            "table",
+            "paper_doc_states",
+            "paper_doc_states",
+            "CREATE TABLE paper_doc_states (\n"
+            "                project_id TEXT NOT NULL,\n"
+            "                file_id TEXT NOT NULL,\n"
+            "                state BLOB NOT NULL,\n"
+            "                through_seq INTEGER NOT NULL,\n"
+            "                through_revision INTEGER NOT NULL DEFAULT 0,\n"
+            "                PRIMARY KEY(project_id, file_id)\n"
+            "            )",
+        ),
+        (
+            "table",
+            "paper_files",
+            "paper_files",
+            "CREATE TABLE paper_files (\n"
+            "                project_id TEXT NOT NULL,\n"
+            "                file_id TEXT NOT NULL,\n"
+            "                path TEXT NOT NULL,\n"
+            "                kind TEXT NOT NULL CHECK(kind IN ('text', 'binary')),\n"
+            "                created_at TEXT NOT NULL,\n"
+            "                deleted_at TEXT,\n"
+            "                blob_sha256 TEXT,\n"
+            "                PRIMARY KEY(project_id, file_id)\n"
+            "            )",
+        ),
+        (
+            "table",
+            "paper_publication",
+            "paper_publication",
+            "CREATE TABLE paper_publication (\n"
+            "                project_id TEXT PRIMARY KEY,\n"
+            "                saved_revision INTEGER NOT NULL DEFAULT 0,\n"
+            "                published_revision INTEGER NOT NULL DEFAULT 0,\n"
+            "                pending_since TEXT,\n"
+            "                last_error TEXT,\n"
+            "                hold TEXT,\n"
+            "                last_edit_at TEXT\n"
+            "            )",
+        ),
+        (
+            "table",
+            "paper_revisions",
+            "paper_revisions",
+            "CREATE TABLE paper_revisions (\n"
+            "                project_id TEXT NOT NULL,\n"
+            "                revision INTEGER NOT NULL,\n"
+            "                created_at TEXT NOT NULL,\n"
+            "                actor TEXT NOT NULL,\n"
+            "                kind TEXT NOT NULL,\n"
+            "                PRIMARY KEY(project_id, revision)\n"
+            "            )",
+        ),
+        (
+            "table",
+            "paper_saved_snapshots",
+            "paper_saved_snapshots",
+            "CREATE TABLE paper_saved_snapshots (\n"
+            "                project_id TEXT NOT NULL,\n"
+            "                revision INTEGER NOT NULL,\n"
+            "                manifest TEXT NOT NULL,\n"
+            "                PRIMARY KEY(project_id, revision)\n"
+            "            )",
+        ),
+        (
+            "table",
+            "paper_updates",
+            "paper_updates",
+            "CREATE TABLE paper_updates (\n"
+            "                project_id TEXT NOT NULL,\n"
+            "                file_id TEXT NOT NULL,\n"
+            "                seq INTEGER NOT NULL,\n"
+            '                "update" BLOB NOT NULL,\n'
+            "                revision INTEGER NOT NULL,\n"
+            "                actor TEXT NOT NULL,\n"
+            "                created_at TEXT NOT NULL,\n"
+            "                PRIMARY KEY(project_id, file_id, seq)\n"
+            "            )",
+        ),
+        (
+            "table",
+            "paper_version_texts",
+            "paper_version_texts",
+            "CREATE TABLE paper_version_texts (\n"
+            "                sha256 TEXT PRIMARY KEY,\n"
+            "                zbody BLOB NOT NULL\n"
+            "            )",
+        ),
+        (
+            "table",
+            "paper_versions",
+            "paper_versions",
+            "CREATE TABLE paper_versions (\n"
+            "                project_id TEXT NOT NULL,\n"
+            "                version_id TEXT NOT NULL,\n"
+            "                revision INTEGER NOT NULL,\n"
+            "                kind TEXT NOT NULL CHECK(kind IN ('auto', 'named')),\n"
+            "                name TEXT,\n"
+            "                actor TEXT NOT NULL,\n"
+            "                created_at TEXT NOT NULL,\n"
+            "                manifest TEXT NOT NULL,\n"
+            "                PRIMARY KEY(project_id, version_id)\n"
+            "            )",
+        ),
+    ),
+)
 
 
 def paper_restore_base_schema(connection: sqlite3.Connection) -> str | None:

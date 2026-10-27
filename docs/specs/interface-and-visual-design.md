@@ -363,9 +363,12 @@ mirrored launch failure offers no cooperative downgrade. Trust rules belong to
 
 ## Paper
 
-The editor/coach split resizes. Authored content leads without a canonical-file
-banner. Write/Preview share one pane and the chat Markdown renderer, so unsaved
-text can be previewed without creating another document.
+The file tree folds beside a live editor and a Preview/Coach pane. Files retain
+their identity across renames; copy links open that file. The editor shows
+durable save coverage separately from publication. Markdown previews use the
+chat renderer; LaTeX and Typst previews show a PDF. At phone width, Write,
+Preview and Coach occupy one pane selected by the segmented control; Files and
+History open as panels.
 
 ## Auto-research and episode history
 

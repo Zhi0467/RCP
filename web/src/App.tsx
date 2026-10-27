@@ -654,6 +654,9 @@ function MemberApp({
     setupOpen: isSetupHash(window.location.hash),
   }));
   const [graphTarget, setGraphTarget] = useState<GraphTargetRef>(initialRoute.graphTarget);
+  const [requestedPaperFile, setRequestedPaperFile] = useState(() =>
+    new URLSearchParams(window.location.hash.split("?")[1]).get("paper_file"),
+  );
   const [groupFiling, setGroupFiling] = useState<{ projectId: string; groupId: string } | null>(
     null,
   );
@@ -1716,6 +1719,9 @@ function MemberApp({
       }
       const route = parseProjectHash(window.location.hash);
       const activeId = getActiveProjectId();
+      setRequestedPaperFile(
+        new URLSearchParams(window.location.hash.split("?")[1]).get("paper_file"),
+      );
       const nextTarget = graphTargetFromHash(window.location.hash);
       setRequestedChat({
         hash: window.location.hash,
@@ -5296,6 +5302,7 @@ function MemberApp({
                 tasks={projectTasks}
                 onStartTask={startAgentTask}
                 editorState={paperEditorStates.current.get(project.id)}
+                requestedFileId={requestedPaperFile}
                 onEditorStateChange={(state) => paperEditorStates.current.set(project.id, state)}
               />
             </div>

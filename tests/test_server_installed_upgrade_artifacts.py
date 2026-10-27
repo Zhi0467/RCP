@@ -239,7 +239,7 @@ def test_current_paper_upgrade_fixture_retains_named_binary_before_unpublished_r
         elif suffix == "/history":
             payload = [{"version_id": key} for key in versions]
         elif suffix.startswith("/history/"):
-            payload = versions[suffix.removeprefix("/history/")]
+            payload = {"manifest": versions[suffix.removeprefix("/history/")]}
         elif suffix.endswith("/raw"):
             return io.BytesIO(contents[suffix.removeprefix("/files/").removesuffix("/raw")])
         else:

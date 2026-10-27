@@ -1,18 +1,42 @@
-"""S2 integration seam for the process-owned ``PaperLive`` lifecycle.
-
-S1 registers its synchronous facade once per store. The facade marshals room
-work to its owner loop; callers here run on lifecycle/control worker threads.
-Dispose unloads a project's rooms and workers. A later admitted request may
-reopen them; maintenance admission remains closed until startup is safe.
-"""
+"""Bridge synchronous lifecycle control workers to the server's live Paper owner."""
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import threading
 from contextlib import AbstractContextManager
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 from weakref import WeakKeyDictionary
+
+if TYPE_CHECKING:
+    from rcp.paper import PaperLive
+
+
+class LivePaperLifecycle:
+    def __init__(self, live: PaperLive):
+        self.live = live
+
+    def _call(self, method: str, project_id: str) -> None:
+        loop = self.live.loop
+        if loop is None or not loop.is_running():
+            raise RuntimeError("PaperLive lifecycle owner is not running.")
+        try:
+            current = asyncio.get_running_loop()
+        except RuntimeError:
+            current = None
+        if current is loop:
+            raise RuntimeError("Synchronous Paper lifecycle requires a control worker thread.")
+        asyncio.run_coroutine_threadsafe(getattr(self.live, method)(project_id), loop).result()
+
+    def pause(self, project_id: str) -> None:
+        self._call("pause", project_id)
+
+    def drain(self, project_id: str) -> None:
+        self._call("drain", project_id)
+
+    def dispose(self, project_id: str) -> None:
+        self._call("dispose", project_id)
 
 
 class PaperLifecycleOwner(Protocol):
@@ -31,13 +55,22 @@ _owners: WeakKeyDictionary[PaperLifecycleStore, PaperLifecycleOwner] = WeakKeyDi
 _owners_lock = threading.Lock()
 
 
-def register_paper_live(store: PaperLifecycleStore, live: PaperLifecycleOwner) -> None:
-    """S1 wiring: register the actual owner, never instantiate another room set."""
+def register_paper_live(store: PaperLifecycleStore, live: PaperLive) -> None:
+    """Register the one process owner; never instantiate a second room set."""
     with _owners_lock:
         existing = _owners.get(store)
-        if existing is not None and existing is not live:
+        if existing is not None:
+            if isinstance(existing, LivePaperLifecycle) and existing.live is live:
+                return
             raise RuntimeError("The store already has a PaperLive lifecycle owner.")
-        _owners[store] = live
+        _owners[store] = LivePaperLifecycle(live)
+
+
+def unregister_paper_live(store: PaperLifecycleStore, live: PaperLive) -> None:
+    with _owners_lock:
+        owner = _owners.get(store)
+        if isinstance(owner, LivePaperLifecycle) and owner.live is live:
+            del _owners[store]
 
 
 def get_paper_live(store: PaperLifecycleStore, project_id: str) -> PaperLifecycleOwner | None:
@@ -46,7 +79,7 @@ def get_paper_live(store: PaperLifecycleStore, project_id: str) -> PaperLifecycl
     if live is not None:
         return live
     # Legacy-only stores have no live workers. New durable rows require explicit
-    # S1 wiring, otherwise claiming quiescence would silently omit publishers.
+    # registration, otherwise claiming quiescence would silently omit publishers.
     from rcp.server_ops.backup_paper import PAPER_PROJECT_TABLES
 
     with store.connection() as connection:

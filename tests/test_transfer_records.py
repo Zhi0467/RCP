@@ -1065,7 +1065,7 @@ def test_fork_records_transfer_parent_names_and_archive_state(manifest, tmp_path
 
 
 def test_saved_paper_records_roundtrip_preserves_revision_history_and_hold(
-    manifest, tmp_path: Path, monkeypatch
+    manifest, tmp_path: Path
 ) -> None:
     from rcp.server_ops import backup_paper
     from rcp.transfer.records import TransferRecordBundle
@@ -1086,37 +1086,14 @@ def test_saved_paper_records_roundtrip_preserves_revision_history_and_hold(
         ],
     }
 
-    class SnapshotReader:
-        def snapshot(self, requested_project_id, revision=None):
-            assert requested_project_id == project_id
-            return snapshot
-
-        def materialize(self, captured, dest):
-            (dest / "figures").mkdir(parents=True)
-            (dest / "figures/renamed.png").write_bytes(figure)
-
-    monkeypatch.setattr(
-        backup_paper, "PAPER_SNAPSHOT_FACTORY", lambda _connection: SnapshotReader()
-    )
-    for store in (source, target):
-        with store.connection() as connection:
-            connection.executescript(
-                "CREATE TABLE paper_publication (project_id TEXT PRIMARY KEY, saved_revision INTEGER, "
-                "published_revision INTEGER, pending_since TEXT, last_error TEXT, hold TEXT);"
-                "CREATE TABLE paper_files (project_id TEXT, file_id TEXT, path TEXT, kind TEXT, "
-                "created_at TEXT, deleted_at TEXT);"
-                "CREATE TABLE paper_versions (project_id TEXT, version_id TEXT, revision INTEGER, "
-                "kind TEXT, name TEXT, actor TEXT, created_at TEXT, manifest TEXT);"
-                "CREATE TABLE paper_blobs (sha256 TEXT PRIMARY KEY, bytes BLOB, size INTEGER);"
-            )
     with source.connection() as connection:
         connection.execute(
-            "INSERT INTO paper_publication VALUES (?, 4, 2, ?, NULL, ?)",
+            "INSERT INTO paper_publication VALUES (?, 4, 2, ?, NULL, ?, NULL)",
             (project_id, source.now(), "legacy-choice"),
         )
         connection.execute(
-            "INSERT INTO paper_files VALUES (?, 'figure', 'figures/renamed.png', 'binary', ?, NULL)",
-            (project_id, source.now()),
+            "INSERT INTO paper_files VALUES (?, 'figure', 'figures/renamed.png', 'binary', ?, NULL, ?)",
+            (project_id, source.now(), digest),
         )
         connection.execute(
             "INSERT INTO paper_blobs VALUES (?, ?, ?)", (digest, figure, len(figure))
@@ -1124,6 +1101,14 @@ def test_saved_paper_records_roundtrip_preserves_revision_history_and_hold(
         connection.execute(
             "INSERT INTO paper_versions VALUES (?, 'named', 3, 'named', 'Submission', 'human', ?, ?)",
             (project_id, source.now(), json.dumps(snapshot["files"])),
+        )
+        connection.execute(
+            "INSERT INTO paper_saved_snapshots VALUES (?, 4, ?)",
+            (project_id, json.dumps(snapshot["files"])),
+        )
+        connection.execute(
+            "INSERT INTO paper_apply_receipts VALUES (?, 'card', 'fingerprint', '{}')",
+            (project_id,),
         )
     exported = source.export_project_transfer_records(project_id, attributions=attributions)
     restored = TransferRecordBundle.model_validate_json(exported.model_dump_json())

@@ -66,6 +66,8 @@ from rcp.api.notifications import router as notifications_router
 from rcp.api.owner import router as owner_router
 from rcp.api.paper import PaperUploadBodyLimit, is_paper_upload
 from rcp.api.paper import router as paper_router
+from rcp.api.paper_compile import assets_router as paper_assets_router
+from rcp.api.paper_compile import router as paper_compile_router
 from rcp.api.paper_live import router as paper_live_router
 from rcp.api.project_groups import router as project_groups_router
 from rcp.api.project_provisioning import router as project_provisioning_router
@@ -115,6 +117,8 @@ from rcp.live_artifact_runtime import reconcile_artifact_live_snapshots
 from rcp.machine_power import MachinePowerController, demand_snapshot
 from rcp.notifications import NotificationSender
 from rcp.paper import PaperLive
+from rcp.paper.compile import PaperCompiler
+from rcp.paper.engines import EngineStore
 from rcp.phone_listener import PhoneListener
 from rcp.projects import ProjectCatalog, ProjectDisplayCache, fill_space_machines
 from rcp.provider_skills import ProviderSkillInventoryManager
@@ -213,6 +217,7 @@ from rcp.server_ops.maintenance import (
     RuntimeAdmissionGate,
 )
 from rcp.server_ops.members import MemberRemovalCoordinator
+from rcp.server_ops.paper_lifecycle import register_paper_live, unregister_paper_live
 from rcp.server_ops.project_provision import ProjectProvisionCoordinator
 from rcp.server_ops.provider_readiness import ProviderReadinessCoordinator
 from rcp.server_runtime import ServerMetadata, data_dir_identity, remove_server_metadata
@@ -1891,6 +1896,10 @@ def create_app(
         startup_maintenance.clear()
         artifact_import_tasks.clear()
         runtime_loop[0] = asyncio.get_running_loop()
+        paper_engines = EngineStore(app_data)
+        paper_compiler = PaperCompiler(paper_live, paper_engines, app_data)
+        app.state.paper_engines = paper_engines
+        app.state.paper_compiler = paper_compiler
         control_started = False
         runtime_started = False
         runtime_start_lock = asyncio.Lock()
@@ -1910,6 +1919,7 @@ def create_app(
                 await asyncio.to_thread(deploy_key_agent.start)
                 await terminals.start()
                 await paper_live.start()
+                register_paper_live(store, paper_live)
                 sync_coordinator.start()
                 # Cards hold provider executables and compute settings; an older
                 # manifest's copy must reach them before recovery relaunches work.
@@ -2090,7 +2100,10 @@ def create_app(
                 await sync_coordinator.stop()
                 paper_live.fence()
                 await asyncio.to_thread(background_tasks.shutdown)
+                await paper_compiler.close()
+                await paper_engines.close()
                 await paper_live.close()
+                unregister_paper_live(store, paper_live)
                 await asyncio.to_thread(
                     deploy_key_agent.stop_after_workers_drained, background_tasks.runtime_is_idle
                 )
@@ -2123,7 +2136,10 @@ def create_app(
                         await sync_coordinator.stop()
                         paper_live.fence()
                         await asyncio.to_thread(background_tasks.shutdown)
+                        await paper_compiler.close()
+                        await paper_engines.close()
                         await paper_live.close()
+                        unregister_paper_live(store, paper_live)
                         await asyncio.to_thread(
                             deploy_key_agent.stop_after_workers_drained,
                             background_tasks.runtime_is_idle,
@@ -2169,7 +2185,10 @@ def create_app(
                 await asyncio.to_thread(phone_listener.stop)
             try:
                 await asyncio.to_thread(background_tasks.shutdown)
+                await paper_compiler.close()
+                await paper_engines.close()
                 await paper_live.close()
+                unregister_paper_live(store, paper_live)
             finally:
                 await asyncio.to_thread(
                     deploy_key_agent.stop_after_workers_drained, background_tasks.runtime_is_idle
@@ -2543,6 +2562,8 @@ def create_app(
     app.include_router(history_router)
     app.include_router(paper_router)
     app.include_router(paper_live_router)
+    app.include_router(paper_compile_router)
+    app.include_router(paper_assets_router)
     app.include_router(result_views_router)
     app.include_router(artifacts_router)
     app.include_router(research_views_router)

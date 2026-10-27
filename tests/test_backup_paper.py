@@ -19,16 +19,9 @@ from rcp.server_ops.backup_paper import (
 
 def _database() -> sqlite3.Connection:
     connection = sqlite3.connect(":memory:")
-    connection.executescript("""
-        CREATE TABLE paper_files(project_id, file_id, path, kind, created_at, deleted_at);
-        CREATE TABLE paper_updates(project_id, file_id, seq, "update" BLOB, revision, actor, created_at);
-        CREATE TABLE paper_doc_states(project_id, file_id, state BLOB, through_seq);
-        CREATE TABLE paper_revisions(project_id, revision, created_at, actor, kind);
-        CREATE TABLE paper_publication(project_id, saved_revision, published_revision, pending_since, last_error, hold);
-        CREATE TABLE paper_versions(project_id, version_id, revision, kind, name, actor, created_at, manifest);
-        CREATE TABLE paper_blobs(sha256 PRIMARY KEY, bytes BLOB, size);
-        CREATE TABLE paper_version_texts(sha256 PRIMARY KEY, zbody BLOB);
-    """)
+    from rcp.storage.base import AppStoreBase
+
+    AppStoreBase._migrate_paper_live(connection)
     return connection
 
 
@@ -43,16 +36,18 @@ def _saved_paper(connection, monkeypatch, project_id="p"):
         {"file_id": "image", "path": "figures/result.png", "kind": "binary", "blob_sha256": digest},
     ]
     connection.executemany(
-        "INSERT INTO paper_files VALUES ('p', ?, ?, ?, 'now', NULL)",
+        "INSERT INTO paper_files (project_id,file_id,path,kind,created_at,deleted_at) VALUES ('p', ?, ?, ?, 'now', NULL)",
         [(f["file_id"], f["path"], f["kind"]) for f in files],
     )
     connection.execute(
         "INSERT INTO paper_updates VALUES ('p', 'text', 2, ?, 4, 'human', 'now')", (b"crdt-tail",)
     )
-    connection.execute("INSERT INTO paper_doc_states VALUES ('p', 'text', ?, 1)", (b"crdt-prefix",))
+    connection.execute(
+        "INSERT INTO paper_doc_states VALUES ('p', 'text', ?, 1, 3)", (b"crdt-prefix",)
+    )
     connection.execute("INSERT INTO paper_revisions VALUES ('p', 4, 'now', 'human', 'rename')")
     connection.execute(
-        "INSERT INTO paper_publication VALUES ('p', 4, 2, 'now', NULL, 'legacy-divergence')"
+        "INSERT INTO paper_publication VALUES ('p', 4, 2, 'now', NULL, 'legacy-divergence', 'now')"
     )
     manifest = [
         {"file_id": "text", "path": "old.tex", "kind": "text", "text_sha256": text_digest},
@@ -69,22 +64,22 @@ def _saved_paper(connection, monkeypatch, project_id="p"):
     # Shared content owned only by another project must not leak into export.
     connection.execute("INSERT INTO paper_blobs VALUES ('unrelated', x'00', 1)")
 
+    saved_hash = hashlib.sha256(text.encode()).hexdigest()
+    connection.execute(
+        "INSERT INTO paper_version_texts VALUES (?, ?)", (saved_hash, zlib.compress(text.encode()))
+    )
+    saved_manifest = [dict(file) for file in files]
+    saved_manifest[0].pop("text")
+    saved_manifest[0]["text_sha256"] = saved_hash
+    connection.execute(
+        "INSERT INTO paper_saved_snapshots VALUES ('p', 4, ?)", (json.dumps(saved_manifest),)
+    )
+    connection.execute("UPDATE paper_files SET blob_sha256=? WHERE file_id='image'", (digest,))
+    connection.execute("INSERT INTO paper_apply_receipts VALUES ('p','key','hash','{}')")
     for table in backup_paper.PAPER_PROJECT_TABLES:
         if table not in {"paper_change_groups", "paper_changes", "paper_change_receipts"}:
             connection.execute(f'UPDATE "{table}" SET project_id=?', (project_id,))
 
-    class Reader:
-        def snapshot(self, requested_project_id, revision=None):
-            assert requested_project_id == project_id
-            return {"revision": 4, "files": files}
-
-        def materialize(self, snapshot, dest):
-            for file in files:
-                path = dest / file["path"]
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(text.encode() if file["kind"] == "text" else figure)
-
-    monkeypatch.setattr(backup_paper, "PAPER_SNAPSHOT_FACTORY", lambda connection: Reader())
     return figure
 
 
@@ -114,15 +109,15 @@ def test_saved_section_roundtrips_one_revision_and_all_recovery_state(monkeypatc
         target.close()
 
 
-def test_saved_section_refuses_missing_owner_or_corrupt_content(monkeypatch):
+def test_saved_section_refuses_missing_snapshot_or_corrupt_content(monkeypatch):
     connection = _database()
     try:
         _saved_paper(connection, monkeypatch)
         connection.execute("UPDATE paper_blobs SET bytes=x'00' WHERE sha256 != 'unrelated'")
         with pytest.raises(ValueError):
             capture_paper_section(connection, "p")
-        monkeypatch.setattr(backup_paper, "PAPER_SNAPSHOT_FACTORY", None)
-        with pytest.raises(ValueError):
+        connection.execute("DELETE FROM paper_saved_snapshots")
+        with pytest.raises(KeyError):
             capture_paper_section(connection, "p")
         assert capture_paper_section(connection, "legacy") is None
     finally:
@@ -195,7 +190,9 @@ def test_backup_binds_saved_sqlite_revision_separately_from_projection(tmp_path,
     try:
         figure = _saved_paper(seed, monkeypatch, project_id=project_id)
         with store.connection() as connection:
-            connection.executescript("\n".join(seed.iterdump()))
+            for statement in seed.iterdump():
+                if statement.startswith("INSERT INTO"):
+                    connection.execute(statement)
         publication = BackupCaptureCoordinator(
             store, data_dir, _metadata(data_dir)
         ).capture_sqlite()
@@ -227,4 +224,62 @@ def test_backup_binds_saved_sqlite_revision_separately_from_projection(tmp_path,
         ]
     finally:
         seed.close()
+        store.close()
+
+
+def test_restore_allowlist_matches_fresh_and_upgraded_migration_62(tmp_path):
+    from rcp.storage import AppStore
+    from rcp.storage.base import AppStoreBase
+
+    fresh = AppStore(tmp_path / "fresh.sqlite3")
+    upgraded = sqlite3.connect(":memory:")
+    AppStoreBase._migrate_paper_live(upgraded)
+    try:
+        with fresh.connection() as connection:
+            for database in (connection, upgraded):
+                tables = set(backup_paper.PAPER_PROJECT_TABLES + backup_paper.PAPER_SHARED_TABLES)
+                shape = tuple(
+                    tuple(row)
+                    for row in database.execute(
+                        "SELECT type,name,tbl_name,sql FROM sqlite_schema "
+                        "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name,tbl_name"
+                    )
+                    if row[2] in tables
+                )
+                assert shape in backup_paper.PAPER_RESTORE_SCHEMA_VARIANTS
+    finally:
+        fresh.close()
+        upgraded.close()
+
+
+def test_deleted_binary_without_retained_history_does_not_require_pruned_bytes(
+    tmp_path, monkeypatch
+):
+    import asyncio
+
+    from rcp import limits
+    from rcp.paper import PaperLive, PaperOp
+    from rcp.storage import AppStore
+    from rcp.transport import LocalStateWorkspace
+
+    monkeypatch.setattr(limits, "PAPER_SAVED_REVISION_LIMIT", 1)
+    store = AppStore(tmp_path / "live.sqlite3")
+    root = tmp_path / "state"
+    root.mkdir()
+    live = PaperLive(store, lambda _: LocalStateWorkspace(root, str(root)))
+
+    async def scenario():
+        created = await live.apply(
+            "p", [PaperOp(kind="create", path="figure.png", file_kind="binary", data=b"image")], "h"
+        )
+        await live.apply("p", [PaperOp(kind="delete", file_id=created.file_ids[0])], "h")
+        with store.connection() as connection:
+            assert connection.execute("SELECT count(*) FROM paper_blobs").fetchone()[0] == 0
+            section = capture_paper_section(connection, "p")
+        assert section is not None and not section.files
+        await live.close()
+
+    try:
+        asyncio.run(scenario())
+    finally:
         store.close()

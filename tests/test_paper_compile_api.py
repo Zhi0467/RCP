@@ -8,7 +8,10 @@ from fastapi.testclient import TestClient
 
 from rcp.api import paper_compile as api
 from rcp.api.dependencies import require_project_membership, require_project_write_admission
-from rcp.paper.compile import CompileResult
+from rcp.paper import PaperOp
+from rcp.paper.compile import CompileResult, PaperCompiler
+from rcp.paper.engines import EngineStore
+from tests.helpers import create_named_app, signed_in_client
 
 
 @pytest.fixture
@@ -104,3 +107,61 @@ def test_engine_install_admission_and_asset_serving(route_client):
     assert client.get("/api/paper-assets/typst/missing").status_code == 404
     state.member = False
     assert client.get("/api/paper-assets/typst/compiler.wasm").status_code == 404
+
+
+def test_application_compiles_real_saved_tree_and_drains(manifest, tmp_path, monkeypatch):
+    async def ensure(self, name):
+        return True
+
+    async def run(self, tree, output, root):
+        assert root == "paper.tex"
+        assert (tree / "section.tex").read_text() == "Saved section"
+        (output / "paper.pdf").write_bytes(b"%PDF-1.7 saved tree")
+        return 0, ""
+
+    closed = []
+    compiler_close = PaperCompiler.close
+    engines_close = EngineStore.close
+
+    async def close_compiler(self):
+        await compiler_close(self)
+        closed.append("compiler")
+
+    async def close_engines(self):
+        await engines_close(self)
+        closed.append("engines")
+
+    monkeypatch.setattr(EngineStore, "ensure", ensure)
+    monkeypatch.setattr(PaperCompiler, "_run", run)
+    monkeypatch.setattr(PaperCompiler, "close", close_compiler)
+    monkeypatch.setattr(EngineStore, "close", close_engines)
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    with signed_in_client(app) as client:
+        project_id = app.state.default_project_id
+        prefix = f"/api/projects/{project_id}/paper"
+        assert client.portal is not None
+        receipt = client.portal.call(
+            app.state.paper_live.apply,
+            project_id,
+            [
+                PaperOp(
+                    kind="create", path="paper.tex", text=r"\documentclass{article}\input{section}"
+                ),
+                PaperOp(kind="create", path="section.tex", text="Saved section"),
+            ],
+            "human",
+        )
+        assert client.get(prefix + "/engines").status_code == 200
+        response = client.post(
+            prefix + "/compile",
+            json={"engine": "latex", "file_id": receipt.file_ids[1]},
+        )
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["status"] == "ok", result
+        assert client.get(result["pdf_url"]).content == b"%PDF-1.7 saved tree"
+        # A mounted asset route rejects an unknown asset instead of reaching the SPA.
+        asset = client.get("/api/paper-assets/typst/missing.wasm")
+        assert asset.status_code == 404
+        assert asset.headers["content-type"] == "application/json"
+    assert closed == ["compiler", "engines"]

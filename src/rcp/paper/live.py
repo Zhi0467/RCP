@@ -37,7 +37,13 @@ from rcp.paper.models import (
     file_format,
     paper_path,
 )
-from rcp.paper.persistence import manifest_for, prune, read_snapshot, save_version
+from rcp.paper.persistence import (
+    PaperSnapshotReader,
+    manifest_for,
+    prune,
+    read_snapshot,
+    save_version,
+)
 from rcp.storage import AppStore
 from rcp.transport import StateUnavailable, StateWorkspace
 
@@ -109,6 +115,7 @@ class PaperLive:
         self._locks: dict[str, asyncio.Lock] = {}
         self._initialized: set[str] = set()
         self._paused: set[str] = set()
+        self._disposed: set[str] = set()
         self._fenced = False
         self._timer: asyncio.Task | None = None
         self._publishers: dict[str, asyncio.Task] = {}
@@ -121,6 +128,7 @@ class PaperLive:
     def _writable(self, project: str) -> None:
         if self._fenced or project in self._paused:
             raise PaperConflict("Paper is paused")
+        self._disposed.discard(project)
 
     @_owned
     async def start(self) -> None:
@@ -128,6 +136,11 @@ class PaperLive:
             with self.store.connection() as conn:
                 projects = [row[0] for row in conn.execute("SELECT project_id FROM projects")]
             for project in projects:
+                try:
+                    self.store.require_project_accepts_new_work(project)
+                except ValueError:
+                    self._disposed.add(project)
+                    continue
                 try:
                     async with self._lock(project):
                         await self._ensure(project)
@@ -175,6 +188,8 @@ class PaperLive:
         for key in [key for key in self.rooms if key[0] == project_id]:
             self._broadcast(self.rooms.pop(key), b"")
         self._initialized.discard(project_id)
+        self._disposed.add(project_id)
+        self._paused.discard(project_id)
 
     def _legacy_content(self, project: str) -> str | None:
         # Completed local display generation only; SSH refresh never blocks saving.
@@ -201,6 +216,8 @@ class PaperLive:
         if exists:
             self._initialized.add(project)
             return
+        if project in self._disposed:
+            raise PaperConflict("Paper is paused")
 
         canonical_unknown = False
         try:
@@ -324,26 +341,7 @@ class PaperLive:
 
     def _snapshot(self, project: str, revision: int | None = None) -> PaperSnapshot:
         with self.store.connection() as conn:
-            if revision is None:
-                revision = int(
-                    conn.execute(
-                        "SELECT saved_revision FROM paper_publication WHERE project_id=?",
-                        (project,),
-                    ).fetchone()[0]
-                )
-            row = conn.execute(
-                "SELECT manifest FROM paper_saved_snapshots WHERE project_id=? AND revision=?",
-                (project, revision),
-            ).fetchone()
-            if row is None:
-                row = conn.execute(
-                    "SELECT manifest FROM paper_versions WHERE project_id=? AND revision=? "
-                    "ORDER BY created_at DESC LIMIT 1",
-                    (project, revision),
-                ).fetchone()
-            if row is None:
-                raise KeyError("Paper revision is no longer retained")
-            return read_snapshot(conn, int(revision), row[0])
+            return PaperSnapshotReader(conn).snapshot(project, revision)
 
     @_owned
     async def snapshot(self, project_id: str, revision: int | None = None) -> PaperSnapshot:
@@ -410,19 +408,7 @@ class PaperLive:
             return bytes(row[0])
 
     def materialize(self, snapshot: PaperSnapshot, dest: Path) -> None:
-        dest.mkdir(parents=True, exist_ok=True)
-        if dest.is_symlink() or any(dest.iterdir()):
-            raise ValueError("Paper destination must be an empty directory")
-        for file in snapshot.files:
-            path = dest / paper_path(file.path)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            data = (
-                (file.text or "").encode()
-                if file.kind == "text"
-                else snapshot._blobs[file.blob_sha256 or ""]
-            )
-            with path.open("xb") as output:
-                output.write(data)
+        PaperSnapshotReader.materialize(snapshot, dest)
 
     @_owned
     async def text_at(self, project_id: str, file_id: str, revision: int) -> str:
@@ -964,6 +950,8 @@ class PaperLive:
     @_owned
     async def publish(self, project_id: str) -> None:
         """Flush a saved snapshot, leaving unreachable state roots pending."""
+        if self._fenced or project_id in self._paused or project_id in self._disposed:
+            raise PaperConflict("Paper is paused")
         task = self._publishers.get(project_id)
         if task is None:
             task = asyncio.create_task(self._publish(project_id))
@@ -1031,7 +1019,12 @@ class PaperLive:
 
         for row in rows:
             project = row["project_id"]
-            if self._fenced or project in self._paused:
+            if (
+                self._fenced
+                or project in self._paused
+                or project in self._disposed
+                or project not in self._initialized
+            ):
                 continue
             if (
                 row["pending_since"]

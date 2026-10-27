@@ -6,9 +6,56 @@ import json
 import sqlite3
 import uuid
 import zlib
+from pathlib import Path
 
 from rcp import limits
-from rcp.paper.models import PaperFile, PaperLimit, PaperSnapshot, digest
+from rcp.paper.models import PaperFile, PaperLimit, PaperSnapshot, digest, paper_path
+
+
+class PaperSnapshotReader:
+    """Read saved trees from exactly the caller's SQLite snapshot, without writes."""
+
+    def __init__(self, connection: sqlite3.Connection):
+        self.connection = connection
+
+    def snapshot(self, project_id: str, revision: int | None = None) -> PaperSnapshot:
+        if revision is None:
+            row = self.connection.execute(
+                "SELECT saved_revision FROM paper_publication WHERE project_id=?",
+                (project_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError("Paper has no saved tree")
+            revision = int(row[0])
+        row = self.connection.execute(
+            "SELECT manifest FROM paper_saved_snapshots WHERE project_id=? AND revision=?",
+            (project_id, revision),
+        ).fetchone()
+        if row is None:
+            row = self.connection.execute(
+                "SELECT manifest FROM paper_versions WHERE project_id=? AND revision=? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (project_id, revision),
+            ).fetchone()
+        if row is None:
+            raise KeyError("Paper revision is no longer retained")
+        return read_snapshot(self.connection, revision, row[0])
+
+    @staticmethod
+    def materialize(snapshot: PaperSnapshot, dest: Path) -> None:
+        dest.mkdir(parents=True, exist_ok=True)
+        if dest.is_symlink() or any(dest.iterdir()):
+            raise ValueError("Paper destination must be an empty directory")
+        for file in snapshot.files:
+            path = dest / paper_path(file.path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = (
+                (file.text or "").encode()
+                if file.kind == "text"
+                else snapshot._blobs[file.blob_sha256 or ""]
+            )
+            with path.open("xb") as output:
+                output.write(data)
 
 
 def manifest_for(connection: sqlite3.Connection, files: list[PaperFile]) -> str:

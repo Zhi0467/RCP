@@ -13,7 +13,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol
 
 from pydantic import BaseModel
 
@@ -26,14 +26,15 @@ from rcp.limits import (
     PAPER_COMPILE_TIMEOUT_SECONDS,
 )
 from rcp.paper.engines import EngineStore
+from rcp.paper.models import PaperSnapshot
 
 
 class PaperLiveAdapter(Protocol):
-    """Only the saved-tree API is needed, independent of S1's concrete models."""
+    """The live owner snapshots on its loop; materialization is worker-safe."""
 
-    def snapshot(self, project_id: str, revision: int | None = None) -> Any: ...
+    async def snapshot(self, project_id: str, revision: int | None = None) -> PaperSnapshot: ...
 
-    def materialize(self, snapshot: Any, dest: Path) -> Any: ...
+    def materialize(self, snapshot: PaperSnapshot, dest: Path) -> None: ...
 
 
 class CompileResult(BaseModel):
@@ -43,10 +44,6 @@ class CompileResult(BaseModel):
     candidates: list[str] | None = None
     log_tail: str = ""
     pdf_url: str | None = None
-
-
-def _field(value: Any, name: str) -> Any:
-    return value[name] if isinstance(value, dict) else getattr(value, name)
 
 
 def _reference(source: str, target: str, suffix: str) -> str | None:
@@ -169,17 +166,13 @@ class PaperCompiler:
     ) -> CompileResult:
         result = CompileResult(compile_id=compile_id, status="error")
         try:
-            snapshot = await asyncio.to_thread(self.live.snapshot, project_id, revision)
-            saved_revision = _field(snapshot, "revision")
-            entries = _field(snapshot, "files")
-            open_path = next(
-                (_field(f, "path") for f in entries if _field(f, "file_id") == file_id), None
-            )
+            snapshot = await self.live.snapshot(project_id, revision)
+            saved_revision = snapshot.revision
+            entries = snapshot.files
+            open_path = next((f.path for f in entries if f.file_id == file_id), None)
             if open_path is None:
                 raise ValueError("The open file is absent from this saved revision.")
-            texts = {
-                _field(f, "path"): _field(f, "text") for f in entries if _field(f, "kind") == "text"
-            }
+            texts = {f.path: f.text for f in entries if f.kind == "text" and f.text is not None}
             roots = root_candidates(texts, open_path, "latex")
             if len(roots) != 1:
                 result.candidates = roots
@@ -196,14 +189,27 @@ class PaperCompiler:
                 with tempfile.TemporaryDirectory(prefix="rcp-paper-") as temporary:
                     tree = Path(temporary) / "source"
                     tree.mkdir()
-                    await asyncio.to_thread(self.live.materialize, snapshot, tree)
+                    materialization = asyncio.create_task(
+                        asyncio.to_thread(self.live.materialize, snapshot, tree)
+                    )
+                    try:
+                        await asyncio.shield(materialization)
+                    except asyncio.CancelledError:
+                        # Cancellation cannot stop the writer thread. Keep its
+                        # temporary tree alive and drain it before releasing ownership.
+                        while not materialization.done():
+                            with contextlib.suppress(asyncio.CancelledError, Exception):
+                                await asyncio.shield(materialization)
+                        with contextlib.suppress(Exception):
+                            materialization.result()
+                        raise
                     output = Path(temporary) / "output"
                     output.mkdir()
                     self.cache_dir.mkdir(parents=True, exist_ok=True)
                     code, log = await self._run(tree, output, roots[0])
                     result.log_tail = log
-                    latest = await asyncio.to_thread(self.live.snapshot, project_id)
-                    if _field(latest, "revision") != saved_revision:
+                    latest = await self.live.snapshot(project_id)
+                    if latest.revision != saved_revision:
                         result.status = "superseded"
                         return result
                     pdf = output / (Path(roots[0]).stem + ".pdf")

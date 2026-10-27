@@ -1141,7 +1141,7 @@ def _paper_read_proof(
 ) -> tuple[str, tuple[str, ...]]:
     """Read durable Paper through its served API, including every saved file.
 
-    S1 seam: the presence of its schema requires the live API. A broken live
+    The presence of the live schema requires the live API. A broken live
     reader must never pass rehearsal by falling back to the legacy projection.
     """
     base = f"/api/projects/{project_id}/paper"

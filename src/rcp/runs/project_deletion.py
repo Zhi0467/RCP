@@ -28,7 +28,7 @@ from rcp.limits import (
     PROJECT_DELETION_CANCEL_CONFIRM_SECONDS,
 )
 from rcp.runs.membership_fence import press_episode_stop
-from rcp.server_ops.paper_lifecycle_seam import get_paper_live
+from rcp.server_ops.paper_lifecycle import get_paper_live
 from rcp.storage import AppStore, EpisodeNotRunning, ProjectActiveTaskConflict
 from rcp.storage.models import (
     AgentTaskRecord,

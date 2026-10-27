@@ -29,6 +29,7 @@ interface Props {
   project: ProjectSnapshot;
   owner?: string;
   editorState?: PaperEditorState;
+  requestedFileId?: string | null;
   onEditorStateChange?: (state: PaperEditorState) => void;
   tasks: AgentTask[];
   onStartTask: StartAgentTask;
@@ -48,6 +49,7 @@ export function PaperWorkspace({
   project,
   owner: resourceOwner,
   editorState,
+  requestedFileId,
   onEditorStateChange,
   tasks,
   onStartTask,
@@ -60,9 +62,14 @@ export function PaperWorkspace({
   const [identityError, setIdentityError] = useState<string | null>(null);
   const [identityRetry, setIdentityRetry] = useState(0);
   const [selected, setSelected] = useState<string | null>(
-    editorState?.fileId ??
-      new URLSearchParams(window.location.hash.split("?")[1]).get("paper_file"),
+    requestedFileId ??
+      new URLSearchParams(window.location.hash.split("?")[1]).get("paper_file") ??
+      editorState?.fileId ??
+      null,
   );
+  useEffect(() => {
+    if (requestedFileId) setSelected(requestedFileId);
+  }, [requestedFileId]);
   const [folded, setFolded] = useState(storedFold);
   const [filesOpen, setFilesOpen] = useState(false);
   const [view, setView] = useState<"write" | "preview" | "coach">("write");

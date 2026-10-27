@@ -32,9 +32,7 @@ from rcp.transfer.archive import (
     TransferGraphTarget,
 )
 
-# S2 seam: admission owners outside this slice still advertise schemas through 6.
-# The orchestrator advances that advertisement with their schema-7 readers.
-TRANSFER_RECORD_SCHEMA_VERSION = 6
+TRANSFER_RECORD_SCHEMA_VERSION = 7
 PAPER_TRANSFER_RECORD_SCHEMA_VERSION = 7
 
 TRANSFER_RECORD_TABLES = frozenset(

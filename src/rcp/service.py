@@ -96,7 +96,8 @@ from rcp.limits import (
     REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 )
 from rcp.operation_ids import canonical_operation_uuid
-from rcp.paper import PaperService, PaperSnapshot
+from rcp.paper import PaperService
+from rcp.paper.projection import publication_badge
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import (
     PROVIDER_IDS,
@@ -1657,7 +1658,6 @@ class ProjectService:
         self,
         *,
         materialization: MaterializationResult | None = None,
-        paper: PaperSnapshot | None = None,
         head: GraphHeadRef | None = None,
     ) -> _ProjectSnapshotDraft:
         with self.history.workspace.read_snapshot() as root:
@@ -1669,20 +1669,17 @@ class ProjectService:
                     root / "manifest.toml", project_root=self.manifest.path.parent.parent
                 )
                 reader.history.manifest._path = self.manifest.path
-            return reader._project_snapshot(materialization=materialization, paper=paper, head=head)
+            return reader._project_snapshot(materialization=materialization, head=head)
 
     def _project_snapshot(
         self,
         *,
         materialization: MaterializationResult | None,
-        paper: PaperSnapshot | None,
         head: GraphHeadRef | None,
     ) -> _ProjectSnapshotDraft:
         if materialization is None:
             materialization = self.history.current_materialization()
         state = materialization.state
-        if paper is None:
-            paper = self.paper.snapshot()
         if head is None:
             # Previews and Sync report the exact head, transition id included; a
             # display head without it reads as a different head at the same
@@ -1734,7 +1731,7 @@ class ProjectService:
                     mode="json"
                 ),
                 "graph": state.model_dump(mode="json"),
-                "paper": paper.model_dump(mode="json"),
+                "paper": publication_badge(self.paper.store, self.paper.project_id),
                 "paper_coach": self.manifest.coach.model_dump(mode="json"),
                 "agent_profiles": profiles,
                 "skill_catalog": official_registry().catalog(),

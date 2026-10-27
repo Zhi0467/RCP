@@ -48,7 +48,8 @@ from rcp.history.store import GRAPH_HISTORY_DIRECTORY
 from rcp.limits import (
     PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES,
 )
-from rcp.paper import PaperService, PaperSnapshot
+from rcp.paper import PaperService
+from rcp.paper.projection import publication_badge
 from rcp.project_snapshot_compat import migrate_display_snapshot_settings
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import PROVIDER_IDS, ProviderId
@@ -2232,21 +2233,6 @@ class ProjectCatalog:
             project_id, "snapshot_freshness", lambda: freshness
         )
 
-    def update_cached_snapshot_paper(
-        self, project_id: str, read_paper: Callable[[], PaperSnapshot]
-    ) -> bool:
-        """Keep the display snapshot's Paper current after a create or save.
-
-        Graph refreshes reuse the cached Paper, so without this a restart opens
-        Paper from the state it had before the introduction existed. The Paper
-        is read under the snapshot lock, so of two overlapping saves the later
-        cache update always holds the newer Paper.
-        """
-
-        return self._update_cached_snapshot_field(
-            project_id, "paper", lambda: read_paper().model_dump(mode="json")
-        )
-
     def _update_cached_snapshot_field(
         self, project_id: str, key: str, read_value: Callable[[], object]
     ) -> bool:
@@ -2762,6 +2748,7 @@ class ProjectDisplayCache:
         payload["skill_catalog"] = official_registry().catalog()
         _refill_undeclared_skill_defaults(payload)
         self._complete_live_control(project_id, payload)
+        payload["paper"] = publication_badge(self._store, project_id)
         repositories = payload["repositories"]
         assert isinstance(repositories, list)
         payload["repositories"] = project_repository_descriptors(
@@ -3006,10 +2993,9 @@ class ProjectDisplayCache:
             if cached is None:
                 raise ValueError("The existing project display snapshot is invalid.")
             materialization = service.history.materialize(write_outputs=False)
-            paper = PaperSnapshot.model_validate(cached["paper"])
             snapshot = self.complete_snapshot(
                 project_id,
-                service.project_snapshot(materialization=materialization, paper=paper),
+                service.project_snapshot(materialization=materialization),
                 fresh=True,
             )
             self._catalog.commit_cached_snapshot(
