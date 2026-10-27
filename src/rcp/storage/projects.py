@@ -549,6 +549,21 @@ class ProjectStoreMixin(StoreMixinBase):
                         (project_id,),
                     ).rowcount,
                 }
+                from rcp.server_ops.backup_paper import PAPER_PROJECT_TABLES
+
+                existing_tables = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                # Shared blobs and version texts remain content-addressed: another
+                # project or retained history may still reference the same bytes.
+                for table in reversed(PAPER_PROJECT_TABLES):
+                    if table in existing_tables:
+                        counts[table] = connection.execute(
+                            f'DELETE FROM "{table}" WHERE project_id = ?', (project_id,)
+                        ).rowcount
                 for table in (
                     "_legacy_campaign_invocations_archive",
                     "_legacy_campaign_messages_archive",

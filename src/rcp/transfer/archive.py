@@ -22,6 +22,7 @@ from rcp.limits import (
     PROJECT_TRANSFER_INVENTORY_MAX_ENTRIES,
     PROJECT_TRANSFER_MANIFEST_MAX_BYTES,
 )
+from rcp.server_ops.backup_paper import PAPER_SHARED_TABLES
 from rcp.server_ops.models import redact_server_text
 
 TRANSFER_ARCHIVE_SCHEMA_VERSION = 1
@@ -105,6 +106,8 @@ TRANSFER_GLOBAL_TABLES = frozenset(
         "owner_sign_in_codes",
     }
 )
+TRANSFER_GLOBAL_TABLES |= frozenset(PAPER_SHARED_TABLES)
+
 _LEGACY_PROJECT_ARCHIVE_TABLES = frozenset(
     {
         "_legacy_campaign_invocations_archive",
@@ -122,6 +125,7 @@ TransferArchiveGroup = Literal[
     "operational_records",
     "rcp_chat",
     "paper_introduction",
+    "paper_projection",
     "fact",
     "kept_artifact",
     "artifact_version",
@@ -284,6 +288,8 @@ class TransferArchiveEntry(_StrictTransferModel):
             valid = len(parts) == 2 and parts[0] == "chats" and path.suffix == ".jsonl"
         elif self.group == "paper_introduction":
             valid = path == PurePosixPath("paper/introduction.md")
+        elif self.group == "paper_projection":
+            valid = len(parts) >= 3 and parts[:2] == ("paper", "projection")
         elif self.group == "fact":
             valid = len(parts) >= 2 and parts[0] == "facts"
         elif self.group == "artifact_version":

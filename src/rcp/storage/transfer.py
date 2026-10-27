@@ -15,6 +15,11 @@ from rcp.artifacts import html_document_title
 from rcp.core.graph_targets import graph_target_json
 from rcp.core.models import EpisodeIsolation, EpisodeIsolationState
 from rcp.core.transition_models import GraphTargetRef
+from rcp.server_ops.backup_paper import (
+    PAPER_PROJECT_TABLES,
+    capture_paper_section,
+    restore_paper_section,
+)
 from rcp.storage.artifact_models import Artifact, ArtifactVersion
 from rcp.storage.artifacts import insert_artifact, write_artifact_file
 from rcp.storage.chat_names import backfill_chat_names
@@ -259,7 +264,19 @@ class ProjectTransferStoreMixin(StoreMixinBase):
     @staticmethod
     def _project_transfer_record_schema_version_in_connection(
         connection: sqlite3.Connection, project_id: str
-    ) -> Literal[1, 2, 3, 4, 5, 6]:
+    ) -> Literal[1, 2, 3, 4, 5, 6, 7]:
+        tables = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        if (
+            "paper_publication" in tables
+            and connection.execute(
+                "SELECT 1 FROM paper_publication WHERE project_id = ? LIMIT 1", (project_id,)
+            ).fetchone()
+            is not None
+        ):
+            return 7
         if (
             connection.execute(
                 "SELECT 1 FROM graph_branches WHERE project_id = ? LIMIT 1", (project_id,)
@@ -358,6 +375,7 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                     for episode in episodes
                 )
             paper = self._transfer_paper_draft(connection, project_id)
+            saved_paper = capture_paper_section(connection, project_id)
             schema_version = self._project_transfer_record_schema_version_in_connection(
                 connection, project_id
             )
@@ -370,6 +388,7 @@ class ProjectTransferStoreMixin(StoreMixinBase):
             episodes=episodes,
             branches=branches,
             paper_draft=paper,
+            paper=saved_paper,
         )
 
     @staticmethod
@@ -1710,6 +1729,11 @@ class ProjectTransferStoreMixin(StoreMixinBase):
             "auto_research_child_experiments",
             "auto_research_child_admissions",
         )
+        existing_tables = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        project_tables += tuple(table for table in PAPER_PROJECT_TABLES if table in existing_tables)
         for table in project_tables:
             if (
                 connection.execute(
@@ -2754,6 +2778,8 @@ class ProjectTransferStoreMixin(StoreMixinBase):
         connection: sqlite3.Connection,
         records: TransferRecordBundle,
     ) -> None:
+        if records.paper is not None:
+            restore_paper_section(connection, records.paper, project_id=records.project_id)
         if records.paper_draft is None:
             return
         draft = records.paper_draft

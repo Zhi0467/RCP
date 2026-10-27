@@ -114,6 +114,8 @@ BackupFileGroup = Literal[
     "canonical",
     "chat",
     "paper_introduction",
+    "paper_saved",
+    "paper_projection",
     "fact",
     "kept_artifact",
     "legacy_kept_result_view",
@@ -277,6 +279,12 @@ class BackupFileEntry(_StrictBackupModel):
             ".research/paper/introduction.md"
         ):
             raise ValueError("Paper backup entries must name the canonical introduction")
+        elif self.group == "paper_saved" and source != PurePosixPath("paper/saved.json"):
+            raise ValueError("saved Paper entries require the versioned section path")
+        elif self.group == "paper_projection" and not (
+            len(source.parts) > 2 and source.parts[:2] == (".research", "paper")
+        ):
+            raise ValueError("Paper projection entries must stay below .research/paper")
         elif self.group == "fact" and not (
             len(source.parts) > 2 and source.parts[:2] == (".research", "facts")
         ):

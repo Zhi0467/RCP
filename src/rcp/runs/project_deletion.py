@@ -28,6 +28,7 @@ from rcp.limits import (
     PROJECT_DELETION_CANCEL_CONFIRM_SECONDS,
 )
 from rcp.runs.membership_fence import press_episode_stop
+from rcp.server_ops.paper_lifecycle_seam import get_paper_live
 from rcp.storage import AppStore, EpisodeNotRunning, ProjectActiveTaskConflict
 from rcp.storage.models import (
     AgentTaskRecord,
@@ -117,6 +118,9 @@ def stop_project_work(
         raise ProjectDeletionStopsChanged(
             "The running work changed. Review it and confirm Delete again."
         )
+    paper = get_paper_live(store, project_id)
+    if paper is not None:
+        paper.pause(project_id)
     unstopped: list[str] = []
     work = store.project_live_work(project_id)
     for watcher in work.watchers:
@@ -164,6 +168,9 @@ def stop_project_work(
                 ]
             )
         )
+    if paper is not None:
+        paper.drain(project_id)
+        paper.dispose(project_id)
     return unstopped
 
 
