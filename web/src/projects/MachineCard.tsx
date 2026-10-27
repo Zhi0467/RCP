@@ -308,18 +308,31 @@ function ComputeFold(props: MachineFoldProps) {
     );
     setChecking(false);
   };
-  const routes =
-    record.job_manager === "slurm" ? (["scheduler", "helper"] as const) : (["helper"] as const);
   // A route check describes the saved settings; an edit not yet saved masks it.
   const unsaved = toggling || jobsRoot.saving || jobsRoot.draft.trim() !== record.jobs_root;
+  const probeLine = (route: "scheduler" | "helper") => {
+    const probe = unsaved ? null : record.compute_probes[route];
+    const presentation = computeProbePresentation(probe);
+    return (
+      <div className={`compute-probe ${presentation.tone}`} data-compute-route={route}>
+        <span className="compute-probe-dot" aria-hidden="true" />
+        <span>{presentation.label}</span>
+        {probe?.backend_id && <span>{probe.backend_id}</span>}
+        {probe?.diagnostic && <span>{probe.diagnostic}</span>}
+        {probe?.required_action && <em>{probe.required_action}</em>}
+      </div>
+    );
+  };
   return (
     <Fold
       className="machine-writable-paths machine-compute"
       title="Compute"
       data-machine-fold="compute"
     >
-      <div className="compute-controls">
-        <span>Slurm</span>
+      {/* Slurm only changes what agents are told about this machine; the helper is
+          RCP's own launcher, and only it uses the job folder. */}
+      <div className="compute-route" data-compute-row="slurm">
+        <strong>Slurm</strong>
         <div
           role="group"
           aria-label="Slurm"
@@ -343,6 +356,7 @@ function ComputeFold(props: MachineFoldProps) {
             </button>
           ))}
         </div>
+        {record.job_manager === "slurm" && probeLine("scheduler")}
         <button
           type="button"
           data-machine-action="check-compute"
@@ -356,24 +370,20 @@ function ComputeFold(props: MachineFoldProps) {
           {checking ? <LoaderCircle className="spin" size={14} /> : <RotateCw size={14} />}
         </button>
       </div>
-      {routes.map((route) => {
-        const probe = unsaved ? null : record.compute_probes[route];
-        const presentation = computeProbePresentation(probe);
-        return (
-          <div
-            className={`compute-probe ${presentation.tone}`}
-            key={route}
-            data-compute-route={route}
-          >
-            <strong>{route === "scheduler" ? "Scheduler" : "Helper"}</strong>
-            <span className="compute-probe-dot" aria-hidden="true" />
-            <span>{presentation.label}</span>
-            {probe?.backend_id && <span>{probe.backend_id}</span>}
-            {probe?.diagnostic && <span>{probe.diagnostic}</span>}
-            {probe?.required_action && <em>{probe.required_action}</em>}
-          </div>
-        );
-      })}
+      <div className="compute-route" data-compute-row="helper">
+        <strong>Helper</strong>
+        {probeLine("helper")}
+        {record.host && (
+          <input
+            {...jobsRoot.inputProps}
+            {...failedProps(failure, "jobs_root")}
+            aria-label="Job output folder"
+            placeholder="Job folder (~/.rcp/jobs)"
+            data-machine-setting="jobs_root"
+            disabled={writesDisabled || jobsRoot.saving}
+          />
+        )}
+      </div>
       {record.reach.map(({ from, probe }) => {
         const presentation = computeProbePresentation(probe);
         return (
@@ -392,28 +402,15 @@ function ComputeFold(props: MachineFoldProps) {
           </div>
         );
       })}
-      <div className="compute-fields">
-        {/* RCP's own machine keeps jobs in its data folder; only a remote host reads this. */}
-        {record.host && (
-          <input
-            {...jobsRoot.inputProps}
-            {...failedProps(failure, "jobs_root")}
-            aria-label="Job output folder"
-            placeholder="Job folder (~/.rcp/jobs)"
-            data-machine-setting="jobs_root"
-            disabled={writesDisabled || jobsRoot.saving}
-          />
-        )}
-        <input
-          {...accessHint.inputProps}
-          {...failedProps(failure, "access_hint")}
-          aria-label="Access hint"
-          placeholder="Access hint for agents"
-          maxLength={512}
-          data-machine-setting="access_hint"
-          disabled={writesDisabled || accessHint.saving}
-        />
-      </div>
+      <input
+        {...accessHint.inputProps}
+        {...failedProps(failure, "access_hint")}
+        aria-label="Access hint"
+        placeholder="Access hint for agents"
+        maxLength={512}
+        data-machine-setting="access_hint"
+        disabled={writesDisabled || accessHint.saving}
+      />
     </Fold>
   );
 }

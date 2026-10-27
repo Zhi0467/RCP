@@ -140,17 +140,14 @@ test("external job Cancel uses one watcher and the machine card saves compute on
       await page.locator(`.machine-tiles [data-machine-tile="${alias}"]`).click();
       await compute.locator("summary").click();
     };
-    const route = (name) =>
-      compute
-        .locator(".compute-probe")
-        .filter({ has: page.locator("strong", { hasText: new RegExp(`^${name}$`) }) });
+    const route = (name) => compute.locator(`[data-compute-route="${name}"]`);
     await open("cluster");
-    assert.equal(await route("Scheduler").count(), 0);
+    assert.equal(await route("scheduler").count(), 0);
     await compute
       .getByRole("group", { name: "Slurm" })
       .getByRole("button", { name: "On", exact: true })
       .click();
-    await route("Scheduler").waitFor();
+    await route("scheduler").waitFor();
     const jobsRoot = compute.getByRole("textbox", { name: "Job output folder" });
     await jobsRoot.fill("/cluster-edited");
     const saved = page.waitForResponse((response) => response.request().method() === "PATCH");
@@ -204,15 +201,17 @@ test("external job Cancel uses one watcher and the machine card saves compute on
       }),
     );
     await compute.locator('[data-machine-action="check-compute"]').click();
-    await route("Scheduler").getByText("Scheduler reachable").waitFor();
-    await route("Helper").getByText("Enable linger for the rcp account").waitFor();
-    assert.equal(await route("Scheduler").getAttribute("class"), "compute-probe ready");
-    assert.equal(await route("Helper").getAttribute("class"), "compute-probe error");
+    await route("scheduler").getByText("Scheduler reachable").waitFor();
+    await route("helper").getByText("Enable linger for the rcp account").waitFor();
+    assert.equal(await route("scheduler").getAttribute("class"), "compute-probe ready");
+    assert.equal(await route("helper").getAttribute("class"), "compute-probe error");
     assert.equal(await compute.locator('[data-compute-reach="local"]').count(), 1);
     await open("local");
     assert.deepEqual(
-      await compute.locator(".compute-probe:not(.compute-reach) strong").allTextContents(),
-      ["Helper"],
+      await compute
+        .locator("[data-compute-route]")
+        .evaluateAll((routes) => routes.map((route) => route.dataset.computeRoute)),
+      ["helper"],
       "A machine without a job manager offers only the helper route",
     );
 

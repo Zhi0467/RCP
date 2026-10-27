@@ -73,7 +73,7 @@ export function BranchGroupList<T>({
   projectId: string;
   groups: BranchGroup<T>[];
   refs: readonly GraphRef[] | null | undefined;
-  renderItems: (items: T[]) => ReactNode;
+  renderItems: (items: T[], key: string) => ReactNode;
 }) {
   const { folded, fold } = useFoldedBranches(projectId);
   const section = (group: BranchGroup<T>) => (
@@ -84,7 +84,7 @@ export function BranchGroupList<T>({
       open={!folded.has(group.key)}
       onFold={(closed) => fold(group.key, closed)}
     >
-      {renderItems(group.items)}
+      {renderItems(group.items, group.key)}
     </BranchGroupSection>
   );
   const archived = groups.filter((group) => group.archived);

@@ -2164,6 +2164,10 @@ button.agent-provider-label {
 .machine-compute {
   min-width: 0;
 }
+/* An open fold's body is not a grid, so the rows space themselves. */
+.machine-compute > :not(summary) + :not(summary) {
+  margin-top: 8px;
+}
 .machine-compute input.failed,
 .provider-path-row input.failed,
 .machine-card > header .icon-button.failed,
@@ -2172,30 +2176,31 @@ button.agent-provider-label {
   border-color: var(--red);
   color: var(--red);
 }
-/* Slurm On/Off and the check share one line; statuses follow; the fields name themselves by hint. */
-.machine-compute .compute-controls {
+/* Two labelled rows: Slurm (what agents are told, with its scheduler status) and
+   Helper (RCP's launcher, with its status and job folder); the access hint follows. */
+.machine-compute .compute-route {
   align-items: center;
   display: flex;
-  gap: 10px;
-  padding-top: 4px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-height: 34px;
 }
-.machine-compute .compute-controls > span {
+.machine-compute .compute-route > strong {
   font-size: var(--type-xs);
   font-weight: 650;
+  min-width: 52px;
 }
-.machine-compute .compute-controls > .icon-button {
+.machine-compute .compute-route > .icon-button {
   margin-left: auto;
+}
+.machine-compute .compute-route > input {
+  flex: 1 1 220px;
 }
 .machine-compute .segmented.failed {
   outline: 2px solid var(--red);
 }
-.machine-compute .compute-fields {
-  display: grid;
-  gap: 8px;
-  grid-auto-columns: minmax(0, 1fr);
-  grid-auto-flow: column;
-}
-.machine-compute .compute-fields input {
+.machine-compute .compute-route > input,
+.machine-compute > input {
   background: var(--paper);
   border: 1px solid var(--line-strong);
   font: var(--type-xs) var(--mono);
@@ -2205,9 +2210,6 @@ button.agent-provider-label {
   width: 100%;
 }
 @media (max-width: 560px) {
-  .machine-compute .compute-fields {
-    grid-auto-flow: row;
-  }
   /* The host label takes the second line, so the actions stay beside the name. */
   .provider-machine.machine-card > header > span {
     flex-basis: 100%;

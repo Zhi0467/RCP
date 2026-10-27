@@ -23,6 +23,9 @@ import type { GraphRef, ProjectArtifact } from "../core/types";
 import { BranchTag } from "../core/BranchTag";
 import { BranchGroupList, branchGroups } from "./BranchGroups";
 
+// A branch lists its newest few outputs until the member asks for the rest.
+const SHOWN_PER_BRANCH = 5;
+
 export function Artifacts({
   projectId,
   graphRefs = null,
@@ -44,6 +47,7 @@ export function Artifacts({
   const error = actionError || (resource.error ? String(resource.error) : null);
   // Grouped as the server orders entries, so the branch with the newest output leads.
   const groups = branchGroups(entries ?? [], (entry) => entry);
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
 
   const open = async (
     event: MouseEvent<HTMLAnchorElement | HTMLButtonElement>,
@@ -175,6 +179,31 @@ export function Artifacts({
     );
   };
 
+  const list = (key: string, items: ProjectArtifact[], grouped: boolean) => {
+    const all = expanded.has(key);
+    const hidden = items.length - SHOWN_PER_BRANCH;
+    return (
+      <ul className="artifacts-list">
+        {(all ? items : items.slice(0, SHOWN_PER_BRANCH)).map((entry) => row(entry, grouped))}
+        {hidden > 0 && (
+          <li className="artifacts-more">
+            <button
+              type="button"
+              onClick={() => {
+                const next = new Set(expanded);
+                if (all) next.delete(key);
+                else next.add(key);
+                setExpanded(next);
+              }}
+            >
+              {all ? "Show fewer" : `Show ${hidden} more`}
+            </button>
+          </li>
+        )}
+      </ul>
+    );
+  };
+
   return (
     <section
       className="view-panel artifacts-view"
@@ -201,15 +230,13 @@ export function Artifacts({
       ) : !error && entries.length === 0 ? (
         <p>No saved artifacts or reports yet.</p>
       ) : groups.length === 1 ? (
-        <ul className="artifacts-list">{entries.map((entry) => row(entry, false))}</ul>
+        list(groups[0].key, entries, false)
       ) : (
         <BranchGroupList
           projectId={projectId}
           groups={groups}
           refs={graphRefs}
-          renderItems={(items) => (
-            <ul className="artifacts-list">{items.map((entry) => row(entry, true))}</ul>
-          )}
+          renderItems={(items, key) => list(key, items, true)}
         />
       )}
     </section>

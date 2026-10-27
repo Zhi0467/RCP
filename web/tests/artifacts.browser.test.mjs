@@ -960,3 +960,56 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
     await server.close();
   }
 });
+
+test("A branch with many artifacts lists its newest few until asked for the rest", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1000, height: 850 } });
+    const entry = (index, branch) => ({
+      id: `a${index}`,
+      artifact_id: `a${index}`,
+      name: `Output ${index}`,
+      kind: "artifact",
+      view: "html",
+      created_at: "2026-10-20T12:00:00Z",
+      path: null,
+      operation_id: null,
+      episode_id: null,
+      episode_mode: null,
+      source_chat_href: null,
+      can_open: true,
+      available: true,
+      can_download: false,
+      download_url: null,
+      unavailable_reason: null,
+      graph_branch_id: branch,
+      graph_branch_name: branch ?? "main",
+      graph_branch_archived: false,
+      viewer_url: `/viewer-shell/a${index}`,
+    });
+    const busy = Array.from({ length: 70 }, (_, index) => entry(index, "busy"));
+    await page.route("**/api/projects/project/artifacts", (route) =>
+      route.fulfill({ json: [...busy, entry(70, null)] }),
+    );
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/artifacts.html`,
+    );
+    const branch = page.locator(".artifacts-branch").filter({ hasText: "Output 0" });
+    await branch.getByRole("heading", { name: "Output 0", exact: true }).waitFor();
+    assert.equal(await branch.locator(".artifact-entry").count(), 5);
+    await branch.locator(".artifacts-more button").click();
+    assert.equal(await branch.locator(".artifact-entry").count(), 70);
+    await branch.locator(".artifacts-more button").click();
+    assert.equal(await branch.locator(".artifact-entry").count(), 5);
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});

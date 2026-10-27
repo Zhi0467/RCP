@@ -209,7 +209,8 @@ there is no header and each row keeps its branch tag. The composer's From RCP
 picker groups its Reports and Artifacts folders the same way, sharing the folds.
 
 Each branch is one raised box holding its rows, with no rules between them; an
-archived branch is a well inside the Archived box. A row leads with the title; one quiet line
+archived branch is the same full-width box under the Archived fold. A branch
+lists its five newest rows, then one Show more control for the rest. A row leads with the title; one quiet line
 below holds the author, a Source chat link when verified, and a node title link
 when the displayed graph holds the origin node. Clicking the row opens it. Copy
 reference, Download, and Delete are icon buttons at the right. Stored

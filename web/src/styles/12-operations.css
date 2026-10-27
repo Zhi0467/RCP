@@ -569,15 +569,26 @@
 .artifacts-branch > .artifacts-list {
   padding-bottom: 4px;
 }
-/* Archived is a fold header, not a box; its branches are the same boxes, indented. */
+/* Archived is a fold header, not a box; its branches are the same full-width boxes. */
 .artifacts-branch.artifacts-archived {
   background: none;
   border: 0;
   box-shadow: none;
   padding: 0;
 }
-.artifacts-archived > .artifacts-branch {
-  margin-left: 22px;
+.artifacts-more > button {
+  background: none;
+  border: 0;
+  border-radius: 7px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: var(--type-sm);
+  padding: 6px 8px 6px 30px;
+}
+.artifacts-more > button:hover {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 .artifacts-branch > summary {
   align-items: center;
