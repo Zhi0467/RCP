@@ -263,37 +263,52 @@ interface MachineFoldProps {
   onRecordChange: (machine: SpaceMachine) => void;
 }
 
-/** One saved change from a fold, its failure shown in that fold. */
+/** One failed control in a fold: a red edge, its message on hover, and the
+ * control itself as the retry. */
+interface FoldFailure {
+  key: string;
+  message: string;
+}
+
+function failedProps(failure: FoldFailure | null, key: string) {
+  return failure?.key === key
+    ? { className: "failed", "aria-invalid": true, title: failure.message }
+    : {};
+}
+
+/** Saved changes and actions from a fold; a failure marks the control that caused it. */
 function useFoldUpdate({ record, save, onRecordChange }: MachineFoldProps) {
-  const [error, setError] = useState<string | null>(null);
-  const update = async (request: SpaceMachineUpdateRequest) => {
-    setError(null);
+  const [failure, setFailure] = useState<FoldFailure | null>(null);
+  const attempt = async (key: string, action: () => Promise<void>) => {
+    setFailure(null);
     try {
-      onRecordChange(await save(record.machine_id, request));
-    } catch (failure) {
-      setError(errorMessage(failure));
+      await action();
+    } catch (caught) {
+      setFailure({ key, message: errorMessage(caught) });
     }
   };
-  return { error, setError, update };
+  const update = (key: string, request: SpaceMachineUpdateRequest) =>
+    attempt(key, async () => onRecordChange(await save(record.machine_id, request)));
+  return { failure, attempt, update };
 }
 
 function ComputeFold(props: MachineFoldProps) {
   const { record, writesDisabled, run, onRecordChange } = props;
-  const { error, setError, update } = useFoldUpdate(props);
+  const { failure, attempt, update } = useFoldUpdate(props);
   const [toggling, setToggling] = useState(false);
   const [checking, setChecking] = useState(false);
-  const jobsRoot = useSavedText(record.jobs_root, (jobs_root) => update({ jobs_root }));
-  const accessHint = useSavedText(record.access_hint, (access_hint) => update({ access_hint }));
+  const jobsRoot = useSavedText(record.jobs_root, (jobs_root) =>
+    update("jobs_root", { jobs_root }),
+  );
+  const accessHint = useSavedText(record.access_hint, (access_hint) =>
+    update("access_hint", { access_hint }),
+  );
   const check = async () => {
     setChecking(true);
-    setError(null);
-    try {
-      await run(async () => onRecordChange(await checkSpaceMachineCompute(record.machine_id)));
-    } catch (failure) {
-      setError(errorMessage(failure));
-    } finally {
-      setChecking(false);
-    }
+    await attempt("check", () =>
+      run(async () => onRecordChange(await checkSpaceMachineCompute(record.machine_id))),
+    );
+    setChecking(false);
   };
   const routes =
     record.job_manager === "slurm" ? (["scheduler", "helper"] as const) : (["helper"] as const);
@@ -305,11 +320,12 @@ function ComputeFold(props: MachineFoldProps) {
     >
       <header>
         <button
-          className="icon-button"
           type="button"
           data-machine-action="check-compute"
           aria-label="Check compute again"
           title="Check compute again"
+          {...failedProps(failure, "check")}
+          className={`icon-button${failure?.key === "check" ? " failed" : ""}`}
           disabled={writesDisabled || checking}
           onClick={() => void check()}
         >
@@ -322,12 +338,13 @@ function ComputeFold(props: MachineFoldProps) {
           <input
             type="checkbox"
             data-machine-setting="job_manager"
+            {...failedProps(failure, "job_manager")}
             checked={record.job_manager === "slurm"}
             disabled={writesDisabled || toggling}
             onChange={(event) => {
               const job_manager = event.target.checked ? "slurm" : "none";
               setToggling(true);
-              void update({ job_manager }).finally(() => setToggling(false));
+              void update("job_manager", { job_manager }).finally(() => setToggling(false));
             }}
           />
         </label>
@@ -335,6 +352,7 @@ function ComputeFold(props: MachineFoldProps) {
           <span>Jobs root</span>
           <input
             {...jobsRoot.inputProps}
+            {...failedProps(failure, "jobs_root")}
             data-machine-setting="jobs_root"
             disabled={writesDisabled || jobsRoot.saving}
           />
@@ -343,6 +361,7 @@ function ComputeFold(props: MachineFoldProps) {
           <span>Access hint</span>
           <input
             {...accessHint.inputProps}
+            {...failedProps(failure, "access_hint")}
             maxLength={512}
             data-machine-setting="access_hint"
             disabled={writesDisabled || accessHint.saving}
@@ -385,27 +404,22 @@ function ComputeFold(props: MachineFoldProps) {
           </div>
         );
       })}
-      {error && <p role="alert">{error}</p>}
     </Fold>
   );
 }
 
 function ProviderExecutables(props: MachineFoldProps) {
   const { record, writesDisabled, run, onRecordChange } = props;
-  const { error, setError, update } = useFoldUpdate(props);
+  const { failure, attempt, update } = useFoldUpdate(props);
   const [resolving, setResolving] = useState<ProviderId | null>(null);
   const resolve = async (provider: ProviderId) => {
     setResolving(provider);
-    setError(null);
-    try {
-      await run(async () =>
+    await attempt(`resolve:${provider}`, () =>
+      run(async () =>
         onRecordChange(await resolveSpaceMachineProvider(record.machine_id, provider)),
-      );
-    } catch (failure) {
-      setError(errorMessage(failure));
-    } finally {
-      setResolving(null);
-    }
+      ),
+    );
+    setResolving(null);
   };
   return (
     <Fold
@@ -422,12 +436,12 @@ function ProviderExecutables(props: MachineFoldProps) {
             label={label || provider}
             writesDisabled={writesDisabled}
             resolving={resolving}
-            onSave={(path) => update({ provider_paths: { [provider]: path } })}
+            failure={failure}
+            onSave={(path) => update(`path:${provider}`, { provider_paths: { [provider]: path } })}
             onResolve={() => void resolve(provider)}
           />
         ))}
       </div>
-      {error && <p role="alert">{error}</p>}
     </Fold>
   );
 }
@@ -438,6 +452,7 @@ function ProviderPathRow({
   label,
   writesDisabled,
   resolving,
+  failure,
   onSave,
   onResolve,
 }: {
@@ -446,6 +461,7 @@ function ProviderPathRow({
   label: string;
   writesDisabled: boolean;
   resolving: ProviderId | null;
+  failure: FoldFailure | null;
   onSave: (path: string) => Promise<void>;
   onResolve: () => void;
 }) {
@@ -463,14 +479,18 @@ function ProviderPathRow({
         type="text"
         {...path.inputProps}
         aria-label={`${label} executable`}
+        {...failedProps(failure, `path:${provider}`)}
         data-machine-setting="provider_path"
         disabled={writesDisabled || path.saving}
       />
       <span className={`provider-path-state ${state.kind}`}>{state.label}</span>
       <button
-        className="button secondary compact"
         type="button"
         data-machine-action="resolve-provider"
+        {...failedProps(failure, `resolve:${provider}`)}
+        className={`button secondary compact${
+          failure?.key === `resolve:${provider}` ? " failed" : ""
+        }`}
         disabled={writesDisabled || resolving !== null}
         onClick={onResolve}
       >

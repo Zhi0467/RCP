@@ -265,6 +265,16 @@ def detect_slurm(host: str) -> bool | None:
     return False if result.exit_code == SLURM_TOOLS_MISSING_EXIT else None
 
 
+def settle_job_manager(store: AppStore, host: str) -> None:
+    """Turn Slurm on for a card nobody decided, when the machine has it; off when it lacks it."""
+    card = store.space_machine_for(host)
+    if card is None or card.job_manager is not None:
+        return
+    found = detect_slurm(host)
+    if found is not None:
+        store.update_space_machine(card.machine_id, job_manager="slurm" if found else "none")
+
+
 def refresh_compute_probes(
     store: AppStore,
     manifest: Manifest,
@@ -280,13 +290,7 @@ def refresh_compute_probes(
     """
     for alias in manifest.machine_map if machines is None else machines:
         host = manifest.machine_map[alias].host
-        card = store.space_machine_for(host)
-        if card is not None and card.job_manager is None:
-            found = detect_slurm(host)
-            if found is not None:
-                store.update_space_machine(
-                    card.machine_id, job_manager="slurm" if found else "none"
-                )
+        settle_job_manager(store, host)
         compute = store.machine_compute(host)
         for route in machine_compute_routes(compute):
             probe = probe_compute_backend(

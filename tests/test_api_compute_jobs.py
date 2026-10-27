@@ -57,6 +57,10 @@ def test_card_compute_change_rechecks_the_routes_of_every_project_on_it(compute_
         assert calls == [
             ("laptop", route, "slurm" if job_manager == "slurm" else None) for route in routes
         ]
+        # The returned card already carries the new checks.
+        assert [route for route, probe in response.json()["compute_probes"].items() if probe] == (
+            sorted(routes, key=["scheduler", "helper"].index)
+        )
         project = client.get(url).json()
         probes = project["machines"][0]["compute_probes"]
         assert [route for route, probe in probes.items() if probe] == sorted(
@@ -90,6 +94,7 @@ def test_an_undecided_card_turns_slurm_on_only_when_the_machine_has_it(
         "probe_compute_backend",
         lambda manifest, machine, route, **_: _result(machine, "launchd", "ready", ""),
     )
+    monkeypatch.setattr("rcp.api.space_machines.probe_machine_reach", lambda *_a, **_k: [])
     assert store.space_machine_for("").job_manager is None
     probe_module.refresh_compute_probes(
         store,
@@ -97,7 +102,13 @@ def test_an_undecided_card_turns_slurm_on_only_when_the_machine_has_it(
         app.state.default_project_id,
         data_dir=app.state.catalog.data_dir,
     )
-    assert store.space_machine_for("").job_manager == {True: "slurm", False: "none"}.get(found)
+    expected = {True: "slurm", False: "none"}.get(found)
+    assert store.space_machine_for("").job_manager == expected
+    # A card no project uses yet settles the same way when it is checked.
+    unused = store.create_space_machine(name="spare", host="spare.example", os_account="")
+    checked = client.post(f"/api/space/machines/{unused.machine_id}/compute/check", json={})
+    assert checked.status_code == 200, checked.text
+    assert checked.json()["job_manager"] == expected
 
 
 def test_compute_check_rechecks_one_machine_on_request(compute_api, monkeypatch):

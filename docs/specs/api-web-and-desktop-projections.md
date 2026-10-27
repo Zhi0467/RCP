@@ -1506,9 +1506,10 @@ cached readiness, the route probes of any project using it, and `reach`: the
 last on-demand check from each machine an agent runs on.
 `PATCH /api/space/machines/{machine_id}` changes only the fields given; an empty
 provider path forgets it, and a compute change clears the card's probes and
-re-checks them in the background.
+re-checks them before it returns, so the returned card shows the new routes.
 `POST /api/space/machines/{machine_id}/compute/check` re-runs the route probes
-and reach now. `POST /api/space/machines/{machine_id}/providers/{provider}/resolve`
+and reach now. Both settle an undecided job manager, even on a card no project
+uses yet. `POST /api/space/machines/{machine_id}/providers/{provider}/resolve`
 finds the executable on the machine and records it on the card. A card
 in use by any project, or whose use cannot be established, cannot be deleted,
 and host and account never change. A team create with a blank account fills it

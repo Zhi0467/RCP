@@ -13,7 +13,7 @@ import threading
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from rcp.agents import AgentLauncher
@@ -24,7 +24,7 @@ from rcp.api.dependencies import get_catalog, get_identity_access, get_store
 from rcp.api.identity import IdentityAccess
 from rcp.browser import BrowserReadiness, enable_linger, install_browser, readiness
 from rcp.compute import probe_machine_reach
-from rcp.compute_jobs.probe import refresh_compute_probes
+from rcp.compute_jobs.probe import refresh_compute_probes, settle_job_manager
 from rcp.compute_jobs.routes import ComputeRoute
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,
@@ -602,7 +602,6 @@ def update_space_machine(
     identity_access: IdentityDependency,
     store: StoreDependency,
     catalog: CatalogDependency,
-    background: BackgroundTasks,
 ) -> dict[str, object]:
     identity_access.acting_user(request)
     machine = _machine_or_404(store, machine_id)
@@ -658,7 +657,9 @@ def update_space_machine(
         for binary in {machine.provider_paths.get(provider), path} - {None}:
             catalog.launcher.invalidate_readiness(provider, host=machine.host, binary=binary)
     if compute_changed:
-        background.add_task(_refresh_machine_probes, store, catalog, updated)
+        # Checked now, so the card this returns already shows the new routes.
+        _refresh_machine_probes(store, catalog, updated)
+        updated = _machine_or_404(store, machine_id)
     return _one_machine_view(
         store, updated, _visible_project_ids(request, identity_access, store), catalog.launcher
     )
@@ -667,8 +668,9 @@ def update_space_machine(
 def _refresh_machine_probes(
     store: AppStore, catalog: ProjectCatalog, machine: SpaceMachineRecord
 ) -> None:
-    """Check the card's routes once for every project on it."""
+    """Settle the card's job manager, then check its routes once for every project on it."""
 
+    settle_job_manager(store, machine.host)
     usage, _, _ = _machine_usage(store)
     for project in usage.get(machine.host, []):
         record = store.project(project["project_id"])

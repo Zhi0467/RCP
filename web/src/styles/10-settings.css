@@ -2194,6 +2194,16 @@ button.agent-provider-label {
 .machine-compute {
   min-width: 0;
 }
+.machine-compute input.failed,
+.provider-path-row input.failed,
+.machine-compute .icon-button.failed,
+.provider-path-row .button.failed {
+  border-color: var(--red);
+  color: var(--red);
+}
+.machine-compute input[type="checkbox"].failed {
+  outline: 2px solid var(--red);
+}
 .machine-compute .compute-connection-fields {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
