@@ -60,7 +60,7 @@ from rcp.runs.shared import (
     _sweep_stale_stages,
     _swept_stage_root,
 )
-from rcp.runs.tasks.coach import _paper_snapshot_path, stream_coach
+from rcp.runs.tasks.coach import stream_coach
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.experiment_loop import stream_experiment_loop_task
 from rcp.runs.tasks.graph import (
@@ -118,6 +118,7 @@ from .helpers import (
     write_turn_outcome,
 )
 from .helpers import wait_for_task_response as _wait_for_run
+from .paper_fakes import wire_saved_paper
 
 
 def _named_test_authorizer(store: AppStore) -> AuthorizedHuman:
@@ -2353,17 +2354,6 @@ def test_raw_agent_patch_rejects_forged_top_level_authority(field: str, value: s
     assert (field,) in {error["loc"] for error in caught.value.errors()}
 
 
-def test_paper_snapshot_filename_cannot_escape_data_directory(tmp_path) -> None:
-    data_dir = tmp_path / "app-data"
-
-    target = _paper_snapshot_path(data_dir, "../../escaped")
-    target.write_text("draft", encoding="utf-8")
-
-    assert target.parent == data_dir / "paper-snapshots"
-    assert target.name == "escaped-introduction.md"
-    assert not (tmp_path / "escaped-introduction.md").exists()
-
-
 def test_remote_context_uses_direct_paths_only_for_its_execution_machine(app, tmp_path) -> None:
     service = app.state.service
     context = service.assemble_run(
@@ -4401,6 +4391,7 @@ def test_failed_chat_task_keeps_the_answer_it_already_produced(app) -> None:
 def test_paper_coach_uses_agent_task_manager_and_result_shape(app, tmp_path) -> None:
     service = app.state.service
     service.paper.create()
+    wire_saved_paper(service)
     answer = "State the comparison before introducing the endpoint-KL terminology."
     session_id = str(uuid.uuid4())
     launcher = FakeLauncher(
@@ -4443,10 +4434,10 @@ def test_paper_coach_uses_agent_task_manager_and_result_shape(app, tmp_path) -> 
     launch = next(
         receipt for receipt in completed["debug_receipts"] if receipt["category"] == "agent_launch"
     )
-    assert launch["payload"]["capability"] == "paper_readonly"
+    assert launch["payload"]["capability"] == "paper_suggest"
     assert launch["payload"]["network_access"] is True
     assert isinstance(launcher.last_kwargs["control"], AgentProcessControl)
-    assert launcher.last_kwargs["capability"] == "paper_readonly"
+    assert launcher.last_kwargs["capability"] == "paper_suggest"
     assert service.paper.sessions()[0].native_session_id == session_id
 
 
@@ -4463,6 +4454,7 @@ def test_paper_coach_follow_up_restores_its_master_into_the_new_turn_stage(
     )
     service = app.state.service
     service.paper.create()
+    wire_saved_paper(service)
     session_id = str(uuid.uuid4())
 
     class RecordingCoachLauncher:
@@ -4520,6 +4512,7 @@ def test_paused_paper_coach_resumes_from_task_checkpoint_before_session_record(
 ) -> None:
     service = app.state.service
     service.paper.create()
+    wire_saved_paper(service)
     session_id = str(uuid.uuid4())
     answer = "Define the comparison in ordinary language before naming the metric."
 
@@ -4563,6 +4556,16 @@ def test_paused_paper_coach_resumes_from_task_checkpoint_before_session_record(
     )
     operation_id = started.json()["operation_id"]
     _wait_for_status(client, app.state.default_project_id, operation_id, {"running"})
+    wait_until(
+        lambda: (
+            client.get(f"/api/projects/{app.state.default_project_id}/tasks/{operation_id}")
+            .json()
+            .get("native_session_id")
+            == session_id
+        ),
+        timeout=60,
+        detail="coach did not checkpoint its native session",
+    )
     paused_response = client.post(
         f"/api/projects/{app.state.default_project_id}/tasks/{operation_id}/pause", json={}
     )
@@ -5384,6 +5387,7 @@ async def test_paper_coach_uses_its_read_only_launcher_contract(manifest, tmp_pa
     _record_local_codex_path(app)
     paper = service.paper
     paper.create()
+    wire_saved_paper(service)
     session_id = str(uuid.uuid4())
     launcher = FakeLauncher(
         [
@@ -5405,7 +5409,7 @@ async def test_paper_coach_uses_its_read_only_launcher_contract(manifest, tmp_pa
     ]
 
     assert launcher.calls == 1
-    assert launcher.last_kwargs["capability"] == "paper_readonly"
+    assert launcher.last_kwargs["capability"] == "paper_suggest"
     assert launcher.last_kwargs["binary"] == "/opt/agents/codex"
     workspace = launcher.last_kwargs["cwd"]
     assert workspace.name == "workspace"

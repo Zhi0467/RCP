@@ -23,10 +23,10 @@ def _request(tmp_path: Path, provider: str) -> ProviderTurnRequest:
         reasoning=None,
         session_id=None,
         read_dirs=[],
-        write_dirs=[],
+        write_dirs=[tmp_path / "changes"],
         write_scope=None,
-        capability="paper_readonly",
-        provider_version="1.18.30" if provider == "opencode" else "0.163.0",
+        capability="paper_suggest",
+        provider_version="2.200.0",
         fork_session_id="source-session",
     )
 
@@ -76,6 +76,7 @@ def test_app_server_forks_without_history_payload_and_requires_new_identity(
                     "thread": {"id": returned_session},
                     "approvalPolicy": "never",
                     "sandbox": {"type": "readOnly"},
+                    "activePermissionProfile": {"id": "rcp_paper"},
                 },
             }
         )
@@ -196,7 +197,8 @@ print(json.dumps({{"type":"result", "subtype":"success", "result":"Fork ready", 
                 session_id=source_id,
                 fork_session_id=source_id,
                 fork_source_cwd=str(source_cwd),
-                capability="paper_readonly",
+                write_dirs=[tmp_path / "changes"],
+                capability="paper_suggest",
             )
         )
     events = [
@@ -207,7 +209,8 @@ print(json.dumps({{"type":"result", "subtype":"success", "result":"Fork ready", 
             cwd=target_cwd,
             fork_session_id=source_id,
             fork_source_cwd=str(source_cwd),
-            capability="paper_readonly",
+            write_dirs=[tmp_path / "changes"],
+            capability="paper_suggest",
         )
     ]
     assert events[-1].event == "done", [(event.event, event.text) for event in events]

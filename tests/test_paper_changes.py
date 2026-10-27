@@ -1,0 +1,428 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from contextlib import nullcontext
+
+import pytest
+
+from rcp.paper.changes import (
+    InvalidChanges,
+    OutdatedChange,
+    PaperChanges,
+    line_changes,
+    map_range,
+    validate_output,
+)
+from rcp.paper.coach_seam import SavedPaperFile, SavedPaperSnapshot
+from rcp.storage import AppStore
+from tests.paper_fakes import FakePaperLive
+
+
+@pytest.fixture
+def setup(tmp_path):
+    snapshot = SavedPaperSnapshot(
+        revision=1,
+        files=[
+            SavedPaperFile(
+                file_id="f1",
+                path="section.md",
+                kind="text",
+                text="".join(f"line {i}\n" for i in range(30)),
+            )
+        ],
+    )
+    live = FakePaperLive(snapshot)
+    store = AppStore(tmp_path / "state.sqlite")
+    changes = PaperChanges(store, live, lambda _: nullcontext())
+    output = tmp_path / "changes"
+    (output / "files").mkdir(parents=True)
+    return snapshot, live, changes, output
+
+
+@pytest.mark.parametrize(
+    "moves",
+    [
+        {"rename": [["absent", "new"]]},
+        {"rename": [["section.md", "section.md"]]},
+        {"delete": ["../outside"]},
+        {"rename": "wrong"},
+        {"delete": ["section.md", "section.md"]},
+        {"unknown": []},
+    ],
+)
+def test_invalid_manifest_is_all_or_nothing(setup, moves):
+    snapshot, _live, changes, output = setup
+    (output / "files/new.md").write_text("valid")
+    (output / "moves.json").write_text(json.dumps(moves))
+    with pytest.raises(InvalidChanges):
+        changes.collect("p", "t", snapshot, output)
+    assert changes.groups("p", "t") == []
+
+
+def test_paths_utf8_symlink_and_size_limits(setup, monkeypatch):
+    snapshot, _live, _changes, output = setup
+    file = output / "files/section.md"
+    file.write_bytes(b"\xff")
+    with pytest.raises(InvalidChanges):
+        validate_output(output, snapshot)
+    file.unlink()
+    file.symlink_to(output.parent / "state.sqlite")
+    with pytest.raises(InvalidChanges):
+        validate_output(output, snapshot)
+    file.unlink()
+    file.write_text("four")
+    monkeypatch.setattr("rcp.paper.changes.PAPER_CHANGES_MAX_FILE_BYTES", 3)
+    with pytest.raises(InvalidChanges):
+        validate_output(output, snapshot)
+
+
+def test_delete_write_conflict_and_moves_filename(setup):
+    snapshot, _live, _changes, output = setup
+    (output / "files/section.md").write_text("replacement")
+    (output / "moves.json").write_text('{"delete":["section.md"]}')
+    with pytest.raises(InvalidChanges):
+        validate_output(output, snapshot)
+    (output / "moves.json").unlink()
+    (output / "files/moves.json").write_text('{"ordinary":"paper file"}')
+    assert "moves.json" in validate_output(output, snapshot)[0]
+
+
+def test_line_diff_merges_nearby_and_rewrites_large_changes():
+    before = "".join(f"line {i}\n" for i in range(100))
+    nearby = before.replace("line 3\n", "changed 3\n").replace("line 7\n", "changed 7\n")
+    assert len(line_changes(before, nearby)) == 1
+    distant = nearby.replace("line 30\n", "changed 30\n")
+    assert len(line_changes(before, distant)) == 2
+    assert line_changes(before, "rewritten\n")[0][0] == "rewrite"
+    many = before
+    for index in range(0, 65, 5):
+        many = many.replace(f"line {index}\n", f"changed {index}\n")
+    assert line_changes(before, many)[0][0] == "rewrite"
+
+
+def test_identity_offsets_repeated_paragraphs_and_empty_insertions():
+    base = "heading\nsame paragraph\nmiddle\nsame paragraph\nend\n"
+    offset = base.rindex("same paragraph")
+    start, end = map_range(base, "prefix\n" + base, offset, offset + len("same paragraph"))
+    assert start == offset + len("prefix\n")
+    assert ("prefix\n" + base)[start:end] == "same paragraph"
+    insertion = base.index("middle")
+    assert map_range(base, "prefix\n" + base, insertion, insertion) == (
+        insertion + 7,
+        insertion + 7,
+    )
+    with pytest.raises(OutdatedChange):
+        map_range(base, base[:insertion] + "human\n" + base[insertion:], insertion, insertion)
+    with pytest.raises(OutdatedChange):
+        map_range(base, base[:offset] + "different" + base[offset + 14 :], offset, offset + 14)
+
+
+def test_accept_idempotency_rebase_and_guarded_undo(setup):
+    snapshot, live, changes, output = setup
+    before = snapshot.files[0].text
+    (output / "files/section.md").write_text(before.replace("line 10\n", "improved 10\n"))
+    group = changes.collect("p", "t", snapshot, output)[0]
+    live.human_edit("f1", "prefix\n" + before)
+    assert changes.accept("p", group.group_id, "human").state == "accepted"
+    assert changes.accept("p", group.group_id, "human").state == "accepted"
+    assert len(live.applied) == 1
+    live.human_edit("f1", (live.current.files[0].text or "") + "later\n")
+    with pytest.raises(OutdatedChange):
+        changes.undo("p", group.group_id, "human")
+    assert "improved 10" in live.current.files[0].text
+
+
+def test_rename_and_dependent_edits_are_atomic(setup):
+    snapshot, live, changes, output = setup
+    (output / "moves.json").write_text('{"rename":[["section.md","renamed.md"]]}')
+    (output / "files/renamed.md").write_text("new text\n")
+    (output / "files/includes.tex").write_text("\\input{renamed.md}\n")
+    groups = changes.collect("p", "t", snapshot, output)
+    assert len(groups) == 1 and len(groups[0].changes) == 3
+    live.human_edit("f1", "human changed source\n")
+    with pytest.raises(OutdatedChange):
+        changes.accept("p", groups[0].group_id, "human")
+    assert live.current.files[0].path == "section.md"
+    assert not live.applied
+
+
+def test_binary_delete_undo_retains_bytes(setup):
+    snapshot, live, changes, output = setup
+    body = b"\x89PNG\xff\x00"
+    digest = hashlib.sha256(body).hexdigest()
+    binary = SavedPaperFile(file_id="b", path="fig.png", kind="binary", blob_sha256=digest)
+    snapshot.files.append(binary)
+    live.current = snapshot.model_copy(deep=True)
+    live.history[1] = snapshot.model_copy(deep=True)
+    live.blobs[digest] = body
+    (output / "moves.json").write_text('{"delete":["fig.png"]}')
+    group = changes.collect("p", "t", snapshot, output)[0]
+    changes.accept("p", group.group_id, "human")
+    live.blobs.clear()
+    changes.undo("p", group.group_id, "human")
+    changes.undo("p", group.group_id, "human")
+    assert live.blobs[digest] == body
+    assert len(live.applied) == 2
+
+
+def test_direct_mode_admission_and_receipt_recovery(setup, monkeypatch):
+    snapshot, live, changes, output = setup
+    (output / "files/new.md").write_text("new")
+    group = changes.collect("p", "t", snapshot, output, mode="apply_directly")[0]
+    state = changes._state
+    monkeypatch.setattr(
+        changes, "_state", lambda *_args: (_ for _ in ()).throw(RuntimeError("crash after apply"))
+    )
+    with pytest.raises(RuntimeError):
+        changes.accept("p", group.group_id, "Coach, applied directly", directly=True)
+    monkeypatch.setattr(changes, "_state", state)
+    assert (
+        changes.accept("p", group.group_id, "Coach, applied directly", directly=True).state
+        == "applied"
+    )
+    assert len(live.applied) == 1
+
+    def deny(_project):
+        raise ValueError("admission closed")
+
+    changes.admission = deny
+    with pytest.raises(ValueError, match="admission closed"):
+        changes.undo("p", group.group_id, "human")
+
+
+def test_refresh_replaces_only_selected_groups(setup):
+    snapshot, live, changes, output = setup
+    original = snapshot.files[0].text
+    (output / "files/section.md").write_text(original.replace("line 10\n", "coach\n"))
+    (output / "files/new.md").write_text("independent\n")
+    groups = changes.collect("p", "t", snapshot, output)
+    live.human_edit("f1", original.replace("line 10\n", "human\n"))
+    stale = changes.stale_group_ids("p", "t")
+    assert len(stale) == 1
+    assert changes.stale_file_ids("p", "t") == {"f1"}
+    (output / "files/new.md").unlink()
+    (output / "files/section.md").write_text(
+        live.current.files[0].text.replace("human\n", "refreshed\n")
+    )
+    refreshed = changes.collect("p", "t", live.snapshot("p"), output, replace_group_ids=stale)
+    assert len(refreshed) == 2
+    assert {g.group_id for g in groups} - stale <= {g.group_id for g in refreshed}
+
+
+def test_routes_enforce_project_scope_accept_and_undo(manifest, tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from rcp.api.paper_changes import router
+    from tests.helpers import create_named_app, signed_in_client
+    from tests.paper_fakes import wire_saved_paper
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    existing_routes = list(app.router.routes)
+    app.include_router(router)
+    app.router.routes[:] = app.router.routes[len(existing_routes) :] + existing_routes
+    catalog = app.state.catalog
+    project_id = app.state.default_project_id
+    service = catalog.open(project_id)
+    live = wire_saved_paper(service)
+    output = tmp_path / "output"
+    (output / "files").mkdir(parents=True)
+    (output / "files/new.md").write_text("new file")
+    group = service.paper_changes.collect(project_id, "task", live.snapshot(project_id), output)[0]
+    base = f"/api/projects/{project_id}/paper/changes"
+    from rcp.storage import AgentTaskRecord
+
+    store = service.paper.store
+    previous = AgentTaskRecord(
+        operation_id="task",
+        project_id=project_id,
+        kind="paper_coach",
+        status="succeeded",
+        request={
+            "provider": "codex",
+            "run_on": "laptop",
+            "message": "Revise",
+            "mode": "apply_directly",
+        },
+        native_session_id="native-paper",
+        created_at=store.now(),
+        updated_at=store.now(),
+        status_message="done",
+    )
+    store.create_agent_task(previous)
+    store.record_agent_task_receipt(
+        "task", "paper_changes_invalid", {"diagnostics": ["exact failure"]}
+    )
+    continued = []
+
+    def start(_project, _kind, body, **_kwargs):
+        continued.append(body)
+        return previous
+
+    monkeypatch.setattr("rcp.api.tasks.start_ordinary_task", start)
+    assert TestClient(app).get(base).status_code in {401, 403}
+    with signed_in_client(app) as client:
+        response = client.get(base, params={"task_id": "task"})
+        assert response.status_code == 200
+        assert response.json()["groups"][0]["changes"][0]["path"] == "new.md"
+        assert client.post(f"{base}/{group.group_id}/refresh", json={}).status_code == 200
+        assert continued[-1]["session_id"] == "native-paper"
+        assert continued[-1]["refresh_group_ids"] == [group.group_id]
+        assert continued[-1]["mode"] == "apply_directly"
+        assert client.post(f"{base}/retry", json={"task_id": "task"}).status_code == 202
+        assert continued[-1]["retry_source_task_id"] == "task"
+        assert continued[-1]["refresh_file_ids"] is None
+        for _ in range(2):
+            response = client.post(f"{base}/{group.group_id}/accept", json={})
+            assert response.status_code == 200, response.text
+        assert len(live.applied) == 1
+        assert client.post(f"{base}/{group.group_id}/undo", json={}).status_code == 200
+        assert len(live.applied) == 2
+        assert (
+            client.post(
+                f"/api/projects/missing/paper/changes/{group.group_id}/accept", json={}
+            ).status_code
+            == 404
+        )
+
+
+def test_undo_all_reverse_order_and_failed_apply_can_refresh(setup, monkeypatch):
+    snapshot, live, changes, output = setup
+    before = snapshot.files[0].text
+    (output / "files/section.md").write_text(
+        before.replace("line 3\n", "first\n").replace("line 20\n", "second\n")
+    )
+    groups = changes.collect("p", "t", snapshot, output)
+    assert len(groups) == 2
+    changes.accept_all("p", "t", "human")
+    assert all(group.state == "undone" for group in changes.undo_all("p", "t", "human"))
+    assert live.current.files[0].text == before
+    (output / "files/section.md").write_text(before.replace("line 10\n", "third\n"))
+    group = changes.collect("p", "next", live.snapshot("p"), output)[0]
+    apply = live.apply
+
+    def refused(*_args, **_kwargs):
+        raise OutdatedChange("atomic precondition refusal")
+
+    monkeypatch.setattr(live, "apply", refused)
+    with pytest.raises(OutdatedChange):
+        changes.accept("p", group.group_id, "human")
+    assert changes._receipt("p", f"paper:{group.group_id}:accept") is None
+    monkeypatch.setattr(live, "apply", apply)
+    refreshed = changes.collect(
+        "p",
+        "refreshed-task",
+        live.snapshot("p"),
+        output,
+        replace_group_ids={group.group_id},
+        replace_source_task_id="next",
+    )
+    assert len(refreshed) == 1
+
+
+def test_binary_replacement_and_new_pdf_use_hash_guards(setup):
+    snapshot, live, changes, output = setup
+    old, replacement = b"old figure", b"replacement figure"
+    digest = hashlib.sha256(old).hexdigest()
+    snapshot.files.append(
+        SavedPaperFile(file_id="binary", path="figure.pdf", kind="binary", blob_sha256=digest)
+    )
+    live.current = snapshot.model_copy(deep=True)
+    live.history[1] = snapshot.model_copy(deep=True)
+    live.blobs[digest] = old
+    (output / "files/figure.pdf").write_bytes(replacement)
+    (output / "files/new.pdf").write_bytes(b"%PDF ASCII content")
+    groups = changes.collect("p", "binary-task", snapshot, output)
+    assert {group.changes[0].kind for group in groups} == {"create", "binary"}
+    assert all(group.changes[0].file_kind == "binary" for group in groups)
+    changes.accept_all("p", "binary-task", "human")
+    assert live.blobs[hashlib.sha256(replacement).hexdigest()] == replacement
+    changes.undo_all("p", "binary-task", "human")
+    assert (
+        next(file for file in live.current.files if file.file_id == "binary").blob_sha256 == digest
+    )
+    assert all(file.path != "new.pdf" for file in live.current.files)
+
+
+def test_old_writer_coach_dispatch_migrates_without_rewriting_history(tmp_path):
+    from pydantic import ValidationError
+
+    from rcp.storage import AgentTaskRecord
+
+    path = tmp_path / "old-writer.sqlite"
+    store = AppStore(path)
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="legacy-coach",
+            project_id="project",
+            kind="paper_coach",
+            status="succeeded",
+            request={"provider": "codex"},
+            created_at=store.now(),
+            updated_at=store.now(),
+            status_message="done",
+        )
+    )
+    legacy = {"profile": "ordinary", "task_contract": "paper_readonly", "scope": {}}
+    store.record_agent_task_receipt("legacy-coach", "launch", {"capability": "paper_readonly"})
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET dispatch_authority_json=? WHERE operation_id=?",
+            (json.dumps(legacy), "legacy-coach"),
+        )
+        for table in ("paper_change_receipts", "paper_changes", "paper_change_groups"):
+            connection.execute(f"DROP TABLE {table}")
+        connection.execute(
+            "DELETE FROM storage_schema_migrations WHERE migration_name='paper_changes_v1'"
+        )
+    with pytest.raises(ValidationError):
+        store.agent_task("legacy-coach")
+    store.close()
+    upgraded = AppStore(path)
+    task = upgraded.agent_task("legacy-coach")
+    assert task is not None and task.dispatch_authority is not None
+    assert task.dispatch_authority.task_contract == "paper_suggest"
+    assert task.dispatch_authority.profile == "ordinary"
+    assert task.dispatch_authority.scope.run_truth_scope == []
+    assert upgraded.agent_task_receipts_by_category("legacy-coach", "launch")[0].payload == {
+        "capability": "paper_readonly"
+    }
+    assert upgraded.storage_schema_ledger_head() == upgraded.storage_schema_registry_head()
+
+
+@pytest.mark.parametrize("file_cap,total_cap,sizes", [(128, 1024, [129]), (512, 256, [140, 140])])
+def test_retained_binary_bases_are_subset_materialized_and_bounded(
+    setup, monkeypatch, file_cap, total_cap, sizes
+):
+    snapshot, live, changes, output = setup
+    deletes = []
+    for index, size in enumerate(sizes):
+        body = bytes([index]) * size
+        digest = hashlib.sha256(body).hexdigest()
+        path = f"figure-{index}.pdf"
+        snapshot.files.append(
+            SavedPaperFile(file_id=f"binary-{index}", path=path, kind="binary", blob_sha256=digest)
+        )
+        live.blobs[digest] = body
+        deletes.append(path)
+    unrelated = SavedPaperFile(
+        file_id="unrelated", path="unrelated.pdf", kind="binary", blob_sha256="unmaterialized"
+    )
+    snapshot.files.append(unrelated)
+    live.current = snapshot.model_copy(deep=True)
+    live.history[1] = snapshot.model_copy(deep=True)
+    (output / "moves.json").write_text(json.dumps({"delete": deletes}))
+    monkeypatch.setattr("rcp.paper.changes.PAPER_CHANGES_MAX_FILE_BYTES", file_cap)
+    monkeypatch.setattr("rcp.paper.changes.PAPER_CHANGES_MAX_TOTAL_BYTES", total_cap)
+    materialized = []
+    materialize = live.materialize
+
+    def capture(selected, dest):
+        materialized.extend(file.path for file in selected.files)
+        materialize(selected, dest)
+
+    monkeypatch.setattr(live, "materialize", capture)
+    with pytest.raises(InvalidChanges, match="Saved binary base"):
+        changes.collect("p", "bounded", snapshot, output)
+    assert set(materialized) == set(deletes)
+    assert changes.groups("p", "bounded") == []

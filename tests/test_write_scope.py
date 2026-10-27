@@ -908,7 +908,7 @@ def test_remote_scope_accepts_the_pointer_the_real_staging_step_produces(
         run_truth_scope=["repo-a"],
         graph_path=str(remote.research_dir / "graph.json"),
         research_md_path=str(remote.research_dir / "research.md"),
-        introduction_path=None,
+        paper_path=None,
         glossary_path=str(remote.research_dir / "glossary.json"),
         facts_dir=str(remote.research_dir / "facts"),
     )

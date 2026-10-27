@@ -16,7 +16,7 @@ def _fake_app_server(
     tmp_path: Path,
     *,
     request_approval: bool = False,
-    permission_profile: str | None = "rcp_stage",
+    permission_profile: str | None = "rcp_paper",
 ) -> tuple[Path, Path]:
     executable = tmp_path / "fake-codex"
     capture = tmp_path / "app-server-capture.json"
@@ -172,7 +172,7 @@ for line in sys.stdin:
                 "thread": {{"id": "app-thread"}},
                 "approvalPolicy": "never",
                 "sandbox": {{"type": "readOnly"}},
-                "activePermissionProfile": {{"id": "rcp_stage"}},
+                "activePermissionProfile": {{"id": "rcp_paper"}},
             }},
         }})
     elif method == "turn/start":
@@ -196,7 +196,8 @@ async def test_app_server_runtime_normalizes_one_fresh_local_turn(tmp_path: Path
             "codex",
             "Reply exactly APP_SERVER_OK",
             cwd=tmp_path,
-            capability="paper_readonly",
+            write_dirs=[tmp_path / "changes"],
+            capability="paper_suggest",
             runtime_id="codex.app-server-stdio.v1",
         )
     ]
@@ -325,9 +326,9 @@ def test_app_server_read_only_capability_rejects_a_project_write_scope(tmp_path:
                 reasoning=None,
                 session_id=None,
                 read_dirs=[],
-                write_dirs=[],
+                write_dirs=[Path("/stage/changes")],
                 write_scope=_work_scope(stage),
-                capability="paper_readonly",
+                capability="paper_suggest",
                 provider_version="0.149.0",
             )
         )
@@ -345,7 +346,8 @@ async def test_app_server_runtime_fails_loudly_on_interactive_request(tmp_path: 
             "codex",
             "Do not ask for approval",
             cwd=tmp_path,
-            capability="paper_readonly",
+            write_dirs=[tmp_path / "changes"],
+            capability="paper_suggest",
             runtime_id="codex.app-server-stdio.v1",
         )
     ]
@@ -384,7 +386,8 @@ async def test_app_server_runtime_uses_the_existing_ssh_wrapper(
             cwd=tmp_path,
             host="research-host",
             remote_pid_file=str(pid_file),
-            capability="paper_readonly",
+            write_dirs=[tmp_path / "changes"],
+            capability="paper_suggest",
             runtime_id="codex.app-server-stdio.v1",
         )
     ]
@@ -413,7 +416,8 @@ async def test_app_server_falls_back_to_exec_only_before_prompt_delivery(
             "Reply exactly EXEC_OK",
             cwd=tmp_path,
             session_id="existing-app-thread",
-            capability="paper_readonly",
+            write_dirs=[tmp_path / "changes"],
+            capability="paper_suggest",
             runtime_id="app-server",
         )
     ]
@@ -439,7 +443,8 @@ async def test_app_server_does_not_fallback_after_prompt_delivery(tmp_path: Path
             "codex",
             "This prompt must not be duplicated",
             cwd=tmp_path,
-            capability="paper_readonly",
+            write_dirs=[tmp_path / "changes"],
+            capability="paper_suggest",
             runtime_id="app-server",
         )
     ]
@@ -461,9 +466,9 @@ def _accounting_turn(tmp_path: Path, *, resumed: bool):
             reasoning=None,
             session_id="accounting-thread" if resumed else None,
             read_dirs=[],
-            write_dirs=[],
+            write_dirs=[Path("/stage/changes")],
             write_scope=None,
-            capability="paper_readonly",
+            capability="paper_suggest",
             provider_version="0.153.4",
         )
     )
@@ -476,6 +481,7 @@ def _accounting_turn(tmp_path: Path, *, resumed: bool):
                 "thread": {"id": "accounting-thread"},
                 "approvalPolicy": "never",
                 "sandbox": {"type": "readOnly"},
+                "activePermissionProfile": {"id": "rcp_paper"},
             },
         },
     ):
@@ -495,9 +501,9 @@ def test_app_server_resume_never_asks_for_past_turns(tmp_path: Path) -> None:
             reasoning=None,
             session_id="long-thread",
             read_dirs=[],
-            write_dirs=[],
+            write_dirs=[Path("/stage/changes")],
             write_scope=None,
-            capability="paper_readonly",
+            capability="paper_suggest",
             provider_version="0.153.4",
         )
     )
@@ -836,7 +842,7 @@ for line in sys.stdin:
                 "thread": {{"id": "app-thread"}},
                 "approvalPolicy": "never",
                 "sandbox": {{"type": "readOnly"}},
-                "activePermissionProfile": {{"id": "rcp_stage"}},
+                "activePermissionProfile": {{"id": "rcp_paper"}},
             }},
         }})
     elif method == "turn/start":
@@ -886,7 +892,8 @@ async def test_an_unreadable_protocol_line_ends_the_pass_instead_of_waiting(
                 "codex",
                 "Reply exactly EXEC_OK",
                 cwd=tmp_path,
-                capability="paper_readonly",
+                write_dirs=[tmp_path / "changes"],
+                capability="paper_suggest",
                 runtime_id="app-server",
             )
         ]
@@ -923,4 +930,5 @@ def test_skill_probe_disables_the_same_features_as_a_launch(tmp_path: Path):
         provider_version=None,
     )
     assert "plugins" in disabled(launch)
-    assert disabled(probe) == disabled(launch) == disabled(exec_launch)
+    assert disabled(probe) == disabled(exec_launch)
+    assert set(disabled(launch)) == {*disabled(probe), "shell_tool"}

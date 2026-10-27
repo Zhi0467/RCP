@@ -1037,7 +1037,7 @@ def test_codex_profiles_deny_desktop_web_storage_for_both_builds(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "capability", ["discuss", "work_auto", "orchestrate", "scratch_patch", "paper_readonly"]
+    "capability", ["discuss", "work_auto", "orchestrate", "scratch_patch", "paper_suggest"]
 )
 @pytest.mark.parametrize("runtime", ["codex.exec-json.v1", "codex.app-server-stdio.v1"])
 @pytest.mark.parametrize("session_id", [None, "resumed-session"])
@@ -1077,7 +1077,7 @@ def test_codex_hidden_read_scope_covers_every_capability(
         reasoning=None,
         session_id=session_id,
         read_dirs=[],
-        write_dirs=[],
+        write_dirs=[tmp_path / "changes"] if capability == "paper_suggest" else [],
         write_scope=write_scope,
         capability=capability,
         provider_version="0.160.0",
@@ -1094,7 +1094,7 @@ def test_codex_hidden_read_scope_covers_every_capability(
         for path in (*scope.hidden_directories, *scope.hidden_files, *scope.hidden_globs)
     )
     assert profile["network"]["enabled"] is True
-    if capability == "paper_readonly":
+    if capability == "paper_suggest":
         assert ":workspace_roots" not in profile["filesystem"]
     policy = config["shell_environment_policy"]
     assert policy["inherit"] == "all"

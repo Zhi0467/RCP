@@ -48,7 +48,7 @@ _PROFILE_CAPABILITY: dict[AgentExecutionProfile, AgentCapability] = {
     "refresh": "scratch_patch",
     "node_chat": "discuss",
     "project_chat": "discuss",
-    "paper_coach": "paper_readonly",
+    "paper_coach": "paper_suggest",
     "orchestrator": "orchestrate",
 }
 

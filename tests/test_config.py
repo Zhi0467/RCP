@@ -22,7 +22,7 @@ def test_capability_permissions_are_fixed_and_narrow() -> None:
     discuss = permissions_for("discuss")
     work = permissions_for("work_auto")
     scratch = permissions_for("scratch_patch")
-    paper = permissions_for("paper_readonly")
+    paper = permissions_for("paper_suggest")
 
     assert discuss.write_graph_patch is False
     assert discuss.write_project_files is False

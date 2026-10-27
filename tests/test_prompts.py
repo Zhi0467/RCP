@@ -78,7 +78,7 @@ def test_chat_master_context_preserves_context_and_skill_paths() -> None:
         graph_revision=7,
         focused_node_id="rq/example",
         repositories=[{"alias": "repo-a", "host": "", "path": "/repo-a"}],
-        introduction_path="/state/paper/introduction.md",
+        paper_path="/state/paper",
         patch_path="/stage/workspace/patch.json",
         workspace_path="/stage/workspace",
         output_schema_path="/stage/inputs/chat-patch-schema.json",
@@ -88,7 +88,7 @@ def test_chat_master_context_preserves_context_and_skill_paths() -> None:
     )
 
     assert master.count(skill_path) == 1
-    for path in ("/state/graph.json", "/state/research.md", "/state/paper/introduction.md"):
+    for path in ("/state/graph.json", "/state/research.md", "/state/paper"):
         assert path in master
     # Discuss and Work share one copy; the editing method is labelled as method, not authority.
     assert master.count(graph_rules(edits=True, ontology_extensions=True)) == 1
@@ -114,7 +114,7 @@ def test_chat_master_preserves_experiment_watcher_resource_paths_and_host() -> N
         graph_revision=7,
         focused_node_id="exp/example",
         repositories=[],
-        introduction_path=None,
+        paper_path=None,
         patch_path="/stage/workspace/patch.json",
         workspace_path="/stage/workspace",
         output_schema_path="/stage/inputs/schema.json",
@@ -214,7 +214,8 @@ def test_provider_native_invocation_preserves_metadata_and_native_token() -> Non
         invoked_provider_skills=[reference],
     )
     paper = PromptFactory.paper_coach_task_contract(
-        introduction_path="/project/introduction.md",
+        paper_path="/project/paper",
+        changes_path="/stage/changes",
         graph_path="/project/graph.json",
         research_path="/project/research.md",
         repositories=[],
@@ -271,7 +272,7 @@ def test_work_contract_preserves_inputs_outputs_and_command_client() -> None:
             {"alias": "repo-a", "host": "", "path": "/repo-a"},
             {"alias": "repo-b", "host": "gpu.example", "path": "/srv/repo-b"},
         ],
-        introduction_path=None,
+        paper_path=None,
         human_request_path="/stage/inputs/human-request.txt",
         patch_path="/stage/patch.json",
         artifact_path="/stage/artifacts",
@@ -465,7 +466,7 @@ def test_experiment_contract_preserves_control_paths_and_resolved_commands(
         research_path="/state/research.md",
         focused_experiment_id="exp/example",
         repositories=[{"alias": "repo-a", "host": "gpu", "path": "/repo-a"}],
-        introduction_path=None,
+        paper_path=None,
         human_request_path="/stage/inputs/human-request.txt",
         loop_control_path="/stage/inputs/experiment-control.json",
         watcher_state_path="/stage/inputs/experiment-watchers.json",
@@ -501,7 +502,7 @@ def test_provider_switch_recovery_preserves_diagnostics_path(
         research_path="/state/research.md",
         focused_experiment_id="exp/example",
         repositories=[{"alias": "repo-a", "host": "gpu", "path": "/repo-a"}],
-        introduction_path=None,
+        paper_path=None,
         human_request_path="/stage/inputs/human-request.txt",
         loop_control_path="/stage/inputs/experiment-control.json",
         watcher_state_path="/stage/inputs/experiment-watchers.json",
@@ -525,7 +526,7 @@ def test_discuss_contract_preserves_artifact_path() -> None:
         research_path="/state/research.md",
         focused_node_id=None,
         repositories=[],
-        introduction_path=None,
+        paper_path=None,
         human_request_path="/stage/inputs/human-request.txt",
         artifact_path="/stage/artifacts",
     )
@@ -543,7 +544,8 @@ def test_paper_and_continuation_contracts_only_point_to_dynamic_content() -> Non
         "path": "/stage/skills/evidence-triage",
     }
     paper = PromptFactory.paper_coach_task_contract(
-        introduction_path="/state/paper/introduction.md",
+        paper_path="/state/paper",
+        changes_path="/stage/changes",
         graph_path="/state/graph.json",
         research_path="/state/research.md",
         repositories=[{"alias": "repo-a", "host": "", "path": "/repo-a"}],
@@ -560,7 +562,8 @@ def test_paper_and_continuation_contracts_only_point_to_dynamic_content() -> Non
         watch_path="/stage/watch.json",
     )
 
-    assert "/state/paper/introduction.md" in paper
+    assert "/state/paper" in paper
+    assert "/stage/changes" in paper
     assert "/stage/inputs/human-request.txt" in paper
     assert "/stage/inputs/retry.json" in paper
     assert "/stage/watch.json" in watcher
@@ -681,7 +684,7 @@ def _work_contract(**overrides: object) -> str:
             {"alias": "repo-a", "host": "", "path": "/repo-a"},
             {"alias": "repo-b", "host": "gpu.example", "path": "/srv/repo-b"},
         ],
-        "introduction_path": None,
+        "paper_path": None,
         "human_request_path": "/stage/inputs/human-request.txt",
         "patch_path": "/stage/patch.json",
         "artifact_path": "/stage/artifacts",
@@ -728,7 +731,7 @@ def test_project_machines_section_states_each_route_and_hint() -> None:
         graph_revision=7,
         focused_node_id=None,
         repositories=[],
-        introduction_path=None,
+        paper_path=None,
         patch_path="/stage/workspace/patch.json",
         workspace_path="/stage/workspace",
         output_schema_path="/stage/inputs/schema.json",

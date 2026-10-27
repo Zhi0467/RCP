@@ -97,6 +97,7 @@ from rcp.limits import (
 )
 from rcp.operation_ids import canonical_operation_uuid
 from rcp.paper import PaperService, PaperSnapshot
+from rcp.paper.coach_seam import get_paper_live
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import (
     PROVIDER_IDS,
@@ -969,6 +970,11 @@ class RunRequest(BaseModel):
 
 class CoachRequest(BaseModel):
     message: str
+    mode: Literal["review", "apply_directly"] = "review"
+    refresh_file_ids: list[str] | None = None
+    refresh_source_task_id: str | None = None
+    refresh_group_ids: list[str] = Field(default_factory=list)
+    retry_source_task_id: str | None = None
     provider: ProviderId | None = None
     model: str | None = None
     reasoning: str | None = None
@@ -1006,7 +1012,7 @@ def resolve_dispatch_authority(
             raise TypeError("paper_coach dispatch requires a CoachRequest")
         return AgentDispatchAuthority(
             profile="ordinary",
-            task_contract="paper_readonly",
+            task_contract="paper_suggest",
             scope=AgentDispatchScope(),
         )
     if not isinstance(request, RunRequest):
@@ -2871,7 +2877,7 @@ class ProjectService:
         )
 
     def coach_context(
-        self, request: CoachRequest, draft_path: Path | None = None
+        self, request: CoachRequest, paper_path: Path | None = None
     ) -> tuple[dict[str, object], list[Path]]:
         # Resolved for its validation of the requested provider/model/run_on.
         self.resolve_agent_profile(
@@ -2888,7 +2894,7 @@ class ProjectService:
             )
             for alias in self.manifest.project.truth_scope
         }
-        pointers = ContextAssembler(self.manifest).paper_pointers(draft_path, repository_access)
+        pointers = ContextAssembler(self.manifest).paper_pointers(paper_path, repository_access)
         read_dirs = [
             Path(access.path)
             for access in repository_access.values()
@@ -2897,14 +2903,15 @@ class ProjectService:
         return pointers, read_dirs
 
     def pointer_hashes(self) -> tuple[str, int, str]:
-        snapshot = self.paper.snapshot()
-        intro_hash = (
-            snapshot.canonical_hash or hashlib.sha256(snapshot.content.encode("utf-8")).hexdigest()
+        snapshot = get_paper_live(self).snapshot(self.paper.project_id)
+        ordered = snapshot.model_copy(
+            update={"files": sorted(snapshot.files, key=lambda f: f.file_id)}
         )
+        paper_hash = hashlib.sha256(ordered.model_dump_json().encode("utf-8")).hexdigest()
         state = self.history.state()
         research_path = self.manifest.research_dir / "research.md"
         research = research_path.read_bytes() if research_path.exists() else b""
-        return intro_hash, state.revision, hashlib.sha256(research).hexdigest()
+        return paper_hash, state.revision, hashlib.sha256(research).hexdigest()
 
     @staticmethod
     def parse_patch_output(chunks: list[str]) -> tuple[AgentPatch, str | None]:

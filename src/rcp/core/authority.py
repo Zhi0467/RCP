@@ -152,7 +152,7 @@ class AgentTaskAuthority(BaseModel):
 
 
 ORDINARY_AGENT_TASK_CONTRACTS: frozenset[AgentCapability] = frozenset(
-    {"discuss", "work_auto", "scratch_patch", "paper_readonly"}
+    {"discuss", "work_auto", "scratch_patch", "paper_suggest"}
 )
 ORCHESTRATOR_AGENT_TASK_CONTRACTS: frozenset[AgentCapability] = frozenset({"orchestrate"})
 APPLY_CAPABLE_TASK_CONTRACTS: frozenset[AgentCapability] = frozenset(
@@ -253,7 +253,7 @@ def _require_scope_shape(
                 f"Authority refused action {action!r}: scratch_patch cannot carry chat identity."
             )
         return
-    if contract == "paper_readonly" and any(
+    if contract == "paper_suggest" and any(
         value is not None
         for value in (
             scope.chat_scope,
@@ -266,7 +266,7 @@ def _require_scope_shape(
         )
     ):
         raise ValueError(
-            f"Authority refused action {action!r}: paper_readonly cannot carry chat, Patch, or "
+            f"Authority refused action {action!r}: paper_suggest cannot carry chat, Patch, or "
             "control scope."
         )
 

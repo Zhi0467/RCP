@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from types import SimpleNamespace
 
 import pytest
 
 from rcp.attachments import NodeReferenceSelector, PaperReferenceSelector
+from rcp.paper.coach_seam import SavedPaperFile, SavedPaperSnapshot
 from rcp.project_references import resolve_project_references
-from rcp.transport import SSHStateWorkspace
 from tests.test_branch_context import branch_services as branch_services
 
 
@@ -49,28 +48,42 @@ def test_node_snapshot_keeps_source_branch_and_coherent_head(branch_services, mo
         _resolve(branch_services, [selector])
 
 
-def test_paper_reference_reads_saved_canonical_from_completed_generation(
-    branch_services, monkeypatch, tmp_path
-):
-    paper = branch_services[0].paper
-    paper.create()
-    paper._save_draft("unsaved draft", None, None)
-    paper.canonical_path.write_bytes(b"Published canonical paper\r\n")
-    paper.workspace = SSHStateWorkspace(paper.workspace.root, "fixture", "/project")
-    paper.workspace._generations.copy(paper.workspace.root)
-    paper.canonical_path.write_bytes(b"Not yet published\r\n")
-    monkeypatch.setattr(paper.workspace, "refresh", lambda: pytest.fail("reference refreshed"))
-    item = _resolve(branch_services, [PaperReferenceSelector(kind="paper")])[0]
-    assert item.content == b"Published canonical paper\r\n"
-    assert item.reference.version == hashlib.sha256(item.content).hexdigest()
-    with monkeypatch.context() as oversized:
-        oversized.setattr("rcp.project_references.CHAT_ATTACHMENT_MAX_FILE_BYTES", 4)
-        oversized.setattr(
-            paper.canonical_path.__class__, "read_bytes", lambda _: pytest.fail("read")
-        )
-        with pytest.raises(ValueError):
-            _resolve(branch_services, [PaperReferenceSelector(kind="paper")])
-    paper.workspace = SSHStateWorkspace(tmp_path / "cold-mirror", "fixture", "/cold-project")
+def test_paper_reference_retains_saved_tree_paths_ids_and_revision(branch_services, monkeypatch):
+    snapshot = SavedPaperSnapshot(
+        revision=9,
+        files=[
+            SavedPaperFile(file_id="tex", path="main.tex", kind="text", text="include{sections/a}"),
+            SavedPaperFile(
+                file_id="section", path="sections/a.tex", kind="text", text="Saved draft"
+            ),
+            SavedPaperFile(
+                file_id="figure", path="figures/a.png", kind="binary", blob_sha256="a" * 64
+            ),
+        ],
+    )
+
+    def materialize(snapshot, dest):
+        for item in snapshot.files:
+            path = dest / item.path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(item.text.encode() if item.text is not None else b"binary")
+
+    branch_services[0].paper_live = SimpleNamespace(
+        snapshot=lambda project_id: snapshot, materialize=materialize
+    )
+    items = _resolve(branch_services, [PaperReferenceSelector(kind="paper")])
+    assert [item.reference.path for item in items] == [
+        "figures/a.png",
+        "main.tex",
+        "sections/a.tex",
+    ]
+    assert {item.reference.version for item in items} == {"9"}
+    one = _resolve(branch_services, [PaperReferenceSelector(kind="paper", file_id="section")])
+    assert len(one) == 1 and one[0].content == b"Saved draft"
+    assert one[0].reference.source_id == "section"
+    with pytest.raises(ValueError):
+        _resolve(branch_services, [PaperReferenceSelector(kind="paper", file_id="missing")])
+    monkeypatch.setattr("rcp.project_references.CHAT_ATTACHMENT_MAX_FILE_BYTES", 4)
     with pytest.raises(ValueError):
         _resolve(branch_services, [PaperReferenceSelector(kind="paper")])
 
