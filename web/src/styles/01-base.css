@@ -344,3 +344,40 @@ button:disabled {
   box-shadow: var(--segmented-selected-shadow);
   color: var(--ink);
 }
+/* Banner: every banner's one dismiss control, top-right inside its frame. */
+.banner {
+  position: relative;
+}
+.banner:has(> .banner-dismiss) {
+  padding-right: 44px;
+}
+.banner-dismiss {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  height: 32px;
+  justify-content: center;
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  width: 32px;
+}
+.banner-dismiss:hover {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+.banner-dismiss:focus-visible {
+  outline: 2px solid var(--cobalt);
+  outline-offset: -2px;
+}
+@media (max-width: 560px) {
+  .banner-dismiss {
+    height: 44px;
+    right: 0;
+    top: 0;
+    width: 44px;
+  }
+}

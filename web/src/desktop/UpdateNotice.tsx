@@ -2,7 +2,8 @@ import { CircleArrowUp, LoaderCircle, Copy, Check } from "lucide-react";
 import { useState } from "react";
 import type { DesktopUpdate, DesktopBuildIdentity } from "../core/desktopRuntime";
 import type { UpdateNotice as NoticeData } from "../core/types";
-import { releaseNotice, dismissRelease, isReleaseDismissed } from "./updateNoticeModel";
+import { Banner } from "../ui/Banner";
+import { releaseDismissKey, releaseNotice } from "./updateNoticeModel";
 
 export function UpdateNotice({
   notice,
@@ -17,17 +18,12 @@ export function UpdateNotice({
   /** Unknown (null) until the app's first update check answers. */
   updaterEnabled: boolean | null;
 }) {
-  const [, rerender] = useState(0);
   const [copied, setCopied] = useState<string | null>(null);
   const [copyError, setCopyError] = useState(false);
   const release = releaseNotice(notice, identity);
   if (desktop && (updater.update || updater.error)) return <DesktopUpdateNotice {...updater} />;
   // This app's own release is the updater's to offer, in place.
-  if (
-    (desktop && notice?.space !== "team" && (!identity || updaterEnabled !== false)) ||
-    !release ||
-    isReleaseDismissed(release.dismissKey)
-  )
+  if ((desktop && notice?.space !== "team" && (!identity || updaterEnabled !== false)) || !release)
     return null;
   const copy = async () => {
     try {
@@ -39,7 +35,8 @@ export function UpdateNotice({
     }
   };
   return (
-    <div
+    <Banner
+      dismissKey={releaseDismissKey(release.dismissKey)}
       className="desktop-update-notice release-update-notice"
       role="status"
       data-kind={release.kind}
@@ -65,17 +62,7 @@ export function UpdateNotice({
         <span>App build not yet published</span>
       ) : null}
       {copyError ? <span role="alert">Could not copy command</span> : null}
-      <button
-        className="desktop-update-dismiss"
-        type="button"
-        onClick={() => {
-          dismissRelease(release.dismissKey);
-          rerender((value) => value + 1);
-        }}
-      >
-        Later
-      </button>
-    </div>
+    </Banner>
   );
 }
 

@@ -94,7 +94,6 @@ import {
   Settings,
   Telescope,
   SquareTerminal,
-  X,
 } from "lucide-react";
 import {
   lazy,
@@ -233,6 +232,7 @@ import { digestChangedNodeIds } from "./projects/projectDigest";
 import { DetailDrawer } from "./graph/DetailDrawer";
 import { branchNameRefusal } from "./graph/BranchNameField";
 import { branchName } from "./core/branchNames";
+import { Banner } from "./ui/Banner";
 import { DraggableWindow } from "./ui/DraggableWindow";
 import { ProjectHistoryDrawer } from "./agents/ProjectHistoryDrawer";
 import { ProjectDock } from "./projects/ProjectDock";
@@ -1393,7 +1393,6 @@ function MemberApp({
     closeProjectHistory,
     resetProjectHistory,
     restoreProjectHistory,
-    dismissHistoryNotices,
   } = useProjectHistory({
     projectId: backendSessionReady ? projectId : null,
     apiBase,
@@ -1409,7 +1408,6 @@ function MemberApp({
     historySummariesRevision,
     historySummariesError,
     projectHistoryOpen,
-    dismissedHistoryNoticeIds,
   } = projectHistorySnapshot;
   currentProjectStateRef.current = targetProject
     ? {
@@ -1816,7 +1814,7 @@ function MemberApp({
             graphTarget,
           });
         resetProjectTasks();
-        resetProjectHistory(projectId, graphTarget);
+        resetProjectHistory();
         resetProjectHeader(projectId);
       }
     }
@@ -2610,10 +2608,9 @@ function MemberApp({
       graph.validation_messages.filter(
         (message) =>
           message.level === "reject" &&
-          !dismissedHistoryNoticeIds.has(validationNoticeId(message)) &&
           !(typeof message.patch_revision === "number" && message.patch_revision < graph.revision),
       ),
-    [dismissedHistoryNoticeIds, graph.revision, graph.validation_messages],
+    [graph.revision, graph.validation_messages],
   );
 
   const updateHumanDraft = (
@@ -4921,15 +4918,23 @@ function MemberApp({
       <div className="project-notices">
         {updateSurface}
         {draftPreviewPending && (
-          <div className="coverage-banner" role="status">
+          <Banner
+            dismissKey={`staged-preview-pending:${project.id}:${graph.revision}`}
+            className="coverage-banner"
+            role="status"
+          >
             <LoaderCircle className="spin" size={16} aria-hidden="true" />
             <span>
               <strong>Preparing staged transition preview.</strong>
             </span>
-          </div>
+          </Banner>
         )}
         {draftPreviewConflict && (
-          <div className="coverage-banner validation-rejected" role="alert">
+          <Banner
+            dismissKey={`staged-conflict:${project.id}:${draftPreviewConflict}`}
+            className="coverage-banner validation-rejected"
+            role="alert"
+          >
             <TriangleAlert size={16} aria-hidden="true" />
             <span>
               <strong>Staged transition conflict.</strong> {draftPreviewConflict} Your staged input
@@ -4938,13 +4943,17 @@ function MemberApp({
                 ? "the graph remains at the last valid staged projection."
                 : "the graph remains at canonical state."}
             </span>
-          </div>
+          </Banner>
         )}
         {!draftPreviewPending &&
           !draftPreviewConflict &&
           draftTransitionProjection &&
           draftTransitionProjection.head.revision !== graph.revision && (
-            <div className="coverage-banner" role="status">
+            <Banner
+              dismissKey={`staged-preview:${project.id}:${draftTransitionProjection.head.revision}`}
+              className="coverage-banner"
+              role="status"
+            >
               <GitBranch size={16} aria-hidden="true" />
               {phone ? (
                 <span title={`Canonical state remains revision ${graph.revision} until Sync.`}>
@@ -4957,7 +4966,7 @@ function MemberApp({
                   {graph.revision} until Sync.
                 </span>
               )}
-            </div>
+            </Banner>
           )}
         {episodeRefreshError && (
           <button
@@ -4971,23 +4980,36 @@ function MemberApp({
           </button>
         )}
         {!project.canonical_state.reachable && (
-          <div className="coverage-banner state-offline">
+          // A sync between outages moves the key, so the next outage shows again.
+          <Banner
+            dismissKey={`canonical-offline:${project.id}:${project.canonical_state.last_synced_at ?? ""}`}
+            className="coverage-banner state-offline"
+          >
             <TriangleAlert size={16} />
             <span>
               <strong>Canonical state is offline.</strong> Sync is unavailable.
             </span>
-          </div>
+          </Banner>
         )}
         {replayWarning && (
-          <div className="coverage-banner replay-degraded" role="alert">
+          <Banner
+            dismissKey={`replay-degraded:${project.id}:${replayWarning}`}
+            className="coverage-banner replay-degraded"
+            role="alert"
+          >
             <TriangleAlert size={16} />
             <span>
               <strong>Replay degraded.</strong> {replayWarning}
             </span>
-          </div>
+          </Banner>
         )}
         {rejectedPatches.length > 0 && view === "attention" && (
-          <div className="coverage-banner validation-rejected" role="status">
+          // Its newest rejection names it, so a later rejected Patch shows again.
+          <Banner
+            dismissKey={`history-note:${graphSessionKey(project.id, graphTarget)}:${validationNoticeId(rejectedPatches.at(-1)!)}`}
+            className="coverage-banner validation-rejected"
+            role="status"
+          >
             <TriangleAlert size={16} />
             <span>
               <strong>
@@ -4997,15 +5019,7 @@ function MemberApp({
               RCP kept the attempted patch for audit, so the graph was unchanged. This is not an
               Inbox decision. Reason: {rejectedPatches.at(-1)?.message}
             </span>
-            <button
-              type="button"
-              className="icon-button compact"
-              aria-label="Dismiss history note"
-              onClick={() => dismissHistoryNotices(rejectedPatches)}
-            >
-              <X size={14} />
-            </button>
-          </div>
+          </Banner>
         )}
       </div>
 

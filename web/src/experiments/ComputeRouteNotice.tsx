@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { checkMachineCompute } from "../core/api";
 import type { Machine } from "../core/types";
+import { Banner } from "../ui/Banner";
 import { CompactNotice } from "../ui/CompactNotice";
 
 interface Props {
@@ -54,7 +55,13 @@ export function ComputeRouteNotice({ apiBase, machines, onOpenSettings }: Props)
   return (
     <>
       {failures.map(({ machine, route, probe }) => (
-        <div className="provider-login-notice" role="status" key={`${machine.alias}:${route}`}>
+        <Banner
+          // One failure of one route: a different diagnostic shows again.
+          dismissKey={`compute-route:${apiBase}:${machine.alias}:${route}:${probe!.diagnostic}`}
+          className="provider-login-notice"
+          role="status"
+          key={`${machine.alias}:${route}`}
+        >
           <CompactNotice
             summary={`${route === "scheduler" ? "Job scheduler" : "Job helper"} not ready on ${machine.alias}`}
             footer={error?.alias === machine.alias ? <p role="alert">{error.message}</p> : null}
@@ -78,7 +85,7 @@ export function ComputeRouteNotice({ apiBase, machines, onOpenSettings }: Props)
               </button>
             </div>
           </CompactNotice>
-        </div>
+        </Banner>
       ))}
     </>
   );

@@ -73,6 +73,7 @@ import { profileRunConfig } from "../core/AgentConfigControls";
 import { sameGraphTarget, MAIN_GRAPH, projectViewHash } from "../core/graphTarget";
 import { useNarrowViewport } from "../ui/useNarrowViewport";
 import { useResource } from "../core/useResource";
+import { Banner } from "../ui/Banner";
 import { watchersProfile } from "../experiments/episodeResources";
 
 interface Props {
@@ -821,7 +822,11 @@ export function ChatsWorkspace({
           </span>
         )}
         {turnBanner && selectedLatest && (
-          <div className="conversation-header-banner" role="status">
+          <Banner
+            dismissKey={`turn:${selectedLatest.operation_id}:${selectedLatest.status_label}`}
+            className="conversation-header-banner"
+            role="status"
+          >
             <span>{selectedLatest.status_label}</span>
             {selectedLatest.can_resume && (
               <button
@@ -840,7 +845,7 @@ export function ChatsWorkspace({
                   Message orchestrator
                 </a>
               )}
-          </div>
+          </Banner>
         )}
       </>
     ) : null;

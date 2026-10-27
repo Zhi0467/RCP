@@ -75,25 +75,5 @@ type SignOut = Pick<ProviderLoginState, "provider" | "host" | "generation">;
 // One sign-out of one account. Only a sign-in or sign-out starts a new
 // generation; another failure of the same sign-out keeps it, so a dismissal holds.
 export const signOutKey = (state: SignOut) => `${state.provider}:${state.host}:${state.generation}`;
-const dismissalKey = (state: SignOut) => `rcp:login-notice-dismissed:${signOutKey(state)}`;
-const dismissed = new Set<string>();
-
-export function isLoginNoticeDismissed(state: SignOut): boolean {
-  const key = dismissalKey(state);
-  if (dismissed.has(key)) return true;
-  try {
-    return localStorage.getItem(key) === "1";
-  } catch {
-    return false;
-  }
-}
-
-export function dismissLoginNotice(state: SignOut): void {
-  const key = dismissalKey(state);
-  dismissed.add(key);
-  try {
-    localStorage.setItem(key, "1");
-  } catch {
-    /* Session memory still hides it on this page. */
-  }
-}
+export const loginNoticeDismissKey = (state: SignOut) =>
+  `login-notice-dismissed:${signOutKey(state)}`;

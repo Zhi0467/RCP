@@ -70,7 +70,7 @@ test("release notice transitions, actions, visibility, and storage through a ser
         await page.locator('[data-kind="prebuilt"]').waitFor();
         assert.equal(await page.locator("[data-kind] a").count(), 0);
         // Dismissing before the download exists must not hide the later download.
-        await page.locator(".desktop-update-dismiss").click();
+        await page.locator(".banner-dismiss").click();
         await page.locator('[data-kind="prebuilt"]').waitFor({ state: "detached" });
         data = {
           ...fixture,
@@ -165,7 +165,7 @@ test("release notice transitions, actions, visibility, and storage through a ser
     await t.test("dismissal persists per release and survives unavailable storage", async () => {
       data = { ...fixture };
       await refresh();
-      await page.locator(".desktop-update-dismiss").click();
+      await page.locator(".banner-dismiss").click();
       assert.equal(await page.locator("[data-kind]").count(), 0);
       assert.equal(
         await page.evaluate(() => localStorage.getItem("rcp:update-dismissed:source:0.4.3")),
@@ -186,7 +186,7 @@ test("release notice transitions, actions, visibility, and storage through a ser
           },
         });
       });
-      await page.locator(".desktop-update-dismiss").click();
+      await page.locator(".banner-dismiss").click();
       await page.evaluate(() => window.remount());
       await page.waitForFunction(
         () => document.querySelector("[data-status]")?.dataset.status === "update_available",
