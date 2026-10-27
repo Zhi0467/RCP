@@ -133,6 +133,7 @@ class AppStoreBase:
         (60, "chat_forks_v1"),
         (61, "machine_settings_v1"),
         (62, "paper_live_v1"),
+        (63, "paper_changes_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -949,6 +950,9 @@ class AppStoreBase:
             version=62,
             name="paper_live_v1",
             migration=self._migrate_paper_live,
+        )
+        self._run_storage_schema_migration(
+            connection, version=63, name="paper_changes_v1", migration=_migrate_paper_changes
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -4122,3 +4126,34 @@ def _migrate_graph_seen_heads(connection: sqlite3.Connection) -> None:
         committed_operation_id TEXT NOT NULL,
         PRIMARY KEY(project_id, owner_id, native_session_id, graph_target)
     )""")
+
+
+# S3 paper changes migration. Renumber this registry entry when merging S1.
+def _migrate_paper_changes(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        "UPDATE graph_runs SET dispatch_authority_json = "
+        "json_set(dispatch_authority_json, '$.task_contract', 'paper_suggest') "
+        "WHERE json_valid(dispatch_authority_json) "
+        "AND json_extract(dispatch_authority_json, '$.task_contract') = 'paper_readonly'"
+    )
+    for statement in (
+        """CREATE TABLE paper_change_groups (
+            project_id TEXT NOT NULL, group_id TEXT NOT NULL, task_id TEXT NOT NULL,
+            base_revision INTEGER NOT NULL, mode TEXT NOT NULL, state TEXT NOT NULL,
+            decided_by TEXT, decided_at TEXT, created_at TEXT NOT NULL,
+            PRIMARY KEY (project_id, group_id))""",
+        """CREATE INDEX paper_change_groups_task
+            ON paper_change_groups(project_id, task_id, created_at)""",
+        """CREATE TABLE paper_changes (
+            project_id TEXT NOT NULL, change_id TEXT NOT NULL, group_id TEXT NOT NULL,
+            payload TEXT NOT NULL, PRIMARY KEY (project_id, change_id),
+            FOREIGN KEY (project_id, group_id)
+                REFERENCES paper_change_groups(project_id, group_id) ON DELETE CASCADE)""",
+        """CREATE TABLE paper_change_receipts (
+            project_id TEXT NOT NULL, receipt_key TEXT NOT NULL, group_id TEXT NOT NULL,
+            action TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL,
+            PRIMARY KEY (project_id, receipt_key),
+            FOREIGN KEY (project_id, group_id)
+                REFERENCES paper_change_groups(project_id, group_id) ON DELETE CASCADE)""",
+    ):
+        connection.execute(statement)

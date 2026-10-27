@@ -237,7 +237,7 @@ def chat_prompt_values(
             "graph_path": context.graph_path,
             "research_path": context.research_md_path,
             "focused_node_id": str(context.node["id"]) if context.node else None,
-            "introduction_path": context.introduction_path,
+            "paper_path": context.paper_path,
             "experiment_watcher_resources": experiment_watcher_resources,
         },
         "repositories": repositories,

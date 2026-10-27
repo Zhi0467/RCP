@@ -2,25 +2,35 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
+import mimetypes
+import tempfile
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from rcp.agents.context import ContextAssembler
-from rcp.attachments import ProjectReferenceSelector, ProjectReferenceSource
+from rcp.attachments import (
+    PaperReferenceSelector,
+    ProjectReferenceSelector,
+    ProjectReferenceSource,
+    _reference_path,
+    _regular_tree,
+)
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import (
+    CHAT_ATTACHMENT_MAX_COUNT,
     CHAT_ATTACHMENT_MAX_FILE_BYTES,
     CHAT_ATTACHMENT_MAX_TOTAL_BYTES,
     PROJECT_REFERENCE_NODE_MAX_BYTES,
 )
+from rcp.paper.coach_seam import get_paper_live
 from rcp.storage import AppStore
 from rcp.transport import StateUnavailable
 
 if TYPE_CHECKING:
     from rcp.projects import ProjectCatalog
+    from rcp.service import ProjectService
 
 
 @dataclass(frozen=True)
@@ -95,20 +105,7 @@ def resolve_project_references(
                 continue
             service = catalog.open(project_id)
             if selector.kind == "paper":
-                content = service.paper.read_canonical_reference(CHAT_ATTACHMENT_MAX_FILE_BYTES)
-                resolved.append(
-                    ResolvedProjectReference(
-                        filename="introduction.md",
-                        display_name="Paper introduction",
-                        media_type="text/markdown",
-                        content=content,
-                        reference=ProjectReferenceSource(
-                            kind="paper",
-                            source_id="introduction",
-                            version=hashlib.sha256(content).hexdigest(),
-                        ),
-                    )
-                )
+                resolved.extend(_resolve_paper(service, project_id, selector))
                 continue
             target = GraphTargetRef(
                 kind="branch" if selector.branch_id else "main",
@@ -144,3 +141,50 @@ def resolve_project_references(
         except (KeyError, OSError, StateUnavailable, StopIteration) as exc:
             raise ValueError("Project reference source is unavailable.") from exc
     return resolved
+
+
+def _resolve_paper(
+    service: ProjectService, project_id: str, selector: PaperReferenceSelector
+) -> list[ResolvedProjectReference]:
+    """Retain one coherent saved tree, including binary files and relative includes."""
+    live = get_paper_live(service)
+    snapshot = live.snapshot(project_id)
+    files = [item for item in snapshot.files if selector.file_id in (None, item.file_id)]
+    if not files:
+        raise ValueError("Paper reference source is unavailable.")
+    if len(files) > CHAT_ATTACHMENT_MAX_COUNT:
+        raise ValueError("The paper reference exceeds the attachment file-count limit.")
+    for item in files:
+        _reference_path(item.path)
+    if len({item.path for item in files}) != len(files):
+        raise ValueError("Paper reference paths are not unique.")
+    selected = snapshot.model_copy(update={"files": files})
+    with tempfile.TemporaryDirectory(prefix="rcp-paper-reference-") as temporary:
+        root = Path(temporary) / "paper"
+        live.materialize(selected, root)
+        paths = _regular_tree(root)
+        if set(paths) != {item.path for item in files}:
+            raise ValueError("Paper reference snapshot is incomplete.")
+        sizes = {path: source.stat().st_size for path, source in paths.items()}
+        if any(size > CHAT_ATTACHMENT_MAX_FILE_BYTES for size in sizes.values()):
+            raise ValueError("A paper reference exceeds the attachment file-size limit.")
+        if sum(sizes.values()) > CHAT_ATTACHMENT_MAX_TOTAL_BYTES:
+            raise ValueError("The paper reference exceeds the attachment total-size limit.")
+        return [
+            ResolvedProjectReference(
+                filename=item.path,
+                display_name=item.path,
+                media_type=(
+                    mimetypes.guess_type(item.path)[0]
+                    or ("text/plain" if item.kind == "text" else "application/octet-stream")
+                ),
+                content=paths[item.path].read_bytes(),
+                reference=ProjectReferenceSource(
+                    kind="paper",
+                    source_id=item.file_id,
+                    path=item.path,
+                    version=str(snapshot.revision),
+                ),
+            )
+            for item in sorted(files, key=lambda item: item.path)
+        ]

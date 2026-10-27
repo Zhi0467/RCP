@@ -31,7 +31,7 @@ AgentCapability = Literal[
     "work_auto",
     "orchestrate",
     "scratch_patch",
-    "paper_readonly",
+    "paper_suggest",
 ]
 
 
@@ -465,7 +465,7 @@ class ProviderProfile:
     ) -> None:
         """Apply the same version floor used by a real launch of this capability."""
 
-        if capability in {"work_auto", "orchestrate"}:
+        if capability in {"work_auto", "orchestrate", "paper_suggest"}:
             minimum = self.work_like_minimum_version
             if minimum is not None:
                 _require_provider_version(
@@ -665,6 +665,18 @@ def _usage_dedupe_key(value: dict[str, object], raw: str, *fields: str) -> str:
         if isinstance(candidate, str) and candidate:
             return candidate
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _paper_changes_root(write_dirs: list[Path]) -> Path:
+    """The coach has exactly one already-resolved output root, never cwd or temp."""
+    if len(write_dirs) != 1 or not write_dirs[0].is_absolute():
+        raise ValueError("paper_suggest requires exactly one absolute changes directory")
+    path = write_dirs[0]
+    if path != path.resolve() or path == Path(path.anchor):
+        raise ValueError("paper_suggest changes directory must be a resolved non-root path")
+    if any(character in str(path) for character in "*?[]\\"):
+        raise ValueError("paper_suggest changes directory cannot contain permission wildcards")
+    return path
 
 
 def _require_project_write_scope(

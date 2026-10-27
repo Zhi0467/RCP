@@ -23,6 +23,7 @@ from rcp.providers.base import (
     ProviderUsage,
     _JsonlProviderRuntime,
     _optional_usage_int,
+    _paper_changes_root,
     _require_project_write_scope,
     _usage_dedupe_key,
     _usage_int,
@@ -315,6 +316,23 @@ class CodexProfile(ProviderProfile):
                     _codex_permission_profile(scope, hidden_read_scope),
                 ]
             )
+        elif capability == "paper_suggest":
+            if write_scope is not None:
+                raise ValueError("paper_suggest cannot carry a project write scope")
+            self.validate_readiness_version(provider_version, capability=capability)
+            command.extend(["--disable", "shell_tool"])
+            command.extend(
+                [
+                    "--config",
+                    'approval_policy="never"',
+                    "--config",
+                    'default_permissions="rcp_paper"',
+                    "--config",
+                    _codex_paper_permission_profile(
+                        _paper_changes_root(write_dirs), hidden_read_scope
+                    ),
+                ]
+            )
         else:
             if write_scope is not None:
                 raise ValueError(f"capability {capability!r} cannot carry a project write scope")
@@ -334,18 +352,16 @@ class CodexProfile(ProviderProfile):
                         "--config",
                         'default_permissions="rcp_stage"',
                         "--config",
-                        _codex_stage_permission_profile(
-                            cwd, hidden_read_scope, read_only=capability == "paper_readonly"
-                        ),
+                        _codex_stage_permission_profile(cwd, hidden_read_scope),
                     ]
                 )
-            sandbox = "read-only" if capability == "paper_readonly" else "workspace-write"
+            sandbox = "workspace-write"
             if capability != "discuss" and hidden_read_scope is None:
                 if continued_session:
                     command.extend(["--config", f'sandbox_mode="{sandbox}"'])
                 else:
                     command.extend(["--sandbox", sandbox])
-            if capability not in {"paper_readonly", "discuss"} and hidden_read_scope is None:
+            if capability != "discuss" and hidden_read_scope is None:
                 command.extend(["--config", "sandbox_workspace_write.network_access=true"])
         if not continued_session:
             command.extend(["--cd", str(cwd)])
@@ -499,12 +515,10 @@ def _codex_environment_config(scope: HiddenReadScope | None) -> list[str]:
     ]
 
 
-def _codex_stage_permission_profile(
-    cwd: Path, hidden_read_scope: HiddenReadScope, *, read_only: bool
-) -> str:
-    filesystem = '":root"="read"'
-    if not read_only:
-        filesystem += ',":workspace_roots"={"."="write"},":tmpdir"="write",":slash_tmp"="write"'
+def _codex_stage_permission_profile(cwd: Path, hidden_read_scope: HiddenReadScope) -> str:
+    filesystem = (
+        '":root"="read",":workspace_roots"={"."="write"},":tmpdir"="write",":slash_tmp"="write"'
+    )
     denials = _codex_read_denials(hidden_read_scope)
     if denials:
         filesystem += "," + denials
@@ -513,6 +527,19 @@ def _codex_stage_permission_profile(
         + json.dumps(str(cwd))
         + "=true},filesystem={"
         + filesystem
+        + "},network={enabled=true}}}"
+    )
+
+
+def _codex_paper_permission_profile(
+    changes: Path, hidden_read_scope: HiddenReadScope | None = None
+) -> str:
+    denials = _codex_read_denials(hidden_read_scope)
+    return (
+        'permissions={rcp_paper={filesystem={":root"="read",'
+        + json.dumps(str(changes))
+        + '="write"'
+        + ("," + denials if denials else "")
         + "},network={enabled=true}}}"
     )
 

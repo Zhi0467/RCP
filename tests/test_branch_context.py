@@ -56,8 +56,8 @@ def test_chat_context_reads_exact_materialized_target_and_shared_inputs(branch_s
         assert "coverage_path" not in context.model_dump()
         for field in ("graph_path", "research_md_path", "glossary_path"):
             assert Path(getattr(context, field)).parent == service.history.root
-        assert context.introduction_path == str(main.paper.canonical_path)
-        assert Path(context.introduction_path).read_text() == "Human paper introduction.\n"
+        assert context.paper_path == str(main.paper.canonical_path.parent)
+        assert Path(context.paper_path).is_dir()
         assert context.facts_dir == str(main.history.root / "facts")
 
 
@@ -110,5 +110,5 @@ def test_remote_context_preserves_target_namespace_and_shared_paper_path(branch_
         ("glossary_path", "glossary.json"),
     ):
         assert updates[field] == str(graph_root / filename)
-    assert updates["introduction_path"] == str(canonical / "paper" / "introduction.md")
+    assert updates["paper_path"] == str(canonical / "paper")
     assert updates["facts_dir"] == str(canonical / "facts")

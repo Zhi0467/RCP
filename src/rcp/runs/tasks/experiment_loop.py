@@ -1151,7 +1151,7 @@ def _experiment_start_contract(
         research_path=turn.context.research_md_path,
         focused_experiment_id=turn.request.control_node_id,
         repositories=staged.repositories,
-        introduction_path=turn.context.introduction_path,
+        paper_path=turn.context.paper_path,
         human_request_path=human_request_path,
         loop_control_path=prepared.loop_control_path,
         watcher_state_path=prepared.watcher_state_path,

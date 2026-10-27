@@ -290,7 +290,7 @@ async def test_launcher_delivers_grant_environment(tmp_path, monkeypatch):
     assert path.startswith("/browser/bin:")
 
 
-@pytest.mark.parametrize("capability", ["paper_readonly", "scratch_patch"])
+@pytest.mark.parametrize("capability", ["paper_suggest", "scratch_patch"])
 def test_excluded_profiles_do_not_add_browser_shell(capability, tmp_path):
     staged = stage_command_mailbox(
         local_stage=tmp_path,
@@ -305,25 +305,27 @@ def test_excluded_profiles_do_not_add_browser_shell(capability, tmp_path):
         request = replace(
             _request(provider, "granted"),
             capability=capability,
+            provider_version="2.200.0",
+            write_dirs=[tmp_path / "changes"] if capability == "paper_suggest" else [],
             invocation_gate=staged.invocation_gate,
         )
         turn = profile.runtime(profile.legacy_runtime_id).turn(request)
         client = shlex.join(staged.client_argv()[:4])
         if provider == "claude":
             assert [arg for arg in turn.command if arg.startswith("Bash(")] == (
-                [f"Bash({client}:*)"] if capability == "paper_readonly" else []
+                [f"Bash({client}:*)"] if capability == "paper_suggest" else []
             )
-            if capability == "paper_readonly":
-                assert turn.command[turn.command.index("--permission-mode") + 1] == "plan"
+            if capability == "paper_suggest":
+                assert turn.command[turn.command.index("--permission-mode") + 1] == "dontAsk"
         else:
             config = json.loads(turn.environment["OPENCODE_CONFIG_CONTENT"])
             agent = turn.command[turn.command.index("--agent") + 1]
             rules = config["agent"][agent]["permission"]
             assert rules.get("bash") == (
-                {"*": "deny", f"{client} *": "allow"} if capability == "paper_readonly" else None
+                {"*": "deny", f"{client} *": "allow"} if capability == "paper_suggest" else None
             )
-            if capability == "paper_readonly":
-                assert rules["*"] == "deny" and "edit" not in rules
+            if capability == "paper_suggest":
+                assert rules["*"] == "deny" and rules["edit"]["*"] == "deny"
     staged.cleanup()
 
 
@@ -333,7 +335,8 @@ def test_coach_codex_client_keeps_readonly_filesystem(runtime, session_id, tmp_p
     staged = _staged_discuss_mailbox(tmp_path, broker=True, layout="split")
     request = replace(
         _request("codex", "not_requested"),
-        capability="paper_readonly",
+        capability="paper_suggest",
+        write_dirs=[tmp_path / "changes"],
         provider_version="0.149.0",
         session_id=session_id,
         invocation_gate=staged.invocation_gate,
@@ -346,8 +349,8 @@ def test_coach_codex_client_keeps_readonly_filesystem(runtime, session_id, tmp_p
     )
     turn = profile_for("codex").runtime(runtime).turn(request)
     policy = next(arg for arg in turn.command if arg.startswith("permissions="))
-    stage = tomllib.loads(policy)["permissions"]["rcp_stage"]
-    assert stage["filesystem"] == {":root": "read"}
+    stage = tomllib.loads(policy)["permissions"]["rcp_paper"]
+    assert stage["filesystem"] == {":root": "read", str(tmp_path / "changes"): "write"}
     assert stage["network"]["enabled"] is True
     staged.cleanup()
 
