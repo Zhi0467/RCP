@@ -64,7 +64,9 @@ from rcp.api.lessons import router as lessons_router
 from rcp.api.machine_power import router as machine_power_router
 from rcp.api.notifications import router as notifications_router
 from rcp.api.owner import router as owner_router
+from rcp.api.paper import PaperUploadBodyLimit, is_paper_upload
 from rcp.api.paper import router as paper_router
+from rcp.api.paper_live import router as paper_live_router
 from rcp.api.project_groups import router as project_groups_router
 from rcp.api.project_provisioning import router as project_provisioning_router
 from rcp.api.project_state import router as project_state_router
@@ -112,6 +114,7 @@ from rcp.limits import (
 from rcp.live_artifact_runtime import reconcile_artifact_live_snapshots
 from rcp.machine_power import MachinePowerController, demand_snapshot
 from rcp.notifications import NotificationSender
+from rcp.paper import PaperLive
 from rcp.phone_listener import PhoneListener
 from rcp.projects import ProjectCatalog, ProjectDisplayCache, fill_space_machines
 from rcp.provider_skills import ProviderSkillInventoryManager
@@ -716,6 +719,11 @@ def create_app(
         process_environment=launcher.process_environment,
     )
     catalog = ProjectCatalog(app_data, store, launcher, provider_skills)
+
+    def paper_workspace(project_id: str):
+        return catalog._display_workspace_or_refresh(project_id)[1]
+
+    paper_live = PaperLive(store, paper_workspace)
     attachment_store = ChatAttachmentStore(app_data / "chat-attachments")
 
     ensure_episode_graph_target = partial(
@@ -1901,6 +1909,7 @@ def create_app(
                     app.state.machine_power_started = True
                 await asyncio.to_thread(deploy_key_agent.start)
                 await terminals.start()
+                await paper_live.start()
                 sync_coordinator.start()
                 # Cards hold provider executables and compute settings; an older
                 # manifest's copy must reach them before recovery relaunches work.
@@ -2079,7 +2088,9 @@ def create_app(
                 await start_deferred_runtime()
             except BaseException:
                 await sync_coordinator.stop()
-                background_tasks.shutdown()
+                paper_live.fence()
+                await asyncio.to_thread(background_tasks.shutdown)
+                await paper_live.close()
                 await asyncio.to_thread(
                     deploy_key_agent.stop_after_workers_drained, background_tasks.runtime_is_idle
                 )
@@ -2110,7 +2121,9 @@ def create_app(
                         await start_deferred_runtime()
                     except BaseException as exc:
                         await sync_coordinator.stop()
-                        background_tasks.shutdown()
+                        paper_live.fence()
+                        await asyncio.to_thread(background_tasks.shutdown)
+                        await paper_live.close()
                         await asyncio.to_thread(
                             deploy_key_agent.stop_after_workers_drained,
                             background_tasks.runtime_is_idle,
@@ -2127,6 +2140,7 @@ def create_app(
                 release_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await release_task
+            paper_live.fence()
             live_artifact_shutdown.set()
             # Request threads blocked behind a contended canonical lock would
             # otherwise outlive uvicorn's grace and hold the instance lock past
@@ -2154,7 +2168,8 @@ def create_app(
             if phone_listener is not None:
                 await asyncio.to_thread(phone_listener.stop)
             try:
-                background_tasks.shutdown()
+                await asyncio.to_thread(background_tasks.shutdown)
+                await paper_live.close()
             finally:
                 await asyncio.to_thread(
                     deploy_key_agent.stop_after_workers_drained, background_tasks.runtime_is_idle
@@ -2177,6 +2192,7 @@ def create_app(
     app.state.services = services
     app.state.server_layout = server_layout
     app.state.catalog = catalog
+    app.state.paper_live = paper_live
     app.state.provider_skills = provider_skills
     app.state.setup = setup
     app.state.default_project_id = default_project_id
@@ -2210,6 +2226,7 @@ def create_app(
     app.state.runtime_admission_gate = runtime_admission_gate
     app.state.background_admission_gate = background_admission_gate
     app.add_middleware(TeamPublicAuthBodyLimit)
+    app.add_middleware(PaperUploadBodyLimit)
 
     @app.middleware("http")
     async def enforce_update_maintenance(request: Request, call_next):
@@ -2341,7 +2358,10 @@ def create_app(
                 )
                 allowed_media_type = (
                     media_type.lower() == "application/json"
-                    or (attachment_upload and media_type.lower() == "multipart/form-data")
+                    or (
+                        (attachment_upload or is_paper_upload(request.method, path))
+                        and media_type.lower() == "multipart/form-data"
+                    )
                     or (transcription_upload and media_type.lower() in {"audio/webm", "audio/mp4"})
                 )
                 if not allowed_media_type:
@@ -2358,7 +2378,7 @@ def create_app(
                                     "Unsupported audio type."
                                     if transcription_upload
                                     else "Authenticated team mutations require JSON, except for "
-                                    "the bounded attachment and transcription uploads."
+                                    "bounded attachment, Paper, and transcription uploads."
                                 ),
                             }
                         },
@@ -2370,8 +2390,8 @@ def create_app(
         ):
             # A cross-site page can send a POST without a CORS preflight
             # only with a simple content type (PUT, PATCH, and DELETE always
-            # preflight), so refuse those; the bounded chat attachment upload is
-            # the one multipart route, as in a team space.
+            # preflight), so refuse those except the bounded attachment and
+            # Paper multipart routes, as in a team space.
             media_type = request.headers.get("content-type", "").partition(";")[0].strip().lower()
             attachment_upload = (
                 request.method == "POST"
@@ -2386,7 +2406,10 @@ def create_app(
                 "multipart/form-data",
                 "text/plain",
             }
-            if simple and not (attachment_upload and media_type == "multipart/form-data"):
+            if simple and not (
+                (attachment_upload or is_paper_upload(request.method, path))
+                and media_type == "multipart/form-data"
+            ):
                 return JSONResponse(
                     status_code=415,
                     content={
@@ -2519,6 +2542,7 @@ def create_app(
     app.include_router(proposal_refresh_router)
     app.include_router(history_router)
     app.include_router(paper_router)
+    app.include_router(paper_live_router)
     app.include_router(result_views_router)
     app.include_router(artifacts_router)
     app.include_router(research_views_router)
