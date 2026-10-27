@@ -59,6 +59,12 @@ concurrency; a newer compile cancels an older one for the same project. A
 compile starts from the one root that reaches the open file; with none or
 several, the preview lists the candidates.
 
+Tectonic runs as the RCP server user with no operating-system sandbox.
+`--untrusted` turns off shell escape only, so `\input` of an absolute path
+can print any file that user can read into the preview PDF, including files
+that agent launches hide. This is accepted: members are one trusted lab, the
+PDF goes only to members, and no agent can read the preview.
+
 ## Writing coach
 
 The coach reads the paper, graph and research rendering, flags unsupported
