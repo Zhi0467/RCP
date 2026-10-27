@@ -376,6 +376,15 @@ root is refused as a write and kept readable, because RCP stages its `graph.json
 and `research.md` as required run context; Codex treats a denied path as
 unreadable rather than unwritable.
 
+Every hidden or protected path RCP names to Codex exists on the execution host
+when the launch resolves. Both scopes record which of their entries are missing,
+and Codex is told only about the rest. Why: on Linux, Codex hides a missing path
+inside a writable root by creating a stand-in file there. A killed command never
+removes it, and a stand-in where a folder belongs makes every later Codex sandbox
+on that account fail to start. A secret created mid-turn is hidden from the next
+turn on. Claude and OpenCode keep missing entries, because RCP's wrapper masks
+them without writing to disk.
+
 Work, orchestrate, and Discuss also deny reads of the desktop app's WebKit,
 application support, cache, HTTP storage, and cookie paths for both release and Dev
 bundle identifiers. These rules are separate from protected write paths.

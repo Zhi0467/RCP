@@ -261,9 +261,17 @@ class HiddenReadScope(BaseModel):
     key_evidence: tuple[HiddenReadKeyEvidence, ...] = Field(
         default=(), max_length=HIDDEN_READ_KEY_MAX_COUNT
     )
+    # Hidden entries with nothing behind them on the execution host when this
+    # launch resolved: a missing literal path, or a glob whose folder is missing.
+    # A launch-time fact, not policy, so the fingerprint leaves it out.
+    absent_entries: tuple[HiddenReadPath, ...] = Field(
+        default=(), max_length=3 * HIDDEN_READ_PATH_MAX_COUNT + HIDDEN_READ_KEY_MAX_COUNT
+    )
     fingerprint: str = Field(default="", pattern=r"^[0-9a-f]{64}$")
 
-    @field_validator("hidden_directories", "hidden_files", "hidden_globs", "env_deny_list")
+    @field_validator(
+        "hidden_directories", "hidden_files", "hidden_globs", "env_deny_list", "absent_entries"
+    )
     @classmethod
     def canonical_entries(cls, values: tuple[str, ...]) -> tuple[str, ...]:
         if len(values) != len(set(values)):
@@ -305,7 +313,9 @@ class HiddenReadScope(BaseModel):
         paths = (*self.hidden_directories, *self.hidden_files, *self.hidden_globs)
         if len(paths) != len(set(paths)):
             raise ValueError("a hidden path must occur in only one path category")
-        payload = self.model_dump(mode="json", exclude={"fingerprint"})
+        if not set(self.absent_entries).issubset(paths):
+            raise ValueError("an absent entry must be one of the hidden entries")
+        payload = self.model_dump(mode="json", exclude={"fingerprint", "absent_entries"})
         expected = hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
                 "utf-8"

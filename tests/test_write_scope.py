@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -102,6 +103,11 @@ def test_local_scope_contains_only_exact_admitted_roots_and_protects_research(
     assert {str(Path(repo_a) / ".research"), str(Path(repo_b) / ".research")} <= set(
         scope.protected_write_paths
     )
+    # Codex is told only about protected paths that exist (see the Codex profile).
+    assert scope.absent_protected_paths == [
+        path for path in scope.protected_write_paths if not os.path.lexists(path)
+    ]
+    assert str(Path(repo_a) / ".research") not in scope.absent_protected_paths
 
 
 def test_machine_grants_join_repository_scopes_and_keep_rcp_data_read_only(
@@ -806,6 +812,9 @@ class _RemoteScopeStage:
         return ({path: self.overrides.get(path, path) for path in paths}, "/home/worker")
 
     def legacy_stage_roots(self) -> list[str]:
+        return []
+
+    def absent_paths(self, paths: list[str]) -> list[str]:
         return []
 
     def write_workspace_text(self, name: str, content: str) -> None:

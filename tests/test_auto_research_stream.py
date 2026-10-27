@@ -701,6 +701,9 @@ class _LocalBackedRemoteStage:
             canonical[raw] = str(resolved)
         return canonical, str(Path.home().resolve())
 
+    def absent_paths(self, paths: list[str]) -> list[str]:
+        return [path for path in paths if not os.path.lexists(path)]
+
     def legacy_stage_roots(self) -> list[str]:
         return []
 

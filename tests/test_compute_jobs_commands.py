@@ -298,7 +298,9 @@ async def test_slow_remote_launch_returns_pending_then_replays_one_launch(comman
     handler = replace(
         commands.handler,
         remote_stage=SimpleNamespace(
-            canonical_directories=canonical_directories, legacy_stage_roots=lambda: []
+            canonical_directories=canonical_directories,
+            legacy_stage_roots=lambda: [],
+            absent_paths=lambda paths: [],
         ),
     )
     monkeypatch.setattr(
