@@ -20,7 +20,7 @@ policy. [Authority and Proposals](authority-and-proposals.md) owns graph authori
 | Episode merge | Scratch candidate; code landing additionally admits the episode worktree and shared checkout. |
 | Correction | Retained scratch; Work-like repair retains the session and exact Work scope. |
 | Artifact edit | Discuss scratch-only access on the admitted session, stage and version; no operational commands or master. Chat-master viewer comments use ordinary Discuss; composer comments use that chat turn's mode. |
-| Paper coach | Read-only; no graph, draft-write or Apply channel. |
+| Paper coach | Reads a snapshot of the saved paper; writes only its task's changes folder; no graph, direct paper-write or command channel. |
 
 Manifest settings and skills select execution details and methods, not capability.
 

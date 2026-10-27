@@ -1,38 +1,89 @@
 # Paper, artifacts, and viewing
 
-This specification owns the human paper draft, read-only coaching, artifacts,
+This specification owns the shared paper, the writing coach, artifacts,
 versioned reports, content interaction, storage, and repository-file previews.
 [Interface design](interface-and-visual-design.md#artifact-viewer) owns panel layout;
 [API projections](api-web-and-desktop-projections.md#artifact-viewer-and-run-inventory)
 owns viewer state and run inventory payloads.
 
-## Human paper authorship
+## Shared paper
 
-The introduction and draft are human-authored, non-authoritative Markdown covering
-the question, related work, methods, results, and publication case. The graph and
-research rendering remain separate writing inputs.
+The paper is a file tree of Markdown, LaTeX, Typst, BibTeX, figures and any
+other files, written by the project's members. It is non-authoritative: the
+graph and research rendering remain separate writing inputs, and no paper text
+becomes graph state. There is no main file; each preview starts from the file
+being read.
 
-The editor retains its canonical base. Incoming canonical changes preserve the
-draft and mark it behind; Preview exposes incoming content, and reversible Apply
-swaps it with the editor. A later human edit re-pins the draft and resumes saving.
-Neither whole version may be discarded or silently overwritten.
+Every text file is one shared live document. Members edit it at once and their
+edits merge; there is no per-person draft and no edit is refused for being
+concurrent. The RCP process that owns the project holds the live documents: the
+team server for a team project, the member's own RCP for a personal one, even
+when its state root is on an SSH host.
 
-Paper uses an ordinary project resource profile for snapshot/coach sessions:
-cached data paints immediately, without a mandatory entry read. Unknown/failed
-absence never offers Create introduction. Refresh preserves buffers. Snapshots
-carry `draft_version`; saves send the loaded version, or null for no stored draft.
-A changed draft returns 409 `The Paper draft changed since it was loaded.` before
-either draft or canonical write. Typed text remains; refresh and explicit retry
-use the new version. Canonical `base_hash` conflict handling is independent.
-Create/save refresh the project snapshot's copy.
+**Saved and published are separate.** An edit is saved once it, the new paper
+revision, and the intent to publish commit in one SQLite transaction; only then
+is it broadcast and acknowledged, and only an acknowledgement shows the editor
+as saved. Edits made while disconnected wait in the browser until a server
+acknowledges them. Publication writes the saved tree to the state root's
+`paper/` some seconds after editing pauses, and at least every few minutes
+during continuous editing, as one staged tree that replaces the previous one in
+a single step, so a rename and the edit that follows it never appear apart. An
+unreachable state root leaves publication pending; saving continues. Paper is
+never committed to Git.
 
-## Read-only writing coach
+**Why:** a paper co-written live must not lose an acknowledged keystroke to a
+crash, and a half-published tree breaks every build that includes the missing
+half.
 
-The coach reads draft/graph, flags unsupported claims, asks questions, and points
-to Evidence with native session continuity. It cannot edit the draft, write
-replacement prose into it, emit a Patch, approve Proposals, or promote paper text
-to graph state. Prior transcripts and skills cannot widen its read-only capability
-or public-web contract; see [provider containment](providers-and-containment.md).
+Files keep a stable identity across renames. Uploaded figures are stored once by
+content hash. Paper files are served as files, never as same-origin documents:
+SVG, HTML and unknown types download; only raster images show inline.
+
+A project that still holds a pre-tree paper keeps it as `introduction.md`. When
+its old draft had diverged from the saved introduction, both are kept, the draft
+becomes the live text, and nothing publishes until a member picks which to keep.
+
+History records a version after each burst of editing and on request. Automatic
+versions form a bounded ring; named versions have a quota, and a full quota
+refuses new names rather than evicting old ones. A version is restored per file
+as a new live edit.
+
+### Preview
+
+Markdown renders in the browser, with image paths resolved inside the paper
+tree. Typst compiles in the browser from compiler and font files that the RCP
+backend downloads once, checks against pinned hashes, and serves from its own
+origin. LaTeX compiles on the RCP backend with Tectonic, downloaded and checked
+the same way on first use, run with `--untrusted` and bounded in time, output and
+concurrency; a newer compile cancels an older one for the same project. A
+compile starts from the one root that reaches the open file; with none or
+several, the preview lists the candidates.
+
+## Writing coach
+
+The coach reads the paper, graph and research rendering, flags unsupported
+claims, asks questions, and may change the paper: edit, create, rename or delete
+any paper file. It reads a read-only snapshot of the saved paper taken when its
+turn starts, and writes whole files into its own changes folder
+(`changes/files/…`, with renames and deletions in `changes/moves.json`). RCP
+collects that folder alone, validates all of it or none of it, and turns it into
+change cards by diffing against the snapshot; the coach never writes diffs or
+line numbers. A rename and the edits that depend on it form one card group.
+
+A card applies only to the text it was made from. At the end of a turn RCP
+checks every card against the live paper; a card whose text has since changed is
+refreshed by up to two short follow-up turns of the same coach session, then
+shown as outdated with a refresh action.
+
+By default each card waits for a member to accept or reject it. In a chat set to
+apply directly, every fresh card is applied when the turn ends, and the cards
+become a log. Either way, applying re-checks the original text, happens once per
+card, and records a receipt that a guarded Undo reverses while the text is still
+what the coach wrote.
+
+The coach cannot write the paper directly, emit a Patch, approve Proposals, or
+promote paper text to graph state. Prior transcripts and skills cannot widen its
+capability or public-web contract; see [provider containment](providers-and-containment.md).
 
 ## Answer and artifacts are independent
 
