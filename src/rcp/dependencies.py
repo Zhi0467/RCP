@@ -456,6 +456,14 @@ DEPENDENCIES: tuple[Dependency, ...] = (
         apt="coreutils",
     ),
     Dependency(
+        "tectonic",
+        "Compile paper snapshots using RCP's checksum-pinned runtime install.",
+        optional_on=frozenset({"local"}),
+        feature="LaTeX preview",
+        fallback="Preview shows unavailable.",
+        note="Installed by Paper into the data directory; PATH installations are not used.",
+    ),
+    Dependency(
         "tar",
         "Extract state archives on a remote machine.",
         required_on=frozenset({"remote"}),
