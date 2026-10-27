@@ -51,7 +51,11 @@ def launch_compute_job(
     request = ComputeLaunchRequest.model_validate(request.model_dump())
     if any(not PurePosixPath(root).is_absolute() for root in writable_roots):
         raise ValueError("compute writable roots must be absolute")
-    context, backend = resolve_context(manifest, execution_machine)
+    context, backend = resolve_context(
+        manifest,
+        execution_machine,
+        store.machine_compute(manifest.machine_map[execution_machine].host),
+    )
     if backend is None:
         raise RuntimeError(
             f"No reliable compute process owner is available for machine {execution_machine!r} "
@@ -122,7 +126,6 @@ def launch_compute_job(
 
 def refresh_compute_job(
     store: AppStore,
-    manifest: Manifest | None,
     job_id: str,
     *,
     data_dir: Path,
@@ -134,7 +137,7 @@ def refresh_compute_job(
     if record.status != "running":
         return record
     try:
-        context = recorded_job_context(manifest, record)
+        context = recorded_job_context(record)
         try:
             alive = COMPUTE_BACKENDS[record.backend_id].alive(record.backend_handle, context)
             if alive is None:
@@ -227,7 +230,7 @@ def helper_watch_spec(job: ComputeJobRecord) -> dict[str, str]:
     }
 
 
-def helper_startup_state(manifest: Manifest | None, job: ComputeJobRecord) -> dict[str, object]:
+def helper_startup_state(job: ComputeJobRecord) -> dict[str, object]:
     """The job's state just after launch, read by RCP outside any agent sandbox."""
     if job.status == "running":
         # A fresh job's running record carries a diagnostic only when the refresh
@@ -240,7 +243,7 @@ def helper_startup_state(manifest: Manifest | None, job: ComputeJobRecord) -> di
     state["diagnostic"] = job.diagnostic
     try:
         state["log_tail"] = read_job_file(
-            recorded_job_context(manifest, job), job.log_path, COMPUTE_JOB_STARTUP_LOG_TAIL_BYTES
+            recorded_job_context(job), job.log_path, COMPUTE_JOB_STARTUP_LOG_TAIL_BYTES
         )
     except (ComputeTransportError, subprocess.TimeoutExpired, OSError) as exc:
         state["log_tail"] = None

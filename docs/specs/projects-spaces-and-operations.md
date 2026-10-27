@@ -37,7 +37,27 @@ fresh personal sign-in.
 
 ### Space machines
 
-One machine card per unique host records name, account and writable paths. SSH
+One machine card per unique host records everything configured on that machine:
+name, account, writable paths, hidden folders, provider limits, provider
+executables, job manager, jobs root and access hint. A project only adds or
+removes cards under an alias its repositories and agent profiles name; it
+configures none of them, and Project Settings shows the same card. A project
+removes a card only while no repository or agent profile uses it. Cards are
+space state and do not travel with a transferred project.
+
+**Why:** settings kept per project disagreed for one machine, and a fix in one
+project's Settings silently missed the others.
+
+Older builds kept `provider_paths`, `compute` and `access_hint` on the
+manifest's machine entries. A card that existed before this layout, or that a
+manifest creates, imports them once: Slurm turns on when any project named it,
+and every other value fills only an empty field. The import runs before
+startup recovery relaunches work. Only a start that read every project settles
+cards; registering one project merges without settling. A human edit to a card
+settles it, so no later start refills a field the human cleared.
+The keys stay inert in the manifest, so backups record the file as written.
+
+SSH
 selects account through the route; a second account on one host refuses. A
 blank account on Add machine is filled from a batch-mode login as the service
 account. An unknown host key shows its SHA256 fingerprint with **Trust**. SSH

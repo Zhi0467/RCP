@@ -826,6 +826,7 @@ async def _prepare_hidden_read_scope(
             remote_stage=remote_stage,
             repository_inventory=service.repository_ownership_inventory(project_id=project_id),
             machine_hidden_folders=list(card.hidden_folders) if card is not None else [],
+            machine_provider_paths=list(card.provider_paths.values()) if card is not None else [],
             git_access=execution.git_access if execution is not None else None,
             browser_enabled=bool(getattr(request, "browser_requested", False)),
         )

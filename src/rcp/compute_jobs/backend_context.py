@@ -121,9 +121,13 @@ def facility_probe(
 def resolve_context(
     manifest: Manifest,
     machine_alias: str,
+    compute: MachineComputeConfig | None,
     runner=subprocess.run,
 ) -> tuple[BackendContext, ComputeBackendProfile | None]:
-    """Resolve identity and OS on the execution machine, never on its client."""
+    """Resolve identity and OS on the execution machine, never on its client.
+
+    `compute` is the machine card's setting (`AppStore.machine_compute`).
+    """
     from rcp.compute_jobs.backends import resolve_backend
     from rcp.config import MachineComputeConfig
 
@@ -131,7 +135,7 @@ def resolve_context(
     context = BackendContext(
         execution_machine=machine_alias,
         execution_host=machine.host,
-        compute=machine.compute or MachineComputeConfig(),
+        compute=compute or MachineComputeConfig(),
         runner=runner,
     )
     os_result = context.run(["uname", "-s"])
@@ -169,11 +173,11 @@ def resolve_context(
     return context, profile
 
 
-def recorded_job_context(manifest: Manifest | None, record: ComputeJobRecord) -> BackendContext:
-    machine = manifest.machine_map.get(record.execution_machine) if manifest is not None else None
+def recorded_job_context(record: ComputeJobRecord) -> BackendContext:
+    """A launched job's context; its root and handle are recorded, so compute settings do not matter."""
     return BackendContext(
         execution_host=record.execution_host,
         execution_machine=record.execution_machine,
-        compute=machine.compute if machine and machine.host == record.execution_host else None,
+        compute=None,
         containment=record.containment,
     )

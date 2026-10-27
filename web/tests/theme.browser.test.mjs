@@ -218,13 +218,12 @@ test("project Settings keeps the global appearance and no longer owns a Display 
   await panel.getByRole("button", { name: "Dark", exact: true }).click();
   await assertAppearance(page, "aqua", "dark");
   await page.goto(`${origin}/tests/fixtures/settingsRequestRaces.html`);
-  await page.locator('[data-machine-tile="local"]').click();
-  const recessed = page.getByLabel("Codex executable on local");
+  const recessed = page.locator(".agent-auto-research-default input");
   await recessed.waitFor();
   await assertAppearance(page, "aqua", "dark");
   assert.equal(await page.locator(".display-settings").count(), 0);
   assert.equal(await page.getByRole("group", { name: "Theme", exact: true }).count(), 0);
-  const raised = page.getByRole("button", { name: "Resolve", exact: true });
+  const raised = page.getByRole("button", { name: "Probe", exact: true });
   const relief = await raised.evaluate((button) => getComputedStyle(button).boxShadow);
   const inset = await recessed.evaluate((field) => getComputedStyle(field).boxShadow);
   assert.notEqual(relief, "none");

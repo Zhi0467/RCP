@@ -1967,12 +1967,12 @@ export interface Machine {
   alias: string;
   host: string;
   os_account: string;
-  provider_paths: Record<ProviderId, string>;
+  /** A read-only projection of the space machine card's compute settings. */
   compute: MachineComputeConfig | null;
-  /** Non-secret guidance every agent receives about this machine. */
-  access_hint: string;
   // Absent from a project cached by a version before split readiness.
   compute_probes?: Record<ComputeRoute, ComputeBackendProbe | null>;
+  /** False while a repository or agent profile uses this machine. */
+  removable: boolean;
 }
 
 export type ComputeRoute = "scheduler" | "helper";
@@ -3185,8 +3185,6 @@ export interface ProjectSnapshot {
   default_auto_research_invocation_ceiling: number;
   repositories: Repository[];
   machines: Machine[];
-  /** Execution machine alias, then attached machine alias. */
-  compute_status: Record<string, Record<string, ComputeConnectionProbe>>;
   primary_question?: GraphNode | null;
   last_refresh_at?: string | null;
   experiment_control: Record<string, ExperimentControlState>;
@@ -3405,6 +3403,21 @@ export interface SpaceMachine {
   projects: SpaceMachineProject[];
   /** Null when the server could not tell. */
   in_use: boolean | null;
+  /** Null until the background probe detects it. */
+  job_manager: "slurm" | "none" | null;
+  /** Empty uses the default. */
+  jobs_root: string;
+  /** Non-secret guidance every agent receives about this machine. */
+  access_hint: string;
+  /** The recorded executable per provider. */
+  provider_paths: Partial<Record<ProviderId, string>>;
+  /** The provider rows this card renders, in order. */
+  providers: { provider: ProviderId; label: string }[];
+  /** Cached readiness only; a provider may be missing. */
+  provider_readiness: Partial<Record<ProviderId, ProviderReadiness>>;
+  compute_probes: { scheduler: ComputeBackendProbe | null; helper: ComputeBackendProbe | null };
+  /** One reach row per machine that reaches this one. */
+  reach: { from: string; probe: ComputeConnectionProbe | null }[];
 }
 
 export interface AutocompactProvider {
@@ -3442,6 +3455,11 @@ export interface SpaceMachineUpdateRequest {
   hidden_folders?: string[];
   provider_autocompact?: Record<string, string>;
   provider_shell_timeout?: Record<string, string>;
+  job_manager?: "slurm" | "none";
+  jobs_root?: string;
+  access_hint?: string;
+  /** An empty path removes that provider's path. */
+  provider_paths?: Partial<Record<ProviderId, string>>;
 }
 
 export interface MachineDirectoryRequest {
@@ -3497,17 +3515,6 @@ export interface ProjectSettingsRequest {
   default_auto_research_invocation_ceiling: number;
   agent_profiles: Record<AgentExecutionProfile, AgentProfileSettings>;
   skill_defaults: SkillDefaults;
-  machine_provider_paths?: Record<string, Record<ProviderId, string>>;
-  machine_compute?: Record<string, MachineComputeConfig | null>;
-  machine_access_hints?: Record<string, string>;
-}
-
-export interface ProviderPathResolution {
-  machine: string;
-  provider: ProviderId;
-  binary_path: string | null;
-  readiness: ProviderReadiness;
-  project: ProjectSnapshot;
 }
 
 export interface SetupCheck {
@@ -3587,6 +3594,7 @@ export interface ProjectArtifact {
   /** The owning branch, resolved by the server; null is main. */
   graph_branch_id: string | null;
   graph_branch_name: string;
+  graph_branch_archived: boolean;
   can_delete: boolean;
 }
 

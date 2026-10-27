@@ -15,7 +15,6 @@ from rcp.config import (
     Manifest,
     load_manifest,
     permissions_for,
-    write_machine_provider_paths,
 )
 from rcp.core.models import AuthorizedHuman, GraphBranchMetadata
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
@@ -428,28 +427,6 @@ def test_completed_provisioning_builds_one_secret_free_recovery_descriptor(
     assert "token" not in payload
 
 
-def test_completed_provisioning_allows_settings_owned_provider_path_updates(
-    tmp_path: Path,
-) -> None:
-    record, request = _completed_registration(tmp_path)
-    write_machine_provider_paths(
-        load_manifest(record.locator),
-        {"worker": {"claude": "/home/alice/.local/bin/claude"}},
-    )
-
-    registration = inspect_backup_project_registration(
-        record,
-        data_dir=tmp_path / "data",
-        provisioning_requests=[request],
-    )
-
-    machine = registration.recovery.configuration.machines[0]
-    assert machine.provider_paths == {
-        "claude": "/home/alice/.local/bin/claude",
-        "codex": "/usr/local/bin/codex",
-    }
-
-
 def test_archive_with_retired_compute_connections_keeps_its_digest_and_restores(
     tmp_path: Path,
 ) -> None:
@@ -503,8 +480,8 @@ def test_machine_access_hint_and_compute_survive_backup_and_restore(tmp_path: Pa
         tomlkit.parse(_render_restored_manifest(archived, paths)).unwrap()
     )
 
-    assert restored.machines[0].access_hint == "Use /scratch/shared"
-    assert restored.machines[0].compute == manifest.machines[0].compute
+    assert restored.machines[0].legacy_access_hint == "Use /scratch/shared"
+    assert restored.machines[0].legacy_compute == manifest.machines[0].legacy_compute
 
 
 def test_archive_without_machine_hints_keeps_its_bytes_and_restores(tmp_path: Path) -> None:
@@ -533,8 +510,8 @@ def test_archive_without_machine_hints_keeps_its_bytes_and_restores(tmp_path: Pa
 
     assert archived.sha256 == hashlib.sha256(encoded.encode("utf-8")).hexdigest()
     assert archived.matches_manifest(manifest)
-    assert restored.machines[0].access_hint == ""
-    assert restored.machines[0].compute is None
+    assert restored.machines[0].legacy_access_hint == ""
+    assert restored.machines[0].legacy_compute is None
 
 
 def test_legacy_backup_configuration_keeps_its_payload_and_digest(tmp_path: Path) -> None:

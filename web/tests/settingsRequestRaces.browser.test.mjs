@@ -32,11 +32,12 @@ async function openFixture(t, { query = "", configure = async () => undefined } 
   await page.route("**/api/projects/*/members", (route) => route.fulfill({ json: [] }));
   await configure(page);
   await page.goto(`${origin}/tests/fixtures/settingsRequestRaces.html${query}`);
-  // Machine cards start closed.
-  await page.locator('[data-machine-tile="local"]').click();
-  await page.getByLabel("Codex executable on local").waitFor();
+  await ceilingEditor(page).waitFor();
   return page;
 }
+
+// A form field each project restores with its own value.
+const ceilingEditor = (page) => page.locator(".agent-auto-research-default input");
 
 async function holdRequest(page, suffix) {
   const { promise, resolve } = Promise.withResolvers();
@@ -52,39 +53,22 @@ async function respond(page, route, options) {
   await page.evaluate(() => new Promise(requestAnimationFrame));
 }
 
-async function savedProject(page, path = "/alpha/saved-codex") {
-  return page.evaluate((binaryPath) => {
+async function savedProject(page, ceiling = 30) {
+  return page.evaluate((value) => {
     const project = window.settingsProject("alpha");
-    project.machines[0].provider_paths.codex = binaryPath;
+    project.default_auto_research_invocation_ceiling = value;
     return project;
-  }, path);
+  }, ceiling);
 }
 
 const operations = [
   {
     name: "Save",
     path: "settings",
-    prepare: (page, value) => page.getByLabel("Codex executable on local").fill(value),
+    prepare: (page, value) => ceilingEditor(page).fill(value),
     click: (page) => page.getByRole("button", { name: "Save", exact: true }).click(),
     pending: (page) => page.getByRole("button", { name: "Saving", exact: true }),
     result: (page) => savedProject(page),
-  },
-  {
-    name: "Resolve",
-    path: "machines/local/providers/codex/resolve",
-    prepare: async () => undefined,
-    click: (page) => page.getByRole("button", { name: "Resolve", exact: true }).click(),
-    pending: (page) => page.getByRole("button", { name: "Resolve", exact: true }),
-    result: async (page) => {
-      const project = await savedProject(page);
-      return {
-        project,
-        machine: "local",
-        provider: "codex",
-        binary_path: "/alpha/resolved-codex",
-        readiness: project.providers.codex,
-      };
-    },
   },
   {
     name: "Clear project cache",
@@ -106,29 +90,27 @@ for (const operation of operations) {
       test(`${operation.name} ${fails ? "failure" : "success"} is ignored after ${returns ? "A to B to A" : "A to B"}`, async (t) => {
         const page = await openFixture(t);
         const old = await holdRequest(page, operation.path);
-        await operation.prepare(page, "/alpha/first-edit");
+        await operation.prepare(page, "11");
         await operation.click(page);
         const oldRoute = await old.started;
 
         await page.getByRole("button", { name: "Open beta", exact: true }).click();
-        const editor = page.getByLabel("Codex executable on local");
+        const editor = ceilingEditor(page);
         await page.waitForFunction(
-          () =>
-            document.querySelector('[aria-label="Codex executable on local"]').value ===
-            "/beta/codex",
+          () => document.querySelector(".agent-auto-research-default input").value === "20",
         );
         assert.equal(await operation.pending(page).count(), operation.name === "Save" ? 0 : 1);
         if (operation.name !== "Save")
           assert.equal(await operation.pending(page).isDisabled(), false);
-        await editor.fill("/beta/unsaved-edit");
+        await editor.fill("21");
         let currentRoute;
         if (returns) {
           // An id-only fence would admit the old request after this return to A.
           await page.getByRole("button", { name: "Open alpha", exact: true }).click();
           await page.getByLabel("Current project").filter({ hasText: "alpha" }).waitFor();
-          await editor.fill("/alpha/new-visit-edit");
+          await editor.fill("12");
           const current = await holdRequest(page, operation.path);
-          await operation.prepare(page, "/alpha/new-visit-edit");
+          await operation.prepare(page, "12");
           await operation.click(page);
           currentRoute = await current.started;
         }
@@ -139,13 +121,10 @@ for (const operation of operations) {
             ? { status: 500, json: { detail: "Previous visit failed" } }
             : { json: await operation.result(page) },
         );
-        assert.equal(
-          await editor.inputValue(),
-          returns ? "/alpha/new-visit-edit" : "/beta/unsaved-edit",
-        );
+        assert.equal(await editor.inputValue(), returns ? "12" : "21");
         assert.doesNotMatch(
           await page.locator(".settings-save-status").textContent(),
-          /Previous visit failed|\bSaved|resolved|cleared/i,
+          /Previous visit failed|\bSaved|cleared/i,
         );
         assert.deepEqual(await page.evaluate(() => window.settingsPublications), []);
         if (currentRoute) {
@@ -221,7 +200,7 @@ test("project member responses and invite selections stay with their project", a
 
 test("a Save response cannot publish after Settings has closed", async (t) => {
   const page = await openFixture(t);
-  await page.getByLabel("Codex executable on local").fill("/alpha/sent-codex");
+  await ceilingEditor(page).fill("11");
   const deferred = await holdRequest(page, "settings");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   const route = await deferred.started;
@@ -229,38 +208,4 @@ test("a Save response cannot publish after Settings has closed", async (t) => {
   await page.locator(".settings-page").waitFor({ state: "detached" });
   await respond(page, route, { json: await savedProject(page) });
   assert.deepEqual(await page.evaluate(() => window.settingsPublications), []);
-});
-
-test("Save preserves provider edits typed while its response is pending", async (t) => {
-  const page = await openFixture(t);
-  const editor = page.getByLabel("Codex executable on local");
-  await editor.fill("/alpha/sent-codex");
-  const first = await holdRequest(page, "settings");
-  await page.getByRole("button", { name: "Save", exact: true }).click();
-  const firstRoute = await first.started;
-  await editor.fill("/alpha/newer-codex");
-  const saved = await savedProject(page, "/alpha/sent-codex");
-  await respond(page, firstRoute, { json: saved });
-  assert.equal(await editor.inputValue(), "/alpha/newer-codex");
-
-  const second = await holdRequest(page, "settings");
-  await page.getByRole("button", { name: "Save", exact: true }).click();
-  const secondRoute = await second.started;
-  const body = secondRoute.request().postDataJSON();
-  assert.equal(body.machine_provider_paths.local.codex, "/alpha/newer-codex");
-  saved.machines[0].provider_paths.codex = "/alpha/newer-codex";
-  await respond(page, secondRoute, { json: saved });
-  await page.getByText("Saved.", { exact: true }).waitFor();
-});
-
-test("Resolve preserves a provider path edited after the lookup started", async (t) => {
-  const page = await openFixture(t);
-  const deferred = await holdRequest(page, "machines/local/providers/codex/resolve");
-  await page.getByRole("button", { name: "Resolve", exact: true }).click();
-  const route = await deferred.started;
-  const editor = page.getByLabel("Codex executable on local");
-  await editor.fill("/alpha/human-choice");
-  await respond(page, route, { json: await operations[1].result(page) });
-  assert.equal(await editor.inputValue(), "/alpha/human-choice");
-  assert.equal(await page.getByRole("button", { name: "Save", exact: true }).isDisabled(), false);
 });

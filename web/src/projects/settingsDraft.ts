@@ -1,23 +1,11 @@
 import { memberDraftKey } from "../core/draftStorage.ts";
-import type {
-  AgentExecutionProfile,
-  AgentProfileSettings,
-  Machine,
-  MachineComputeConfig,
-  ProviderId,
-  SkillDefaults,
-} from "../core/types";
-
-export type MachineProviderPaths = Record<string, Record<ProviderId, string>>;
+import type { AgentExecutionProfile, AgentProfileSettings, SkillDefaults } from "../core/types";
 
 export interface SettingsDraft {
   version: 4;
   scope: string[];
   profiles: Partial<Record<AgentExecutionProfile, AgentProfileSettings>>;
   autoResearchInvocationCeiling?: number;
-  providerPaths?: MachineProviderPaths;
-  machineComputeEdits?: MachineComputeSettings;
-  accessHintEdits?: MachineAccessHints;
   skillDefaults?: SkillDefaults;
 }
 
@@ -38,27 +26,6 @@ export function mergeAgentProfiles(
  */
 export function settingsFingerprint(state: unknown): string {
   return JSON.stringify(withSortedKeys(state));
-}
-
-/**
- * Whether a save changes the backend compute probe cache key.
- *
- * Of that key's inputs, Settings edits only the set of machines selected by an
- * agent execution profile, so pointing one profile at a machine no other
- * profile uses invalidates the reachability matrix.
- */
-export function computeProbeConfigurationChanged(
-  savedExecutionMachines: readonly string[],
-  currentExecutionMachines: readonly string[],
-): boolean {
-  return (
-    settingsFingerprint(executionMachineSet(savedExecutionMachines)) !==
-    settingsFingerprint(executionMachineSet(currentExecutionMachines))
-  );
-}
-
-function executionMachineSet(machines: readonly string[]): string[] {
-  return [...new Set(machines)].sort();
 }
 
 function withSortedKeys(value: unknown): unknown {
@@ -92,23 +59,18 @@ export function deserializeSettingsDraft(value: string | null): SettingsDraft | 
       return null;
     if (!isRecord(parsed.profiles)) return null;
     dropProfilesWithoutRuntime(parsed.profiles);
-    if (parsed.providerPaths !== undefined && !isMachineProviderPaths(parsed.providerPaths))
-      return null;
-    // Earlier drafts stored the entire map, including untouched machines. It cannot
-    // safely override newer saved configuration; retain only explicit edits.
-    delete parsed.machineCompute;
-    if (parsed.machineComputeEdits !== undefined) {
-      if (!isMachineComputeSettings(parsed.machineComputeEdits)) return null;
-      // A hint once staged inside compute edits; it moved to the machine.
-      for (const config of Object.values(parsed.machineComputeEdits))
-        if (config) delete config.access_hint;
-    }
-    if (parsed.accessHintEdits !== undefined && !isStringRecord(parsed.accessHintEdits))
-      return null;
     if (parsed.skillDefaults !== undefined && !isSkillDefaults(parsed.skillDefaults)) return null;
-    // v3 briefly persisted compute connections, a concept machines replaced.
-    // Drop it on read, regardless of shape.
-    delete parsed.computeConnections;
+    // Machine settings once staged here; the space machine card saves them
+    // directly now. v3 also briefly persisted compute connections. Drop all of
+    // them on read, regardless of shape.
+    for (const key of [
+      "providerPaths",
+      "machineCompute",
+      "machineComputeEdits",
+      "accessHintEdits",
+      "computeConnections",
+    ])
+      delete parsed[key];
 
     if (parsed.version === 4) {
       if (parsed.campaignInvocationCeiling !== undefined) return null;
@@ -133,9 +95,6 @@ export function deserializeSettingsDraft(value: string | null): SettingsDraft | 
       ...(parsed.campaignInvocationCeiling === undefined
         ? {}
         : { autoResearchInvocationCeiling: parsed.campaignInvocationCeiling }),
-      ...(parsed.providerPaths === undefined
-        ? {}
-        : { providerPaths: parsed.providerPaths as MachineProviderPaths }),
       ...(parsed.skillDefaults === undefined
         ? {}
         : { skillDefaults: parsed.skillDefaults as SkillDefaults }),
@@ -164,46 +123,6 @@ function isInvocationCeiling(value: unknown): value is number | undefined {
   return value === undefined || (Number.isSafeInteger(value) && (value as number) >= 1);
 }
 
-export function machineProviderPathsFrom(machines: Machine[]): MachineProviderPaths {
-  return Object.fromEntries(
-    machines.map((machine) => [machine.alias, { ...machine.provider_paths }]),
-  );
-}
-
-export function machineProviderPathUpdates(
-  saved: MachineProviderPaths,
-  current: MachineProviderPaths,
-): MachineProviderPaths | undefined {
-  const updates: MachineProviderPaths = {};
-  for (const [machine, providers] of Object.entries(current)) {
-    for (const [provider, path] of Object.entries(providers)) {
-      if (saved[machine]?.[provider] === path) continue;
-      (updates[machine] ??= {})[provider] = path;
-    }
-  }
-  return Object.keys(updates).length ? updates : undefined;
-}
-
-export function mergeMachineProviderPaths(
-  saved: MachineProviderPaths,
-  staged: MachineProviderPaths | undefined,
-): MachineProviderPaths {
-  if (!staged) return saved;
-  const merged: MachineProviderPaths = {};
-  for (const machine of new Set([...Object.keys(saved), ...Object.keys(staged)])) {
-    merged[machine] = { ...saved[machine], ...staged[machine] };
-  }
-  return merged;
-}
-
-function isMachineProviderPaths(value: unknown): value is MachineProviderPaths {
-  if (!isRecord(value)) return false;
-  return Object.values(value).every(
-    (providers) =>
-      isRecord(providers) && Object.values(providers).every((path) => typeof path === "string"),
-  );
-}
-
 function isSkillDefaults(value: unknown): value is SkillDefaults {
   if (!isRecord(value)) return false;
   return (
@@ -214,62 +133,6 @@ function isSkillDefaults(value: unknown): value is SkillDefaults {
   );
 }
 
-function isStringRecord(value: unknown): value is Record<string, string> {
-  return isRecord(value) && Object.values(value).every((item) => typeof item === "string");
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-export type MachineComputeSettings = Record<string, MachineComputeConfig | null>;
-
-export function machineComputeFrom(machines: Machine[]): MachineComputeSettings {
-  return Object.fromEntries(machines.map((machine) => [machine.alias, machine.compute ?? null]));
-}
-
-export type MachineAccessHints = Record<string, string>;
-
-export function machineAccessHintsFrom(machines: Machine[]): MachineAccessHints {
-  return Object.fromEntries(machines.map((machine) => [machine.alias, machine.access_hint]));
-}
-
-export function machineAccessHintUpdates(
-  saved: MachineAccessHints,
-  current: MachineAccessHints,
-): MachineAccessHints | undefined {
-  const updates = Object.fromEntries(
-    Object.entries(current).filter(([alias, hint]) => saved[alias] !== hint),
-  );
-  return Object.keys(updates).length ? updates : undefined;
-}
-
-export function machineComputeUpdates(
-  saved: MachineComputeSettings,
-  current: MachineComputeSettings,
-): MachineComputeSettings | undefined {
-  const updates = Object.fromEntries(
-    Object.entries(current).filter(
-      ([alias, config]) =>
-        settingsFingerprint(saved[alias] ?? null) !== settingsFingerprint(config),
-    ),
-  );
-  return Object.keys(updates).length ? updates : undefined;
-}
-
-function isMachineComputeSettings(
-  value: unknown,
-): value is Record<string, (MachineComputeConfig & { access_hint?: string }) | null> {
-  if (!isRecord(value)) return false;
-  return Object.values(value).every(
-    (config) =>
-      config === null ||
-      (isRecord(config) &&
-        (config.job_manager === null || config.job_manager === "slurm") &&
-        typeof config.jobs_root === "string" &&
-        (config.access_hint === undefined || typeof config.access_hint === "string") &&
-        Object.keys(config).every(
-          (key) => key === "job_manager" || key === "jobs_root" || key === "access_hint",
-        )),
-  );
 }

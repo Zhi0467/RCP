@@ -14,9 +14,10 @@ from types import ModuleType
 import pytest
 from fastapi.testclient import TestClient
 
+from rcp.agents import ProviderReadiness
 from rcp.browser import BrowserReadiness
 from rcp.config import load_manifest
-from rcp.projects import fill_space_machines
+from rcp.projects import fill_space_machines, record_space_machines
 from tests.helpers import create_named_app, signed_in_client
 from tests.storage_helpers import downgrade_resource_watermarks
 from tests.test_project_membership import _create_project, _team_app
@@ -531,12 +532,21 @@ def test_machine_card_column_upgrades_preserve_existing_card(app) -> None:
         connection.execute("ALTER TABLE space_machines DROP COLUMN hidden_folders_json")
         connection.execute("ALTER TABLE space_machines DROP COLUMN provider_autocompact_json")
         connection.execute("ALTER TABLE space_machines DROP COLUMN provider_shell_timeout_json")
+        for column in (
+            "job_manager",
+            "jobs_root",
+            "access_hint",
+            "provider_paths_json",
+            "legacy_settings_pending",
+        ):
+            connection.execute(f"ALTER TABLE space_machines DROP COLUMN {column}")
         connection.execute(
-            "DELETE FROM storage_schema_migrations WHERE migration_name IN (?, ?, ?)",
+            "DELETE FROM storage_schema_migrations WHERE migration_name IN (?, ?, ?, ?)",
             (
                 "machine_hidden_folders_v1",
                 "machine_provider_autocompact_v1",
                 "machine_provider_shell_timeout_v1",
+                "machine_settings_v1",
             ),
         )
     upgraded = AppStore(store.path)
@@ -545,6 +555,9 @@ def test_machine_card_column_upgrades_preserve_existing_card(app) -> None:
     assert card.hidden_folders == []
     assert card.provider_autocompact == {}
     assert card.provider_shell_timeout == {}
+    # An existing card has not decided Slurm and may still have manifest settings.
+    assert card.job_manager is None
+    assert card.legacy_settings_pending
     upgraded.update_space_machine(
         machine.machine_id,
         hidden_folders=["/private"],
@@ -622,3 +635,110 @@ def test_local_wrapper_readiness_cache_expires(monkeypatch):
     clock[0] += HIDDEN_READ_READINESS_TTL_SECONDS
     assert hidden_read.cached_hidden_read_readiness().status == "unhidden"
     assert len(calls) == 2
+
+
+def test_older_manifest_machine_settings_move_onto_the_card_once(manifest, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import tomlkit
+
+    from rcp.storage import AppStore
+
+    store = AppStore(tmp_path / "cards.sqlite3")
+    projects = []
+    for name, settings in (
+        ("a", {"access_hint": "Use /scratch", "provider_paths": {"codex": "/a/codex"}}),
+        (
+            "b",
+            {
+                "access_hint": "Other hint",
+                "provider_paths": {"codex": "/b/codex", "claude": "/b/claude"},
+                "compute": {"job_manager": "slurm", "jobs_root": "/jobs"},
+            },
+        ),
+    ):
+        document = tomlkit.parse(manifest.path.read_text())
+        document["machines"].append({"alias": "gpu", "host": "gpu.example", **settings})
+        path = tmp_path / f"{name}.toml"
+        path.write_text(tomlkit.dumps(document))
+        projects.append(SimpleNamespace(project_id=name, locator=str(path)))
+    monkeypatch.setattr(store, "projects", lambda: projects)
+
+    # Startup registers the default project before the sweep; that read alone
+    # must not settle a card another project shares.
+    record_space_machines(store, load_manifest(projects[0].locator))
+    assert store.space_machine_for("gpu.example").legacy_settings_pending
+    # While any project's manifest cannot be read, no card settles.
+    unreadable = SimpleNamespace(project_id="c", locator=str(tmp_path / "missing.toml"))
+    monkeypatch.setattr(store, "projects", lambda: [*projects, unreadable])
+    fill_space_machines(store)
+    assert store.space_machine_for("gpu.example").legacy_settings_pending
+    monkeypatch.setattr(store, "projects", lambda: projects)
+    fill_space_machines(store)
+
+    card = store.space_machine_for("gpu.example")
+    assert card is not None and not card.legacy_settings_pending
+    assert (card.job_manager, card.jobs_root, card.access_hint) == (
+        "slurm",
+        "/jobs",
+        "Use /scratch",
+    )
+    assert card.provider_paths == {"codex": "/a/codex", "claude": "/b/claude"}
+    # The card owns them now: a cleared field stays cleared on the next start.
+    store.update_space_machine(card.machine_id, access_hint="")
+    fill_space_machines(store)
+    assert store.space_machine_for("gpu.example").access_hint == ""
+
+
+def test_card_provider_paths_merge_and_a_bad_edit_changes_nothing(app) -> None:
+    client = signed_in_client(app)
+    local = next(
+        item for item in client.get("/api/space/machines").json()["machines"] if not item["host"]
+    )
+    path = f"/api/space/machines/{local['machine_id']}"
+    with _store(app).connection() as connection:
+        connection.execute("UPDATE space_machines SET legacy_settings_pending = 1")
+
+    first = client.patch(path, json={"provider_paths": {"codex": "/opt/agents/codex"}})
+    second = client.patch(path, json={"provider_paths": {"claude": "/opt/agents/claude"}})
+    relative = client.patch(
+        path, json={"provider_paths": {"codex": "relative/codex"}, "access_hint": "Use /a"}
+    )
+    credential = client.patch(path, json={"access_hint": "password=hunter2"})
+
+    assert first.status_code == second.status_code == 200
+    assert relative.status_code == credential.status_code == 422
+    card = _store(app).space_machine(local["machine_id"])
+    assert card.provider_paths == {"codex": "/opt/agents/codex", "claude": "/opt/agents/claude"}
+    assert card.access_hint == ""
+    # The human's edit owns the card; no later start refills it from a manifest.
+    assert not card.legacy_settings_pending
+
+
+def test_provider_resolve_records_the_discovered_executable_on_the_card(app) -> None:
+    client = signed_in_client(app)
+    local = next(
+        item for item in client.get("/api/space/machines").json()["machines"] if not item["host"]
+    )
+    calls: list[str | None] = []
+
+    def readiness(provider, *, host="", binary=None, refresh=False):
+        assert (provider, host, refresh) == ("codex", "", True)
+        calls.append(binary)
+        return ProviderReadiness(
+            provider=provider,
+            installed=True,
+            authenticated=True,
+            binary_path=binary or "/opt/new-agent/codex",
+            path_state="resolved" if binary else "unconfigured",
+        )
+
+    app.state.catalog.launcher.readiness = readiness
+    response = client.post(
+        f"/api/space/machines/{local['machine_id']}/providers/codex/resolve", json={}
+    )
+
+    assert response.status_code == 200, response.text
+    assert calls == [None, "/opt/new-agent/codex"]
+    assert response.json()["provider_paths"] == {"codex": "/opt/new-agent/codex"}
+    assert _store(app).provider_binary("codex", "") == "/opt/new-agent/codex"

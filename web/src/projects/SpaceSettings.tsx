@@ -122,7 +122,6 @@ function SpaceMachineList({
             hostLabel={machineHostLabel(machine.host, spaceKind)}
             osAccount={machine.os_account}
             record={machine}
-            level="space"
             writesDisabled={writesDisabled}
             onRecordChange={replace}
             onDelete={
@@ -133,13 +132,7 @@ function SpaceMachineList({
                   }
                 : undefined
             }
-          >
-            {machine.projects.length > 0 && (
-              <p className="machine-card-projects">
-                {[...new Set(machine.projects.map((project) => project.project_name))].join(", ")}
-              </p>
-            )}
-          </MachineCard>
+          />
         ))}
       </div>
       {adding ? (

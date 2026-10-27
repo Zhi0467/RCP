@@ -23,7 +23,8 @@ from rcp.compute_jobs.files import (
 from rcp.compute_jobs.job_managers import JOB_MANAGERS
 from rcp.compute_jobs.models import ComputeBackendProbe, ComputeLaunchRequest
 from rcp.compute_jobs.routes import ComputeRoute
-from rcp.config import MachineConfig, Manifest
+from rcp.compute_jobs.scheduler_readiness import SLURM_TOOLS_CHECK, SLURM_TOOLS_MISSING_EXIT
+from rcp.config import MachineComputeConfig, Manifest
 from rcp.limits import (
     COMPUTE_JOB_POLL_INTERVAL_SECONDS,
     COMPUTE_PROBE_JOB_SECONDS,
@@ -172,20 +173,24 @@ def probe_compute_backend(
     runner=subprocess.run,
     *,
     data_dir: Path,
+    compute: MachineComputeConfig | None = None,
 ) -> ComputeBackendProbe:
-    """Exercise the actual owner, wrapper, liveness, exit file, and job log."""
+    """Exercise the actual owner, wrapper, liveness, exit file, and job log.
+
+    `compute` is the machine card's setting (`AppStore.machine_compute`).
+    """
     if route not in {"scheduler", "helper"}:
         raise ValueError("Unknown compute route")
     backend_id = ""
     try:
         machine = manifest.machine_map[machine_alias]
         if route == "scheduler":
-            manager = JOB_MANAGERS.get(machine.compute.job_manager) if machine.compute else None
+            manager = JOB_MANAGERS.get(compute.job_manager or "") if compute else None
             if manager is None:
                 return _result(machine_alias, "", "unavailable", "No job manager is configured.")
             backend_id = manager.id
             return manager.probe(machine_alias, machine.host)
-        context, profile = resolve_context(manifest, machine_alias, runner)
+        context, profile = resolve_context(manifest, machine_alias, compute, runner)
         if profile is None:
             result = _result(
                 machine_alias,
@@ -239,11 +244,35 @@ def probe_compute_backend(
     return result
 
 
-def machine_compute_routes(machine: MachineConfig) -> tuple[ComputeRoute, ...]:
+def machine_compute_routes(compute: MachineComputeConfig | None) -> tuple[ComputeRoute, ...]:
     """The helper is always offered; a job manager adds the scheduler route."""
-    if machine.compute and machine.compute.job_manager:
+    if compute and compute.job_manager:
         return ("scheduler", "helper")
     return ("helper",)
+
+
+def detect_slurm(host: str) -> bool | None:
+    """Whether the machine account has Slurm; None when the machine could not answer."""
+    from rcp.watchers import WatchSpec, run_watcher_check
+
+    result = run_watcher_check(
+        WatchSpec(check_command=SLURM_TOOLS_CHECK, log_path="/dev/null", cwd="/"),
+        host,
+        COMPUTE_PROBE_TIMEOUT_SECONDS,
+    )
+    if result.state == "complete":
+        return True
+    return False if result.exit_code == SLURM_TOOLS_MISSING_EXIT else None
+
+
+def settle_job_manager(store: AppStore, host: str) -> None:
+    """Turn Slurm on for a card nobody decided, when the machine has it; off when it lacks it."""
+    card = store.space_machine_for(host)
+    if card is None or card.job_manager is not None:
+        return
+    found = detect_slurm(host)
+    if found is not None:
+        store.decide_job_manager(card.machine_id, "slurm" if found else "none")
 
 
 def refresh_compute_probes(
@@ -254,8 +283,17 @@ def refresh_compute_probes(
     data_dir: Path,
     machines: list[str] | None = None,
 ) -> None:
-    """Probe and record every route the machines offer, so nobody has to ask."""
+    """Probe and record every route the machines offer, so nobody has to ask.
+
+    A card whose job manager nobody chose yet turns Slurm on here when the
+    machine has it, and off when its tools are missing.
+    """
     for alias in manifest.machine_map if machines is None else machines:
-        for route in machine_compute_routes(manifest.machine_map[alias]):
-            probe = probe_compute_backend(manifest, alias, route, data_dir=data_dir)
+        host = manifest.machine_map[alias].host
+        settle_job_manager(store, host)
+        compute = store.machine_compute(host)
+        for route in machine_compute_routes(compute):
+            probe = probe_compute_backend(
+                manifest, alias, route, data_dir=data_dir, compute=compute
+            )
             store.record_compute_backend_probe(project_id, probe, route)

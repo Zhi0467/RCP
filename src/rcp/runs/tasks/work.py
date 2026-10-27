@@ -532,7 +532,7 @@ def _resolve_work_execution(
         compute_profiles=service.machine_prompt_profiles(profile.run_on),
         execution_machine_alias=execution_machine.alias,
         execution_host=execution_machine.host,
-        provider_binary=execution_machine.provider_paths.get(profile.provider),
+        provider_binary=service.launcher.provider_binary(profile.provider, execution_machine.host),
         ask_wait_seconds=ask_hold_seconds(shell_timeout),
         shell_timeout_seconds=shell_timeout,
     )
@@ -2779,7 +2779,7 @@ async def _stream_work_graph_repair(
         request = _pinned_to_profile(request, profile)
         execution_machine = service.manifest.machine_map[profile.run_on]
         execution_host = execution_machine.host
-        provider_binary = execution_machine.provider_paths.get(profile.provider)
+        provider_binary = service.launcher.provider_binary(profile.provider, execution_machine.host)
         context = service.assemble_chat(request)
         # A chat comment is an ordinary turn; only the viewer's edit runs without it.
         if not (

@@ -1,4 +1,8 @@
-"""Space machine cards: list, add, rename, grant writable paths, and browse folders."""
+"""Space machine cards: list, add, configure, check, and browse folders.
+
+A card is the one place a machine is configured; projects only name the cards
+they use (`rcp.api.project_state`).
+"""
 
 from __future__ import annotations
 
@@ -7,24 +11,35 @@ import os
 import shlex
 import threading
 from pathlib import Path, PurePosixPath
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from rcp.agents import AgentLauncher
 from rcp.agents.grant_paths import check_writable_path_text, refuse_grants_inside
 from rcp.agents.hidden_read import cached_hidden_read_readiness, hidden_read_defaults
 from rcp.agents.write_scope import rcp_owned_paths
 from rcp.api.dependencies import get_catalog, get_identity_access, get_store
 from rcp.api.identity import IdentityAccess
 from rcp.browser import BrowserReadiness, enable_linger, install_browser, readiness
-from rcp.config import MachineConfig, load_manifest
+from rcp.compute import probe_machine_reach
+from rcp.compute_jobs.probe import refresh_compute_probes, settle_job_manager
+from rcp.compute_jobs.routes import ComputeRoute
+from rcp.config import (
+    AGENT_EXECUTION_PROFILES,
+    MachineComputeConfig,
+    MachineConfig,
+    load_manifest,
+    validate_machine_access_hint,
+    validate_machine_provider_paths,
+)
 from rcp.core.models import MachineHiddenReadProjection
 from rcp.limits import HIDDEN_READ_PATH_MAX_COUNT
 from rcp.machine_login import MachineLoginFailure, login_account, trust_host_key
 from rcp.operator_commands import operator_route
 from rcp.projects import ProjectCatalog
-from rcp.providers import PROVIDER_IDS, profile_for
+from rcp.providers import PROVIDER_IDS, ProviderId, profile_for
 from rcp.rcp_home import command_socket_directory
 from rcp.setup import MachineBrowseFailure, browse_machine_directory, run_machine_directory_request
 from rcp.storage import AppStore
@@ -44,6 +59,11 @@ MACHINE_ATTACHMENT_LOCK = threading.Lock()
 
 #: Bounds one PATCH; a card holds a handful of grants, not a mount table.
 _MAX_WRITABLE_PATHS = 64
+
+#: The last reach check of each card, by data directory and card: run on demand,
+#: never on a read, because an unreachable SSH target can take its full timeout.
+_REACH: dict[tuple[str, str], list[dict[str, object]]] = {}
+_REACH_LOCK = threading.Lock()
 
 
 def _one_line(value: str, *, label: str, maximum: int) -> str:
@@ -90,6 +110,23 @@ class UpdateSpaceMachineRequest(BaseModel):
     provider_shell_timeout: dict[str, Annotated[str, Field(max_length=16)]] | None = Field(
         default=None, max_length=len(PROVIDER_IDS)
     )
+    job_manager: Literal["slurm", "none"] | None = None
+    jobs_root: str | None = Field(default=None, max_length=1024)
+    access_hint: str | None = Field(default=None, max_length=512)
+    #: The providers to change; an empty value forgets that provider's executable.
+    provider_paths: dict[ProviderId, Annotated[str, Field(max_length=1024)]] | None = None
+
+    @field_validator("jobs_root")
+    @classmethod
+    def validate_jobs_root(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return MachineComputeConfig(jobs_root=value.strip()).jobs_root
+
+    @field_validator("access_hint")
+    @classmethod
+    def validate_access_hint(cls, value: str | None) -> str | None:
+        return None if value is None else validate_machine_access_hint(value)
 
     @field_validator("provider_shell_timeout")
     @classmethod
@@ -146,10 +183,12 @@ class MachineDirectoriesRequest(BaseModel):
 
 def _machine_usage(
     store: AppStore,
-) -> tuple[dict[str, list[dict[str, str]]], bool]:
-    """Which registered projects name each machine account, and whether every manifest read."""
+) -> tuple[dict[str, list[dict[str, str]]], bool, set[str]]:
+    """Which registered projects name each machine account, whether every manifest
+    read, and the hosts any project's agents run on."""
 
     usage: dict[str, list[dict[str, str]]] = {}
+    agent_hosts: set[str] = set()
     complete = True
     for project in store.projects():
         try:
@@ -166,7 +205,11 @@ def _machine_usage(
                     "alias": machine.alias,
                 }
             )
-    return usage, complete
+        agent_hosts.update(
+            manifest.machine_map[manifest.agent_profile(profile).run_on].host
+            for profile in AGENT_EXECUTION_PROFILES
+        )
+    return usage, complete, agent_hosts
 
 
 def _hidden_read_projection(
@@ -204,14 +247,38 @@ def _hidden_read_projection(
     )
 
 
+def _compute_probes(
+    store: AppStore, projects: list[dict[str, str]]
+) -> dict[str, dict[str, object] | None]:
+    """The card's recorded route checks; every project on it shares the card's settings."""
+
+    result: dict[str, dict[str, object] | None] = {"scheduler": None, "helper": None}
+    routes: tuple[ComputeRoute, ...] = ("scheduler", "helper")
+    for route in routes:
+        for project in projects:
+            probe = store.compute_backend_probe(project["project_id"], project["alias"], route)
+            if probe is not None:
+                result[route] = probe.model_dump(mode="json")
+                break
+    return result
+
+
 def _machine_view(
     machine: SpaceMachineRecord,
     usage: dict[str, list[dict[str, str]]],
     complete: bool,
     visible: set[str],
-    data_dir: Path,
+    store: AppStore,
+    launcher: AgentLauncher | None,
 ) -> dict[str, object]:
     projects = usage.get(machine.host, [])
+    readiness = {
+        provider: launcher.cached_readiness(
+            provider, host=machine.host, binary=machine.provider_paths.get(provider)
+        )
+        for provider in PROVIDER_IDS
+        if launcher is not None
+    }
     return {
         "machine_id": machine.machine_id,
         "name": machine.name,
@@ -234,7 +301,22 @@ def _machine_view(
             }
             for profile in map(profile_for, PROVIDER_IDS)
         ],
-        "hidden_read": _hidden_read_projection(machine, data_dir).model_dump(mode="json"),
+        "job_manager": machine.job_manager,
+        "jobs_root": machine.jobs_root,
+        "access_hint": machine.access_hint,
+        "provider_paths": dict(machine.provider_paths),
+        "providers": [
+            {"provider": profile.id, "label": profile.label}
+            for profile in map(profile_for, PROVIDER_IDS)
+        ],
+        "provider_readiness": {
+            provider: value.model_dump(mode="json")
+            for provider, value in readiness.items()
+            if value is not None
+        },
+        "compute_probes": _compute_probes(store, projects),
+        "reach": _REACH.get((str(store.path), machine.machine_id), []),
+        "hidden_read": _hidden_read_projection(machine, store.path.parent).model_dump(mode="json"),
         # Use counts every project; only the viewer's own projects are named.
         "projects": [project for project in projects if project["project_id"] in visible],
         "in_use": True if projects else (False if complete else None),
@@ -242,9 +324,13 @@ def _machine_view(
 
 
 def _one_machine_view(
-    store: AppStore, machine: SpaceMachineRecord, visible: set[str]
+    store: AppStore,
+    machine: SpaceMachineRecord,
+    visible: set[str],
+    launcher: AgentLauncher | None = None,
 ) -> dict[str, object]:
-    return _machine_view(machine, *_machine_usage(store), visible, store.path.parent)
+    usage, complete, _ = _machine_usage(store)
+    return _machine_view(machine, usage, complete, visible, store, launcher)
 
 
 def _visible_project_ids(
@@ -417,12 +503,13 @@ def list_space_machines(
     *,
     identity_access: IdentityDependency,
     store: StoreDependency,
+    catalog: CatalogDependency,
 ) -> dict[str, object]:
     visible = _visible_project_ids(request, identity_access, store)
-    usage, complete = _machine_usage(store)
+    usage, complete, _ = _machine_usage(store)
     return {
         "machines": [
-            _machine_view(machine, usage, complete, visible, store.path.parent)
+            _machine_view(machine, usage, complete, visible, store, catalog.launcher)
             for machine in store.space_machines()
         ]
     }
@@ -536,6 +623,27 @@ def update_space_machine(
                     "message": str(exc),
                 },
             ) from exc
+    provider_paths = None
+    if body.provider_paths is not None:
+        try:
+            recorded = validate_machine_provider_paths(
+                {provider: path for provider, path in body.provider_paths.items() if path.strip()},
+                host=machine.host,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        provider_paths = {provider: recorded.get(provider) for provider in body.provider_paths}
+    compute_changed = (
+        body.job_manager is not None and body.job_manager != machine.job_manager
+    ) or (body.jobs_root is not None and body.jobs_root != machine.jobs_root)
+    usage, _, _ = _machine_usage(store)
+    if compute_changed:
+        # Fail closed: no project keeps a route check made under the old settings.
+        for project in usage.get(machine.host, []):
+            store.delete_compute_backend_probe(project["project_id"], project["alias"])
+    # A human edit makes the card the owner: no later start refills a field
+    # this edit cleared from an older manifest.
+    store.settle_legacy_machine_settings([machine.host])
     updated = store.update_space_machine(
         machine_id,
         name=body.name,
@@ -543,8 +651,113 @@ def update_space_machine(
         hidden_folders=hidden_folders,
         provider_autocompact=body.provider_autocompact,
         provider_shell_timeout=body.provider_shell_timeout,
+        job_manager=body.job_manager,
+        jobs_root=body.jobs_root,
+        access_hint=body.access_hint,
+        provider_paths=provider_paths,
     )
-    return _one_machine_view(store, updated, _visible_project_ids(request, identity_access, store))
+    for provider, path in (provider_paths or {}).items():
+        for binary in {machine.provider_paths.get(provider), path} - {None}:
+            catalog.launcher.invalidate_readiness(provider, host=machine.host, binary=binary)
+    if compute_changed:
+        # Checked now, so the card this returns already shows the new routes.
+        _refresh_machine_probes(store, catalog, updated)
+        updated = _machine_or_404(store, machine_id)
+    return _one_machine_view(
+        store, updated, _visible_project_ids(request, identity_access, store), catalog.launcher
+    )
+
+
+def _refresh_machine_probes(
+    store: AppStore, catalog: ProjectCatalog, machine: SpaceMachineRecord
+) -> None:
+    """Settle the card's job manager, then check its routes once for every project on it."""
+
+    settle_job_manager(store, machine.host)
+    usage, _, _ = _machine_usage(store)
+    for project in usage.get(machine.host, []):
+        record = store.project(project["project_id"])
+        if record is None:
+            continue
+        try:
+            refresh_compute_probes(
+                store,
+                load_manifest(record.locator),
+                record.project_id,
+                data_dir=catalog.data_dir,
+                machines=[project["alias"]],
+            )
+        except Exception as exc:
+            logger.warning("Could not check compute routes on %s: %s", machine.name, exc)
+
+
+@router.post("/api/space/machines/{machine_id}/compute/check")
+def check_space_machine_compute(
+    machine_id: str,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+    catalog: CatalogDependency,
+) -> dict[str, object]:
+    """Re-check the card's compute routes and its reach from every agent machine now."""
+
+    identity_access.acting_user(request)
+    machine = _machine_or_404(store, machine_id)
+    _refresh_machine_probes(store, catalog, machine)
+    _, _, agent_hosts = _machine_usage(store)
+    sources = [card for card in store.space_machines() if card.host in agent_hosts]
+    reach = [
+        {"from": source.name, "probe": probe.model_dump(mode="json")}
+        for source, probe in probe_machine_reach(machine, sources, space_kind=store.space_kind)
+    ]
+    with _REACH_LOCK:
+        _REACH[(str(store.path), machine_id)] = reach
+    return _one_machine_view(
+        store,
+        _machine_or_404(store, machine_id),
+        _visible_project_ids(request, identity_access, store),
+        catalog.launcher,
+    )
+
+
+@router.post("/api/space/machines/{machine_id}/providers/{provider}/resolve")
+def resolve_space_machine_provider(
+    machine_id: str,
+    provider: str,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+    catalog: CatalogDependency,
+) -> dict[str, object]:
+    """Find `provider` on the machine and record that executable on its card."""
+
+    identity_access.acting_user(request)
+    machine = _machine_or_404(store, machine_id)
+    try:
+        profile_for(provider)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="Unknown provider") from exc
+    launcher = catalog.launcher
+    discovered = launcher.readiness(provider, host=machine.host, refresh=True)
+    if discovered.path_state == "unreachable":
+        raise HTTPException(
+            status_code=422, detail=discovered.reason or f"{machine.name} is unreachable"
+        )
+    if not discovered.installed or not discovered.binary_path:
+        raise HTTPException(
+            status_code=422,
+            detail=discovered.reason or f"No {provider} executable was found on {machine.name}.",
+        )
+    store.settle_legacy_machine_settings([machine.host])
+    updated = store.update_space_machine(
+        machine_id, provider_paths={provider: discovered.binary_path}
+    )
+    launcher.readiness(provider, host=machine.host, binary=discovered.binary_path, refresh=True)
+    return _one_machine_view(
+        store, updated, _visible_project_ids(request, identity_access, store), launcher
+    )
 
 
 @router.delete("/api/space/machines/{machine_id}")

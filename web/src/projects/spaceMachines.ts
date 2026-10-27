@@ -156,6 +156,7 @@ export function createMachineWriteQueue(save: MachineSave) {
   };
   return {
     save: ((machineId, request) => queue(() => save(machineId, request))) as MachineSave,
-    remove: (run: () => Promise<void>) => queue(run),
+    /** Any other request whose answer must not cross a save, such as a delete. */
+    run: queue,
   };
 }

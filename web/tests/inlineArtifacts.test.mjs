@@ -88,6 +88,14 @@ test("a repeated reference label embeds its first definition, as it renders", ()
   );
 });
 
+test("a re-rendered reply resolves its embeds against the turn's current artifacts", () => {
+  const text = `![Breakout](${dir}/breakout.html)`;
+  // The same text renders on every keystroke while its turn's descriptors arrive.
+  assert.deepEqual([...inlineArtifactIds(text, "op-1", [])], []);
+  assert.deepEqual([...inlineArtifactIds(text, "op-1", named("breakout.html"))], ["breakout.html"]);
+  assert.deepEqual([...inlineArtifactIds(text, "op-2", named("breakout.html"))], []);
+});
+
 test("only artifacts the viewer shows render in place", () => {
   assert.equal(isInlineViewable(artifact("a.html", "html")), true);
   assert.equal(isInlineViewable(artifact("a.svg", "image")), true);

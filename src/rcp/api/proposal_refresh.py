@@ -100,7 +100,7 @@ def refresh_proposal(
             readiness = service.launcher.cached_readiness(
                 profile.provider,
                 host=machine.host,
-                binary=machine.provider_paths.get(profile.provider),
+                binary=service.launcher.provider_binary(profile.provider, machine.host),
             )
             efforts = next(
                 (

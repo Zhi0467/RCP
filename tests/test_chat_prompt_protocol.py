@@ -138,13 +138,12 @@ def _enable_graph_audit(service) -> None:
     )
 
 
-def _set_access_hint(service, alias: str, hint: str) -> None:
-    surfaces = ("seed", "refresh", "node_chat", "project_chat", "paper_coach")
-    service.history.update_agent_settings(
-        service.manifest.agent.default_run_truth_scope,
-        {surface: service.manifest.agent_profile(surface) for surface in surfaces},
-        machine_access_hints={alias: hint},
+def _set_access_hint(app, host: str, hint: str) -> None:
+    store = app.state.catalog.store
+    card = store.space_machine_for(host) or store.create_space_machine(
+        name=host, host=host, os_account="alice"
     )
+    store.update_space_machine(card.machine_id, access_hint=hint)
 
 
 @pytest.mark.asyncio
@@ -457,7 +456,7 @@ def test_fresh_chat_master_names_every_project_machine_and_ignores_client_select
     service = app.state.service
     append_fixture_patch(service, seed_patch())
     service.add_machine("gpu", "gpu.example", "alice")
-    _set_access_hint(service, "gpu", "Use /scratch/shared for temporary outputs")
+    _set_access_hint(app, "gpu.example", "Use /scratch/shared for temporary outputs")
     project_id = app.state.default_project_id
     chat_id = "3f3eea3f-0e1d-4c92-a1c2-71c877be342d"
     session_id = f"native-compute-{mode}"
@@ -536,7 +535,7 @@ def test_launch_states_the_machines_current_at_launch_not_at_admission(manifest,
     service = app.state.service
     append_fixture_patch(service, seed_patch())
     service.add_machine("gpu", "gpu.example", "alice")
-    _set_access_hint(service, "gpu", "Use /scratch/admitted")
+    _set_access_hint(app, "gpu.example", "Use /scratch/admitted")
     project_id = app.state.default_project_id
     launch_gate = threading.Event()
     launcher = _RecordingLauncher("admission-native-session")
@@ -565,7 +564,7 @@ def test_launch_states_the_machines_current_at_launch_not_at_admission(manifest,
     assert response.status_code == 202, response.text
     operation_id = response.json()["operation_id"]
 
-    _set_access_hint(service, "gpu", "Use /scratch/current")
+    _set_access_hint(app, "gpu.example", "Use /scratch/current")
     launch_gate.set()
     assert wait_for_task_response(client, project_id, operation_id)["status"] == "succeeded"
 
@@ -579,7 +578,7 @@ def test_resumed_chat_delivers_changed_machines_in_the_same_session(manifest, tm
     service = app.state.service
     append_fixture_patch(service, seed_patch())
     service.add_machine("gpu", "gpu.example", "alice")
-    _set_access_hint(service, "gpu", "Use /scratch/old")
+    _set_access_hint(app, "gpu.example", "Use /scratch/old")
     project_id = app.state.default_project_id
     chat_id = "943025d2-e23d-4a6c-a48e-6d16ded8d870"
     session_id = "native-compute-delta"
@@ -619,7 +618,7 @@ def test_resumed_chat_delivers_changed_machines_in_the_same_session(manifest, tm
     turn("Nothing changed.")
     assert "alice@gpu.example" not in launcher.prompts[1]
 
-    _set_access_hint(service, "gpu", "Use /scratch/new")
+    _set_access_hint(app, "gpu.example", "Use /scratch/new")
     turn("The hint changed.")
     assert "Use /scratch/new" in launcher.prompts[2]
 

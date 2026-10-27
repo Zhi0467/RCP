@@ -145,7 +145,12 @@ class WorkComputeCommands:
     @cached_property
     def helper_backend(self) -> ComputeBackendProfile | None:
         try:
-            _context, backend = resolve_context(self.manifest, self.write_scope.execution_machine)
+            machine = self.write_scope.execution_machine
+            _context, backend = resolve_context(
+                self.manifest,
+                machine,
+                self.execution.store.machine_compute(self.manifest.machine_map[machine].host),
+            )
         except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
             return None
         return backend
@@ -212,14 +217,19 @@ class WorkComputeCommands:
             raise ValueError("Compute cwd is a protected write path.")
         launch = launch.model_copy(update={"cwd": str(cwd)})
         machine = self.write_scope.execution_machine
-        probe = probe_compute_backend(self.manifest, machine, "helper", data_dir=self.data_dir)
+        compute = self.execution.store.machine_compute(self.manifest.machine_map[machine].host)
+        probe = probe_compute_backend(
+            self.manifest, machine, "helper", data_dir=self.data_dir, compute=compute
+        )
         self.execution.store.record_compute_backend_probe(
             self.write_scope.project_id, probe, "helper"
         )
         try:
             return self._launch(request, launch, probe)
         except ComputeProbeStaleError:
-            probe = probe_compute_backend(self.manifest, machine, "helper", data_dir=self.data_dir)
+            probe = probe_compute_backend(
+                self.manifest, machine, "helper", data_dir=self.data_dir, compute=compute
+            )
             self.execution.store.record_compute_backend_probe(
                 self.write_scope.project_id, probe, "helper"
             )
@@ -257,13 +267,11 @@ class WorkComputeCommands:
             probe=probe,
         )
         time.sleep(COMPUTE_JOB_STARTUP_CHECK_SECONDS)
-        job = refresh_compute_job(
-            self.execution.store, self.manifest, job.job_id, data_dir=self.data_dir
-        )
+        job = refresh_compute_job(self.execution.store, job.job_id, data_dir=self.data_dir)
         result = {
             "job_id": job.job_id,
             "watcher": helper_watch_spec(job),
-            "startup": helper_startup_state(self.manifest, job),
+            "startup": helper_startup_state(job),
         }
         return CommandResponse(request_id=request.request_id, status="ok", result=result)
 
@@ -295,7 +303,7 @@ class WorkComputeCommands:
                 or job.origin_operation_id not in operation_ids
             ):
                 continue
-            job = refresh_compute_job(store, self.manifest, job.job_id, data_dir=self.data_dir)
+            job = refresh_compute_job(store, job.job_id, data_dir=self.data_dir)
             watcher = helper_watch_spec(job)
             if job.status == "running" and watcher["check_command"] not in observed_check_commands:
                 unobserved.append(watcher)

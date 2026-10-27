@@ -288,6 +288,14 @@ def test_restore_accepts_artifact_storage_before_and_after_import_migration(
         connection.execute("ALTER TABLE space_machines DROP COLUMN hidden_folders_json")
         connection.execute("ALTER TABLE space_machines DROP COLUMN provider_autocompact_json")
         connection.execute("ALTER TABLE space_machines DROP COLUMN provider_shell_timeout_json")
+        for column in (
+            "job_manager",
+            "jobs_root",
+            "access_hint",
+            "provider_paths_json",
+            "legacy_settings_pending",
+        ):
+            connection.execute(f"ALTER TABLE space_machines DROP COLUMN {column}")
         for table in (
             "owner_credentials",
             "owner_sign_in_codes",

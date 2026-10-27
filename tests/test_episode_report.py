@@ -319,6 +319,7 @@ def _setup_report(
     return (
         SimpleNamespace(
             manifest=manifest,
+            launcher=SimpleNamespace(provider_binary=store.provider_binary),
             repository_ownership_inventory=lambda *, project_id: registered_repository_roots(
                 manifest,
                 project_id=project_id,

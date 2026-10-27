@@ -26,6 +26,7 @@ from pydantic import (
 from rcp.config import (
     DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING,
     AgentExecutionProfile,
+    MachineComputeConfig,
 )
 from rcp.core.authority import (
     AgentDispatchAuthority,
@@ -3806,8 +3807,28 @@ class SpaceMachineRecord(BaseModel):
     provider_shell_timeout: dict[str, Annotated[str, Field(min_length=1, max_length=16)]] = Field(
         default_factory=dict
     )
+    #: None until a human chooses or the compute probe decides; "none" is an
+    #: explicit "do not use Slurm" that no probe overrides.
+    job_manager: Literal["slurm", "none"] | None = None
+    jobs_root: str = ""
+    #: What every agent is told about this machine beside its route.
+    access_hint: str = ""
+    #: Provider id to the executable recorded on this machine.
+    provider_paths: dict[str, str] = Field(default_factory=dict)
+    #: Set while a project manifest may still hold this machine's settings.
+    legacy_settings_pending: bool = False
     created_at: str
     updated_at: str
+
+    def compute_config(self) -> MachineComputeConfig | None:
+        """The card's compute choice in the shape compute jobs read."""
+
+        if self.job_manager != "slurm" and not self.jobs_root:
+            return None
+        return MachineComputeConfig(
+            job_manager="slurm" if self.job_manager == "slurm" else None,
+            jobs_root=self.jobs_root,
+        )
 
     @field_validator("hidden_folders")
     @classmethod

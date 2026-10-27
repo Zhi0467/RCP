@@ -18,15 +18,14 @@ from typing import TYPE_CHECKING
 from rcp.config import (
     AgentExecutionProfile,
     AgentSurfaceConfig,
-    MachineComputeConfig,
     MachineConfig,
     Manifest,
     load_manifest,
     validate_project_scope_update,
     write_added_machine,
     write_agent_settings,
-    write_machine_provider_paths,
     write_project_scope,
+    write_removed_machine,
 )
 from rcp.core.authority import WriteAuthority, refused_authorizer
 from rcp.core.materialize import (
@@ -65,7 +64,6 @@ from rcp.limits import (
     PROJECT_TRANSFER_INVENTORY_MAX_ENTRIES,
     REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 )
-from rcp.providers import ProviderId
 from rcp.skill_registry import SkillDefaults
 from rcp.transport import (
     BatchPublishFailed,
@@ -1430,11 +1428,8 @@ class HistoryManager:
         self,
         default_run_truth_scope: list[str],
         profiles: dict[AgentExecutionProfile, AgentSurfaceConfig],
-        provider_path_updates: dict[str, dict[ProviderId, str]] | None = None,
         skill_defaults: SkillDefaults | None = None,
         default_auto_research_invocation_ceiling: int | None = None,
-        machine_compute: dict[str, MachineComputeConfig | None] | None = None,
-        machine_access_hints: dict[str, str] | None = None,
     ) -> Manifest:
         with self.workspace.transaction(), self._append_lock():
             self._reload_manifest()
@@ -1442,37 +1437,12 @@ class HistoryManager:
             self.require_writable(current.state)
             self._require_writable_home_locked(current)
             self._repair_materializations_locked()
-            unknown = {*(machine_compute or {}), *(machine_access_hints or {})} - (
-                self.manifest.machine_map.keys()
-            )
-            if unknown:
-                raise ValueError(f"compute configuration uses unknown machines: {sorted(unknown)}")
             self.manifest = write_agent_settings(
                 self.manifest,
                 default_run_truth_scope,
                 profiles,
-                provider_path_updates,
                 skill_defaults,
                 default_auto_research_invocation_ceiling,
-                machine_compute,
-                machine_access_hints,
-            )
-            self.workspace.publish([Path("manifest.toml")])
-        return self.manifest
-
-    def update_machine_provider_paths(
-        self,
-        provider_path_updates: dict[str, dict[ProviderId, str]],
-    ) -> Manifest:
-        with self.workspace.transaction(), self._append_lock():
-            self._reload_manifest()
-            current = self.materialize(write_outputs=False)
-            self.require_writable(current.state)
-            self._require_writable_home_locked(current)
-            self._repair_materializations_locked()
-            self.manifest = write_machine_provider_paths(
-                self.manifest,
-                provider_path_updates,
             )
             self.workspace.publish([Path("manifest.toml")])
         return self.manifest
@@ -1485,6 +1455,17 @@ class HistoryManager:
             self._require_writable_home_locked(current)
             self._repair_materializations_locked()
             self.manifest = write_added_machine(self.manifest, machine)
+            self.workspace.publish([Path("manifest.toml")])
+        return self.manifest
+
+    def remove_machine(self, alias: str) -> Manifest:
+        with self.workspace.transaction(), self._append_lock():
+            self._reload_manifest()
+            current = self.materialize(write_outputs=False)
+            self.require_writable(current.state)
+            self._require_writable_home_locked(current)
+            self._repair_materializations_locked()
+            self.manifest = write_removed_machine(self.manifest, alias)
             self.workspace.publish([Path("manifest.toml")])
         return self.manifest
 

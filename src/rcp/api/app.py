@@ -522,7 +522,13 @@ def create_app(
                     except (OSError, ValueError) as exc:
                         raise ServerControlError("operation_refused", str(exc)) from exc
                     probe = probe_compute_backend(
-                        manifest, request.machine_alias, request.compute_route, data_dir=app_data
+                        manifest,
+                        request.machine_alias,
+                        request.compute_route,
+                        data_dir=app_data,
+                        compute=store.machine_compute(
+                            manifest.machine_map[request.machine_alias].host
+                        ),
                     )
                     return ServerControlComputeProbeResult(
                         instance_id=identity.instance_id,
@@ -1497,7 +1503,7 @@ def create_app(
             if live_artifact_shutdown.is_set():
                 return
             with background_admission_gate.mutation("live artifact reconciliation"):
-                reconcile_compute_jobs(store, None, project_id=project_id, data_dir=app_data)
+                reconcile_compute_jobs(store, project_id=project_id, data_dir=app_data)
                 reconcile_artifact_live_snapshots(store, catalog, project_id)
 
     def drain_live_artifact_pass() -> None:
@@ -1896,6 +1902,9 @@ def create_app(
                 await asyncio.to_thread(deploy_key_agent.start)
                 await terminals.start()
                 sync_coordinator.start()
+                # Cards hold provider executables and compute settings; an older
+                # manifest's copy must reach them before recovery relaunches work.
+                await asyncio.to_thread(fill_space_machines, store)
                 background_tasks.recover_at_startup()
                 from rcp.runs.branch_merge_admission import recover_branch_merge_task
                 from rcp.runs.episodes.merge import reconcile_episode_merge
@@ -1935,8 +1944,6 @@ def create_app(
                     member_removal_coordinator.reconcile_pending()
                 background_tasks.accept_watcher_notifications()
                 store.prune_operational_storage()
-                # Registered projects' machines appear without opening each project.
-                await asyncio.to_thread(fill_space_machines, store)
                 await asyncio.to_thread(
                     reconcile_reserved_auto_research_roots,
                     background_tasks,

@@ -133,6 +133,7 @@ import {
   type StagedArtifactTarget,
   type StagedChatAnnotation,
 } from "./chatInput";
+import { createComposerDraft, useComposerDraft, type ComposerDraft } from "./composerDraft";
 import {
   chooseRecordingFormat,
   liveDictationSpan,
@@ -519,7 +520,7 @@ export function NodeChat({
     () => latestPersistedConversationMode(historyMessages, relatedTasks),
     [historyMessages, relatedTasks],
   );
-  const [message, setMessage] = useState(() => readStorage(draftKey) ?? "");
+  const [draft] = useState(() => createComposerDraft(readStorage(draftKey) ?? ""));
   const [annotations, setAnnotations] = useState<StagedChatAnnotation[]>(() =>
     readStagedChatAnnotations(annotationsKey),
   );
@@ -678,9 +679,9 @@ export function NodeChat({
     providerLabel: readiness?.label || config.provider,
     machine: config.run_on,
     inventory: project.provider_skill_inventories?.[config.run_on]?.[config.provider],
-    message,
+    getMessage: draft.get,
     onComplete: (next) => {
-      setMessage(next);
+      draft.set(next);
       setSubmitError(null);
       window.requestAnimationFrame(() => {
         textareaRef.current?.focus();
@@ -768,8 +769,10 @@ export function NodeChat({
   const annotationsComplete = stagedChatAnnotationsAreComplete(annotations);
   const dictating = dictationState !== "idle" && dictationState !== "error";
   const kept = useKeptSpeech(draftKey);
-  const messageRef = useRef(message);
-  messageRef.current = message;
+  // The chat re-renders when the draft becomes sendable or empty, not per keystroke.
+  const draftSendable = useComposerDraft(draft, (text) =>
+    Boolean(assembleChatTurn(text, annotations)),
+  );
   // macOS: the ring drains over the whole cap; the last 10 s also show the seconds.
   const dictationMsLeft =
     dictationState === "recording" && dictationDeadline !== null
@@ -822,9 +825,14 @@ export function NodeChat({
   }, [chatId, project.id]);
 
   useEffect(() => {
-    if (message) writeStorage(draftKey, message);
-    else removeStorage(draftKey);
-  }, [draftKey, message]);
+    const persist = () => {
+      const text = draft.get();
+      if (text) writeStorage(draftKey, text);
+      else removeStorage(draftKey);
+    };
+    persist();
+    return draft.subscribe(persist);
+  }, [draft, draftKey]);
 
   useEffect(() => {
     if (annotations.length) writeSessionStorage(annotationsKey, JSON.stringify(annotations));
@@ -933,7 +941,7 @@ export function NodeChat({
     void listenDesktopEvent<DictationResultEvent>("rcp://dictation-result", (payload) => {
       const span = liveDictationSpan(dictationSpanRef.current, payload.session_id);
       if (!span) return;
-      setMessage((current) => {
+      draft.set((current) => {
         const next = replaceTextSpan(current, span, payload.text);
         span.end = next.end;
         skills.readMessage(next.value);
@@ -1084,7 +1092,7 @@ export function NodeChat({
       writeStorage(modeKey, modeState.value);
       setModeState({ value: modeState.value, pinned: true });
     }
-    setMessage(next);
+    draft.set(next);
     skills.readMessage(next);
     setSubmitError(null);
   };
@@ -1119,7 +1127,7 @@ export function NodeChat({
         // Nothing may land in the draft any more; the session keeps it for Insert,
         // which continues here if the draft is unchanged by then.
         const span = dictationSpanRef.current;
-        network.resume = span ? { draft: messageRef.current, at: span.end } : null;
+        network.resume = span ? { draft: draft.get(), at: span.end } : null;
         dictationSpanRef.current = null;
         setDictationState("idle");
         network.session.detach();
@@ -1151,11 +1159,10 @@ export function NodeChat({
   /** Insert dictated text at `at`, joined with one space; returns the new end. */
   /** Insert kept text at `at`; returns where the rest of that speech continues. */
   const insertDictatedText = (at: number, text: string) => {
-    const current = messageRef.current;
+    const current = draft.get();
     const addition = joinDictatedText(current.slice(0, at), text);
     const next = replaceTextSpan(current, { start: at, end: at }, addition);
-    messageRef.current = next.value;
-    setMessage(next.value);
+    draft.set(next.value);
     skills.readMessage(next.value);
     window.requestAnimationFrame(() => textareaRef.current?.setSelectionRange(next.end, next.end));
     return { draft: next.value, at: next.end };
@@ -1167,7 +1174,7 @@ export function NodeChat({
     if (!span) return;
     // Read once: an updater may run twice, and must append once.
     const { end } = span;
-    setMessage((current) => {
+    draft.set((current) => {
       const addition = joinDictatedText(current.slice(0, end), text);
       const next = replaceTextSpan(current, { start: end, end }, addition);
       span.end = next.end;
@@ -1197,7 +1204,7 @@ export function NodeChat({
     addKeptSpeech(draftKey, {
       pieces,
       error,
-      resume: span ? { draft: messageRef.current, at: span.end } : (detachedResume ?? null),
+      resume: span ? { draft: draft.get(), at: span.end } : (detachedResume ?? null),
     });
     if (!span) return;
     dictationSpanRef.current = null;
@@ -1280,9 +1287,9 @@ export function NodeChat({
     const kept = keptSpeech(draftKey);
     if (!kept || readOnly || dictating) return;
     const at =
-      kept.resume && kept.resume.draft === message
+      kept.resume && kept.resume.draft === draft.get()
         ? kept.resume.at
-        : (textareaRef.current?.selectionStart ?? message.length);
+        : (textareaRef.current?.selectionStart ?? draft.get().length);
     // A span like dictation's: typing, sending, or leaving detaches it, and the
     // result is kept again instead of landing at a stale offset.
     const sessionId = crypto.randomUUID();
@@ -1345,7 +1352,7 @@ export function NodeChat({
     }
     if (!confirmDiscardKeptSpeech("dictate")) return;
     const textarea = textareaRef.current;
-    const start = textarea?.selectionStart ?? message.length;
+    const start = textarea?.selectionStart ?? draft.get().length;
     const sessionId = crypto.randomUUID();
     dictationSpanRef.current = { sessionId, start, end: start };
     if (!commentOnly) {
@@ -1536,10 +1543,11 @@ export function NodeChat({
     if (result.text === text && !insertPlainText) return false;
     setReferences(result.references);
     const input = textareaRef.current;
-    const start = input?.selectionStart ?? message.length;
+    const current = draft.get();
+    const start = input?.selectionStart ?? current.length;
     const end = input?.selectionEnd ?? start;
     if (dictating) stopDictation(true);
-    updateMessage(message.slice(0, start) + result.text + message.slice(end));
+    updateMessage(current.slice(0, start) + result.text + current.slice(end));
     requestAnimationFrame(() =>
       input?.setSelectionRange(start + result.text.length, start + result.text.length),
     );
@@ -1888,9 +1896,9 @@ export function NodeChat({
   };
 
   const steer = async (task: AgentTask) => {
-    const draftMessage = message;
+    const draftMessage = draft.get();
     const draftAnnotations = annotations;
-    const text = assembleChatTurn(message, annotations);
+    const text = assembleChatTurn(draftMessage, annotations);
     if (!annotationsComplete) {
       setAnnotationsOpen(true);
       setSubmitError("Each staged annotation needs a comment.");
@@ -1932,7 +1940,7 @@ export function NodeChat({
       // Typing and skill selection are fenced while the receipt is awaited, so
       // the delivered draft is exactly what is consumed. Artifact comments can
       // still arrive from another view meanwhile, and they survive.
-      setMessage((current) => (current === draftMessage ? "" : current));
+      draft.set((current) => (current === draftMessage ? "" : current));
       setAnnotations((current) => (current === draftAnnotations ? [] : current));
       setAnnotationsOpen(false);
       skills.reset();
@@ -1975,8 +1983,8 @@ export function NodeChat({
       );
       return;
     }
-    const draftMessage = message;
-    const text = assembleChatTurn(message, annotations);
+    const draftMessage = draft.get();
+    const text = assembleChatTurn(draftMessage, annotations);
     if (!annotationsComplete) {
       setAnnotationsOpen(true);
       setSubmitError("Each staged annotation needs a comment.");
@@ -1998,7 +2006,7 @@ export function NodeChat({
     if (dictating) stopDictation(true);
     // A new send is a new request; only Resend reuses a failed turn's key.
     const requestId = crypto.randomUUID();
-    setMessage("");
+    draft.set("");
     setAddMenuOpen(false);
     await submitTurn({
       clientId: `pending-${requestId}`,
@@ -2043,7 +2051,7 @@ export function NodeChat({
       setConfigOverride((current) => (current === turn.submittedOverride ? null : current));
       worktree.refresh();
       setPendingTurn((current) => (current?.clientId === turn.clientId ? null : current));
-      setMessage((current) => (current === turn.draft ? "" : current));
+      draft.set((current) => (current === turn.draft ? "" : current));
       skills.reset();
       setAttachments([]);
       setReferences([]);
@@ -2062,7 +2070,7 @@ export function NodeChat({
       if (error instanceof ApiError && error.code === "backend_instance_replaced") {
         if (!readStorage(draftKey)) writeStorage(draftKey, turn.draft);
         setPendingTurn((current) => (current?.clientId === turn.clientId ? null : current));
-        setMessage((current) => (current ? current : turn.draft));
+        draft.set((current) => (current ? current : turn.draft));
         return;
       }
       // The request may never have reached the server, so the turn stays where it
@@ -2081,7 +2089,7 @@ export function NodeChat({
       setPendingTurn((current) =>
         current?.clientId === turn.clientId ? { ...pending, error: reason } : current,
       );
-      setMessage((current) => (current ? current : turn.draft));
+      draft.set((current) => (current ? current : turn.draft));
     } finally {
       setSubmitting(false);
     }
@@ -3129,12 +3137,12 @@ export function NodeChat({
               if (files.length) void addFiles(files);
             }}
           />
-          <textarea
+          <ComposerTextarea
+            draft={draft}
             ref={textareaRef}
             aria-label="Message"
             aria-keyshortcuts="Shift+Tab"
             disabled={awaitingSteerReceipt}
-            value={message}
             onChange={(event) => {
               setSendAfterDictation(null);
               if (dictating) stopDictation(true);
@@ -3356,7 +3364,7 @@ export function NodeChat({
                 className="icon-button primary chat-send-button"
                 disabled={
                   // While dictating, Send finishes the dictation and sends its transcript.
-                  !(assembleChatTurn(message, annotations) || artifactContext || dictating) ||
+                  !(draftSendable || artifactContext || dictating) ||
                   !annotationsComplete ||
                   submitting ||
                   (steeringTask
@@ -3576,6 +3584,15 @@ export function NodeChat({
         : null}
     </div>
   );
+}
+
+/** The composer's text field: the only part of the chat a keystroke re-renders. */
+function ComposerTextarea({
+  draft,
+  ...props
+}: { draft: ComposerDraft } & Omit<React.ComponentProps<"textarea">, "value">) {
+  const value = useComposerDraft(draft);
+  return <textarea {...props} value={value} />;
 }
 
 function InlineTaskProgress({ task }: { task: AgentTask | null }) {

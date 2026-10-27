@@ -20,7 +20,8 @@ interface Options {
   providerLabel: string;
   machine: string;
   inventory?: ProviderSkillInventory | null;
-  message: string;
+  /** Read when a skill is chosen, so the composer need not re-render per keystroke. */
+  getMessage: () => string;
   onComplete: (message: string) => void;
 }
 
@@ -38,7 +39,7 @@ export function useSkillPicker({
   providerLabel,
   machine,
   inventory,
-  message,
+  getMessage,
   onComplete,
 }: Options) {
   const [selection, setSelection] = useState<SkillDefaults>(EMPTY_SKILL_SELECTION);
@@ -84,7 +85,7 @@ export function useSkillPicker({
   const readMessage = (next: string) => setQuery(readSkillTrigger(next));
 
   const choose = (entry: SkillPickerEntry) => {
-    onComplete(completeSkillTrigger(message, entry));
+    onComplete(completeSkillTrigger(getMessage(), entry));
     if (entry.source === "rcp") {
       setSelection((current) => addSkillSelection(current, entry));
     } else {

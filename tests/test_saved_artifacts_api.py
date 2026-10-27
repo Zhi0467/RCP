@@ -411,6 +411,16 @@ def test_saved_origins_use_exact_main_and_branch_chats_in_one_scan_per_target(
         None,
         branch.graph_target.branch_id,
     ]
+    assert not any(entry["graph_branch_archived"] for entry in entries.values())
+    app.state.background_tasks.store.set_branch_archived(
+        project_id, branch.graph_target.branch_id, archived=True
+    )
+    archived = {
+        entry["operation_id"]: entry["graph_branch_archived"]
+        for entry in client.get(f"/api/projects/{project_id}/artifacts").json()
+    }
+    assert archived[main_task.operation_id] is False
+    assert archived[branch_task.operation_id] is True
     for task in [main_task, branch_task]:
         url, params = _source_chat_url(project_id, entries[task.operation_id]["source_chat_href"])
         transcript = client.get(url, params=params)

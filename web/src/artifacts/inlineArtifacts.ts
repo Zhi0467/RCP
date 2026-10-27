@@ -22,6 +22,25 @@ export function inlineArtifactIds(
   taskId: string,
   artifacts: readonly AgentArtifactDescriptor[],
 ): Set<string> {
+  // By identity: two files of one name from different turn folders keep apart.
+  const ids = new Set<string>();
+  for (const source of embedSources(text)) {
+    const found = turnArtifactFor(source, taskId, (id) => (id === taskId ? artifacts : []));
+    if (found?.taskId === taskId && found.artifact) ids.add(found.artifact.artifact_id);
+  }
+  return ids;
+}
+
+// A chat re-renders every reply on each keystroke and refresh beat, and a full
+// parse per artifact card made typing in a long chat take seconds. A reply's
+// text never changes, so each text is parsed once.
+const EMBED_SOURCES_CACHE_SIZE = 1000;
+const embedSourcesByText = new Map<string, readonly string[]>();
+
+/** The image sources a reply renders, in order, with references resolved. */
+function embedSources(text: string): readonly string[] {
+  const cached = embedSourcesByText.get(text);
+  if (cached) return cached;
   const processor = unified().use(remarkParse);
   for (const plugin of ANSWER_SYNTAX_PLUGINS) processor.use(plugin);
   const tree = processor.parse(text);
@@ -45,13 +64,11 @@ export function inlineArtifactIds(
     const url = definitions.get(reference);
     if (url) sources.push(url);
   }
-  // By identity: two files of one name from different turn folders keep apart.
-  const ids = new Set<string>();
-  for (const source of sources) {
-    const found = turnArtifactFor(source, taskId, (id) => (id === taskId ? artifacts : []));
-    if (found?.taskId === taskId && found.artifact) ids.add(found.artifact.artifact_id);
+  if (embedSourcesByText.size >= EMBED_SOURCES_CACHE_SIZE) {
+    embedSourcesByText.delete(embedSourcesByText.keys().next().value as string);
   }
-  return ids;
+  embedSourcesByText.set(text, sources);
+  return sources;
 }
 
 /** Whether a turn's artifact can render in place: anything the viewer shows. */

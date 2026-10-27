@@ -120,13 +120,10 @@ def test_launch_receipt_refresh_and_log(launch_environment, tmp_path, manifest):
     assert json.loads((root / "command.json").read_text())["origin_operation_id"] == "turn"
     assert json.loads((root / "launch.json").read_text())["backend_handle"] == record.backend_handle
     assert (root / "log").read_text() == "hello world"
-    result = jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
+    result = jobs.refresh_compute_job(store, record.job_id, data_dir=tmp_path / "data")
     assert result.status == "exited" and result.exit_status == 0
     assert result.started_at and result.ended_at
-    assert (
-        jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
-        == result
-    )
+    assert jobs.refresh_compute_job(store, record.job_id, data_dir=tmp_path / "data") == result
 
 
 @pytest.mark.parametrize("cancelled", [False, True])
@@ -136,7 +133,7 @@ def test_reconcile_missing_exit(launch_environment, tmp_path, manifest, cancelle
     Path(record.exit_path).unlink()
     if cancelled:
         Path(record.job_root, "cancelled").write_text("1757000000")
-    reconcile_compute_jobs(store, manifest, project_id="project", data_dir=tmp_path / "data")
+    reconcile_compute_jobs(store, project_id="project", data_dir=tmp_path / "data")
     result = store.compute_job(record.job_id)
     assert result.status == ("cancelled" if cancelled else "lost")
     assert bool(result.diagnostic) is not cancelled
@@ -160,24 +157,21 @@ def test_gone_job_with_malformed_exit_stays_lost(launch_environment, tmp_path, m
     store, backend, launch = launch_environment
     record = launch()
     Path(record.exit_path).write_text(receipt)
-    result = jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
+    result = jobs.refresh_compute_job(store, record.job_id, data_dir=tmp_path / "data")
     assert result.status == "lost"
     assert result.exit_status is None
     assert result.ended_at
     assert "malformed exit receipt" in result.diagnostic
     assert record.exit_path in result.diagnostic
     backend.is_alive = True
-    assert (
-        jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
-        == result
-    )
+    assert jobs.refresh_compute_job(store, record.job_id, data_dir=tmp_path / "data") == result
 
 
 def test_unknown_backend_stays_running_even_with_exit(launch_environment, tmp_path, manifest):
     store, backend, launch = launch_environment
     record = launch()
     backend.unknown = True
-    reconcile_compute_jobs(store, manifest, project_id="project", data_dir=tmp_path / "data")
+    reconcile_compute_jobs(store, project_id="project", data_dir=tmp_path / "data")
     result = store.compute_job(record.job_id)
     assert result.status == "running"
     assert "could not determine" in result.diagnostic
@@ -189,24 +183,21 @@ def test_cancel_receipt_waits_for_owner_to_disappear(launch_environment, tmp_pat
     Path(record.exit_path).unlink()
     Path(record.job_root, "cancelled").write_text("1757000000")
     backend.is_alive = True
-    running = jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
+    running = jobs.refresh_compute_job(store, record.job_id, data_dir=tmp_path / "data")
     assert running.status == "running"
     assert running.ended_at is None
     backend.unknown = True
-    unknown = jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
+    unknown = jobs.refresh_compute_job(store, record.job_id, data_dir=tmp_path / "data")
     assert unknown.status == "running"
     assert unknown.diagnostic
     backend.unknown = False
     backend.is_alive = False
-    cancelled = jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
+    cancelled = jobs.refresh_compute_job(store, record.job_id, data_dir=tmp_path / "data")
     assert cancelled.status == "cancelled"
     assert cancelled.ended_at == jobs.epoch_timestamp("1757000000")
     assert cancelled.exit_status is None and cancelled.diagnostic is None
     Path(record.job_root, "cancelled").unlink()
-    assert (
-        jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
-        == cancelled
-    )
+    assert jobs.refresh_compute_job(store, record.job_id, data_dir=tmp_path / "data") == cancelled
 
 
 def test_launch_without_backend_names_machine_and_setup_action(
@@ -250,13 +241,10 @@ def test_changed_machine_refresh_uses_recorded_identity(
     launch_environment, tmp_path, manifest, monkeypatch, change, reconcile
 ):
     store, backend, launch = launch_environment
-    context, _ = jobs.resolve_context(manifest, "laptop")
-    context.execution_host = "recorded-host"
-    context.compute = MachineComputeConfig(jobs_root=str(tmp_path / "remote-jobs"))
-    context.containment = "mirrored"
-    machine = manifest.machine_map[context.execution_machine]
-    machine.host = context.execution_host
-    machine.compute = context.compute
+    machine = manifest.machine_map["laptop"]
+    machine.host = "recorded-host"
+    card = store.create_space_machine(name="recorded", host=machine.host, os_account="")
+    store.update_space_machine(card.machine_id, jobs_root=str(tmp_path / "remote-jobs"))
 
     def ssh_bridge(host, command):
         assert host == "recorded-host"
@@ -279,18 +267,16 @@ def test_changed_machine_refresh_uses_recorded_identity(
     monkeypatch.setattr(backend, "alive", alive)
     backend.is_alive = True
     if reconcile:
-        reconcile_compute_jobs(store, manifest, project_id="project", data_dir=tmp_path / "data")
+        reconcile_compute_jobs(store, project_id="project", data_dir=tmp_path / "data")
         result = store.compute_job(record.job_id)
     else:
-        result = jobs.refresh_compute_job(
-            store, manifest, record.job_id, data_dir=tmp_path / "data"
-        )
+        result = jobs.refresh_compute_job(store, record.job_id, data_dir=tmp_path / "data")
     assert result.status == "running"
     assert result.diagnostic is None
     backend.is_alive = False
     Path(record.exit_path).unlink()
     Path(record.job_root, "cancelled").write_text("1757000000")
-    result = jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
+    result = jobs.refresh_compute_job(store, record.job_id, data_dir=tmp_path / "data")
     assert result.status == "cancelled"
     assert len(observed) == 2
     for context in observed:
@@ -363,7 +349,7 @@ def test_gone_job_with_malformed_started_receipt_still_exits(
     record = launch()
     Path(record.job_root, "started").write_text("nope")
     Path(record.exit_path).write_text("0 1757000000")
-    result = jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
+    result = jobs.refresh_compute_job(store, record.job_id, data_dir=tmp_path / "data")
     assert result.status == "exited"
     assert result.exit_status == 0
 
@@ -382,7 +368,7 @@ def test_local_backend_oserror_is_not_a_host_outage(
         return False
 
     monkeypatch.setattr(backend, "alive", alive)
-    reconcile_compute_jobs(store, manifest, project_id="project", data_dir=tmp_path / "data")
+    reconcile_compute_jobs(store, project_id="project", data_dir=tmp_path / "data")
     assert len(calls) == 3
     statuses = sorted(store.compute_job(record.job_id).status for record in records)
     assert statuses == ["exited", "exited", "running"]
@@ -484,7 +470,6 @@ def test_shipped_file_operations_use_execution_machine(tmp_path, monkeypatch):
         resolve_jobs_root,
         write_job_file,
     )
-    from rcp.config import MachineComputeConfig
 
     calls = []
 
@@ -536,7 +521,7 @@ def test_reconcile_row_failure_does_not_skip_other_jobs(
 
     monkeypatch.setattr(backend, "alive", observe)
     assert store.running_compute_jobs()[0].job_id == bad.job_id
-    reconcile_compute_jobs(store, manifest, project_id="project", data_dir=tmp_path / "data")
+    reconcile_compute_jobs(store, project_id="project", data_dir=tmp_path / "data")
     bad = store.compute_job(bad.job_id)
     assert bad.status == "running"
     assert ("could not determine" if failure == "unknown" else failure) in bad.diagnostic
@@ -566,7 +551,7 @@ def test_reconcile_contacts_unreachable_host_once_per_pass(
         raise error
 
     monkeypatch.setattr(backend, "alive", unreachable)
-    reconcile_compute_jobs(store, manifest, project_id="project", data_dir=tmp_path / "data")
+    reconcile_compute_jobs(store, project_id="project", data_dir=tmp_path / "data")
     assert len(calls) == 1
     refreshed = [store.compute_job(record.job_id) for record in records]
     assert all(record.status == "running" for record in refreshed)
@@ -575,5 +560,5 @@ def test_reconcile_contacts_unreachable_host_once_per_pass(
 
     backend.is_alive = False
     monkeypatch.setattr(backend, "alive", lambda *_: False)
-    reconcile_compute_jobs(store, manifest, project_id="project", data_dir=tmp_path / "data")
+    reconcile_compute_jobs(store, project_id="project", data_dir=tmp_path / "data")
     assert all(store.compute_job(record.job_id).status == "exited" for record in records)

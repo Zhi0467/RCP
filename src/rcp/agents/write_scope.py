@@ -84,6 +84,11 @@ class ProjectWriteScope(BaseModel):
     # The subset of protected paths present only because a grant covers RCP's
     # own storage; kept apart so a pre-grant fingerprint can be derived.
     granted_protected_paths: list[str] = Field(default_factory=list)
+    # Protected paths with nothing behind them on the execution host when this
+    # launch resolved. A launch-time fact, not scope identity: it is in neither
+    # the fingerprint nor any serialized copy, so a retained scope contract stays
+    # identical across re-entries and across the release that added this field.
+    absent_protected_paths: list[str] = Field(default_factory=list, exclude=True)
     episode_worktree: EpisodeWorktreeFact | None = None
     fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
 
@@ -120,6 +125,10 @@ class ProjectWriteScope(BaseModel):
             raise ValueError("protected write paths must be sorted and unique")
         if any(not PurePosixPath(item).is_absolute() for item in self.protected_write_paths):
             raise ValueError("protected write paths must be absolute")
+        if self.absent_protected_paths != sorted(set(self.absent_protected_paths)):
+            raise ValueError("absent protected paths must be sorted and unique")
+        if not set(self.absent_protected_paths).issubset(self.protected_write_paths):
+            raise ValueError("absent protected paths must be protected write paths")
         expected = _scope_fingerprint(self._fingerprint_payload())
         if self.fingerprint != expected:
             raise ValueError("write-scope fingerprint does not match its canonical roots")
@@ -140,6 +149,7 @@ class ProjectWriteScope(BaseModel):
         git_metadata_roots: list[str] | None = None,
         granted_roots: list[str] | None = None,
         granted_protected_paths: list[str] | None = None,
+        absent_protected_paths: list[str] | None = None,
         episode_worktree: EpisodeWorktreeFact | None = None,
     ) -> ProjectWriteScope:
         payload: dict[str, object] = {
@@ -168,7 +178,11 @@ class ProjectWriteScope(BaseModel):
         if episode_worktree is not None:
             payload["episode_worktree"] = episode_worktree.model_dump(mode="json")
         return cls.model_validate(
-            {**payload, "fingerprint": _scope_fingerprint(_without_grants(payload))}
+            {
+                **payload,
+                "absent_protected_paths": sorted(set(absent_protected_paths or [])),
+                "fingerprint": _scope_fingerprint(_without_grants(payload)),
+            }
         )
 
     @property
@@ -191,7 +205,7 @@ class ProjectWriteScope(BaseModel):
     def _fingerprint_payload(self) -> dict[str, object]:
         # Retain every existing unbound scope fingerprint across this additive
         # field: only worktree scopes carry Git metadata outside their checkout.
-        excluded = {"fingerprint"}
+        excluded = {"fingerprint", "absent_protected_paths"}
         if not self.git_metadata_roots:
             excluded.add("git_metadata_roots")
         if self.episode_worktree is None:
@@ -463,6 +477,7 @@ def resolve_project_write_scope(
     )
     granted_protected = sorted(set(rcp_protected) - set(base_protected))
     protected = sorted({*base_protected, *granted_protected})
+    absent = _absent_paths(protected, remote_stage=remote_stage)
 
     return ProjectWriteScope.create(
         project_id=project_id,
@@ -476,6 +491,7 @@ def resolve_project_write_scope(
         granted_roots=granted,
         protected_write_paths=protected,
         granted_protected_paths=granted_protected,
+        absent_protected_paths=absent,
         episode_worktree=(
             EpisodeWorktreeFact(
                 repository_alias=binding.repository_alias,
@@ -665,6 +681,15 @@ def registered_repository_roots(
             item.path,
         ),
     )
+
+
+def _absent_paths(paths: list[str], *, remote_stage: RemoteRunStage | None) -> list[str]:
+    """The paths with nothing behind them, asked on the execution account."""
+    if remote_stage is not None:
+        return remote_stage.absent_paths(paths)
+    from rcp.agents.staged_hidden_read import absent_paths
+
+    return absent_paths(paths)
 
 
 def _canonical_directories(

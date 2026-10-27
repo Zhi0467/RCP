@@ -653,18 +653,8 @@ class ProjectSetupManager:
             for provider in PROVIDER_IDS
         }
 
-        provider_paths = {
-            host: {
-                provider: readiness.binary_path
-                for provider in PROVIDER_IDS
-                if (readiness := readiness_cache[(provider, host)]).installed
-                and readiness.binary_path
-            }
-            for host in machine_hosts
-        }
         manifest = render_manifest(
             request,
-            provider_paths,
             {host: self.machine_account(host) for host in machine_hosts if host},
         )
         selected_existing_action = request.existing_research_action
@@ -758,6 +748,20 @@ class ProjectSetupManager:
                 ),
                 seat_member=seat_member,
             )
+            # Preflight probed every machine; these readiness reads are cached.
+            self._record_provider_paths(
+                {
+                    machine.host: {
+                        provider: readiness.binary_path
+                        for provider in PROVIDER_IDS
+                        if (
+                            readiness := self.launcher.readiness(provider, host=machine.host)
+                        ).installed
+                        and readiness.binary_path
+                    }
+                    for machine in load_manifest(Path(locator)).machines
+                }
+            )
             # Creation is a write path: read canonical state, not the display
             # generation, which a new remote project does not have yet.
             snapshot = self.catalog.open(record.project_id).project_snapshot()
@@ -823,6 +827,7 @@ class ProjectSetupManager:
             project_id=request.proposed_project_id,
             seat_member=seat_member,
         )
+        self.record_prepared_provider_paths(request)
         # Registration is a write path; see `create`.
         snapshot = self.catalog.open(record.project_id).project_snapshot()
         self.catalog.update_summary(record.project_id, snapshot)
@@ -1198,6 +1203,33 @@ class ProjectSetupManager:
             ),
         )
 
+    def record_prepared_provider_paths(self, request: ProjectProvisioningRequestRecord) -> None:
+        """Fill the machine cards with the executables a reviewed request verified."""
+
+        machine_hosts = {machine.alias: machine.host for machine in request.machines}
+        self._record_provider_paths(
+            {
+                machine_hosts[alias]: paths
+                for alias, paths in prepared_provider_paths(request).items()
+            }
+        )
+
+    def _record_provider_paths(self, paths_by_host: dict[str, dict[str, str]]) -> None:
+        """Record the executables setup verified on each machine card that has none yet."""
+
+        store = self.catalog.store
+        for host, paths in paths_by_host.items():
+            card = store.space_machine_for(host)
+            if card is None:
+                continue
+            missing = {
+                provider: path
+                for provider, path in paths.items()
+                if provider not in card.provider_paths
+            }
+            if missing:
+                store.update_space_machine(card.machine_id, provider_paths=missing)
+
     def _write_bootstrap(self, canonical: SetupRepository, content: str) -> Path:
         digest = hashlib.sha256(f"{canonical.host}\0{canonical.path}".encode()).hexdigest()[:16]
         path = self.data_dir / "bootstrap-manifests" / f"{digest}.toml"
@@ -1208,8 +1240,10 @@ class ProjectSetupManager:
         return path
 
 
-def render_prepared_team_manifest(request: ProjectProvisioningRequestRecord) -> str:
-    """Render the exact reviewed paths and execution profiles of a ready request."""
+def prepared_provider_paths(
+    request: ProjectProvisioningRequestRecord,
+) -> dict[str, dict[str, str]]:
+    """Each machine alias's verified provider executables from a ready request."""
 
     if not request.configuration_complete:
         raise ValueError("the prepared project configuration is incomplete")
@@ -1251,7 +1285,18 @@ def render_prepared_team_manifest(request: ProjectProvisioningRequestRecord) -> 
                 f"{machine.alias}"
             )
         paths[check.provider] = check.binary_path
+    return provider_paths
 
+
+def render_prepared_team_manifest(request: ProjectProvisioningRequestRecord) -> str:
+    """Render the exact reviewed paths and execution profiles of a ready request.
+
+    The verified provider executables go to the machine cards, not the manifest
+    (`prepared_provider_paths`); rendering still checks their proofs.
+    """
+
+    prepared_provider_paths(request)
+    profile_map = {check.profile: check for check in request.provider_checks}
     document = tomlkit.document()
     assert request.name is not None
     assert request.state_repository is not None
@@ -1263,7 +1308,6 @@ def render_prepared_team_manifest(request: ProjectProvisioningRequestRecord) -> 
         machine.add("alias", item.alias)
         machine.add("host", item.host)
         machine.add("os_account", item.os_account)
-        _add_provider_paths(machine, provider_paths.get(item.alias, {}))
         machines.append(machine)
     document.add("machines", machines)
 
@@ -1326,7 +1370,6 @@ def render_prepared_team_manifest(request: ProjectProvisioningRequestRecord) -> 
 
 def render_manifest(
     request: ProjectSetupRequest,
-    provider_paths: dict[str, dict[str, str]] | None = None,
     host_accounts: dict[str, str] | None = None,
 ) -> str:
     assert request.agents is not None
@@ -1344,7 +1387,6 @@ def render_manifest(
         machine = tomlkit.table()
         machine.add("alias", "laptop")
         machine.add("host", "")
-        _add_provider_paths(machine, (provider_paths or {}).get("", {}))
         machines.append(machine)
     remote_hosts = sorted(
         {repository.host for repository in request.repositories if repository.location == "ssh"}
@@ -1358,7 +1400,6 @@ def render_manifest(
         if account := (host_accounts or {}).get(host, ""):
             # The wrong-account check needs it when the host does not name the user.
             machine.add("os_account", account)
-        _add_provider_paths(machine, (provider_paths or {}).get(host, {}))
         machines.append(machine)
     document.add("machines", machines)
 
@@ -1411,18 +1452,6 @@ def render_manifest(
     document.add("sources", sources)
 
     return tomlkit.dumps(document)
-
-
-def _add_provider_paths(machine: tomlkit.items.Table, paths: dict[str, str]) -> None:
-    if not paths:
-        return
-    provider_paths = tomlkit.inline_table()
-    for provider in PROVIDER_IDS:
-        path = paths.get(provider)
-        if path:
-            provider_paths.append(provider, path)
-    if provider_paths:
-        machine.add("provider_paths", provider_paths)
 
 
 def _canonical_location(repository: SetupRepository) -> str:

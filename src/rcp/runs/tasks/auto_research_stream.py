@@ -1136,7 +1136,7 @@ def _open_auto_research_actor_stage(
                 remote=remote,
                 workspace=Path(str(remote.workspace)),
                 execution_host=machine.host,
-                provider_binary=machine.provider_paths.get(request.provider),
+                provider_binary=service.launcher.provider_binary(request.provider, machine.host),
             )
         expected_local = _swept_stage_root(data_dir, store=execution.store) / stage_name
         saved = Path(turn.binding.stage_root)
@@ -1154,7 +1154,7 @@ def _open_auto_research_actor_stage(
             remote=None,
             workspace=saved,
             execution_host="",
-            provider_binary=machine.provider_paths.get(request.provider),
+            provider_binary=service.launcher.provider_binary(request.provider, machine.host),
         )
 
     if turn.binding.native_session_id is not None or (
@@ -1176,7 +1176,7 @@ def _open_auto_research_actor_stage(
             remote=remote,
             workspace=Path(str(remote.workspace)),
             execution_host=machine.host,
-            provider_binary=machine.provider_paths.get(request.provider),
+            provider_binary=service.launcher.provider_binary(request.provider, machine.host),
         )
     local = _swept_stage_root(data_dir, store=execution.store) / stage_name
     if os.path.lexists(local):
@@ -1190,7 +1190,7 @@ def _open_auto_research_actor_stage(
         remote=None,
         workspace=local,
         execution_host="",
-        provider_binary=machine.provider_paths.get(request.provider),
+        provider_binary=service.launcher.provider_binary(request.provider, machine.host),
     )
 
 

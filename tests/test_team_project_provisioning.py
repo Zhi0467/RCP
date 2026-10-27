@@ -1161,16 +1161,11 @@ def test_final_review_creates_exact_reserved_project_once(
     assert project.home_space_id == store.space_id
     manifest = load_manifest(repository_path / ".research" / "manifest.toml")
     assert manifest.name == "Reviewed team project"
-    assert [machine.model_dump() for machine in manifest.machines] == [
-        {
-            "alias": "server",
-            "host": "",
-            "os_account": "rcp",
-            "provider_paths": {"codex": "/usr/local/bin/codex"},
-            "compute": None,
-            "access_hint": "",
-        }
-    ]
+    assert [
+        machine.model_dump(include={"alias", "host", "os_account"}) for machine in manifest.machines
+    ] == [{"alias": "server", "host": "", "os_account": "rcp"}]
+    assert manifest.machines[0].legacy_provider_paths == {}
+    assert store.space_machine_for("").provider_paths == {"codex": "/usr/local/bin/codex"}
     assert manifest.repository_paths == {"paper": str(repository_path)}
     assert manifest.project.truth_scope == ["paper"]
     assert manifest.state.repository == "paper"

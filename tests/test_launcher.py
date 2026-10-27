@@ -22,6 +22,7 @@ from rcp.agents.command_protocol import CommandResponse, staged_command_broker_s
 from rcp.agents.launcher import REMOTE_PROVIDER_START_LINE
 from rcp.agents.staged_command_client import _broker_socket_path
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
+from rcp.core.models import HiddenReadScope, HiddenReadStatus
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
 from rcp.providers import PROVIDER_IDS, ProviderRuntimeStep, ProviderTurnRequest, profile_for
 from rcp.providers.codex.profile import CODEX_READ_DENY_PATHS, _codex_read_denials
@@ -1034,7 +1035,7 @@ def test_codex_work_uses_exact_project_permission_profile(
     assert (
         'permissions={rcp_project={workspace_roots={"/data/chat-stage"=true,'
         '"/project/repo-a"=true},filesystem={":root"="read",":workspace_roots"='
-        '{"."="write",".git"="write",".research"="read"},'
+        '{"."="write",".git"="write"},'
         '"/project/repo-a/.research"="read",' + _codex_read_denials() + "},network={enabled=true}}}"
     ) in command
     if session_id:
@@ -1076,10 +1077,56 @@ def test_codex_profile_keeps_staged_canonical_state_readable() -> None:
     # The staged pointer and the policy governing it, checked against each other.
     assert f"{state_repository}/.research" in scope.protected_write_paths
     assert '".git"="write"' in permission_profile
-    assert '".research"="read"' in permission_profile
     assert all(f'"{path}"="read"' in permission_profile for path in scope.protected_write_paths)
     # Only the desktop app's own storage is unreadable.
     assert permission_profile.count('"deny"') == len(CODEX_READ_DENY_PATHS)
+
+
+def test_codex_is_told_only_about_paths_that_exist() -> None:
+    """Codex's Linux sandbox makes a stand-in file for a missing path it must hide or
+    protect. A killed command leaves it behind, and every later sandbox fails to start."""
+    scope = ProjectWriteScope.create(
+        project_id="project-1",
+        execution_machine="local",
+        execution_host="",
+        capability="work_auto",
+        stage_root="/data/chat-stage",
+        workspace_root="/data/chat-stage",
+        repositories=[
+            WritableRepositoryRoot(alias=name, machine="local", path=f"/project/{name}")
+            for name in ("repo-a", "repo-b")
+        ],
+        protected_write_paths=["/project/repo-a/.research", "/project/repo-b/.research"],
+        absent_protected_paths=["/project/repo-b/.research"],
+    )
+    hidden = HiddenReadScope(
+        execution_machine="local",
+        execution_host="",
+        os_account="rcp",
+        hidden_files=("/home/rcp/.codex/auth.json", "/home/rcp/.config/rcp/claude-setup-token"),
+        hidden_globs=("/data/rcp.sqlite3*",),
+        absent_entries=("/home/rcp/.config/rcp/claude-setup-token",),
+        enforcement=HiddenReadStatus(status="enforced", reasons=()),
+    )
+    command = _command(
+        "codex",
+        "run the experiment",
+        cwd=Path("/data/chat-stage"),
+        write_dirs=[Path("/project/repo-a"), Path("/project/repo-b")],
+        write_scope=scope,
+        hidden_read_scope=hidden,
+        capability="work_auto",
+        provider_version="0.147.0",
+    )
+    profile = next(item for item in command if item.startswith("permissions={"))
+
+    assert '"/project/repo-a/.research"="read"' in profile
+    assert '"/home/rcp/.codex/auth.json"="deny"' in profile
+    assert '"/data/rcp.sqlite3*"="deny"' in profile
+    assert "/project/repo-b/.research" not in profile
+    assert "claude-setup-token" not in profile
+    # No relative rule either: it named `.research` inside every writable root.
+    assert '".research"' not in profile
 
 
 def test_codex_orchestrate_uses_only_its_resolved_project_roots() -> None:
@@ -1109,7 +1156,7 @@ def test_codex_orchestrate_uses_only_its_resolved_project_roots() -> None:
     assert '"/project/repo-b"=true' in permission_profile
     assert "/project/repo-a" not in permission_profile
     assert '":root"="read"' in permission_profile
-    assert '".research"="read"' in permission_profile
+    assert '"/project/repo-b/.research"="read"' in permission_profile
     assert "network={enabled=true}" in permission_profile
     assert command[-1] == "-"
 

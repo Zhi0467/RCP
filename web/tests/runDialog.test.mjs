@@ -26,9 +26,7 @@ const { ProposalJudgmentSection } = await server.ssrLoadModule("/src/graph/Atten
 const { DetailDrawer } = await server.ssrLoadModule("/src/graph/DetailDrawer.tsx");
 const { shouldStartWindowDrag } = await server.ssrLoadModule("/src/ui/DraggableWindow.tsx");
 const { NodeChat } = await server.ssrLoadModule("/src/chat/NodeChat.tsx");
-const { providerPathPresentation } = await server.ssrLoadModule(
-  "/src/projects/ProjectSettings.tsx",
-);
+const { providerPathPresentation } = await server.ssrLoadModule("/src/projects/providerPaths.ts");
 const { ChatsWorkspace } = await server.ssrLoadModule("/src/chat/ChatsWorkspace.tsx");
 
 after(() => server.close());

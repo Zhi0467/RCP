@@ -224,7 +224,11 @@ async def stream_artifact_edit_run(
             remote_stage=remote,
             capability="discuss",
             outcome=outcome,
-            binary=machine.provider_paths.get(request.provider),
+            binary=(
+                service.launcher.provider_binary(request.provider, machine.host)
+                if request.provider
+                else None
+            ),
             required_session_id=request.session_id,
         )
     ) as stream:

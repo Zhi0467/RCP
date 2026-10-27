@@ -575,8 +575,8 @@ function settingsProject() {
       {
         alias: "local",
         host: "",
-        provider_paths: { codex: "codex" },
         compute_probes: { scheduler: null, helper: null },
+        removable: false,
       },
     ],
     agent_profiles: {

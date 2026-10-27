@@ -18,7 +18,6 @@ from rcp.agents.provider_accounts import (
     ProviderAccounts,
 )
 from rcp.agents.provider_environment import ProviderProcessEnvironment
-from rcp.config import load_manifest
 from rcp.limits import (
     PROVIDER_LOGIN_VERIFY_TIMEOUT_SECONDS,
     PROVIDER_SIGN_IN_CANCEL_GRACE_SECONDS,
@@ -74,39 +73,6 @@ class ProviderSignInStatus(BaseModel):
     started_by: str
     finished_at: str | None = None
     resumed: dict[str, int] | None = None
-
-
-class ProviderPathSource(BaseModel):
-    """Which project's saved provider path sign-in uses on one account."""
-
-    model_config = ConfigDict(extra="forbid")
-    path: str
-    project_id: str
-    project_name: str
-    machine_alias: str
-
-
-def provider_path_sources(store: AppStore) -> dict[tuple[str, str], list[ProviderPathSource]]:
-    """Every saved provider path by `(provider, host)`, in registered-project order."""
-
-    sources: dict[tuple[str, str], list[ProviderPathSource]] = {}
-    for project in store.projects():
-        try:
-            manifest = load_manifest(project.locator)
-        except (OSError, ValueError):
-            _LOGGER.warning("Provider login skipped an unavailable project manifest.")
-            continue
-        for machine in manifest.machines:
-            for provider, path in machine.provider_paths.items():
-                sources.setdefault((provider, machine.host), []).append(
-                    ProviderPathSource(
-                        path=path,
-                        project_id=project.project_id,
-                        project_name=project.name,
-                        machine_alias=machine.alias,
-                    )
-                )
-    return sources
 
 
 class ProviderSignInRunner:
@@ -165,12 +131,11 @@ class ProviderSignInRunner:
         return True
 
     def provider_binary(self, provider: str, host: str) -> tuple[str, set[str]]:
-        """The executable RCP would launch on this account, and every path a manifest saved.
+        """The executable RCP would launch on this account, and the path its card records.
 
-        The account must be a space machine. A project's saved provider path on
-        that host is used when one exists (the first, as `provider_path_sources`
-        orders them); otherwise the same discovery readiness uses resolves the
-        provider on that machine, so a native install off PATH still signs in.
+        The account must be a space machine. The card's recorded provider path is
+        used when one exists; otherwise the same discovery readiness uses resolves
+        the provider on that machine, so a native install off PATH still signs in.
         """
 
         card = self.store.space_machine_for(host) if host else None
@@ -186,9 +151,8 @@ class ProviderSignInRunner:
                 raise ProviderLoginRefused(
                     f"{host} reached account {reached.os_account}, not {card.os_account}."
                 )
-        sources = provider_path_sources(self.store).get((provider, host), [])
-        binaries = {source.path for source in sources}
-        binary = sources[0].path if sources else None
+        binary = self.store.provider_binary(provider, host)
+        binaries = {binary} if binary else set()
         if binary is None:
             # Read through the module so the suite's discovery seam covers sign-in too.
             try:

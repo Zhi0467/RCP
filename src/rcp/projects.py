@@ -18,7 +18,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 import tomlkit
 from pydantic import BaseModel, Field, TypeAdapter
@@ -26,11 +26,6 @@ from pydantic import BaseModel, Field, TypeAdapter
 from rcp.agents import AgentLauncher
 from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_repository_roots
 from rcp.attachments import ChatAttachmentStore
-from rcp.compute import (
-    ComputeProbeCacheKey,
-    compute_probe_cache_key,
-    probe_compute_connections,
-)
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,
     MachineConfig,
@@ -127,7 +122,6 @@ _DISPLAY_SNAPSHOT_FIELDS = {
     "default_auto_research_invocation_ceiling",
     "repositories",
     "machines",
-    "compute_status",
     "primary_question",
     "last_refresh_at",
     "attention",
@@ -316,7 +310,12 @@ def _backup_recovery_machine(
 
 
 def record_space_machines(store: AppStore, manifest: Manifest) -> None:
-    """Give the space a card for every machine account this manifest names."""
+    """Give the space a card for every machine account this manifest names.
+
+    Settings an older build kept in the manifest are copied into cards still
+    pending import. Only the startup sweep (`fill_space_machines`) settles a
+    card, since a registration reads one project and the card may be shared.
+    """
 
     conflicts = store.ensure_space_machines(
         (machine.host, machine.os_account, machine.alias) for machine in manifest.machines
@@ -325,18 +324,38 @@ def record_space_machines(store: AppStore, manifest: Manifest) -> None:
         _LOGGER.warning(
             "Projects name different accounts for machine %s; its card now names none.", host
         )
+    for machine in manifest.machines:
+        compute = machine.legacy_compute
+        store.merge_legacy_machine_settings(
+            machine.host,
+            job_manager=compute.job_manager if compute else None,
+            jobs_root=compute.jobs_root if compute else "",
+            access_hint=machine.legacy_access_hint,
+            provider_paths=machine.legacy_provider_paths,
+        )
 
 
 def fill_space_machines(store: AppStore) -> None:
-    """Fill the space machine list from every registered project's manifest."""
+    """Fill the space machine list from every registered project's manifest.
 
+    Cards settle only after every manifest merged, so a machine two projects
+    share takes Slurm from either. While any manifest fails to read, which
+    machines it names is unknown, so no card settles until a start reads all.
+    """
+
+    hosts: set[str] = set()
+    unread = False
     for project in store.projects():
         try:
             manifest = load_manifest(project.locator)
         except (OSError, ValueError) as exc:
             _LOGGER.warning("Could not read machines for project %s: %s", project.project_id, exc)
+            unread = True
             continue
         record_space_machines(store, manifest)
+        hosts.update(machine.host for machine in manifest.machines)
+    if not unread:
+        store.settle_legacy_machine_settings(hosts)
 
 
 def rebind_restored_project_registration(
@@ -843,11 +862,6 @@ class ProjectCatalog:
         self._committed_snapshot_generations: dict[str, int] = {}
         self._cached_snapshot_patch_heads: dict[str, int | None] = {}
         self._candidate_snapshot_patch_heads: dict[str, int | None] = {}
-        self._compute_status_cache: dict[
-            str, tuple[ComputeProbeCacheKey, dict[str, dict[str, dict[str, object]]]]
-        ] = {}
-        self._compute_probe_generations: dict[str, int] = {}
-        self._compute_probe_locks: dict[str, threading.Lock] = {}
         self._registration_lock = threading.Lock()
         self._project_aliases = self.store.project_aliases()
         self.request_sync: Callable[[str], None] | None = None
@@ -1587,8 +1601,6 @@ class ProjectCatalog:
                 self._committed_snapshot_generations,
                 self._cached_snapshot_patch_heads,
                 self._candidate_snapshot_patch_heads,
-                self._compute_status_cache,
-                self._compute_probe_generations,
             ):
                 if old_project_id not in mapping:
                     continue
@@ -1598,9 +1610,6 @@ class ProjectCatalog:
                         "Project identity migration found conflicting in-memory cache state."
                     )
                 mapping[canonical_project_id] = old_value
-            old_compute_lock = self._compute_probe_locks.pop(old_project_id, None)
-            if old_compute_lock is not None:
-                self._compute_probe_locks.setdefault(canonical_project_id, old_compute_lock)
 
     def cards(self, *, team_shell_protocol: int | None = None) -> list[dict[str, object]]:
         return [
@@ -1832,13 +1841,7 @@ class ProjectCatalog:
         if workspace is not None and workspace.remote:
             cached = self.open_display(project_id)
         if cached is not None:
-            snapshot = cached.readiness_snapshot(refresh=refresh)
-            snapshot["compute_status"] = self._compute_status_snapshot(
-                project_id,
-                cached.manifest,
-                refresh=refresh,
-            )
-            return snapshot
+            return cached.readiness_snapshot(refresh=refresh)
         record = self.store.project(project_id)
         if record is None:
             raise KeyError(project_id)
@@ -1847,46 +1850,15 @@ class ProjectCatalog:
             manifest, self.launcher, refresh=refresh, provider_skills=self.provider_skills
         )
         snapshot["agent_profiles"] = ProjectService.effective_profiles(manifest, self.launcher)
-        snapshot["compute_status"] = self._compute_status_snapshot(
-            project_id,
-            manifest,
-            refresh=refresh,
+        ProjectService.wait_for_provider_skill_inventories_for(
+            manifest, self.launcher, self.provider_skills
         )
-        ProjectService.wait_for_provider_skill_inventories_for(manifest, self.provider_skills)
         snapshot["provider_skill_inventories"] = ProjectService.provider_skill_inventories_for(
             manifest,
+            self.launcher,
             self.provider_skills,
         )
         return snapshot
-
-    def _compute_status_snapshot(
-        self,
-        project_id: str,
-        manifest: Manifest,
-        *,
-        refresh: bool,
-    ) -> dict[str, object]:
-        """Run compute probes only for an explicit refresh; otherwise reuse the last matrix."""
-
-        key = compute_probe_cache_key(manifest)
-        if not refresh:
-            # A cached read does network work for nobody, so it must never queue
-            # behind an explicit refresh of a slow or unreachable SSH target.
-            with self._services_lock:
-                cached = self._compute_status_cache.get(project_id)
-                if cached is not None and cached[0] != key:
-                    self._compute_status_cache.pop(project_id, None)
-                    cached = None
-                return deepcopy(cached[1] if cached is not None else {})
-        with self._services_lock:
-            generation = self._compute_probe_generations.get(project_id, 0)
-            lock = self._compute_probe_locks.setdefault(project_id, threading.Lock())
-        with lock:
-            status = probe_compute_connections(manifest, space_kind=self.store.space_kind)
-            with self._services_lock:
-                if self._compute_probe_generations.get(project_id, 0) == generation:
-                    self._compute_status_cache[project_id] = (key, status)
-            return deepcopy(status)
 
     def provider_targets(self) -> list[tuple[ProviderId, str, str | None]]:
         """Unique configured provider capabilities known to this app process."""
@@ -1899,7 +1871,13 @@ class ProjectCatalog:
                 continue
             for machine in manifest.machines:
                 for provider in PROVIDER_IDS:
-                    targets.add((provider, machine.host, machine.provider_paths.get(provider)))
+                    targets.add(
+                        (
+                            provider,
+                            machine.host,
+                            self.launcher.provider_binary(provider, machine.host),
+                        )
+                    )
         return sorted(targets, key=lambda item: (item[1], item[0], item[2] or ""))
 
     def repository_ownership_inventory(self) -> list[RegisteredRepositoryRoot]:
@@ -2024,9 +2002,6 @@ class ProjectCatalog:
                 self._committed_snapshot_generations.pop(project_id, None)
                 self._cached_snapshot_patch_heads.pop(project_id, None)
                 self._candidate_snapshot_patch_heads.pop(project_id, None)
-                self._compute_status_cache.pop(project_id, None)
-                self._compute_probe_generations.pop(project_id, None)
-                self._compute_probe_locks.pop(project_id, None)
 
                 removed_stages = 0
                 for stage in stages:
@@ -2634,16 +2609,7 @@ class ProjectCatalog:
         generation = self.reserve_cached_snapshot_generation(project_id)
         service = self.open(project_id)
         project_id = self._canonical_project_id(project_id)
-        prior_compute_key = compute_probe_cache_key(service.manifest)
-        for alias, compute in (request.machine_compute or {}).items():
-            machine = service.manifest.machine_map.get(alias)
-            if machine is None:
-                raise ValueError(f"compute configuration uses unknown machine: {alias}")
-            if machine.compute != compute:
-                # Fail closed even if manifest publication fails partway through.
-                self.store.delete_compute_backend_probe(project_id, alias)
         service.update_settings(request)
-        self._retire_compute_status(project_id, prior_compute_key, service.manifest)
         self._persist_bootstrap_locator(project_id, service)
         snapshot = _snapshot_payload(service.project_snapshot())
         self._stamp_snapshot_identity(snapshot, project_id)
@@ -2655,35 +2621,6 @@ class ProjectCatalog:
             patch_log_head=service.history.workspace.cached_patch_log_head(),
         )
         return _ProjectSnapshotDraft(snapshot)
-
-    def resolve_provider_path(
-        self,
-        project_id: str,
-        machine_alias: str,
-        provider: ProviderId,
-    ) -> dict[str, object]:
-        project_id = self._canonical_project_id(project_id)
-        generation = self.reserve_cached_snapshot_generation(project_id)
-        service = self.open(project_id)
-        project_id = self._canonical_project_id(project_id)
-        readiness = service.resolve_provider_path(machine_alias, provider)
-        self._persist_bootstrap_locator(project_id, service)
-        snapshot = _snapshot_payload(service.project_snapshot())
-        self._stamp_snapshot_identity(snapshot, project_id)
-        self.mark_snapshot_fresh(snapshot)
-        self.commit_cached_snapshot(
-            project_id,
-            snapshot,
-            generation=generation,
-            patch_log_head=service.history.workspace.cached_patch_log_head(),
-        )
-        return {
-            "machine": machine_alias,
-            "provider": provider,
-            "binary_path": readiness.binary_path,
-            "readiness": readiness.model_dump(mode="json"),
-            "project": _ProjectSnapshotDraft(snapshot),
-        }
 
     def add_machine(
         self,
@@ -2698,10 +2635,7 @@ class ProjectCatalog:
         generation = self.reserve_cached_snapshot_generation(project_id)
         service = self.open(project_id)
         project_id = self._canonical_project_id(project_id)
-        prior_compute_key = compute_probe_cache_key(service.manifest)
         service.add_machine(alias, card.host, card.os_account)
-        # A new machine is a new probe target for every agent machine.
-        self._retire_compute_status(project_id, prior_compute_key, service.manifest)
         self._persist_bootstrap_locator(project_id, service)
         record_space_machines(self.store, service.manifest)
         snapshot = _snapshot_payload(service.project_snapshot())
@@ -2715,18 +2649,26 @@ class ProjectCatalog:
         )
         return _ProjectSnapshotDraft(snapshot)
 
-    def _retire_compute_status(
-        self, project_id: str, prior_key: ComputeProbeCacheKey, manifest: Manifest
-    ) -> None:
-        """Drop the probe matrix, and fence any refresh in flight, once its routes changed."""
+    def remove_machine(self, project_id: str, alias: str) -> _ProjectSnapshotDraft:
+        """Drop one machine from a project's manifest; the space card stays."""
 
-        if compute_probe_cache_key(manifest) == prior_key:
-            return
-        with self._services_lock:
-            self._compute_status_cache.pop(project_id, None)
-            self._compute_probe_generations[project_id] = (
-                self._compute_probe_generations.get(project_id, 0) + 1
-            )
+        project_id = self._canonical_project_id(project_id)
+        generation = self.reserve_cached_snapshot_generation(project_id)
+        service = self.open(project_id)
+        project_id = self._canonical_project_id(project_id)
+        service.remove_machine(alias)
+        self.store.delete_compute_backend_probe(project_id, alias)
+        self._persist_bootstrap_locator(project_id, service)
+        snapshot = _snapshot_payload(service.project_snapshot())
+        self._stamp_snapshot_identity(snapshot, project_id)
+        self.mark_snapshot_fresh(snapshot)
+        self.commit_cached_snapshot(
+            project_id,
+            snapshot,
+            generation=generation,
+            patch_log_head=service.history.workspace.cached_patch_log_head(),
+        )
+        return _ProjectSnapshotDraft(snapshot)
 
     def _persist_bootstrap_locator(
         self,
@@ -2825,10 +2767,24 @@ class ProjectDisplayCache:
         payload["repositories"] = project_repository_descriptors(
             repositories, store=self._store, project_id=str(payload["id"])
         )
+        manifest_machines = payload["machines"]
+        assert isinstance(manifest_machines, list)
+        used = {repository["machine"] for repository in repositories} | {
+            profile["run_on"]
+            for profile in cast(dict[str, dict[str, str]], payload["agent_profiles"]).values()
+        }
         payload["machines"] = [
             {
-                **machine,
-                "compute": machine.get("compute"),
+                "alias": machine["alias"],
+                "host": machine["host"],
+                "os_account": machine["os_account"],
+                # Read from the space card, which owns it; Runs reads it from here.
+                "compute": (
+                    compute.model_dump(mode="json")
+                    if (compute := self._store.machine_compute(machine["host"]))
+                    else None
+                ),
+                "removable": machine["alias"] not in used,
                 "compute_probes": {
                     route: probe.model_dump(mode="json") if probe is not None else None
                     for route in ("scheduler", "helper")
@@ -2837,7 +2793,7 @@ class ProjectDisplayCache:
                     ]
                 },
             }
-            for machine in payload["machines"]
+            for machine in manifest_machines
         ]
         payload["compute_probes_probed_at"] = self._store.compute_probes_probed_at(payload["id"])
         _stamp_display_signals(payload)
@@ -2936,15 +2892,8 @@ class ProjectDisplayCache:
             self._catalog.add_machine(project_id, machine_id, alias),
         )
 
-    def resolve_provider_path(
-        self,
-        project_id: str,
-        machine_alias: str,
-        provider: ProviderId,
-    ) -> dict[str, object]:
-        result = self._catalog.resolve_provider_path(project_id, machine_alias, provider)
-        result["project"] = self.complete_snapshot(project_id, result["project"])
-        return result
+    def remove_machine(self, project_id: str, alias: str) -> dict[str, object]:
+        return self.complete_snapshot(project_id, self._catalog.remove_machine(project_id, alias))
 
     def complete_transition_control(
         self,
@@ -3382,7 +3331,6 @@ def _valid_display_snapshot(
             "provider_skill_inventories",
             "providers",
             "cache_metrics",
-            "compute_status",
         )
     ):
         return False

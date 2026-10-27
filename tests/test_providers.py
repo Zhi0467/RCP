@@ -435,7 +435,7 @@ def test_a_task_names_its_umbrella_provider_apart_from_the_runtime() -> None:
 def test_machine_provider_paths_are_backward_compatible_and_absolute(manifest) -> None:
     from rcp.config import MachineConfig
 
-    assert manifest.machine_map["laptop"].provider_paths == {}
+    assert manifest.machine_map["laptop"].legacy_provider_paths == {}
     configured = MachineConfig(
         alias="remote",
         host="gpu.example",
@@ -443,7 +443,8 @@ def test_machine_provider_paths_are_backward_compatible_and_absolute(manifest) -
         provider_paths={"codex": "/opt/codex/bin/codex"},
     )
     assert configured.os_account == "alice"
-    assert configured.provider_paths == {"codex": "/opt/codex/bin/codex"}
+    # An older manifest's key still loads, for the one-time import onto the card.
+    assert configured.legacy_provider_paths == {"codex": "/opt/codex/bin/codex"}
     with pytest.raises(ValueError, match="must be absolute"):
         MachineConfig(alias="local", provider_paths={"codex": "bin/codex"})
     with pytest.raises(ValueError, match="operating-system account"):

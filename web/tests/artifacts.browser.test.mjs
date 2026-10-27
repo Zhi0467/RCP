@@ -86,6 +86,12 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
         viewer_url: null,
         unavailable_reason: "Preview unavailable.",
       }),
+      // An archived branch waits in the one Archived fold, after every live branch.
+      entry("old-plot", "Old plot", {
+        graph_branch_id: "branch-old",
+        graph_branch_name: "old-sweep",
+        graph_branch_archived: true,
+      }),
       entry("report-no-chat", "Report", {
         kind: "report",
         episode_id: "no-chat",
@@ -129,6 +135,7 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
       "transfer-sweep",
       "main",
       "night-run",
+      "old-sweep",
     ]);
     assert.equal(await page.locator(".artifact-entry .branch-tag").count(), 0);
     const branchOf = (name) =>
@@ -151,6 +158,13 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
       () => localStorage.getItem("rcp:artifacts-folded-branches:project") === "[]",
     );
     await page.getByRole("heading", { name: "Report", exact: true }).waitFor();
+    const archived = page.locator(".artifacts-archived");
+    assert.equal(await archived.evaluate((fold) => fold.open), false);
+    await archived.locator("> summary").click();
+    await page.getByRole("heading", { name: "Old plot", exact: true }).waitFor();
+    await page.waitForFunction(() =>
+      localStorage.getItem("rcp:artifacts-folded-branches:project").includes("archived-open"),
+    );
     const layout = await page.evaluate(() => {
       const panel = document.querySelector(".artifacts-view");
       const heading = panel.querySelector("h2");
@@ -175,27 +189,22 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
       await page.getByRole("link", { name: "Open Validation report" }).getAttribute("target"),
       "_blank",
     );
-    // The title and whitespace belong to the existing link, in both Aqua modes.
+    // In Aqua the branch is the raised box; its rows sit flat inside it.
     const report = page.locator(".artifact-entry").filter({ hasText: "Validation report" });
     const unavailable = page.locator(".artifact-entry").filter({ hasText: "Unavailable plot" });
-    const classicShadow = await report.evaluate((row) => getComputedStyle(row).boxShadow);
+    assert.equal(await unavailable.getByRole("link").count(), 0);
     for (const mode of ["light", "dark"]) {
       await page.evaluate((mode) => {
         document.documentElement.dataset.theme = "aqua";
         document.documentElement.dataset.colorMode = mode;
       }, mode);
-      const raised = await report.evaluate((row) => getComputedStyle(row).boxShadow);
-      assert.notEqual(raised, "none");
-      assert.equal(await unavailable.evaluate((row) => getComputedStyle(row).boxShadow), "none");
-      assert.equal(await unavailable.getByRole("link").count(), 0);
-      await report.hover({ position: { x: 25, y: 25 } });
-      await page.mouse.down();
-      const pressed = await report.evaluate((row) => getComputedStyle(row).boxShadow);
-      assert.match(pressed, /inset/);
-      assert.notEqual(pressed, raised);
-      // Moving out cancels navigation while still exercising the pressed state.
-      await page.mouse.move(0, 0);
-      await page.mouse.up();
+      assert.equal(await report.evaluate((row) => getComputedStyle(row).boxShadow), "none");
+      assert.notEqual(
+        await report.evaluate(
+          (row) => getComputedStyle(row.closest(".artifacts-branch")).boxShadow,
+        ),
+        "none",
+      );
       await page.setViewportSize({ width: 360, height: 780 });
       assert.equal(
         await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
@@ -207,7 +216,19 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
       document.documentElement.dataset.theme = "classic";
       document.documentElement.dataset.colorMode = "light";
     });
-    assert.equal(await report.evaluate((row) => getComputedStyle(row).boxShadow), classicShadow);
+    // With every branch folded the page keeps its width instead of shrinking to the tags.
+    const fullWidth = await page.locator(".artifacts-view").evaluate((panel) => panel.offsetWidth);
+    for (const summary of await page.locator(".artifacts-view > .artifacts-branch > summary").all())
+      await summary.click();
+    await page
+      .getByRole("heading", { name: "Saved plot", exact: true })
+      .waitFor({ state: "hidden" });
+    assert.equal(
+      await page.locator(".artifacts-view").evaluate((panel) => panel.offsetWidth),
+      fullWidth,
+    );
+    for (const summary of await page.locator(".artifacts-view > .artifacts-branch > summary").all())
+      await summary.click();
     failure = true;
     await page.getByRole("button", { name: "Refresh artifacts", exact: true }).click();
     await page
@@ -296,8 +317,9 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
       plot.getByRole("link", { name: "Open Saved plot", exact: true }).boundingBox(),
       plot.boundingBox(),
     ]);
-    assert.ok(openBox.x - (download.x + download.width) < 24);
-    assert.ok(rowBox.x + rowBox.width - (openBox.x + openBox.width) < 24);
+    assert.ok(rowBox.x + rowBox.width - (download.x + download.width) < 24);
+    // The preview link covers the whole row.
+    assert.deepEqual([openBox.x, openBox.width], [rowBox.x, rowBox.width]);
     // The source node opens in place, above the stretched preview target.
     const previews = await page.evaluate(() => window.previewCalls.length);
     await page.getByRole("button", { name: "Open source node for Saved plot" }).click();
@@ -933,6 +955,59 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
       errors.every((error) => error === "inline-failure"),
       JSON.stringify(errors),
     );
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
+
+test("A branch with many artifacts lists its newest few until asked for the rest", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1000, height: 850 } });
+    const entry = (index, branch) => ({
+      id: `a${index}`,
+      artifact_id: `a${index}`,
+      name: `Output ${index}`,
+      kind: "artifact",
+      view: "html",
+      created_at: "2026-10-20T12:00:00Z",
+      path: null,
+      operation_id: null,
+      episode_id: null,
+      episode_mode: null,
+      source_chat_href: null,
+      can_open: true,
+      available: true,
+      can_download: false,
+      download_url: null,
+      unavailable_reason: null,
+      graph_branch_id: branch,
+      graph_branch_name: branch ?? "main",
+      graph_branch_archived: false,
+      viewer_url: `/viewer-shell/a${index}`,
+    });
+    const busy = Array.from({ length: 70 }, (_, index) => entry(index, "busy"));
+    await page.route("**/api/projects/project/artifacts", (route) =>
+      route.fulfill({ json: [...busy, entry(70, null)] }),
+    );
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/artifacts.html`,
+    );
+    const branch = page.locator(".artifacts-branch").filter({ hasText: "Output 0" });
+    await branch.getByRole("heading", { name: "Output 0", exact: true }).waitFor();
+    assert.equal(await branch.locator(".artifact-entry").count(), 5);
+    await branch.locator(".artifacts-more button").click();
+    assert.equal(await branch.locator(".artifact-entry").count(), 70);
+    await branch.locator(".artifacts-more button").click();
+    assert.equal(await branch.locator(".artifact-entry").count(), 5);
   } finally {
     await browser?.close();
     await server.close();

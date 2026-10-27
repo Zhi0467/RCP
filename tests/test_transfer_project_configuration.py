@@ -355,7 +355,6 @@ def test_target_configuration_uses_only_reviewed_target_execution_and_replays(
         f"/srv/rcp/projects/{PROJECT_ID}/repositories/repo-a"
     )
     assert target.machine_map["laptop"].host == "server.example"
-    assert target.machine_map["laptop"].provider_paths == {"codex": "/usr/local/bin/codex"}
     assert str(manifest.repository_map["repo-a"].path) not in configured.manifest_content
     assert configured.receipt.main_head == archive.main_head
     assert configured.receipt.final_review_sha256 == provisioning.final_review_digest

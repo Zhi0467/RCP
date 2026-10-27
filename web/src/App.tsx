@@ -5320,7 +5320,6 @@ function MemberApp({
               readinessRequest={{
                 pending: settingsResource.loading,
                 providerError: settingsResource.error ? String(settingsResource.error) : null,
-                computeError: settingsResource.error ? String(settingsResource.error) : null,
               }}
               onMovePersonalProjectToTeam={movePersonalProjectToTeam}
               consolidation={consolidation}

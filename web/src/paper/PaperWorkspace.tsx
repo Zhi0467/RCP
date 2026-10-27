@@ -299,7 +299,7 @@ export function PaperWorkspace({
     providerLabel: readiness?.label || config.provider,
     machine: config.run_on,
     inventory: project.provider_skill_inventories?.[config.run_on]?.[config.provider],
-    message,
+    getMessage: () => message,
     onComplete: (next) => {
       setMessage(next);
       setSubmitError(null);

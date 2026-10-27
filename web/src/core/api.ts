@@ -38,6 +38,7 @@ import type {
   ProjectProvisioningResponse,
   ProjectSnapshot,
   ProjectDeletionPreview,
+  ProviderId,
   ProviderLoginAccount,
   ProviderLoginState,
   ProviderSignInStatus,
@@ -481,6 +482,33 @@ export function listMachineDirectory(
   );
 }
 
+/** Finds the provider's executable on the machine and records it on the space card. */
+export function resolveSpaceMachineProvider(
+  machineId: string,
+  provider: ProviderId,
+): Promise<MachineSettingsRecord> {
+  return api<MachineSettingsRecord>(
+    `/api/space/machines/${encodeURIComponent(machineId)}/providers/${encodeURIComponent(provider)}/resolve`,
+    { method: "POST" },
+  );
+}
+
+/** Re-runs the card's scheduler, helper, and reach probes now. */
+export function checkSpaceMachineCompute(machineId: string): Promise<MachineSettingsRecord> {
+  return api<MachineSettingsRecord>(
+    `/api/space/machines/${encodeURIComponent(machineId)}/compute/check`,
+    { method: "POST" },
+  );
+}
+
+/** Unlinks a machine from a project; the space card stays. */
+export function removeProjectMachine(projectId: string, alias: string): Promise<ProjectSnapshot> {
+  return api<ProjectSnapshot>(
+    `/api/projects/${encodeURIComponent(projectId)}/machines/${encodeURIComponent(alias)}`,
+    { method: "DELETE" },
+  );
+}
+
 /** Appends a space machine to a project's manifest under a project alias. */
 export function addProjectMachine(
   projectId: string,
@@ -499,7 +527,6 @@ export function loadProjectReadiness(
 ): Promise<
   Pick<
     ProjectSnapshot,
-    | "compute_status"
     | "provider_logins"
     | "provider_readiness"
     | "providers"

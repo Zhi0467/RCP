@@ -16,18 +16,21 @@ testWindow.openedNodes = [];
 function renderArtifacts() {
   root.render(
     <RefreshRuntimeContext.Provider value={runtime}>
-      <Artifacts
-        projectId="project"
-        graphRefs={[
-          {
-            kind: "branch",
-            branch_id: "branch-one",
-            name: "transfer-sweep",
-          } as unknown as GraphRef,
-        ]}
-        nodeTitle={(nodeId) => nodeTitles[nodeId] ?? null}
-        onOpenNode={(nodeId) => testWindow.openedNodes.push(nodeId)}
-      />
+      {/* The app's flex shell, so the page's width behaves as it does there. */}
+      <div className="artifacts-shell">
+        <Artifacts
+          projectId="project"
+          graphRefs={[
+            {
+              kind: "branch",
+              branch_id: "branch-one",
+              name: "transfer-sweep",
+            } as unknown as GraphRef,
+          ]}
+          nodeTitle={(nodeId) => nodeTitles[nodeId] ?? null}
+          onOpenNode={(nodeId) => testWindow.openedNodes.push(nodeId)}
+        />
+      </div>
       <ArtifactViewer />
     </RefreshRuntimeContext.Provider>,
   );

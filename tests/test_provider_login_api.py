@@ -24,7 +24,6 @@ from rcp.api.dependencies import (
 from rcp.providers import PROVIDER_IDS
 from rcp.runs.provider_sign_in import (
     ProviderLoginRefused,
-    ProviderPathSource,
     ProviderSignInRunner,
 )
 from rcp.storage import AppStore
@@ -364,29 +363,28 @@ def test_sign_in_preserves_remote_discovery_failure(
     assert store.provider_login_states() == []
 
 
-def test_an_unmanaged_login_note_names_the_saved_executable(tmp_path, monkeypatch):
+def test_an_unmanaged_login_note_names_the_machine_card_executable(tmp_path):
     store = AppStore(tmp_path / "login.sqlite3")
     credentials = ProviderCredentialStore(tmp_path / "providers")
     accounts = ProviderAccounts(store, credentials)
     catalog = SimpleNamespace(provider_targets=lambda: [("opencode", "", None)])
-    source = ProviderPathSource(
-        path="/opt/oc bin/opencode", project_id="p", project_name="P", machine_alias="local"
-    )
-    hidden = source.model_copy(update={"path": "/hidden/opencode", "project_id": "q"})
-    monkeypatch.setattr(
-        provider_login, "provider_path_sources", lambda _: {("opencode", ""): [hidden, source]}
-    )
     runner = ProviderSignInRunner(store, AgentLauncher(accounts=accounts), accounts)
 
-    def note(visible):
-        (account,) = provider_login.provider_login_accounts(
-            store, catalog, credentials, runner, visible
+    def note():
+        (account,) = (
+            account
+            for account in provider_login.provider_login_accounts(
+                store, catalog, credentials, runner, set()
+            )
+            if account.provider == "opencode"
         )
         assert not account.managed
         return account.login_command
 
-    assert note({"p"}) == "'/opt/oc bin/opencode' providers login"
-    assert note(set()) == "opencode providers login"
+    assert note() == "opencode providers login"
+    card = store.create_space_machine(name="local", host="", os_account="")
+    store.update_space_machine(card.machine_id, provider_paths={"opencode": "/opt/oc bin/opencode"})
+    assert note() == "'/opt/oc bin/opencode' providers login"
 
 
 def test_only_accounts_an_agent_launches_on_are_marked_agent_used(tmp_path, monkeypatch, manifest):

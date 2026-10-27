@@ -1724,14 +1724,6 @@
                     "endColumn": 31,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 39,
-                    "endColumn": 66,
-                    "lineCount": 1
-                }
             }
         ],
         "./src/rcp/consolidation.py": [
@@ -2846,30 +2838,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 16,
-                    "endColumn": 45,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportReturnType",
-                "range": {
-                    "startColumn": 23,
-                    "endColumn": 72,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportReturnType",
-                "range": {
-                    "startColumn": 19,
-                    "endColumn": 35,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 20,
                     "endColumn": 38,
                     "lineCount": 1
@@ -2940,26 +2908,10 @@
                 }
             },
             {
-                "code": "reportGeneralTypeIssues",
-                "range": {
-                    "startColumn": 27,
-                    "endColumn": 46,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 83,
                     "endColumn": 96,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 63,
-                    "endColumn": 80,
                     "lineCount": 1
                 }
             }
@@ -4021,14 +3973,6 @@
             }
         ],
         "./src/rcp/runs/tasks/branch_merge.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 54,
-                    "endColumn": 70,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportArgumentType",
                 "range": {
@@ -6035,14 +5979,6 @@
                 "code": "reportAttributeAccessIssue",
                 "range": {
                     "startColumn": 36,
-                    "endColumn": 46,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 41,
                     "endColumn": 46,
                     "lineCount": 1
                 }

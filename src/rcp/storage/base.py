@@ -131,6 +131,7 @@ class AppStoreBase:
         (58, "project_worker_seats_v1"),
         (59, "conversation_names_v1"),
         (60, "chat_forks_v1"),
+        (61, "machine_settings_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -935,6 +936,12 @@ class AppStoreBase:
 
         self._run_storage_schema_migration(
             connection, version=60, name="chat_forks_v1", migration=migrate_v60
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=61,
+            name="machine_settings_v1",
+            migration=self._migrate_machine_settings,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -2778,6 +2785,28 @@ class AppStoreBase:
             "provider_shell_timeout_json",
             "TEXT NOT NULL DEFAULT '{}'",
         )
+
+    @classmethod
+    def _migrate_machine_settings(cls, connection: sqlite3.Connection) -> None:
+        # NULL job_manager means "not decided": the compute probe turns Slurm on
+        # when it finds it. Every card that exists now may still have settings
+        # in a project manifest; `legacy_settings_pending` lets startup copy them
+        # in once (`rcp.projects.fill_space_machines`).
+        cls._ensure_column(connection, "space_machines", "job_manager", "TEXT")
+        cls._ensure_column(connection, "space_machines", "jobs_root", "TEXT NOT NULL DEFAULT ''")
+        cls._ensure_column(connection, "space_machines", "access_hint", "TEXT NOT NULL DEFAULT ''")
+        cls._ensure_column(
+            connection, "space_machines", "provider_paths_json", "TEXT NOT NULL DEFAULT '{}'"
+        )
+        cls._ensure_column(
+            connection,
+            "space_machines",
+            "legacy_settings_pending",
+            "INTEGER NOT NULL DEFAULT 1",
+        )
+        from rcp.storage.resource_versions import migrate_space_machine_settings_versions
+
+        migrate_space_machine_settings_versions(connection)
 
     @staticmethod
     def _migrate_chat_display(connection: sqlite3.Connection) -> None:

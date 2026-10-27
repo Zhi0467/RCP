@@ -193,7 +193,8 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
     service = app.state.catalog.open(project_id)
     machine = service.manifest.machine_map["laptop"]
     machine.host = host
-    machine.provider_paths["codex"] = binary
+    card = store.create_space_machine(name="compute", host=host, os_account="")
+    store.update_space_machine(card.machine_id, provider_paths={"codex": binary})
     monkeypatch.setattr(service.history, "_reload_manifest", lambda: None)
 
     async def failing_stream(_project_id, _kind, _request, execution):
@@ -259,7 +260,7 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
     assert store.episode_budget_meter(episode_id).invocations_used == 1
 
     claude_binary = "/opt/claude/bin/claude"
-    machine.provider_paths["claude"] = claude_binary
+    store.update_space_machine(card.machine_id, provider_paths={"claude": claude_binary})
     readiness_calls.clear()
 
     def unauthenticated_readiness(

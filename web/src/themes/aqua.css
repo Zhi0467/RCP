@@ -227,6 +227,27 @@
   box-shadow: var(--aqua-raised);
 }
 
+/* Artifacts: every branch is the same raised box; the Archived fold itself is not one. */
+:root[data-theme="aqua"]
+  :is(.artifacts-branch:not(.artifacts-archived), .artifacts-heading + .artifacts-list) {
+  background: var(--aqua-surface);
+  border-color: var(--rule);
+  box-shadow: var(--aqua-raised);
+}
+
+/* A machine is a raised box; each of its sections is a well inside it. */
+:root[data-theme="aqua"] .provider-machine.machine-card {
+  background: var(--aqua-surface);
+  border-color: var(--rule);
+  box-shadow: var(--aqua-raised);
+}
+
+:root[data-theme="aqua"] .machine-card > .fold {
+  background: var(--aqua-field);
+  border-color: transparent;
+  box-shadow: var(--aqua-inset);
+}
+
 :root[data-theme="aqua"]
   :is(
     .detail-drawer,
@@ -373,19 +394,14 @@
 }
 
 /* Relief belongs to the actual click target, not its expanded detail. */
-:root[data-theme="aqua"] :is(.overview-questions, .space-runs-rows, .artifacts-list) {
+:root[data-theme="aqua"] :is(.overview-questions, .space-runs-rows) {
   display: grid;
   gap: 12px;
   border: 0;
 }
 
 :root[data-theme="aqua"]
-  :is(
-    .overview-questions > button,
-    .space-run-row,
-    .campaign-run:has(.campaign-run-toggle),
-    .artifact-entry:has(.artifact-entry-open)
-  ) {
+  :is(.overview-questions > button, .space-run-row, .campaign-run:has(.campaign-run-toggle)) {
   background: var(--aqua-surface);
   border: 1px solid var(--rule);
   border-radius: 12px;
@@ -395,10 +411,6 @@
 :root[data-theme="aqua"] .overview-questions > button {
   padding-inline: 20px;
   transition: box-shadow 0.16s;
-}
-
-:root[data-theme="aqua"] .artifact-entry:has(.artifact-entry-open) {
-  padding: 20px;
 }
 
 :root[data-theme="aqua"] .space-run-row > button {
@@ -435,8 +447,7 @@
   :is(
     .overview-questions > button:hover,
     .space-run-row:has(> button:hover),
-    .campaign-run:has(.campaign-run-toggle:hover),
-    .artifact-entry:has(.artifact-entry-open:hover)
+    .campaign-run:has(.campaign-run-toggle:hover)
   ) {
   box-shadow: var(--aqua-hover);
 }
@@ -445,8 +456,7 @@
   :is(
     .overview-questions > button:active,
     .space-run-row:has(> button:active),
-    .campaign-run-heading:has(.campaign-run-toggle:active),
-    .artifact-entry:has(.artifact-entry-open:active)
+    .campaign-run-heading:has(.campaign-run-toggle:active)
   ) {
   background: var(--aqua-field);
   box-shadow: var(--aqua-inset);

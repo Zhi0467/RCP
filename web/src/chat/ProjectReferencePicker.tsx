@@ -3,7 +3,7 @@ import { api } from "../core/api";
 import { ArrowLeft, Check, ChevronRight, Folder, RotateCw, Search, X } from "lucide-react";
 import { referenceKey, type DraftReference } from "../core/projectReferences";
 import { ReferenceIcon } from "../core/ReferenceChip";
-import { BranchGroupSection, branchGroups, useFoldedBranches } from "../artifacts/BranchGroups";
+import { BranchGroupList, branchGroups } from "../artifacts/BranchGroups";
 import type { GraphNode, GraphTargetRef, PaperSnapshot, ProjectArtifact } from "../core/types";
 
 type FolderId = "reports" | "artifacts" | "nodes";
@@ -120,7 +120,6 @@ export function ProjectReferencePicker({
       count: entries.filter((entry) => entry.folder === id).length,
     }));
   // An open Reports or Artifacts folder groups like the Artifacts page, folds included.
-  const { folded, fold } = useFoldedBranches(projectId);
   const groups =
     folder === "reports" || folder === "artifacts"
       ? branchGroups(shown, (entry) => entry.artifact!)
@@ -207,18 +206,14 @@ export function ProjectReferencePicker({
             <li className="chat-reference-empty">No matches.</li>
           )}
         </ul>
-        {grouped &&
-          groups.map((group) => (
-            <BranchGroupSection
-              key={group.key}
-              group={group}
-              refs={null}
-              open={!folded.has(group.key)}
-              onFold={(closed) => fold(group.key, closed)}
-            >
-              <ul>{group.items.map(row)}</ul>
-            </BranchGroupSection>
-          ))}
+        {grouped && (
+          <BranchGroupList
+            projectId={projectId}
+            groups={groups}
+            refs={null}
+            renderItems={(items) => <ul>{items.map(row)}</ul>}
+          />
+        )}
       </div>
     </section>
   );

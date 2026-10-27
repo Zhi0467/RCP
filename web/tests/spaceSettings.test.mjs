@@ -60,6 +60,17 @@ const gpu = {
   autocompact_providers: [{ provider: "claude", label: "Claude", hint: "auto or tokens" }],
   projects: [{ project_id: projectId, project_name: "Project", alias: "gpu" }],
   in_use: true,
+  job_manager: "slurm",
+  jobs_root: "",
+  access_hint: "",
+  provider_paths: { codex: "/opt/codex" },
+  providers: [
+    { provider: "codex", label: "Codex" },
+    { provider: "claude", label: "Claude" },
+  ],
+  provider_readiness: {},
+  compute_probes: { scheduler: null, helper: null },
+  reach: [{ from: "laptop", probe: null }],
 };
 
 function page(entries, nextOffset, path = "/data", parent = "/") {
@@ -167,44 +178,55 @@ test("a project machine finds its space record by project and alias", () => {
   assert.equal(spaceMachineForProject([gpu], "other", { alias: "gpu" }), null);
 });
 
-test("both Settings levels render the same machine card with one remove per path", () => {
-  const render = (level) =>
+test("one machine card renders every section folded, with remove-from-project only when offered", () => {
+  const render = (props = {}) =>
     renderMarkup(
       React.createElement(MachineCard, {
         title: "gpu",
         hostLabel: gpu.host,
         osAccount: gpu.os_account,
         record: gpu,
-        level,
         onRecordChange() {},
+        ...props,
       }),
     );
-  for (const level of ["space", "project"]) {
-    const html = render(level);
-    assert.match(html, new RegExp(`data-machine-writable-paths="${level}"`));
-    assert.equal(html.match(/data-machine-action="remove-path"/g)?.length, 2);
-    assert.equal(html.match(/data-machine-action="add-path"/g)?.length, 1);
-    assert.equal(html.match(/data-provider-setting="provider_autocompact"/g)?.length, 1);
-    const timeoutInputs = html.match(
-      /<input[^>]*data-provider-setting="provider_shell_timeout"[^>]*>/g,
-    );
-    assert.equal(timeoutInputs?.length, 2);
-    assert.match(timeoutInputs[0], /value="30"/);
-    assert.match(timeoutInputs[1], /placeholder="2"/);
-    assert.match(timeoutInputs[1], /value=""/);
-    // Browser, dependencies, provider limits, writable paths and hidden folders start folded.
-    const folds = html.match(/<details[^>]*class="fold[ "][^>]*>/g);
-    assert.equal(folds?.length, 5);
-    assert.ok(folds.every((tag) => !/\sopen/.test(tag)));
-  }
-  // The card's own name is renamed on the space page; a project names its machines itself.
-  assert.equal(render("space").match(/data-machine-action="rename"/g)?.length, 1);
-  assert.equal(render("project").match(/data-machine-action="rename"/g), null);
-  // Only the project card carries the applies-to-every-project note.
-  assert.equal(
-    render("project").match(/machine-writable-note/g)?.length,
-    (render("space").match(/machine-writable-note/g)?.length ?? 0) + 1,
+  const html = render();
+  assert.equal(html.match(/data-machine-action="remove-path"/g)?.length, 2);
+  assert.equal(html.match(/data-machine-action="add-path"/g)?.length, 1);
+  assert.equal(html.match(/data-machine-action="rename"/g)?.length, 1);
+  assert.equal(html.match(/data-provider-setting="provider_autocompact"/g)?.length, 1);
+  const timeoutInputs = html.match(
+    /<input[^>]*data-provider-setting="provider_shell_timeout"[^>]*>/g,
   );
+  assert.equal(timeoutInputs?.length, 2);
+  assert.match(timeoutInputs[0], /value="30"/);
+  assert.match(timeoutInputs[1], /placeholder="2"/);
+  assert.match(timeoutInputs[1], /value=""/);
+  // One provider row per listed provider, each with its recorded path.
+  const pathInputs = html.match(/<input[^>]*data-machine-setting="provider_path"[^>]*>/g);
+  assert.equal(pathInputs?.length, 2);
+  assert.match(pathInputs[0], /value="\/opt\/codex"/);
+  assert.equal(html.match(/data-machine-action="resolve-provider"/g)?.length, 2);
+  // Slurm adds the scheduler route; each reach entry is one row.
+  assert.match(
+    html,
+    /data-machine-setting="job_manager"[^>]*>\s*<button[^>]*aria-pressed="true"[^>]*>On</,
+  );
+  assert.match(html, /data-compute-route="scheduler"/);
+  assert.match(html, /data-compute-route="helper"/);
+  assert.match(html, /data-compute-reach="laptop"/);
+  // Browser, dependencies, compute, provider executables, provider limits,
+  // writable paths and hidden folders all start folded.
+  const folds = html.match(/<details[^>]*class="fold[ "][^>]*>/g);
+  assert.equal(folds?.length, 7);
+  assert.ok(folds.every((tag) => !/\sopen/.test(tag)));
+  assert.doesNotMatch(html, /data-machine-action="remove-from-project"/);
+  assert.match(
+    render({ onRemoveFromProject: async () => {} }),
+    /data-machine-action="remove-from-project"/,
+  );
+  // Without a space record only the header renders.
+  assert.doesNotMatch(render({ record: null }), /<details/);
 });
 
 function settingsProject() {
@@ -229,8 +251,9 @@ function settingsProject() {
         alias: "local",
         host: "",
         os_account: "",
-        provider_paths: { codex: "codex" },
+        compute: null,
         compute_probes: { scheduler: null, helper: null },
+        removable: false,
       },
     ],
     agent_profiles: Object.fromEntries(
@@ -466,7 +489,6 @@ for (const status of ["unhidden", "enforced", null]) {
         hostLabel: "GPU",
         osAccount: "worker",
         record,
-        level: "space",
         onRecordChange() {},
       }),
     );
@@ -484,7 +506,7 @@ for (const status of ["unhidden", "enforced", null]) {
 test("machine-card writes run one at a time, deletes included", async () => {
   const started = [];
   const finishes = [];
-  const { save, remove } = createMachineWriteQueue((machineId, request) => {
+  const { save, run: remove } = createMachineWriteQueue((machineId, request) => {
     started.push(request);
     return new Promise((resolve) => finishes.push(() => resolve({ ...gpu, ...request })));
   });

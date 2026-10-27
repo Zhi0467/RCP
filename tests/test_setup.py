@@ -300,7 +300,7 @@ def test_local_wizard_preflights_without_writing_then_creates(tmp_path) -> None:
     assert client.get("/api/projects").json()[0]["id"] == created.json()["id"]
 
 
-def test_setup_records_discovered_provider_paths_in_new_manifest(tmp_path) -> None:
+def test_setup_records_discovered_provider_paths_on_the_machine_card(tmp_path) -> None:
     repository = tmp_path / "paper"
     repository.mkdir()
     app = create_app(data_dir=tmp_path / "data")
@@ -326,7 +326,8 @@ def test_setup_records_discovered_provider_paths_in_new_manifest(tmp_path) -> No
 
     assert created.status_code == 200
     manifest = load_manifest(repository / ".research" / "manifest.toml")
-    assert manifest.machine_map["laptop"].provider_paths == {
+    assert manifest.machine_map["laptop"].legacy_provider_paths == {}
+    assert app.state.catalog.store.space_machine_for("").provider_paths == {
         provider: f"/opt/rcp-test/{provider}" for provider in PROVIDER_IDS
     }
 

@@ -12,7 +12,7 @@ import pytest
 from pydantic import ValidationError
 
 import rcp.config as config_module
-from rcp.config import load_manifest
+from rcp.config import MachineConfig, load_manifest
 from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import GraphState, Patch, ValidationMessage
 from rcp.core.operations import operation_dict
@@ -124,7 +124,7 @@ def test_manifest_writes_share_the_append_lock_across_manager_instances(
 
     def update_provider_path() -> None:
         calls_ready.wait()
-        settings_history.update_machine_provider_paths({"laptop": {"codex": "/opt/agents/codex"}})
+        settings_history.add_machine(MachineConfig(alias="gpu", host="gpu.example"))
 
     def change_scope() -> None:
         calls_ready.wait()
@@ -141,7 +141,7 @@ def test_manifest_writes_share_the_append_lock_across_manager_instances(
 
     updated = load_manifest(manifest.path)
     assert updated.project.truth_scope == ["repo-a"]
-    assert updated.machine_map["laptop"].provider_paths["codex"] == "/opt/agents/codex"
+    assert updated.machine_map["gpu"].host == "gpu.example"
     assert scope_history.state().revision == 2
 
 
@@ -1255,7 +1255,7 @@ def test_foreign_home_refuses_single_batch_and_settings_writes(manifest) -> None
     with pytest.raises(ProjectIdentityConflict):
         foreign.append_batch([_approval_patch([])])
     with pytest.raises(ProjectIdentityConflict):
-        foreign.update_machine_provider_paths({"laptop": {"codex": "/foreign/codex"}})
+        foreign.add_machine(MachineConfig(alias="gpu", host="gpu.example"))
 
     assert home.project_identity() == identity
     assert len(home.load_patches()) == 1

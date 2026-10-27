@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from typing import Literal
 
@@ -11,18 +11,15 @@ from pydantic import BaseModel, ConfigDict
 
 from rcp.compute_jobs.text import safe_compute_diagnostic
 from rcp.config import (
-    AGENT_EXECUTION_PROFILES,
     Manifest,
     ResolvedComputeContext,
     ResolvedComputeProfile,
 )
 from rcp.operator_commands import operator_route
+from rcp.storage.models import SpaceMachineRecord
 from rcp.transport.remote_compute_probe import probe_connection
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import _remote_script
-
-#: Each execution machine with the routes it probes; hints never change reachability.
-ComputeProbeCacheKey = tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...]
 
 
 class ComputeConnectionProbe(BaseModel):
@@ -154,69 +151,55 @@ def _probe_one(
     )
 
 
-def _probe_targets(manifest: Manifest) -> dict[str, list[ResolvedComputeProfile]]:
-    """Every other project machine an agent profile's machine can route to."""
-
-    execution_aliases = sorted(
-        {manifest.agent_profile(profile).run_on for profile in AGENT_EXECUTION_PROFILES}
-    )
-    return {
-        alias: [
-            profile
-            for profile in machine_compute_context(manifest, execution_machine=alias).active
-            if profile.kind == "ssh"
-        ]
-        for alias in execution_aliases
-    }
+def _machine_route(host: str, os_account: str) -> str:
+    return f"{os_account}@{host}" if os_account and "@" not in host else host
 
 
-def probe_compute_connections(
-    manifest: Manifest,
+def probe_machine_reach(
+    target: SpaceMachineRecord,
+    sources: list[SpaceMachineRecord],
     *,
     space_kind: str,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-) -> dict[str, dict[str, dict[str, object]]]:
-    """Probe every other project machine from each machine an agent profile runs on."""
+) -> list[tuple[SpaceMachineRecord, ComputeConnectionProbe]]:
+    """Probe `target` from each machine an agent runs on.
 
-    by_execution = _probe_targets(manifest)
-    targets = [(alias, target) for alias, profiles in by_execution.items() for target in profiles]
-    result: dict[str, dict[str, dict[str, object]]] = {alias: {} for alias in by_execution}
-    if not targets:
-        return result
-    with ThreadPoolExecutor(max_workers=min(len(targets), 8)) as executor:
+    A host-less (server-local) machine has no route from any other machine,
+    and a machine is local to itself, so neither is probed.
+    """
+
+    if not target.host:
+        return []
+    profile = ResolvedComputeProfile(
+        id=target.machine_id,
+        name=target.name,
+        kind="ssh",
+        ssh_target=_machine_route(target.host, target.os_account),
+    )
+    others = [source for source in sources if source.host != target.host]
+    if not others:
+        return []
+    with ThreadPoolExecutor(max_workers=min(len(others), 8)) as executor:
         futures = [
             (
-                alias,
-                target.id,
+                source,
                 executor.submit(
                     _probe_one,
-                    target,
-                    execution_machine=alias,
-                    execution_host=manifest.machine_map[alias].host,
+                    profile,
+                    execution_machine=source.name,
+                    execution_host=source.host,
                     space_kind=space_kind,
                     runner=runner,
                 ),
             )
-            for alias, target in targets
+            for source in others
         ]
-        for alias, compute_id, future in futures:
-            result[alias][compute_id] = future.result().model_dump(mode="json")
-    return result
-
-
-def compute_probe_cache_key(manifest: Manifest) -> ComputeProbeCacheKey:
-    return tuple(
-        (
-            alias,
-            manifest.machine_map[alias].host,
-            tuple((target.id, target.ssh_target) for target in targets),
-        )
-        for alias, targets in _probe_targets(manifest).items()
-    )
+        return [(source, future.result()) for source, future in futures]
 
 
 def machine_compute_context(
     manifest: Manifest,
+    cards: Mapping[str, SpaceMachineRecord],
     *,
     execution_machine: str,
 ) -> ResolvedComputeContext:
@@ -224,7 +207,8 @@ def machine_compute_context(
 
     The machine the agent runs on is local; any other machine is reached over its
     SSH route from there. A host-less (server-local) machine has no route from an
-    agent running elsewhere, so that agent is not told about it.
+    agent running elsewhere, so that agent is not told about it. Each machine's
+    access hint and job manager come from its space card, keyed by host.
     """
 
     machines = manifest.machine_map
@@ -232,8 +216,9 @@ def machine_compute_context(
         raise ValueError(f"unknown execution machine: {execution_machine}")
     profiles = []
     for machine in manifest.machines:
-        hint = machine.access_hint
-        manager = (machine.compute.job_manager if machine.compute else None) or ""
+        card = cards.get(machine.host)
+        hint = card.access_hint if card is not None else ""
+        manager = "slurm" if card is not None and card.job_manager == "slurm" else ""
         if machine.alias == execution_machine:
             profiles.append(
                 ResolvedComputeProfile(
@@ -245,17 +230,12 @@ def machine_compute_context(
                 )
             )
         elif machine.host:
-            route = (
-                f"{machine.os_account}@{machine.host}"
-                if machine.os_account and "@" not in machine.host
-                else machine.host
-            )
             profiles.append(
                 ResolvedComputeProfile(
                     id=machine.alias,
                     name=machine.alias,
                     kind="ssh",
-                    ssh_target=route,
+                    ssh_target=_machine_route(machine.host, machine.os_account),
                     access_hint=hint,
                     job_manager=manager,
                 )
