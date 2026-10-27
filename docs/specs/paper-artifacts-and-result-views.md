@@ -202,13 +202,16 @@ kept. Revisits paint cached lists first.
 buried the outputs a member chose to keep; the chain's own report summarizes them.
 
 Rows group under their branch, the branch with the newest output first; each
-header folds, and the device remembers which branches are folded. With one branch
+header folds, and the device remembers which branches are folded. Archived
+branches sit together in one Archived fold after the live ones, closed until the
+member opens it; the server marks each row's branch as archived. With one branch
 there is no header and each row keeps its branch tag. The composer's From RCP
 picker groups its Reports and Artifacts folders the same way, sharing the folds.
 
-Rows lead with title, a separate Source chat link when verified, and a node title
-link when the displayed graph holds the origin node. Episode outputs have one
-Experiment/Auto-research tag; ordinary outputs do not. Actions sit right. Stored
+Each row is a flat rule in every theme. It leads with the title; one quiet line
+below holds the author, a Source chat link when verified, and a node title link
+when the displayed graph holds the origin node. Clicking the row opens it. Copy
+reference, Download, and Delete are icon buttons at the right. Stored
 identity/time/path remain data, not repetitive row labels.
 
 Report titles come from captured/imported HTML metadata without rereading bytes;

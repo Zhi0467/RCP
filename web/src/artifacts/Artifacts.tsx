@@ -21,7 +21,7 @@ import { StoredArtifactDownload } from "./StoredArtifactDownload";
 import { EpisodeAuthor } from "../experiments/EpisodeRunControls";
 import type { GraphRef, ProjectArtifact } from "../core/types";
 import { BranchTag } from "../core/BranchTag";
-import { BranchGroupSection, branchGroups, useFoldedBranches } from "./BranchGroups";
+import { BranchGroupList, branchGroups } from "./BranchGroups";
 
 export function Artifacts({
   projectId,
@@ -44,7 +44,6 @@ export function Artifacts({
   const error = actionError || (resource.error ? String(resource.error) : null);
   // Grouped as the server orders entries, so the branch with the newest output leads.
   const groups = branchGroups(entries ?? [], (entry) => entry);
-  const { folded, fold } = useFoldedBranches(projectId);
 
   const open = async (
     event: MouseEvent<HTMLAnchorElement | HTMLButtonElement>,
@@ -93,43 +92,44 @@ export function Artifacts({
         }}
       >
         <div>
-          <div className="artifact-entry-heading">
-            <h3>{entry.name}</h3>
+          <h3>{entry.name}</h3>
+          <div className="artifact-entry-meta">
             <EpisodeAuthor author={entry.authorized_by} />
             {!grouped && (
               <BranchTag refs={graphRefs} target={target} name={entry.graph_branch_name} />
             )}
+            {entry.source_chat_href && (
+              <a
+                className="artifact-entry-chat"
+                href={entry.source_chat_href}
+                aria-label={`Open originating chat for ${entry.name}`}
+              >
+                <MessageCircle size={13} aria-hidden="true" /> Source chat
+              </a>
+            )}
+            {entry.source_node_id && sourceNodeTitle !== null && (
+              <button
+                type="button"
+                className="artifact-entry-chat artifact-entry-node"
+                aria-label={`Open source node for ${entry.name}`}
+                onClick={() => onOpenNode(entry.source_node_id!)}
+              >
+                <GitCommitHorizontal size={13} aria-hidden="true" /> {sourceNodeTitle}
+              </button>
+            )}
           </div>
-          {entry.source_chat_href && (
-            <a
-              className="artifact-entry-chat"
-              href={entry.source_chat_href}
-              aria-label={`Open originating chat for ${entry.name}`}
-            >
-              <MessageCircle size={14} aria-hidden="true" /> Source chat
-            </a>
-          )}
-          {entry.source_node_id && sourceNodeTitle !== null && (
-            <button
-              type="button"
-              className="artifact-entry-chat artifact-entry-node"
-              aria-label={`Open source node for ${entry.name}`}
-              onClick={() => onOpenNode(entry.source_node_id!)}
-            >
-              <GitCommitHorizontal size={14} aria-hidden="true" /> {sourceNodeTitle}
-            </button>
-          )}
           {!entry.can_open && !entry.can_download && (
             <p>{entry.unavailable_reason || "Preview unavailable."}</p>
           )}
         </div>
         {!entry.can_open && entry.view === "pdf" && entry.can_download && isDesktopRuntime() && (
           <button
-            className="button compact secondary artifact-entry-open"
+            className="icon-button artifact-entry-action"
             aria-label={`Open ${entry.name}`}
+            title="Open"
             onClick={(event) => void open(event, entry)}
           >
-            <ExternalLink size={14} /> Open
+            <ExternalLink size={15} />
           </button>
         )}
         {entry.artifact_id && entry.available && (
@@ -137,8 +137,7 @@ export function Artifacts({
             projectId={projectId}
             graphTarget={graphTargetFromHash(entry.source_chat_href ?? "")}
             reference={{ kind: "artifact", artifact_id: entry.artifact_id }}
-            className="button compact secondary artifact-entry-copy"
-            showLabel
+            className="icon-button artifact-entry-action"
           />
         )}
         {entry.can_download && entry.download_url && entry.artifact_id && (
@@ -146,31 +145,30 @@ export function Artifacts({
             projectId={projectId}
             artifactId={entry.artifact_id}
             name={entry.name}
-            className="button compact secondary artifact-entry-download"
+            className="icon-button artifact-entry-action"
             href={entry.download_url}
           >
-            <Download size={14} /> Download
+            <Download size={15} />
           </StoredArtifactDownload>
         )}
         {entry.can_open && entry.view !== "pdf" && (
+          // The whole row is this link; the actions above it stay clickable.
           <a
-            className="button compact secondary artifact-entry-open"
+            className="artifact-entry-open"
             href={entry.viewer_url ?? undefined}
             target="_blank"
             rel="noopener noreferrer"
             aria-label={`Open ${entry.name}`}
             onClick={(event) => void open(event, entry)}
-          >
-            <ExternalLink size={14} /> Open
-          </a>
+          />
         )}
         {entry.can_delete && entry.artifact_id && (
           <DeleteArtifactButton
             projectId={projectId}
             artifactId={entry.artifact_id}
             label={`Delete ${entry.name}`}
-            className="button compact secondary artifact-entry-delete"
-            iconSize={14}
+            className="icon-button artifact-entry-action"
+            iconSize={15}
           />
         )}
       </li>
@@ -205,17 +203,14 @@ export function Artifacts({
       ) : groups.length === 1 ? (
         <ul className="artifacts-list">{entries.map((entry) => row(entry, false))}</ul>
       ) : (
-        groups.map((group) => (
-          <BranchGroupSection
-            key={group.key}
-            group={group}
-            refs={graphRefs}
-            open={!folded.has(group.key)}
-            onFold={(closed) => fold(group.key, closed)}
-          >
-            <ul className="artifacts-list">{group.items.map((entry) => row(entry, true))}</ul>
-          </BranchGroupSection>
-        ))
+        <BranchGroupList
+          projectId={projectId}
+          groups={groups}
+          refs={graphRefs}
+          renderItems={(items) => (
+            <ul className="artifacts-list">{items.map((entry) => row(entry, true))}</ul>
+          )}
+        />
       )}
     </section>
   );

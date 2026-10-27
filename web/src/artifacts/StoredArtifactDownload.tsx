@@ -21,7 +21,13 @@ export function StoredArtifactDownload({
   const [saving, setSaving] = useState(false);
   if (!isDesktopRuntime())
     return (
-      <a className={className} href={href} download={name} aria-label={`Download ${name}`}>
+      <a
+        className={className}
+        href={href}
+        download={name}
+        aria-label={`Download ${name}`}
+        title="Download"
+      >
         {children}
       </a>
     );
@@ -32,6 +38,7 @@ export function StoredArtifactDownload({
         type="button"
         disabled={saving}
         aria-label={`Download ${name}`}
+        title="Download"
         onClick={() => {
           setError("");
           setSaving(true);

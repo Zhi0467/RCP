@@ -514,6 +514,8 @@
 }
 
 .artifacts-view {
+  /* A centered flex item does not stretch, so the width is set rather than left to content. */
+  width: 100%;
   max-width: 1100px;
   margin: 0 auto;
   padding: 27px clamp(18px, 4vw, 30px) 60px;
@@ -529,18 +531,28 @@
 
 .artifacts-heading {
   align-items: center;
-  margin-bottom: 1.5rem;
+  margin-bottom: 0;
+}
+
+/* The heading's rule already separates the first row or branch. */
+.artifacts-heading + .artifacts-list > .artifact-entry:first-child,
+.artifacts-heading + .artifacts-branch > summary {
+  border-top: 0;
 }
 
 .artifact-entry h3 {
+  font-size: var(--type-base);
+  font-weight: 500;
   margin: 0;
 }
 
-.artifact-entry-heading {
+.artifact-entry-meta {
+  align-items: center;
+  color: var(--muted);
   display: flex;
-  align-items: baseline;
   flex-wrap: wrap;
-  gap: 6px 10px;
+  font-size: var(--type-sm);
+  gap: 4px 14px;
 }
 
 .artifacts-list {
@@ -567,16 +579,27 @@
   color: var(--muted);
   font-size: var(--type-sm);
 }
+.artifacts-branch .artifact-entry,
+.artifacts-archived > .artifacts-branch > summary {
+  padding-left: 22px;
+}
+.artifacts-archived .artifact-entry {
+  padding-left: 44px;
+}
+.artifacts-archived > summary {
+  color: var(--muted);
+}
 
 .artifact-entry {
-  padding: 1.25rem 0;
+  align-items: center;
+  gap: 6px;
+  padding: 0.75rem 0;
   border-top: 1px solid var(--rule);
   position: relative;
 }
 
 /* One preview link owns the whole row, including its name and whitespace. */
-.artifact-entry-open::after {
-  content: "";
+.artifact-entry > .artifact-entry-open {
   position: absolute;
   inset: 0;
   border-radius: inherit;
@@ -584,6 +607,11 @@
 
 .artifact-entry .artifact-entry-open:active {
   transform: none;
+}
+
+.artifact-entry:has(.artifact-entry-open:hover) h3 {
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .artifact-entry:has(.artifact-entry-open:focus-visible) {
@@ -595,18 +623,16 @@
   /* Fill the row so every action button stays at its right end. */
   flex: 1;
   display: grid;
-  gap: 8px;
+  gap: 4px;
+  margin-right: 10px;
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
-.artifact-entry .button {
+.artifact-entry-action {
   flex-shrink: 0;
-}
-
-.artifact-entry-download,
-.artifact-entry-copy,
-.artifact-entry-delete {
+  min-height: 30px;
+  padding: 0 7px;
   position: relative;
   z-index: 1;
 }
@@ -620,20 +646,6 @@
   border-color: var(--red);
 }
 
-/* On a phone the name takes its own line and the actions wrap below it. */
-@media (max-width: 560px) {
-  .artifact-entry {
-    flex-wrap: wrap;
-    gap: 0.5rem;
-  }
-  .artifact-entry > div {
-    flex-basis: 100%;
-  }
-  .artifact-entry-copy .copy-reference-label {
-    display: none;
-  }
-}
-
 .artifact-entry-node {
   background: none;
   border: 0;
@@ -645,14 +657,17 @@
 
 .artifact-entry-chat {
   align-items: center;
-  color: var(--cobalt);
+  color: inherit;
   display: inline-flex;
-  gap: 6px;
-  justify-self: start;
+  gap: 5px;
   position: relative;
+  text-decoration: none;
+  z-index: 1;
+}
+.artifact-entry-chat:hover {
+  color: var(--ink);
   text-decoration: underline;
   text-underline-offset: 3px;
-  z-index: 1;
 }
 
 /* Actor roster: colors inherit both theme and display mode. */

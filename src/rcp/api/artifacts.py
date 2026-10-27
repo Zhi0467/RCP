@@ -92,6 +92,7 @@ class SavedArtifactResponse(BaseModel):
     # The owning branch, resolved here so the page never guesses from a link; None is main.
     graph_branch_id: str | None = None
     graph_branch_name: str = "main"
+    graph_branch_archived: bool = False
     can_delete: bool = False
 
 
@@ -406,11 +407,12 @@ def saved_artifacts(
 def _name_artifact_branches(
     store: AppStore, project_id: str, entries: list[SavedArtifactResponse]
 ) -> None:
-    """Name each entry's branch from its producing task, else its episode.
+    """Name each entry's branch, and whether it is archived, from its producing task, else its episode.
 
     A worker spawned onto a fork shares its parent's episode but not its target.
     """
     names = store.branch_names(project_id)
+    archived = {record.branch_id for record in store.graph_branches(project_id) if record.archived}
     for entry in entries:
         episode = store.episode(entry.episode_id) if entry.episode_id else None
         task = store.agent_task(entry.operation_id) if entry.operation_id else None
@@ -423,6 +425,7 @@ def _name_artifact_branches(
         if target.kind == "branch" and target.branch_id is not None:
             entry.graph_branch_id = target.branch_id
             entry.graph_branch_name = names.get(target.branch_id, target.branch_id[:8])
+            entry.graph_branch_archived = target.branch_id in archived
 
 
 def _stored_artifact(store: AppStore, project_id: str, artifact_id: str):

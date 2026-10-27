@@ -1,13 +1,16 @@
 import { useState, type ReactNode } from "react";
-import { ChevronRight } from "lucide-react";
+import { Archive, ChevronRight } from "lucide-react";
 import { BranchTag } from "../core/BranchTag";
 import type { GraphRef, ProjectArtifact } from "../core/types";
 
 const MAIN = "main";
+// Stored when the Archived fold is open, so it starts closed on a new device.
+const ARCHIVED_OPEN = "archived-open";
 
 export interface BranchGroup<T> {
   key: string;
   name: string;
+  archived: boolean;
   items: T[];
 }
 
@@ -17,7 +20,12 @@ export function branchGroups<T>(items: T[], artifactOf: (item: T) => ProjectArti
   for (const item of items) {
     const artifact = artifactOf(item);
     const key = artifact.graph_branch_id ?? MAIN;
-    const group = groups.get(key) ?? { key, name: artifact.graph_branch_name, items: [] };
+    const group = groups.get(key) ?? {
+      key,
+      name: artifact.graph_branch_name,
+      archived: artifact.graph_branch_archived,
+      items: [],
+    };
     group.items.push(item);
     groups.set(key, group);
   }
@@ -38,7 +46,7 @@ function readFolded(projectId: string): Set<string> {
 }
 
 /** The branches this device keeps folded, shared by the Artifacts page and the picker. */
-export function useFoldedBranches(projectId: string) {
+function useFoldedBranches(projectId: string) {
   const [folded, setFolded] = useState(() => readFolded(projectId));
   const fold = (key: string, closed: boolean) => {
     if (folded.has(key) === closed) return;
@@ -55,8 +63,57 @@ export function useFoldedBranches(projectId: string) {
   return { folded, fold };
 }
 
+/** Live branches in order, then every archived branch inside one Archived fold. */
+export function BranchGroupList<T>({
+  projectId,
+  groups,
+  refs,
+  renderItems,
+}: {
+  projectId: string;
+  groups: BranchGroup<T>[];
+  refs: readonly GraphRef[] | null | undefined;
+  renderItems: (items: T[]) => ReactNode;
+}) {
+  const { folded, fold } = useFoldedBranches(projectId);
+  const section = (group: BranchGroup<T>) => (
+    <BranchGroupSection
+      key={group.key}
+      group={group}
+      refs={refs}
+      open={!folded.has(group.key)}
+      onFold={(closed) => fold(group.key, closed)}
+    >
+      {renderItems(group.items)}
+    </BranchGroupSection>
+  );
+  const archived = groups.filter((group) => group.archived);
+  return (
+    <>
+      {groups.filter((group) => !group.archived).map(section)}
+      {archived.length > 0 && (
+        <details
+          className="artifacts-branch artifacts-archived"
+          open={folded.has(ARCHIVED_OPEN)}
+          onToggle={(event) => fold(ARCHIVED_OPEN, event.currentTarget.open)}
+        >
+          <summary>
+            <ChevronRight className="artifacts-branch-chevron" size={14} aria-hidden="true" />
+            <Archive size={14} aria-hidden="true" />
+            <span>Archived</span>
+            <span className="artifacts-branch-count">
+              {archived.reduce((count, group) => count + group.items.length, 0)}
+            </span>
+          </summary>
+          {archived.map(section)}
+        </details>
+      )}
+    </>
+  );
+}
+
 /** One branch's foldable section: chevron, branch tag, and item count. */
-export function BranchGroupSection({
+function BranchGroupSection({
   group,
   refs,
   open,

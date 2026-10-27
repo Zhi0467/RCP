@@ -3594,6 +3594,7 @@ export interface ProjectArtifact {
   /** The owning branch, resolved by the server; null is main. */
   graph_branch_id: string | null;
   graph_branch_name: string;
+  graph_branch_archived: boolean;
   can_delete: boolean;
 }
 
