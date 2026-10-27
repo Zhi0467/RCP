@@ -192,6 +192,21 @@ def test_state_research_is_protected_when_state_repository_is_not_admitted(
     )
 
 
+def test_a_retained_scope_contract_ignores_which_paths_were_absent(
+    manifest: Manifest, tmp_path: Path
+) -> None:
+    # Episode reports and branch merges retain this JSON as an immutable contract
+    # and re-record it on every re-entry, including ones started by an older release.
+    resolved = _resolve_local(manifest, tmp_path, aliases=["repo-a", "repo-b"])
+    scope = resolved.model_copy(
+        update={"absent_protected_paths": resolved.protected_write_paths[:1]}
+    )
+    other = resolved.model_copy(update={"absent_protected_paths": []})
+    assert scope.model_dump_json() == other.model_dump_json()
+    assert "absent_protected_paths" not in json.loads(scope.model_dump_json())
+    assert ProjectWriteScope.model_validate_json(scope.model_dump_json()) == other
+
+
 def test_scope_fingerprint_is_deterministic_and_binds_material_scope_fields(
     manifest: Manifest, tmp_path: Path
 ) -> None:
