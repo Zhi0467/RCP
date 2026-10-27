@@ -18,13 +18,22 @@
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/lang-markdown": "6.5.2",
+    "@codemirror/language": "6.13.1",
+    "@codemirror/legacy-modes": "6.5.5",
+    "@codemirror/state": "6.7.6",
+    "@codemirror/view": "6.43.15",
     "@tailwindcss/vite": "^4.1.11",
     "@tauri-apps/api": "^2.11.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "codemirror-lang-typst": "0.6.0",
     "d3-force": "^3.0.0",
     "katex": "^0.18.10",
+    "lib0": "0.2.119",
     "lucide-react": "^0.525.0",
+    "pdfjs-dist": "6.4.299",
     "qrcode-generator": "^2.0.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
@@ -33,7 +42,12 @@
     "remark-gfm": "^4.0.1",
     "remark-math-extended": "^6.1.1",
     "remark-parse": "^11.0.0",
-    "unified": "^11.0.5"
+    "unified": "^11.0.5",
+    "y-codemirror.next": "0.3.6",
+    "y-indexeddb": "9.0.12",
+    "y-protocols": "1.0.7",
+    "y-websocket": "3.1.0",
+    "yjs": "13.6.33"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
@@ -48,7 +62,8 @@
     "tailwindcss": "^4.1.11",
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.71.0",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "ws": "8.22.0"
   },
   "overrides": {
     "katex": "$katex"

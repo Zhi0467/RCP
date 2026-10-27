@@ -13,9 +13,6 @@ const server = await createServer({
 });
 const { NodeChat, reconcileChatRunScope } = await server.ssrLoadModule("/src/chat/NodeChat.tsx");
 const { chatDraftStorageKey } = await server.ssrLoadModule("/src/chat/chatWorkspace.ts");
-const { PaperWorkspace, swapPaperBuffers } = await server.ssrLoadModule(
-  "/src/paper/PaperWorkspace.tsx",
-);
 
 const { RefreshRuntimeContext } = await server.ssrLoadModule("/src/core/useResource.ts");
 const { ResourceStore } = await server.ssrLoadModule("/src/core/resourceStore.ts");
@@ -144,100 +141,6 @@ test("a persisted chat draft is restored only for the member who wrote it", () =
   } finally {
     globalThis.localStorage = previous;
   }
-});
-
-test("paper preview renders unsaved Markdown in the editor pane and keeps status", () => {
-  const previousStorage = globalThis.localStorage;
-  const storageKeys = [];
-  globalThis.localStorage = {
-    getItem(key) {
-      storageKeys.push(key);
-      return key === "rcp:paper-view:project" ? "preview" : null;
-    },
-  };
-  let html;
-  try {
-    html = renderToStaticMarkup(
-      React.createElement(PaperWorkspace, {
-        apiBase: "/api/projects/project",
-        project,
-        initialPaper: {
-          content: "## Methods\n\nDraft words",
-          sync_state: "synced",
-          canonical_available: true,
-        },
-        tasks: [],
-        activeTask: null,
-        onStartTask() {},
-        onPaperChange() {},
-      }),
-    );
-
-    assert.match(html, /class="paper-status"><span>4[^<]*<\/span>/);
-  } finally {
-    if (previousStorage === undefined) delete globalThis.localStorage;
-    else globalThis.localStorage = previousStorage;
-  }
-
-  assert.deepEqual(storageKeys, ["rcp:paper-view:project"]);
-
-  assert.match(html, /aria-pressed="false"/);
-  assert.match(html, /aria-pressed="true"/);
-
-  assert.match(html, /<h2>Methods<\/h2>/);
-
-  assert.match(html, /sync-state synced/);
-
-  assert.match(html, />Codex</);
-  assert.doesNotMatch(html, /agent-config-summary/);
-});
-
-test("behind paper exposes one reversible Incoming swap without destructive controls", () => {
-  const previousStorage = globalThis.localStorage;
-  globalThis.localStorage = {
-    getItem(key) {
-      return key === "rcp:paper-view:project" ? "incoming" : null;
-    },
-  };
-  let html;
-  try {
-    html = renderToStaticMarkup(
-      React.createElement(PaperWorkspace, {
-        apiBase: "/api/projects/project",
-        project,
-        initialPaper: {
-          content: "## Local draft\n\nTyped words",
-          sync_state: "behind",
-          base_hash: "old-base",
-          canonical_hash: "incoming-hash",
-          incoming_content: "## Incoming canonical\n\nRemote words",
-          canonical_available: true,
-        },
-        tasks: [],
-        activeTask: null,
-        onStartTask() {},
-        onPaperChange() {},
-      }),
-    );
-
-    assert.match(html, /class="button compact secondary paper-apply-incoming"/);
-  } finally {
-    if (previousStorage === undefined) delete globalThis.localStorage;
-    else globalThis.localStorage = previousStorage;
-  }
-
-  assert.match(html, /aria-pressed="false"/);
-  assert.match(html, /aria-pressed="false"/);
-  assert.match(html, /aria-pressed="true"/);
-  assert.match(html, /aria-pressed="true"/);
-  assert.match(html, /paper-markdown-preview chat-markdown/);
-  assert.match(html, /<h2>Incoming canonical<\/h2>/);
-  assert.match(html, /sync-state behind/);
-  assert.doesNotMatch(html, /conflict-banner/);
-
-  const first = swapPaperBuffers("local", "canonical");
-  assert.deepEqual(first, ["canonical", "local"]);
-  assert.deepEqual(swapPaperBuffers(...first), ["local", "canonical"]);
 });
 
 test("chat run scope preserves valid choices, prunes removed repositories, and resets", () => {
