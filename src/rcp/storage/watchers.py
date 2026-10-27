@@ -1172,14 +1172,24 @@ class WatcherStoreMixin(StoreMixinBase):
         self,
         connection: sqlite3.Connection,
     ) -> list[list[StoredWatcherRecord]]:
-        """Build indivisible ready groups plus ordinary completed observer units."""
+        """Build indivisible ready groups plus ordinary completed observer units.
+
+        A lone observer that stays unobservable as long as a group member may
+        wakes its agent with the error, as a group does, rather than holding its
+        work shut forever.
+        """
 
         ungrouped_rows = connection.execute(
             """
             SELECT * FROM watchers
-            WHERE group_id IS NULL AND status = 'completed' AND notified = 0
+            WHERE group_id IS NULL AND notified = 0
+              AND (
+                status = 'completed'
+                OR (status = 'degraded' AND consecutive_error_count >= ?)
+              )
             ORDER BY completed_at, created_at, watcher_id
-            """
+            """,
+            (WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT,),
         ).fetchall()
         grouped_rows = connection.execute(
             """

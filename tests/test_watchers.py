@@ -963,6 +963,26 @@ def test_fifth_group_observation_error_is_ready_but_remains_degraded(store) -> N
     assert unknown.consecutive_error_count == 5
 
 
+def test_lone_observer_unobservable_as_long_as_a_group_member_wakes(store) -> None:
+    # A check that loses sight of its job (squeue forgets a finished job) must
+    # not hold its episode shut forever; it wakes once, still degraded.
+    for watcher_id, errors in (("lone-early", 4), ("lone-unknown", 5)):
+        store.create_watchers(
+            [
+                _record(
+                    watcher_id, status="degraded", continuation=_loop_continuation("episode")
+                ).model_copy(
+                    update={"consecutive_error_count": errors, "last_error": "Invalid job id"}
+                )
+            ]
+        )
+
+    groups = store.completed_watcher_groups()
+
+    assert [[item.watcher_id for item in group] for group in groups] == [["lone-unknown"]]
+    assert store.watcher("lone-unknown").status == "degraded"
+
+
 def test_claimed_diagnostic_group_remains_history_not_live_work(store) -> None:
     episode_id = str(uuid.uuid4())
     _bound_episode(store, episode_id)

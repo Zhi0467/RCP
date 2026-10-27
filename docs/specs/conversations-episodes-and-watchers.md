@@ -675,7 +675,11 @@ their own bounded timeout owner so a lost client cannot abandon the check.
 Exit `0` means the named work is gone, `1` means still present, and any other result is
 unobservable. Active observations use the normal interval; repeated failures
 persist bounded exponential backoff and identity jitter. Only exit `1` resets
-the error count. A degraded observation is never inferred complete or dead.
+the error count. A degraded observation is never inferred complete or dead, but
+an observer still unobservable after as many consecutive errors as a group member
+needs wakes its agent once with the error, alone or in its group, and then stops
+checking. A lone check that loses sight of its job, as `squeue` does once Slurm
+forgets a finished job, therefore cannot hold its episode shut.
 
 Shell completion reports operational liveness, not scientific success. The
 Experiment watcher-state file and generic Work wake message, including child
