@@ -192,6 +192,15 @@ export function ProjectSettings({
   const [saving, setSaving] = useState(false);
   const [clearingCaches, setClearingCaches] = useState(false);
   const spaceMachines = useSpaceMachines();
+  // A settings watermark move (another tab's card edit, a route check) brings a
+  // new machine list; the cards follow it, keeping drafts still being typed.
+  const machinesSeen = useRef(project.machines);
+  const reloadSpaceMachines = spaceMachines.reload;
+  useEffect(() => {
+    if (machinesSeen.current === project.machines) return;
+    machinesSeen.current = project.machines;
+    void reloadSpaceMachines();
+  }, [project.machines, reloadSpaceMachines]);
   // Machines show as tiles, all closed at first; one opens at a time so the
   // section stays short.
   const [openMachine, setOpenMachine] = useState<string | null>(null);
@@ -598,7 +607,7 @@ export function ProjectSettings({
               const removable = group.every((machine) => machine.removable);
               return (
                 <MachineCard
-                  key={key}
+                  key={`${project.id}:${record?.machine_id ?? key}`}
                   title={record?.name ?? group.map((item) => item.alias).join(", ")}
                   hostLabel={machineHostLabel(group[0].host, spaceKind)}
                   osAccount={group[0].os_account}

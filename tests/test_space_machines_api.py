@@ -668,6 +668,12 @@ def test_older_manifest_machine_settings_move_onto_the_card_once(manifest, tmp_p
     # must not settle a card another project shares.
     record_space_machines(store, load_manifest(projects[0].locator))
     assert store.space_machine_for("gpu.example").legacy_settings_pending
+    # While any project's manifest cannot be read, no card settles.
+    unreadable = SimpleNamespace(project_id="c", locator=str(tmp_path / "missing.toml"))
+    monkeypatch.setattr(store, "projects", lambda: [*projects, unreadable])
+    fill_space_machines(store)
+    assert store.space_machine_for("gpu.example").legacy_settings_pending
+    monkeypatch.setattr(store, "projects", lambda: projects)
     fill_space_machines(store)
 
     card = store.space_machine_for("gpu.example")
@@ -690,6 +696,8 @@ def test_card_provider_paths_merge_and_a_bad_edit_changes_nothing(app) -> None:
         item for item in client.get("/api/space/machines").json()["machines"] if not item["host"]
     )
     path = f"/api/space/machines/{local['machine_id']}"
+    with _store(app).connection() as connection:
+        connection.execute("UPDATE space_machines SET legacy_settings_pending = 1")
 
     first = client.patch(path, json={"provider_paths": {"codex": "/opt/agents/codex"}})
     second = client.patch(path, json={"provider_paths": {"claude": "/opt/agents/claude"}})
@@ -703,6 +711,8 @@ def test_card_provider_paths_merge_and_a_bad_edit_changes_nothing(app) -> None:
     card = _store(app).space_machine(local["machine_id"])
     assert card.provider_paths == {"codex": "/opt/agents/codex", "claude": "/opt/agents/claude"}
     assert card.access_hint == ""
+    # The human's edit owns the card; no later start refills it from a manifest.
+    assert not card.legacy_settings_pending
 
 
 def test_provider_resolve_records_the_discovered_executable_on_the_card(app) -> None:

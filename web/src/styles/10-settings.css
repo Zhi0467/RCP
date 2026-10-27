@@ -2196,6 +2196,7 @@ button.agent-provider-label {
 }
 .machine-compute input.failed,
 .provider-path-row input.failed,
+.machine-card > header .icon-button.failed,
 .machine-compute .icon-button.failed,
 .provider-path-row .button.failed {
   border-color: var(--red);
@@ -3143,14 +3144,10 @@ button.agent-provider-label {
   font-size: var(--type-2xs);
   font-style: normal;
 }
-.machine-card-error,
 .machine-card-projects {
   font-size: var(--type-2xs);
   margin: 0;
   padding: 8px 12px 0;
-}
-.machine-card-error {
-  color: var(--red);
 }
 .machine-card-projects {
   color: var(--ink-soft);

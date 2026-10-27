@@ -77,14 +77,14 @@ export function MachineCard({
   // Every write on this card queues here, so no earlier answer lands after a newer one.
   const writes = useRef(createMachineWriteQueue(updateSpaceMachine)).current;
   const save = writes.save;
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<FoldFailure | null>(null);
   const act = async (kind: "delete" | "unlink", action: () => Promise<void>) => {
     setBusy(kind);
-    setError(null);
+    setFailure(null);
     try {
       await writes.run(action);
-    } catch (failure) {
-      setError(errorMessage(failure));
+    } catch (caught) {
+      setFailure({ key: kind, message: errorMessage(caught) });
     } finally {
       setBusy(null);
     }
@@ -111,11 +111,12 @@ export function MachineCard({
         </span>
         {onRemoveFromProject && (
           <button
-            className="icon-button"
             type="button"
             data-machine-action="remove-from-project"
             aria-label="Remove from project"
             title="Remove from project"
+            {...failedProps(failure, "unlink")}
+            className={`icon-button${failure?.key === "unlink" ? " failed" : ""}`}
             disabled={writesDisabled || busy !== null}
             onClick={() => void act("unlink", onRemoveFromProject)}
           >
@@ -124,10 +125,11 @@ export function MachineCard({
         )}
         {onDelete && (
           <button
-            className="icon-button"
             type="button"
             data-machine-action="delete"
             aria-label={`Remove ${title}`}
+            {...failedProps(failure, "delete")}
+            className={`icon-button${failure?.key === "delete" ? " failed" : ""}`}
             disabled={writesDisabled || busy !== null}
             onClick={() => void act("delete", onDelete)}
           >
@@ -135,11 +137,6 @@ export function MachineCard({
           </button>
         )}
       </header>
-      {error && (
-        <p className="machine-card-error" role="alert">
-          {error}
-        </p>
-      )}
       {record && (
         <>
           {record.projects.length > 0 && (
@@ -228,8 +225,9 @@ function useSavedText(saved: string, commit: (value: string) => Promise<void>) {
   const [base, setBase] = useState(saved);
   const [saving, setSaving] = useState(false);
   if (base !== saved) {
+    // A newer saved value replaces the draft only when nobody is typing over it.
     setBase(saved);
-    setDraft(saved);
+    if (draft === base || draft.trim() === saved) setDraft(saved);
   }
   const submit = () => {
     const value = draft.trim();
@@ -312,6 +310,8 @@ function ComputeFold(props: MachineFoldProps) {
   };
   const routes =
     record.job_manager === "slurm" ? (["scheduler", "helper"] as const) : (["helper"] as const);
+  // A route check describes the saved settings; an edit not yet saved masks it.
+  const unsaved = toggling || jobsRoot.saving || jobsRoot.draft.trim() !== record.jobs_root;
   return (
     <Fold
       className="machine-writable-paths machine-compute"
@@ -369,7 +369,7 @@ function ComputeFold(props: MachineFoldProps) {
         </label>
       </div>
       {routes.map((route) => {
-        const probe = record.compute_probes[route];
+        const probe = unsaved ? null : record.compute_probes[route];
         const presentation = computeProbePresentation(probe);
         return (
           <div

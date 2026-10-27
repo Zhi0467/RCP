@@ -338,21 +338,24 @@ def record_space_machines(store: AppStore, manifest: Manifest) -> None:
 def fill_space_machines(store: AppStore) -> None:
     """Fill the space machine list from every registered project's manifest.
 
-    Cards settle only after every readable manifest merged, so a machine two
-    projects share takes Slurm from either. A card whose every project failed
-    to read stays pending for the next start.
+    Cards settle only after every manifest merged, so a machine two projects
+    share takes Slurm from either. While any manifest fails to read, which
+    machines it names is unknown, so no card settles until a start reads all.
     """
 
     hosts: set[str] = set()
+    unread = False
     for project in store.projects():
         try:
             manifest = load_manifest(project.locator)
         except (OSError, ValueError) as exc:
             _LOGGER.warning("Could not read machines for project %s: %s", project.project_id, exc)
+            unread = True
             continue
         record_space_machines(store, manifest)
         hosts.update(machine.host for machine in manifest.machines)
-    store.settle_legacy_machine_settings(hosts)
+    if not unread:
+        store.settle_legacy_machine_settings(hosts)
 
 
 def rebind_restored_project_registration(

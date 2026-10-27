@@ -104,6 +104,16 @@ class SpaceMachineStoreMixin(StoreMixinBase):
                 ),
             )
 
+    def decide_job_manager(self, machine_id: str, job_manager: str) -> None:
+        """Record a detected job manager unless someone decided first."""
+
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE space_machines SET job_manager = ?, updated_at = ? "
+                "WHERE machine_id = ? AND job_manager IS NULL",
+                (job_manager, self.now(), machine_id),
+            )
+
     def settle_legacy_machine_settings(self, hosts: Iterable[str]) -> None:
         """Every manifest naming these machines was read; their cards own the settings now."""
 

@@ -51,9 +51,10 @@ project's Settings silently missed the others.
 Older builds kept `provider_paths`, `compute` and `access_hint` on the
 manifest's machine entries. A card that existed before this layout, or that a
 manifest creates, imports them once: Slurm turns on when any project named it,
-and every other value fills only an empty field. Only startup settles a card,
-after reading every project; registering one project merges without settling.
-A card whose projects all failed to read stays pending.
+and every other value fills only an empty field. The import runs before
+startup recovery relaunches work. Only a start that read every project settles
+cards; registering one project merges without settling. A human edit to a card
+settles it, so no later start refills a field the human cleared.
 The keys stay inert in the manifest, so backups record the file as written.
 
 SSH
