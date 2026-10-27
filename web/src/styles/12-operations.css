@@ -531,13 +531,7 @@
 
 .artifacts-heading {
   align-items: center;
-  margin-bottom: 0;
-}
-
-/* The heading's rule already separates the first row or branch. */
-.artifacts-heading + .artifacts-list > .artifact-entry:first-child,
-.artifacts-heading + .artifacts-branch > summary {
-  border-top: 0;
+  border-bottom: 0;
 }
 
 .artifact-entry h3 {
@@ -556,18 +550,37 @@
 }
 
 .artifacts-list {
+  display: grid;
+  gap: 2px;
   list-style: none;
   padding: 0;
   margin: 0;
 }
 
+/* Each branch is one raised box holding its rows; spacing, not rules, separates them. */
+.artifacts-branch,
+.artifacts-heading + .artifacts-list {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  margin-bottom: 12px;
+  padding: 4px 6px;
+}
+.artifacts-branch > .artifacts-list {
+  padding-bottom: 4px;
+}
+/* An archived branch sits as a well inside the Archived box. */
+.artifacts-archived > .artifacts-branch {
+  background: var(--paper);
+  margin: 0 0 6px;
+}
 .artifacts-branch > summary {
   align-items: center;
-  border-top: 1px solid var(--rule);
+  border-radius: 9px;
   cursor: pointer;
   display: flex;
   gap: 8px;
-  padding: 0.75rem 0;
+  padding: 8px;
 }
 .artifacts-branch > summary::-webkit-details-marker {
   display: none;
@@ -579,23 +592,27 @@
   color: var(--muted);
   font-size: var(--type-sm);
 }
-.artifacts-branch .artifact-entry,
-.artifacts-archived > .artifacts-branch > summary {
-  padding-left: 22px;
-}
-.artifacts-archived .artifact-entry {
-  padding-left: 44px;
-}
 .artifacts-archived > summary {
   color: var(--muted);
 }
 
 .artifact-entry {
   align-items: center;
+  border-radius: 9px;
   gap: 6px;
-  padding: 0.75rem 0;
-  border-top: 1px solid var(--rule);
+  padding: 10px 8px 10px 30px;
   position: relative;
+}
+.artifacts-heading + .artifacts-list > .artifact-entry {
+  padding-left: 8px;
+}
+.artifact-entry:has(.artifact-entry-open:hover) {
+  background: var(--paper);
+}
+@media (max-width: 560px) {
+  .artifact-entry {
+    padding-left: 8px;
+  }
 }
 
 /* One preview link owns the whole row, including its name and whitespace. */

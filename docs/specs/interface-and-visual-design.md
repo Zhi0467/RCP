@@ -304,8 +304,11 @@ card adds only an icon-only unlink while no repository or agent profile uses the
 machine. Cards group Compute, provider executables, provider limits, writable
 paths, and hidden folders. Folder pickers have breadcrumbs,
 one-level/filter/paging, protected entries, and Use this folder. Slurm opts into
-scheduler submission and starts on when the machine has it; Jobs root sets helper
-storage. Each field saves on its own. No scheduler resource form exists.
+scheduler submission and starts on when the machine has it; its checkbox shares
+a line with the compute check. Jobs root sets helper storage. Jobs root and Access
+hint name themselves by placeholder, with no label above. Each field saves on its
+own. No scheduler resource form exists. A machine card is one raised box, and
+each section is a rounded well inside it, not a ruled row.
 
 Card sections and server status sections share one fold, closed by default: a
 +/− summary with a bold title and a short state (count, badge, or status word);

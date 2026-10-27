@@ -208,7 +208,8 @@ member opens it; the server marks each row's branch as archived. With one branch
 there is no header and each row keeps its branch tag. The composer's From RCP
 picker groups its Reports and Artifacts folders the same way, sharing the folds.
 
-Each row is a flat rule in every theme. It leads with the title; one quiet line
+Each branch is one raised box holding its rows, with no rules between them; an
+archived branch is a well inside the Archived box. A row leads with the title; one quiet line
 below holds the author, a Source chat link when verified, and a node title link
 when the displayed graph holds the origin node. Clicking the row opens it. Copy
 reference, Download, and Delete are icon buttons at the right. Stored

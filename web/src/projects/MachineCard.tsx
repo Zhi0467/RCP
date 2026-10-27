@@ -318,23 +318,8 @@ function ComputeFold(props: MachineFoldProps) {
       title="Compute"
       data-machine-fold="compute"
     >
-      <header>
-        <button
-          type="button"
-          data-machine-action="check-compute"
-          aria-label="Check compute again"
-          title="Check compute again"
-          {...failedProps(failure, "check")}
-          className={`icon-button${failure?.key === "check" ? " failed" : ""}`}
-          disabled={writesDisabled || checking}
-          onClick={() => void check()}
-        >
-          {checking ? <LoaderCircle className="spin" size={14} /> : <RotateCw size={14} />}
-        </button>
-      </header>
       <div className="compute-connection-fields">
-        <label>
-          <span>Use Slurm</span>
+        <label className="compute-slurm">
           <input
             type="checkbox"
             data-machine-setting="job_manager"
@@ -347,26 +332,37 @@ function ComputeFold(props: MachineFoldProps) {
               void update("job_manager", { job_manager }).finally(() => setToggling(false));
             }}
           />
+          <span>Use Slurm</span>
         </label>
-        <label>
-          <span>Jobs root</span>
-          <input
-            {...jobsRoot.inputProps}
-            {...failedProps(failure, "jobs_root")}
-            data-machine-setting="jobs_root"
-            disabled={writesDisabled || jobsRoot.saving}
-          />
-        </label>
-        <label>
-          <span>Access hint</span>
-          <input
-            {...accessHint.inputProps}
-            {...failedProps(failure, "access_hint")}
-            maxLength={512}
-            data-machine-setting="access_hint"
-            disabled={writesDisabled || accessHint.saving}
-          />
-        </label>
+        <button
+          type="button"
+          data-machine-action="check-compute"
+          aria-label="Check compute again"
+          title="Check compute again"
+          {...failedProps(failure, "check")}
+          className={`icon-button${failure?.key === "check" ? " failed" : ""}`}
+          disabled={writesDisabled || checking}
+          onClick={() => void check()}
+        >
+          {checking ? <LoaderCircle className="spin" size={14} /> : <RotateCw size={14} />}
+        </button>
+        <input
+          {...jobsRoot.inputProps}
+          {...failedProps(failure, "jobs_root")}
+          aria-label="Jobs root"
+          placeholder="Jobs root folder"
+          data-machine-setting="jobs_root"
+          disabled={writesDisabled || jobsRoot.saving}
+        />
+        <input
+          {...accessHint.inputProps}
+          {...failedProps(failure, "access_hint")}
+          aria-label="Access hint"
+          placeholder="Access hint for agents"
+          maxLength={512}
+          data-machine-setting="access_hint"
+          disabled={writesDisabled || accessHint.saving}
+        />
       </div>
       {routes.map((route) => {
         const probe = unsaved ? null : record.compute_probes[route];

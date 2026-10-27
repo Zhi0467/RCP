@@ -2205,8 +2205,42 @@ button.agent-provider-label {
 .machine-compute input[type="checkbox"].failed {
   outline: 2px solid var(--red);
 }
+/* Use Slurm and the check share one line; the two fields carry their names as hints. */
 .machine-compute .compute-connection-fields {
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  align-items: center;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  padding: 4px 0 0;
+}
+.machine-compute .compute-slurm {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+.machine-compute .compute-slurm > span {
+  color: var(--ink);
+  font: 600 var(--type-xs) var(--ui);
+  letter-spacing: 0;
+  text-transform: none;
+}
+.machine-compute .compute-connection-fields > .icon-button {
+  justify-self: end;
+}
+@media (max-width: 560px) {
+  .machine-compute .compute-connection-fields > input {
+    grid-column: 1 / -1;
+  }
+  /* The host label takes the second line, so the actions stay beside the name. */
+  .provider-machine.machine-card > header > span {
+    flex-basis: 100%;
+    margin-left: 0;
+    order: 1;
+  }
+  .provider-machine.machine-card > header > .icon-button {
+    margin-left: auto;
+  }
+  .provider-machine.machine-card > header > .icon-button ~ .icon-button {
+    margin-left: 0;
+  }
 }
 .machine-compute input[type="checkbox"] {
   accent-color: var(--cobalt);
@@ -2216,6 +2250,10 @@ button.agent-provider-label {
 .machine-compute .compute-probe {
   display: flex;
   flex-wrap: wrap;
+  padding: 4px 0;
+}
+.machine-compute .compute-probe + .compute-probe {
+  border-top: 0;
 }
 .compute-probe-list {
   border-top: 1px solid var(--line);
@@ -3147,7 +3185,28 @@ button.agent-provider-label {
 .machine-card-projects {
   font-size: var(--type-2xs);
   margin: 0;
-  padding: 8px 12px 0;
+  padding: 0 6px;
+}
+/* A machine is one box; each section inside it is its own rounded well, not a ruled row. */
+.provider-machine.machine-card {
+  border-radius: 12px;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+}
+.provider-machine.machine-card > header {
+  border-bottom: 0;
+  flex-wrap: wrap;
+  padding: 2px 4px 4px;
+}
+.provider-machine.machine-card > header strong {
+  white-space: nowrap;
+}
+.machine-card > .fold {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 9px 12px;
 }
 .machine-card-projects {
   color: var(--ink-soft);

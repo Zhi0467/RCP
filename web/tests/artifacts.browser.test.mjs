@@ -189,7 +189,7 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
       await page.getByRole("link", { name: "Open Validation report" }).getAttribute("target"),
       "_blank",
     );
-    // Rows stay flat rules in every theme, like the branch headers between them.
+    // In Aqua the branch is the raised box; its rows sit flat inside it.
     const report = page.locator(".artifact-entry").filter({ hasText: "Validation report" });
     const unavailable = page.locator(".artifact-entry").filter({ hasText: "Unavailable plot" });
     assert.equal(await unavailable.getByRole("link").count(), 0);
@@ -199,6 +199,12 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
         document.documentElement.dataset.colorMode = mode;
       }, mode);
       assert.equal(await report.evaluate((row) => getComputedStyle(row).boxShadow), "none");
+      assert.notEqual(
+        await report.evaluate(
+          (row) => getComputedStyle(row.closest(".artifacts-branch")).boxShadow,
+        ),
+        "none",
+      );
       await page.setViewportSize({ width: 360, height: 780 });
       assert.equal(
         await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
