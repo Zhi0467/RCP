@@ -146,9 +146,12 @@ test("external job Cancel uses one watcher and the machine card saves compute on
         .filter({ has: page.locator("strong", { hasText: new RegExp(`^${name}$`) }) });
     await open("cluster");
     assert.equal(await route("Scheduler").count(), 0);
-    await compute.getByRole("checkbox", { name: "Use Slurm" }).click();
+    await compute
+      .getByRole("group", { name: "Slurm" })
+      .getByRole("button", { name: "On", exact: true })
+      .click();
     await route("Scheduler").waitFor();
-    const jobsRoot = compute.getByRole("textbox", { name: "Jobs root" });
+    const jobsRoot = compute.getByRole("textbox", { name: "Job output folder" });
     await jobsRoot.fill("/cluster-edited");
     const saved = page.waitForResponse((response) => response.request().method() === "PATCH");
     await jobsRoot.press("Enter");

@@ -318,22 +318,31 @@ function ComputeFold(props: MachineFoldProps) {
       title="Compute"
       data-machine-fold="compute"
     >
-      <div className="compute-connection-fields">
-        <label className="compute-slurm">
-          <input
-            type="checkbox"
-            data-machine-setting="job_manager"
-            {...failedProps(failure, "job_manager")}
-            checked={record.job_manager === "slurm"}
-            disabled={writesDisabled || toggling}
-            onChange={(event) => {
-              const job_manager = event.target.checked ? "slurm" : "none";
-              setToggling(true);
-              void update("job_manager", { job_manager }).finally(() => setToggling(false));
-            }}
-          />
-          <span>Use Slurm</span>
-        </label>
+      <div className="compute-controls">
+        <span>Slurm</span>
+        <div
+          role="group"
+          aria-label="Slurm"
+          data-machine-setting="job_manager"
+          {...failedProps(failure, "job_manager")}
+          className={`segmented${failure?.key === "job_manager" ? " failed" : ""}`}
+        >
+          {(["slurm", "none"] as const).map((job_manager) => (
+            <button
+              type="button"
+              key={job_manager}
+              aria-pressed={(record.job_manager === "slurm") === (job_manager === "slurm")}
+              disabled={writesDisabled || toggling}
+              onClick={() => {
+                if ((record.job_manager === "slurm") === (job_manager === "slurm")) return;
+                setToggling(true);
+                void update("job_manager", { job_manager }).finally(() => setToggling(false));
+              }}
+            >
+              {job_manager === "slurm" ? "On" : "Off"}
+            </button>
+          ))}
+        </div>
         <button
           type="button"
           data-machine-action="check-compute"
@@ -346,23 +355,6 @@ function ComputeFold(props: MachineFoldProps) {
         >
           {checking ? <LoaderCircle className="spin" size={14} /> : <RotateCw size={14} />}
         </button>
-        <input
-          {...jobsRoot.inputProps}
-          {...failedProps(failure, "jobs_root")}
-          aria-label="Jobs root"
-          placeholder="Jobs root folder"
-          data-machine-setting="jobs_root"
-          disabled={writesDisabled || jobsRoot.saving}
-        />
-        <input
-          {...accessHint.inputProps}
-          {...failedProps(failure, "access_hint")}
-          aria-label="Access hint"
-          placeholder="Access hint for agents"
-          maxLength={512}
-          data-machine-setting="access_hint"
-          disabled={writesDisabled || accessHint.saving}
-        />
       </div>
       {routes.map((route) => {
         const probe = unsaved ? null : record.compute_probes[route];
@@ -400,6 +392,28 @@ function ComputeFold(props: MachineFoldProps) {
           </div>
         );
       })}
+      <div className="compute-fields">
+        {/* RCP's own machine keeps jobs in its data folder; only a remote host reads this. */}
+        {record.host && (
+          <input
+            {...jobsRoot.inputProps}
+            {...failedProps(failure, "jobs_root")}
+            aria-label="Job output folder"
+            placeholder="Job folder (~/.rcp/jobs)"
+            data-machine-setting="jobs_root"
+            disabled={writesDisabled || jobsRoot.saving}
+          />
+        )}
+        <input
+          {...accessHint.inputProps}
+          {...failedProps(failure, "access_hint")}
+          aria-label="Access hint"
+          placeholder="Access hint for agents"
+          maxLength={512}
+          data-machine-setting="access_hint"
+          disabled={writesDisabled || accessHint.saving}
+        />
+      </div>
     </Fold>
   );
 }

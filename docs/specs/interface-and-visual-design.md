@@ -304,9 +304,11 @@ card adds only an icon-only unlink while no repository or agent profile uses the
 machine. Cards group Compute, provider executables, provider limits, writable
 paths, and hidden folders. Folder pickers have breadcrumbs,
 one-level/filter/paging, protected entries, and Use this folder. Slurm opts into
-scheduler submission and starts on when the machine has it; its checkbox shares
-a line with the compute check. Jobs root sets helper storage. Jobs root and Access
-hint name themselves by placeholder, with no label above. Each field saves on its
+scheduler submission and starts on when the machine has it; its On/Off control
+shares a line with the compute check, and route statuses follow it. A remote
+machine's job folder sets helper storage, defaulting to `~/.rcp/jobs`; RCP's own
+machine keeps jobs in its data folder and shows no such field. The job folder and
+Access hint name themselves by placeholder, with no label above. Each field saves on its
 own. No scheduler resource form exists. A machine card is one raised box, and
 each section is a rounded well inside it, not a ruled row.
 

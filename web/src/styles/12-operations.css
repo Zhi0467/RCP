@@ -569,10 +569,15 @@
 .artifacts-branch > .artifacts-list {
   padding-bottom: 4px;
 }
-/* An archived branch sits as a well inside the Archived box. */
+/* Archived is a fold header, not a box; its branches are the same boxes, indented. */
+.artifacts-branch.artifacts-archived {
+  background: none;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+}
 .artifacts-archived > .artifacts-branch {
-  background: var(--paper);
-  margin: 0 0 6px;
+  margin-left: 22px;
 }
 .artifacts-branch > summary {
   align-items: center;
@@ -605,9 +610,6 @@
 }
 .artifacts-heading + .artifacts-list > .artifact-entry {
   padding-left: 8px;
-}
-.artifact-entry:has(.artifact-entry-open:hover) {
-  background: var(--paper);
 }
 @media (max-width: 560px) {
   .artifact-entry {

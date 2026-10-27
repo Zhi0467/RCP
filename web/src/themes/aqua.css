@@ -227,17 +227,12 @@
   box-shadow: var(--aqua-raised);
 }
 
-/* Artifacts: raised branch boxes, archived branches and hovered rows as wells. */
-:root[data-theme="aqua"] :is(.artifacts-branch, .artifacts-heading + .artifacts-list) {
+/* Artifacts: every branch is the same raised box; the Archived fold itself is not one. */
+:root[data-theme="aqua"]
+  :is(.artifacts-branch:not(.artifacts-archived), .artifacts-heading + .artifacts-list) {
   background: var(--aqua-surface);
   border-color: var(--rule);
   box-shadow: var(--aqua-raised);
-}
-
-:root[data-theme="aqua"]
-  :is(.artifacts-archived > .artifacts-branch, .artifact-entry:has(.artifact-entry-open:hover)) {
-  background: var(--aqua-field);
-  box-shadow: var(--aqua-inset);
 }
 
 /* A machine is a raised box; each of its sections is a well inside it. */

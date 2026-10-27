@@ -2161,36 +2161,6 @@ button.agent-provider-label {
   border-color: color-mix(in srgb, var(--cobalt) 35%, var(--line));
   color: var(--cobalt-dark);
 }
-.compute-connection-fields {
-  align-items: end;
-  display: grid;
-  gap: 9px;
-  grid-template-columns:
-    minmax(120px, 0.8fr) minmax(90px, 0.35fr) minmax(155px, 0.8fr) minmax(190px, 1.2fr)
-    30px;
-  padding: 11px 12px;
-}
-.compute-connection-fields label {
-  display: grid;
-  gap: 5px;
-  min-width: 0;
-}
-.compute-connection-fields label > span {
-  color: var(--muted);
-  font: 750 var(--type-2xs) var(--mono);
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-.compute-connection-fields input,
-.compute-connection-fields select {
-  background: var(--paper);
-  border: 1px solid var(--line-strong);
-  font: var(--type-xs) var(--mono);
-  height: 31px;
-  min-width: 0;
-  padding: 0 8px;
-  width: 100%;
-}
 .machine-compute {
   min-width: 0;
 }
@@ -2202,32 +2172,41 @@ button.agent-provider-label {
   border-color: var(--red);
   color: var(--red);
 }
-.machine-compute input[type="checkbox"].failed {
-  outline: 2px solid var(--red);
-}
-/* Use Slurm and the check share one line; the two fields carry their names as hints. */
-.machine-compute .compute-connection-fields {
-  align-items: center;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  padding: 4px 0 0;
-}
-.machine-compute .compute-slurm {
+/* Slurm On/Off and the check share one line; statuses follow; the fields name themselves by hint. */
+.machine-compute .compute-controls {
   align-items: center;
   display: flex;
+  gap: 10px;
+  padding-top: 4px;
+}
+.machine-compute .compute-controls > span {
+  font-size: var(--type-xs);
+  font-weight: 650;
+}
+.machine-compute .compute-controls > .icon-button {
+  margin-left: auto;
+}
+.machine-compute .segmented.failed {
+  outline: 2px solid var(--red);
+}
+.machine-compute .compute-fields {
+  display: grid;
   gap: 8px;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
 }
-.machine-compute .compute-slurm > span {
-  color: var(--ink);
-  font: 600 var(--type-xs) var(--ui);
-  letter-spacing: 0;
-  text-transform: none;
-}
-.machine-compute .compute-connection-fields > .icon-button {
-  justify-self: end;
+.machine-compute .compute-fields input {
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  font: var(--type-xs) var(--mono);
+  height: 31px;
+  min-width: 0;
+  padding: 0 8px;
+  width: 100%;
 }
 @media (max-width: 560px) {
-  .machine-compute .compute-connection-fields > input {
-    grid-column: 1 / -1;
+  .machine-compute .compute-fields {
+    grid-auto-flow: row;
   }
   /* The host label takes the second line, so the actions stay beside the name. */
   .provider-machine.machine-card > header > span {
@@ -2242,15 +2221,12 @@ button.agent-provider-label {
     margin-left: 0;
   }
 }
-.machine-compute input[type="checkbox"] {
-  accent-color: var(--cobalt);
-  height: 16px;
-  width: 16px;
-}
+/* The dot centers on its line at every width, phones included. */
 .machine-compute .compute-probe {
+  align-items: center;
   display: flex;
   flex-wrap: wrap;
-  padding: 4px 0;
+  padding: 2px 0;
 }
 .machine-compute .compute-probe + .compute-probe {
   border-top: 0;
@@ -2700,9 +2676,6 @@ button.agent-provider-label {
     grid-column: 3;
     grid-row: 1 / span 2;
   }
-  .compute-connection-fields {
-    grid-template-columns: minmax(120px, 1fr) minmax(90px, 0.45fr) minmax(180px, 1.2fr) 30px;
-  }
   .cache-meter + .cache-meter {
     border-left: 0;
     border-top: 1px solid var(--line);
@@ -2883,20 +2856,6 @@ button.agent-provider-label {
   .provider-path-row .button {
     grid-column: 2;
     grid-row: auto;
-  }
-  .compute-connection-fields {
-    grid-template-columns: minmax(0, 1fr) 30px;
-  }
-  .compute-connection-fields > label {
-    grid-column: 1 / -1;
-  }
-  .compute-connection-fields > label:first-child {
-    grid-column: 1;
-    grid-row: 1;
-  }
-  .compute-connection-fields > .icon-button {
-    grid-column: 2;
-    grid-row: 1;
   }
   .compute-probe {
     align-items: start;
