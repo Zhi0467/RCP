@@ -522,7 +522,13 @@ def create_app(
                     except (OSError, ValueError) as exc:
                         raise ServerControlError("operation_refused", str(exc)) from exc
                     probe = probe_compute_backend(
-                        manifest, request.machine_alias, request.compute_route, data_dir=app_data
+                        manifest,
+                        request.machine_alias,
+                        request.compute_route,
+                        data_dir=app_data,
+                        compute=store.machine_compute(
+                            manifest.machine_map[request.machine_alias].host
+                        ),
                     )
                     return ServerControlComputeProbeResult(
                         instance_id=identity.instance_id,
@@ -1497,7 +1503,7 @@ def create_app(
             if live_artifact_shutdown.is_set():
                 return
             with background_admission_gate.mutation("live artifact reconciliation"):
-                reconcile_compute_jobs(store, None, project_id=project_id, data_dir=app_data)
+                reconcile_compute_jobs(store, project_id=project_id, data_dir=app_data)
                 reconcile_artifact_live_snapshots(store, catalog, project_id)
 
     def drain_live_artifact_pass() -> None:

@@ -2816,7 +2816,7 @@ async def _stream_work_graph_repair(
         request = _pinned_to_profile(request, profile)
         execution_machine = service.manifest.machine_map[profile.run_on]
         execution_host = execution_machine.host
-        provider_binary = execution_machine.provider_paths.get(profile.provider)
+        provider_binary = service.launcher.provider_binary(profile.provider, execution_machine.host)
         context = service.assemble_chat(request)
         context.group_context = build_group_context(
             service, execution.store, execution_machine.alias

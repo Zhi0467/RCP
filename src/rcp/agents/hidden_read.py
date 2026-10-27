@@ -8,6 +8,7 @@ import json
 import re
 import threading
 import time
+from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 
 from rcp.agents.staged_hidden_read import glob_path_regex, host_facts
@@ -252,6 +253,7 @@ def resolve_hidden_read_scope(
     machine_hidden_folders: list[str],
     key_evidence: tuple[HiddenReadKeyEvidence, ...],
     browser_enabled: bool,
+    machine_provider_paths: Sequence[str] = (),
 ) -> HiddenReadScope:
     machine = manifest.machine_map[execution_machine]
     if bool(machine.host) != (remote_stage is not None) or (
@@ -317,7 +319,7 @@ def resolve_hidden_read_scope(
         *(str(PurePosixPath(path).parent) for path in exempt),
         *SYSTEM_RUNTIME_ROOTS,
         *resolved["runtime_paths"],
-        *(str(PurePosixPath(path).parent) for path in machine.provider_paths.values()),
+        *(str(PurePosixPath(path).parent) for path in machine_provider_paths),
     ]
     # A saved folder can come to cover a required path later (a provider moved
     # in, a checkout appeared). Drop only that folder; the defaults stay hidden.

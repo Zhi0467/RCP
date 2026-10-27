@@ -40,18 +40,17 @@ function projectFor(id: string): ProjectSnapshot {
     repositories: [{ alias: "repo", machine: "local", path: `/${id}/repo` }],
     project_truth_scope: ["repo"],
     default_run_truth_scope: ["repo"],
-    default_auto_research_invocation_ceiling: 10,
+    default_auto_research_invocation_ceiling: id === "beta" ? 20 : 10,
     state_repository: "repo",
     machines: [
       {
         alias: "local",
         host: null,
-        provider_paths: { codex: `/${id}/codex` },
         compute: null,
         compute_probes: { scheduler: null, helper: null },
+        removable: false,
       },
     ],
-    compute_status: {},
     cache_metrics: {
       remote_sources: {
         bytes: 1024,

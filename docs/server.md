@@ -312,7 +312,8 @@ Codex reruns its noninteractive installer; Claude runs `claude update`; OpenCode
 runs `opencode upgrade`. Account-local Codex wins over an older system copy, which
 is left for separate cleanup. An update is not a sign-in: repair dead login in
 **Settings, Provider logins**. For a project pinned to an old versioned executable,
-use **Resolve** in Settings, then rerun `server provider check --project <project-id>`.
+use **Resolve** on the machine card in Space Settings, then rerun
+`server provider check --project <project-id>`.
 Stable provider paths survive subsequent native updates.
 
 After the project wizard names its project id, run the exact readiness command
@@ -457,9 +458,9 @@ for any SSH user.
 In **Space Settings → Machines**, choose **Add machine** and enter the `Host`
 name as the SSH host. RCP fills in the account from the login, and the first
 connection shows the machine's host-key fingerprint with **Trust**. Then add the
-machine to the project. Its **Compute** block takes an access hint, such as
-where code lives or how to run jobs. Every agent in the project is told every
-machine's SSH name and hint.
+machine to the project. The card's **Compute** fold takes an access hint, such
+as where code lives or how to run jobs. Every agent in a project that uses the
+machine is told its SSH name and hint.
 
 Agents reach the VM with plain `ssh <Host name>`; that needs no gcloud. To let
 them run `gcloud` as well, for example to start a stopped spot VM, add
@@ -473,11 +474,13 @@ A spot or preemptible VM may get a new external IP when it restarts. Rerun
 never changes. Set the VM's termination action to **Stop**: **Delete** replaces
 the VM, along with its host key, at every preemption.
 
-## Opt into Slurm for long-running work
+## Slurm for long-running work
 
-After creating the project, open **Project Settings → Long-running jobs** for
-its execution machine, enable **Use Slurm**, and Save. RCP checks the scheduler
-and helper routes right after the save, and again at every startup; a route
+RCP turns **Slurm** on in a machine card's **Compute** fold when the machine's
+account has the Slurm tools, the first time it checks the machine's routes. To
+change it, open **Space Settings → Machines**, open the machine, and toggle
+**Slurm**. RCP checks the scheduler and helper routes right after the change,
+and again at every startup; a route
 that is not ready shows a notice on **Runs** with its fix and a **Check again**
 control. An operator can run the same check from the server operator session:
 

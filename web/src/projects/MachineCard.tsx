@@ -5,14 +5,23 @@ import {
   LoaderCircle,
   Pencil,
   RotateCw,
+  ScanSearch,
   ShieldAlert,
   ShieldQuestion,
   Trash2,
+  Unlink,
   WifiOff,
   X,
 } from "lucide-react";
-import { useRef, useState, type ReactNode } from "react";
-import { ApiError, createSpaceMachine, trustMachineHostKey, updateSpaceMachine } from "../core/api";
+import { useRef, useState } from "react";
+import {
+  ApiError,
+  checkSpaceMachineCompute,
+  createSpaceMachine,
+  resolveSpaceMachineProvider,
+  trustMachineHostKey,
+  updateSpaceMachine,
+} from "../core/api";
 import { errorMessage } from "../core/errors";
 import {
   createPathEditor,
@@ -22,55 +31,71 @@ import {
 } from "./spaceMachines";
 import type {
   MachineLoginFailureCode,
+  ProviderId,
   SpaceMachine,
   SpaceMachineCreateRequest,
+  SpaceMachineUpdateRequest,
 } from "../core/types";
 import { MachineProviderSettingRow } from "./MachineProviderSettingRow";
 import { MachineBrowserRow } from "./MachineBrowserRow";
 import { MachineDependenciesRow } from "./MachineDependenciesRow";
 import { PathPicker } from "./PathPicker";
 import { Fold } from "../core/Fold";
+import { computeProbePresentation } from "../experiments/compute";
+import { providerPathPresentation } from "./providerPaths";
 
 interface Props {
   title: string;
   /** Where the account lives, as a person names it. */
   hostLabel: string;
   osAccount: string;
-  /** The space record whose writable paths this card edits; null when the space has none yet. */
+  /** The space record this card edits; null while the space list has not loaded it. */
   record: SpaceMachine | null;
-  level: "space" | "project";
   writesDisabled?: boolean;
   onRecordChange: (machine: SpaceMachine) => void;
   /** Offered only for a space machine no project uses. */
   onDelete?: () => Promise<void>;
-  /** Project-only rows, such as provider paths and compute. */
-  children?: ReactNode;
+  /** Offered on a project's card when nothing in the project uses the machine. */
+  onRemoveFromProject?: () => Promise<void>;
 }
 
-/** One machine account, shown the same way on the space and the project Settings pages. */
+/** Runs one card's requests in order; a later answer never lands under an earlier one. */
+type MachineRun = <T>(task: () => Promise<T>) => Promise<T>;
+
+/** One machine account, the same card on the space and the project Settings pages. */
 export function MachineCard({
   title,
   hostLabel,
   osAccount,
   record,
-  level,
   writesDisabled = false,
   onRecordChange,
   onDelete,
-  children,
+  onRemoveFromProject,
 }: Props) {
-  const [deleting, setDeleting] = useState(false);
+  const [busy, setBusy] = useState<"delete" | "unlink" | null>(null);
   // Every write on this card queues here, so no earlier answer lands after a newer one.
   const writes = useRef(createMachineWriteQueue(updateSpaceMachine)).current;
   const save = writes.save;
   const [error, setError] = useState<string | null>(null);
+  const act = async (kind: "delete" | "unlink", action: () => Promise<void>) => {
+    setBusy(kind);
+    setError(null);
+    try {
+      await writes.run(action);
+    } catch (failure) {
+      setError(errorMessage(failure));
+    } finally {
+      setBusy(null);
+    }
+  };
   return (
     <article
       className="provider-machine machine-card"
       data-machine-card={record?.machine_id ?? title}
     >
       <header>
-        {level === "space" && record ? (
+        {record ? (
           <MachineName
             record={record}
             writesDisabled={writesDisabled}
@@ -84,27 +109,29 @@ export function MachineCard({
           {hostLabel}
           {osAccount ? ` · ${osAccount}` : ""}
         </span>
+        {onRemoveFromProject && (
+          <button
+            className="icon-button"
+            type="button"
+            data-machine-action="remove-from-project"
+            aria-label="Remove from project"
+            title="Remove from project"
+            disabled={writesDisabled || busy !== null}
+            onClick={() => void act("unlink", onRemoveFromProject)}
+          >
+            {busy === "unlink" ? <LoaderCircle className="spin" size={14} /> : <Unlink size={14} />}
+          </button>
+        )}
         {onDelete && (
           <button
             className="icon-button"
             type="button"
             data-machine-action="delete"
             aria-label={`Remove ${title}`}
-            disabled={writesDisabled || deleting}
-            onClick={() =>
-              void (async () => {
-                setDeleting(true);
-                setError(null);
-                try {
-                  await writes.remove(onDelete);
-                } catch (failure) {
-                  setError(errorMessage(failure));
-                  setDeleting(false);
-                }
-              })()
-            }
+            disabled={writesDisabled || busy !== null}
+            onClick={() => void act("delete", onDelete)}
           >
-            {deleting ? <LoaderCircle className="spin" size={14} /> : <Trash2 size={14} />}
+            {busy === "delete" ? <LoaderCircle className="spin" size={14} /> : <Trash2 size={14} />}
           </button>
         )}
       </header>
@@ -113,84 +140,358 @@ export function MachineCard({
           {error}
         </p>
       )}
-      {children}
       {record && (
-        <MachineBrowserRow
-          key={`${record.machine_id}:${record.host}:${record.os_account}`}
-          machineId={record.machine_id}
-          disabled={writesDisabled}
-        />
-      )}
-      {record && (
-        <MachineDependenciesRow
-          key={`${record.machine_id}:${record.host}:${record.os_account}:dependencies`}
-          machineId={record.machine_id}
-        />
-      )}
-      {record && (
-        <Fold
-          className="machine-writable-paths"
-          title="Provider limits"
-          data-machine-fold="provider-limits"
-        >
-          {record.autocompact_providers.map((option) => (
-            <MachineProviderSettingRow
-              key={`${record.machine_id}:${option.provider}:autocompact`}
-              record={record}
-              provider={option.provider}
-              setting="provider_autocompact"
-              label={`${option.label} auto-compact`}
-              placeholder="CLI default"
-              hint={`Accepts ${option.hint}. Empty keeps the CLI's default.`}
-              writesDisabled={writesDisabled}
-              save={save}
-              onRecordChange={onRecordChange}
-            />
-          ))}
-          {record.shell_timeout_providers.map((option) => (
-            <MachineProviderSettingRow
-              key={`${record.machine_id}:${option.provider}:shell-timeout`}
-              record={record}
-              provider={option.provider}
-              setting="provider_shell_timeout"
-              label={`${option.label} shell timeout (minutes)`}
-              placeholder={String(option.default_minutes)}
-              hint="Whole minutes, 2–120. Empty keeps the provider default."
-              writesDisabled={writesDisabled}
-              save={save}
-              onRecordChange={onRecordChange}
-            />
-          ))}
-        </Fold>
-      )}
-      <WritablePaths
-        record={record}
-        level={level}
-        writesDisabled={writesDisabled}
-        save={save}
-        onRecordChange={onRecordChange}
-      />
-      {record && (
-        <HiddenFolders
-          record={record}
-          writesDisabled={writesDisabled}
-          save={save}
-          onRecordChange={onRecordChange}
-        />
+        <>
+          {record.projects.length > 0 && (
+            <p className="machine-card-projects">
+              {[...new Set(record.projects.map((project) => project.project_name))].join(", ")}
+            </p>
+          )}
+          <MachineBrowserRow
+            key={`${record.machine_id}:${record.host}:${record.os_account}`}
+            machineId={record.machine_id}
+            disabled={writesDisabled}
+          />
+          <MachineDependenciesRow
+            key={`${record.machine_id}:${record.host}:${record.os_account}:dependencies`}
+            machineId={record.machine_id}
+          />
+          <ComputeFold
+            record={record}
+            writesDisabled={writesDisabled}
+            save={save}
+            run={writes.run}
+            onRecordChange={onRecordChange}
+          />
+          <ProviderExecutables
+            record={record}
+            writesDisabled={writesDisabled}
+            save={save}
+            run={writes.run}
+            onRecordChange={onRecordChange}
+          />
+          <Fold
+            className="machine-writable-paths"
+            title="Provider limits"
+            data-machine-fold="provider-limits"
+          >
+            {record.autocompact_providers.map((option) => (
+              <MachineProviderSettingRow
+                key={`${record.machine_id}:${option.provider}:autocompact`}
+                record={record}
+                provider={option.provider}
+                setting="provider_autocompact"
+                label={`${option.label} auto-compact`}
+                placeholder="CLI default"
+                hint={`Accepts ${option.hint}. Empty keeps the CLI's default.`}
+                writesDisabled={writesDisabled}
+                save={save}
+                onRecordChange={onRecordChange}
+              />
+            ))}
+            {record.shell_timeout_providers.map((option) => (
+              <MachineProviderSettingRow
+                key={`${record.machine_id}:${option.provider}:shell-timeout`}
+                record={record}
+                provider={option.provider}
+                setting="provider_shell_timeout"
+                label={`${option.label} shell timeout (minutes)`}
+                placeholder={String(option.default_minutes)}
+                hint="Whole minutes, 2–120. Empty keeps the provider default."
+                writesDisabled={writesDisabled}
+                save={save}
+                onRecordChange={onRecordChange}
+              />
+            ))}
+          </Fold>
+          <WritablePaths
+            record={record}
+            writesDisabled={writesDisabled}
+            save={save}
+            onRecordChange={onRecordChange}
+          />
+          <HiddenFolders
+            record={record}
+            writesDisabled={writesDisabled}
+            save={save}
+            onRecordChange={onRecordChange}
+          />
+        </>
       )}
     </article>
   );
 }
 
+/** A text field saved on blur or Enter, reset whenever the saved value changes. */
+function useSavedText(saved: string, commit: (value: string) => Promise<void>) {
+  const [draft, setDraft] = useState(saved);
+  const [base, setBase] = useState(saved);
+  const [saving, setSaving] = useState(false);
+  if (base !== saved) {
+    setBase(saved);
+    setDraft(saved);
+  }
+  const submit = () => {
+    const value = draft.trim();
+    if (saving) return;
+    if (value === saved) {
+      setDraft(saved);
+      return;
+    }
+    setSaving(true);
+    void commit(value).finally(() => setSaving(false));
+  };
+  return {
+    draft,
+    saving,
+    inputProps: {
+      value: draft,
+      onChange: (event: { target: { value: string } }) => setDraft(event.target.value),
+      onBlur: submit,
+      onKeyDown: (event: { key: string }) => {
+        if (event.key === "Enter") submit();
+      },
+    },
+  };
+}
+
+interface MachineFoldProps {
+  record: SpaceMachine;
+  writesDisabled: boolean;
+  save: MachineSave;
+  run: MachineRun;
+  onRecordChange: (machine: SpaceMachine) => void;
+}
+
+/** One saved change from a fold, its failure shown in that fold. */
+function useFoldUpdate({ record, save, onRecordChange }: MachineFoldProps) {
+  const [error, setError] = useState<string | null>(null);
+  const update = async (request: SpaceMachineUpdateRequest) => {
+    setError(null);
+    try {
+      onRecordChange(await save(record.machine_id, request));
+    } catch (failure) {
+      setError(errorMessage(failure));
+    }
+  };
+  return { error, setError, update };
+}
+
+function ComputeFold(props: MachineFoldProps) {
+  const { record, writesDisabled, run, onRecordChange } = props;
+  const { error, setError, update } = useFoldUpdate(props);
+  const [toggling, setToggling] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const jobsRoot = useSavedText(record.jobs_root, (jobs_root) => update({ jobs_root }));
+  const accessHint = useSavedText(record.access_hint, (access_hint) => update({ access_hint }));
+  const check = async () => {
+    setChecking(true);
+    setError(null);
+    try {
+      await run(async () => onRecordChange(await checkSpaceMachineCompute(record.machine_id)));
+    } catch (failure) {
+      setError(errorMessage(failure));
+    } finally {
+      setChecking(false);
+    }
+  };
+  const routes =
+    record.job_manager === "slurm" ? (["scheduler", "helper"] as const) : (["helper"] as const);
+  return (
+    <Fold
+      className="machine-writable-paths machine-compute"
+      title="Compute"
+      data-machine-fold="compute"
+    >
+      <header>
+        <button
+          className="icon-button"
+          type="button"
+          data-machine-action="check-compute"
+          aria-label="Check compute again"
+          title="Check compute again"
+          disabled={writesDisabled || checking}
+          onClick={() => void check()}
+        >
+          {checking ? <LoaderCircle className="spin" size={14} /> : <RotateCw size={14} />}
+        </button>
+      </header>
+      <div className="compute-connection-fields">
+        <label>
+          <span>Use Slurm</span>
+          <input
+            type="checkbox"
+            data-machine-setting="job_manager"
+            checked={record.job_manager === "slurm"}
+            disabled={writesDisabled || toggling}
+            onChange={(event) => {
+              const job_manager = event.target.checked ? "slurm" : "none";
+              setToggling(true);
+              void update({ job_manager }).finally(() => setToggling(false));
+            }}
+          />
+        </label>
+        <label>
+          <span>Jobs root</span>
+          <input
+            {...jobsRoot.inputProps}
+            data-machine-setting="jobs_root"
+            disabled={writesDisabled || jobsRoot.saving}
+          />
+        </label>
+        <label>
+          <span>Access hint</span>
+          <input
+            {...accessHint.inputProps}
+            maxLength={512}
+            data-machine-setting="access_hint"
+            disabled={writesDisabled || accessHint.saving}
+          />
+        </label>
+      </div>
+      {routes.map((route) => {
+        const probe = record.compute_probes[route];
+        const presentation = computeProbePresentation(probe);
+        return (
+          <div
+            className={`compute-probe ${presentation.tone}`}
+            key={route}
+            data-compute-route={route}
+          >
+            <strong>{route === "scheduler" ? "Scheduler" : "Helper"}</strong>
+            <span className="compute-probe-dot" aria-hidden="true" />
+            <span>{presentation.label}</span>
+            {probe?.backend_id && <span>{probe.backend_id}</span>}
+            {probe?.diagnostic && <span>{probe.diagnostic}</span>}
+            {probe?.required_action && <em>{probe.required_action}</em>}
+          </div>
+        );
+      })}
+      {record.reach.map(({ from, probe }) => {
+        const presentation = computeProbePresentation(probe);
+        return (
+          <div
+            className={`compute-probe compute-reach ${presentation.tone}`}
+            key={`reach:${from}`}
+            data-compute-reach={from}
+          >
+            <strong>From {from}</strong>
+            <span className="compute-probe-dot" aria-hidden="true" />
+            <span>{presentation.label}</span>
+            {probe?.required_action ? <em>{probe.required_action}</em> : null}
+            {probe && presentation.tone === "error" && !probe.required_action ? (
+              <em>{probe.diagnostic}</em>
+            ) : null}
+          </div>
+        );
+      })}
+      {error && <p role="alert">{error}</p>}
+    </Fold>
+  );
+}
+
+function ProviderExecutables(props: MachineFoldProps) {
+  const { record, writesDisabled, run, onRecordChange } = props;
+  const { error, setError, update } = useFoldUpdate(props);
+  const [resolving, setResolving] = useState<ProviderId | null>(null);
+  const resolve = async (provider: ProviderId) => {
+    setResolving(provider);
+    setError(null);
+    try {
+      await run(async () =>
+        onRecordChange(await resolveSpaceMachineProvider(record.machine_id, provider)),
+      );
+    } catch (failure) {
+      setError(errorMessage(failure));
+    } finally {
+      setResolving(null);
+    }
+  };
+  return (
+    <Fold
+      className="machine-writable-paths"
+      title="Provider executables"
+      data-machine-fold="provider-executables"
+    >
+      <div className="provider-path-list">
+        {record.providers.map(({ provider, label }) => (
+          <ProviderPathRow
+            key={`${record.machine_id}:${provider}`}
+            record={record}
+            provider={provider}
+            label={label || provider}
+            writesDisabled={writesDisabled}
+            resolving={resolving}
+            onSave={(path) => update({ provider_paths: { [provider]: path } })}
+            onResolve={() => void resolve(provider)}
+          />
+        ))}
+      </div>
+      {error && <p role="alert">{error}</p>}
+    </Fold>
+  );
+}
+
+function ProviderPathRow({
+  record,
+  provider,
+  label,
+  writesDisabled,
+  resolving,
+  onSave,
+  onResolve,
+}: {
+  record: SpaceMachine;
+  provider: ProviderId;
+  label: string;
+  writesDisabled: boolean;
+  resolving: ProviderId | null;
+  onSave: (path: string) => Promise<void>;
+  onResolve: () => void;
+}) {
+  const recorded = record.provider_paths[provider] ?? "";
+  const path = useSavedText(recorded, onSave);
+  const state = providerPathPresentation(
+    record.provider_readiness[provider],
+    path.draft.trim(),
+    recorded,
+  );
+  return (
+    <div className="provider-path-row" data-provider={provider}>
+      <strong>{label}</strong>
+      <input
+        type="text"
+        {...path.inputProps}
+        aria-label={`${label} executable`}
+        data-machine-setting="provider_path"
+        disabled={writesDisabled || path.saving}
+      />
+      <span className={`provider-path-state ${state.kind}`}>{state.label}</span>
+      <button
+        className="button secondary compact"
+        type="button"
+        data-machine-action="resolve-provider"
+        disabled={writesDisabled || resolving !== null}
+        onClick={onResolve}
+      >
+        {resolving === provider ? (
+          <LoaderCircle className="spin" size={14} />
+        ) : (
+          <ScanSearch size={14} />
+        )}
+        Resolve
+      </button>
+    </div>
+  );
+}
+
 export function WritablePaths({
   record,
-  level,
   writesDisabled,
   save,
   onRecordChange,
 }: {
-  record: SpaceMachine | null;
-  level: "space" | "project";
+  record: SpaceMachine;
   writesDisabled: boolean;
   save: MachineSave;
   onRecordChange: (machine: SpaceMachine) => void;
@@ -225,33 +526,24 @@ export function WritablePaths({
     <Fold
       className="machine-writable-paths"
       title="Writable paths"
-      status={record?.writable_paths.length ?? 0}
-      data-machine-writable-paths={level}
+      status={record.writable_paths.length}
+      data-machine-writable-paths=""
     >
       <header>
-        {record && (
-          <button
-            className="button secondary compact"
-            type="button"
-            data-machine-action="add-path"
-            disabled={writesDisabled || picking || pending !== null}
-            onClick={() => {
-              setError(null);
-              setPicking(true);
-            }}
-          >
-            <FolderPlus size={14} /> Add path
-          </button>
-        )}
+        <button
+          className="button secondary compact"
+          type="button"
+          data-machine-action="add-path"
+          disabled={writesDisabled || picking || pending !== null}
+          onClick={() => {
+            setError(null);
+            setPicking(true);
+          }}
+        >
+          <FolderPlus size={14} /> Add path
+        </button>
       </header>
-      {level === "project" && record && (
-        <p className="machine-writable-note">Applies to every project on this machine.</p>
-      )}
-      {!record ? (
-        <p className="machine-writable-note">
-          This machine is not in the space list yet. Reload Settings to edit its writable paths.
-        </p>
-      ) : record.writable_paths.length ? (
+      {record.writable_paths.length ? (
         <ul>
           {record.writable_paths.map((path) => (
             <li key={path}>
@@ -277,7 +569,7 @@ export function WritablePaths({
         <p className="machine-writable-note">No extra writable paths.</p>
       )}
       {error && <p role="alert">{error}</p>}
-      {record && picking && (
+      {picking && (
         <PathPicker
           machineId={record.machine_id}
           pickLabel="Add this folder"
@@ -430,8 +722,7 @@ function hiddenReadReason(reason: string): string {
   return reasons[reason] ?? reason;
 }
 
-/** Adds one machine account to the space list, for setup and project Settings to pick. */
-/** A space card's name, renamed in place; a project names its machines itself. */
+/** A machine card's name, renamed in place. */
 function MachineName({
   record,
   writesDisabled,
@@ -536,6 +827,7 @@ function loginFailure(
   };
 }
 
+/** Adds one machine account to the space list, for setup and project Settings to pick. */
 export function NewMachineForm({
   writesDisabled = false,
   accountRequired = false,

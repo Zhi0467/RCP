@@ -6,18 +6,14 @@ import subprocess
 import pytest
 from pydantic import ValidationError
 
-from rcp.compute import (
-    _probe_one,
-    compute_probe_cache_key,
-    machine_compute_context,
-    probe_compute_connections,
-)
+from rcp.compute import _probe_one, machine_compute_context, probe_machine_reach
 from rcp.config import (
     Manifest,
     ResolvedComputeContext,
     ResolvedComputeProfile,
 )
 from rcp.operator_commands import operator_route
+from rcp.storage.models import SpaceMachineRecord
 from rcp.transport.remote_compute_probe import classify_ssh_failure, probe_connection
 
 
@@ -183,17 +179,21 @@ def test_probe_redacts_runtime_errors_from_ssh_setup(monkeypatch) -> None:
     assert "\n" not in result.diagnostic
 
 
-def test_probe_matrix_covers_other_routable_machines_from_each_agent_machine(manifest) -> None:
-    payload = manifest.model_dump(mode="python")
-    payload["machines"].extend(
-        [
-            {"alias": "remote-agent", "host": "agent.example", "os_account": "researcher"},
-            {"alias": "gpu", "host": "gpu.example", "os_account": "alice"},
-            {"alias": "server-local", "host": ""},
-        ]
+def _card(name: str, host: str, os_account: str = "", **fields: object) -> SpaceMachineRecord:
+    return SpaceMachineRecord(
+        machine_id=name,
+        name=name,
+        host=host,
+        os_account=os_account,
+        created_at="",
+        updated_at="",
+        **fields,
     )
-    payload["agent"]["paper_coach"]["run_on"] = "remote-agent"
-    configured = Manifest.model_validate(payload)
+
+
+def test_reach_is_probed_from_every_other_agent_machine() -> None:
+    gpu = _card("gpu", "gpu.example", "alice")
+    sources = [_card("laptop", ""), _card("remote-agent", "agent.example", "researcher"), gpu]
     commands: list[list[str]] = []
 
     def runner(command, **kwargs):
@@ -205,28 +205,17 @@ def test_probe_matrix_covers_other_routable_machines_from_each_agent_machine(man
             "",
         )
 
-    status = probe_compute_connections(configured, space_kind="personal", runner=runner)
+    reach = probe_machine_reach(gpu, sources, space_kind="personal", runner=runner)
 
-    assert {alias: set(row) for alias, row in status.items()} == {
-        "laptop": {"remote-agent", "gpu"},
-        "remote-agent": {"gpu"},
-    }
-    assert status["remote-agent"]["gpu"]["reachable"] is True
+    assert [(source.name, probe.reachable) for source, probe in reach] == [
+        ("laptop", True),
+        ("remote-agent", True),
+    ]
     remote_runs = [command for command in commands if "agent.example" in command]
     assert len(remote_runs) == 1
-    assert "remote_compute_probe.py" not in remote_runs[0][-1]
     assert "alice@gpu.example" in remote_runs[0][-1]
-
-
-def test_probe_cache_key_follows_routes_but_not_access_hints(manifest) -> None:
-    payload = manifest.model_dump(mode="python")
-    payload["machines"].append({"alias": "gpu", "host": "gpu.example", "os_account": "alice"})
-    base = compute_probe_cache_key(Manifest.model_validate(payload))
-
-    payload["machines"][-1]["access_hint"] = "Use /scratch"
-    assert compute_probe_cache_key(Manifest.model_validate(payload)) == base
-    payload["machines"][-1]["os_account"] = "bob"
-    assert compute_probe_cache_key(Manifest.model_validate(payload)) != base
+    # A server-local machine has no route from anywhere else.
+    assert probe_machine_reach(sources[0], sources, space_kind="personal", runner=runner) == []
 
 
 def test_every_machine_the_manifest_accepts_resolves(manifest) -> None:
@@ -236,7 +225,7 @@ def test_every_machine_the_manifest_accepts_resolves(manifest) -> None:
         + [{"alias": f"node-{index}", "host": f"node-{index}.example"} for index in range(40)]
     )
     context = machine_compute_context(
-        Manifest.model_validate(payload), execution_machine=manifest.machines[0].alias
+        Manifest.model_validate(payload), {}, execution_machine=manifest.machines[0].alias
     )
 
     assert len(context.active) == len(payload["machines"])
@@ -249,13 +238,12 @@ def test_each_machine_carries_its_own_job_manager_into_the_prompt(manifest) -> N
     from rcp.compute_jobs.job_managers import JOB_MANAGERS
 
     payload = manifest.model_dump(mode="python")
-    payload["machines"].append(
-        {"alias": "cluster", "host": "cluster.example", "compute": {"job_manager": "slurm"}}
-    )
+    payload["machines"].append({"alias": "cluster", "host": "cluster.example"})
+    cards = {"cluster.example": _card("cluster", "cluster.example", job_manager="slurm")}
     profiles = [
         profile.model_dump(mode="json")
         for profile in machine_compute_context(
-            Manifest.model_validate(payload), execution_machine=manifest.machines[0].alias
+            Manifest.model_validate(payload), cards, execution_machine=manifest.machines[0].alias
         ).active
     ]
     rules = JOB_MANAGERS["slurm"].instructions

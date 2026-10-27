@@ -24,10 +24,8 @@ from rcp.projects import ProjectCatalog
 from rcp.providers import PROVIDER_IDS, ProviderId, profile_for
 from rcp.runs.provider_sign_in import (
     ProviderLoginRefused,
-    ProviderPathSource,
     ProviderSignInRunner,
     ProviderSignInStatus,
-    provider_path_sources,
 )
 from rcp.service import agent_login_accounts
 from rcp.storage import AppStore
@@ -100,23 +98,14 @@ class ProviderLoginAccount(BaseModel):
     token_instructions: str | None = None
     token: ProviderCredentialSummary | None = None
     sign_in: ProviderSignInStatus | None = None
-    #: The project path sign-in launches; None means the machine's PATH resolves it.
-    provider_path: ProviderPathSource | None = None
+    #: The machine card's path sign-in launches; None means the machine resolves it.
+    provider_path: str | None = None
     #: Some visible project's agents launch on, or hold work parked on, this account.
     agent_used: bool = False
 
 
 def _refused(exc: ProviderLoginRefused) -> HTTPException:
     return HTTPException(status_code=exc.status_code, detail=exc.detail)
-
-
-def _visible_path(
-    sources: list[ProviderPathSource], visible: set[str]
-) -> ProviderPathSource | None:
-    """The path sign-in uses, shown only when the viewer is on its project."""
-
-    first = next(iter(sources), None)
-    return first if first is not None and first.project_id in visible else None
 
 
 def provider_login_accounts(
@@ -139,7 +128,6 @@ def provider_login_accounts(
         for state in store.provider_login_states()
         if not state.host or state.host in machines
     )
-    paths = provider_path_sources(store)
     used = _agent_used_accounts(store, visible)
     accounts = []
     for provider, host in sorted(pairs):
@@ -147,18 +135,14 @@ def provider_login_accounts(
         profile = profile_for(provider)
         metadata = profile.authentication.credential_metadata(credentials, host)
         token = ProviderCredentialSummary(**metadata) if metadata is not None else None
-        sources = paths.get((provider, host), [])
-        provider_path = _visible_path(sources, visible)
-        # The member runs this command themselves, so any path they can see works;
-        # sign-in, by contrast, always uses the first.
-        own = next((source.path for source in sources if source.project_id in visible), None)
+        provider_path = store.provider_binary(provider, host)
         accounts.append(
             ProviderLoginAccount(
                 **state.model_dump(),
                 label=profile.label,
                 sign_in_methods=profile.authentication.methods,
                 managed=profile.authentication.manages_login,
-                login_command=shlex.join(profile.login_command(own or profile.id)),
+                login_command=shlex.join(profile.login_command(provider_path or profile.id)),
                 token_instructions=profile.authentication.token_instructions,
                 machines=sorted(machines.get(host, set())),
                 provider_path=provider_path,

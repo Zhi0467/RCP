@@ -913,8 +913,8 @@ its prompt is built. The execution
 machine itself is `local`. Any other machine is reached over its SSH route from
 there, which is its host, prefixed by its account when the host names none. A
 host-less (server-local) machine has no route from an agent running elsewhere,
-so that agent is not told about it. Each machine's optional `access_hint`
-(`machines[].access_hint`) is non-secret, single-line guidance shown
+so that agent is not told about it. Each machine's optional access hint, set on
+its space machine card, is non-secret, single-line guidance shown
 beside its route, after the machine's job manager when it has one. The list
 states each named manager's rules once, from the job-manager registry. Compute
 context never supplies `run_on`, never relaunches or moves a provider, and never

@@ -39,16 +39,22 @@ class MachineComputeConfig(BaseModel):
 
 
 class MachineConfig(BaseModel):
+    """One space machine a project uses, named by the project's alias.
+
+    The machine's settings live on its space card (`rcp.storage.space_machines`).
+    The `legacy_*` fields read what older builds stored here; they are validated
+    and copied into the card once (`rcp.projects.record_space_machines`), and
+    nothing else reads them.
+    """
+
     alias: str
     host: str = ""
     os_account: str = ""
-    provider_paths: dict[ProviderId, str] = Field(default_factory=dict)
-    compute: MachineComputeConfig | None = None
-    # What every agent is told about this machine, beside its route: metadata,
-    # never a credential channel. It sits on the machine rather than in
-    # `compute`, whose released model forbids unknown keys, so an older build
-    # ignores it, and resetting compute keeps it.
-    access_hint: str = Field(default="", max_length=512)
+    legacy_provider_paths: dict[ProviderId, str] = Field(
+        default_factory=dict, alias="provider_paths"
+    )
+    legacy_compute: MachineComputeConfig | None = Field(default=None, alias="compute")
+    legacy_access_hint: str = Field(default="", max_length=512, alias="access_hint")
 
     @model_validator(mode="after")
     def validate_host(self) -> MachineConfig:
@@ -59,28 +65,14 @@ class MachineConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_access_hint(self) -> MachineConfig:
-        self.access_hint = self.access_hint.strip()
-        if any(ord(character) < 32 or ord(character) == 127 for character in self.access_hint):
-            raise ValueError("machine access hint must be one line")
-        if redact_server_text(self.access_hint) != self.access_hint:
-            raise ValueError("machine access hint cannot contain credential-shaped text")
-        if COMPUTE_CREDENTIAL_PATH.search(self.access_hint):
-            raise ValueError("machine access hint cannot contain SSH credential paths")
+        self.legacy_access_hint = validate_machine_access_hint(self.legacy_access_hint)
         return self
 
     @model_validator(mode="after")
     def validate_provider_paths(self) -> MachineConfig:
-        normalized: dict[ProviderId, str] = {}
-        for provider, raw_path in self.provider_paths.items():
-            path = raw_path.strip()
-            if not path:
-                continue
-            absolute = PurePosixPath(path).is_absolute() if self.host else Path(path).is_absolute()
-            if not absolute:
-                target = self.host or "the local machine"
-                raise ValueError(f"provider path for {provider!r} on {target} must be absolute")
-            normalized[provider] = path
-        self.provider_paths = normalized
+        self.legacy_provider_paths = validate_machine_provider_paths(
+            self.legacy_provider_paths, host=self.host
+        )
         return self
 
     @model_validator(mode="after")
@@ -91,6 +83,39 @@ class MachineConfig(BaseModel):
         ):
             raise ValueError("machine operating-system account is invalid")
         return self
+
+
+def validate_machine_access_hint(value: str) -> str:
+    """One line of metadata every agent reads, never a credential channel."""
+
+    hint = value.strip()
+    if len(hint) > 512:
+        raise ValueError("machine access hint must be at most 512 characters")
+    if any(ord(character) < 32 or ord(character) == 127 for character in hint):
+        raise ValueError("machine access hint must be one line")
+    if redact_server_text(hint) != hint:
+        raise ValueError("machine access hint cannot contain credential-shaped text")
+    if COMPUTE_CREDENTIAL_PATH.search(hint):
+        raise ValueError("machine access hint cannot contain SSH credential paths")
+    return hint
+
+
+def validate_machine_provider_paths(
+    paths: dict[ProviderId, str], *, host: str
+) -> dict[ProviderId, str]:
+    """Strip each recorded executable, drop empty ones, and require absolute paths."""
+
+    normalized: dict[ProviderId, str] = {}
+    for provider, raw_path in paths.items():
+        path = raw_path.strip()
+        if not path:
+            continue
+        absolute = PurePosixPath(path).is_absolute() if host else Path(path).is_absolute()
+        if not absolute:
+            target = host or "the local machine"
+            raise ValueError(f"provider path for {provider!r} on {target} must be absolute")
+        normalized[provider] = path
+    return normalized
 
 
 class ResolvedComputeProfile(BaseModel):
@@ -594,11 +619,8 @@ def write_agent_settings(
     manifest: Manifest,
     default_run_truth_scope: list[str],
     profiles: dict[AgentExecutionProfile, AgentSurfaceConfig],
-    provider_path_updates: dict[str, dict[ProviderId, str]] | None = None,
     skill_defaults: SkillDefaults | None = None,
     default_auto_research_invocation_ceiling: int | None = None,
-    machine_compute: dict[str, MachineComputeConfig | None] | None = None,
-    machine_access_hints: dict[str, str] | None = None,
 ) -> Manifest:
     document = tomlkit.parse(manifest.path.read_text(encoding="utf-8"))
     agent = document.get("agent")
@@ -645,24 +667,8 @@ def write_agent_settings(
         if not paper:
             del document["paper"]
 
-    _apply_machine_provider_path_updates(document, provider_path_updates or {})
-    _apply_machine_compute_updates(document, machine_compute or {})
-    _apply_machine_access_hint_updates(document, machine_access_hints or {})
     document.pop(LEGACY_COMPUTE_CONNECTIONS_KEY, None)
 
-    content = tomlkit.dumps(document)
-    Manifest.model_validate(tomlkit.parse(content).unwrap())
-    _atomic_write(manifest.path, content)
-    return load_manifest(manifest.path)
-
-
-def write_machine_provider_paths(
-    manifest: Manifest,
-    provider_path_updates: dict[str, dict[ProviderId, str]],
-) -> Manifest:
-    document = tomlkit.parse(manifest.path.read_text(encoding="utf-8"))
-    _apply_machine_provider_path_updates(document, provider_path_updates)
-    document.pop(LEGACY_COMPUTE_CONNECTIONS_KEY, None)
     content = tomlkit.dumps(document)
     Manifest.model_validate(tomlkit.parse(content).unwrap())
     _atomic_write(manifest.path, content)
@@ -689,76 +695,25 @@ def write_added_machine(manifest: Manifest, machine: MachineConfig) -> Manifest:
     return load_manifest(manifest.path)
 
 
-def _apply_machine_compute_updates(
-    document: tomlkit.TOMLDocument,
-    updates: dict[str, MachineComputeConfig | None],
-) -> None:
-    if not updates:
-        return
-    machine_tables = {
-        str(machine.get("alias")): machine for machine in document.get("machines", [])
-    }
-    unknown = set(updates) - set(machine_tables)
-    if unknown:
-        raise ValueError(f"compute configuration uses unknown machines: {sorted(unknown)}")
-    for alias, compute in updates.items():
-        machine = machine_tables[alias]
-        if compute is None:
-            machine.pop("compute", None)
-        else:
-            table = tomlkit.table()
-            for key, value in compute.model_dump(mode="json", exclude_defaults=True).items():
-                table.add(key, value)
-            machine["compute"] = table
+def write_removed_machine(manifest: Manifest, alias: str) -> Manifest:
+    """Drop one machine the project no longer uses; its space card stays."""
 
-
-def _apply_machine_access_hint_updates(
-    document: tomlkit.TOMLDocument,
-    updates: dict[str, str],
-) -> None:
-    if not updates:
-        return
-    machine_tables = {
-        str(machine.get("alias")): machine for machine in document.get("machines", [])
-    }
-    unknown = set(updates) - set(machine_tables)
-    if unknown:
-        raise ValueError(f"access hints use unknown machines: {sorted(unknown)}")
-    for alias, raw_hint in updates.items():
-        hint = raw_hint.strip()
-        if hint:
-            machine_tables[alias]["access_hint"] = hint
-        else:
-            machine_tables[alias].pop("access_hint", None)
-
-
-def _apply_machine_provider_path_updates(
-    document: tomlkit.TOMLDocument,
-    updates: dict[str, dict[ProviderId, str]],
-) -> None:
-    if not updates:
-        return
-    machines = document.get("machines", [])
-    machine_tables = {str(machine.get("alias")): machine for machine in machines}
-    unknown = set(updates) - set(machine_tables)
-    if unknown:
-        raise ValueError(f"provider paths use unknown machines: {sorted(unknown)}")
-    for alias, provider_updates in updates.items():
-        machine = machine_tables[alias]
-        merged = dict(machine.get("provider_paths", {}))
-        for provider, raw_path in provider_updates.items():
-            path = raw_path.strip()
-            if path:
-                merged[provider] = path
-            else:
-                merged.pop(provider, None)
-        if merged:
-            paths = tomlkit.inline_table()
-            for provider, path in merged.items():
-                paths.append(provider, path)
-            machine["provider_paths"] = paths
-        elif "provider_paths" in machine:
-            del machine["provider_paths"]
+    if alias not in manifest.machine_map:
+        raise ValueError(f"unknown machine: {alias}")
+    if any(repository.machine == alias for repository in manifest.repositories):
+        raise ValueError(f"a repository lives on {alias}")
+    if any(manifest.agent_profile(profile).run_on == alias for profile in AGENT_EXECUTION_PROFILES):
+        raise ValueError(f"an agent profile runs on {alias}")
+    document = tomlkit.parse(manifest.path.read_text(encoding="utf-8"))
+    machines = document["machines"]
+    for index, table in enumerate(machines):
+        if str(table.get("alias")) == alias:
+            del machines[index]
+            break
+    content = tomlkit.dumps(document)
+    Manifest.model_validate(tomlkit.parse(content).unwrap())
+    _atomic_write(manifest.path, content)
+    return load_manifest(manifest.path)
 
 
 def _atomic_write(path: Path, content: str) -> None:

@@ -1,4 +1,9 @@
-"""The machines one space runs on, and the extra paths granted on each."""
+"""The machines one space runs on, and everything configured on each.
+
+A card is the one owner of a machine's settings: compute, access hint, provider
+executables, writable paths, hidden folders, and provider limits. A project only
+names which cards it uses.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +12,7 @@ import sqlite3
 import uuid
 from collections.abc import Iterable, Mapping
 
+from rcp.config import MachineComputeConfig
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import SpaceMachineRecord
 
@@ -44,6 +50,68 @@ class SpaceMachineStoreMixin(StoreMixinBase):
         card = self.space_machine_for(host)
         value = card.provider_shell_timeout.get(provider, "") if card is not None else ""
         return int(value) * 60 if value else None
+
+    def machine_compute(self, host: str) -> MachineComputeConfig | None:
+        """This machine's compute settings, as compute jobs read them."""
+
+        card = self.space_machine_for(host)
+        return card.compute_config() if card is not None else None
+
+    def provider_binary(self, provider: str, host: str) -> str | None:
+        """The executable recorded for `provider` on this machine; None lets RCP discover it."""
+
+        card = self.space_machine_for(host)
+        return card.provider_paths.get(provider) if card is not None else None
+
+    def merge_legacy_machine_settings(
+        self,
+        host: str,
+        *,
+        job_manager: str | None,
+        jobs_root: str,
+        access_hint: str,
+        provider_paths: Mapping[str, str],
+    ) -> None:
+        """Copy one manifest's retired machine settings into a card still pending import.
+
+        Fill-only, so several projects naming one machine merge: Slurm turns on
+        when any of them used it, and the first value wins for the rest.
+        """
+
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM space_machines WHERE host = ? AND legacy_settings_pending = 1",
+                (host,),
+            ).fetchone()
+            if row is None:
+                return
+            card = _record(row)
+            paths = {**provider_paths, **card.provider_paths}
+            connection.execute(
+                """
+                UPDATE space_machines
+                SET job_manager = ?, jobs_root = ?, access_hint = ?, provider_paths_json = ?
+                WHERE machine_id = ?
+                """,
+                (
+                    "slurm"
+                    if job_manager == "slurm" and card.job_manager is None
+                    else card.job_manager,
+                    card.jobs_root or jobs_root,
+                    card.access_hint or access_hint,
+                    json.dumps(paths, sort_keys=True),
+                    card.machine_id,
+                ),
+            )
+
+    def settle_legacy_machine_settings(self, hosts: Iterable[str]) -> None:
+        """Every manifest naming these machines was read; their cards own the settings now."""
+
+        with self.connection() as connection:
+            connection.executemany(
+                "UPDATE space_machines SET legacy_settings_pending = 0 WHERE host = ?",
+                [(host,) for host in set(hosts)],
+            )
 
     def ensure_space_machines(self, machines: Iterable[tuple[str, str, str]]) -> list[str]:
         """Insert a card for each host the space lacks; return hosts whose account conflicts.
@@ -110,6 +178,10 @@ class SpaceMachineStoreMixin(StoreMixinBase):
         hidden_folders: list[str] | None = None,
         provider_autocompact: Mapping[str, str | None] | None = None,
         provider_shell_timeout: Mapping[str, str | None] | None = None,
+        job_manager: str | None = None,
+        jobs_root: str | None = None,
+        access_hint: str | None = None,
+        provider_paths: Mapping[str, str | None] | None = None,
     ) -> SpaceMachineRecord:
         # Write only the fields given, so a rename and a path edit racing on one
         # card both land. Provider settings merge per provider (None removes one), so
@@ -127,6 +199,12 @@ class SpaceMachineStoreMixin(StoreMixinBase):
                     provider_shell_timeout_json = COALESCE(
                         json_patch(provider_shell_timeout_json, ?), provider_shell_timeout_json
                     ),
+                    job_manager = COALESCE(?, job_manager),
+                    jobs_root = COALESCE(?, jobs_root),
+                    access_hint = COALESCE(?, access_hint),
+                    provider_paths_json = COALESCE(
+                        json_patch(provider_paths_json, ?), provider_paths_json
+                    ),
                     updated_at = ?
                 WHERE machine_id = ?
                 """,
@@ -136,6 +214,10 @@ class SpaceMachineStoreMixin(StoreMixinBase):
                     None if hidden_folders is None else json.dumps(hidden_folders),
                     None if provider_autocompact is None else json.dumps(provider_autocompact),
                     None if provider_shell_timeout is None else json.dumps(provider_shell_timeout),
+                    job_manager,
+                    jobs_root,
+                    access_hint,
+                    None if provider_paths is None else json.dumps(provider_paths),
                     self.now(),
                     machine_id,
                 ),
@@ -159,4 +241,6 @@ def _record(row: sqlite3.Row) -> SpaceMachineRecord:
     values["hidden_folders"] = json.loads(values.pop("hidden_folders_json"))
     values["provider_autocompact"] = json.loads(values.pop("provider_autocompact_json"))
     values["provider_shell_timeout"] = json.loads(values.pop("provider_shell_timeout_json"))
+    values["provider_paths"] = json.loads(values.pop("provider_paths_json"))
+    values["legacy_settings_pending"] = bool(values["legacy_settings_pending"])
     return SpaceMachineRecord(**values)

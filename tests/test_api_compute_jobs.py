@@ -25,45 +25,79 @@ def settings_body(snapshot):
     }
 
 
-def test_compute_settings_save_checks_every_route_of_the_saved_machine(compute_api, monkeypatch):
+def _laptop_card(client):
+    return next(
+        card for card in client.get("/api/space/machines").json()["machines"] if not card["host"]
+    )
+
+
+def test_card_compute_change_rechecks_the_routes_of_every_project_on_it(compute_api, monkeypatch):
     from rcp.compute_jobs import probe as probe_module
 
     app, client, url = compute_api
+    store = app.state.services.store
+    project_id = app.state.default_project_id
     calls = []
 
-    def run(manifest, machine, route, *, data_dir):
-        calls.append((machine, route, data_dir))
+    def run(manifest, machine, route, *, data_dir, compute):
+        calls.append((machine, route, compute.job_manager if compute else None))
         return _result(
             machine, {"helper": "systemd_user", "scheduler": "slurm"}[route], "ready", ""
         )
 
     monkeypatch.setattr(probe_module, "probe_compute_backend", run)
-    monkeypatch.setattr(
-        "rcp.api.project_state.refresh_compute_probes", probe_module.refresh_compute_probes
-    )
-    body = settings_body(client.get(url).json())
-    for compute, routes in (
-        ({"job_manager": "slurm"}, ["scheduler", "helper"]),
-        (None, ["helper"]),
-    ):
+    card = _laptop_card(client)
+    for job_manager, routes in (("slurm", ["scheduler", "helper"]), ("none", ["helper"])):
         calls.clear()
-        before = resource_watermark_tokens(
-            client, app.state.default_project_id, {"name": "settings"}
-        )
-        response = client.put(
-            f"{url}/settings", json={**body, "machine_compute": {"laptop": compute}}
+        before = resource_watermark_tokens(client, project_id, {"name": "settings"})
+        response = client.patch(
+            f"/api/space/machines/{card['machine_id']}", json={"job_manager": job_manager}
         )
         assert response.status_code == 200, response.text
-        assert calls == [("laptop", route, app.state.catalog.data_dir) for route in routes]
-        probes = client.get(url).json()["machines"][0]["compute_probes"]
+        assert calls == [
+            ("laptop", route, "slurm" if job_manager == "slurm" else None) for route in routes
+        ]
+        project = client.get(url).json()
+        probes = project["machines"][0]["compute_probes"]
         assert [route for route, probe in probes.items() if probe] == sorted(
             routes, key=["scheduler", "helper"].index
         )
-        assert (
-            resource_watermark_tokens(client, app.state.default_project_id, {"name": "settings"})
-            != before
+        assert (project["machines"][0]["compute"] or {}).get("job_manager") == (
+            "slurm" if job_manager == "slurm" else None
         )
-        assert client.get(url).json()["compute_probes_probed_at"] is not None
+        assert resource_watermark_tokens(client, project_id, {"name": "settings"}) != before
+    # A setting that changes no route keeps the recorded checks.
+    calls.clear()
+    hinted = client.patch(
+        f"/api/space/machines/{card['machine_id']}", json={"access_hint": "Use /shared"}
+    )
+    assert hinted.status_code == 200 and hinted.json()["access_hint"] == "Use /shared"
+    assert calls == []
+    assert store.compute_backend_probe(project_id, "laptop", "helper") is not None
+
+
+@pytest.mark.parametrize("found", [True, False, None])
+def test_an_undecided_card_turns_slurm_on_only_when_the_machine_has_it(
+    compute_api, monkeypatch, found
+):
+    from rcp.compute_jobs import probe as probe_module
+
+    app, client, _ = compute_api
+    store = app.state.services.store
+    monkeypatch.setattr(probe_module, "detect_slurm", lambda host: found)
+    monkeypatch.setattr(
+        probe_module,
+        "probe_compute_backend",
+        lambda manifest, machine, route, **_: _result(machine, "launchd", "ready", ""),
+    )
+    assert store.space_machine_for("").job_manager is None
+    probe_module.refresh_compute_probes(
+        store,
+        load_manifest(store.project(app.state.default_project_id).locator),
+        app.state.default_project_id,
+        data_dir=app.state.catalog.data_dir,
+    )
+    assert store.space_machine_for("").job_manager == {True: "slurm", False: "none"}.get(found)
 
 
 def test_compute_check_rechecks_one_machine_on_request(compute_api, monkeypatch):
@@ -72,7 +106,7 @@ def test_compute_check_rechecks_one_machine_on_request(compute_api, monkeypatch)
     app, client, url = compute_api
     calls = []
 
-    def run(manifest, machine, route, *, data_dir):
+    def run(manifest, machine, route, *, data_dir, compute):
         calls.append((machine, route))
         return _result(machine, "launchd", "ready", "")
 
@@ -111,88 +145,14 @@ def test_project_machine_browser_reads_that_machines_account(compute_api, manife
     assert client.get(f"{url}/machines/missing/browser").status_code == 422
 
 
-def test_machine_compute_settings_write_invalidate_and_preserve_omitted(compute_api, manifest):
-    app, client, url = compute_api
-    store = app.state.services.store
-    project_id = app.state.default_project_id
-    body = settings_body(client.get(url).json())
-    probe = _result("laptop", "systemd_user", "ready", "Passed.")
-    scheduler = _result("laptop", "slurm", "ready", "Passed.")
-    store.record_compute_backend_probe(project_id, probe, "helper")
-    store.record_compute_backend_probe(project_id, scheduler, "scheduler")
-    compute = {
-        "job_manager": "slurm",
-        "jobs_root": "/shared/jobs",
-    }
-    response = client.put(f"{url}/settings", json={**body, "machine_compute": {"laptop": compute}})
-    assert response.status_code == 200, response.text
-    assert response.json()["machines"][0]["compute"] == compute
-    assert response.json()["machines"][0]["compute_probes"] == {"helper": None, "scheduler": None}
-    assert load_manifest(manifest.path).machine_map["laptop"].compute.model_dump() == compute
-    assert store.compute_backend_probe(project_id, "laptop", "helper") is None
-    assert store.compute_backend_probe(project_id, "laptop", "scheduler") is None
-    store.record_compute_backend_probe(project_id, probe, "helper")
-    store.record_compute_backend_probe(project_id, scheduler, "scheduler")
-    for extra in (
-        {},
-        {"machine_compute": {"laptop": compute}},
-        {"machine_access_hints": {"laptop": "Use /shared/jobs for outputs"}},
-    ):
-        assert client.put(f"{url}/settings", json={**body, **extra}).status_code == 200
-        assert store.compute_backend_probe(project_id, "laptop", "helper") == probe
-        assert store.compute_backend_probe(project_id, "laptop", "scheduler") == scheduler
-    response = client.put(f"{url}/settings", json={**body, "machine_compute": {"laptop": None}})
-    assert response.status_code == 200
-    assert load_manifest(manifest.path).machine_map["laptop"].compute is None
-    assert store.compute_backend_probe(project_id, "laptop", "helper") is None
-    assert store.compute_backend_probe(project_id, "laptop", "scheduler") is None
-
-
-@pytest.mark.parametrize("unknown_alias", [False, True])
-def test_settings_publish_agent_and_machine_compute_in_one_write(
-    compute_api, manifest, monkeypatch, unknown_alias
-):
-    import rcp.config as config
-
-    _, client, url = compute_api
-    with manifest.path.open("a") as stream:
-        stream.write('\n[[machines]]\nalias = "cluster"\nhost = "cluster.example"\n')
-    body = settings_body(client.get(url).json())
-    body["default_run_truth_scope"] = ["repo-a", "repo-b"]
-    updates = {"laptop": {"jobs_root": "/local/jobs"}, "cluster": {"job_manager": "slurm"}}
-    if unknown_alias:
-        updates["missing"] = {"job_manager": "slurm"}
-    before = manifest.path.read_bytes()
-    writes = []
-    atomic_write = config._atomic_write
-
-    def record_write(path, content):
-        writes.append(path)
-        atomic_write(path, content)
-
-    monkeypatch.setattr(config, "_atomic_write", record_write)
-    response = client.put(f"{url}/settings", json={**body, "machine_compute": updates})
-    if unknown_alias:
-        assert response.status_code == 422, response.text
-        assert writes == []
-        assert manifest.path.read_bytes() == before
-    else:
-        assert response.status_code == 200, response.text
-        assert writes == [manifest.path]
-        updated = load_manifest(manifest.path)
-        assert updated.agent.default_run_truth_scope == ["repo-a", "repo-b"]
-        assert updated.machine_map["laptop"].compute.jobs_root == "/local/jobs"
-        assert updated.machine_map["cluster"].compute.job_manager == "slurm"
-
-
 @pytest.mark.parametrize(
     "compute",
     [{"job_manager": "subprocess"}, {"jobs_root": "relative"}, {"slurm_account": "account"}],
 )
-def test_invalid_machine_compute_settings_do_not_write(compute_api, manifest, compute):
-    _, client, url = compute_api
-    body = settings_body(client.get(url).json())
-    before = manifest.path.read_text()
-    response = client.put(f"{url}/settings", json={**body, "machine_compute": {"laptop": compute}})
+def test_invalid_machine_compute_settings_do_not_write(compute_api, compute):
+    _, client, _ = compute_api
+    card = _laptop_card(client)
+    response = client.patch(f"/api/space/machines/{card['machine_id']}", json=compute)
     assert response.status_code == 422
-    assert manifest.path.read_text() == before
+    after = _laptop_card(client)
+    assert (after["job_manager"], after["jobs_root"]) == (card["job_manager"], card["jobs_root"])

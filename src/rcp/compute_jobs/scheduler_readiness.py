@@ -5,6 +5,15 @@ from __future__ import annotations
 from rcp.compute_jobs.models import ComputeBackendProbe
 from rcp.limits import COMPUTE_PROBE_TIMEOUT_SECONDS
 
+#: The exit status of `SLURM_TOOLS_CHECK` when the account has no Slurm tools.
+SLURM_TOOLS_MISSING_EXIT = 3
+#: Whether the account has the Slurm tools at all, without asking the queue.
+SLURM_TOOLS_CHECK = (
+    "for tool in sbatch squeue scancel; do "
+    'command -v "$tool" >/dev/null || { echo "Missing Slurm tool: $tool" >&2; '
+    f"exit {SLURM_TOOLS_MISSING_EXIT}; }}; done"
+)
+
 
 def probe_slurm_access(machine_alias: str, execution_host: str) -> ComputeBackendProbe:
     from rcp.watchers import WatchSpec, run_watcher_check
@@ -13,11 +22,7 @@ def probe_slurm_access(machine_alias: str, execution_host: str) -> ComputeBacken
     # without inventing a resource request or waiting for a queued job.
     result = run_watcher_check(
         WatchSpec(
-            check_command=(
-                "for tool in sbatch squeue scancel; do "
-                'command -v "$tool" >/dev/null || { echo "Missing Slurm tool: $tool" >&2; exit 2; }; '
-                "done; squeue -h -o '%A' >/dev/null || exit 2"
-            ),
+            check_command=f"{SLURM_TOOLS_CHECK}; squeue -h -o '%A' >/dev/null || exit 2",
             log_path="/dev/null",
             cwd="/",
         ),

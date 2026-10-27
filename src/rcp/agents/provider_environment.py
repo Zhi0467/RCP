@@ -245,6 +245,7 @@ def prepare_hidden_read_launch(
     remote_stage: RemoteRunStage | None,
     repository_inventory: Sequence[RegisteredRepositoryRoot] = (),
     machine_hidden_folders: Sequence[str] = (),
+    machine_provider_paths: Sequence[str] = (),
     git_access: ProviderGitAccess | None = None,
     browser_enabled: bool = False,
 ) -> HiddenReadScope:
@@ -303,6 +304,7 @@ def prepare_hidden_read_launch(
             remote_stage=remote_stage,
             repository_inventory=list(repository_inventory),
             machine_hidden_folders=list(machine_hidden_folders),
+            machine_provider_paths=list(machine_provider_paths),
             key_evidence=evidence,
             browser_enabled=browser_enabled,
         )

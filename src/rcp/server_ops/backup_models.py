@@ -710,14 +710,16 @@ class BackupManifestConfiguration(_StrictBackupModel):
                     alias=machine.alias,
                     host=machine.host,
                     os_account=machine.os_account,
-                    provider_paths=dict(machine.provider_paths),
-                    access_hint=machine.access_hint,
+                    # The manifest's own retired machine settings, recorded as
+                    # written; the space machine cards travel in the database.
+                    provider_paths=dict(machine.legacy_provider_paths),
+                    access_hint=machine.legacy_access_hint,
                     compute=(
                         None
-                        if machine.compute is None
+                        if machine.legacy_compute is None
                         else BackupManifestMachineCompute(
-                            job_manager=machine.compute.job_manager,
-                            jobs_root=machine.compute.jobs_root,
+                            job_manager=machine.legacy_compute.job_manager,
+                            jobs_root=machine.legacy_compute.jobs_root,
                         )
                     ),
                 )

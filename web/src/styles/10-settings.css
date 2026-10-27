@@ -2192,15 +2192,7 @@ button.agent-provider-label {
   width: 100%;
 }
 .machine-compute {
-  border: 0;
-  border-top: 1px solid var(--line);
-  margin: 12px 0 0;
   min-width: 0;
-  padding: 8px 0 0;
-}
-.machine-compute legend {
-  font: 750 var(--type-xs) var(--mono);
-  padding: 0 8px;
 }
 .machine-compute .compute-connection-fields {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -3289,20 +3281,6 @@ button.agent-provider-label {
   font-size: var(--type-2xs);
 }
 /* Folded sections share one +/− disclosure, the same the Experiment page uses. */
-/* Aliases sharing one machine: each alias's own settings sit under its name. */
-.machine-alias-settings {
-  display: grid;
-  gap: 10px;
-}
-.machine-alias-settings + .machine-alias-settings {
-  border-top: 1px solid var(--line);
-  padding-top: 12px;
-}
-.machine-alias-settings > strong {
-  color: var(--muted);
-  font: var(--type-2xs)/1 var(--mono);
-  padding: 0 12px;
-}
 .fold > summary {
   align-items: baseline;
   cursor: pointer;

@@ -490,7 +490,6 @@ test("a settings save replaces project metadata without reconciling session stat
 
   const saved = projectSettingsSavedProject(snapshot(1, { name: "Renamed Alpha" }), state.project, {
     provider: true,
-    compute: true,
   });
   const updated = projectSessionReducer(state, { kind: "project_replaced", project: saved });
 
@@ -601,68 +600,21 @@ for (const navigation of ["another project", "another view"]) {
   });
 }
 
-test("a changed compute configuration does not preserve stale readiness", () => {
-  const current = snapshot(1, {
-    compute_status: {
-      laptop: {
-        gpu: {
-          compute_id: "gpu",
-          execution_machine: "laptop",
-          state: "opaque",
-          reachable: true,
-          diagnostic: "Old target was reachable.",
-          required_action: null,
-          status_label: "Reachable",
-          status_tone: "ready",
-        },
-      },
-    },
-  });
-  const saved = snapshot(1, { compute_status: {} });
-
-  assert.deepEqual(
-    projectSettingsSavedProject(saved, current, { provider: true, compute: false }).compute_status,
-    {},
-  );
-  assert.deepEqual(
-    projectSettingsSavedProject(saved, current, { provider: true, compute: true }).compute_status,
-    current.compute_status,
-  );
-});
-
-test("a provider resolve keeps the rendered compute matrix and takes fresh provider readiness", () => {
+test("a machine change takes fresh provider readiness; a settings save keeps the rendered one", () => {
   const readiness = { provider: "codex", installed: true, authenticated: true, version: "1" };
-  const probed = {
-    laptop: {
-      gpu: {
-        compute_id: "gpu",
-        execution_machine: "laptop",
-        state: "opaque",
-        reachable: true,
-        diagnostic: "Probed after the resolve started.",
-        required_action: null,
-        status_label: "Reachable",
-        status_tone: "ready",
-      },
-    },
-  };
-  // The in-flight compute probe already applied to the rendered project.
   const current = snapshot(1, {
-    compute_status: probed,
     provider_readiness: { laptop: { codex: { ...readiness, installed: false, version: "0" } } },
   });
-  const resolved = snapshot(1, {
-    compute_status: {},
-    provider_readiness: { laptop: { codex: readiness } },
-  });
+  const saved = snapshot(1, { provider_readiness: { laptop: { codex: readiness } } });
 
-  const applied = projectSettingsSavedProject(resolved, current, {
-    provider: false,
-    compute: true,
-  });
-
-  assert.deepEqual(applied.compute_status, probed);
-  assert.deepEqual(applied.provider_readiness.laptop.codex, readiness);
+  assert.deepEqual(
+    projectSettingsSavedProject(saved, current, { provider: false }).provider_readiness,
+    saved.provider_readiness,
+  );
+  assert.deepEqual(
+    projectSettingsSavedProject(saved, current, { provider: true }).provider_readiness,
+    current.provider_readiness,
+  );
 });
 
 test("tab serialization retains only human UI and drafts", () => {

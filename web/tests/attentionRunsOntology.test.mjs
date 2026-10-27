@@ -676,8 +676,8 @@ test("Project Settings supports legacy profiles without an ontology authoring su
             {
               alias: "local",
               host: "",
-              provider_paths: { codex: "codex" },
               compute_probes: { scheduler: null, helper: null },
+              removable: false,
             },
           ],
           agent_profiles: {

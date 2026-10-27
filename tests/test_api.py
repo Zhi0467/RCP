@@ -152,6 +152,13 @@ def _seeded_project(manifest, tmp_path):
     return app, service
 
 
+def _record_local_codex_path(app) -> None:
+    store = app.state.catalog.store
+    card = store.space_machine_for("")
+    assert card is not None
+    store.update_space_machine(card.machine_id, provider_paths={"codex": "/opt/agents/codex"})
+
+
 def _experiment_project(manifest, tmp_path):
     app, service = _seeded_project(manifest, tmp_path)
     append_fixture_patch(service, _experiment_fixture_patch())
@@ -1976,7 +1983,7 @@ def test_rejected_refresh_is_corrected_without_burning_a_revision(app, tmp_path)
 @pytest.mark.asyncio
 async def test_graph_launch_passes_the_recorded_provider_binary(manifest, tmp_path) -> None:
     app, service = _seeded_project(manifest, tmp_path)
-    service.history.update_machine_provider_paths({"laptop": {"codex": "/opt/agents/codex"}})
+    _record_local_codex_path(app)
     launcher = ScriptedLauncher([{"patch.json": agent_patch_json(refresh_patch())}])
 
     _ = [
@@ -3532,7 +3539,7 @@ def test_node_chat_returns_as_task_then_persists_result_and_transcript(
     app, manifest, tmp_path
 ) -> None:
     service = app.state.service
-    service.history.update_machine_provider_paths({"laptop": {"codex": "/opt/agents/codex"}})
+    _record_local_codex_path(app)
     append_fixture_patch(service, seed_patch())
     chat_id = str(uuid.uuid4())
     answer = "The node remains proposed because the matched forward test has not run."
@@ -5374,7 +5381,7 @@ async def test_paper_resume_rejects_settings_change_before_launch(manifest, tmp_
 async def test_paper_coach_uses_its_read_only_launcher_contract(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.manifest.machine_map["laptop"].provider_paths["codex"] = "/opt/agents/codex"
+    _record_local_codex_path(app)
     paper = service.paper
     paper.create()
     session_id = str(uuid.uuid4())
@@ -8209,7 +8216,6 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
     app, service = _seeded_project(manifest, tmp_path)
     store = app.state.background_tasks.store
     chat_id = str(uuid.uuid4())
-    surfaces = ("seed", "refresh", "node_chat", "project_chat", "paper_coach")
     service.add_machine("gpu", "watcher.example", "alice")
     request = RunRequest(
         chat_scope="project",
@@ -8271,10 +8277,11 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
 
     store.complete_agent_task("watch-origin", applied_revision=None, result={"messages": []})
     external = next(record for record in armed if isinstance(record, WatcherRecord))
-    service.history.update_agent_settings(
-        service.manifest.agent.default_run_truth_scope,
-        {surface: service.manifest.agent_profile(surface) for surface in surfaces},
-        machine_access_hints={"gpu": "Use /scratch/at-wake"},
+    card = app.state.catalog.store.create_space_machine(
+        name="gpu", host="watcher.example", os_account="alice"
+    )
+    app.state.catalog.store.update_space_machine(
+        card.machine_id, access_hint="Use /scratch/at-wake"
     )
     wake = _generic_watcher_delivery_request([external])
     wake_execution = _chat_task_execution(app, wake, "watch-wake")

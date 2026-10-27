@@ -178,4 +178,4 @@ def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) 
         "orchestrator",
     }
     # Only the already-cached probe for that machine's exact executable is read.
-    assert probed[0] == ("codex", machine.host, machine.provider_paths.get("codex"))
+    assert probed[0] == ("codex", machine.host, None)

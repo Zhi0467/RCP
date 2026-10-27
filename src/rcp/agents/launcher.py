@@ -70,7 +70,11 @@ from rcp.providers import (
 )
 from rcp.providers.base import AgentStatusDelta, ProviderRuntimeStep, ProviderStreamEvent
 from rcp.providers.browser_grant import BrowserGrant
-from rcp.storage.models import ProviderLoginStateRecord, ProviderReadinessSnapshotRecord
+from rcp.storage.models import (
+    ProviderLoginStateRecord,
+    ProviderReadinessSnapshotRecord,
+    SpaceMachineRecord,
+)
 from rcp.transport.provider_discovery import discover_provider
 from rcp.transport.remote_terminate_provider import ABSENT as REMOTE_PROBE_ABSENT
 from rcp.transport.ssh import ssh_arguments
@@ -2045,6 +2049,20 @@ class AgentLauncher:
             return ""
         card = self.accounts.store.space_machine_for(host)
         return card.provider_autocompact.get(provider, "") if card is not None else ""
+
+    def machine_cards(self) -> dict[str, SpaceMachineRecord]:
+        """Every space machine card by host, read now; empty without a space store."""
+
+        if self.accounts is None:
+            return {}
+        return {card.host: card for card in self.accounts.store.space_machines()}
+
+    def provider_binary(self, provider: str, host: str = "") -> str | None:
+        """The machine card's recorded executable; None lets readiness discover one."""
+
+        if self.accounts is None:
+            return None
+        return self.accounts.store.provider_binary(provider, host)
 
     def shell_timeout_seconds(self, provider: str, host: str = "") -> int | None:
         """Resolve the configured timeout once; None preserves the provider default."""

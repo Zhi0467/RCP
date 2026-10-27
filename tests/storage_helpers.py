@@ -57,10 +57,18 @@ def downgrade_artifacts(
         connection.execute("ALTER TABLE space_machines DROP COLUMN hidden_folders_json")
         connection.execute("ALTER TABLE space_machines DROP COLUMN provider_autocompact_json")
         connection.execute("ALTER TABLE space_machines DROP COLUMN provider_shell_timeout_json")
+        for column in (
+            "job_manager",
+            "jobs_root",
+            "access_hint",
+            "provider_paths_json",
+            "legacy_settings_pending",
+        ):
+            connection.execute(f"ALTER TABLE space_machines DROP COLUMN {column}")
         connection.execute(
             "DELETE FROM storage_schema_migrations WHERE migration_name IN "
             "('machine_hidden_folders_v1', 'machine_provider_autocompact_v1', "
-            "'machine_provider_shell_timeout_v1')"
+            "'machine_provider_shell_timeout_v1', 'machine_settings_v1')"
         )
     connection.execute("ALTER TABLE episodes DROP COLUMN browser_requested")
     for table in ("chat_browser_preferences", "browser_owners", "browser_turn_status"):

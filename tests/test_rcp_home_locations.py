@@ -198,8 +198,11 @@ def test_auto_research_resumes_a_new_or_legacy_saved_remote_stage(
         "_directory_probe",
         lambda _stage, root: subprocess.CompletedProcess([], 0, "", ""),
     )
-    machine = SimpleNamespace(host="worker.example", provider_paths={})
-    service = SimpleNamespace(manifest=SimpleNamespace(machine_map={"gpu": machine}))
+    machine = SimpleNamespace(host="worker.example")
+    service = SimpleNamespace(
+        manifest=SimpleNamespace(machine_map={"gpu": machine}),
+        launcher=SimpleNamespace(provider_binary=lambda _provider, _host: None),
+    )
     turn = SimpleNamespace(
         request=SimpleNamespace(provider="codex", model="m", reasoning="high", run_on="gpu"),
         binding=SimpleNamespace(stage_root=saved_root, stage_host="worker.example"),

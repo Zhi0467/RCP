@@ -8,8 +8,11 @@ watcher contract and human job controls.
 
 ## Execution route
 
-`machines[].compute` optionally sets `job_manager` and `jobs_root`.
-`job_manager = "slurm"` adds direct scheduler submission. Independently, the
+Each space machine card sets an optional job manager and `jobs_root`; a project
+configures neither. A card's job manager starts undecided. The background route
+check turns Slurm on when the account has `sbatch`, `squeue` and `scancel`, and
+off when they are missing; an unreachable machine stays undecided, and a human's
+choice is never overridden. Slurm adds direct scheduler submission. Independently, the
 helper resolves `systemd_user` on Linux with a reachable user manager or `launchd`
 on macOS. Missing ownership refuses launch before job files; no detached-process
 or SSH-session fallback exists.

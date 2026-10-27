@@ -511,16 +511,14 @@ has its episode.
 
 ## Compute setup and job APIs
 
-Project machine entries expose the manifest `compute` block and live
-`compute_probes`, one `ComputeBackendProbe` or null per route. The latter is
-read from storage even when the graph snapshot is cached. Settings updates
-accept `machine_compute`, a partial alias-to-`MachineComputeConfig` map; null
-removes a block, omission preserves it. Validation and TOML persistence belong
-to the machine configuration owner. A changed block invalidates its stored
-probes and schedules a fresh background check of that machine. Entries also
-expose `access_hint`, updated through `machine_access_hints`, a partial
-alias-to-string map where omission preserves and an empty string clears; it
-lives on the machine, survives a compute reset, and invalidates no probe.
+Project machine entries carry `alias`, `host`, `os_account`, `removable` (no
+repository or agent profile uses it), the space card's `compute` block, and live
+`compute_probes`, one `ComputeBackendProbe` or null per route. Both are read
+from the card and storage even when the graph snapshot is cached. Project
+Settings saves no machine settings.
+`DELETE /api/projects/{project_id}/machines/{machine_alias}` uses project write
+admission, refuses a machine a repository or agent profile uses with 422, and
+returns the project snapshot; the space card stays.
 `POST /api/projects/{project_id}/machines/{machine_alias}/compute/check` uses
 project write admission, re-probes every route that machine offers, and
 returns both route slots.
@@ -547,14 +545,11 @@ could not run. Otherwise the route claims and executes the saved command once.
 Its result is an action receipt, not a separate cancelled watcher state. Errors
 are returned on the watcher and allow an explicit retry.
 
-Settings stages per-machine `job_manager` and optional helper `jobs_root` beside
-provider paths. **Use Slurm** opts into direct scheduler submission; RCP exposes
-no resource-argument inputs. Only changed aliases are saved. Draft storage keeps
-explicit machine edits, so an unrelated draft cannot restore an older full
-compute configuration. Unsaved machine edits mask readiness. A save that
-changes a machine's block probes its offered routes in the background; Runs
-offers **Check again** through `POST .../machines/{machine_alias}/compute/check`.
-Each stored probe supplies its own label, tone, and diagnostic.
+The machine card's Compute fold holds **Slurm**, helper `jobs_root`, and the
+access hint; RCP exposes no resource-argument inputs. Each saves on its own.
+Runs offers **Check again** through
+`POST .../machines/{machine_alias}/compute/check`. Each stored probe supplies
+its own label, tone, and diagnostic.
 
 Chat and Experiment use the existing watcher refreshes to show one external job
 row. It displays the log path, observation state, check diagnostic, and Cancel
@@ -1487,11 +1482,10 @@ moves forward. Markers are not moved with a transferred project.
 
 Paper owns human Markdown Write/Preview and read-only coaching. Settings has two
 levels. Space Settings, opened from the gear beside the identity menu, owns the
-server status (team spaces), machine cards with their names (renamed in place) and
-writable paths, provider logins, and the
-personal space's clear-all-caches. Project Settings owns repositories, this
-project's machine cards (provider paths, compute, and the same writable-path
-record and access hint), execution profiles, packages, caches, project
+server status (team spaces), machine cards with their names (renamed in place),
+provider logins, and the personal space's clear-all-caches. Project Settings owns
+repositories, which space machines the project uses (the same machine cards,
+read from the space), execution profiles, packages, caches, project
 membership, and prospective episode limits, not ontology authoring. Display
 preferences live in the identity menu.
 
@@ -1505,7 +1499,17 @@ resolved, omit all three fields: nothing claims a server-only state or offers
 Connect without proof. These fields describe RCP-managed provisioning, not
 discovery of a personal checkout's Git remotes.
 
-`/api/space/machines` lists, creates, renames, and deletes machine cards; a card
+`/api/space/machines` lists, creates, configures, and deletes machine cards. A
+card view carries its settings (`job_manager` of `slurm`, `none`, or null while
+undecided; `jobs_root`; `access_hint`; `provider_paths`), the provider rows with
+cached readiness, the route probes of any project using it, and `reach`: the
+last on-demand check from each machine an agent runs on.
+`PATCH /api/space/machines/{machine_id}` changes only the fields given; an empty
+provider path forgets it, and a compute change clears the card's probes and
+re-checks them in the background.
+`POST /api/space/machines/{machine_id}/compute/check` re-runs the route probes
+and reach now. `POST /api/space/machines/{machine_id}/providers/{provider}/resolve`
+finds the executable on the machine and records it on the card. A card
 in use by any project, or whose use cannot be established, cannot be deleted,
 and host and account never change. A team create with a blank account fills it
 from the login check or refuses with 422 and a `detail.code` of

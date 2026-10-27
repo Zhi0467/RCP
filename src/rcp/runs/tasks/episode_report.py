@@ -560,7 +560,7 @@ def _open_exact_report_stage(
             remote=remote,
             workspace=Path(str(remote.workspace)),
             execution_host=machine.host,
-            provider_binary=machine.provider_paths.get(turn.request.provider),
+            provider_binary=service.launcher.provider_binary(turn.request.provider, machine.host),
         )
 
     local = Path(stage_root)
@@ -573,7 +573,7 @@ def _open_exact_report_stage(
         remote=None,
         workspace=local,
         execution_host="",
-        provider_binary=machine.provider_paths.get(turn.request.provider),
+        provider_binary=service.launcher.provider_binary(turn.request.provider, machine.host),
     )
 
 

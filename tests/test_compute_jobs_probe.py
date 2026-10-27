@@ -90,9 +90,11 @@ def fake_linux_cgroup(monkeypatch):
 def test_probe_runs_backend_and_requires_liveness_exit_and_log(
     manifest, tmp_path, fake_linux_cgroup, os_name, job_manager
 ):
-    manifest.machines[0].compute = MachineComputeConfig(job_manager=job_manager)
+    compute = MachineComputeConfig(job_manager=job_manager)
     runner = ProbeRunner(os_name=os_name)
-    result = probe_compute_backend(manifest, "laptop", "helper", runner, data_dir=tmp_path)
+    result = probe_compute_backend(
+        manifest, "laptop", "helper", runner, data_dir=tmp_path, compute=compute
+    )
     assert result.ready
     if os_name == "Linux":
         assert result.backend_id == "systemd_user"
@@ -191,7 +193,6 @@ def test_slurm_readiness_uses_watcher_shell_without_submitting_a_job(
     manifest, tmp_path, monkeypatch, execution_host, failure
 ):
     machine = manifest.machines[0]
-    machine.compute = MachineComputeConfig(job_manager="slurm")
     machine.host = execution_host
     binaries = tmp_path / "bin"
     binaries.mkdir()
@@ -226,7 +227,12 @@ def test_slurm_readiness_uses_watcher_shell_without_submitting_a_job(
 
     monkeypatch.setattr("rcp.watchers._run_watcher_command", execute)
     result = probe_compute_backend(
-        manifest, "laptop", "scheduler", unexpected_helper, data_dir=tmp_path
+        manifest,
+        "laptop",
+        "scheduler",
+        unexpected_helper,
+        data_dir=tmp_path,
+        compute=MachineComputeConfig(job_manager="slurm"),
     )
     assert result.backend_id == "slurm"
     assert result.ready is (failure is None)
@@ -306,7 +312,7 @@ def test_cgroup_comparison_ignores_hierarchies_where_both_sit_at_the_root():
 
 @pytest.mark.parametrize("job_manager", [None, "slurm"])
 def test_remote_linux_without_user_manager_refuses_compute(manifest, tmp_path, job_manager):
-    manifest.machines[0].compute = MachineComputeConfig(job_manager=job_manager)
+    compute = MachineComputeConfig(job_manager=job_manager)
     manifest.machines[0].host = "compute.example"
     commands = []
 
@@ -320,12 +326,14 @@ def test_remote_linux_without_user_manager_refuses_compute(manifest, tmp_path, j
         assert "XDG_RUNTIME_DIR=/run/user/1234" in remote
         return subprocess.CompletedProcess(command, 1, "", "No user manager")
 
-    context, profile = resolve_context(manifest, "laptop", runner)
+    context, profile = resolve_context(manifest, "laptop", compute, runner)
     assert context.uid == "1234"
     assert profile is None
     assert all(command[0] == "ssh" and "compute.example" in command for command in commands)
     commands.clear()
-    result = probe_compute_backend(manifest, "laptop", "helper", runner, data_dir=tmp_path)
+    result = probe_compute_backend(
+        manifest, "laptop", "helper", runner, data_dir=tmp_path, compute=compute
+    )
     assert result.state == "unavailable"
     assert not result.ready
     assert result.required_action
@@ -407,7 +415,6 @@ def test_real_compute_owner_when_facility_available(manifest, tmp_path, backend_
                 timeout=COMPUTE_JOB_STATUS_TIMEOUT_SECONDS,
                 check=False,
             )
-    manifest.machines[0].compute = None
     if (backend_id == "launchd") != (os.uname().sysname == "Darwin"):
         pytest.skip("The automatic backend uses the execution machine's operating system")
     units = []

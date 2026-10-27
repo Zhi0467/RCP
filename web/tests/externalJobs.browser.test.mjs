@@ -3,7 +3,7 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
-test("external job Cancel and machine setup use one watcher and preserve newer settings", async () => {
+test("external job Cancel uses one watcher and the machine card saves compute on the space machine", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "silent",
@@ -26,6 +26,66 @@ test("external job Cancel and machine setup use one watcher and preserve newer s
       if (request.url().includes("/api/")) requests.push(request.url());
     });
     await page.route("**/api/**", (route) => route.fulfill({ json: [] }));
+    // Compute lives on the space machine card, which the project card reads.
+    const idle = { scheduler: null, helper: null };
+    const spaceMachine = (alias, jobManager) => ({
+      machine_id: `m-${alias}`,
+      name: alias,
+      host: alias === "local" ? "" : alias,
+      os_account: "rcp",
+      writable_paths: [],
+      hidden_folders: [],
+      provider_autocompact: {},
+      provider_shell_timeout: {},
+      autocompact_providers: [],
+      shell_timeout_providers: [],
+      hidden_read: null,
+      projects: [{ project_id: "project", project_name: "Project", alias }],
+      in_use: true,
+      job_manager: jobManager,
+      jobs_root: "",
+      access_hint: "",
+      provider_paths: {},
+      providers: [],
+      provider_readiness: {},
+      compute_probes: idle,
+      reach: [],
+    });
+    const machines = {
+      "m-local": spaceMachine("local", "none"),
+      "m-cluster": spaceMachine("cluster", null),
+    };
+    const patches = [];
+    await page.route("**/api/space/machines", (route) =>
+      route.fulfill({ json: { machines: Object.values(machines) } }),
+    );
+    await page.route("**/api/space/machines/*/browser", (route) =>
+      route.fulfill({
+        json: { status: "ready", detail: null, apt_command: null, admin_command: null },
+      }),
+    );
+    await page.route("**/api/space/machines/*/dependencies", (route) =>
+      route.fulfill({
+        json: {
+          outcome: "ready",
+          platform: null,
+          distribution: null,
+          tested: true,
+          missing: [],
+          install_command: null,
+          install_notes: [],
+          reason: null,
+          checked_at: new Date().toISOString(),
+        },
+      }),
+    );
+    await page.route("**/api/space/machines/m-*", async (route) => {
+      const id = new URL(route.request().url()).pathname.split("/").pop();
+      const body = route.request().postDataJSON();
+      patches.push({ id, method: route.request().method(), body });
+      machines[id] = { ...machines[id], ...body };
+      await route.fulfill({ json: machines[id] });
+    });
     let cancellations = 0;
     await page.route("**/watchers/watcher-1/cancel", async (route) => {
       cancellations += 1;
@@ -75,105 +135,80 @@ test("external job Cancel and machine setup use one watcher and preserve newer s
 
     // One machine's card is open at a time; its tile opens it.
     const card = page.locator(".provider-machine");
-    const local = card;
-    const cluster = card;
-    const open = (alias) => page.locator(`.machine-tiles [data-machine-tile="${alias}"]`).click();
+    const compute = card.locator('[data-machine-fold="compute"]');
+    const open = async (alias) => {
+      await page.locator(`.machine-tiles [data-machine-tile="${alias}"]`).click();
+      await compute.locator("summary").click();
+    };
+    const route = (name) =>
+      compute
+        .locator(".compute-probe")
+        .filter({ has: page.locator("strong", { hasText: new RegExp(`^${name}$`) }) });
     await open("cluster");
-    await cluster.getByRole("textbox", { name: "Jobs root" }).fill("/cluster-edited");
-    await cluster.getByRole("checkbox", { name: "Use Slurm" }).check();
-    await page.evaluate(() => {
-      const { project, setProject } = window.jobFixture;
-      setProject({
-        ...project,
-        machines: project.machines.map((machine) =>
-          machine.alias === "local"
-            ? { ...machine, compute: { job_manager: null, jobs_root: "/new" } }
-            : machine,
-        ),
-      });
-    });
-    await open("local");
-    await page.waitForFunction(() =>
-      [...document.querySelectorAll("input")].some((input) => input.value === "/new"),
-    );
-    assert.equal(await local.getByRole("textbox", { name: "Jobs root" }).inputValue(), "/new");
-    const staged = await page.evaluate(() =>
-      JSON.parse(localStorage.getItem("rcp:member-draft:owner:settings-draft:project")),
-    );
-    assert.deepEqual(staged.machineComputeEdits, {
-      cluster: { job_manager: "slurm", jobs_root: "/cluster-edited" },
-    });
-    let settingsRequest;
-    await page.route("**/api/projects/project/settings", async (route) => {
-      settingsRequest = route.request().postDataJSON();
-      const project = await page.evaluate(() => window.jobFixture.project);
-      await route.fulfill({
-        json: {
-          ...project,
-          machines: project.machines.map((machine) =>
-            Object.hasOwn(settingsRequest.machine_compute, machine.alias)
-              ? { ...machine, compute: settingsRequest.machine_compute[machine.alias] }
-              : machine,
-          ),
-        },
-      });
-    });
-    await page.getByRole("button", { name: "Save", exact: true }).click();
-    await page.getByText("Saved.", { exact: true }).waitFor();
-    assert.deepEqual(settingsRequest.machine_compute, {
-      cluster: { job_manager: "slurm", jobs_root: "/cluster-edited" },
-    });
-    assert.equal(await local.getByRole("textbox", { name: "Jobs root" }).inputValue(), "/new");
-    assert.equal(await page.getByText("Slurm account", { exact: true }).count(), 0);
-    assert.equal(await page.getByText("Slurm partition", { exact: true }).count(), 0);
-    await open("cluster");
+    assert.equal(await route("Scheduler").count(), 0);
+    await compute.getByRole("checkbox", { name: "Use Slurm" }).click();
+    await route("Scheduler").waitFor();
+    const jobsRoot = compute.getByRole("textbox", { name: "Jobs root" });
+    await jobsRoot.fill("/cluster-edited");
+    const saved = page.waitForResponse((response) => response.request().method() === "PATCH");
+    await jobsRoot.press("Enter");
+    await saved;
+    assert.deepEqual(patches, [
+      { id: "m-cluster", method: "PATCH", body: { job_manager: "slurm" } },
+      { id: "m-cluster", method: "PATCH", body: { jobs_root: "/cluster-edited" } },
+    ]);
+    assert.equal(await jobsRoot.inputValue(), "/cluster-edited");
 
-    const scheduler = cluster
-      .locator(".compute-probe")
-      .filter({ has: page.locator("strong", { hasText: /^Scheduler$/ }) });
-    const helper = cluster
-      .locator(".compute-probe")
-      .filter({ has: page.locator("strong", { hasText: /^Helper$/ }) });
-    await page.evaluate(() => {
-      const { project, setProject } = window.jobFixture;
-      setProject({
-        ...project,
-        machines: project.machines.map((machine) =>
-          machine.alias === "cluster"
-            ? {
-                ...machine,
-                compute_probes: {
-                  scheduler: {
-                    backend_id: "slurm",
-                    ready: true,
-                    state: "ready",
-                    status_label: "Ready",
-                    status_tone: "ready",
-                    diagnostic: "Scheduler reachable",
-                  },
-                  helper: {
-                    backend_id: "systemd_user",
-                    ready: false,
-                    state: "failed",
-                    status_label: "Failed",
-                    status_tone: "error",
-                    diagnostic: "User manager is unavailable",
-                    required_action: "Enable linger for the rcp account",
-                  },
-                },
-              }
-            : machine,
-        ),
-      });
-    });
-    await scheduler.getByText("Scheduler reachable").waitFor();
-    await helper.getByText("Enable linger for the rcp account").waitFor();
-    assert.equal(await scheduler.getAttribute("class"), "compute-probe ready");
-    assert.equal(await helper.getAttribute("class"), "compute-probe error");
-    assert.equal(await cluster.getByRole("button", { name: "Probe", exact: true }).count(), 0);
+    await page.route("**/api/space/machines/m-cluster/compute/check", (route) =>
+      route.fulfill({
+        json: {
+          ...machines["m-cluster"],
+          compute_probes: {
+            scheduler: {
+              backend_id: "slurm",
+              ready: true,
+              state: "ready",
+              status_label: "Ready",
+              status_tone: "ready",
+              diagnostic: "Scheduler reachable",
+            },
+            helper: {
+              backend_id: "systemd_user",
+              ready: false,
+              state: "failed",
+              status_label: "Failed",
+              status_tone: "error",
+              diagnostic: "User manager is unavailable",
+              required_action: "Enable linger for the rcp account",
+            },
+          },
+          reach: [
+            {
+              from: "local",
+              probe: {
+                compute_id: "cluster",
+                execution_machine: "local",
+                state: "opaque",
+                reachable: true,
+                diagnostic: "",
+                required_action: null,
+                status_label: "Reachable",
+                status_tone: "ready",
+              },
+            },
+          ],
+        },
+      }),
+    );
+    await compute.locator('[data-machine-action="check-compute"]').click();
+    await route("Scheduler").getByText("Scheduler reachable").waitFor();
+    await route("Helper").getByText("Enable linger for the rcp account").waitFor();
+    assert.equal(await route("Scheduler").getAttribute("class"), "compute-probe ready");
+    assert.equal(await route("Helper").getAttribute("class"), "compute-probe error");
+    assert.equal(await compute.locator('[data-compute-reach="local"]').count(), 1);
     await open("local");
     assert.deepEqual(
-      await local.locator(".compute-probe:not(.compute-reach) strong").allTextContents(),
+      await compute.locator(".compute-probe:not(.compute-reach) strong").allTextContents(),
       ["Helper"],
       "A machine without a job manager offers only the helper route",
     );

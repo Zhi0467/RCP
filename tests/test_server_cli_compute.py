@@ -64,7 +64,7 @@ def test_server_compute_probe_runs_through_installed_service_and_stores_result(
     store.record_compute_backend_probe(PROJECT_ID, other_probe, other_route)
     calls = []
 
-    def probe(loaded, machine_alias, selected_route, *, data_dir):
+    def probe(loaded, machine_alias, selected_route, *, data_dir, compute):
         calls.append((loaded.path, machine_alias, selected_route, data_dir))
         return result
 

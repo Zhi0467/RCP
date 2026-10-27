@@ -13,7 +13,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, clearProjectCaches } from "../core/api";
+import { api, clearProjectCaches, removeProjectMachine } from "../core/api";
 import { computeProbePresentation } from "../experiments/compute";
 import { RepositoryRequests } from "./RepositoryRequests";
 import { ProjectMembers } from "./ProjectMembers";
@@ -30,23 +30,13 @@ import { AgentConfigControls, profileRunConfig } from "../core/AgentConfigContro
 import { AgentUsageWidgets } from "../agents/AgentUsageWidgets";
 import { SkillPackageInspector } from "../agents/SkillPackageInspector";
 import {
-  computeProbeConfigurationChanged,
   deserializeSettingsDraft,
-  machineAccessHintUpdates,
-  machineAccessHintsFrom,
-  type MachineAccessHints,
-  machineComputeFrom,
-  machineComputeUpdates,
-  type MachineComputeSettings,
-  machineProviderPathUpdates,
-  machineProviderPathsFrom,
   mergeAgentProfiles,
-  mergeMachineProviderPaths,
   serializeSettingsDraft,
   settingsDraftStorageKey,
   settingsFingerprint,
-  type MachineProviderPaths,
 } from "./settingsDraft";
+import { providerPathPresentation } from "./providerPaths";
 import type { ProjectReadinessRetention } from "../graph/projectSession";
 import type {
   AgentExecutionProfile,
@@ -54,14 +44,10 @@ import type {
   AgentUsageSnapshot,
   CacheMetric,
   ConsolidationView,
-  MachineComputeConfig,
   ProjectCacheMetrics,
   ProjectSettingsRequest,
   IdentityResponse,
   ProjectSnapshot,
-  ProviderId,
-  ProviderPathResolution,
-  ProviderReadiness,
   SkillDefaults,
 } from "../core/types";
 
@@ -80,7 +66,6 @@ interface Props {
   readinessRequest?: {
     pending: boolean;
     providerError: string | null;
-    computeError: string | null;
   };
   spaceKind: "personal" | "team";
   onMovePersonalProjectToTeam?: (sourceProjectId: string) => void;
@@ -141,9 +126,6 @@ function stagedOrSaved(project: ProjectSnapshot, actorId: string | null) {
     scope: project.default_run_truth_scope,
     autoResearchInvocationCeiling: project.default_auto_research_invocation_ceiling,
     profiles: profilesFrom(project),
-    providerPaths: machineProviderPathsFrom(project.machines),
-    machineComputeEdits: {} as MachineComputeSettings,
-    accessHintEdits: {} as MachineAccessHints,
     skillDefaults: skillDefaultsFrom(project),
   };
   let staged: ReturnType<typeof deserializeSettingsDraft> = null;
@@ -161,9 +143,6 @@ function stagedOrSaved(project: ProjectSnapshot, actorId: string | null) {
     autoResearchInvocationCeiling:
       staged.autoResearchInvocationCeiling ?? saved.autoResearchInvocationCeiling,
     profiles: mergeAgentProfiles(saved.profiles, staged.profiles),
-    providerPaths: mergeMachineProviderPaths(saved.providerPaths, staged.providerPaths),
-    machineComputeEdits: staged.machineComputeEdits ?? {},
-    accessHintEdits: staged.accessHintEdits ?? {},
     skillDefaults: staged.skillDefaults ?? saved.skillDefaults,
   };
 }
@@ -200,28 +179,6 @@ export function ProjectSettings({
   const [profiles, setProfiles] = useState<Record<AgentExecutionProfile, AgentProfileSettings>>(
     () => restoredSettings.profiles,
   );
-  const [providerPaths, setProviderPaths] = useState<MachineProviderPaths>(
-    () => restoredSettings.providerPaths,
-  );
-  const [machineComputeEdits, setMachineComputeEdits] = useState<MachineComputeSettings>(
-    () => restoredSettings.machineComputeEdits,
-  );
-  const machineCompute = { ...machineComputeFrom(project.machines), ...machineComputeEdits };
-  const [accessHintEdits, setAccessHintEdits] = useState<MachineAccessHints>(
-    () => restoredSettings.accessHintEdits,
-  );
-  const accessHints = { ...machineAccessHintsFrom(project.machines), ...accessHintEdits };
-  // A hint the project now has is no longer an edit, so a later refresh with
-  // someone else's newer hint shows theirs.
-  useEffect(() => {
-    setAccessHintEdits((edits) => {
-      const saved = machineAccessHintsFrom(project.machines);
-      const kept = Object.fromEntries(
-        Object.entries(edits).filter(([alias, hint]) => saved[alias] !== hint),
-      );
-      return Object.keys(kept).length === Object.keys(edits).length ? edits : kept;
-    });
-  }, [project.machines]);
   // A return to the same project is a new visit: requests from the previous
   // visit must not overwrite the restored form or publish into another view.
   const requestOwner = useMemo(() => ({ projectId: project.id }), [project.id]);
@@ -239,7 +196,6 @@ export function ProjectSettings({
   // section stays short.
   const [openMachine, setOpenMachine] = useState<string | null>(null);
   const [addingMachine, setAddingMachine] = useState(false);
-  const [resolvingProvider, setResolvingProvider] = useState<string | null>(null);
   const [cacheMetrics, setCacheMetrics] = useState(project.cache_metrics);
   const [status, setStatus] = useState<{ kind: "saved" | "error"; text: string } | null>(null);
 
@@ -258,13 +214,9 @@ export function ProjectSettings({
     setScope(restoredSettings.scope);
     setAutoResearchInvocationCeiling(restoredSettings.autoResearchInvocationCeiling);
     setProfiles(restoredSettings.profiles);
-    setProviderPaths(restoredSettings.providerPaths);
-    setMachineComputeEdits(restoredSettings.machineComputeEdits);
-    setAccessHintEdits(restoredSettings.accessHintEdits);
     setSkillDefaults(restoredSettings.skillDefaults);
     setSaving(false);
     setClearingCaches(false);
-    setResolvingProvider(null);
     setInspectedPackage(null);
     setStatus(null);
   }, [restoredSettings]);
@@ -284,9 +236,6 @@ export function ProjectSettings({
         scope: project.default_run_truth_scope,
         autoResearchInvocationCeiling: project.default_auto_research_invocation_ceiling,
         profiles: profilesFrom(project),
-        providerPaths: machineProviderPathsFrom(project.machines),
-        machineCompute: machineComputeFrom(project.machines),
-        accessHints: machineAccessHintsFrom(project.machines),
         skillDefaults: skillDefaultsFrom(project),
       }),
     [project],
@@ -295,17 +244,13 @@ export function ProjectSettings({
     scope,
     autoResearchInvocationCeiling,
     profiles,
-    providerPaths,
-    machineCompute,
-    accessHints,
     skillDefaults,
   });
   const dirty = current !== baseline;
   const autoResearchInvocationCeilingIsValid =
     Number.isSafeInteger(autoResearchInvocationCeiling) && autoResearchInvocationCeiling >= 1;
 
-  // Stage machine settings alongside provider paths; clearing a clean form
-  // drops the staged copy.
+  // Stage the form's edits; clearing a clean form drops the staged copy.
   useEffect(() => {
     const key = settingsDraftStorageKey(actorId, project.id);
     if (!key) return;
@@ -318,15 +263,6 @@ export function ProjectSettings({
             scope,
             autoResearchInvocationCeiling,
             profiles,
-            providerPaths,
-            machineComputeEdits: machineComputeUpdates(
-              machineComputeFrom(project.machines),
-              machineComputeEdits,
-            ),
-            accessHintEdits: machineAccessHintUpdates(
-              machineAccessHintsFrom(project.machines),
-              accessHintEdits,
-            ),
             skillDefaults,
           }),
         );
@@ -357,13 +293,6 @@ export function ProjectSettings({
   );
   const workflowCatalog = skillCatalog.filter((entry) => entry.kind === "workflow");
   const directSkillCatalog = skillCatalog.filter((entry) => entry.kind === "skill");
-  const executionMachines = Array.from(
-    new Set(Object.values(profiles).map((profile) => profile.run_on)),
-  );
-  const computeConfigurationIsDirty = computeProbeConfigurationChanged(
-    Object.values(profilesFrom(project)).map((profile) => profile.run_on),
-    executionMachines,
-  );
 
   const toggleRepository = (alias: string) => {
     setStatus(null);
@@ -433,9 +362,6 @@ export function ProjectSettings({
     setScope(project.default_run_truth_scope);
     setAutoResearchInvocationCeiling(project.default_auto_research_invocation_ceiling);
     setProfiles(profilesFrom(project));
-    setProviderPaths(machineProviderPathsFrom(project.machines));
-    setMachineComputeEdits({});
-    setAccessHintEdits({});
     setSkillDefaults(savedSkillDefaults);
     setStatus(null);
   };
@@ -450,42 +376,15 @@ export function ProjectSettings({
       agent_profiles: profiles,
       skill_defaults: skillDefaults,
     };
-    const pathUpdates = machineProviderPathUpdates(
-      machineProviderPathsFrom(project.machines),
-      providerPaths,
-    );
-    if (pathUpdates) body.machine_provider_paths = pathUpdates;
-    const computeUpdates = machineComputeUpdates(
-      machineComputeFrom(project.machines),
-      machineCompute,
-    );
-    if (computeUpdates) body.machine_compute = computeUpdates;
-    const hintUpdates = machineAccessHintUpdates(
-      machineAccessHintsFrom(project.machines),
-      accessHints,
-    );
-    if (hintUpdates) body.machine_access_hints = hintUpdates;
     try {
       const saved = await api<ProjectSnapshot>(`${apiBase}/settings`, {
         method: "PUT",
         body: JSON.stringify(body),
       });
       if (!requestIsCurrent()) return;
-      setProviderPaths((currentPaths) =>
-        currentPaths === providerPaths ? machineProviderPathsFrom(saved.machines) : currentPaths,
-      );
-      setMachineComputeEdits({});
-      // Like provider paths, hold the saved hints until the project refresh lands,
-      // or the field blanks while readiness reloads.
-      setAccessHintEdits((currentEdits) =>
-        currentEdits === accessHintEdits ? machineAccessHintsFrom(saved.machines) : currentEdits,
-      );
-      // The save response intentionally carries no live probe. Preserve each
-      // readiness slice whose own inputs this save left alone.
-      onSaved(saved, {
-        provider: pathUpdates === undefined,
-        compute: !computeConfigurationIsDirty,
-      });
+      // The save response intentionally carries no live probe, and no setting
+      // here feeds provider readiness, so the rendered readiness stands.
+      onSaved(saved);
       try {
         await onRefreshReadiness();
         if (!requestIsCurrent()) return;
@@ -505,100 +404,28 @@ export function ProjectSettings({
     }
   };
 
-  const updateMachineCompute = (alias: string, config: MachineComputeConfig | null) => {
-    setMachineComputeEdits((currentEdits) => {
-      const next = { ...currentEdits, [alias]: config };
-      if (
-        !machineComputeUpdates(
-          { [alias]: machineByAlias[alias].compute ?? null },
-          { [alias]: config },
-        )
-      )
-        delete next[alias];
-      return next;
-    });
-    setStatus(null);
-  };
-
   // What a tile shows at a glance: each provider, the jobs route, and grants.
   const machineSignals = (machine: (typeof project.machines)[number]): MachineSignal[] => {
-    const signals: MachineSignal[] = providerCatalog.map((provider) => {
-      const state = providerPathPresentation(
-        project.provider_readiness[machine.alias]?.[provider.provider],
-        providerPaths[machine.alias]?.[provider.provider] ?? "",
-        machine.provider_paths[provider.provider] ?? "",
-      );
-      return { label: provider.label || provider.provider, tone: state.kind };
-    });
-    const unsavedCompute = Boolean(
-      machineComputeUpdates(
-        { [machine.alias]: machine.compute ?? null },
-        { [machine.alias]: machineCompute[machine.alias] ?? null },
-      ),
-    );
-    const probe = machine.compute_probes?.[machine.compute?.job_manager ? "scheduler" : "helper"];
-    signals.push({
-      label: machine.compute?.job_manager === "slurm" ? "Slurm" : "Jobs",
-      tone: unsavedCompute ? "pending" : probe ? computeProbePresentation(probe).tone : "warning",
-    });
     const record = spaceMachines.machines
       ? spaceMachineForProject(spaceMachines.machines, project.id, machine)
       : null;
+    const signals: MachineSignal[] = providerCatalog.map((provider) => {
+      const recorded = record?.provider_paths[provider.provider] ?? "";
+      const state = providerPathPresentation(
+        project.provider_readiness[machine.alias]?.[provider.provider],
+        recorded,
+        recorded,
+      );
+      return { label: provider.label || provider.provider, tone: state.kind };
+    });
+    const probe = machine.compute_probes?.[machine.compute?.job_manager ? "scheduler" : "helper"];
+    signals.push({
+      label: machine.compute?.job_manager === "slurm" ? "Slurm" : "Jobs",
+      tone: probe ? computeProbePresentation(probe).tone : "warning",
+    });
     const grants = record?.writable_paths.length ?? 0;
     if (grants) signals.push({ label: `${grants} writable`, tone: "ready" });
     return signals;
-  };
-
-  const resolveProviderPath = async (machine: string, provider: ProviderId) => {
-    const key = `${machine}:${provider}`;
-    if (resolvingProvider || writesDisabled) return;
-    setResolvingProvider(key);
-    setStatus(null);
-    try {
-      const result = await api<ProviderPathResolution>(
-        `${apiBase}/machines/${encodeURIComponent(machine)}/providers/${encodeURIComponent(provider)}/resolve`,
-        { method: "POST" },
-      );
-      if (!requestIsCurrent()) return;
-      setProviderPaths((currentPaths) =>
-        currentPaths[machine]?.[provider] !== providerPaths[machine]?.[provider]
-          ? currentPaths
-          : {
-              ...currentPaths,
-              [result.machine]: {
-                ...currentPaths[result.machine],
-                [result.provider]: result.binary_path ?? "",
-              },
-            },
-      );
-      const coachMachine = project.agent_profiles.paper_coach.run_on;
-      const resolvedProject: ProjectSnapshot = {
-        ...result.project,
-        provider_readiness: {
-          ...project.provider_readiness,
-          [result.machine]: {
-            ...project.provider_readiness[result.machine],
-            [result.provider]: result.readiness,
-          },
-        },
-        providers:
-          coachMachine === result.machine
-            ? { ...project.providers, [result.provider]: result.readiness }
-            : project.providers,
-      };
-      // A resolve invalidates provider readiness alone. Retaining the rendered
-      // compute status keeps a compute probe that answers mid-resolve.
-      onSaved(resolvedProject, { provider: false, compute: true });
-      setStatus({
-        kind: "saved",
-        text: `${result.readiness.label || result.provider} resolved on ${result.machine}.`,
-      });
-    } catch (caught) {
-      if (!requestIsCurrent()) return;
-      setStatus({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
-    } finally {
-      if (requestIsCurrent()) setResolvingProvider(null);
-    }
   };
 
   const clearCaches = async () => {
@@ -720,12 +547,8 @@ export function ProjectSettings({
           <button
             className="button secondary compact"
             type="button"
-            disabled={writesDisabled || readinessRequest?.pending || computeConfigurationIsDirty}
-            title={
-              computeConfigurationIsDirty
-                ? "Save agent machines before probing"
-                : "Probe machine reachability"
-            }
+            disabled={writesDisabled || readinessRequest?.pending}
+            title="Probe machine reachability"
             onClick={() => void onRefreshReadiness().catch(() => {})}
           >
             {readinessRequest?.pending ? (
@@ -733,7 +556,7 @@ export function ProjectSettings({
             ) : (
               <ScanSearch size={14} />
             )}
-            {computeConfigurationIsDirty ? "Save first" : "Probe"}
+            Probe
           </button>
         </header>
         <div className="machine-tiles" role="group" aria-label="Machines">
@@ -768,202 +591,38 @@ export function ProjectSettings({
         <div className="provider-machine-list">
           {machineGroups
             .filter((group) => group.key === openMachine)
-            .map(({ key, machines: group }) => (
-              <MachineCard
-                key={key}
-                title={group.map((item) => item.alias).join(", ")}
-                hostLabel={machineHostLabel(group[0].host, spaceKind)}
-                osAccount={group[0].os_account}
-                record={
-                  spaceMachines.machines
-                    ? spaceMachineForProject(spaceMachines.machines, project.id, group[0])
-                    : null
-                }
-                level="project"
-                writesDisabled={writesDisabled}
-                onRecordChange={spaceMachines.replace}
-              >
-                {group.map((machine) => {
-                  const config = machineCompute[machine.alias] ?? {
-                    job_manager: null,
-                    jobs_root: "",
-                  };
-                  const needsSave = Boolean(
-                    machineComputeUpdates(
-                      { [machine.alias]: machine.compute ?? null },
-                      { [machine.alias]: machineCompute[machine.alias] ?? null },
-                    ),
-                  );
-                  const computeDisabled = writesDisabled || saving;
-                  return (
-                    <div className="machine-alias-settings" key={machine.alias}>
-                      {group.length > 1 && <strong>{machine.alias}</strong>}
-                      <div className="provider-path-list">
-                        {providerCatalog.map((provider) => {
-                          const recorded = machine.provider_paths[provider.provider] ?? "";
-                          const value = providerPaths[machine.alias]?.[provider.provider] ?? "";
-                          const readiness =
-                            project.provider_readiness[machine.alias]?.[provider.provider];
-                          const state = providerPathPresentation(readiness, value, recorded);
-                          const resolveKey = `${machine.alias}:${provider.provider}`;
-                          return (
-                            <div className="provider-path-row" key={provider.provider}>
-                              <strong>{provider.label || provider.provider}</strong>
-                              <input
-                                type="text"
-                                aria-label={`${provider.label || provider.provider} executable on ${machine.alias}`}
-                                value={value}
-                                disabled={writesDisabled}
-                                onChange={(event) => {
-                                  const path = event.target.value;
-                                  setProviderPaths((currentPaths) => ({
-                                    ...currentPaths,
-                                    [machine.alias]: {
-                                      ...currentPaths[machine.alias],
-                                      [provider.provider]: path,
-                                    },
-                                  }));
-                                  setStatus(null);
-                                }}
-                              />
-                              <span className={`provider-path-state ${state.kind}`}>
-                                {state.label}
-                              </span>
-                              <button
-                                className="button secondary compact"
-                                type="button"
-                                disabled={writesDisabled || Boolean(resolvingProvider)}
-                                onClick={() =>
-                                  void resolveProviderPath(machine.alias, provider.provider)
-                                }
-                              >
-                                {resolvingProvider === resolveKey ? (
-                                  <LoaderCircle className="spin" size={14} />
-                                ) : (
-                                  <ScanSearch size={14} />
-                                )}
-                                Resolve
-                              </button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                      <fieldset className="machine-compute" disabled={computeDisabled}>
-                        <legend>Compute</legend>
-                        <div className="compute-connection-fields">
-                          <label>
-                            <span>Use Slurm</span>
-                            <input
-                              type="checkbox"
-                              checked={config.job_manager === "slurm"}
-                              onChange={(event) =>
-                                updateMachineCompute(machine.alias, {
-                                  ...config,
-                                  job_manager: event.target.checked ? "slurm" : null,
-                                })
-                              }
-                            />
-                          </label>
-                          <label>
-                            <span>Jobs root</span>
-                            <input
-                              value={config.jobs_root}
-                              onChange={(event) =>
-                                updateMachineCompute(machine.alias, {
-                                  ...config,
-                                  jobs_root: event.target.value,
-                                })
-                              }
-                            />
-                          </label>
-                          <label>
-                            <span>Access hint</span>
-                            <input
-                              maxLength={512}
-                              value={accessHints[machine.alias] ?? ""}
-                              onChange={(event) => {
-                                const hint = event.target.value;
-                                setAccessHintEdits((currentEdits) => {
-                                  const next = { ...currentEdits, [machine.alias]: hint };
-                                  if (hint === machine.access_hint) delete next[machine.alias];
-                                  return next;
-                                });
-                                setStatus(null);
-                              }}
-                            />
-                          </label>
-                          <button
-                            className="button secondary compact"
-                            type="button"
-                            onClick={() => updateMachineCompute(machine.alias, null)}
-                          >
-                            Reset compute
-                          </button>
-                        </div>
-                        {(machine.compute?.job_manager
-                          ? (["scheduler", "helper"] as const)
-                          : (["helper"] as const)
-                        ).map((route) => {
-                          // RCP checks each route at startup and after a compute save.
-                          const probe = needsSave
-                            ? null
-                            : (machine.compute_probes?.[route] ?? null);
-                          const presentation = probe
-                            ? computeProbePresentation(probe)
-                            : {
-                                label: needsSave ? "Checked after save" : "Not checked yet",
-                                tone: "pending" as const,
-                              };
-                          return (
-                            <div className={`compute-probe ${presentation.tone}`} key={route}>
-                              <strong>{route === "scheduler" ? "Scheduler" : "Helper"}</strong>
-                              <span className="compute-probe-dot" aria-hidden="true" />
-                              <span>{presentation.label}</span>
-                              {probe?.backend_id && <span>{probe.backend_id}</span>}
-                              {probe?.diagnostic && <span>{probe.diagnostic}</span>}
-                              {probe?.required_action && <em>{probe.required_action}</em>}
-                            </div>
-                          );
-                        })}
-                        {executionMachines
-                          // An agent's own machine is local to it, and a host-less machine has
-                          // no route from any other: RCP probes neither.
-                          .filter(
-                            (executionMachine) =>
-                              executionMachine !== machine.alias && machine.host,
-                          )
-                          .map((executionMachine) => {
-                            const probe =
-                              project.compute_status?.[executionMachine]?.[machine.alias];
-                            const presentation = computeProbePresentation(probe);
-                            return (
-                              <div
-                                className={`compute-probe compute-reach ${presentation.tone}`}
-                                key={`reach:${executionMachine}`}
-                              >
-                                <strong>From {executionMachine}</strong>
-                                <span className="compute-probe-dot" aria-hidden="true" />
-                                <span>{presentation.label}</span>
-                                {probe?.required_action ? <em>{probe.required_action}</em> : null}
-                                {probe &&
-                                presentation.tone === "error" &&
-                                !probe.required_action ? (
-                                  <em>{probe.diagnostic}</em>
-                                ) : null}
-                              </div>
-                            );
-                          })}
-                      </fieldset>
-                    </div>
-                  );
-                })}
-              </MachineCard>
-            ))}
+            .map(({ key, machines: group }) => {
+              const record = spaceMachines.machines
+                ? spaceMachineForProject(spaceMachines.machines, project.id, group[0])
+                : null;
+              const removable = group.every((machine) => machine.removable);
+              return (
+                <MachineCard
+                  key={key}
+                  title={record?.name ?? group.map((item) => item.alias).join(", ")}
+                  hostLabel={machineHostLabel(group[0].host, spaceKind)}
+                  osAccount={group[0].os_account}
+                  record={record}
+                  writesDisabled={writesDisabled}
+                  onRecordChange={spaceMachines.replace}
+                  onRemoveFromProject={
+                    removable
+                      ? async () => {
+                          for (const machine of group) {
+                            const saved = await removeProjectMachine(project.id, machine.alias);
+                            if (!requestIsCurrent()) return;
+                            onSaved(saved, { provider: false });
+                          }
+                          void spaceMachines.reload();
+                          setOpenMachine(null);
+                        }
+                      : undefined
+                  }
+                />
+              );
+            })}
         </div>
         {spaceMachines.error && <div className="settings-error">{spaceMachines.error}</div>}
-        {readinessRequest?.computeError ? (
-          <div className="settings-error">{readinessRequest.computeError}</div>
-        ) : null}
         {addingMachine && (
           <AddProjectMachine
             projectId={project.id}
@@ -975,12 +634,7 @@ export function ProjectSettings({
             onCreated={spaceMachines.replace}
             onAdded={(saved, alias) => {
               if (!requestIsCurrent()) return;
-              // Keep in-progress path edits; the new machine starts from its manifest values.
-              setProviderPaths((currentPaths) => ({
-                ...machineProviderPathsFrom(saved.machines),
-                ...currentPaths,
-              }));
-              onSaved(saved, { provider: false, compute: false });
+              onSaved(saved, { provider: false });
               void spaceMachines.reload();
               void onRefreshReadiness().catch(() => {});
               setAddingMachine(false);
@@ -1148,22 +802,6 @@ export function ProjectSettings({
       </footer>
     </section>
   );
-}
-
-export function providerPathPresentation(
-  readiness: ProviderReadiness | undefined,
-  value: string,
-  recorded: string,
-): { label: string; kind: "ready" | "warning" | "error" | "pending" } {
-  if (value !== recorded) return { label: "Unsaved", kind: "pending" };
-  if (readiness?.path_state === "unreachable")
-    return { label: "Machine unreachable", kind: "error" };
-  if (readiness?.path_state === "denied") return { label: "Recorded path unusable", kind: "error" };
-  if (readiness?.path_state === "missing") {
-    return { label: value ? "Recorded path missing" : "Executable missing", kind: "error" };
-  }
-  if (readiness?.path_state === "resolved") return { label: "Ready", kind: "ready" };
-  return { label: "Not recorded", kind: "warning" };
 }
 
 function CacheMeter({ label, metric }: { label: string; metric: CacheMetric }) {

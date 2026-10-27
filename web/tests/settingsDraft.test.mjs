@@ -2,44 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  computeProbeConfigurationChanged,
   deserializeSettingsDraft,
-  machineProviderPathUpdates,
-  machineProviderPathsFrom,
   mergeAgentProfiles,
-  mergeMachineProviderPaths,
-  serializeSettingsDraft,
   settingsFingerprint,
 } from "../src/projects/settingsDraft.ts";
-
-test("machine provider paths preserve recorded values and emit only edits", () => {
-  const saved = machineProviderPathsFrom([
-    { alias: "local", host: "", provider_paths: { codex: "/opt/codex", claude: "/opt/claude" } },
-    { alias: "cluster", host: "cluster", provider_paths: {} },
-  ]);
-  assert.deepEqual(machineProviderPathUpdates(saved, saved), undefined);
-  assert.deepEqual(
-    machineProviderPathUpdates(saved, {
-      ...saved,
-      local: { ...saved.local, codex: "" },
-      cluster: { codex: "/usr/local/bin/codex" },
-    }),
-    {
-      local: { codex: "" },
-      cluster: { codex: "/usr/local/bin/codex" },
-    },
-  );
-});
-
-test("an older staged path set keeps provider records added since it was written", () => {
-  assert.deepEqual(
-    mergeMachineProviderPaths(
-      { local: { codex: "/new/codex", claude: "/new/claude" } },
-      { local: { codex: "/staged/codex" } },
-    ),
-    { local: { codex: "/staged/codex", claude: "/new/claude" } },
-  );
-});
 
 test("a staged profile keeps its own runtime over the manifest", () => {
   const saved = {
@@ -116,17 +82,6 @@ test("a dropped staged profile leaves the manifest profile intact", () => {
 
   assert.ok(draft);
   assert.deepEqual(mergeAgentProfiles(saved, draft.profiles), saved);
-});
-
-test("settings drafts round trip staged provider paths", () => {
-  const draft = {
-    version: 4,
-    scope: ["repo"],
-    profiles: {},
-    autoResearchInvocationCeiling: 14,
-    providerPaths: { local: { codex: "/opt/codex" } },
-  };
-  assert.deepEqual(deserializeSettingsDraft(serializeSettingsDraft(draft)), draft);
 });
 
 test("v1 settings drafts migrate the campaign default into the current episode field", () => {
@@ -216,57 +171,6 @@ test("v3 settings drafts discard previously persisted compute metadata", () => {
   assert.equal(Object.hasOwn(malformed, "computeConnections"), false);
 });
 
-test("moving one profile to an unused machine changes the compute probe cache key", () => {
-  assert.equal(
-    computeProbeConfigurationChanged(
-      ["laptop", "laptop", "laptop"],
-      ["laptop", "laptop", "cluster"],
-    ),
-    true,
-  );
-  assert.equal(
-    computeProbeConfigurationChanged(["laptop", "cluster"], ["cluster", "laptop"]),
-    false,
-  );
-});
-
-test("compute edits that staged an access hint load without it", () => {
-  const draft = deserializeSettingsDraft(
-    JSON.stringify({
-      version: 4,
-      scope: ["repo"],
-      profiles: {},
-      machineComputeEdits: {
-        old: { job_manager: "slurm", jobs_root: "/scratch" },
-        hinted: { job_manager: null, jobs_root: "", access_hint: "module load cuda" },
-        reset: null,
-      },
-    }),
-  );
-  assert.deepEqual(draft?.machineComputeEdits, {
-    old: { job_manager: "slurm", jobs_root: "/scratch" },
-    hinted: { job_manager: null, jobs_root: "" },
-    reset: null,
-  });
-});
-
-test("access hint edits stage, restore, and save only changed aliases", async () => {
-  const { machineAccessHintsFrom, machineAccessHintUpdates } =
-    await import("../src/projects/settingsDraft.ts");
-  const saved = machineAccessHintsFrom([
-    { alias: "local", access_hint: "" },
-    { alias: "cluster", access_hint: "module load cuda" },
-  ]);
-  assert.equal(machineAccessHintUpdates(saved, saved), undefined);
-  assert.deepEqual(machineAccessHintUpdates(saved, { ...saved, cluster: "" }), { cluster: "" });
-  const draft = { version: 4, scope: ["repo"], profiles: {}, accessHintEdits: { cluster: "" } };
-  assert.deepEqual(deserializeSettingsDraft(serializeSettingsDraft(draft)), draft);
-  assert.equal(
-    deserializeSettingsDraft(JSON.stringify({ ...draft, accessHintEdits: { cluster: 1 } })),
-    null,
-  );
-});
-
 test("a migrated five-profile v1 draft keeps the saved orchestrator profile", () => {
   const runConfig = (model) => ({
     provider: "codex",
@@ -321,58 +225,17 @@ test("settings compare keeps list order, which the researcher chose", () => {
   );
 });
 
-test("machine compute edits stage, restore, and save only changed aliases", async () => {
-  const { machineComputeFrom, machineComputeUpdates } =
-    await import("../src/projects/settingsDraft.ts");
-  const slurm = { job_manager: "slurm", jobs_root: "/jobs" };
-  const saved = machineComputeFrom([
-    { alias: "local", compute: null },
-    { alias: "cluster", compute: slurm },
-  ]);
-  assert.equal(machineComputeUpdates(saved, saved), undefined);
-  assert.deepEqual(machineComputeUpdates(saved, { cluster: null }), { cluster: null });
-  const draft = {
-    version: 4,
-    scope: ["repo"],
-    profiles: {},
-    machineComputeEdits: { cluster: null },
-  };
-  assert.deepEqual(deserializeSettingsDraft(serializeSettingsDraft(draft)), draft);
-  assert.equal(
-    deserializeSettingsDraft(
-      JSON.stringify({
-        ...draft,
-        machineComputeEdits: { cluster: { ...slurm, job_manager: "unknown" } },
-      }),
-    ),
-    null,
-  );
-});
-
-test("compute drafts cannot restore untouched stale machine settings", async () => {
-  const { machineComputeUpdates } = await import("../src/projects/settingsDraft.ts");
-  const original = { job_manager: null, jobs_root: "/old" };
-  const fresh = { job_manager: null, jobs_root: "/new" };
-  const saved = { local: fresh, cluster: null };
-  const unrelatedDraft = deserializeSettingsDraft(
+test("machine settings an older draft staged load without them", () => {
+  const draft = deserializeSettingsDraft(
     JSON.stringify({
-      version: 4,
-      scope: ["changed-repo"],
-      profiles: {},
-      machineCompute: { local: original, cluster: null },
-    }),
-  );
-  assert.equal(unrelatedDraft.machineCompute, undefined);
-  assert.equal(machineComputeUpdates(saved, unrelatedDraft.machineComputeEdits ?? {}), undefined);
-  const edits = { cluster: { job_manager: "slurm", jobs_root: "" } };
-  const staged = deserializeSettingsDraft(
-    serializeSettingsDraft({
       version: 4,
       scope: ["repo"],
       profiles: {},
-      machineComputeEdits: edits,
+      providerPaths: { local: { codex: "/opt/codex" } },
+      machineCompute: { local: { job_manager: null, jobs_root: "/old" } },
+      machineComputeEdits: { cluster: { job_manager: "slurm", jobs_root: "" } },
+      accessHintEdits: { cluster: "module load cuda" },
     }),
   );
-  assert.deepEqual({ ...saved, ...staged.machineComputeEdits }, { local: fresh, ...edits });
-  assert.deepEqual(machineComputeUpdates(saved, staged.machineComputeEdits), edits);
+  assert.deepEqual(draft, { version: 4, scope: ["repo"], profiles: {} });
 });

@@ -134,7 +134,6 @@ export type SettingsResource = Pick<
   | "paper_coach"
   | "skill_catalog"
   | "skill_defaults"
-  | "compute_status"
   | "provider_logins"
   | "provider_readiness"
   | "providers"
@@ -151,7 +150,6 @@ export function settingsProfile(projectId: string): ResourceProfile<SettingsReso
         api<
           Pick<
             SettingsResource,
-            | "compute_status"
             | "provider_logins"
             | "provider_readiness"
             | "providers"

@@ -206,10 +206,13 @@ def test_auto_research_retry_is_refused_before_allocation_when_the_work_probe_fa
         work_like_available=False,
         work_like_reason=_WORK_PROBE_REASON,
     )
-    machine = SimpleNamespace(host="gpu.example", provider_paths={"claude": "/bin/claude"})
+    machine = SimpleNamespace(host="gpu.example")
     service = SimpleNamespace(
         manifest=SimpleNamespace(machine_map={"remote-1": machine}),
-        launcher=SimpleNamespace(readiness=lambda *_args, **_kwargs: blocked),
+        launcher=SimpleNamespace(
+            readiness=lambda *_args, **_kwargs: blocked,
+            provider_binary=lambda _provider, _host: "/bin/claude",
+        ),
     )
     request = SimpleNamespace(provider="claude", run_on="remote-1")
     with pytest.raises(ValueError, match="unknown permission mode"):
@@ -218,7 +221,8 @@ def test_auto_research_retry_is_refused_before_allocation_when_the_work_probe_fa
     service.launcher = SimpleNamespace(
         readiness=lambda *_args, **_kwargs: blocked.model_copy(
             update={"work_like_available": True, "work_like_reason": None}
-        )
+        ),
+        provider_binary=lambda _provider, _host: "/bin/claude",
     )
     _require_auto_research_retry_target_ready(service, request)
 

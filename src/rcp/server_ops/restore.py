@@ -46,6 +46,21 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Machine settings on the space card (v61): fresh, immutable fixture
+        # upgrades, and in-place upgrades.
+        "1f9d439edf04b3e88e49a52d7dc51749ed240d3008b8722740a9bf77d291a3fb",
+        "210d64d4f2b17b27f024060980c7b174932a97a179a1ab2ed041bc241649e398",
+        "34e853acdaf5460866a20e0290e0e4647da709509875e4bde6465a3fa4a27f65",
+        "36a764bba44b519c66935e81cdf8e706678b59f5621f83d563ca077bf444ffd9",
+        "649a28a292afce69563551eaa8ee6899c0b7e978fca7d8896bdcf2485305db3c",
+        "94225e451fb090f3c3bf4fec97e11fef4c84710d644a2efd7de035fcde191bf5",
+        "97698471ca5a8a26b409a410364435542a4b76e3ecda70f5c8c68a7212efc2c9",
+        "a0e0048968d9038cd502a9c9f489d89a29edb99e01f5a92dc4bb05a8f02fd066",
+        "a25f0d17f38a8a8006026e616d6bc8d505696ebbed05bd737f103e066cee8986",
+        "afbc146db1ebf1518f44c8f91b7431108e6d07aa90722ee53bc3f897c9b7311a",
+        "bd45956be2eb00efed74713fbced0bd94948aa0f03876d517ce396b01a0556c4",
+        "e20d949d928ee32b0bb5dfef1881cad18b9c8e4a3f53f26580046c980c64dd2b",
+        "f353ac420107c10ddbd28b74acf19fc2d66f7e3ca06b4d2dd5a2a149cf253012",
         # Chat forks (v60) after conversation names: fresh, immutable fixture
         # upgrades, and in-place upgrades.
         "292cf729baeb529eb6c37920df537da471712be9fe36e08b3a9e0ffe5c27d130",

@@ -516,3 +516,14 @@ def migrate_chat_name_versions(connection: sqlite3.Connection) -> None:
             _bump("ROW.project_id", "chat", "ROW.chat_id", "ROW.chat_id IS NOT NULL"),
         ],
     )
+
+
+def migrate_space_machine_settings_versions(connection: sqlite3.Connection) -> None:
+    """Reinstall the machine card owner after it gained machine settings columns."""
+    for event in ("insert", "update", "delete"):
+        connection.execute(f"DROP TRIGGER resource_space_machines_{event}")
+    _install(
+        connection,
+        "space_machines",
+        [_bump("''", resource) for resource in _GLOBAL_TABLES["space_machines"]],
+    )

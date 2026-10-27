@@ -24,7 +24,6 @@ from rcp.agents import (
     ChatContext,
     ContextAssembler,
     PromptFactory,
-    ProviderReadiness,
     RunContext,
     parse_agent_patch_json,
 )
@@ -36,7 +35,6 @@ from rcp.config import (
     AgentExecutionProfile,
     AgentSurface,
     AgentSurfaceConfig,
-    MachineComputeConfig,
     MachineConfig,
     Manifest,
     launches_work_like,
@@ -1069,13 +1067,6 @@ class ProjectSettingsRequest(BaseModel):
     )
     agent_profiles: dict[AgentExecutionProfile, AgentProfileSettings]
     skill_defaults: SkillDefaults = Field(default_factory=SkillDefaults)
-    # Partial by machine and provider. Omission preserves every recorded path;
-    # an empty string explicitly clears one provider's record.
-    machine_provider_paths: dict[str, dict[ProviderId, str]] | None = None
-    # Omitted machines are preserved; null removes one machine compute block.
-    machine_compute: dict[str, MachineComputeConfig | None] | None = None
-    # Omitted machines are preserved; an empty string clears one machine's hint.
-    machine_access_hints: dict[str, str] | None = None
 
     @model_validator(mode="after")
     def require_every_surface(self) -> ProjectSettingsRequest:
@@ -1729,8 +1720,10 @@ class ProjectService:
                 "repositories": [
                     repository.model_dump() for repository in self.manifest.repositories
                 ],
-                "machines": [machine.model_dump() for machine in self.manifest.machines],
-                "compute_status": {},
+                "machines": [
+                    machine.model_dump(include={"alias", "host", "os_account"})
+                    for machine in self.manifest.machines
+                ],
                 "primary_question": (
                     primary.model_dump(mode="json") if primary is not None else None
                 ),
@@ -1775,11 +1768,14 @@ class ProjectService:
     def wait_for_provider_skill_inventories(self) -> None:
         """Wait only for an already-scheduled startup refresh; never start one."""
 
-        self.wait_for_provider_skill_inventories_for(self.manifest, self.provider_skills)
+        self.wait_for_provider_skill_inventories_for(
+            self.manifest, self.launcher, self.provider_skills
+        )
 
     @staticmethod
     def wait_for_provider_skill_inventories_for(
         manifest: Manifest,
+        launcher: AgentLauncher,
         provider_skills: ProviderSkillInventoryManager | None,
     ) -> None:
         if provider_skills is None:
@@ -1789,17 +1785,20 @@ class ProjectService:
                 provider_skills.wait(
                     provider,
                     machine.host,
-                    machine.provider_paths.get(provider),
+                    launcher.provider_binary(provider, machine.host),
                 )
 
     def provider_skill_inventory_snapshot(self) -> dict[str, dict[ProviderId, object]]:
         """Return startup-cached provider skills without probing a provider."""
 
-        return self.provider_skill_inventories_for(self.manifest, self.provider_skills)
+        return self.provider_skill_inventories_for(
+            self.manifest, self.launcher, self.provider_skills
+        )
 
     @staticmethod
     def provider_skill_inventories_for(
         manifest: Manifest,
+        launcher: AgentLauncher,
         provider_skills: ProviderSkillInventoryManager | None,
     ) -> dict[str, dict[ProviderId, object]]:
         """Project provider inventories mapped through its machine aliases."""
@@ -1814,7 +1813,7 @@ class ProjectService:
                 provider: provider_skills.snapshot(
                     provider,
                     machine.host,
-                    machine.provider_paths.get(provider),
+                    launcher.provider_binary(provider, machine.host),
                     machine.alias,
                 ).model_dump(mode="json")
                 for provider in PROVIDER_IDS
@@ -1870,7 +1869,7 @@ class ProjectService:
                 machine.alias,
                 machine.host,
                 provider,
-                machine.provider_paths.get(provider),
+                launcher.provider_binary(provider, machine.host),
             )
             for machine in manifest.machines
             for provider in PROVIDER_IDS
@@ -1985,38 +1984,12 @@ class ProjectService:
             surface: self._settings_profile(surface, request.agent_profiles[surface])
             for surface in _SETTINGS_SURFACES
         }
-        provider_path_updates = self._validate_provider_path_updates(request.machine_provider_paths)
-        prior_paths = {
-            (alias, provider): self.manifest.machine_map[alias].provider_paths.get(provider)
-            for alias, updates in (provider_path_updates or {}).items()
-            for provider in updates
-        }
         self.history.update_agent_settings(
             request.default_run_truth_scope,
             profiles,
-            provider_path_updates,
             request.skill_defaults,
             request.default_auto_research_invocation_ceiling,
-            request.machine_compute,
-            request.machine_access_hints,
         )
-        for (alias, provider), prior_path in prior_paths.items():
-            machine = self.manifest.machine_map[alias]
-            current_path = machine.provider_paths.get(provider)
-            if prior_path == current_path:
-                continue
-            if prior_path is not None:
-                self.launcher.invalidate_readiness(
-                    provider,
-                    host=machine.host,
-                    binary=prior_path,
-                )
-            if current_path is not None:
-                self.launcher.invalidate_readiness(
-                    provider,
-                    host=machine.host,
-                    binary=current_path,
-                )
         self.paper.manifest = self.manifest
         self.invalidate_source_index()
 
@@ -2032,67 +2005,19 @@ class ProjectService:
         self.paper.manifest = self.manifest
         self.invalidate_source_index()
 
-    def machine_prompt_profiles(self, run_on: str) -> list[dict[str, str]]:
-        """Every project machine as seen from `run_on`, read from the manifest now."""
-        context = machine_compute_context(self.manifest, execution_machine=run_on)
-        return [profile.model_dump(mode="json") for profile in context.active]
+    def remove_machine(self, alias: str) -> None:
+        """Drop one machine this project no longer uses; its space card stays."""
 
-    def resolve_provider_path(
-        self,
-        machine_alias: str,
-        provider: ProviderId,
-    ) -> ProviderReadiness:
-        try:
-            machine = self.manifest.machine_map[machine_alias]
-        except KeyError:
-            raise ValueError(f"unknown execution machine: {machine_alias}") from None
-        discovered = self.launcher.readiness(
-            provider,
-            host=machine.host,
-            refresh=True,
-        )
-        if discovered.path_state == "unreachable":
-            raise ValueError(discovered.reason or f"{machine_alias} is unreachable")
-        if not discovered.installed or not discovered.binary_path:
-            raise ValueError(
-                discovered.reason or f"No {provider} executable was found on {machine_alias}."
-            )
-        self.history.update_machine_provider_paths(
-            {machine_alias: {provider: discovered.binary_path}}
-        )
+        self.history.remove_machine(alias)
         self.paper.manifest = self.manifest
-        return self.launcher.readiness(
-            provider,
-            host=machine.host,
-            binary=discovered.binary_path,
-            refresh=True,
-        )
+        self.invalidate_source_index()
 
-    def _validate_provider_path_updates(
-        self,
-        updates: dict[str, dict[ProviderId, str]] | None,
-    ) -> dict[str, dict[ProviderId, str]] | None:
-        if updates is None:
-            return None
-        unknown = set(updates) - set(self.manifest.machine_map)
-        if unknown:
-            raise ValueError(f"provider paths use unknown machines: {sorted(unknown)}")
-        validated: dict[str, dict[ProviderId, str]] = {}
-        for alias, provider_updates in updates.items():
-            machine = self.manifest.machine_map[alias]
-            merged = dict(machine.provider_paths)
-            merged.update(provider_updates)
-            candidate = MachineConfig(
-                alias=machine.alias,
-                host=machine.host,
-                os_account=machine.os_account,
-                provider_paths=merged,
-            )
-            validated[alias] = {
-                provider: candidate.provider_paths.get(provider, "")
-                for provider in provider_updates
-            }
-        return validated
+    def machine_prompt_profiles(self, run_on: str) -> list[dict[str, str]]:
+        """Every project machine as seen from `run_on`, read from the manifest and cards now."""
+        context = machine_compute_context(
+            self.manifest, self.launcher.machine_cards(), execution_machine=run_on
+        )
+        return [profile.model_dump(mode="json") for profile in context.active]
 
     def review_node(
         self,
@@ -2704,7 +2629,7 @@ class ProjectService:
         readiness = launcher.cached_readiness(
             profile.provider,
             host=machine.host,
-            binary=machine.provider_paths.get(profile.provider),
+            binary=launcher.provider_binary(profile.provider, machine.host),
         )
         if readiness is None or not readiness.models:
             return profile
@@ -2930,7 +2855,7 @@ class ProjectService:
             resolved_provider_skills = self.provider_skills.resolve(
                 request.provider,
                 machine.host,
-                machine.provider_paths.get(request.provider),
+                self.launcher.provider_binary(request.provider, machine.host),
                 machine.alias,
                 request.invoked_provider_skill_names,
             )

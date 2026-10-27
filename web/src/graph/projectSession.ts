@@ -33,22 +33,17 @@ export type BrowserTransitionProjection = ProjectTransitionProjection<
 >;
 
 /**
- * Which readiness slice of the rendered project survives a settings response.
+ * Whether the rendered provider readiness survives a settings response.
  *
- * Provider readiness and compute status are invalidated by different edits, so
- * one save or resolve keeps the slice it did not touch. A provider path resolve
- * carries fresh provider readiness while a compute probe may still be in
- * flight; a compute connection or execution-binding change invalidates the
- * matrix while provider readiness stands.
+ * A save response carries no live probe, so a save that left the provider
+ * inputs alone keeps the readiness already shown; a machine change does not.
  */
 export interface ProjectReadinessRetention {
   provider: boolean;
-  compute: boolean;
 }
 
 export const RETAIN_ALL_PROJECT_READINESS: ProjectReadinessRetention = {
   provider: true,
-  compute: true,
 };
 
 export type ProjectSessionManifestState =
@@ -913,7 +908,6 @@ function preserveProjectReadiness(
   if (!current || current.id !== next.id) return next;
   return {
     ...next,
-    ...(retention.compute ? { compute_status: current.compute_status } : {}),
     ...(retention.provider
       ? {
           provider_readiness: current.provider_readiness,

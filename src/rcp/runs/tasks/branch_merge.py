@@ -250,7 +250,11 @@ async def stream_branch_merge_task(
                     code_block=code.prompt_section(write_scope),
                     verify=lambda: verify_episode_merge_code(execution.store, episode),
                     execution=execution,
-                    binary=machine.provider_paths.get(request.provider),
+                    binary=(
+                        service.launcher.provider_binary(request.provider, machine.host)
+                        if request.provider
+                        else None
+                    ),
                     hidden_read_scope=hidden_read_scope,
                 )
             ) as stream:
@@ -433,7 +437,7 @@ async def stream_branch_merge_task(
                     invocation_gate=staged_validator.invocation_gate,
                     service=service,
                     execution=execution,
-                    binary=machine.provider_paths.get(request.provider),
+                    binary=service.launcher.provider_binary(request.provider, machine.host),
                     code_block=code_block,
                     code_roots=list(write_scope.repository_roots) if code else None,
                     code_landed=code_landed or recorded is not None,

@@ -4,7 +4,7 @@ import asyncio
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -33,7 +33,6 @@ from rcp.compute_jobs.probe import refresh_compute_probes
 from rcp.config import load_manifest
 from rcp.history.branches import BranchHistoryManager
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
-from rcp.providers import profile_for
 from rcp.repository_preview import (
     REPOSITORY_PREVIEW_CSP,
     load_repository_source_for_path,
@@ -338,10 +337,7 @@ def preview_repository_file(
 def update_project_settings(
     project_id: str,
     body: ProjectSettingsRequest,
-    background: BackgroundTasks,
     *,
-    catalog: CatalogDependency,
-    store: StoreDependency,
     project_display_cache: DisplayCacheDependency,
 ) -> dict[str, object]:
     try:
@@ -350,25 +346,7 @@ def update_project_settings(
         raise HTTPException(status_code=404, detail="Project not found") from exc
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if body.machine_compute:
-        # The save cleared these machines' readiness; check them again now.
-        background.add_task(
-            _refresh_machine_compute_probes, catalog, store, project_id, list(body.machine_compute)
-        )
     return snapshot
-
-
-def _refresh_machine_compute_probes(
-    catalog: ProjectCatalog, store: AppStore, project_id: str, machines: list[str]
-) -> None:
-    project_id = catalog.resolve_project_id(project_id)
-    try:
-        manifest = get_project_writer(catalog, project_id).manifest
-        refresh_compute_probes(
-            store, manifest, project_id, data_dir=catalog.data_dir, machines=machines
-        )
-    except Exception as exc:
-        logger.warning("Could not check compute routes for project %s: %s", project_id, exc)
 
 
 class AddProjectMachineRequest(BaseModel):
@@ -403,29 +381,25 @@ def add_project_machine(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@router.post(
-    "/api/projects/{project_id}/machines/{machine_alias}/providers/{provider}/resolve",
+@router.delete(
+    "/api/projects/{project_id}/machines/{machine_alias}",
     dependencies=[Depends(require_project_write_admission)],
 )
-def resolve_project_provider_path(
+def remove_project_machine(
     project_id: str,
     machine_alias: str,
-    provider: str,
     *,
     project_display_cache: DisplayCacheDependency,
 ) -> dict[str, object]:
+    """Drop a machine no repository or agent profile uses; its space card stays."""
+
     try:
-        profile_for(provider)
-        result = project_display_cache.resolve_provider_path(
-            project_id,
-            machine_alias,
-            provider,
-        )
+        with MACHINE_ATTACHMENT_LOCK:
+            return project_display_cache.remove_machine(project_id, machine_alias)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return result
 
 
 @router.post(
@@ -527,7 +501,7 @@ __all__ = [
     "project_members",
     "project_readiness",
     "project_revision",
-    "resolve_project_provider_path",
+    "remove_project_machine",
     "router",
     "sources",
     "update_project_settings",

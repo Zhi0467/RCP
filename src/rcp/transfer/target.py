@@ -557,6 +557,7 @@ class TargetTransferActivationCoordinator:
                 if activated_project is None:
                     raise RuntimeError("target activation lost its registered project")
                 self.catalog.refresh_after_incoming_transfer_activation(activated_project)
+                self.setup.record_prepared_provider_paths(provisioning)
                 _discard_verified_target_archive(
                     archive_receipt.archive_path,
                     expected_sha256=upload.archive_sha256,

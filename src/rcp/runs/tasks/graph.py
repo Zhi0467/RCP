@@ -637,7 +637,7 @@ async def stream_graph_run(
     local_stage: Path | None = None
     execution_machine = service.manifest.machine_map[profile.run_on]
     execution_host = execution_machine.host
-    provider_binary = execution_machine.provider_paths.get(profile.provider)
+    provider_binary = service.launcher.provider_binary(profile.provider, execution_machine.host)
     remote_stage: RemoteRunStage | None = None
     try:
         imported_source_inventory = await asyncio.to_thread(

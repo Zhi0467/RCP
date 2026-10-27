@@ -1018,7 +1018,7 @@ def _settle_project_compute_jobs(catalog: ProjectCatalog, store: AppStore, proje
     neither listed nor stopped, and Delete's stop list matches its preview."""
 
     if any(job.project_id == project_id for job in store.running_compute_jobs()):
-        reconcile_compute_jobs(store, None, project_id=project_id, data_dir=catalog.data_dir)
+        reconcile_compute_jobs(store, project_id=project_id, data_dir=catalog.data_dir)
 
 
 @membership_router.delete("/api/projects/{project_id}")

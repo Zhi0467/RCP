@@ -7,7 +7,6 @@ from pathlib import Path
 
 from rcp.compute_jobs.jobs import refresh_compute_job
 from rcp.compute_jobs.text import safe_compute_diagnostic
-from rcp.config import Manifest
 from rcp.storage import AppStore
 
 logger = logging.getLogger(__name__)
@@ -15,7 +14,6 @@ logger = logging.getLogger(__name__)
 
 def reconcile_compute_jobs(
     store: AppStore,
-    manifest: Manifest | None,
     *,
     project_id: str,
     data_dir: Path,
@@ -34,7 +32,6 @@ def reconcile_compute_jobs(
             else:
                 refreshed = refresh_compute_job(
                     store,
-                    manifest,
                     record.job_id,
                     data_dir=data_dir,
                     unavailable_hosts=unavailable_hosts,

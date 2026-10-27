@@ -207,7 +207,6 @@ async def test_slow_remote_launch_returns_pending_then_replays_one_launch(comman
     from rcp.compute_jobs import backend_context
     from rcp.compute_jobs import probe as probe_module
     from rcp.compute_jobs.backends.systemd_user import SystemdUserBackend
-    from rcp.config import MachineComputeConfig
     from rcp.runs import patch_validator
     from rcp.transport.remote_job_files import operate
     from rcp.transport.workspace_mailbox import RunStageMailbox
@@ -262,7 +261,8 @@ async def test_slow_remote_launch_returns_pending_then_replays_one_launch(comman
 
     machine = commands.handler.manifest.machines[0]
     machine.host = "rcp@slow-compute.example"
-    machine.compute = MachineComputeConfig(jobs_root=str(commands.workspace / "jobs"))
+    card = commands.store.create_space_machine(name="slow", host=machine.host, os_account="")
+    commands.store.update_space_machine(card.machine_id, jobs_root=str(commands.workspace / "jobs"))
     monkeypatch.setattr(
         probe_module,
         "time",
@@ -280,10 +280,10 @@ async def test_slow_remote_launch_returns_pending_then_replays_one_launch(comman
     )
     resolutions = 0
 
-    def resolve_launch_context(manifest, alias):
+    def resolve_launch_context(manifest, alias, compute):
         nonlocal resolutions
         resolutions += 1
-        context, backend = backend_context.resolve_context(manifest, alias, runner)
+        context, backend = backend_context.resolve_context(manifest, alias, compute, runner)
         # Exercise the existing fresh-probe retry before any real launch is attempted.
         return context, SimpleNamespace(id="changed-owner") if resolutions == 1 else backend
 
@@ -596,10 +596,14 @@ def test_compute_uncertain_launch_never_repeats_backend_submission(commands, mon
 
 
 def test_slurm_keeps_helper_submission_and_separate_readiness(commands):
-    from rcp.config import MachineComputeConfig
 
     manifest = commands.handler.manifest.model_copy(deep=True)
-    manifest.machine_map["laptop"].compute = MachineComputeConfig(job_manager="slurm")
+    card = commands.store.space_machine_for(
+        manifest.machine_map["laptop"].host
+    ) or commands.store.create_space_machine(
+        name="laptop", host=manifest.machine_map["laptop"].host, os_account=""
+    )
+    commands.store.update_space_machine(card.machine_id, job_manager="slurm")
     scheduler = commands.probe.model_copy(update={"backend_id": "slurm"})
     commands.store.record_compute_backend_probe("project", scheduler, "scheduler")
     handler = replace(commands.handler, manifest=manifest)

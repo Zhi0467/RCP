@@ -95,7 +95,6 @@ test("settings refresh carries manifest changes without replacing graph or paper
     project_truth_scope: ["protected"],
   };
   const readiness = {
-    compute_status: {},
     provider_readiness: { fresh: true },
     providers: {},
     provider_skill_inventories: {},

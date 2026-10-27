@@ -75,6 +75,9 @@ _PATH_COLUMN_NAMES = frozenset(
         "cwd",
         "job_root",
         "exit_path",
+        # A machine card's jobs directory lives on that machine, like its writable
+        # paths; a rehearsal copies it unchanged, as it did from the manifest.
+        "jobs_root",
     }
 )
 
@@ -788,6 +791,10 @@ def _validate_path_column_inventory(connection: sqlite3.Connection) -> None:
                     f"Copied table {table!r} unexpectedly owns {column!r}."
                 )
             if column in {"job_root", "exit_path"} and table != "compute_jobs":
+                raise CandidateRehearsalRefused(
+                    f"Copied table {table!r} unexpectedly owns {column!r}."
+                )
+            if column == "jobs_root" and table != "space_machines":
                 raise CandidateRehearsalRefused(
                     f"Copied table {table!r} unexpectedly owns {column!r}."
                 )

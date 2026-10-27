@@ -400,7 +400,7 @@ class ProviderReadinessCoordinator:
                     location="ssh" if machine.host else "local",
                     host=machine.host,
                     os_account=os_account,
-                    binary_path=machine.provider_paths.get(configured.provider),
+                    binary_path=self.store.provider_binary(configured.provider, machine.host),
                     provider_index=None,
                 )
             )

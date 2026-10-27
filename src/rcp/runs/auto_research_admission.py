@@ -1889,7 +1889,7 @@ def _require_auto_research_retry_target_ready(
     machine = service.manifest.machine_map.get(request.run_on)
     if machine is None:
         raise ValueError(f"unknown execution machine: {request.run_on}")
-    binary = machine.provider_paths.get(request.provider)
+    binary = service.launcher.provider_binary(request.provider, machine.host)
     readiness = service.launcher.readiness(
         request.provider,
         host=machine.host,
@@ -1953,7 +1953,7 @@ def auto_research_child_profile_choices(
         return {}
     choices: ChildProfileChoices = {}
     for provider in providers:
-        binary = machine.provider_paths.get(provider)
+        binary = service.launcher.provider_binary(provider, machine.host)
         readiness = service.launcher.readiness(provider, host=machine.host, binary=binary)
         if (
             readiness is None
