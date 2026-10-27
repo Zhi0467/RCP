@@ -272,7 +272,7 @@ def settle_job_manager(store: AppStore, host: str) -> None:
         return
     found = detect_slurm(host)
     if found is not None:
-        store.update_space_machine(card.machine_id, job_manager="slurm" if found else "none")
+        store.decide_job_manager(card.machine_id, "slurm" if found else "none")
 
 
 def refresh_compute_probes(

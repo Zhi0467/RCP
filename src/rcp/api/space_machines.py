@@ -641,6 +641,9 @@ def update_space_machine(
         # Fail closed: no project keeps a route check made under the old settings.
         for project in usage.get(machine.host, []):
             store.delete_compute_backend_probe(project["project_id"], project["alias"])
+    # A human edit makes the card the owner: no later start refills a field
+    # this edit cleared from an older manifest.
+    store.settle_legacy_machine_settings([machine.host])
     updated = store.update_space_machine(
         machine_id,
         name=body.name,
@@ -747,6 +750,7 @@ def resolve_space_machine_provider(
             status_code=422,
             detail=discovered.reason or f"No {provider} executable was found on {machine.name}.",
         )
+    store.settle_legacy_machine_settings([machine.host])
     updated = store.update_space_machine(
         machine_id, provider_paths={provider: discovered.binary_path}
     )

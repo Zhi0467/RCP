@@ -104,6 +104,11 @@ def test_an_undecided_card_turns_slurm_on_only_when_the_machine_has_it(
     )
     expected = {True: "slurm", False: "none"}.get(found)
     assert store.space_machine_for("").job_manager == expected
+    # Detection never overrides a decision made while it ran.
+    decided = store.create_space_machine(name="decided", host="decided.example", os_account="")
+    store.update_space_machine(decided.machine_id, job_manager="none")
+    store.decide_job_manager(decided.machine_id, "slurm")
+    assert store.space_machine(decided.machine_id).job_manager == "none"
     # A card no project uses yet settles the same way when it is checked.
     unused = store.create_space_machine(name="spare", host="spare.example", os_account="")
     checked = client.post(f"/api/space/machines/{unused.machine_id}/compute/check", json={})
