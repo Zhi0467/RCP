@@ -5420,7 +5420,7 @@ function MemberApp({
         </Suspense>
       </main>
 
-      {phone && view !== "chats" && (
+      {phone && view !== "chats" && view !== "paper" && (
         <PhoneAskButton
           disabled={projectReconciliation !== "authoritative"}
           onAsk={askAboutProject}

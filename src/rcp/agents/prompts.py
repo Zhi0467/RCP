@@ -1550,7 +1550,7 @@ Graph Patch (optional):
         )
 
     # Bumped when the paper-coach task contract's stable policy prose changes.
-    PAPER_COACH_POLICY_VERSION = "paper-coach-v4"
+    PAPER_COACH_POLICY_VERSION = "paper-coach-v5"
 
     @staticmethod
     def paper_coach_task_contract(
@@ -1605,6 +1605,8 @@ Authorship contract:
   {{"rename": [["old/path", "new/path"]], "delete": ["path"]}}. For a rename plus edit,
   write the complete edited file at the new path under `files/`.
 - Preserve binary files unless the request calls for replacing them.
+- In your answer, name files by their paper paths. The human never sees the changes folder,
+  the snapshot, or `moves.json`, so do not mention them.
 - All output is validated together and presented for review, or applied by RCP under the human's
   saved Apply-directly choice. You have no direct paper-write authority.
 - Run no commands except the exact protected graph-history client below. Use native file-reading,

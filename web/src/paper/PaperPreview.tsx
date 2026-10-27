@@ -195,7 +195,7 @@ export function PaperPreview({
 
   if (file.format === "markdown")
     return (
-      <article className="paper-markdown markdown-body">
+      <article className="paper-markdown chat-markdown">
         <MarkdownAnswer
           text={text}
           renderEmbed={(src, alt) => {

@@ -103,7 +103,9 @@ function location(change: PaperChange) {
         ? `line ${lines.start}`
         : `lines ${lines.start}–${lines.end}`
       : null,
-    change.stats ? `+${change.stats.added} −${change.stats.removed}` : null,
+    change.stats && change.stats.added + change.stats.removed > 0
+      ? `+${change.stats.added} −${change.stats.removed}`
+      : null,
   ]
     .filter(Boolean)
     .join(" · ");

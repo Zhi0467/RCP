@@ -332,6 +332,9 @@ def map_range(base: str, current: str, start: int, end: int) -> tuple[int, int]:
 
 def _preview(change: Change) -> None:
     removed, added = change.before.splitlines(), change.after.splitlines()
+    if change.kind == "rename":
+        # A rename keeps the text; its edits, if any, are their own cards.
+        removed, added = [], []
     cap = PAPER_CHANGES_PREVIEW_LINES
     change.preview = {
         "removed": removed[:cap],
