@@ -85,8 +85,10 @@ class ProjectWriteScope(BaseModel):
     # own storage; kept apart so a pre-grant fingerprint can be derived.
     granted_protected_paths: list[str] = Field(default_factory=list)
     # Protected paths with nothing behind them on the execution host when this
-    # launch resolved. A launch-time fact, not scope identity: no fingerprint.
-    absent_protected_paths: list[str] = Field(default_factory=list)
+    # launch resolved. A launch-time fact, not scope identity: it is in neither
+    # the fingerprint nor any serialized copy, so a retained scope contract stays
+    # identical across re-entries and across the release that added this field.
+    absent_protected_paths: list[str] = Field(default_factory=list, exclude=True)
     episode_worktree: EpisodeWorktreeFact | None = None
     fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
 
