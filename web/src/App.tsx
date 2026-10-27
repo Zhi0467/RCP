@@ -2470,12 +2470,13 @@ function MemberApp({
       (item) => item.chat_id === requestedChat.chatId,
     );
     // A link names the chat; the inventory knows its graph. A wrong or missing
-    // branch_id reroutes to that graph instead of opening another chat.
-    if (
+    // branch_id reroutes to that graph instead of opening another chat. Main also
+    // lists each branch orchestrator, so a main link to one opens it in place.
+    const openableHere =
       listed &&
-      listed.conversation_kind !== "auto_research" &&
-      !sameGraphTarget(listed.graph_target, graphTarget)
-    ) {
+      (sameGraphTarget(listed.graph_target, graphTarget) ||
+        (listed.conversation_kind === "auto_research" && graphTarget.kind === "main"));
+    if (listed && !openableHere) {
       window.location.replace(
         projectViewHash(requestedChat.projectId, listed.graph_target, "chats", {
           chatId: listed.chat_id,
@@ -2483,7 +2484,7 @@ function MemberApp({
       );
       return;
     }
-    if (listed && sameGraphTarget(listed.graph_target, graphTarget)) {
+    if (listed) {
       selectChat(listed.chat_id);
       setFloatingChat(null);
       clearNodeSelections();

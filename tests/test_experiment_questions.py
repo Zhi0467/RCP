@@ -136,7 +136,7 @@ def test_continuation_reopens_predecessor_question_without_moving_origin(tmp_pat
     question = _question(store, episode_id)
     store.complete_agent_task("loop-root", applied_revision=None, result={})
     store.end_episode_without_report(episode_id, ending="exhausted")
-    assert store.get_question(question.question_id).withdrawn_readonly
+    assert not store.get_question(question.question_id).withdrawn_readonly
     continued_id = str(uuid.uuid4())
     store.create_experiment_episode_with_invocation(
         _task(store, "continued-root", continued_id),
@@ -158,7 +158,7 @@ def test_continuation_reopens_predecessor_question_without_moving_origin(tmp_pat
 def test_continuation_claims_answer_in_first_snapshot_at_ceiling(tmp_path, changed_binding):
     store, episode_id, question, _ = _ready_answer(tmp_path, ceiling=1)
     store.end_episode_without_report(episode_id, ending="exhausted")
-    assert store.get_question(question.question_id).withdrawn_readonly
+    assert not store.get_question(question.question_id).withdrawn_readonly
     continued_id = str(uuid.uuid4())
     continued = _task(
         store,

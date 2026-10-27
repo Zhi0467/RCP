@@ -34,8 +34,11 @@ def _question(store, episode, *, key="question", state="pending"):
     return question
 
 
-@pytest.mark.parametrize("path", ["fence", "wrapup", "restore", "stop_skipped"])
-def test_questions_withdraw_at_ending_fence_before_report_finishes(tmp_path, path):
+@pytest.mark.parametrize(
+    ("path", "withdrawn"),
+    [("fence", False), ("wrapup", False), ("restore", True), ("stop_skipped", True)],
+)
+def test_only_stop_endings_withdraw_questions(tmp_path, path, withdrawn):
     store = AppStore(tmp_path / "app.sqlite3")
     episode = store.create_episode(_episode(store, "episode"))
     question = _question(store, episode)
@@ -55,7 +58,7 @@ def test_questions_withdraw_at_ending_fence_before_report_finishes(tmp_path, pat
             store.detach_experiment_episodes_for_restore(
                 connection, diagnostic="Restored copy", now=store.now()
             )
-    assert store.get_question(question.question_id).withdrawn_readonly
+    assert store.get_question(question.question_id).withdrawn_readonly is withdrawn
 
 
 def test_continuations_reopen_ancestor_questions_without_changing_origins(tmp_path):
@@ -87,7 +90,7 @@ def test_continuations_reopen_ancestor_questions_without_changing_origins(tmp_pa
         current = next(s for s in snapshots if s.episode.episode_id == episode_id)
         assert current.has_open_questions
         store.end_episode_without_report(episode_id, ending="exhausted", diagnostic=None)
-        assert all(q.withdrawn_readonly for q in store.episode_questions("project", episode_id))
+        assert not any(q.withdrawn_readonly for q in store.episode_questions("project", episode_id))
     assert store.episode_questions("other-project", "third") == []
 
 

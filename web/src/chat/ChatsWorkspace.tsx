@@ -72,6 +72,8 @@ import { NodeChat } from "./NodeChat";
 import { profileRunConfig } from "../core/AgentConfigControls";
 import { sameGraphTarget, MAIN_GRAPH, projectViewHash } from "../core/graphTarget";
 import { useNarrowViewport } from "../ui/useNarrowViewport";
+import { useResource } from "../core/useResource";
+import { watchersProfile } from "../experiments/episodeResources";
 
 interface Props {
   project: ProjectSnapshot;
@@ -220,6 +222,7 @@ function agentMeta(
 const NO_EPISODES: readonly Episode[] = [];
 const NO_RUN_CONFIG: AgentRunConfig = { provider: "", model: "", reasoning: "", run_on: "" };
 const NO_NODES: Record<string, GraphNode> = {};
+const NO_WATCHERS: WatcherRecord[] = [];
 const NO_GLOSSARY = buildGlossaryIndex({});
 
 /** The orchestrator card's episode comes from the server's projection, not its tasks. */
@@ -718,6 +721,19 @@ export function ChatsWorkspace({
   const selectedHistory = selected ? chatTranscripts.get(selected.chatId)?.messages : undefined;
   const selectedOffGraph =
     selected !== null && !sameGraphTarget(selected.graphTarget ?? MAIN_GRAPH, graphTarget);
+  // The view's watchers cover its own graph; an orchestrator listed from another
+  // graph reads its branch's, so its turns' watchers still show.
+  const offGraphOrchestrator =
+    selected?.conversationKind === "auto_research" && selectedOffGraph ? selected : null;
+  const offGraphWatcherView = useResource(
+    `${project.id}:orchestrator-watcher-view`,
+    offGraphOrchestrator
+      ? watchersProfile(project.id, offGraphOrchestrator.graphTarget ?? MAIN_GRAPH)
+      : null,
+  );
+  const orchestratorWatchers = offGraphOrchestrator
+    ? (offGraphWatcherView.value ?? NO_WATCHERS)
+    : watchers;
   const selectedOrchestratorTurns = useMemo(
     () =>
       selected?.conversationKind === "auto_research"
@@ -1204,6 +1220,7 @@ export function ChatsWorkspace({
             runScope={runScope}
             tasks={selectedOrchestratorTurns?.tasks ?? []}
             historyMessages={selectedOrchestratorTurns?.history}
+            watchers={orchestratorWatchers}
             agentSetup={selected.agentSetup}
             chatId={selected.chatId}
             presentation="workspace"
@@ -1231,6 +1248,7 @@ export function ChatsWorkspace({
             onOpenInbox={onOpenInbox}
             onRepairGraphUpdate={onRepairGraphUpdate}
             onOpenNode={onOpenNode}
+            onStopWatcher={onStopWatcher}
             onNewSession={() => undefined}
             onClose={() => undefined}
           />

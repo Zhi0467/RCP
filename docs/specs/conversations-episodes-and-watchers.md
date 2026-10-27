@@ -737,7 +737,9 @@ or undelivered answer belonging to that human-started episode. A question never
 excuses unwatched compute. An answer wake spends one normal Experiment invocation
 and preserves the session, scope, target, Stop fence and ceiling; exhaustion needs
 human reauthorization. Continuation episodes reopen their predecessor's questions
-without changing origin provenance; ended episodes withdraw their cards. In the
+without changing origin provenance. Only Stop withdraws an episode's cards: an
+ending turn may ask several questions, and its human answers them after the
+ending, the last open card naming the turns that continue the episode. In the
 continuation's creation transaction, unreceived, unclaimed answers are claimed by
 invocation 1 when its binding passes the answer-wake origin checks. Its first
 question snapshot carries those answers without spending another invocation.
