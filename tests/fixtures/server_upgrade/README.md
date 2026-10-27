@@ -147,3 +147,8 @@ the exact boundary source from `pre-graph-branches-v29-daad53e`.
 records (storage migration 60), ending at migration 59 after conversation
 names. It is built by the exact boundary source from
 `pre-conversation-names-v30-51f290d`.
+
+`pre-machine-settings-v32-0a934a6` retains the last shape before machine cards
+gained compute, access-hint, provider-path, and legacy-import columns (storage
+migration 61), ending at migration 60 after chat forks. It is built by the exact
+boundary source from `pre-chat-forks-v31-cfaebcc`.
