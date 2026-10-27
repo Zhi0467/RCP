@@ -143,10 +143,12 @@ test("external job Cancel uses one watcher and the machine card saves compute on
     const route = (name) => compute.locator(`[data-compute-route="${name}"]`);
     await open("cluster");
     assert.equal(await route("scheduler").count(), 0);
-    await compute
-      .getByRole("group", { name: "Slurm" })
-      .getByRole("button", { name: "On", exact: true })
-      .click();
+    // Off on an undecided card is still saved, so a later check cannot turn Slurm on.
+    const slurm = compute.getByRole("group", { name: "Slurm" });
+    const offSaved = page.waitForResponse((response) => response.request().method() === "PATCH");
+    await slurm.getByRole("button", { name: "Off", exact: true }).click();
+    await offSaved;
+    await slurm.getByRole("button", { name: "On", exact: true }).click();
     await route("scheduler").waitFor();
     const jobsRoot = compute.getByRole("textbox", { name: "Job output folder" });
     await jobsRoot.fill("/cluster-edited");
@@ -154,6 +156,7 @@ test("external job Cancel uses one watcher and the machine card saves compute on
     await jobsRoot.press("Enter");
     await saved;
     assert.deepEqual(patches, [
+      { id: "m-cluster", method: "PATCH", body: { job_manager: "none" } },
       { id: "m-cluster", method: "PATCH", body: { job_manager: "slurm" } },
       { id: "m-cluster", method: "PATCH", body: { jobs_root: "/cluster-edited" } },
     ]);

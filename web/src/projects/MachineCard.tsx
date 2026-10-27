@@ -347,7 +347,8 @@ function ComputeFold(props: MachineFoldProps) {
               aria-pressed={(record.job_manager === "slurm") === (job_manager === "slurm")}
               disabled={writesDisabled || toggling}
               onClick={() => {
-                if ((record.job_manager === "slurm") === (job_manager === "slurm")) return;
+                // Undecided shows as Off; clicking Off still records the choice so no check overrides it.
+                if (record.job_manager === job_manager) return;
                 setToggling(true);
                 void update("job_manager", { job_manager }).finally(() => setToggling(false));
               }}
