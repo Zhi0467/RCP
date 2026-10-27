@@ -28,6 +28,9 @@ class RestoreDetachmentStoreMixin(StoreMixinBase):
         recorded_detail = f"{detail} Restore confirmed by {confirmer}."[:2000]
         now = detached_at or self.now()
         _required_timestamp(now)
+        from rcp.server_ops.paper_lifecycle_seam import detach_paper_runtime
+
+        detach_paper_runtime(self)
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             # A restore request retains detached_at across retries. Keep that

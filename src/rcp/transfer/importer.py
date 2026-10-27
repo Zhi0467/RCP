@@ -47,6 +47,7 @@ _PROJECT_FILE_GROUPS = frozenset(
     {
         "rcp_chat",
         "paper_introduction",
+        "paper_projection",
         "fact",
         "kept_artifact",
         "artifact_version",
@@ -366,6 +367,13 @@ def _publish_project_files(
                     expected_sha256=entry.sha256,
                     expected_size=entry.size_bytes,
                 )
+            elif entry.group == "paper_projection":
+                owners.workspace.restore_exact_file(
+                    Path("paper", *path.parts[2:]),
+                    source,
+                    expected_sha256=entry.sha256,
+                    expected_size=entry.size_bytes,
+                )
             elif entry.group == "fact":
                 owners.workspace.restore_exact_file(
                     Path(*path.parts),
@@ -440,6 +448,7 @@ def _publication_sha256(
         "canonical_history",
         "rcp_chat",
         "paper_introduction",
+        "paper_projection",
         "fact",
         "kept_artifact",
         "artifact_version",

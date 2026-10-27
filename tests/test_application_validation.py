@@ -612,3 +612,33 @@ def test_rehearsal_rebinds_local_browser_paths_and_preserves_remote_owners(tmp_p
             for field in ("stage_root", "workspace_dir"):
                 assert Path(row[field]).is_relative_to(absent)
                 assert not Path(row[field]).exists()
+
+
+def test_candidate_paper_proof_reads_saved_bytes_and_refuses_broken_live_api():
+    import httpx
+
+    base = "/api/projects/project/paper"
+    content = b"saved but unpublished\x00figure"
+    tree = {
+        "saved_revision": 8,
+        "published_revision": 3,
+        "hold": "migration",
+        "files": [{"file_id": "figure", "sha256": hashlib.sha256(content).hexdigest()}],
+    }
+    responses = {
+        base + "/tree": httpx.Response(200, json=tree),
+        base + "/history": httpx.Response(200, json=[{"version_id": "named", "revision": 3}]),
+        base + "/files/figure/raw": httpx.Response(200, content=content),
+    }
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda req: responses[req.url.path]),
+        base_url="https://testserver",
+    ) as client:
+        proof, reads = rehearsal_module._paper_read_proof(client, "project", headers={}, live=True)
+        assert proof and reads[-1].endswith("?revision=8")
+        responses[base + "/files/figure/raw"] = httpx.Response(200, content=b"published bytes")
+        with pytest.raises(CandidateRehearsalRefused):
+            rehearsal_module._paper_read_proof(client, "project", headers={}, live=True)
+        responses[base + "/tree"] = httpx.Response(404)
+        with pytest.raises(CandidateRehearsalRefused):
+            rehearsal_module._paper_read_proof(client, "project", headers={}, live=True)

@@ -19,11 +19,9 @@ from rcp.limits import (
     PROJECT_TRANSFER_STABLE_READ_ATTEMPTS,
 )
 from rcp.operation_ids import canonical_operation_uuid
-from rcp.paper.service import (
-    canonical_introduction_backup_source,
-    validate_canonical_introduction_backup,
-)
+from rcp.paper.service import validate_canonical_introduction_backup
 from rcp.rcp_home import rcp_temp_dir
+from rcp.server_ops.backup_paper import paper_projection_sources
 from rcp.service import (
     ProjectService,
     canonical_chat_backup_sources,
@@ -37,6 +35,7 @@ from rcp.storage.artifact_models import (
 )
 from rcp.transfer.archive import TransferArchiveEntry
 from rcp.transfer.records import (
+    PAPER_TRANSFER_RECORD_SCHEMA_VERSION,
     TransferArtifactReference,
     TransferRecordBundle,
     TransferTaskRecord,
@@ -47,6 +46,7 @@ _PROJECT_FILE_GROUPS = frozenset(
     {
         "rcp_chat",
         "paper_introduction",
+        "paper_projection",
         "fact",
         "kept_artifact",
         "artifact_version",
@@ -360,15 +360,30 @@ def _capture_project_files_locked(
                         ),
                     )
                 )
-            introduction = canonical_introduction_backup_source(source_root)
-            if introduction is not None:
+            paper_sources = paper_projection_sources(source_root)
+            legacy_introduction = records.paper is None and paper_sources == (
+                source_root / "paper/introduction.md",
+            )
+            if (
+                paper_sources
+                and not legacy_introduction
+                and records.schema_version < PAPER_TRANSFER_RECORD_SCHEMA_VERSION
+            ):
+                records = records.model_copy(
+                    update={"schema_version": PAPER_TRANSFER_RECORD_SCHEMA_VERSION}
+                )
+            for source in paper_sources:
+                relative = source.relative_to(source_root / "paper")
                 entry = _capture_regular_file(
                     capture_root,
-                    introduction,
-                    PurePosixPath("paper/introduction.md"),
-                    "paper_introduction",
+                    source,
+                    PurePosixPath("paper/introduction.md")
+                    if legacy_introduction
+                    else PurePosixPath("paper/projection") / relative.as_posix(),
+                    "paper_introduction" if legacy_introduction else "paper_projection",
                 )
-                validate_canonical_introduction_backup(capture_root / entry.archive_path)
+                if legacy_introduction:
+                    validate_canonical_introduction_backup(capture_root / entry.archive_path)
                 captured.append(entry)
             for source in canonical_fact_sources(source_root):
                 captured.append(

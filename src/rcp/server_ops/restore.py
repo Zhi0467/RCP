@@ -36,6 +36,12 @@ from rcp.server_ops.backup_integrity import (
     database_schema_sha256,
 )
 from rcp.server_ops.backup_models import BackupArchiveManifest, artifact_backup_entries
+from rcp.server_ops.backup_paper import (
+    PAPER_PROJECT_TABLES,
+    PaperSection,
+    paper_restore_base_schema,
+    verify_paper_section_records,
+)
 from rcp.storage import AppStore
 from rcp.storage.artifacts import write_artifact_file
 
@@ -1281,7 +1287,7 @@ def _restore_project_bytes(owners, capture, payload, operation_projects, *, exis
             )
         elif entry.group == "paper_introduction":
             owners.paper.restore_canonical(source, **arguments)
-        elif entry.group == "fact":
+        elif entry.group == "paper_projection" or entry.group == "fact":
             owners.workspace.restore_exact_file(
                 entry.source_relative_path.removeprefix(".research/"), source, **arguments
             )
@@ -1301,6 +1307,8 @@ def _restore_project_bytes(owners, capture, payload, operation_projects, *, exis
 
 def _verify_project_publication_bytes(workspace, entries) -> None:
     for entry in entries:
+        if entry.group == "paper_saved":
+            continue  # Verified against SQLite before detachment; never a published file.
         relative = PurePosixPath(entry.source_relative_path)
         if entry.group in {"kept_artifact", "legacy_kept_result_view"}:
             if entry.group == "kept_artifact":
@@ -1323,6 +1331,43 @@ def _verify_project_publication_bytes(workspace, entries) -> None:
             raise RestoreRefused(
                 "A restored project file changed before final publication readback."
             )
+
+
+def _supported_restore_schema(database: Path, digest: str) -> bool:
+    if digest in SUPPORTED_RESTORE_DATABASE_SCHEMAS:
+        return True
+    with closing(sqlite3.connect(database)) as connection:
+        return paper_restore_base_schema(connection) in SUPPORTED_RESTORE_DATABASE_SCHEMAS
+
+
+def _verify_archived_paper_sections(
+    database: Path, manifest: BackupArchiveManifest, payload: Path
+) -> None:
+    with closing(sqlite3.connect(database)) as connection:
+        present = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_schema WHERE type='table'")
+        }
+        for project in manifest.projects:
+            if project.status != "captured":
+                continue
+            entries = [entry for entry in project.files if entry.group == "paper_saved"]
+            has_saved = any(
+                connection.execute(
+                    f'SELECT 1 FROM "{table}" WHERE project_id=? LIMIT 1', (project.project_id,)
+                ).fetchone()
+                for table in PAPER_PROJECT_TABLES
+                if table in present
+            )
+            if len(entries) != int(has_saved):
+                raise RestoreRefused("The archive lacks one exact saved paper section.")
+            if entries:
+                section = PaperSection.model_validate_json(
+                    (payload / entries[0].archive_path).read_bytes()
+                )
+                if section.project_id != project.project_id:
+                    raise RestoreRefused("The saved paper section belongs to another project.")
+                verify_paper_section_records(connection, section)
 
 
 def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
@@ -1395,11 +1440,13 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
         )
     archived_database = payload / manifest.sqlite_snapshot.archive_path
     _verify_sqlite_integrity(archived_database)
-    if (
-        _database_schema_sha256(archived_database) != manifest.database_schema_sha256
-        or manifest.database_schema_sha256 not in SUPPORTED_RESTORE_DATABASE_SCHEMAS
+    if _database_schema_sha256(
+        archived_database
+    ) != manifest.database_schema_sha256 or not _supported_restore_schema(
+        archived_database, manifest.database_schema_sha256
     ):
         raise RestoreRefused("Protected archive SQLite schema is unsupported or changed.")
+    _verify_archived_paper_sections(archived_database, manifest, payload)
     app = output / "app-data"
     app.mkdir(mode=0o700)
     database = app / "rcp.sqlite3"
@@ -1600,10 +1647,21 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
             if record is None:
                 raise RestoreRefused("The restored project registration is missing.")
             captured = project.status == "captured"
+            saved_entry = next(
+                (entry for entry in project.files if entry.group == "paper_saved"), None
+            )
+            paper_revision = (
+                PaperSection.model_validate_json(
+                    (payload / saved_entry.archive_path).read_bytes()
+                ).revision
+                if saved_entry is not None
+                else None
+            )
             try:
                 inventories.append(
                     BackupSnapshotProjectInventory(
                         project_id=project.project_id,
+                        paper_revision=paper_revision,
                         home_space_id=project.home_space_id,
                         locator=record.locator
                         if captured

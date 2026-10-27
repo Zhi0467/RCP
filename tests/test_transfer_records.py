@@ -1062,3 +1062,78 @@ def test_fork_records_transfer_parent_names_and_archive_state(manifest, tmp_path
             connection.execute(f"DELETE FROM {table} WHERE project_id=?", (project_id,))
         store._insert_transfer_episodes(connection, records, {})
     assert store.export_project_transfer_records(project_id, attributions=attributions) == records
+
+
+def test_saved_paper_records_roundtrip_preserves_revision_history_and_hold(
+    manifest, tmp_path: Path, monkeypatch
+) -> None:
+    from rcp.server_ops import backup_paper
+    from rcp.transfer.records import TransferRecordBundle
+
+    source, project_id, attributions = _store(manifest, tmp_path)
+    target = AppStore(tmp_path / "target.sqlite3")
+    figure = b"\x89PNG\r\n\x1a\nfigure"
+    digest = hashlib.sha256(figure).hexdigest()
+    snapshot = {
+        "revision": 4,
+        "files": [
+            {
+                "file_id": "figure",
+                "path": "figures/renamed.png",
+                "kind": "binary",
+                "blob_sha256": digest,
+            }
+        ],
+    }
+
+    class SnapshotReader:
+        def snapshot(self, requested_project_id, revision=None):
+            assert requested_project_id == project_id
+            return snapshot
+
+        def materialize(self, captured, dest):
+            (dest / "figures").mkdir(parents=True)
+            (dest / "figures/renamed.png").write_bytes(figure)
+
+    monkeypatch.setattr(
+        backup_paper, "PAPER_SNAPSHOT_FACTORY", lambda _connection: SnapshotReader()
+    )
+    for store in (source, target):
+        with store.connection() as connection:
+            connection.executescript(
+                "CREATE TABLE paper_publication (project_id TEXT PRIMARY KEY, saved_revision INTEGER, "
+                "published_revision INTEGER, pending_since TEXT, last_error TEXT, hold TEXT);"
+                "CREATE TABLE paper_files (project_id TEXT, file_id TEXT, path TEXT, kind TEXT, "
+                "created_at TEXT, deleted_at TEXT);"
+                "CREATE TABLE paper_versions (project_id TEXT, version_id TEXT, revision INTEGER, "
+                "kind TEXT, name TEXT, actor TEXT, created_at TEXT, manifest TEXT);"
+                "CREATE TABLE paper_blobs (sha256 TEXT PRIMARY KEY, bytes BLOB, size INTEGER);"
+            )
+    with source.connection() as connection:
+        connection.execute(
+            "INSERT INTO paper_publication VALUES (?, 4, 2, ?, NULL, ?)",
+            (project_id, source.now(), "legacy-choice"),
+        )
+        connection.execute(
+            "INSERT INTO paper_files VALUES (?, 'figure', 'figures/renamed.png', 'binary', ?, NULL)",
+            (project_id, source.now()),
+        )
+        connection.execute(
+            "INSERT INTO paper_blobs VALUES (?, ?, ?)", (digest, figure, len(figure))
+        )
+        connection.execute(
+            "INSERT INTO paper_versions VALUES (?, 'named', 3, 'named', 'Submission', 'human', ?, ?)",
+            (project_id, source.now(), json.dumps(snapshot["files"])),
+        )
+    exported = source.export_project_transfer_records(project_id, attributions=attributions)
+    restored = TransferRecordBundle.model_validate_json(exported.model_dump_json())
+    assert restored.schema_version == 7
+    assert restored.paper is not None
+    assert restored.paper == exported.paper
+    with target.connection() as connection:
+        target._insert_transfer_paper(connection, restored)
+        assert backup_paper.capture_paper_section(connection, project_id) == exported.paper
+        publication = connection.execute(
+            "SELECT saved_revision, published_revision, hold FROM paper_publication"
+        ).fetchone()
+        assert tuple(publication) == (4, 2, "legacy-choice")

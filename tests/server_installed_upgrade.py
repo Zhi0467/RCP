@@ -81,14 +81,25 @@ def wait_health() -> dict:
     return wait_for(healthy, "Installed service did not become healthy.")
 
 
-def request(path: str, *, body: dict | None = None, method: str = "GET", cookie: str = ""):
+def request(
+    path: str,
+    *,
+    body: dict | bytes | None = None,
+    method: str = "GET",
+    cookie: str = "",
+    content_type: str = "application/json",
+):
     protocol = str(health()["team_shell_protocol"]["maximum"])
     query = urllib.request.Request(
         f"http://127.0.0.1:{PORT}{path}",
         method=method,
-        data=None if body is None else json.dumps(body).encode(),
+        data=body
+        if isinstance(body, bytes)
+        else None
+        if body is None
+        else json.dumps(body).encode(),
         headers={
-            "Content-Type": "application/json",
+            "Content-Type": content_type,
             "Cookie": cookie,
             "RCP-Team-Shell-Protocol": protocol,
         },
@@ -130,6 +141,18 @@ def assert_serves(fixture: dict, version: str) -> None:
     empty_patches = Path(fixture["empty_patches"])
     assert empty_patches.is_dir() and not list(empty_patches.iterdir())
     cookie = session(fixture)
+    if fixture.get("paper"):
+        with sqlite3.connect(f"file:{DATA / 'rcp.sqlite3'}?mode=ro", uri=True) as database:
+            live = database.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_files'"
+            ).fetchone()
+        if live is None:
+            from tests.server_upgrade_paper import CANONICAL, DRAFT
+
+            with request(f"/api/projects/{fixture['project_id']}/paper", cookie=cookie) as response:
+                paper = json.load(response)
+            assert paper["content"] == DRAFT and paper["incoming_content"] == CANONICAL
+            assert paper["sync_state"] == "behind"
     with request(f"/api/projects/{fixture['project_id']}", cookie=cookie) as response:
         graph = json.load(response)["graph"]
     assert graph["nodes"]["hyp/recovery-keeps-history"]["statement"]
@@ -528,6 +551,9 @@ def seed() -> None:
     )
     for name in ("facts", "paper"):
         (Path(fixture["research"]) / name).mkdir(exist_ok=True, mode=0o700)
+    from tests.server_upgrade_paper import seed_legacy_paper
+
+    fixture["paper"] = seed_legacy_paper(DATA, fixture)
     write_json(ROOT / "state/fixture.json", fixture)
 
 
@@ -775,6 +801,15 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     assert_serves(fixture, version)
     assert_kept_artifact(fixture, base_artifact)
     assert_followup(fixture, followup)
+    from tests.server_upgrade_paper import assert_current_paper, seed_current_paper
+
+    current_paper = seed_current_paper(request, fixture, session(fixture))
+    # Two real service starts exercise recovery of saved state and the hold.
+    for _ in range(2):
+        run(["systemctl", "restart", "rcp.service"])
+        wait_health()
+        assert_current_paper(request, fixture, session(fixture), current_paper)
+    backup()
     candidate_python = str(Path(current["release_directory"]) / ".venv/bin/python")
     service([candidate_python, "-I", str(SCRIPT), "seed-candidate-artifact"])
     candidate_artifact = json.loads((ROOT / "state/candidate-artifact.json").read_text())
@@ -808,6 +843,7 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
             "base_maintenance_kept_project_uncaptured": base_kept_project_uncaptured,
             "backup_after_candidate_keep": "protected",
             "question_followup": followup,
+            "paper": {"legacy": fixture["paper"], "current": current_paper},
             "dry_run": rehearsal,
             "injected_backup_rejection": {
                 "project_id": rejected,

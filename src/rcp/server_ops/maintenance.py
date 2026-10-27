@@ -191,6 +191,20 @@ class MaintenanceCoordinator:
         self.background_admission.close_and_wait(
             timeout=remaining(), additional_idle=self.background.runtime_is_idle
         )
+        from rcp.server_ops.paper_lifecycle_seam import get_paper_live
+
+        papers = [
+            (record.project_id, get_paper_live(self.store, record.project_id))
+            for record in self.store.projects()
+        ]
+        for project_id, paper in papers:
+            if paper is not None:
+                paper.pause(project_id)
+        for project_id, paper in papers:
+            if paper is not None:
+                paper.drain(project_id)
+                paper.dispose(project_id)
+            remaining()
         self.capture = self.capture_sqlite()
         self.quiescent = True
 
