@@ -113,6 +113,17 @@ def test_tree_upload_history_restore_and_raw_content_policy(manifest, tmp_path):
                 )
                 assert replaced.status_code == 200, replaced.text
                 assert client.get(prefix + f"/files/{binary_id}/raw").content == b"changed"
+        text_id = next(
+            file["file_id"]
+            for file in client.get(prefix + "/tree").json()["files"]
+            if file["path"] == "chapter.md"
+        )
+        uploaded = client.put(
+            prefix + f"/files/{text_id}/content",
+            files={"file": ("chapter.md", "# Uploaded\n".encode(), "text/markdown")},
+        )
+        assert uploaded.status_code == 200, uploaded.text
+        assert client.get(prefix + f"/files/{text_id}/raw").content == b"# Uploaded\n"
         assert client.get(prefix + "/sessions").status_code == 200
 
 

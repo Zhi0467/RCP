@@ -155,9 +155,26 @@ async def upload_file(request: Request, project_id: str = _member):
 
 
 @router.put(_PREFIX + "/files/{file_id}/content")
-async def replace_binary(file_id: str, request: Request, project_id: str = _member):
+async def replace_content(file_id: str, request: Request, project_id: str = _member):
     _, data = await _upload(request, new=False)
-    return await _apply(request, project_id, PaperOp(kind="binary", file_id=file_id, data=data))
+    live = get_paper_live(request)
+    tree = await live.snapshot(project_id)
+    current = next((file for file in tree.files if file.file_id == file_id), None)
+    if current is None or current.kind == "binary":
+        return await _apply(request, project_id, PaperOp(kind="binary", file_id=file_id, data=data))
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(409, "Paper text files take UTF-8 uploads") from exc
+    old = current.text or ""
+    # The whole-text guard refuses an upload that would overwrite a concurrent edit.
+    op = PaperOp(kind="replace", file_id=file_id, start=0, end=len(old), text=text)
+    checks = [{"file_id": file_id, "kind": "text", "text": old}]
+    return await paper_mutation(
+        request,
+        project_id,
+        lambda: live.apply(project_id, [op], _actor(request), {"checks": checks}),
+    )
 
 
 @router.get(_PREFIX + "/files/{file_id}/raw")
