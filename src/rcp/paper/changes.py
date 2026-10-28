@@ -351,6 +351,54 @@ class _RangeMapping:
         return mapped
 
 
+def _undo_against(
+    current: PaperSnapshot, inverse: list[dict], guards: list[dict]
+) -> tuple[list[dict], list[dict]]:
+    """Restore only the regions an accept changed, so later edits elsewhere in a file
+    leave Undo available; any of those regions edited since refuses it."""
+    by_id = {file.file_id: file for file in current.files}
+    # Only a text replace narrows to regions; a created file's Undo deletes it, so its
+    # whole-text guard stays and later typing in it refuses the Undo.
+    replaced = {op["file_id"] for op in inverse if op["kind"] == "replace"}
+    accepted = {
+        guard["file_id"]: guard["text"]
+        for guard in guards
+        if guard.get("file_id") in replaced and isinstance(guard.get("text"), str)
+    }
+    ops: list[dict] = []
+    checks = [
+        {key: value for key, value in guard.items() if key != "text"}
+        if guard.get("file_id") in accepted
+        else guard
+        for guard in guards
+    ]
+    for op in inverse:
+        file = by_id.get(str(op.get("file_id")))
+        if op["kind"] != "replace" or file is None or file.text is None:
+            ops.append(op)
+            continue
+        if file.kind != "text":
+            raise OutdatedChange("Paper file kind changed")
+        after = accepted[op["file_id"]]
+        mapping = _RangeMapping(after, file.text)
+        # Right to left, so each region's offsets hold while the earlier ones apply.
+        for _kind, start, end, before, restored, *_lines in reversed(
+            line_changes(after, op["text"])
+        ):
+            start, end = mapping.map(start, end)
+            checks.append({"file_id": op["file_id"], "start": start, "end": end, "text": before})
+            ops.append(
+                {
+                    "kind": "replace",
+                    "file_id": op["file_id"],
+                    "start": start,
+                    "end": end,
+                    "text": restored,
+                }
+            )
+    return ops, checks
+
+
 def _preview(change: Change) -> None:
     removed, added = change.before.splitlines(), change.after.splitlines()
     if change.kind == "rename":
@@ -995,9 +1043,14 @@ class PaperChanges:
                 accepted = self._receipt(project_id, f"paper:{group_id}:accept")
                 if accepted is None:
                     raise ValueError("The acceptance receipt is missing")
+                ops, checks = _undo_against(
+                    self._snapshot(project_id),
+                    cast(list[dict], accepted["inverse"]),
+                    cast(list[dict], accepted["guards"]),
+                )
                 payload = {
-                    "ops": accepted["inverse"],
-                    "expect": {"receipt_key": key, "checks": accepted["guards"]},
+                    "ops": ops,
+                    "expect": {"receipt_key": key, "checks": checks},
                     "actor": actor,
                 }
                 self._save_receipt(project_id, group_id, key, "undo", payload)

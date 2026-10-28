@@ -138,10 +138,27 @@ def test_accept_idempotency_rebase_and_guarded_undo(setup):
     assert changes.accept("p", group.group_id, "human").state == "accepted"
     assert changes.accept("p", group.group_id, "human").state == "accepted"
     assert len(receipts(live)) == 1
-    human_edit(live, "f1", (saved(live).files[0].text or "") + "later\n")
+    accepted = saved(live).files[0].text or ""
+    # An edit inside the accepted region refuses Undo; one elsewhere does not.
+    human_edit(live, "f1", accepted.replace("improved 10", "improved 10 more"))
     with pytest.raises(OutdatedChange):
         changes.undo("p", group.group_id, "human")
-    assert "improved 10" in saved(live).files[0].text
+    assert "improved 10 more" in saved(live).files[0].text
+    human_edit(live, "f1", accepted + "later\n")
+    assert changes.undo("p", group.group_id, "human").state == "undone"
+    assert saved(live).files[0].text == "prefix\n" + before + "later\n"
+
+
+def test_undo_never_deletes_a_created_file_the_human_typed_in(setup):
+    snapshot, live, changes, output = setup
+    (output / "files/new.md").write_text("new\n")
+    group = changes.collect("p", "t", snapshot, output)[0]
+    changes.accept("p", group.group_id, "human")
+    created = next(file for file in saved(live).files if file.path == "new.md")
+    human_edit(live, created.file_id, "new\nmine\n")
+    with pytest.raises(OutdatedChange):
+        changes.undo("p", group.group_id, "human")
+    assert any(file.text == "new\nmine\n" for file in saved(live).files)
 
 
 def test_rename_and_dependent_edits_are_atomic(setup):
