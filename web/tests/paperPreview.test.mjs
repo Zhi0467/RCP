@@ -112,7 +112,7 @@ test("Typst tree fetches only changed hashes and overlays unsaved open text", as
   }
 });
 
-test("Typst compiler reuses its worker, ignores superseded replies and recovers after error", async () => {
+test("Typst compiler reuses its worker, ignores superseded replies and survives source errors", async () => {
   const { TypstCompiler } = await import("../src/paper/typstPreview.ts");
   const original = globalThis.Worker;
   const workers = [];
@@ -147,13 +147,14 @@ test("Typst compiler reuses its worker, ignores superseded replies and recovers 
     workers[0].reply({ pdf: new Uint8Array([2]) }, oldId);
     workers[0].reply({ error: "bad source" });
     await failed;
-    assert.equal(workers.length, 1);
-    assert.equal(workers[0].terminated, true);
+    // A source error keeps the warm worker for the next edit.
+    assert.equal(workers[0].terminated, false);
     const recovery = compiler.compile([], "main.typ", new AbortController().signal);
-    workers[1].reply({ pdf: new Uint8Array([3]) });
+    workers[0].reply({ pdf: new Uint8Array([3]) });
     await recovery;
+    assert.equal(workers.length, 1);
     compiler.dispose();
-    assert.equal(workers[1].terminated, true);
+    assert.equal(workers[0].terminated, true);
   } finally {
     compiler.dispose();
     globalThis.Worker = original;

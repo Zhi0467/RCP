@@ -662,7 +662,6 @@ def test_same_provider_paper_coach_retry_receives_exact_failure(
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     start_paper(app.state.paper_live)
     service = app.state.service
-    service.paper.create()
     failure = "Paper coach provider failed while examining the introduction."
     objective = "Review the introduction's causal argument."
     launcher = _FailThenSucceedLauncher(failure)
@@ -719,7 +718,6 @@ def test_recovery_delivers_current_guidance_in_the_retained_session(
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
-    service.paper.create()
 
     class RecoveryLauncher(_FailThenSucceedLauncher):
         async def stream(self, provider, prompt, **kwargs):

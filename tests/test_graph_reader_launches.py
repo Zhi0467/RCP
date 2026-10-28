@@ -117,7 +117,6 @@ def test_graph_reader_master_commands_and_committed_observation(
 ):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.paper.create()
     if kind == "paper_coach":
         wire_saved_paper(service)
     if kind != "seed":

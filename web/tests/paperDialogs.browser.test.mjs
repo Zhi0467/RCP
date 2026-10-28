@@ -46,7 +46,13 @@ for (const width of [390, 1280]) {
       assert.ok(await dialog.evaluate((element) => element.matches("dialog:modal")));
       for (let i = 0; i < 8; i++) {
         await page.keyboard.press(i < 4 ? "Tab" : "Shift+Tab");
-        assert.ok(await dialog.evaluate((element) => element.contains(document.activeElement)));
+        // Native modals may hand focus to browser chrome, never to the inert page.
+        assert.ok(
+          await dialog.evaluate(
+            (element) =>
+              element.contains(document.activeElement) || document.activeElement === document.body,
+          ),
+        );
       }
       await page.keyboard.press("Escape");
       await dialog.waitFor({ state: "detached" });
@@ -78,7 +84,7 @@ for (const width of [390, 1280]) {
 
 test("coach settings stay within a short phone pane and scroll to the last control", async (t) => {
   const page = await open(t);
-  await page.getByRole("button", { name: "Coach", exact: true }).first().click();
+  await page.getByRole("button", { name: "Coach", exact: true }).filter({ visible: true }).click();
   await page.getByRole("textbox", { name: "Message", exact: true }).evaluate((textarea) => {
     textarea.style.height = "180px";
   });

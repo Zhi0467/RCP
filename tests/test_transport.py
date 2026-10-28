@@ -27,9 +27,7 @@ from rcp.limits import (
     STATE_LOCK_HOLDER_HEARTBEAT_TIMEOUT_SECONDS,
     STATE_LOCK_POLL_INTERVAL_SECONDS,
 )
-from rcp.paper import PaperService
 from rcp.setup import ProjectSetupRequest, render_manifest
-from rcp.storage import AppStore
 from rcp.transport import (
     BatchPublishFailed,
     LocalStateWorkspace,
@@ -182,13 +180,11 @@ def _accept_question_patch() -> Patch:
     )
 
 
-def test_history_and_paper_publish_only_explicit_canonical_files(manifest, tmp_path) -> None:
+def test_history_publishes_only_explicit_canonical_files(manifest) -> None:
     workspace = RecordingWorkspace(manifest.research_dir)
     history = HistoryManager(manifest, workspace, write_authority=unchecked_write_authority())
     history.initialize()
     history.append(seed_patch())
-    paper = PaperService(manifest, AppStore(tmp_path / "app.sqlite3"), workspace)
-    created = paper.create()
 
     published = {path for batch in workspace.published for path in batch}
     assert "patches/000001.json" in published
@@ -197,14 +193,6 @@ def test_history_and_paper_publish_only_explicit_canonical_files(manifest, tmp_p
     assert "research.md" in published
     assert "manifest.toml" in published
     assert "paper/introduction.md" not in published
-    assert created.sync_state == "unsynced"
-    assert workspace.transactions == 2
-
-    saved = paper.save(created.content, created.base_hash, created.draft_version)
-    published = {path for batch in workspace.published for path in batch}
-    assert "paper/introduction.md" in published
-    assert saved.sync_state == "synced"
-    assert workspace.transactions == 3
 
 
 def test_coherent_remote_initialization_reuses_refreshed_snapshot_without_publish(

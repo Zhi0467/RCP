@@ -129,7 +129,6 @@ def test_delete_project_route_disappears_after_restart_without_touching_reposito
             stage_root=str(stage),
         )
     )
-    app.state.catalog.open(project_id).paper.create()
 
     deleted = client.delete(f"/api/projects/{project_id}")
 

@@ -4396,7 +4396,6 @@ def test_failed_chat_task_keeps_the_answer_it_already_produced(app) -> None:
 
 def test_paper_coach_uses_agent_task_manager_and_result_shape(app, tmp_path) -> None:
     service = app.state.service
-    service.paper.create()
     wire_saved_paper(service)
     answer = "State the comparison before introducing the endpoint-KL terminology."
     session_id = str(uuid.uuid4())
@@ -4459,7 +4458,6 @@ def test_paper_coach_follow_up_restores_its_master_into_the_new_turn_stage(
         lambda paths: {**host_facts(paths), "home": str(tmp_path / "account")},
     )
     service = app.state.service
-    service.paper.create()
     wire_saved_paper(service)
     session_id = str(uuid.uuid4())
 
@@ -4517,7 +4515,6 @@ def test_paused_paper_coach_resumes_from_task_checkpoint_before_session_record(
     app, tmp_path
 ) -> None:
     service = app.state.service
-    service.paper.create()
     wire_saved_paper(service)
     session_id = str(uuid.uuid4())
     answer = "Define the comparison in ordinary language before naming the metric."
@@ -5392,7 +5389,6 @@ async def test_paper_coach_uses_its_read_only_launcher_contract(manifest, tmp_pa
     service = app.state.service
     _record_local_codex_path(app)
     paper = service.paper
-    paper.create()
     wire_saved_paper(service)
     session_id = str(uuid.uuid4())
     launcher = FakeLauncher(
