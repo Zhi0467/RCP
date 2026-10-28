@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import sqlite3
 import threading
@@ -22,29 +21,17 @@ class LivePaperLifecycle:
     def __init__(self, live: PaperLive):
         self.live = live
 
-    def _call(self, method: str, project_id: str) -> None:
-        loop = self.live.loop
-        if loop is None or not loop.is_running():
-            raise RuntimeError("PaperLive lifecycle owner is not running.")
-        try:
-            current = asyncio.get_running_loop()
-        except RuntimeError:
-            current = None
-        if current is loop:
-            raise RuntimeError("Synchronous Paper lifecycle requires a control worker thread.")
-        asyncio.run_coroutine_threadsafe(getattr(self.live, method)(project_id), loop).result()
-
     def pause(self, project_id: str) -> None:
-        self._call("pause", project_id)
+        self.live.run_sync(self.live.pause(project_id))
 
     def resume(self, project_id: str) -> None:
-        self._call("resume", project_id)
+        self.live.run_sync(self.live.resume(project_id))
 
     def drain(self, project_id: str) -> None:
-        self._call("drain", project_id)
+        self.live.run_sync(self.live.drain(project_id))
 
     def dispose(self, project_id: str) -> None:
-        self._call("dispose", project_id)
+        self.live.run_sync(self.live.dispose(project_id))
 
 
 class PaperLifecycleOwner(Protocol):
@@ -135,7 +122,9 @@ def stop_paper_project(store: PaperLifecycleStore, project_id: str) -> None:
             live.dispose(project_id)
 
 
-def detach_paper_runtime(store: PaperLifecycleStore) -> None:
+def detach_paper_runtime(
+    store: PaperLifecycleStore,
+) -> list[tuple[str, PaperLifecycleOwner]]:
     """Discard process-local job claims and destinations before offline restore.
 
     The contract persists content and publication intent, not worker claims or
@@ -145,7 +134,7 @@ def detach_paper_runtime(store: PaperLifecycleStore) -> None:
     with _owners_lock:
         live = _owners.get(store)
     if live is None:
-        return
+        return []
     with store.connection() as connection:
         project_ids = [row[0] for row in connection.execute("SELECT project_id FROM projects")]
     with ExitStack() as pauses:
@@ -154,3 +143,4 @@ def detach_paper_runtime(store: PaperLifecycleStore) -> None:
         for project_id in project_ids:
             live.drain(project_id)
             live.dispose(project_id)
+    return [(project_id, live) for project_id in project_ids]

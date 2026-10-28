@@ -66,12 +66,6 @@ class PaperSnapshotReader:
                 entry["size"] = self.connection.execute(
                     "SELECT size FROM paper_blobs WHERE sha256=?", (entry["blob_sha256"],)
                 ).fetchone()[0]
-            elif "size" not in entry:
-                # Pre-size manifests remain readable; new saves store this metadata.
-                body = self.connection.execute(
-                    "SELECT zbody FROM paper_version_texts WHERE sha256=?", (entry["text_sha256"],)
-                ).fetchone()[0]
-                entry["size"] = len(zlib.decompress(body))
         return revision, entries
 
     @staticmethod
@@ -235,6 +229,12 @@ def prune(connection: sqlite3.Connection, project: str, *, refuse: bool = True) 
             # and the next history request is the one refused.
             break
         raise PaperLimit("Paper history byte quota reached")
+    connection.execute(
+        "DELETE FROM paper_revisions WHERE project_id=? AND revision <= MIN("
+        "(SELECT published_revision FROM paper_publication WHERE project_id=?), "
+        "(SELECT MAX(revision) FROM paper_versions WHERE project_id=?))",
+        (project, project, project),
+    )
     for table in ("paper_updates", "paper_doc_states"):
         connection.execute(
             f"DELETE FROM {table} WHERE project_id=? AND file_id IN "

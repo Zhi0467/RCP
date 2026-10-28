@@ -4310,7 +4310,7 @@ function MemberApp({
         {voiceSurface}
       </div>
     );
-  if (!project || !paper)
+  if (!project || paper === null)
     return (
       <div className="fatal-state">
         <TriangleAlert />
@@ -4678,7 +4678,7 @@ function MemberApp({
         {item.view === "attention" && attentionCount > 0 && (
           <small className="inbox-count">{attentionCount}</small>
         )}
-        {item.view === "artifacts" && paper.sync_state !== "synced" && <small>1</small>}
+        {item.view === "artifacts" && paper && <small>1</small>}
         {item.view === "chats" && chatsIndicator && (
           <small
             className={`chats-indicator ${chatsIndicator}`}
@@ -5188,7 +5188,7 @@ function MemberApp({
               <ArtifactsSubnav
                 view={view}
                 filesActive={!activePin}
-                paperUnsynced={paper.sync_state !== "synced"}
+                paperUnsynced={paper}
                 failed={Boolean(pinsResource.error)}
                 onChange={(next) => {
                   setPinSelection(null);
@@ -5315,7 +5315,7 @@ function MemberApp({
             <div className="artifacts-shell">
               <ArtifactsSubnav
                 view={view}
-                paperUnsynced={paper.sync_state !== "synced"}
+                paperUnsynced={paper}
                 failed={Boolean(pinsResource.error)}
                 onChange={changeView}
               >
@@ -5458,7 +5458,7 @@ function MemberApp({
             (item) => !phonePrimaryViews.has(item.view) && navItemActive(item.view, view),
           )}
           moreBadge={
-            (chatsIndicator || paper.sync_state !== "synced") && (
+            (chatsIndicator || paper) && (
               <small className="phone-more-badge" aria-label="Updates in More" />
             )
           }

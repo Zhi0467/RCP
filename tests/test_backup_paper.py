@@ -17,19 +17,16 @@ from rcp.server_ops.backup_paper import (
 )
 
 
-def _database(*, unified: bool = True) -> sqlite3.Connection:
+def _database() -> sqlite3.Connection:
     connection = sqlite3.connect(":memory:")
-    from rcp.storage.base import AppStoreBase, _migrate_paper_changes, _migrate_paper_receipts
+    from rcp.storage.base import AppStoreBase
 
     connection.execute(
         "CREATE TABLE resource_versions(scope TEXT, resource TEXT, entity TEXT, "
         "generation INTEGER, PRIMARY KEY(scope, resource, entity))"
     )
-    AppStoreBase._migrate_paper_live(connection)
     connection.execute("CREATE TABLE graph_runs(dispatch_authority_json TEXT)")
-    _migrate_paper_changes(connection)
-    if unified:
-        _migrate_paper_receipts(connection)
+    AppStoreBase._migrate_paper_live(connection)
     return connection
 
 
@@ -92,8 +89,7 @@ def _saved_paper(connection, monkeypatch, project_id="p"):
         (json.dumps({"fingerprint": "hash", "receipt": {}}),),
     )
     for table in backup_paper.PAPER_PROJECT_TABLES:
-        if table != "paper_apply_receipts":
-            connection.execute(f'UPDATE "{table}" SET project_id=?', (project_id,))
+        connection.execute(f'UPDATE "{table}" SET project_id=?', (project_id,))
 
     return figure
 
@@ -145,41 +141,6 @@ def test_saved_section_refuses_missing_snapshot_or_corrupt_content(monkeypatch):
         assert capture_paper_section(connection, "legacy") is None
     finally:
         connection.close()
-
-
-def test_restore_legacy_receipts_merges_prepared_and_committed_mutation(monkeypatch):
-    source = _database(unified=False)
-    target = _database()
-    try:
-        _saved_paper(source, monkeypatch)
-        source.execute(
-            "UPDATE paper_change_receipts SET payload=?",
-            (json.dumps({"inverse": [{"kind": "delete", "file_id": "text"}]}),),
-        )
-        source.executemany(
-            "INSERT INTO paper_apply_receipts VALUES ('p', ?, 'hash', ?)",
-            [(key, json.dumps({"revision": 4})) for key in ("accept", "generic")],
-        )
-        section = capture_paper_section(source, "p")
-        assert section is not None
-        restore_paper_section(target, section)
-        rows = target.execute(
-            "SELECT receipt_key, group_id, payload FROM paper_change_receipts ORDER BY receipt_key"
-        ).fetchall()
-        assert [(row[0], row[1]) for row in rows] == [("accept", "group"), ("generic", None)]
-        accepted = json.loads(rows[0][2])
-        assert accepted == {
-            "inverse": [{"kind": "delete", "file_id": "text"}],
-            "fingerprint": "hash",
-            "receipt": {"revision": 4},
-        }
-        assert json.loads(rows[1][2])["receipt"] == {"revision": 4}
-        assert not target.execute(
-            "SELECT 1 FROM sqlite_schema WHERE name='paper_apply_receipts'"
-        ).fetchall()
-    finally:
-        source.close()
-        target.close()
 
 
 def test_projection_is_recursive_binary_safe_and_rejects_links(tmp_path):
@@ -298,15 +259,12 @@ def test_backup_marks_restored_paper_pending_when_projection_advances(tmp_path, 
 
 def test_restore_allowlist_matches_fresh_and_upgraded_paper_migrations(tmp_path):
     from rcp.storage import AppStore
-    from rcp.storage.base import AppStoreBase
 
     fresh = AppStore(tmp_path / "fresh.sqlite3")
-    upgraded = sqlite3.connect(":memory:")
-    AppStoreBase._migrate_paper_live(upgraded)
-    upgraded_changes = _database(unified=False)
+    upgraded = _database()
     try:
         with fresh.connection() as connection:
-            for database in (connection, upgraded, upgraded_changes):
+            for database in (connection, upgraded):
                 tables = set(backup_paper.PAPER_PROJECT_TABLES + backup_paper.PAPER_SHARED_TABLES)
                 shape = tuple(
                     tuple(row)
@@ -320,7 +278,6 @@ def test_restore_allowlist_matches_fresh_and_upgraded_paper_migrations(tmp_path)
     finally:
         fresh.close()
         upgraded.close()
-        upgraded_changes.close()
 
 
 @pytest.mark.parametrize("coached", [False, True])
@@ -417,3 +374,60 @@ def test_backup_and_live_share_path_validation(path):
         else:
             assert paper_path(path) == path
             entry()
+
+
+def test_pending_binary_card_survives_backup_accept_and_undo(tmp_path):
+    import asyncio
+    from contextlib import nullcontext
+
+    from rcp.paper import PaperLive, PaperOp
+    from rcp.paper.changes import PaperChanges
+    from rcp.storage import AppStore
+    from rcp.transport import LocalStateWorkspace
+
+    source = AppStore(tmp_path / "source.sqlite3")
+    target = AppStore(tmp_path / "target.sqlite3")
+    owners = []
+    for name, store in (("source", source), ("target", target)):
+        root = tmp_path / name
+        root.mkdir()
+        owners.append(PaperLive(store, lambda _, root=root: LocalStateWorkspace(root, str(root))))
+    live, restored = owners
+
+    async def scenario():
+        created = await live.apply(
+            "p",
+            [PaperOp(kind="create", path="figure.png", file_kind="binary", data=b"before")],
+            "h",
+        )
+        output = tmp_path / "changes"
+        (output / "files").mkdir(parents=True)
+        (output / "files/figure.png").write_bytes(b"after")
+        changes = PaperChanges(source, live, lambda _: nullcontext())
+        groups = await asyncio.to_thread(
+            changes.collect, "p", "task", await live.snapshot("p"), output
+        )
+        with source.connection() as connection:
+            section = capture_paper_section(connection, "p")
+        assert section is not None
+        section = PaperSection.model_validate_json(section.model_dump_json())
+        with target.connection() as connection:
+            restore_paper_section(connection, section)
+        await restored.snapshot("p")
+        recovered = PaperChanges(target, restored, lambda _: nullcontext())
+        await asyncio.to_thread(recovered.accept, "p", groups[0].group_id, "h")
+        snapshot = await restored.snapshot("p")
+        figure = next(file for file in snapshot.files if file.file_id == created.file_ids[0])
+        assert restored.blob(figure.blob_sha256) == b"after"
+        await asyncio.to_thread(recovered.undo, "p", groups[0].group_id, "h")
+        snapshot = await restored.snapshot("p")
+        figure = next(file for file in snapshot.files if file.file_id == created.file_ids[0])
+        assert restored.blob(figure.blob_sha256) == b"before"
+        for owner in owners:
+            await owner.close()
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        source.close()
+        target.close()

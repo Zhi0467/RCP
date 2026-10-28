@@ -38,8 +38,6 @@ test("Paper profile reads only the tree through its API base with cancellation",
     );
     assert.ok(requests.every(({ method, signal }) => !method && signal === controller.signal));
     assert.deepEqual(result.tree, tree);
-    assert.equal(result.paper.content, "");
-    assert.equal(result.paper.draft_version, null);
   } finally {
     globalThis.fetch = original;
   }
@@ -52,8 +50,7 @@ test("Paper shell badge reflects publication independently of the saved tree rev
       globalThis.fetch = async () => Response.json({ ...tree, publish_state: publishState });
       const result = await paperProfile("p").fetch(new AbortController().signal);
       assert.equal(result.tree.saved_revision, 4);
-      assert.equal(result.paper.sync_state === "synced", publishState === "published");
-      assert.equal(result.paper.canonical_available, true);
+      assert.equal(result.paper, publishState !== "published");
     }
   } finally {
     globalThis.fetch = original;

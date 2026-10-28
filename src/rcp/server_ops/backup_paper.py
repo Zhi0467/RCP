@@ -28,7 +28,6 @@ PAPER_PROJECT_TABLES = (
     "paper_revisions",
     "paper_publication",
     "paper_versions",
-    "paper_apply_receipts",
     "paper_saved_snapshots",
     "paper_change_groups",
     "paper_changes",
@@ -188,8 +187,13 @@ def _references(files, tables) -> tuple[set[str], set[str]]:
     def visit(value):
         if isinstance(value, dict):
             for key, item in value.items():
-                if key in {"blob_sha256", "text_sha256"} and isinstance(item, str):
-                    (blobs if key == "blob_sha256" else texts).add(item)
+                if key in {
+                    "blob_sha256",
+                    "before_blob",
+                    "after_blob",
+                    "text_sha256",
+                } and isinstance(item, str):
+                    (texts if key == "text_sha256" else blobs).add(item)
                 else:
                     visit(item)
         elif isinstance(value, list):
@@ -251,33 +255,8 @@ def restore_paper_section(
     """Insert exact durable state into the caller's transaction; never publish it."""
     section = PaperSection.model_validate(section.model_dump())
     project_id = project_id or section.project_id
-    tables = dict(section.tables)
-    legacy_receipts = tables.pop("paper_apply_receipts", ())
-    if legacy_receipts:
-        receipts = {
-            str(row["receipt_key"]): dict(row) for row in tables.get("paper_change_receipts", ())
-        }
-        for legacy in legacy_receipts:
-            key = str(legacy["receipt_key"])
-            row = receipts.setdefault(
-                key,
-                {
-                    "project_id": project_id,
-                    "receipt_key": key,
-                    "group_id": None,
-                    "action": "apply",
-                    "payload": "{}",
-                    "created_at": "",
-                },
-            )
-            payload = json.loads(str(row["payload"]))
-            payload.update(
-                fingerprint=legacy["fingerprint"], receipt=json.loads(str(legacy["receipt"]))
-            )
-            row["payload"] = json.dumps(payload)
-        tables["paper_change_receipts"] = tuple(receipts.values())
     for table in (*PAPER_SHARED_TABLES, *PAPER_PROJECT_TABLES):
-        for archived in tables.get(table, ()):
+        for archived in section.tables.get(table, ()):
             row = dict(archived)
             if table in PAPER_PROJECT_TABLES:
                 row["project_id"] = project_id
@@ -321,6 +300,13 @@ PAPER_RESTORE_SCHEMA_VARIANTS = (
     (
         (
             "index",
+            "paper_change_groups_task",
+            "paper_change_groups",
+            "CREATE INDEX paper_change_groups_task\n"
+            "            ON paper_change_groups(project_id, task_id, created_at)",
+        ),
+        (
+            "index",
             "paper_files_live_path",
             "paper_files",
             "CREATE UNIQUE INDEX paper_files_live_path\n"
@@ -330,20 +316,7 @@ PAPER_RESTORE_SCHEMA_VARIANTS = (
             "index",
             "paper_versions_revision",
             "paper_versions",
-            "CREATE INDEX paper_versions_revision\n"
-            "                ON paper_versions(project_id, revision)",
-        ),
-        (
-            "table",
-            "paper_apply_receipts",
-            "paper_apply_receipts",
-            "CREATE TABLE paper_apply_receipts (\n"
-            "                project_id TEXT NOT NULL,\n"
-            "                receipt_key TEXT NOT NULL,\n"
-            "                fingerprint TEXT NOT NULL,\n"
-            "                receipt TEXT NOT NULL,\n"
-            "                PRIMARY KEY(project_id, receipt_key)\n"
-            "            )",
+            "CREATE INDEX paper_versions_revision\n                ON paper_versions(project_id, revision)",
         ),
         (
             "table",
@@ -354,6 +327,37 @@ PAPER_RESTORE_SCHEMA_VARIANTS = (
             "                bytes BLOB NOT NULL,\n"
             "                size INTEGER NOT NULL CHECK(size >= 0)\n"
             "            )",
+        ),
+        (
+            "table",
+            "paper_change_groups",
+            "paper_change_groups",
+            "CREATE TABLE paper_change_groups (\n"
+            "            project_id TEXT NOT NULL, group_id TEXT NOT NULL, task_id TEXT NOT NULL,\n"
+            "            base_revision INTEGER NOT NULL, mode TEXT NOT NULL, state TEXT NOT NULL,\n"
+            "            decided_by TEXT, decided_at TEXT, created_at TEXT NOT NULL,\n"
+            "            PRIMARY KEY (project_id, group_id))",
+        ),
+        (
+            "table",
+            "paper_change_receipts",
+            "paper_change_receipts",
+            "CREATE TABLE paper_change_receipts (\n"
+            "        project_id TEXT NOT NULL, receipt_key TEXT NOT NULL, group_id TEXT,\n"
+            "        action TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL,\n"
+            "        PRIMARY KEY (project_id, receipt_key),\n"
+            "        FOREIGN KEY (project_id, group_id)\n"
+            "            REFERENCES paper_change_groups(project_id, group_id) ON DELETE CASCADE)",
+        ),
+        (
+            "table",
+            "paper_changes",
+            "paper_changes",
+            "CREATE TABLE paper_changes (\n"
+            "            project_id TEXT NOT NULL, change_id TEXT NOT NULL, group_id TEXT NOT NULL,\n"
+            "            payload TEXT NOT NULL, PRIMARY KEY (project_id, change_id),\n"
+            "            FOREIGN KEY (project_id, group_id)\n"
+            "                REFERENCES paper_change_groups(project_id, group_id) ON DELETE CASCADE)",
         ),
         (
             "table",
@@ -461,96 +465,39 @@ PAPER_RESTORE_SCHEMA_VARIANTS = (
             "                PRIMARY KEY(project_id, version_id)\n"
             "            )",
         ),
-        # Saves and publication invalidate the Paper badge (resource_versions).
         (
             "trigger",
             "resource_paper_publication_delete",
             "paper_publication",
-            "CREATE TRIGGER resource_paper_publication_delete BEFORE DELETE ON \"paper_publication\"  BEGIN INSERT INTO resource_versions(scope,resource,entity,generation) SELECT OLD.project_id,'paper',COALESCE('',''),1 WHERE (OLD.project_id) IS NOT NULL AND (1) ON CONFLICT(scope,resource,entity) DO UPDATE SET generation=generation+1; END",
+            'CREATE TRIGGER resource_paper_publication_delete BEFORE DELETE ON "paper_publication"  BEGIN '
+            "INSERT INTO resource_versions(scope,resource,entity,generation) SELECT "
+            "OLD.project_id,'paper',COALESCE('',''),1 WHERE (OLD.project_id) IS NOT NULL AND (1) ON "
+            "CONFLICT(scope,resource,entity) DO UPDATE SET generation=generation+1; END",
         ),
         (
             "trigger",
             "resource_paper_publication_insert",
             "paper_publication",
-            "CREATE TRIGGER resource_paper_publication_insert AFTER INSERT ON \"paper_publication\"  BEGIN INSERT INTO resource_versions(scope,resource,entity,generation) SELECT NEW.project_id,'paper',COALESCE('',''),1 WHERE (NEW.project_id) IS NOT NULL AND (1) ON CONFLICT(scope,resource,entity) DO UPDATE SET generation=generation+1; END",
+            'CREATE TRIGGER resource_paper_publication_insert AFTER INSERT ON "paper_publication"  BEGIN '
+            "INSERT INTO resource_versions(scope,resource,entity,generation) SELECT "
+            "NEW.project_id,'paper',COALESCE('',''),1 WHERE (NEW.project_id) IS NOT NULL AND (1) ON "
+            "CONFLICT(scope,resource,entity) DO UPDATE SET generation=generation+1; END",
         ),
         (
             "trigger",
             "resource_paper_publication_update",
             "paper_publication",
-            'CREATE TRIGGER resource_paper_publication_update AFTER UPDATE ON "paper_publication" WHEN OLD."saved_revision" IS NOT NEW."saved_revision" OR OLD."published_revision" IS NOT NEW."published_revision" OR OLD."pending_since" IS NOT NEW."pending_since" OR OLD."last_error" IS NOT NEW."last_error" OR OLD."hold" IS NOT NEW."hold" BEGIN INSERT INTO resource_versions(scope,resource,entity,generation) SELECT NEW.project_id,\'paper\',COALESCE(\'\',\'\'),1 WHERE (NEW.project_id) IS NOT NULL AND (1) ON CONFLICT(scope,resource,entity) DO UPDATE SET generation=generation+1; INSERT INTO resource_versions(scope,resource,entity,generation) SELECT OLD.project_id,\'paper\',COALESCE(\'\',\'\'),1 WHERE (OLD.project_id) IS NOT NULL AND (1) ON CONFLICT(scope,resource,entity) DO UPDATE SET generation=generation+1; END',
+            'CREATE TRIGGER resource_paper_publication_update AFTER UPDATE ON "paper_publication" WHEN '
+            'OLD."saved_revision" IS NOT NEW."saved_revision" OR OLD."published_revision" IS NOT '
+            'NEW."published_revision" OR OLD."pending_since" IS NOT NEW."pending_since" OR OLD."last_error" '
+            'IS NOT NEW."last_error" OR OLD."hold" IS NOT NEW."hold" BEGIN INSERT INTO '
+            "resource_versions(scope,resource,entity,generation) SELECT "
+            "NEW.project_id,'paper',COALESCE('',''),1 WHERE (NEW.project_id) IS NOT NULL AND (1) ON "
+            "CONFLICT(scope,resource,entity) DO UPDATE SET generation=generation+1; INSERT INTO "
+            "resource_versions(scope,resource,entity,generation) SELECT "
+            "OLD.project_id,'paper',COALESCE('',''),1 WHERE (OLD.project_id) IS NOT NULL AND (1) ON "
+            "CONFLICT(scope,resource,entity) DO UPDATE SET generation=generation+1; END",
         ),
-    ),
-)
-
-
-# Migration 64 adds durable coach cards and prepared mutation receipts.
-_PAPER_CHANGES_SCHEMA = (
-    (
-        "index",
-        "paper_change_groups_task",
-        "paper_change_groups",
-        "CREATE INDEX paper_change_groups_task\n"
-        "            ON paper_change_groups(project_id, task_id, created_at)",
-    ),
-    (
-        "table",
-        "paper_change_groups",
-        "paper_change_groups",
-        "CREATE TABLE paper_change_groups (\n"
-        "            project_id TEXT NOT NULL, group_id TEXT NOT NULL, task_id TEXT NOT NULL,\n"
-        "            base_revision INTEGER NOT NULL, mode TEXT NOT NULL, state TEXT NOT NULL,\n"
-        "            decided_by TEXT, decided_at TEXT, created_at TEXT NOT NULL,\n"
-        "            PRIMARY KEY (project_id, group_id))",
-    ),
-    (
-        "table",
-        "paper_change_receipts",
-        "paper_change_receipts",
-        "CREATE TABLE paper_change_receipts (\n"
-        "            project_id TEXT NOT NULL, receipt_key TEXT NOT NULL, group_id TEXT NOT NULL,\n"
-        "            action TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL,\n"
-        "            PRIMARY KEY (project_id, receipt_key),\n"
-        "            FOREIGN KEY (project_id, group_id)\n"
-        "                REFERENCES paper_change_groups(project_id, group_id) ON DELETE CASCADE)",
-    ),
-    (
-        "table",
-        "paper_changes",
-        "paper_changes",
-        "CREATE TABLE paper_changes (\n"
-        "            project_id TEXT NOT NULL, change_id TEXT NOT NULL, group_id TEXT NOT NULL,\n"
-        "            payload TEXT NOT NULL, PRIMARY KEY (project_id, change_id),\n"
-        "            FOREIGN KEY (project_id, group_id)\n"
-        "                REFERENCES paper_change_groups(project_id, group_id) ON DELETE CASCADE)",
-    ),
-)
-PAPER_RESTORE_SCHEMA_VARIANTS += (
-    tuple(sorted((*PAPER_RESTORE_SCHEMA_VARIANTS[0], *_PAPER_CHANGES_SCHEMA))),
-)
-# Migration 65 unifies live results and prepared coach receipts in one table.
-PAPER_RESTORE_SCHEMA_VARIANTS += (
-    tuple(
-        sorted(
-            (
-                *(
-                    row
-                    for row in PAPER_RESTORE_SCHEMA_VARIANTS[1]
-                    if row[2] not in {"paper_apply_receipts", "paper_change_receipts"}
-                ),
-                (
-                    "table",
-                    "paper_change_receipts",
-                    "paper_change_receipts",
-                    "CREATE TABLE paper_change_receipts (\n"
-                    "        project_id TEXT NOT NULL, receipt_key TEXT NOT NULL, group_id TEXT,\n"
-                    "        action TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL,\n"
-                    "        PRIMARY KEY (project_id, receipt_key),\n"
-                    "        FOREIGN KEY (project_id, group_id)\n"
-                    "            REFERENCES paper_change_groups(project_id, group_id) ON DELETE CASCADE)",
-                ),
-            )
-        )
     ),
 )
 

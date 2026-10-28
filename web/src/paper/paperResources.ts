@@ -1,6 +1,6 @@
 import { api } from "../core/api";
 import type { ResourceKey, ResourceProfile } from "../core/resourceStore";
-import type { PaperSnapshot, PaperTree } from "../core/types";
+import type { PaperTree } from "../core/types";
 
 /** Each link opening is a new request, including a return to the same file. */
 export function paperFileRequest(hash: string) {
@@ -9,8 +9,8 @@ export function paperFileRequest(hash: string) {
 
 export interface PaperResource {
   tree: PaperTree;
-  /** Shell badge projection until the shell consumes PaperTree directly. */
-  paper: PaperSnapshot;
+  /** Whether saved changes still need publication. */
+  paper: boolean;
 }
 export function paperResourceKey(projectId: string): ResourceKey {
   return { backend: "", member: "", project: projectId, name: "paper" };
@@ -25,12 +25,7 @@ export function paperProfile(
       const tree = await api<PaperTree>(`${apiBase}/paper/tree`, { signal });
       return {
         tree,
-        paper: {
-          content: "",
-          draft_version: null,
-          sync_state: tree.publish_state === "published" ? "synced" : "unsynced",
-          canonical_available: tree.files.length > 0,
-        },
+        paper: tree.publish_state !== "published",
       };
     },
   };
