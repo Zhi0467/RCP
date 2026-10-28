@@ -248,11 +248,14 @@ def test_ordinary_mail_consent_cannot_start_a_continuation(
 def test_continuation_first_turn_claims_answers_held_since_the_ending(
     manifest, tmp_path, monkeypatch
 ):
+    import rcp.runs.auto_research_admission as admission
     from rcp.runs.auto_research_questions import auto_research_question_snapshot
     from tests.test_episode_questions import _question
 
     app, store, original, _ = _ended_app(manifest, tmp_path, monkeypatch)
-    # Several held answers claim together, whatever their ids' sort order.
+    # Held answers claim together in mail order; past one wake's bound the rest
+    # wait for ordinary mail delivery instead of refusing the continuation.
+    monkeypatch.setattr(admission, "AUTO_RESEARCH_MAIL_MAX_MESSAGES", 3)
     answers = [
         _question(store, original, key=f"held-{index}", state="answered") for index in range(4)
     ]
@@ -266,7 +269,7 @@ def test_continuation_first_turn_claims_answers_held_since_the_ending(
     )
     mails = store.auto_research_messages(continued.episode_id)
     assert {mail.message_id for mail in mails} == {
-        f"question:{item.question_id}:answer:{item.answer_revision}" for item in answers
+        f"question:{item.question_id}:answer:{item.answer_revision}" for item in answers[:3]
     }
     mail = next(mail for mail in mails if held.question_id in mail.message_id)
     assert mail.delivery_operation_id == root.operation_id

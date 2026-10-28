@@ -72,9 +72,17 @@ def question_answer_mail(
 
 
 def held_question_answer_mail(
-    store: AppStore, source: EpisodeRecord, *, episode_id: str, recipient_task_id: str
+    store: AppStore,
+    source: EpisodeRecord,
+    *,
+    episode_id: str,
+    recipient_task_id: str,
+    limit: int,
 ) -> list[AutoResearchMessageRecord]:
-    """Answers given after the chain ended, addressed to its continuation's first turn."""
+    """Answers given after the chain ended, addressed to its continuation's first turn.
+
+    At most ``limit`` fit one wake's claim; the answer reconciler mails the rest.
+    """
     held = [
         question
         for question in store.episode_questions(source.project_id, source.episode_id)
@@ -90,7 +98,7 @@ def held_question_answer_mail(
         question_answer_mail(
             question, episode_id=episode_id, recipient_task_id=recipient_task_id, created_at=now
         )
-        for question in held
+        for question in held[:limit]
     ]
 
 
