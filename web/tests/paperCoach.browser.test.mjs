@@ -61,13 +61,19 @@ test("card refusals have a visible edge and dismiss; transient failures retry", 
     let status = 409;
     await context.route("**/changes/g1/*", (route) => route.fulfill({ status, json: {} }));
     await change.getByRole("button", { name: action, exact: true }).click();
-    const dismiss = change.getByRole("button", { name: "Dismiss change failure" });
-    await dismiss.waitFor();
+    await page.waitForFunction(() =>
+      document.querySelector('[data-change-id="c1"]').classList.contains("paper-failure"),
+    );
     await redEdge(change);
-    await target(dismiss);
     await fits(page);
-    await dismiss.click();
-    assert.equal(await change.evaluate((e) => e.classList.contains("paper-failure")), false);
+    // A pending or outdated card's own actions are its way forward; only a settled one dismisses.
+    const dismiss = change.getByRole("button", { name: "Dismiss change failure" });
+    assert.equal(await dismiss.count(), state === "accepted" ? 1 : 0);
+    if (state === "accepted") {
+      await target(dismiss);
+      await dismiss.click();
+      assert.equal(await change.evaluate((e) => e.classList.contains("paper-failure")), false);
+    }
     status = 503;
     await change.getByRole("button", { name: action, exact: true }).click();
     await change.getByRole("button", { name: "Retry change", exact: true }).waitFor();

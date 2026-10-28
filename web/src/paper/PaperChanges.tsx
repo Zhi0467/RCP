@@ -260,7 +260,9 @@ export function PaperChanges({
                   {change.state !== "pending" ? ` · ${change.state}` : ""}
                 </span>
               </span>
-              {failed && (
+              {/* A refused pending or outdated card keeps its own actions; one more X beside
+                  Reject would read as two rejects. */}
+              {failed && (retry || (change.state !== "pending" && change.state !== "outdated")) && (
                 <button
                   className="icon-button compact"
                   aria-label={retry ? "Retry change" : "Dismiss change failure"}

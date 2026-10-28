@@ -6,6 +6,7 @@ import {
   MessageCirclePlus,
   RotateCcw,
   Send,
+  Square,
   X,
   Zap,
 } from "lucide-react";
@@ -214,6 +215,16 @@ export function PaperCoach({
       setSubmitting(false);
     }
   };
+  const stop = async (task: AgentTask) => {
+    setError(null);
+    try {
+      await api(`${apiBase}/tasks/${encodeURIComponent(task.operation_id)}/pause`, {
+        method: "POST",
+      });
+    } catch (cause) {
+      setError(String(cause));
+    }
+  };
   const retryButton = (task: AgentTask) => (
     <button
       className="icon-button compact paper-reply-retry"
@@ -382,20 +393,31 @@ export function PaperCoach({
               </button>
             ))}
           </div>
-          <button
-            className="icon-button primary"
-            aria-label={error ? "Retry message" : "Send coach message"}
-            title={error || undefined}
-            disabled={
-              !message.trim() ||
-              Boolean(activeTask) ||
-              submitting ||
-              !launchProviderReady(project, config)
-            }
-            onClick={() => void send()}
-          >
-            {error ? <RotateCcw size={16} /> : <Send size={16} />}
-          </button>
+          {activeTask?.can_pause ? (
+            <button
+              className="icon-button primary"
+              aria-label="Stop coach"
+              title={error || undefined}
+              onClick={() => void stop(activeTask)}
+            >
+              <Square size={14} />
+            </button>
+          ) : (
+            <button
+              className="icon-button primary"
+              aria-label={error ? "Retry message" : "Send coach message"}
+              title={error || undefined}
+              disabled={
+                !message.trim() ||
+                Boolean(activeTask) ||
+                submitting ||
+                !launchProviderReady(project, config)
+              }
+              onClick={() => void send()}
+            >
+              {error ? <RotateCcw size={16} /> : <Send size={16} />}
+            </button>
+          )}
         </div>
       </div>
       {configOpen && (
