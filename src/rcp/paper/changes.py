@@ -62,8 +62,8 @@ class Change(BaseModel):
     preview: dict[str, object] = Field(default_factory=dict)
     stats: dict[str, int] = Field(default_factory=dict)
     # Anchor mapped into the live text when the card was last read, in the UTF-16
-    # offsets the browser's Yjs text uses; never stored.
-    _current: dict[str, int] | None = PrivateAttr(default=None)
+    # offsets the browser's Yjs text uses, with its exact text; never stored.
+    _current: dict[str, int | str] | None = PrivateAttr(default=None)
 
 
 class ChangeGroup(BaseModel):
@@ -766,6 +766,7 @@ class PaperChanges:
                     "start": _utf16_length(live_text[:start]),
                     "end": _utf16_length(live_text[:end]),
                     "revision": current.revision,
+                    "text": change.before,
                 }
                 checks.append(
                     {"file_id": file.file_id, "start": start, "end": end, "text": change.before}

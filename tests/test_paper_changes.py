@@ -394,7 +394,7 @@ def test_old_writer_coach_dispatch_migrates_without_rewriting_history(tmp_path):
         )
         for table in ("paper_change_receipts", "paper_changes", "paper_change_groups"):
             connection.execute(f"DROP TABLE {table}")
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version>=63")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version>=64")
     with pytest.raises(ValidationError):
         store.agent_task("legacy-coach")
     store.close()
@@ -682,7 +682,12 @@ def test_pending_card_reports_its_anchor_in_live_utf16_offsets(setup):
     text = saved(live).files[0].text or ""
     offset = text.index("line 11\n")
     expected = len(text[:offset].encode("utf-16-le")) // 2
-    assert card["current"] == {"start": expected, "end": expected, "revision": saved(live).revision}
+    assert card["current"] == {
+        "start": expected,
+        "end": expected,
+        "revision": saved(live).revision,
+        "text": "",
+    }
     assert changes.groups("p", "t")[0].group_id == group.group_id
 
 

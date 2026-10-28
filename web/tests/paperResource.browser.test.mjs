@@ -274,7 +274,7 @@ test("Locate waits for an unopened file's server text", async (t) => {
         ...card,
         file_id: "f2",
         lines: { start: 3, end: 3 },
-        current: { start: 8, end: 13, revision: 1 },
+        current: { start: 8, end: 13, revision: 1, text: "draft" },
       },
     ],
     configure: ({ tree }) =>
@@ -333,7 +333,7 @@ test("superseded LaTeX compilation keeps the existing PDF", async (t) => {
 test("insertion refreshes use current anchors without downloading base files", async (t) => {
   const insertion = {
     ...card,
-    current: { start: 5, end: 5, revision: 1 },
+    current: { start: 5, end: 5, revision: 1, text: "" },
     preview: { removed: [], added: ["suggested"], more: 0 },
   };
   let currentTree;
@@ -348,7 +348,7 @@ test("insertion refreshes use current anchors without downloading base files", a
   await page.keyboard.press("ControlOrMeta+Home");
   const refreshed = page.waitForResponse((response) => response.url().endsWith("/paper/changes"));
   await page.keyboard.insertText("prefix ");
-  insertion.current = { start: 12, end: 12, revision: 2 };
+  insertion.current = { start: 12, end: 12, revision: 2, text: "" };
   currentTree.revision = 2;
   currentTree.saved_revision = 2;
   await refreshed;
@@ -503,7 +503,7 @@ test("repeated same lines paint and locate the verified current range, then hide
       {
         ...card,
         lines: { start: 1, end: 1 },
-        current: { start: 5, end: 9, revision: 1 },
+        current: { start: 5, end: 9, revision: 1, text: "same" },
         preview: { removed: ["same"], added: ["new"], more: 0 },
       },
     ],

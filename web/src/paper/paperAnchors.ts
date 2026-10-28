@@ -10,7 +10,7 @@ function matches(change: PaperChange, text: Y.Text, start: number, end: number) 
     start >= 0 &&
     end >= start &&
     end <= text.length &&
-    text.toString().slice(start, end) === change.preview.removed.join("\n")
+    text.toString().slice(start, end) === change.current?.text
   );
 }
 

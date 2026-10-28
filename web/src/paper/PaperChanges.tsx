@@ -27,7 +27,7 @@ export interface PaperChange {
   file_id: string;
   path: string;
   new_path?: string;
-  current: { start: number; end: number; revision: number } | null;
+  current: { start: number; end: number; revision: number; text: string } | null;
   lines?: { start: number; end: number };
   preview: { removed: string[]; added: string[]; more: number };
   stats?: { added: number; removed: number };
