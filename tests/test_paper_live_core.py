@@ -320,3 +320,54 @@ def test_causal_update_gap_survives_compaction_and_restart(paper, monkeypatch):
         await restarted.close()
 
     run(scenario())
+
+
+def test_receive_uses_blob_sizes_and_batches_retention(paper, monkeypatch):
+    import threading
+
+    import rcp.paper.live as module
+
+    live, store, _ = paper
+
+    async def scenario():
+        receipt = await live.apply(
+            "p",
+            [
+                PaperOp(kind="create", path="a.md"),
+                PaperOp(kind="create", path="image", file_kind="binary", data=b"image"),
+            ],
+            "h",
+        )
+        room = await live.connect("p", receipt.file_ids[0])
+        client = Doc({"text": Text()})
+        client.apply_update(room.encoded)
+        client["text"].insert(0, "saved")
+        owner = threading.get_ident()
+        queries = []
+        connection = store.connection
+
+        @contextmanager
+        def traced():
+            with connection() as conn:
+                conn.set_trace_callback(lambda sql: queries.append(sql))
+                yield conn
+
+        original = live._save_text_update
+
+        def save(*args):
+            assert threading.get_ident() != owner
+            return original(*args)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(store, "connection", traced)
+            patch.setattr(live, "_save_text_update", save)
+            patch.setattr(module, "prune", lambda *_: pytest.fail("per-update retention"))
+            assert await live.receive(
+                "p", receipt.file_ids[0], create_update_message(client.get_update()), "h"
+            )
+        assert not any("SELECT bytes" in sql for sql in queries)
+        assert (await live.snapshot("p")).files[0].text == "saved"
+        await live.tick()
+        await live.close()
+
+    run(scenario())

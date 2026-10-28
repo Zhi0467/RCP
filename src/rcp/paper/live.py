@@ -14,6 +14,7 @@ import logging
 import tempfile
 import time
 import uuid
+import zlib
 from collections import deque
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
@@ -141,6 +142,8 @@ class PaperLive:
         self._timer: asyncio.Task | None = None
         self._publishers: dict[str, asyncio.Task] = {}
         self._compactions: set[asyncio.Task] = set()
+        # Saved revision last pruned per project; idle projects are not rescanned.
+        self._pruned: dict[str, int] = {}
         self._rates: dict[str, deque[float]] = {}
 
     def run_sync(self, action: Coroutine[Any, Any, _Result]) -> _Result:
@@ -203,6 +206,17 @@ class PaperLive:
         self._paused.add(project_id)
         async with self._lock(project_id):
             pass
+
+    @_owned
+    async def resume(self, project_id: str) -> None:
+        async with self._lock(project_id):
+            try:
+                self.store.require_project_accepts_new_work(project_id)
+            except ValueError:
+                return
+            await self._ensure(project_id)
+            self._disposed.discard(project_id)
+            self._paused.discard(project_id)
 
     @_owned
     async def drain(self, project_id: str) -> None:
@@ -366,13 +380,13 @@ class PaperLive:
     async def snapshot(self, project_id: str, revision: int | None = None) -> PaperSnapshot:
         async with self._lock(project_id):
             await self._ensure(project_id)
-            return self._snapshot(project_id, revision)
+            return await asyncio.to_thread(self._snapshot, project_id, revision)
 
     @_owned
     async def tree(self, project_id: str) -> PaperTree:
         async with self._lock(project_id):
             await self._ensure(project_id)
-            snapshot = self._snapshot(project_id)
+            snapshot = await asyncio.to_thread(self._snapshot, project_id)
             with self.store.connection() as conn:
                 row = conn.execute(
                     "SELECT * FROM paper_publication WHERE project_id=?", (project_id,)
@@ -382,7 +396,7 @@ class PaperLive:
                 data = (
                     (file.text or "").encode()
                     if file.kind == "text"
-                    else self.blob(file.blob_sha256 or "")
+                    else snapshot._blobs[file.blob_sha256 or ""]
                 )
                 files.append(
                     PaperTreeFile(
@@ -437,7 +451,7 @@ class PaperLive:
                 return file.text or ""
         raise KeyError(file_id)
 
-    def _revision(self, conn, project, revision, files, actor, kind, now):
+    def _revision(self, conn, project, revision, files, actor, kind, now, manifest=None):
         conn.execute(
             "INSERT INTO paper_revisions VALUES(?,?,?,?,?)", (project, revision, now, actor, kind)
         )
@@ -448,9 +462,10 @@ class PaperLive:
         )
         conn.execute(
             "INSERT INTO paper_saved_snapshots VALUES(?,?,?)",
-            (project, revision, manifest_for(conn, files)),
+            (project, revision, manifest if manifest is not None else manifest_for(conn, files)),
         )
-        prune(conn, project)
+        if kind != "text":
+            prune(conn, project)
 
     def _validate_tree(self, files: list[PaperFile], blobs: dict[str, bytes]) -> None:
         if len(files) > limits.PAPER_MAX_FILES:
@@ -567,7 +582,7 @@ class PaperLive:
                     if payload["fingerprint"] != fingerprint:
                         raise PaperConflict("Receipt key was used for another operation")
                     return Receipt.model_validate(payload["receipt"])
-            snapshot = self._snapshot(project_id)
+            snapshot = await asyncio.to_thread(self._snapshot, project_id)
             files = {file.file_id: file.model_copy() for file in snapshot.files}
             if "revision" in expect and expect["revision"] != snapshot.revision:
                 raise PaperPrecondition("Paper revision changed")
@@ -691,10 +706,11 @@ class PaperLive:
                         blobs[sha] = op.data
                     else:
                         sha = op.blob_sha256 or ""
-                        self.blob(sha)
+                        if sha not in snapshot._blobs:
+                            blobs[sha] = await asyncio.to_thread(self.blob, sha)
                     file.blob_sha256 = sha
                 affected.append(file_id)
-            self._validate_tree(list(files.values()), blobs)
+            self._validate_tree(list(files.values()), snapshot._blobs | blobs)
             encoded_docs = {
                 file_id: merge_updates(bases[file_id].encoded, doc.get_update())
                 if file_id in bases
@@ -795,28 +811,90 @@ class PaperLive:
             if encoded == room.encoded:
                 return [_ack(room.doc)]
             candidate = _doc(encoded)
-            snapshot = self._snapshot(project_id)
-            for file in snapshot.files:
-                if file.file_id == file_id:
-                    file.text = str(candidate["text"])
-            self._validate_tree(snapshot.files, {})
             if len(encoded) > limits.PAPER_MAX_MESSAGE_BYTES:
                 raise PaperLimit("Paper CRDT state is too large")
             self._rate(project_id)
-            revision = snapshot.revision + 1
             seq = room.seq + 1
-            with self.store.connection() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                now = self.store.now()
-                conn.execute(
-                    "INSERT INTO paper_updates VALUES(?,?,?,?,?,?,?)",
-                    (project_id, file_id, seq, update, revision, actor, now),
+            saving = asyncio.create_task(
+                asyncio.to_thread(
+                    self._save_text_update,
+                    project_id,
+                    file_id,
+                    seq,
+                    update,
+                    str(candidate["text"]),
+                    actor,
                 )
-                self._revision(conn, project_id, revision, snapshot.files, actor, "text", now)
+            )
+            cancelled = False
+            try:
+                revision = await asyncio.shield(saving)
+            except asyncio.CancelledError:
+                # Keep the project lock until the transaction has settled.
+                revision = await saving
+                cancelled = True
             room.doc, room.seq, room.encoded = candidate, seq, encoded
             self._broadcast(room, create_update_message(update))
             self._compact(project_id, file_id, room, revision)
+            if cancelled:
+                raise asyncio.CancelledError
             return [_ack(candidate)]
+
+    def _save_text_update(self, project, file_id, seq, update, text, actor):
+        body = text.encode()
+        if b"\0" in body:
+            raise ValueError("Paper text cannot contain NUL")
+        if len(body) > limits.PAPER_MAX_DOC_BYTES:
+            raise PaperLimit("Paper document is too large")
+        with self.store.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            previous, manifest = conn.execute(
+                "SELECT p.saved_revision,s.manifest FROM paper_publication p "
+                "JOIN paper_saved_snapshots s ON s.project_id=p.project_id "
+                "AND s.revision=p.saved_revision WHERE p.project_id=?",
+                (project,),
+            ).fetchone()
+            entries = json.loads(manifest)
+            size = len(body)
+            for entry in entries:
+                if entry["file_id"] == file_id:
+                    replacement = PaperFile(
+                        file_id=file_id, path=entry["path"], kind="text", text=text
+                    )
+                    entry.update(json.loads(manifest_for(conn, [replacement]))[0])
+                elif entry["kind"] == "binary":
+                    size += conn.execute(
+                        "SELECT size FROM paper_blobs WHERE sha256=?", (entry["blob_sha256"],)
+                    ).fetchone()[0]
+                else:
+                    compressed = conn.execute(
+                        "SELECT zbody FROM paper_version_texts WHERE sha256=?",
+                        (entry["text_sha256"],),
+                    ).fetchone()[0]
+                    size += len(zlib.decompress(compressed))
+            if size > limits.PAPER_MAX_TREE_BYTES:
+                raise PaperLimit("Paper tree is too large")
+            revision = previous + 1
+            now = self.store.now()
+            conn.execute(
+                "INSERT INTO paper_updates VALUES(?,?,?,?,?,?,?)",
+                (project, file_id, seq, update, revision, actor, now),
+            )
+            self._revision(
+                conn,
+                project,
+                revision,
+                [],
+                actor,
+                "text",
+                now,
+                manifest=json.dumps(entries, sort_keys=True),
+            )
+            return revision
+
+    def _prune(self, project):
+        with self.store.connection() as conn:
+            prune(conn, project)
 
     @staticmethod
     def _broadcast(room: Room, message: bytes) -> None:
@@ -914,21 +992,24 @@ class PaperLive:
     async def version_snapshot(self, project_id: str, version_id: str) -> PaperSnapshot:
         async with self._lock(project_id):
             await self._ensure(project_id)
-            with self.store.connection() as conn:
-                row = conn.execute(
-                    "SELECT revision,manifest FROM paper_versions WHERE project_id=? AND version_id=?",
-                    (project_id, version_id),
-                ).fetchone()
-                if row is None:
-                    raise KeyError(version_id)
-                return read_snapshot(conn, row[0], row[1])
+            return await asyncio.to_thread(self._version_snapshot, project_id, version_id)
+
+    def _version_snapshot(self, project_id: str, version_id: str) -> PaperSnapshot:
+        with self.store.connection() as conn:
+            row = conn.execute(
+                "SELECT revision,manifest FROM paper_versions WHERE project_id=? AND version_id=?",
+                (project_id, version_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(version_id)
+            return read_snapshot(conn, row[0], row[1])
 
     @_owned
     async def create_version(self, project_id: str, name: str, actor: str) -> dict[str, Any]:
         async with self._lock(project_id):
             self._writable(project_id)
             await self._ensure(project_id)
-            snapshot = self._snapshot(project_id)
+            snapshot = await asyncio.to_thread(self._snapshot, project_id)
             with self.store.connection() as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 version_id = save_version(conn, project_id, snapshot, actor, self.store.now(), name)
@@ -1000,7 +1081,7 @@ class PaperLive:
             if hold.get("canonical_unknown"):
                 canonical = await asyncio.to_thread(self._legacy_content, project_id)
                 async with self._lock(project_id):
-                    snapshot = self._snapshot(project_id)
+                    snapshot = await asyncio.to_thread(self._snapshot, project_id)
                     introduction = next(
                         (file for file in snapshot.files if file.path == "introduction.md"), None
                     )
@@ -1064,7 +1145,7 @@ class PaperLive:
                 ).fetchone()
             if row["hold"] or row["saved_revision"] == row["published_revision"]:
                 return
-            snapshot = self._snapshot(project)
+            snapshot = await asyncio.to_thread(self._snapshot, project)
 
         def write():
             with tempfile.TemporaryDirectory(prefix="rcp-paper-") as directory:
@@ -1138,6 +1219,12 @@ class PaperLive:
 
                 task.add_done_callback(finished)
             async with self._lock(project):
+                if self._pruned.get(project) != row["saved_revision"]:
+                    pruning = asyncio.create_task(asyncio.to_thread(self._prune, project))
+                    self._compactions.add(pruning)
+                    pruning.add_done_callback(self._compactions.discard)
+                    await asyncio.shield(pruning)
+                    self._pruned[project] = row["saved_revision"]
                 with self.store.connection() as conn:
                     previous = (
                         conn.execute(
@@ -1158,5 +1245,5 @@ class PaperLive:
                             or age(burst) >= limits.PAPER_HISTORY_MAX_SECONDS
                         )
                     ):
-                        snapshot = self._snapshot(project)
+                        snapshot = await asyncio.to_thread(self._snapshot, project)
                         save_version(conn, project, snapshot, "automatic", self.store.now())

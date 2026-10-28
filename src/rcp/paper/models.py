@@ -79,7 +79,7 @@ def paper_path(value: str) -> str:
         or len(value.encode()) > 1024
         or "\\" in value
         or any(ord(char) < 32 or ord(char) == 127 for char in value)
-        or any(part in {"", ".", ".."} for part in value.split("/"))
+        or any(part in {"", ".", "..", ".git", ".publish"} for part in value.split("/"))
         or PurePosixPath(value).is_absolute()
     ):
         raise ValueError("Invalid Paper path")

@@ -110,3 +110,22 @@ def test_publication_refuses_symlinks_without_changing_selected_tree(publication
     with pytest.raises(ValueError):
         workspace.publish_paper_tree(source, 2)
     assert [p.name for p in (root / "paper").iterdir()] == ["paper.md"]
+
+
+def test_rsync_paper_sources_are_local_operands(tmp_path, monkeypatch):
+    from pathlib import PurePosixPath
+
+    from rcp.transport import state_transfer
+
+    workspace = SSHStateWorkspace(tmp_path / "mirror", "research.example", "/state")
+    monkeypatch.setattr(
+        state_transfer,
+        "get_engine",
+        lambda _: state_transfer.TransferEngine("rsync", "rsync", "3.2.7", "3.2.7"),
+    )
+    calls = []
+    monkeypatch.setattr(state_transfer, "run_rsync", lambda host, argv, **kw: calls.append(argv))
+    names = ["--rsh=command", "host:paper.tex", "figures/-image.png"]
+    workspace._push_state_files(PurePosixPath("/stage"), names, source_root=tmp_path)
+    argv = calls[0]
+    assert argv[argv.index("--") + 1 : -1] == ["./" + name for name in names]

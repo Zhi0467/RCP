@@ -16,7 +16,7 @@ import tempfile
 import zlib
 from collections.abc import Callable
 from contextlib import suppress
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
@@ -143,18 +143,9 @@ class PaperSection(BaseModel):
 
 
 def safe_paper_path(value: str) -> str:
-    path = PurePosixPath(value)
-    if (
-        not value
-        or not path.parts
-        or path.is_absolute()
-        or path.as_posix() != value
-        or any(part in {".", "..", ".git", ".publish"} for part in path.parts)
-        or "\\" in value
-        or any(ord(char) < 32 for char in value)
-    ):
-        raise ValueError("unsafe paper path")
-    return value
+    from rcp.paper.models import paper_path
+
+    return paper_path(value)
 
 
 def paper_projection_sources(root: Path) -> tuple[Path, ...]:

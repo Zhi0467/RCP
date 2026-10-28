@@ -460,6 +460,21 @@ class BackupCaptureCoordinator:
         snapshot_path = capture_root / "rcp.sqlite3"
         with self.store.artifact_capture():
             self.store.online_snapshot(snapshot_path)
+            # The later filesystem copy is not tied to this SQLite revision.
+            # Mark only the unpublished recovery copy for republishing on restore;
+            # saved truth and human migration holds remain unchanged.
+            snapshot_path.chmod(0o600)
+            try:
+                with closing(sqlite3.connect(snapshot_path)) as connection, connection:
+                    connection.execute(
+                        "UPDATE paper_publication SET published_revision=-1,"
+                        "pending_since=COALESCE(pending_since,?)",
+                        (captured_at.isoformat(),),
+                    )
+            finally:
+                snapshot_path.chmod(0o400)
+            with snapshot_path.open("rb") as stream:
+                os.fsync(stream.fileno())
             with closing(AppStore.open_read_only_snapshot(snapshot_path)) as captured_store:
                 artifact_inventory = tuple(captured_store.artifact_inventory())
             for item in artifact_inventory:

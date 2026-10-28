@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks, StartupEffectFence
     from rcp.projects import ProjectCatalog
     from rcp.server_ops.control import ServerControlBackupCaptureResult
+    from rcp.server_ops.paper_lifecycle import PaperLifecycleOwner
     from rcp.storage import AppStore
 
 
@@ -151,6 +152,13 @@ class MaintenanceCoordinator:
         self.quiescent = identity is not None
         self.capture = None
         self.verification_sha256 = None
+        self._paused_papers: list[tuple[str, PaperLifecycleOwner]] = []
+
+    def _resume_papers(self) -> None:
+        while self._paused_papers:
+            project_id, paper = self._paused_papers[-1]
+            paper.resume(project_id)
+            self._paused_papers.pop()
 
     def require_identity(self, identity: MaintenanceIdentity) -> None:
         if self.identity != identity:
@@ -197,16 +205,21 @@ class MaintenanceCoordinator:
             (record.project_id, get_paper_live(self.store, record.project_id))
             for record in self.store.projects()
         ]
-        for project_id, paper in papers:
-            if paper is not None:
-                paper.pause(project_id)
-        for project_id, paper in papers:
-            if paper is not None:
-                paper.drain(project_id)
-                paper.dispose(project_id)
-            remaining()
-        self.capture = self.capture_sqlite()
-        self.quiescent = True
+        try:
+            for project_id, paper in papers:
+                if paper is not None:
+                    self._paused_papers.append((project_id, paper))
+                    paper.pause(project_id)
+            for project_id, paper in papers:
+                if paper is not None:
+                    paper.drain(project_id)
+                    paper.dispose(project_id)
+                remaining()
+            self.capture = self.capture_sqlite()
+            self.quiescent = True
+        except BaseException:
+            self._resume_papers()
+            raise
 
     def verify(self, identity: MaintenanceIdentity, *, proof_path: Path, proof_sha256: str) -> None:
         self.require_identity(identity)
@@ -251,5 +264,6 @@ class MaintenanceCoordinator:
                 )
             if self.runtime_error():
                 raise MaintenanceRefused("Deferred runtime startup failed after admission release.")
+        self._resume_papers()
         self.admission.reopen()
         self.quiescent = False

@@ -2855,7 +2855,14 @@ class SSHStateWorkspace(StateWorkspace):
         destination = f"{self.host}:{shlex.quote(str(stage))}/"
         return state_transfer.run_rsync(
             self.host,
-            [engine.local_path, "-aR", *rsync_ssh_arguments(), *sources, destination],
+            [
+                engine.local_path,
+                "-aR",
+                *rsync_ssh_arguments(),
+                "--",
+                *("./" + source for source in sources),
+                destination,
+            ],
             phase="push",
             cwd=source_root,
         )
