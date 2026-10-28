@@ -210,14 +210,22 @@ class PaperLive:
 
     @_owned
     async def resume(self, project_id: str) -> None:
+        # Undoes pause/dispose only; it never initializes, so it cannot fail on a
+        # project whose paper was never opened. The next read initializes lazily.
         async with self._lock(project_id):
             try:
                 self.store.require_project_accepts_new_work(project_id)
             except ValueError:
                 return
-            await self._ensure(project_id)
             self._disposed.discard(project_id)
             self._paused.discard(project_id)
+            with self.store.connection() as conn:
+                exists = conn.execute(
+                    "SELECT 1 FROM paper_publication WHERE project_id=?", (project_id,)
+                ).fetchone()
+            if exists:
+                # Timed publication and history skip uninitialized projects.
+                self._initialized.add(project_id)
 
     @_owned
     async def drain(self, project_id: str) -> None:
@@ -895,7 +903,7 @@ class PaperLive:
 
     def _prune(self, project):
         with self.store.connection() as conn:
-            prune(conn, project)
+            prune(conn, project, refuse=False)
 
     @staticmethod
     def _broadcast(room: Room, message: bytes) -> None:
@@ -1219,32 +1227,36 @@ class PaperLive:
                         _LOG.error("Paper publisher failed: %s", task.exception())
 
                 task.add_done_callback(finished)
-            async with self._lock(project):
-                if self._pruned.get(project) != row["saved_revision"]:
-                    pruning = asyncio.create_task(asyncio.to_thread(self._prune, project))
-                    self._compactions.add(pruning)
-                    pruning.add_done_callback(self._compactions.discard)
-                    await asyncio.shield(pruning)
-                    self._pruned[project] = row["saved_revision"]
-                with self.store.connection() as conn:
-                    previous = (
-                        conn.execute(
-                            "SELECT MAX(revision) FROM paper_versions WHERE project_id=?",
-                            (project,),
-                        ).fetchone()[0]
-                        or 0
-                    )
-                    burst = conn.execute(
-                        "SELECT MIN(created_at) FROM paper_revisions WHERE project_id=? AND revision>?",
-                        (project, previous),
-                    ).fetchone()[0]
-                    if (
-                        row["saved_revision"] > previous
-                        and burst
-                        and (
-                            age(row["last_edit_at"]) >= limits.PAPER_HISTORY_IDLE_SECONDS
-                            or age(burst) >= limits.PAPER_HISTORY_MAX_SECONDS
+            try:
+                async with self._lock(project):
+                    if self._pruned.get(project) != row["saved_revision"]:
+                        pruning = asyncio.create_task(asyncio.to_thread(self._prune, project))
+                        self._compactions.add(pruning)
+                        pruning.add_done_callback(self._compactions.discard)
+                        await asyncio.shield(pruning)
+                        self._pruned[project] = row["saved_revision"]
+                    with self.store.connection() as conn:
+                        previous = (
+                            conn.execute(
+                                "SELECT MAX(revision) FROM paper_versions WHERE project_id=?",
+                                (project,),
+                            ).fetchone()[0]
+                            or 0
                         )
-                    ):
-                        snapshot = await asyncio.to_thread(self._snapshot, project)
-                        save_version(conn, project, snapshot, "automatic", self.store.now())
+                        burst = conn.execute(
+                            "SELECT MIN(created_at) FROM paper_revisions WHERE project_id=? AND revision>?",
+                            (project, previous),
+                        ).fetchone()[0]
+                        if (
+                            row["saved_revision"] > previous
+                            and burst
+                            and (
+                                age(row["last_edit_at"]) >= limits.PAPER_HISTORY_IDLE_SECONDS
+                                or age(burst) >= limits.PAPER_HISTORY_MAX_SECONDS
+                            )
+                        ):
+                            snapshot = await asyncio.to_thread(self._snapshot, project)
+                            save_version(conn, project, snapshot, "automatic", self.store.now())
+            except Exception:
+                # One project's history failure must not stop the others' timers.
+                _LOG.exception("Paper history pass failed for project %s", project)

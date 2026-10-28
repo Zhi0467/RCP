@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sqlite3
 import threading
 from collections.abc import Iterator
@@ -12,6 +13,9 @@ from weakref import WeakKeyDictionary
 
 if TYPE_CHECKING:
     from rcp.paper import PaperLive
+
+
+_LOG = logging.getLogger(__name__)
 
 
 class LivePaperLifecycle:
@@ -116,7 +120,11 @@ def pause_paper_project(
         yield live
     except BaseException:
         if live is not None:
-            live.resume(project_id)
+            try:
+                live.resume(project_id)
+            except Exception:
+                # The stop's own failure is the one the caller must see.
+                _LOG.exception("Paper for project %s could not resume", project_id)
         raise
 
 

@@ -274,3 +274,38 @@ def test_maintenance_release_resumes_disposed_paper(manifest, tmp_path, monkeypa
     assert owner.events == [
         (action, record.project_id) for action in ("pause", "drain", "dispose", "resume")
     ]
+
+
+def test_release_reopens_admission_for_a_never_opened_paper(manifest, tmp_path):
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    catalog = ProjectCatalog(tmp_path, store, AgentLauncher())
+    record = catalog.register(str(manifest.path), identity_action="adopted")
+    root = tmp_path / "paper-state"
+    root.mkdir()
+    live = PaperLive(store, lambda _: LocalStateWorkspace(root, str(root)))
+    coordinator = MaintenanceCoordinator(
+        admission=RuntimeAdmissionGate(),
+        background_admission=RuntimeAdmissionGate(),
+        background=SimpleNamespace(
+            close_watcher_notifications=lambda: None,
+            accept_watcher_notifications=lambda: None,
+            runtime_is_idle=lambda: True,
+        ),
+        catalog=catalog,
+        store=store,
+        capture_sqlite=lambda: None,
+    )
+    identity = MaintenanceIdentity(str(uuid.uuid4()), "a" * 64)
+
+    async def scenario():
+        await live.start()
+        register_paper_live(store, live)
+        await asyncio.to_thread(coordinator.enter, identity, timeout=5)
+        await asyncio.to_thread(coordinator.release, identity, timeout=5)
+        assert not coordinator.admission.closed
+        assert (await live.tree(record.project_id)).revision == 0
+        await live.close()
+        paper_lifecycle.unregister_paper_live(store, live)
+
+    asyncio.run(scenario())
+    store.close()

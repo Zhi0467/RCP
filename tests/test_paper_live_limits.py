@@ -179,3 +179,21 @@ async def test_offline_legacy_draft_migrates_and_stays_editable(paper, monkeypat
     )
     assert (await live.snapshot("p")).files[0].text == "saved"
     await live.close()
+
+
+@pytest.mark.asyncio
+async def test_full_history_quota_never_stops_other_projects_timers(paper, monkeypatch):
+    live, store, workspace = paper
+    for project in ("full", "other"):
+        await live.apply(project, [PaperOp(kind="create", path="a.md", text="seed")], "h")
+    await live.create_version("full", "kept", "h")
+    monkeypatch.setattr(limits, "PAPER_HISTORY_MAX_BYTES", 1)
+    monkeypatch.setattr(limits, "PAPER_PUBLISH_IDLE_SECONDS", 0)
+    with pytest.raises(PaperLimit):
+        await live.create_version("full", "refused", "h")
+    await live.tick()
+    await live.drain("full")
+    await live.drain("other")
+    tree = await live.tree("other")
+    assert tree.published_revision == tree.saved_revision
+    await live.close()

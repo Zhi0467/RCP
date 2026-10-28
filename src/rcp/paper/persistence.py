@@ -134,11 +134,13 @@ def save_version(
             manifest_for(connection, snapshot.files),
         ),
     )
-    prune(connection, project)
+    # Only a named request is refused at the quota; automatic history stays best effort.
+    prune(connection, project, refuse=kind == "named")
     return version_id
 
 
-def prune(connection: sqlite3.Connection, project: str) -> None:
+def prune(connection: sqlite3.Connection, project: str, *, refuse: bool = True) -> None:
+    """Thin history to its budgets; ``refuse=False`` keeps what cannot be thinned."""
     connection.execute(
         "DELETE FROM paper_versions WHERE project_id=? AND kind='auto' AND version_id NOT IN "
         "(SELECT version_id FROM paper_versions WHERE project_id=? AND kind='auto' "
@@ -189,6 +191,10 @@ def prune(connection: sqlite3.Connection, project: str) -> None:
                 (project, rows[0][0]),
             )
             continue
+        if not refuse:
+            # Timed cleanup: named versions and protected bases fill the quota,
+            # and the next history request is the one refused.
+            break
         raise PaperLimit("Paper history byte quota reached")
     for table in ("paper_updates", "paper_doc_states"):
         connection.execute(

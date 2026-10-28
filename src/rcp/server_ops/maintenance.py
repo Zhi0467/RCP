@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -17,6 +18,8 @@ if TYPE_CHECKING:
     from rcp.server_ops.control import ServerControlBackupCaptureResult
     from rcp.server_ops.paper_lifecycle import PaperLifecycleOwner
     from rcp.storage import AppStore
+
+_LOG = logging.getLogger(__name__)
 
 
 class MaintenanceRefused(RuntimeError):
@@ -155,10 +158,14 @@ class MaintenanceCoordinator:
         self._paused_papers: list[tuple[str, PaperLifecycleOwner]] = []
 
     def _resume_papers(self) -> None:
+        # One project's failed resume must not keep every other project, or
+        # application admission, closed; it stays paused and is logged.
         while self._paused_papers:
-            project_id, paper = self._paused_papers[-1]
-            paper.resume(project_id)
-            self._paused_papers.pop()
+            project_id, paper = self._paused_papers.pop()
+            try:
+                paper.resume(project_id)
+            except Exception:
+                _LOG.exception("Paper for project %s could not resume", project_id)
 
     def require_identity(self, identity: MaintenanceIdentity) -> None:
         if self.identity != identity:
