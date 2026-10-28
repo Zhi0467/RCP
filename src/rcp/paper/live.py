@@ -177,8 +177,15 @@ class PaperLive:
             raise PaperConflict("Paper is paused")
         self._disposed.discard(project)
 
-    @_owned
     async def start(self) -> None:
+        if self.loop is not None and self.loop.is_closed():
+            # An earlier lifespan's owner loop is gone with its rooms, locks and
+            # timer; this lifespan starts a fresh owner instead of marshalling to it.
+            self.__init__(self.store, self.workspace_for)
+        await self._start()
+
+    @_owned
+    async def _start(self) -> None:
         if self._timer is None:
             with self.store.connection() as conn:
                 projects = [row[0] for row in conn.execute("SELECT project_id FROM projects")]
