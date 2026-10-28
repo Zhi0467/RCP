@@ -16,7 +16,13 @@ async function open(t, width = 390, height = 600) {
   const context = await browser.newContext({ viewport: { width, height } });
   t.after(() => context.close());
   const fixture = createPaperFixture({
-    cards: [{ ...paperTestCard, kind: "rewrite", current: { start: 0, end: 5, revision: 1, text: "draft" } }],
+    cards: [
+      {
+        ...paperTestCard,
+        kind: "rewrite",
+        current: { start: 0, end: 5, revision: 1, text: "draft" },
+      },
+    ],
     proposedTexts: { c1: "revised" },
   });
   await context.route("**/api/**", (route) =>

@@ -102,12 +102,18 @@ test("current UTF-16 anchors follow unrelated local edits and reject stale range
   const doc = new Y.Doc();
   const text = doc.getText("text");
   text.insert(0, "😀one\ntwo");
-  const insertion = { current: { start: 6, end: 6, revision: 2, text: "" }, preview: { removed: [] } };
+  const insertion = {
+    current: { start: 6, end: 6, revision: 2, text: "" },
+    preview: { removed: [] },
+  };
   const anchor = anchorPaperChange(insertion, text);
   assert.ok(anchor);
   text.insert(2, "changed ");
   assert.deepEqual(resolvePaperAnchor(anchor, insertion, text), { from: 14, to: 14 });
-  const edit = { current: { start: 14, end: 17, revision: 3, text: "two" }, preview: { removed: ["two"] } };
+  const edit = {
+    current: { start: 14, end: 17, revision: 3, text: "two" },
+    preview: { removed: ["two"] },
+  };
   const editAnchor = anchorPaperChange(edit, text);
   assert.ok(editAnchor);
   text.insert(15, "x");
