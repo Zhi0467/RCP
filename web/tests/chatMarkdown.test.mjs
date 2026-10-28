@@ -255,3 +255,17 @@ test("malformed or untrusted TeX remains visible without breaking the reply", ()
   assert.doesNotMatch(untrusted, /href=/);
   assert.match(untrusted, /class="katex"/);
 });
+
+test("a long run of letters without a slash renders in linear time", () => {
+  const started = performance.now();
+  const rendered = renderToStaticMarkup(
+    MarkdownAnswer({
+      text: `${"x".repeat(200_000)} exp/known`,
+      nodes: { "exp/known": { id: "exp/known" } },
+      onOpenNode() {},
+    }),
+  );
+  assert.match(rendered, /href="#rcp-node=exp%2Fknown"/);
+  // The quadratic pattern took minutes at this size; linear matching takes milliseconds.
+  assert.ok(performance.now() - started < 5000);
+});

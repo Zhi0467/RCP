@@ -78,6 +78,7 @@ export function PaperEditor({
   );
   const anchors = useMemo(
     () => new Map<PaperChange, ReturnType<typeof anchorPaperChange>>(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the deps reset this anchor cache; the factory needs none of them
     [pending, owner, owner.text],
   );
   const { text, error } = owner.getSnapshot();
@@ -182,6 +183,7 @@ export function PaperEditor({
       return;
     locate(focusChange);
     located.current = { owner, change: focusChange };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- locate is recreated each render; text arriving is the trigger
   }, [focusChange, owner, text]);
   const words = owner.getSnapshot().text.trim().split(/\s+/).filter(Boolean).length;
   return (

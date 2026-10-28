@@ -400,7 +400,19 @@ test("Reconnect discards a rejected oversized update and its persisted copy only
   for (const client of [...room.clients]) client.close({ code: 4413 });
   await page.getByRole("button", { name: "Reconnect Paper" }).click();
   await saved(page, true);
-  await append(page, "x".repeat(5 * 1024 * 1024));
+  // A real paste is one editor transaction; typing 5 MiB through the driver times out.
+  await page.locator(".cm-content").click();
+  await page.keyboard.press("ControlOrMeta+End");
+  await page.evaluate(
+    (size) => {
+      const data = new DataTransfer();
+      data.setData("text/plain", "x".repeat(size));
+      document
+        .querySelector(".cm-content")
+        .dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true }));
+    },
+    5 * 1024 * 1024,
+  );
   await page.getByRole("button", { name: "Reconnect Paper" }).waitFor();
   await page.locator(".cm-content").click();
   await page.keyboard.press("ControlOrMeta+Z");

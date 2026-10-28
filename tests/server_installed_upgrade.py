@@ -611,6 +611,7 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
         "helpers.py",
         "server_installed_upgrade.py",
         "server_installed_upgrade_hook.py",
+        "server_upgrade_paper.py",
         "server_upgrade_scratch.py",
         "supervisor_reboot_guest.py",
         "supervisor_reboot_data.py",
