@@ -87,21 +87,3 @@ def test_coach_changes_are_the_only_write_grant(tmp_path, provider, runtime, ses
         profile.runtime(runtime).turn(replace(request, write_dirs=[]))
     with pytest.raises(ValueError, match="permission wildcards"):
         profile.runtime(runtime).turn(replace(request, write_dirs=[tmp_path / "changes*"]))
-
-
-@pytest.mark.parametrize("direct,mode", [(False, "review"), (True, "apply_directly")])
-def test_coach_wire_mode_preserves_persisted_requests(direct, mode):
-    from rcp.service import CoachRequest
-
-    request = CoachRequest.model_validate({"message": "Review", "paper_apply_directly": direct})
-    assert request.mode == mode
-    assert CoachRequest.model_validate(request.model_dump()).mode == mode
-    assert CoachRequest(message="Review", mode=mode).mode == mode
-    with pytest.raises(ValueError, match="disagree"):
-        CoachRequest.model_validate(
-            {
-                "message": "Review",
-                "paper_apply_directly": not direct,
-                "mode": mode,
-            }
-        )

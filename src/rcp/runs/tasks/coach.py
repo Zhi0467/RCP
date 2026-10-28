@@ -150,8 +150,6 @@ def _stage_saved_paper(
     snapshots.append(path)
     live.materialize(snapshot, path)
     for child in path.rglob("*"):
-        if child.is_symlink():
-            raise ValueError("Saved paper materialization contains a symlink")
         child.chmod(0o500 if child.is_dir() else 0o400)
     path.chmod(0o500)
     return path
@@ -160,21 +158,12 @@ def _stage_saved_paper(
 def _record_paper_base(
     execution: AgentTaskExecution | None,
     snapshot: PaperSnapshot,
-    mode: str,
-    snapshot_path: Path,
-    changes_path: Path,
 ) -> None:
     if execution is not None:
         execution.store.record_agent_task_receipt(
             execution.operation_id,
             "paper_turn_base",
-            {
-                "revision": snapshot.revision,
-                "file_ids": [f.file_id for f in snapshot.files],
-                "mode": mode,
-                "snapshot_path": str(snapshot_path),
-                "changes_path": str(changes_path),
-            },
+            {"revision": snapshot.revision},
         )
 
 
@@ -189,7 +178,7 @@ def _validate_paper_continuation(
     request: CoachRequest,
     project_id: str,
 ) -> None:
-    source_id = request.refresh_source_task_id or request.retry_source_task_id
+    source_id = request.refresh_source_task_id
     if not source_id:
         if request.refresh_group_ids:
             raise ValueError("Paper refresh requires its source task")
@@ -210,11 +199,9 @@ def _validate_paper_continuation(
         raise ValueError("Paper continuation must retain its task, session, machine, and mode")
 
 
-def _paper_retry_diagnostics(
-    execution: AgentTaskExecution, source_task_id: str | None = None
-) -> list[str]:
+def _paper_retry_diagnostics(execution: AgentTaskExecution) -> list[str]:
     task = execution.store.agent_task(execution.operation_id)
-    source_task_id = source_task_id or (task.parent_operation_id if task is not None else None)
+    source_task_id = task.parent_operation_id if task is not None else None
     if source_task_id:
         receipts = execution.store.agent_task_receipts(source_task_id)
         for receipt in reversed(receipts):
@@ -278,6 +265,7 @@ async def _stream_coach(
         data_dir,
         store=execution.store if execution is not None else None,
     )
+    token = _task_token(execution)
     if reusing_checkpoint:
         if not execution.stage_root:
             yield _sse(
@@ -297,16 +285,15 @@ async def _stream_coach(
             )
             return
     else:
-        token = _task_token(execution)
         local_stage = stage_root / f"paper-{token}"
         local_stage.mkdir(parents=True, exist_ok=False)
         if execution is not None:
             execution.checkpoint_stage("", str(local_stage))
-    token = _task_token(execution)
     try:
         live = service.paper_live
         changes = get_paper_changes(service)
         _validate_paper_continuation(execution, request, paper.project_id)
+        wanted = None
         if request.refresh_source_task_id:
             selected = [
                 group
@@ -321,26 +308,17 @@ async def _stream_coach(
                 or any(group.state not in {"pending", "outdated"} for group in selected)
             ):
                 raise ValueError("Only undecided source groups can be refreshed")
-            request = request.model_copy(
-                update={
-                    "refresh_file_ids": sorted(
-                        await asyncio.to_thread(
-                            changes.affected_file_ids,
-                            paper.project_id,
-                            set(request.refresh_group_ids),
-                        )
-                    )
-                }
+            wanted = await asyncio.to_thread(
+                changes.affected_file_ids, paper.project_id, set(request.refresh_group_ids)
             )
         snapshot = await live.snapshot(paper.project_id)
-        if request.refresh_file_ids is not None:
-            wanted = set(request.refresh_file_ids)
+        if wanted is not None:
             snapshot = snapshot.model_copy(
                 update={"files": [file for file in snapshot.files if file.file_id in wanted]}
             )
         snapshot_path = _stage_saved_paper(live, snapshot, local_stage, snapshots, 0)
         changes_path = Path(tempfile.mkdtemp(prefix="changes-", dir=local_stage)).resolve()
-        _record_paper_base(execution, snapshot, request.mode, snapshot_path, changes_path)
+        _record_paper_base(execution, snapshot)
     except (OSError, ValueError) as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
         return
@@ -350,7 +328,7 @@ async def _stream_coach(
             service.resolve_skill_selection(request),
             local_stage=local_stage,
             remote_stage=None,
-            label=f"rcp-skills-{_task_token(execution)}",
+            label=f"rcp-skills-{token}",
         )
         if reusing_checkpoint and not request.session_id:
             raise ValueError(
@@ -358,15 +336,14 @@ async def _stream_coach(
                 "clean attempt instead."
             )
         pointers, read_dirs = service.coach_context(request, snapshot_path)
-        token = _task_token(execution)
         retry_diagnostics_path = (
             _stage_json_task_input(
                 local_stage,
                 None,
                 f"task-{token}-retry-diagnostics.json",
-                {"diagnostics": _paper_retry_diagnostics(execution, request.retry_source_task_id)},
+                {"diagnostics": _paper_retry_diagnostics(execution)},
             )
-            if execution is not None and (retry_attempt or request.retry_source_task_id)
+            if execution is not None and retry_attempt
             else None
         )
         raw_repositories = pointers["truth_repositories"]
@@ -428,21 +405,25 @@ async def _stream_coach(
                 history_staged.client_command(),
             )
 
+        def current_master_values() -> dict[str, object]:
+            values = _coach_master_values(
+                paper_path=str(snapshot_path),
+                changes_path=str(changes_path),
+                graph_path=str(pointers["graph"]),
+                research_path=str(pointers["research_md"]),
+                repositories=repositories,
+                skill_pointers=skill_pointers,
+            )
+            values["history_client"] = history_staged.client_command()
+            return values
+
         node = classify(
             LaunchPhase(
                 session_id=request.session_id,
                 phase="turn" if continuation == "fresh" else "recovery",
             )
         )
-        master_values = _coach_master_values(
-            paper_path=str(snapshot_path),
-            changes_path=str(changes_path),
-            graph_path=str(pointers["graph"]),
-            research_path=str(pointers["research_md"]),
-            repositories=repositories,
-            skill_pointers=skill_pointers,
-        )
-        master_values["history_client"] = history_staged.client_command()
+        master_values = current_master_values()
         # The coach reads the graph under the base rules only, whatever the ontology.
         key = master_key(PromptFactory.PAPER_COACH_POLICY_VERSION, ontology_extensions=False)
         if node == "session_start":
@@ -459,6 +440,7 @@ async def _stream_coach(
                 record_session_master(
                     execution.store, execution.operation_id, contract, key, master_values
                 )
+            master = MasterRef(path=contract_path, bootstrap=False, values=master_values)
         else:
             assert request.session_id is not None
             master = _coach_session_master(
@@ -528,10 +510,6 @@ async def _stream_coach(
             "surface": "paper_coach",
             "capability": "paper_suggest",
             "network_access": True,
-            "paper_revision": snapshot.revision,
-            "paper_file_ids": [file.file_id for file in snapshot.files],
-            "paper_mode": request.mode,
-            "changes_path": str(changes_path),
             "launch_kind": "retry" if retry_attempt else "resume" if resuming else "initial",
         },
     )
@@ -654,9 +632,11 @@ async def _stream_coach(
                 yield _sse(AgentEvent(event="error", text=str(exc)))
                 break
             replace_source_task_id = None
-            stale_files = await asyncio.to_thread(changes.stale_file_ids, paper.project_id, token)
+            replace_group_ids = await asyncio.to_thread(
+                changes.stale_group_ids, paper.project_id, token
+            )
             if (
-                not stale_files
+                not replace_group_ids
                 or refresh_round == PAPER_COACH_MAX_REFRESH_ROUNDS
                 or not native_session_id
             ):
@@ -666,8 +646,8 @@ async def _stream_coach(
             newer = await live.snapshot(paper.project_id)
             if newer.revision <= snapshot.revision:
                 break
-            replace_group_ids = await asyncio.to_thread(
-                changes.stale_group_ids, paper.project_id, token
+            stale_files = await asyncio.to_thread(
+                changes.affected_file_ids, paper.project_id, replace_group_ids
             )
             snapshot = newer.model_copy(
                 update={"files": [file for file in newer.files if file.file_id in stale_files]}
@@ -677,24 +657,10 @@ async def _stream_coach(
             )
             changes_path = Path(tempfile.mkdtemp(prefix="changes-", dir=local_stage)).resolve()
             read_dirs.append(snapshot_path)
-            _record_paper_base(execution, snapshot, request.mode, snapshot_path, changes_path)
-            values = _coach_master_values(
-                paper_path=str(snapshot_path),
-                changes_path=str(changes_path),
-                graph_path=str(pointers["graph"]),
-                research_path=str(pointers["research_md"]),
-                repositories=repositories,
-                skill_pointers=skill_pointers,
-            )
-            values["history_client"] = history_staged.client_command()
-            master = _coach_session_master(
-                execution,
-                local_stage=local_stage,
-                native_session_id=native_session_id,
-                key=key,
-                render=render_contract,
-                values=values,
-            )
+            _record_paper_base(execution, snapshot)
+            values = current_master_values()
+            # This round completed in the same session; it already received this master.
+            master = MasterRef(path=master.path, bootstrap=False, values=master.values)
             prompt = compose(
                 "human_turn",
                 master=master,
@@ -703,8 +669,6 @@ async def _stream_coach(
                     PromptFactory.inline_continuation(
                         mode="paper_refresh",
                         turn_mode="paper",
-                        paper_path=str(snapshot_path),
-                        changes_path=str(changes_path),
                     )
                 ],
             )
@@ -713,7 +677,7 @@ async def _stream_coach(
                 local_stage=local_stage,
                 remote_stage=None,
                 label=f"task-{token}-paper-refresh-{refresh_round + 1}.md",
-                role="paper_refresh",
+                role=f"paper_refresh_{refresh_round + 1}",
                 prompt=prompt,
             )
             _record_agent_launch_receipt(
@@ -727,8 +691,6 @@ async def _stream_coach(
                 extra={
                     "surface": "paper_coach",
                     "capability": "paper_suggest",
-                    "changes_path": str(changes_path),
-                    "paper_revision": snapshot.revision,
                 },
             )
         if completed and _coach_stopped(execution):
@@ -830,12 +792,6 @@ def _coach_continuation_parts(
         ):
             if section.strip():
                 parts.append(section.strip())
-        if retry_diagnostics_path is not None:
-            parts.append(
-                PromptFactory.inline_continuation(
-                    mode="retry", turn_mode="paper", diagnostics_path=retry_diagnostics_path
-                )
-            )
         return parts
     if retry_diagnostics_path is None:
         heading = "Continue the interrupted coaching turn in this native session from its progress."

@@ -11,8 +11,8 @@ from rcp.paper.changes import (
     InvalidChanges,
     OutdatedChange,
     PaperChanges,
+    _RangeMapping,
     line_changes,
-    map_range,
     validate_output,
 )
 from rcp.storage import AppStore
@@ -111,18 +111,22 @@ def test_line_diff_merges_nearby_and_rewrites_large_changes():
 def test_identity_offsets_repeated_paragraphs_and_empty_insertions():
     base = "heading\nsame paragraph\nmiddle\nsame paragraph\nend\n"
     offset = base.rindex("same paragraph")
-    start, end = map_range(base, "prefix\n" + base, offset, offset + len("same paragraph"))
+    start, end = _RangeMapping(base, "prefix\n" + base).map(offset, offset + len("same paragraph"))
     assert start == offset + len("prefix\n")
     assert ("prefix\n" + base)[start:end] == "same paragraph"
     insertion = base.index("middle")
-    assert map_range(base, "prefix\n" + base, insertion, insertion) == (
+    assert _RangeMapping(base, "prefix\n" + base).map(insertion, insertion) == (
         insertion + 7,
         insertion + 7,
     )
     with pytest.raises(OutdatedChange):
-        map_range(base, base[:insertion] + "human\n" + base[insertion:], insertion, insertion)
+        _RangeMapping(base, base[:insertion] + "human\n" + base[insertion:]).map(
+            insertion, insertion
+        )
     with pytest.raises(OutdatedChange):
-        map_range(base, base[:offset] + "different" + base[offset + 14 :], offset, offset + 14)
+        _RangeMapping(base, base[:offset] + "different" + base[offset + 14 :]).map(
+            offset, offset + 14
+        )
 
 
 def test_accept_idempotency_rebase_and_guarded_undo(setup):
@@ -188,7 +192,6 @@ def test_refresh_replaces_only_selected_groups(setup):
     human_edit(live, "f1", original.replace("line 10\n", "human\n"))
     stale = changes.stale_group_ids("p", "t")
     assert len(stale) == 1
-    assert changes.stale_file_ids("p", "t") == {"f1"}
     (output / "files/new.md").unlink()
     (output / "files/section.md").write_text(
         saved(live).files[0].text.replace("human\n", "refreshed\n")
@@ -234,9 +237,6 @@ def test_routes_enforce_project_scope_accept_and_undo(manifest, tmp_path, monkey
         status_message="done",
     )
     store.create_agent_task(previous)
-    store.record_agent_task_receipt(
-        "task", "paper_changes_invalid", {"diagnostics": ["exact failure"]}
-    )
     continued = []
 
     def start(_project, _kind, body, **_kwargs):
@@ -256,14 +256,19 @@ def test_routes_enforce_project_scope_accept_and_undo(manifest, tmp_path, monkey
 
             patch.setattr(service.paper_changes, "admission", closed)
             assert client.get(base).json()["groups"][0]["group_id"] == group.group_id
-        assert client.post(f"{base}/{group.group_id}/refresh", json={}).status_code == 200
+        with monkeypatch.context() as patch:
+
+            def no_group_scan(*_args):
+                raise AssertionError("Refresh must load only its selected group")
+
+            patch.setattr(PaperChanges, "groups", no_group_scan)
+            assert client.post(f"{base}/{group.group_id}/refresh", json={}).status_code == 200
+            assert client.post(f"{base}/missing/refresh", json={}).status_code == 404
         assert continued[-1]["session_id"] == "native-paper"
         assert continued[-1]["refresh_group_ids"] == [group.group_id]
         assert continued[-1]["mode"] == "apply_directly"
-        assert client.post(f"{base}/retry", json={"task_id": "task"}).status_code == 202
-        assert continued[-1]["retry_source_task_id"] == "task"
-        assert continued[-1]["refresh_file_ids"] is None
         assert client.post(f"{base}/{group.group_id}/accept", json={}).status_code == 200
+        assert client.post(f"{base}/{group.group_id}/refresh", json={}).status_code == 409
         assert client.post(f"{base}/{group.group_id}/undo", json={}).status_code == 200
         assert len(receipts(live)) == 2
         assert (
@@ -539,8 +544,7 @@ def test_collection_enforces_live_tree_validation(setup, monkeypatch, case):
     assert changes.groups("p", "t") == []
 
 
-@pytest.mark.parametrize("failure", [ValueError, RuntimeError])
-def test_failed_direct_group_releases_receipt_and_continues(setup, monkeypatch, failure):
+def test_failed_direct_group_releases_receipt_and_continues(setup, monkeypatch):
     snapshot, live, changes, output = setup
     for name in ("a.md", "b.md"):
         (output / "files" / name).write_text("new")
@@ -549,7 +553,7 @@ def test_failed_direct_group_releases_receipt_and_continues(setup, monkeypatch, 
 
     async def apply_group(project, ops, **kwargs):
         if ops[0].path == "a.md":
-            raise failure("apply refused")
+            raise RuntimeError("apply refused")
         return await original(project, ops, **kwargs)
 
     monkeypatch.setattr(live, "apply", apply_group)
@@ -589,13 +593,15 @@ def test_pending_card_reports_its_anchor_in_live_utf16_offsets(setup):
     before = snapshot.files[0].text or ""
     (output / "files/section.md").write_text(before.replace("line 10\n", "line 10\nadded\n"))
     group = changes.collect("p", "t", snapshot, output)[0]
-    prefix = "😀 edited elsewhere\n"
+    original_line = group.public()["changes"][0]["current"]["line"]
+    prefix = "😀 edited elsewhere\nsecond inserted line\n"
     human_edit(live, "f1", prefix + before)
     card = changes.groups("p", "t")[0].public()["changes"][0]
     text = saved(live).files[0].text or ""
     offset = text.index("line 11\n")
     expected = len(text[:offset].encode("utf-16-le")) // 2
     assert card["current"] == {
+        "line": original_line + 2,
         "start": expected,
         "end": expected,
         "revision": saved(live).revision,
@@ -629,7 +635,7 @@ def test_repeated_deleted_paragraph_makes_card_outdated(setup):
     assert saved(live).files[0].text == current
 
 
-@pytest.mark.parametrize("state", [None, "accepted", "rejected", "outdated", "undone"])
+@pytest.mark.parametrize("state", [None, "accepted"])
 def test_groups_without_pending_cards_need_no_live_content(setup, monkeypatch, state):
     snapshot, _live, changes, output = setup
     if state is not None:

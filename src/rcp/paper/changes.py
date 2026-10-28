@@ -13,7 +13,7 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from difflib import SequenceMatcher
 from pathlib import Path, PurePosixPath
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import BaseModel, Field, PrivateAttr
 
@@ -27,6 +27,9 @@ from rcp.limits import (
 from rcp.paper import PaperFile, PaperLive, PaperOp, PaperSnapshot
 from rcp.paper.models import PaperPrecondition, paper_file_kind, paper_path
 from rcp.storage import AppStore
+
+if TYPE_CHECKING:
+    from rcp.service import ProjectService
 
 
 class InvalidChanges(ValueError):
@@ -120,8 +123,6 @@ def _read_output(root: Path) -> dict[str, bytes]:
             if entries > PAPER_CHANGES_MAX_FILES * 4:
                 raise InvalidChanges(["Changes folder has too many entries"])
             relative = _path(f"{prefix}/{name}" if prefix else name)
-            if not prefix and name not in {"files", "moves.json"}:
-                raise InvalidChanges([f"Unexpected output: {name}"])
             info = os.stat(name, dir_fd=fd, follow_symlinks=False)
             if stat.S_ISDIR(info.st_mode):
                 child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
@@ -323,7 +324,22 @@ class _RangeMapping:
         self.changed = [(a, b, c, d) for a, b, c, d in windows if base[a:b] != current[c:d]]
 
     def map(self, start: int, end: int) -> tuple[int, int]:
-        mapped = _map_edits(self.base, self.current, start, end, self.edits)
+        if not 0 <= start <= end <= len(self.base):
+            raise OutdatedChange("Invalid base anchor")
+        shift = 0
+        for a, b, c, d in self.edits:
+            overlaps = (
+                (a == b and start <= a <= end)
+                or (start == end and a <= start <= b)
+                or (a < end and b > start)
+            )
+            if overlaps:
+                raise OutdatedChange("The anchored paper region changed")
+            if b <= start:
+                shift += (d - c) - (b - a)
+        mapped = (start + shift, end + shift)
+        if self.current[mapped[0] : mapped[1]] != self.base[start:end]:
+            raise OutdatedChange("The anchored paper region changed")
         anchor = self.base[start:end]
         if anchor:
             for a, b, c, d in self.changed:
@@ -333,33 +349,6 @@ class _RangeMapping:
                         if first >= 0 and text.find(anchor, first + 1) >= 0:
                             raise OutdatedChange("The anchored paper region is ambiguous")
         return mapped
-
-
-def _map_edits(
-    base: str, current: str, start: int, end: int, edits: list[tuple[int, int, int, int]]
-) -> tuple[int, int]:
-    if not 0 <= start <= end <= len(base):
-        raise OutdatedChange("Invalid base anchor")
-    shift = 0
-    for a, b, c, d in edits:
-        overlaps = (
-            (a == b and start <= a <= end)
-            or (start == end and a <= start <= b)
-            or (a < end and b > start)
-        )
-        if overlaps:
-            raise OutdatedChange("The anchored paper region changed")
-        if b <= start:
-            shift += (d - c) - (b - a)
-    mapped = (start + shift, end + shift)
-    if current[mapped[0] : mapped[1]] != base[start:end]:
-        raise OutdatedChange("The anchored paper region changed")
-    return mapped
-
-
-def map_range(base: str, current: str, start: int, end: int) -> tuple[int, int]:
-    """Translate anchors only when their changed neighbourhood is unambiguous."""
-    return _RangeMapping(base, current).map(start, end)
 
 
 def _preview(change: Change) -> None:
@@ -447,7 +436,7 @@ def build_changes(
             file_id=original.file_id if original else name,
             path=name,
             kind=file_kind,
-            text=text if file_kind == "text" else None,
+            text=text,
             blob_sha256=_sha(body) if file_kind == "binary" else None,
         )
         if file_kind == "binary":
@@ -542,18 +531,7 @@ class PaperChanges:
                 (project_id, group_id),
             ).fetchall()
         return ChangeGroup(
-            **{
-                key: row[key]
-                for key in (
-                    "group_id",
-                    "task_id",
-                    "base_revision",
-                    "mode",
-                    "state",
-                    "decided_by",
-                    "decided_at",
-                )
-            },
+            **dict(row),
             changes=[Change.model_validate_json(item[0]) for item in changes],
         )
 
@@ -676,9 +654,6 @@ class PaperChanges:
             file.file_id for file in self._snapshot(project_id).files if file.path in paths
         }
 
-    def stale_file_ids(self, project_id: str, task_id: str) -> set[str]:
-        return self.affected_file_ids(project_id, self.stale_group_ids(project_id, task_id))
-
     def _prepare(
         self,
         project_id: str,
@@ -749,6 +724,7 @@ class PaperChanges:
                 change._current = {
                     "start": _utf16_length(live_text[:start]),
                     "end": _utf16_length(live_text[:end]),
+                    "line": live_text.count("\n", 0, start) + 1,
                     "revision": current.revision,
                     "text": change.before,
                 }
@@ -1021,9 +997,6 @@ class PaperChanges:
         return self.groups(project_id, task_id)
 
 
-def get_paper_changes(owner: object) -> PaperChanges:
+def get_paper_changes(owner: ProjectService) -> PaperChanges:
     """Return the service's durable saved-paper change manager."""
-    manager = getattr(owner, "paper_changes", None)
-    if not isinstance(manager, PaperChanges):
-        raise ValueError("Paper change service is unavailable")
-    return manager
+    return owner.paper_changes
