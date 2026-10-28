@@ -496,7 +496,7 @@ def build_changes(
                 )
     try:
         # Collection and live apply enforce the same complete-tree budgets.
-        live._validate_tree(list(proposed.values()), blobs)
+        live.validate_tree(list(proposed.values()), blobs)
     except ValueError as exc:
         raise InvalidChanges([str(exc)]) from exc
     for change in changes:

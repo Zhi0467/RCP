@@ -467,7 +467,7 @@ class PaperLive:
         if kind != "text":
             prune(conn, project)
 
-    def _validate_tree(self, files: list[PaperFile], blobs: dict[str, bytes]) -> None:
+    def validate_tree(self, files: list[PaperFile], blobs: dict[str, bytes]) -> None:
         if len(files) > limits.PAPER_MAX_FILES:
             raise PaperLimit("Paper file limit reached")
         paths = sorted(paper_path(file.path) for file in files)
@@ -710,7 +710,7 @@ class PaperLive:
                             blobs[sha] = await asyncio.to_thread(self.blob, sha)
                     file.blob_sha256 = sha
                 affected.append(file_id)
-            self._validate_tree(list(files.values()), snapshot._blobs | blobs)
+            self.validate_tree(list(files.values()), snapshot._blobs | blobs)
             encoded_docs = {
                 file_id: merge_updates(bases[file_id].encoded, doc.get_update())
                 if file_id in bases
