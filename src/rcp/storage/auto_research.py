@@ -303,6 +303,10 @@ class AutoResearchStoreMixin(StoreMixinBase):
                     ):
                         raise ValueError("invalid continuation message ownership")
                     self._insert_auto_research_message(connection, message)
+                claimed_mail: list[AutoResearchMessageRecord] = [
+                    *([message] if message is not None else []),
+                    *question_answers,
+                ]
                 for answer in question_answers:
                     self._require_held_question_answer(connection, answer, started, task)
                     self._insert_auto_research_message(connection, answer)
@@ -311,9 +315,12 @@ class AutoResearchStoreMixin(StoreMixinBase):
                     started,
                     task,
                     lifecycle_notice_ids=[notice.notice_id],
+                    # The claim matches the pending prefix in mail order.
                     message_ids=[
-                        *([message.message_id] if message is not None else []),
-                        *(answer.message_id for answer in question_answers),
+                        item.message_id
+                        for item in sorted(
+                            claimed_mail, key=lambda item: (item.created_at, item.message_id)
+                        )
                     ],
                 ):
                     raise ValueError("the continuation could not claim its reauthorized notice")

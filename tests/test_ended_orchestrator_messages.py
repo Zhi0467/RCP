@@ -252,7 +252,11 @@ def test_continuation_first_turn_claims_answers_held_since_the_ending(
     from tests.test_episode_questions import _question
 
     app, store, original, _ = _ended_app(manifest, tmp_path, monkeypatch)
-    held = _question(store, original, state="answered")
+    # Several held answers claim together, whatever their ids' sort order.
+    answers = [
+        _question(store, original, key=f"held-{index}", state="answered") for index in range(4)
+    ]
+    held = answers[0]
     continued, root = continue_auto_research(
         app.state.background_tasks,
         original,
@@ -260,8 +264,11 @@ def test_continuation_first_turn_claims_answers_held_since_the_ending(
         request_id=str(uuid.uuid4()),
         authorized_by=original.authorized_by,
     )
-    [mail] = store.auto_research_messages(continued.episode_id)
-    assert mail.message_id == f"question:{held.question_id}:answer:{held.answer_revision}"
+    mails = store.auto_research_messages(continued.episode_id)
+    assert {mail.message_id for mail in mails} == {
+        f"question:{item.question_id}:answer:{item.answer_revision}" for item in answers
+    }
+    mail = next(mail for mail in mails if held.question_id in mail.message_id)
     assert mail.delivery_operation_id == root.operation_id
     assert mail.authorized_by == held.resolved_by
     snapshot, _ = auto_research_question_snapshot(
