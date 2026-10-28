@@ -2850,7 +2850,8 @@ class SSHStateWorkspace(StateWorkspace):
     ) -> subprocess.CompletedProcess[str]:
         source_root = self.root if source_root is None else source_root
         engine = state_transfer.get_engine(self.host)
-        if engine.engine == "tar":
+        # The rsync engine is chosen only with a local binary; the check narrows the type.
+        if engine.engine == "tar" or engine.local_path is None:
             return state_transfer.push_tar(self.host, stage, source_root, sources)
         destination = f"{self.host}:{shlex.quote(str(stage))}/"
         return state_transfer.run_rsync(
