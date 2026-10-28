@@ -21,6 +21,8 @@ export interface PaperDocumentState {
   ready: boolean;
   connected: boolean;
   error: string | null;
+  /** The server's final close code; the editor is read-only until Reconnect. */
+  closed: number | null;
   presence: PaperPresence[];
 }
 export function paperDocumentKey(key: PaperDocumentKey): string {
@@ -85,6 +87,7 @@ export class PaperDocument {
     ready: false,
     connected: false,
     error: null,
+    closed: null,
     presence: [],
   };
 
@@ -126,7 +129,11 @@ export class PaperDocument {
     });
     this.provider.on("closed", ({ code }) => {
       this.rejected = code === 4413 || code === 4400;
-      this.snapshot = { ...this.snapshot, error: `Paper connection closed (${code})` };
+      this.snapshot = {
+        ...this.snapshot,
+        error: `Paper connection closed (${code})`,
+        closed: code,
+      };
       this.emit();
     });
     this.provider.awareness.on("change", () => this.emit());
@@ -213,7 +220,13 @@ export class PaperDocument {
     if (this.recovering) return;
     if (this.rejected) {
       this.recovering = true;
-      this.snapshot = { ...this.snapshot, ready: false, connected: false, error: null };
+      this.snapshot = {
+        ...this.snapshot,
+        ready: false,
+        connected: false,
+        error: null,
+        closed: null,
+      };
       this.emit();
       try {
         const presence = this.provider.awareness.getLocalState();
@@ -245,7 +258,7 @@ export class PaperDocument {
       }
       return;
     }
-    this.snapshot = { ...this.snapshot, error: null };
+    this.snapshot = { ...this.snapshot, error: null, closed: null };
     if (this.snapshot.ready) this.provider.connect();
     else void this.startStorage();
     this.emit();

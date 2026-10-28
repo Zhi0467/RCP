@@ -271,15 +271,6 @@
 .files-folded .paper-show-files {
   display: inline-flex;
 }
-.paper-dialog-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 180;
-  display: grid;
-  place-items: center;
-  background: rgb(0 0 0 / 22%);
-  padding: 20px;
-}
 .paper-dialog {
   border: 0;
   padding: 0;
@@ -400,9 +391,6 @@
   .paper-editor-footer {
     gap: 5px;
     padding-inline: 10px;
-  }
-  .paper-dialog-backdrop {
-    padding: 10px;
   }
   .paper-dialog {
     max-width: calc(100% - 20px);

@@ -17,13 +17,22 @@ import { usePreviewText } from "./usePreviewText";
 
 const PaperPdf = lazy(() => import("./PaperPdf"));
 type EngineState = "ready" | "installing" | "unavailable";
-type Engines = { latex: EngineState; typst: EngineState };
+type Engines = {
+  latex: EngineState;
+  typst: EngineState;
+  errors: { latex: string | null; typst: string | null };
+};
 interface CompileResult {
   status: "ok" | "error" | "superseded" | "unavailable";
   root_path: string;
   candidates?: string[];
   log_tail: string;
   pdf_url: string | null;
+}
+
+// An asset URL changes only with its bytes, so other files' saves never refetch it.
+function assetUrl(projectId: string, file: PaperFile) {
+  return `${paperRawUrl(projectId, file.file_id)}?sha256=${file.sha256}`;
 }
 
 // Memoization keeps the Markdown parser idle while the source changes.
@@ -48,7 +57,7 @@ const MarkdownPreview = memo(function MarkdownPreview({
             (entry) => entry.path === path && /\.(png|jpe?g|gif|webp)$/i.test(entry.path),
           );
           return image ? (
-            <img src={paperRawUrl(projectId, image.file_id, tree.saved_revision)} alt={alt} />
+            <img src={assetUrl(projectId, image)} alt={alt} />
           ) : (
             <span role="img" aria-label={alt}>
               {alt}
@@ -65,13 +74,17 @@ export function PaperPreview({
   file,
   tree,
   text,
+  active,
 }: {
   projectId: string;
   file: PaperFile;
   tree: PaperTree;
   text: string;
+  /** A hidden preview stays mounted but does no compile work. */
+  active: boolean;
 }) {
-  const previewText = usePreviewText(file.format === "markdown" ? text : "", file.file_id);
+  const previewText = usePreviewText(file.format === "markdown" ? text : "", file.file_id, active);
+  const compiled = useRef<string | null>(null);
   const compiler = useRef(new TypstCompiler());
   const bytesCache = useRef(new Map<string, Uint8Array>());
   const [showLog, setShowLog] = useState(false);
@@ -114,6 +127,7 @@ export function PaperPreview({
       try {
         const value = await api<Engines>(`${base}/engines`, { signal: controller.signal });
         setEngines(value);
+        if (value.errors[engine]) setError(value.errors[engine]);
         if (value[engine] === "installing") timer = setTimeout(() => void check(), 1500);
       } catch (reason) {
         if (!controller.signal.aborted) setError(String(reason));
@@ -128,7 +142,10 @@ export function PaperPreview({
 
   useEffect(() => {
     setLoading(false);
-    if (!engine || engines?.[engine] !== "ready") return;
+    if (!engine || engines?.[engine] !== "ready" || !active) return;
+    // Showing the preview again compiles only when its input changed meanwhile.
+    const key = JSON.stringify([file.file_id, tree.saved_revision, typstText, selectedRoot, retry]);
+    if (key === compiled.current) return;
     const controller = new AbortController();
     const timer = setTimeout(() => {
       setError(null);
@@ -206,7 +223,9 @@ export function PaperPreview({
             setError(reason instanceof Error ? reason.message : String(reason));
         })
         .finally(() => {
-          if (!controller.signal.aborted) setLoading(false);
+          if (controller.signal.aborted) return;
+          compiled.current = key;
+          setLoading(false);
         });
     }, 600);
     return () => {
@@ -224,6 +243,7 @@ export function PaperPreview({
     typstText,
     selectedRoot,
     retry,
+    active,
   ]);
 
   async function install() {
@@ -242,16 +262,13 @@ export function PaperPreview({
   if (file.format === "image" && /\.(png|jpe?g|gif|webp)$/i.test(file.path))
     return (
       <div className="paper-image-preview">
-        <img src={paperRawUrl(projectId, file.file_id, tree.saved_revision)} alt={file.path} />
+        <img src={assetUrl(projectId, file)} alt={file.path} />
       </div>
     );
   if (file.format === "pdf")
     return (
       <Suspense fallback={<LoaderCircle className="spin" size={16} />}>
-        <PaperPdf
-          url={paperRawUrl(projectId, file.file_id, tree.saved_revision)}
-          name={file.path.split("/").at(-1)}
-        />
+        <PaperPdf url={assetUrl(projectId, file)} name={file.path.split("/").at(-1)} />
       </Suspense>
     );
   if (!engine)

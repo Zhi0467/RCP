@@ -1,7 +1,5 @@
 import { EventEmitter, once } from "node:events";
-import { pathToFileURL } from "node:url";
 import { createServer } from "vite";
-import { WebSocketServer } from "ws";
 import * as Y from "yjs";
 import * as encoding from "lib0/encoding";
 import * as decoding from "lib0/decoding";
@@ -97,7 +95,7 @@ export const paperTestCard = {
   state: "pending",
 };
 
-/** The same REST contract powers page.route tests and the interactive fixture. */
+/** The REST contract behind each test page's routes. */
 export function createPaperFixture({
   room = new PaperTestRoom(),
   cards = [],
@@ -133,6 +131,7 @@ export function createPaperFixture({
     tree,
     cards,
     posts,
+    versions,
     respond(path, method = "GET", body = {}) {
       if (method === "POST") posts.push({ path, body });
       if (path === "/api/health")
@@ -148,7 +147,10 @@ export function createPaperFixture({
         };
       if (path.endsWith("/tree")) return { json: tree };
       if (path.endsWith("/sessions")) return { json: [] };
-      if (path.endsWith("/engines")) return { json: { latex: "ready", typst: "ready" } };
+      if (path.endsWith("/engines"))
+        return {
+          json: { latex: "ready", typst: "ready", errors: { latex: null, typst: null } },
+        };
       if (path.endsWith("/changes"))
         return {
           json: {
@@ -201,8 +203,11 @@ export function createPaperFixture({
         replace(oldText);
         return { json: {} };
       }
-      if (/\/history\/[^/]+$/.test(path))
-        return { json: versions.find((version) => path.endsWith(`/${version.version_id}`)) };
+      if (/\/history\/[^/]+$/.test(path)) {
+        const index = versions.findIndex((version) => path.endsWith(`/${version.version_id}`));
+        if (method === "DELETE") return { json: versions.splice(index, 1)[0] };
+        return { json: versions[index] };
+      }
       if (path.endsWith("/hold/resolve")) {
         tree.hold = null;
         return { json: {} };
@@ -212,101 +217,102 @@ export function createPaperFixture({
   };
 }
 
-export async function createPaperTestServer({ port = 8477, fixture = null } = {}) {
-  const websocket = new WebSocketServer({ noServer: true });
+export function pdfBytes(count) {
+  const objects = ["<< /Type /Catalog /Pages 2 0 R >>", ""];
+  const children = [];
+  for (let index = 0; index < count; index++) {
+    children.push(`${objects.length + 1} 0 R`);
+    objects.push("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << >> >>");
+  }
+  objects[1] = `<< /Type /Pages /Count ${count} /Kids [${children.join(" ")}] >>`;
+  let body = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(Buffer.byteLength(body));
+    body += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const start = Buffer.byteLength(body);
+  body += `xref\n0 ${offsets.length}\n0000000000 65535 f \n`;
+  body += offsets
+    .slice(1)
+    .map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`)
+    .join("");
+  body += `trailer\n<< /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${start}\n%%EOF`;
+  return Buffer.from(body);
+}
+
+/** Serves the Paper page; each test routes its API and websocket in the browser. */
+export async function createPaperTestServer() {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "error",
     optimizeDeps: { entries: ["tests/fixtures/paperResource.html"] },
-    server: { host: "127.0.0.1", port, strictPort: port !== 0 },
+    server: { host: "127.0.0.1", port: 0 },
     plugins: [
       {
-        name: "paper-test-fixture",
+        name: "paper-test-no-proxy",
         configResolved(config) {
           config.server.proxy = undefined;
-        },
-        configureServer(vite) {
-          vite.middlewares.use(async (request, response, next) => {
-            const url = new URL(request.url, "http://localhost");
-            if (
-              url.pathname === "/tests/fixtures/paperResource.html" &&
-              url.searchParams.get("phone") === "1"
-            ) {
-              response.setHeader("Content-Type", "text/html");
-              response.end(
-                '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Paper phone fixture</title></head><body style="margin:0"><iframe title="Paper at 390px" src="/tests/fixtures/paperResource.html" style="display:block;width:390px;height:844px;border:0"></iframe></body></html>',
-              );
-              return;
-            }
-            if (
-              !fixture ||
-              (!url.pathname.startsWith("/api/") && !url.pathname.startsWith("/__paper_test__/"))
-            )
-              return next();
-            let body = "";
-            for await (const chunk of request) body += chunk;
-            const payload = body ? JSON.parse(body) : {};
-            let result;
-            if (url.pathname === "/__paper_test__/state")
-              result = {
-                json: {
-                  text: fixture.room.doc.getText("text").toString(),
-                  posts: fixture.posts,
-                },
-              };
-            else if (url.pathname === "/__paper_test__/control") {
-              if (typeof payload.hold === "boolean") fixture.room.hold = payload.hold;
-              if (typeof payload.acknowledge === "boolean")
-                fixture.room.acknowledge = payload.acknowledge;
-              if (payload.flush) fixture.room.flush();
-              if (payload.ack) fixture.room.ack();
-              result = { json: {} };
-            } else result = fixture.respond(url.pathname, request.method, payload);
-            response.statusCode = result.status ?? 200;
-            response.setHeader("Content-Type", result.contentType ?? "application/json");
-            response.end(result.body ?? JSON.stringify(result.json));
-          });
         },
       },
     ],
   });
-  server.httpServer.on("upgrade", (request, socket, head) => {
-    if (fixture && /\/paper\/files\/[^/]+\/live(?:\?.*)?$/.test(request.url)) {
-      websocket.handleUpgrade(request, socket, head, (client) =>
-        fixture.room.connect({
-          send: (message) => {
-            if (client.readyState === 1) client.send(message);
-          },
-          onClose: (callback) => client.on("close", callback),
-          onMessage: (callback) => client.on("message", callback),
-        }),
-      );
-    }
-  });
   await server.listen();
   return {
     origin: `http://127.0.0.1:${server.httpServer.address().port}`,
-    async close() {
-      for (const client of websocket.clients) client.terminate();
-      websocket.close();
-      await server.close();
-      fixture?.room.doc.destroy();
-    },
+    close: () => server.close(),
   };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const fixture = createPaperFixture({
-    cards: [{ ...paperTestCard }],
-    spaceId: `paper-fixture-${Date.now()}`,
+export function editorMatches(expected) {
+  const source = document.querySelector(".cm-content")?.cloneNode(true);
+  source
+    ?.querySelectorAll(".paper-inline-suggestion, .cm-ySelectionCaret")
+    .forEach((widget) => widget.remove());
+  const lines = [...(source?.querySelectorAll(".cm-line") ?? [])];
+  return lines.map((line) => line.textContent).join("\n") === expected;
+}
+
+export async function openPaper(
+  t,
+  {
+    browser,
+    origin,
+    room = new PaperTestRoom(),
+    width = 1280,
+    height = 844,
+    cards = [],
+    proposedTexts = {},
+    initialText = "draft",
+    configure = () => {},
+  },
+) {
+  const context = await browser.newContext({ viewport: { width, height } });
+  t.after(async () => {
+    await context.close();
   });
-  const server = await createPaperTestServer({ fixture });
-  console.log(`${server.origin}/tests/fixtures/paperResource.html`);
-  console.log(`${server.origin}/tests/fixtures/paperResource.html?phone=1`);
-  const close = async () => {
-    await server.close();
-    process.exit(0);
-  };
-  process.once("SIGTERM", close);
-  process.once("SIGINT", close);
+  const page = await context.newPage();
+  const errors = [];
+  const requests = [];
+  page.on("request", (request) => requests.push(request.url()));
+  const fixture = createPaperFixture({ room, cards, proposedTexts });
+  configure(fixture);
+  const posts = fixture.posts;
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+  await context.route("**/api/**", async (route) => {
+    const request = route.request();
+    return route.fulfill(
+      fixture.respond(new URL(request.url()).pathname, request.method(), request.postDataJSON()),
+    );
+  });
+  await context.routeWebSocket(/\/paper\/files\/[^/]+\/live(?:\?.*)?$/, (socket) =>
+    room.connect(socket),
+  );
+  await page.goto(`${origin}/tests/fixtures/paperResource.html`);
+  await page.locator(".cm-content").waitFor();
+  await page.waitForFunction(editorMatches, initialText);
+  return { page, context, room, errors, posts, requests, fixture };
 }

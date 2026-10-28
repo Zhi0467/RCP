@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Compartment, EditorState } from "@codemirror/state";
+import { Compartment, EditorSelection, EditorState } from "@codemirror/state";
 import { Decoration, EditorView, keymap, lineNumbers, WidgetType } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
 import { defaultHighlightStyle, StreamLanguage, syntaxHighlighting } from "@codemirror/language";
 import { markdown } from "@codemirror/lang-markdown";
 import { stex } from "@codemirror/legacy-modes/mode/stex";
 import { typst_lezer } from "codemirror-lang-typst/lezer";
+import * as Y from "yjs";
 import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import { Check, ChevronLeft, ChevronRight, X } from "lucide-react";
 import { anchorPaperChange, resolvePaperAnchor } from "./paperAnchors";
@@ -49,6 +50,18 @@ class SuggestionWidget extends WidgetType {
   }
 }
 
+/** Per-document editor memory: a file switch keeps undo, selection and scroll.
+ * Keyed by Y.Text, so a rejected document's replacement starts fresh. */
+const memories = new WeakMap<
+  Y.Text,
+  {
+    undo: Y.UndoManager;
+    anchor?: Y.RelativePosition;
+    head?: Y.RelativePosition;
+    top?: Y.RelativePosition;
+  }
+>();
+
 export function PaperEditor({
   owner,
   format,
@@ -65,10 +78,16 @@ export function PaperEditor({
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const suggestions = useRef(new Compartment());
+  const readOnly = useRef(new Compartment());
   const decide = useRef(onDecide);
   decide.current = onDecide;
   const [position, setPosition] = useState({ line: 1, column: 1 });
   const [step, setStep] = useState(0);
+  const report = (state: EditorState) => {
+    const head = state.selection.main.head;
+    const line = state.doc.lineAt(head);
+    setPosition({ line: line.number, column: head - line.from + 1 });
+  };
   const pending = useMemo(
     () =>
       changes.filter(
@@ -82,7 +101,8 @@ export function PaperEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the deps reset this anchor cache; the factory needs none of them
     [pending, owner, owner.text],
   );
-  const { text, error } = owner.getSnapshot();
+  const { text, error, closed } = owner.getSnapshot();
+  const locked = closed !== null;
   const currentStep = Math.min(step, pending.length - 1);
   const active = pending[currentStep];
   useEffect(() => {
@@ -95,10 +115,27 @@ export function PaperEditor({
           : format === "typst"
             ? typst_lezer()
             : [];
+    let memory = memories.get(owner.text);
+    if (!memory) {
+      memory = { undo: new Y.UndoManager(owner.text) };
+      memories.set(owner.text, memory);
+    }
+    const saved = memory;
+    const relative = (index: number) => Y.createRelativePositionFromTypeIndex(owner.text, index);
+    const absolute = (position: Y.RelativePosition | undefined) =>
+      position && Y.createAbsolutePositionFromRelativePosition(position, owner.doc)?.index;
+    const anchor = absolute(saved.anchor);
+    const head = absolute(saved.head);
+    const top = absolute(saved.top);
     const editor = new EditorView({
       parent: host.current,
+      scrollTo: top === undefined ? undefined : EditorView.scrollIntoView(top, { y: "start" }),
       state: EditorState.create({
         doc: owner.text.toString(),
+        selection:
+          anchor === undefined || head === undefined
+            ? undefined
+            : EditorSelection.single(anchor, head),
         extensions: [
           lineNumbers(),
           keymap.of([...yUndoManagerKeymap, ...defaultKeymap]),
@@ -106,24 +143,35 @@ export function PaperEditor({
           syntaxHighlighting(defaultHighlightStyle),
           EditorView.lineWrapping,
           EditorView.contentAttributes.of({ "aria-label": "Paper source", spellcheck: "false" }),
-          yCollab(owner.text, owner.provider.awareness),
+          yCollab(owner.text, owner.provider.awareness, { undoManager: saved.undo }),
           suggestions.current.of([]),
+          readOnly.current.of(EditorState.readOnly.of(owner.getSnapshot().closed !== null)),
+          EditorView.domEventObservers({
+            scroll(_event, view) {
+              saved.top = relative(view.lineBlockAtHeight(view.scrollDOM.scrollTop).from);
+            },
+          }),
           EditorView.updateListener.of((update) => {
-            if (update.selectionSet || update.docChanged) {
-              const head = update.state.selection.main.head;
-              const line = update.state.doc.lineAt(head);
-              setPosition({ line: line.number, column: head - line.from + 1 });
-            }
+            if (update.selectionSet || update.docChanged) report(update.state);
           }),
         ],
       }),
     });
     view.current = editor;
+    report(editor.state);
     return () => {
+      const { main } = editor.state.selection;
+      saved.anchor = relative(main.anchor);
+      saved.head = relative(main.head);
       view.current = null;
       editor.destroy();
     };
   }, [owner, owner.text, format]);
+  useEffect(() => {
+    view.current?.dispatch({
+      effects: readOnly.current.reconfigure(EditorState.readOnly.of(locked)),
+    });
+  }, [locked]);
 
   useEffect(() => {
     const editor = view.current;

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
-/** Idle preview updates, with a deadline during continuous typing; a new file shows at once. */
-export function usePreviewText(text: string, fileId: string) {
+/** Idle preview updates, with a deadline during continuous typing; a new file shows at once.
+ * An inactive (hidden) preview keeps its text until shown again. */
+export function usePreviewText(text: string, fileId: string, active: boolean) {
   const [preview, setPreview] = useState({ fileId, text });
   const pendingSince = useRef<number | null>(null);
   if (preview.fileId !== fileId) setPreview({ fileId, text });
@@ -10,6 +11,7 @@ export function usePreviewText(text: string, fileId: string) {
       pendingSince.current = null;
       return;
     }
+    if (!active) return;
     const now = Date.now();
     pendingSince.current ??= now;
     const timer = setTimeout(
@@ -20,6 +22,6 @@ export function usePreviewText(text: string, fileId: string) {
       Math.min(250, Math.max(0, 1000 - (now - pendingSince.current))),
     );
     return () => clearTimeout(timer);
-  }, [text, preview.text, fileId]);
+  }, [text, preview.text, fileId, active]);
   return preview.fileId === fileId ? preview.text : text;
 }
