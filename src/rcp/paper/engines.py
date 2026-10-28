@@ -258,7 +258,9 @@ class EngineStore:
         try:
             self._validate(name)
         except (OSError, ValueError) as exc:
-            self._errors.setdefault(name, str(exc))
+            # A never-installed engine is not a failure; it is offered for install.
+            if not isinstance(exc, FileNotFoundError):
+                self._errors.setdefault(name, str(exc))
             return "unavailable"
         self._errors.pop(name, None)
         return "ready"

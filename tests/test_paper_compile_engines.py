@@ -24,6 +24,7 @@ def test_verified_install_is_atomic_and_reusable_offline(tmp_path, monkeypatch):
 
     async def run():
         store = engines.EngineStore(tmp_path, download=download)
+        assert (store.status("typst"), store.error("typst")) == ("unavailable", "")
         store.start_install("typst")
         assert store.status("typst") == "installing"
         assert await store.ensure("typst")
