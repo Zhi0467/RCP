@@ -501,105 +501,6 @@ test("a settings save replaces project metadata without reconciling session stat
   assert.deepEqual(updated.draftReconciliationDiscardedProposalIds, ["proposal/retained"]);
 });
 
-test("a delayed paper response cannot change the project opened while it was saving", () => {
-  const alphaPaper = { content: "Alpha draft", sync_state: "synced" };
-  const betaPaper = { content: "Beta draft", sync_state: "synced" };
-  let state = projectSessionReducer(emptyProjectSessionState("alpha"), {
-    kind: "snapshot_applied",
-    snapshot: snapshot(1, { paper: alphaPaper }),
-    preserve_readiness: false,
-  });
-  const saveResponse = {
-    kind: "paper_updated",
-    project_id: "alpha",
-    editor_generation: state.paperEditorGeneration,
-    paper: { ...alphaPaper, content: "Saved Alpha draft" },
-  };
-
-  // The route changes before its replacement snapshot has loaded.
-  state = projectSessionReducer(state, { kind: "activate", project_id: "beta" });
-  assert.strictEqual(projectSessionReducer(state, saveResponse), state);
-  state = projectSessionReducer(state, { kind: "reset", project_id: "beta" });
-  state = projectSessionReducer(state, {
-    kind: "snapshot_applied",
-    snapshot: snapshot(1, { id: "beta", paper: betaPaper }),
-    preserve_readiness: false,
-  });
-  const afterResponse = projectSessionReducer(state, saveResponse);
-  assert.strictEqual(afterResponse, state);
-  assert.deepEqual(afterResponse.project.paper, betaPaper);
-});
-
-test("paper completion updates its owning project while preserving graph and staged work", () => {
-  let state = projectSessionReducer(emptyProjectSessionState("alpha"), {
-    kind: "snapshot_applied",
-    snapshot: snapshot(2, { paper: { content: "Before save" } }),
-    preserve_readiness: false,
-  });
-  state = projectSessionReducer(state, {
-    kind: "human_draft_loaded",
-    draft: humanDraft(2),
-  });
-  const paper = { content: "Saved introduction", sync_state: "synced" };
-  const saved = projectSessionReducer(state, {
-    kind: "paper_updated",
-    project_id: "alpha",
-    editor_generation: state.paperEditorGeneration,
-    paper,
-  });
-  assert.deepEqual(saved.project.paper, paper);
-  assert.strictEqual(saved.project.graph, state.project.graph);
-  assert.strictEqual(saved.humanDraft, state.humanDraft);
-  assert.strictEqual(saved.transitionHead, state.transitionHead);
-});
-
-for (const navigation of ["another project", "another view"]) {
-  test(`an older paper save cannot replace a newer editor after visiting ${navigation}`, () => {
-    let state = projectSessionReducer(emptyProjectSessionState("alpha"), {
-      kind: "snapshot_applied",
-      snapshot: snapshot(1, { paper: { content: "Initial introduction" } }),
-      preserve_readiness: false,
-    });
-    state = projectSessionReducer(state, { kind: "paper_editor_opened" });
-    const olderSave = {
-      kind: "paper_updated",
-      project_id: "alpha",
-      editor_generation: state.paperEditorGeneration,
-      paper: { content: "Older introduction", sync_state: "synced" },
-    };
-
-    if (navigation === "another project") {
-      const alphaTab = serializeProjectSessionTabState(state);
-      state = projectSessionReducer(state, { kind: "activate", project_id: "beta" });
-      state = projectSessionReducer(state, {
-        kind: "restore_tab",
-        project_id: "alpha",
-        state: alphaTab,
-      });
-      assert.strictEqual(projectSessionReducer(state, olderSave), state);
-      state = projectSessionReducer(state, {
-        kind: "snapshot_applied",
-        snapshot: snapshot(1, { paper: { content: "Initial introduction" } }),
-        preserve_readiness: false,
-      });
-    } else {
-      // Merely leaving Paper allows its save to finish in the other view.
-      assert.deepEqual(projectSessionReducer(state, olderSave).project.paper, olderSave.paper);
-    }
-
-    state = projectSessionReducer(state, { kind: "paper_editor_opened" });
-    const newerPaper = { content: "Newer introduction", sync_state: "synced" };
-    state = projectSessionReducer(state, {
-      kind: "paper_updated",
-      project_id: "alpha",
-      editor_generation: state.paperEditorGeneration,
-      paper: newerPaper,
-    });
-    assert.deepEqual(state.project.paper, newerPaper);
-    assert.strictEqual(projectSessionReducer(state, olderSave), state);
-  });
-}
-
 test("a machine change takes fresh provider readiness; a settings save keeps the rendered one", () => {
   const readiness = { provider: "codex", installed: true, authenticated: true, version: "1" };
   const current = snapshot(1, {
@@ -626,13 +527,7 @@ test("tab serialization retains only human UI and drafts", () => {
   const saved = serializeProjectSessionTabState(state);
   assert.deepEqual(
     Object.keys(saved).sort(),
-    [
-      "projectId",
-      "graphTarget",
-      "humanDraft",
-      "paperEditorGeneration",
-      "draftReconciliationDiscardedProposalIds",
-    ].sort(),
+    ["projectId", "graphTarget", "humanDraft", "draftReconciliationDiscardedProposalIds"].sort(),
   );
   assert.equal(saved.project, undefined);
 });
@@ -700,10 +595,7 @@ test("an empty project session survives tab serialization and restoration", () =
     state: serialized,
   });
 
-  assert.deepEqual(serializeProjectSessionTabState(restored), {
-    ...serialized,
-    paperEditorGeneration: serialized.paperEditorGeneration + 1,
-  });
+  assert.deepEqual(serializeProjectSessionTabState(restored), serialized);
 });
 
 test("a replacement backend accepts its own revision and invalidates old Sync fences", () => {

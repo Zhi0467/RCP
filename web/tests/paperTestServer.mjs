@@ -15,8 +15,8 @@ export class PaperTestRoom {
   events = new EventEmitter();
   updatesReceived = 0;
 
-  constructor() {
-    this.doc.getText("text").insert(0, "draft");
+  constructor(text = "draft") {
+    this.doc.getText("text").insert(0, text);
     this.doc.on("update", (update) => {
       const encoder = encoding.createEncoder();
       encoding.writeVarUint(encoder, 0);
@@ -76,6 +76,7 @@ export class PaperTestRoom {
 }
 
 export const paperTestTree = {
+  max_doc_bytes: 4 * 1024 * 1024,
   revision: 1,
   saved_revision: 1,
   published_revision: 1,
@@ -100,16 +101,17 @@ export function createPaperFixture({
   room = new PaperTestRoom(),
   cards = [],
   proposedTexts = {},
-  spaceId = "space",
 } = {}) {
   const tree = structuredClone(paperTestTree);
   const posts = [];
+  const rooms = new Map([["f1", room]]);
+  let nextFile = 10;
   const versions = [
     {
       version_id: "v1",
       revision: 1,
       name: "First draft",
-      actor: "Member",
+      actor_name: "Member",
       created_at: new Date().toISOString(),
       kind: "named",
       manifest: tree.files,
@@ -128,6 +130,7 @@ export function createPaperFixture({
   }
   return {
     room,
+    rooms,
     tree,
     cards,
     posts,
@@ -139,7 +142,7 @@ export function createPaperFixture({
       if (path === "/api/identity")
         return {
           json: {
-            space_id: spaceId,
+            space_id: "space",
             space_kind: "personal",
             space_name: null,
             user: { user_id: "member", display_name: "Member", identity_kind: "local_owner" },
@@ -165,30 +168,22 @@ export function createPaperFixture({
       const proposed = path.match(/\/changes\/([^/]+)\/proposed$/);
       if (proposed && proposed[1] in proposedTexts)
         return { body: proposedTexts[proposed[1]], contentType: "text/plain" };
-      const decision = path.match(/\/changes\/([^/]+)\/(accept|reject|undo|refresh)$/);
-      if (decision) {
-        for (const change of cards.filter((item) => item.group_id === decision[1])) {
-          change.state = {
-            accept: "accepted",
-            reject: "rejected",
-            undo: "undone",
-            refresh: "pending",
-          }[decision[2]];
-          if (decision[2] === "accept" && change.kind === "edit") {
-            const text = room.doc.getText("text").toString();
-            replace(
-              text.replace(change.preview.removed.join("\n"), change.preview.added.join("\n")),
-            );
-          }
-        }
-        return { json: {} };
-      }
-      if (path.endsWith("/undo-all")) {
-        for (const change of cards.filter(
-          (item) => item.task_id === body.task_id && item.state === "applied",
-        ))
-          change.state = "undone";
-        return { json: {} };
+      if (/\/changes\/[^/]+\/accept$/.test(path)) return { json: {} };
+      if (method === "POST" && (path.endsWith("/files") || path.endsWith("/uploads"))) {
+        const file_id = `f${nextFile++}`;
+        const text = body.text ?? "";
+        const kind = /\.(png|jpg)$/.test(body.path) ? "binary" : "text";
+        tree.files.push({
+          file_id,
+          path: body.path,
+          kind,
+          format: kind === "text" ? "markdown" : "image",
+          size: text.length,
+        });
+        rooms.set(file_id, new PaperTestRoom(text));
+        tree.revision += 1;
+        tree.saved_revision = tree.revision;
+        return { json: { revision: tree.revision, file_ids: [file_id] } };
       }
       if (path.endsWith("/raw"))
         return { body: room.doc.getText("text").toString(), contentType: "text/plain" };
@@ -206,7 +201,6 @@ export function createPaperFixture({
       if (/\/history\/[^/]+$/.test(path)) {
         const index = versions.findIndex((version) => path.endsWith(`/${version.version_id}`));
         if (method === "DELETE") return { json: versions.splice(index, 1)[0] };
-        return { json: versions[index] };
       }
       if (path.endsWith("/hold/resolve")) {
         tree.hold = null;
@@ -304,13 +298,19 @@ export async function openPaper(
   });
   await context.route("**/api/**", async (route) => {
     const request = route.request();
-    return route.fulfill(
-      fixture.respond(new URL(request.url()).pathname, request.method(), request.postDataJSON()),
-    );
+    let body;
+    if (request.headers()["content-type"]?.startsWith("multipart/form-data")) {
+      const form = await new Response(request.postDataBuffer(), {
+        headers: { "content-type": request.headers()["content-type"] },
+      }).formData();
+      body = { path: form.get("path"), text: await form.get("file").text() };
+    } else body = request.postDataJSON();
+    return route.fulfill(fixture.respond(new URL(request.url()).pathname, request.method(), body));
   });
-  await context.routeWebSocket(/\/paper\/files\/[^/]+\/live(?:\?.*)?$/, (socket) =>
-    room.connect(socket),
-  );
+  await context.routeWebSocket(/\/paper\/files\/[^/]+\/live(?:\?.*)?$/, (socket) => {
+    const id = new URL(socket.url()).pathname.split("/").at(-2);
+    (fixture.rooms.get(id) ?? room).connect(socket);
+  });
   await page.goto(`${origin}/tests/fixtures/paperResource.html`);
   await page.locator(".cm-content").waitFor();
   await page.waitForFunction(editorMatches, initialText);

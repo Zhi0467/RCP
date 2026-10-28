@@ -1,5 +1,5 @@
 import { api } from "../core/api";
-import type { ResourceKey, ResourceProfile } from "../core/resourceStore";
+import type { ResourceProfile } from "../core/resourceStore";
 import type { PaperTree } from "../core/types";
 
 /** Each link opening is a new request, including a return to the same file. */
@@ -12,17 +12,14 @@ export interface PaperResource {
   /** Whether saved changes still need publication. */
   paper: boolean;
 }
-export function paperResourceKey(projectId: string): ResourceKey {
-  return { backend: "", member: "", project: projectId, name: "paper" };
-}
-export function paperProfile(
-  projectId: string,
-  apiBase = `/api/projects/${encodeURIComponent(projectId)}`,
-): ResourceProfile<PaperResource> {
+export function paperProfile(projectId: string): ResourceProfile<PaperResource> {
   return {
-    key: paperResourceKey(projectId),
+    key: { backend: "", member: "", project: projectId, name: "paper" },
     async fetch(signal) {
-      const tree = await api<PaperTree>(`${apiBase}/paper/tree`, { signal });
+      const tree = await api<PaperTree>(
+        `/api/projects/${encodeURIComponent(projectId)}/paper/tree`,
+        { signal },
+      );
       return {
         tree,
         paper: tree.publish_state !== "published",

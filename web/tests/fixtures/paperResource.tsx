@@ -1,6 +1,6 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { LoadedPaperWorkspace } from "../../src/paper/PaperWorkspace";
+import { PaperWorkspace } from "../../src/paper/PaperWorkspace";
 import { ResourceStore } from "../../src/core/resourceStore";
 import { RefreshRuntimeContext } from "../../src/core/useResource";
 import "../../src/styles.css";
@@ -17,7 +17,7 @@ const project = {
 };
 createRoot(document.getElementById("root")!).render(
   <RefreshRuntimeContext.Provider value={{ store } as never}>
-    <LoadedPaperWorkspace
+    <PaperWorkspace
       project={project as never}
       apiBase="/api/projects/p"
       tasks={[]}

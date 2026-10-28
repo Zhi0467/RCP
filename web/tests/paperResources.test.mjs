@@ -21,37 +21,26 @@ const tree = {
   files: [{ file_id: "f1", path: "intro.md", kind: "text", format: "markdown", size: 5 }],
 };
 
-test("Paper profile reads only the tree through its API base with cancellation", async () => {
+test("Paper profile reads the tree with cancellation and derives the publication badge", async () => {
   const original = globalThis.fetch;
   const requests = [];
-  globalThis.fetch = async (path, init) => {
-    requests.push({ path, ...init });
-    return Response.json(tree);
-  };
   try {
     const controller = new AbortController();
-    const profile = paperProfile("project", "/api/projects/project");
-    const result = await profile.fetch(controller.signal);
-    assert.deepEqual(
-      requests.map(({ path }) => path),
-      ["/api/projects/project/paper/tree"],
-    );
-    assert.ok(requests.every(({ method, signal }) => !method && signal === controller.signal));
-    assert.deepEqual(result.tree, tree);
-  } finally {
-    globalThis.fetch = original;
-  }
-});
-
-test("Paper shell badge reflects publication independently of the saved tree revision", async () => {
-  const original = globalThis.fetch;
-  try {
     for (const publishState of ["published", "pending", "failed"]) {
-      globalThis.fetch = async () => Response.json({ ...tree, publish_state: publishState });
-      const result = await paperProfile("p").fetch(new AbortController().signal);
-      assert.equal(result.tree.saved_revision, 4);
+      globalThis.fetch = async (path, init) => {
+        requests.push({ path, ...init });
+        return Response.json({ ...tree, publish_state: publishState });
+      };
+      const result = await paperProfile("project").fetch(controller.signal);
+      assert.deepEqual(result.tree, { ...tree, publish_state: publishState });
       assert.equal(result.paper, publishState !== "published");
     }
+    assert.ok(
+      requests.every(
+        ({ path, method, signal }) =>
+          path === "/api/projects/project/paper/tree" && !method && signal === controller.signal,
+      ),
+    );
   } finally {
     globalThis.fetch = original;
   }

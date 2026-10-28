@@ -11,7 +11,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { api, apiReadResponse } from "../core/api";
+import { api, ApiError, apiReadResponse } from "../core/api";
 import type { PaperTree } from "../core/types";
 import "./paper-coach.css";
 
@@ -26,14 +26,15 @@ interface Version {
   version_id: string;
   revision: number;
   name?: string | null;
-  actor: string;
+  actor_name: string | null;
   created_at: string;
   kind: "auto" | "named";
   manifest?: VersionFile[];
 }
 async function readText(path: string, signal: AbortSignal) {
   const response = await apiReadResponse(path, signal);
-  if (!response.ok) throw new Error(`Paper history read failed (${response.status})`);
+  if (!response.ok)
+    throw new ApiError(`Paper history read failed (${response.status})`, response.status);
   return response.text();
 }
 
@@ -54,7 +55,17 @@ export function PaperHistory({
   const [comparison, setComparison] = useState<{ saved: string; current: string } | null>(null);
   const [name, setName] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string; retryable: boolean } | null>(null);
+  const fail = (cause: unknown) =>
+    setError({
+      message: String(cause),
+      retryable: !(cause instanceof ApiError && cause.status >= 400 && cause.status < 500),
+    });
+  const [confirmation, setConfirmation] = useState<{
+    label: string;
+    action: () => Promise<unknown>;
+    onDone: () => void;
+  } | null>(null);
   const [refresh, setRefresh] = useState(0);
   const retryAction = useRef<() => void>(() => setRefresh((value) => value + 1));
   const controller = useRef<AbortController | null>(null);
@@ -62,43 +73,27 @@ export function PaperHistory({
   useEffect(() => {
     const abort = new AbortController();
     setBusy(true);
+    retryAction.current = () => setRefresh((value) => value + 1);
     api<Version[]>(`${apiBase}/paper/history`, { signal: abort.signal })
       .then((next) => {
         setVersions(next);
         setError(null);
       })
       .catch((cause) => {
-        if (!abort.signal.aborted) setError(String(cause));
+        if (!abort.signal.aborted) fail(cause);
       })
       .finally(() => {
         if (!abort.signal.aborted) setBusy(false);
       });
     return () => abort.abort();
   }, [apiBase, refresh]);
-  const selectVersion = async (next: Version) => {
-    retryAction.current = () => {
-      void selectVersion(next);
-    };
+  const selectVersion = (next: Version) => {
     controller.current?.abort();
-    const abort = new AbortController();
-    controller.current = abort;
-    setBusy(true);
+    setBusy(false);
     setError(null);
-    try {
-      const detail = await api<Version>(
-        `${apiBase}/paper/history/${encodeURIComponent(next.version_id)}`,
-        { signal: abort.signal },
-      );
-      if (!abort.signal.aborted) {
-        setVersion(detail);
-        setFile(null);
-        setComparison(null);
-      }
-    } catch (cause) {
-      if (!abort.signal.aborted) setError(String(cause));
-    } finally {
-      if (!abort.signal.aborted) setBusy(false);
-    }
+    setVersion(next);
+    setFile(null);
+    setComparison(null);
   };
   const selectFile = async (next: VersionFile) => {
     if (!version) return;
@@ -129,68 +124,25 @@ export function PaperHistory({
         if (!abort.signal.aborted) setComparison({ saved, current });
       }
     } catch (cause) {
-      if (!abort.signal.aborted) setError(String(cause));
+      if (!abort.signal.aborted) fail(cause);
     } finally {
       if (!abort.signal.aborted) setBusy(false);
     }
   };
-  const restore = async () => {
-    if (!version || !file) return;
-    retryAction.current = () => {
-      void restore();
-    };
+  const run = async (action: () => Promise<unknown>, onDone: () => void) => {
+    retryAction.current = () => void run(action, onDone);
     setBusy(true);
     setError(null);
     try {
-      await api(`${apiBase}/paper/history/${encodeURIComponent(version.version_id)}/restore`, {
-        method: "POST",
-        body: JSON.stringify({ file_ids: [file.file_id] }),
-      });
-      onRestored();
-      onClose();
+      await action();
+      onDone();
     } catch (cause) {
-      setError(String(cause));
+      fail(cause);
     } finally {
       setBusy(false);
     }
   };
-  const saveNamed = async () => {
-    if (!name?.trim()) return;
-    retryAction.current = () => {
-      void saveNamed();
-    };
-    setBusy(true);
-    setError(null);
-    try {
-      await api(`${apiBase}/paper/history`, {
-        method: "POST",
-        body: JSON.stringify({ name: name.trim() }),
-      });
-      setName(null);
-      setRefresh((value) => value + 1);
-    } catch (cause) {
-      setError(String(cause));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const deleteVersion = async (target: Version) => {
-    retryAction.current = () => {
-      void deleteVersion(target);
-    };
-    setBusy(true);
-    setError(null);
-    try {
-      await api(`${apiBase}/paper/history/${encodeURIComponent(target.version_id)}`, {
-        method: "DELETE",
-      });
-      setRefresh((value) => value + 1);
-    } catch (cause) {
-      setError(String(cause));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const reload = () => setRefresh((value) => value + 1);
   return (
     <PaperDialog
       className={`paper-inspector${error ? " paper-failure" : ""}`}
@@ -230,7 +182,23 @@ export function PaperHistory({
             className="icon-button"
             aria-label="Restore file"
             title="Restore file"
-            onClick={() => void restore()}
+            onClick={() =>
+              setConfirmation({
+                label: `Restore ${file.path}?`,
+                action: () =>
+                  api(
+                    `${apiBase}/paper/history/${encodeURIComponent(version!.version_id)}/restore`,
+                    {
+                      method: "POST",
+                      body: JSON.stringify({ file_ids: [file.file_id] }),
+                    },
+                  ),
+                onDone: () => {
+                  onRestored();
+                  onClose();
+                },
+              })
+            }
           >
             <RotateCcw size={16} />
           </button>
@@ -238,11 +206,11 @@ export function PaperHistory({
         {error && (
           <button
             className="icon-button"
-            aria-label="Retry history"
-            title={error}
-            onClick={() => retryAction.current()}
+            aria-label={error.retryable ? "Retry history" : "Dismiss history error"}
+            title={error.message}
+            onClick={() => (error.retryable ? retryAction.current() : setError(null))}
           >
-            <RotateCcw size={16} />
+            {error.retryable ? <RotateCcw size={16} /> : <X size={16} />}
           </button>
         )}
         <button className="icon-button" aria-label="Close history" onClick={onClose}>
@@ -254,7 +222,18 @@ export function PaperHistory({
           className="paper-history-name"
           onSubmit={(event) => {
             event.preventDefault();
-            void saveNamed();
+            if (!name.trim()) return;
+            void run(
+              () =>
+                api(`${apiBase}/paper/history`, {
+                  method: "POST",
+                  body: JSON.stringify({ name: name.trim() }),
+                }),
+              () => {
+                setName(null);
+                reload();
+              },
+            );
           }}
         >
           <input
@@ -287,8 +266,11 @@ export function PaperHistory({
                 disabled={busy}
                 onClick={() => void selectVersion(item)}
               >
-                <span>{item.name || new Date(item.created_at).toLocaleString()}</span>
-                <span>{item.actor}</span>
+                <span>
+                  {item.name && <>{item.name} · </>}
+                  {new Date(item.created_at).toLocaleString()}
+                  {item.actor_name && <> · {item.actor_name}</>}
+                </span>
                 <ChevronRight size={16} />
               </button>
               {item.kind === "named" && (
@@ -297,7 +279,16 @@ export function PaperHistory({
                   aria-label="Delete version"
                   title="Delete version"
                   disabled={busy}
-                  onClick={() => void deleteVersion(item)}
+                  onClick={() =>
+                    setConfirmation({
+                      label: `Delete ${item.name}?`,
+                      action: () =>
+                        api(`${apiBase}/paper/history/${encodeURIComponent(item.version_id)}`, {
+                          method: "DELETE",
+                        }),
+                      onDone: reload,
+                    })
+                  }
                 >
                   <Trash2 size={15} />
                 </button>
@@ -339,6 +330,30 @@ export function PaperHistory({
           </dl>
         )}
       </div>
+      {confirmation && (
+        <PaperDialog
+          className="paper-box paper-confirm"
+          role="alertdialog"
+          label={confirmation.label}
+          onClose={() => setConfirmation(null)}
+        >
+          <strong>{confirmation.label}</strong>
+          <div className="paper-bar">
+            <button className="button" onClick={() => setConfirmation(null)}>
+              Cancel
+            </button>
+            <button
+              className="button"
+              onClick={() => {
+                setConfirmation(null);
+                void run(confirmation.action, confirmation.onDone);
+              }}
+            >
+              Confirm
+            </button>
+          </div>
+        </PaperDialog>
+      )}
     </PaperDialog>
   );
 }

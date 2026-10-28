@@ -129,6 +129,7 @@ test("Paper pending local edits survive reload before the server receives them",
     }
   });
   assert.equal(room.doc.getText("text").toString(), "draft");
+  page.once("dialog", (dialog) => dialog.accept());
   await page.reload();
   await page.waitForFunction(editorMatches, "draft offline");
   await saved(page, false);
@@ -159,6 +160,10 @@ test("Paper fits 390px in Write, Preview, Coach and the file panel", async (t) =
   }
   await page.getByRole("button", { name: "Show files", exact: true }).click();
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  for (const target of await page.locator(".paper-file, .paper-files footer .icon-button").all()) {
+    const box = await target.boundingBox();
+    assert.ok(box && box.height >= 44 && box.x >= 0 && box.x + box.width <= 390);
+  }
   assert.deepEqual(errors, []);
 });
 
@@ -210,12 +215,16 @@ test("cancelling failed delete and rename removes their retry authority", async 
       await page.getByRole("button", { name: "Save file path" }).click();
     } else await page.getByRole("button", { name: "Delete", exact: true }).click();
     await page.locator(".paper-files.paper-failed").waitFor();
-    await page
-      .getByRole("button", {
-        name: operation === "Rename" ? "Cancel file path" : "Cancel",
-        exact: true,
-      })
-      .click();
+    if (operation === "Rename") {
+      await page.getByRole("textbox", { name: "File path" }).press("Escape");
+      await page.getByRole("button", { name: "Rename file", exact: true }).click();
+      assert.ok(
+        await page
+          .getByRole("textbox", { name: "File path" })
+          .evaluate((input) => input === document.activeElement),
+      );
+      await page.getByRole("button", { name: "Cancel file path" }).click();
+    } else await page.getByRole("button", { name: "Cancel", exact: true }).click();
     assert.equal(await page.getByRole("button", { name: "Retry file operation" }).count(), 0);
     assert.equal(await page.locator(".paper-files.paper-failed").count(), 0);
   }
@@ -314,49 +323,52 @@ test("insertion refreshes use current anchors without downloading base files", a
   );
 });
 
-test("uploading an existing name replaces it, and a failed upload keeps the file actions", async (t) => {
-  const { page, context } = await openPaper(t, {
+test("folder uploads select the new file and require confirmation before replacing an existing path", async (t) => {
+  const { page, context, fixture } = await openPaper(t, {
     width: 390,
     configure: ({ tree }) =>
       tree.files.push({
         file_id: "img",
-        path: "figure.png",
+        path: "figures/figure.png",
         kind: "binary",
         format: "image",
         size: 5,
-        sha256: "a",
       }),
   });
   await page.getByRole("button", { name: "Show files", exact: true }).click();
-  let attempts = 0;
+  await page.locator(".paper-folder").click();
+  let replacements = 0;
   await context.route("**/paper/files/img/content", (route) => {
-    attempts += 1;
+    replacements += 1;
     assert.equal(route.request().method(), "PUT");
-    return route.fulfill({ status: attempts === 1 ? 500 : 200, json: {} });
+    return route.fulfill({ status: replacements === 1 ? 500 : 200, json: { file_ids: ["img"] } });
   });
-  await page.locator('input[type="file"]').setInputFiles({
+  const input = page.locator('input[type="file"]');
+  await input.setInputFiles({
     name: "figure.png",
     mimeType: "image/png",
     buffer: Buffer.from("image"),
   });
-  const footer = page.getByTestId("paper-files").locator("footer");
-  await footer.getByRole("button", { name: "Retry file operation" }).waitFor();
-  for (const name of ["Rename file", "Download file", "Delete file"]) {
-    const box = await footer
-      .getByRole(name === "Download file" ? "link" : "button", { name })
-      .boundingBox();
-    assert.ok(box && box.x >= 0 && box.x + box.width <= 390);
-  }
-  // A clean New file form does not take over the upload's failure.
-  await page.getByRole("button", { name: "New file", exact: true }).click();
-  assert.equal(await page.locator(".paper-path-form.paper-failed").count(), 0);
-  await page.getByRole("button", { name: "Cancel file path" }).click();
-  const retried = page.waitForResponse(
-    (response) => response.url().endsWith("/files/img/content") && response.status() === 200,
+  const dialog = page.getByRole("alertdialog");
+  await dialog.waitFor();
+  assert.equal(replacements, 0);
+  assert.ok(await insideViewport(dialog));
+  await dialog.getByRole("button", { name: "Replace", exact: true }).click();
+  await dialog.getByRole("button", { name: "Retry upload" }).click();
+  await page.waitForFunction(
+    () => document.querySelector(".paper-path")?.textContent === "figures/figure.png",
   );
-  await footer.getByRole("button", { name: "Retry file operation" }).click();
-  await retried;
-  assert.equal(attempts, 2);
+  assert.equal(replacements, 2);
+  assert.equal(fixture.tree.files.length, 2);
+  await page.getByRole("button", { name: "Show files", exact: true }).click();
+  await input.setInputFiles({
+    name: "caption.md",
+    mimeType: "text/markdown",
+    buffer: Buffer.from("caption"),
+  });
+  await page.waitForFunction(editorMatches, "caption");
+  assert.equal(fixture.tree.files.at(-1).path, "figures/caption.md");
+  assert.equal(await page.locator(".paper-path").textContent(), "figures/caption.md");
 });
 
 test("Reconnect discards a rejected oversized update and its persisted copy only for that file", async (t) => {
@@ -594,7 +606,7 @@ test("a hidden phone preview keeps its PDF and reading position and compiles onl
   assert.equal(pdfs, 1);
 });
 
-test("a deleted file keeps its unsent text read-only and refreshes the tree", async (t) => {
+test("a deleted file can be recreated without losing its unsent text", async (t) => {
   const { page, context, fixture } = await openPaper(t, { configure: secondFile });
   const other = new Room();
   await context.routeWebSocket(/\/files\/f2\/live$/, (socket) => other.connect(socket));
@@ -612,10 +624,16 @@ test("a deleted file keeps its unsent text read-only and refreshes the tree", as
   await treeRead;
   await page.getByRole("button", { name: "second.md", exact: true }).waitFor({ state: "detached" });
   assert.equal(await page.locator(".paper-path").textContent(), "second.md");
-  await page.getByRole("button", { name: "Reconnect Paper" }).waitFor();
+  await page.getByRole("button", { name: "Recreate file" }).waitFor();
   await page.locator(".cm-content").click();
   await page.keyboard.insertText(" typed");
   assert.ok(await page.evaluate(editorMatches, "draft unsent"));
+  await page.getByRole("button", { name: "Recreate file" }).click();
+  await saved(page, true);
+  await page.waitForFunction(editorMatches, "draft unsent");
+  const restored = fixture.tree.files.find((file) => file.path === "second.md");
+  assert.notEqual(restored.file_id, "f2");
+  assert.equal(fixture.rooms.get(restored.file_id).doc.getText("text").toString(), "draft unsent");
 });
 
 test("a refused card decision refreshes the cards and keeps their actions; only server failures retry", async (t) => {
@@ -680,9 +698,125 @@ test("named versions can be deleted from history; automatic versions cannot", as
   assert.equal(await remove.count(), 1);
   assert.ok(await insideViewport(remove));
   await remove.click();
+  assert.equal(fixture.versions.length, 2);
+  await page.getByRole("alertdialog").getByRole("button", { name: "Confirm", exact: true }).click();
   await remove.waitFor({ state: "detached" });
   assert.deepEqual(
     fixture.versions.map((version) => version.version_id),
     ["auto"],
   );
+});
+
+test("a newly created file receives typing and stays selected after reload", async (t) => {
+  const { page, room, fixture, errors } = await openPaper(t, {
+    width: 390,
+    configure: ({ tree }) =>
+      tree.files.push(
+        { ...tree.files[0], file_id: "s12", path: "section 12.md" },
+        { ...tree.files[0], file_id: "s6", path: "section 6.md" },
+      ),
+  });
+  await page.getByRole("button", { name: "Show files", exact: true }).click();
+  assert.deepEqual(await page.locator(".paper-file span").allTextContents(), [
+    "intro.md",
+    "section 6.md",
+    "section 12.md",
+  ]);
+  await page.getByRole("button", { name: "New file", exact: true }).click();
+  const path = page.getByRole("textbox", { name: "File path" });
+  assert.ok((await path.boundingBox()).height >= 44);
+  await path.fill("new.md");
+  await path.press("Enter");
+  await page.waitForFunction(() => document.activeElement?.classList.contains("cm-content"));
+  await page.waitForFunction(editorMatches, "");
+  await page.keyboard.insertText("new words");
+  await saved(page, true);
+  assert.equal(room.doc.getText("text").toString(), "draft");
+  assert.equal(
+    fixture.rooms.get(fixture.tree.files.at(-1).file_id).doc.getText("text").toString(),
+    "new words",
+  );
+  await page.reload();
+  await page.waitForFunction(editorMatches, "new words");
+  assert.equal(await page.locator(".paper-path").textContent(), "new.md");
+  assert.deepEqual(errors, []);
+});
+
+test("phone Write returns keyboard focus to the document", async (t) => {
+  const { page } = await openPaper(t, { width: 390 });
+  await page.locator(".cm-content").click();
+  await page.keyboard.press("ControlOrMeta+End");
+  await page.getByRole("button", { name: "Preview", exact: true }).first().click();
+  await page.getByRole("button", { name: "Write", exact: true }).click();
+  await page.waitForFunction(() => document.activeElement?.classList.contains("cm-content"));
+  await page.keyboard.insertText(" returned");
+  await page.waitForFunction(editorMatches, "draft returned");
+});
+
+test("beforeunload is prevented only while the open document is unsaved", async (t) => {
+  const { page, room } = await openPaper(t);
+  const guarded = () =>
+    page.evaluate(() => {
+      const event = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    });
+  await saved(page, true);
+  assert.equal(await guarded(), false);
+  room.acknowledge = false;
+  const count = room.updatesReceived;
+  await append(page, " pending");
+  await room.waitForUpdates(count + 1);
+  await saved(page, false);
+  assert.equal(await guarded(), true);
+  room.ack();
+  await saved(page, true);
+  assert.equal(await guarded(), false);
+});
+
+test("history uses list manifests and confirms restoring a file", async (t) => {
+  const { page, fixture, requests } = await openPaper(t, { width: 390 });
+  await append(page, " changed");
+  await saved(page, true);
+  await page.getByRole("button", { name: "Paper history", exact: true }).click();
+  const history = page.getByRole("dialog", { name: "Paper history" });
+  await history.locator(".paper-history-row").first().click();
+  await history.locator(".paper-history-row").first().click();
+  await history.locator("pre").first().waitFor();
+  assert.deepEqual(await history.locator("pre").allTextContents(), ["draft", "draft changed"]);
+  assert.ok(await insideViewport(history));
+  await history.getByRole("button", { name: "Restore file" }).click();
+  assert.equal(fixture.posts.filter((post) => post.path.endsWith("/restore")).length, 0);
+  await page.getByRole("alertdialog").getByRole("button", { name: "Confirm", exact: true }).click();
+  await page.waitForFunction(editorMatches, "draft");
+  assert.equal(fixture.posts.filter((post) => post.path.endsWith("/restore")).length, 1);
+  assert.equal(requests.filter((url) => /\/history\/v1$/.test(url)).length, 0);
+});
+
+test("history quota refusal dismisses instead of retrying", async (t) => {
+  const { page, context } = await openPaper(t, { width: 390 });
+  let attempts = 0;
+  await context.route("**/paper/history", (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    attempts += 1;
+    return attempts === 1
+      ? route.fulfill({ status: 409, json: { detail: "quota reached" } })
+      : route.fallback();
+  });
+  await page.getByRole("button", { name: "Paper history", exact: true }).click();
+  const history = page.getByRole("dialog", { name: "Paper history" });
+  await history.getByRole("button", { name: "Name version" }).click();
+  await history.getByRole("textbox").fill("Checkpoint");
+  await history.getByRole("button", { name: "Save version" }).click();
+  await history.locator(".paper-history-content").waitFor();
+  const dismiss = history.getByRole("button", { name: "Dismiss history error" });
+  await dismiss.waitFor();
+  assert.equal(await history.getByRole("button", { name: "Retry history" }).count(), 0);
+  assert.ok(await insideViewport(dismiss));
+  await dismiss.click();
+  assert.equal(attempts, 1);
+  assert.equal(await history.getByRole("textbox").inputValue(), "Checkpoint");
+  await history.getByRole("button", { name: "Save version" }).click();
+  await page.waitForFunction(() => document.querySelectorAll(".paper-history-row").length === 2);
+  assert.equal(attempts, 2);
 });

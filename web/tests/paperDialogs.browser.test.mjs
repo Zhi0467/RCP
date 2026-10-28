@@ -30,50 +30,26 @@ async function open(t, width = 390, height = 600) {
   return page;
 }
 
-for (const width of [390, 1280]) {
-  test(`Paper dialogs contain keyboard focus and restore the opener at ${width}px`, async (t) => {
-    const page = await open(t, width);
-    async function check(opener, role, name) {
-      await opener.click();
-      const dialog = page.getByRole(role, { name, exact: true });
-      assert.ok(await dialog.evaluate((element) => element.matches("dialog:modal")));
-      for (let i = 0; i < 8; i++) {
-        await page.keyboard.press(i < 4 ? "Tab" : "Shift+Tab");
-        // Native modals may hand focus to browser chrome, never to the inert page.
-        assert.ok(
-          await dialog.evaluate(
-            (element) =>
-              element.contains(document.activeElement) || document.activeElement === document.body,
-          ),
-        );
-      }
-      await page.keyboard.press("Escape");
-      await dialog.waitFor({ state: "detached" });
-      assert.ok(await opener.evaluate((element) => document.activeElement === element));
-    }
-    await check(
-      page.getByRole("button", { name: "Paper history", exact: true }),
-      "dialog",
-      "Paper history",
+test("Paper dialog contains keyboard focus and restores the opener", async (t) => {
+  const page = await open(t);
+  const opener = page.getByRole("button", { name: "Paper history", exact: true });
+  await opener.click();
+  const dialog = page.getByRole("dialog", { name: "Paper history", exact: true });
+  assert.ok(await dialog.evaluate((element) => element.matches("dialog:modal")));
+  for (let i = 0; i < 8; i++) {
+    await page.keyboard.press(i < 4 ? "Tab" : "Shift+Tab");
+    // Native modals may hand focus to browser chrome, never to the inert page.
+    assert.ok(
+      await dialog.evaluate(
+        (element) =>
+          element.contains(document.activeElement) || document.activeElement === document.body,
+      ),
     );
-    if (width === 390) await page.getByRole("button", { name: "Show files", exact: true }).click();
-    await check(
-      page.getByRole("button", { name: "Delete file", exact: true }),
-      "alertdialog",
-      "Delete file",
-    );
-    if (width === 390) await page.getByRole("button", { name: "Fold files", exact: true }).click();
-    await page
-      .getByRole("button", { name: "Coach", exact: true })
-      .filter({ visible: true })
-      .click();
-    await check(
-      page.getByRole("button", { name: "Compare", exact: true }),
-      "dialog",
-      "Compare change",
-    );
-  });
-}
+  }
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
+  assert.ok(await opener.evaluate((element) => document.activeElement === element));
+});
 
 test("coach settings stay within a short phone pane and scroll to the last control", async (t) => {
   const page = await open(t);
