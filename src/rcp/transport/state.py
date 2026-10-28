@@ -1582,10 +1582,13 @@ class StateWorkspace:
             digest = _paper_tree_digest(source)
             stage = self.root / ".publish" / f"paper-stage-{uuid.uuid4().hex}"
             stage.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(source, stage)
-            _select_paper_tree(
-                self.root, stage, revision, digest, STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS
-            )
+            try:
+                shutil.copytree(source, stage)
+                _select_paper_tree(
+                    self.root, stage, revision, digest, STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS
+                )
+            finally:
+                shutil.rmtree(stage, ignore_errors=True)
             self._generations.bump(["paper"])
 
     def publish(self, relative_paths: list[Path | str]) -> None:
@@ -2883,6 +2886,7 @@ class SSHStateWorkspace(StateWorkspace):
             if paths:
                 pushed = self._push_state_files(stage, paths, source_root=source)
                 if pushed.returncode:
+                    self._ssh(["rm", "-rf", "--", str(stage)])
                     self._mark_unreachable(pushed.stderr)
                     raise BatchPublishFailed("Paper upload failed", commit_status="absent")
             arguments = [
@@ -2901,6 +2905,8 @@ class SSHStateWorkspace(StateWorkspace):
                 # A dropped SSH response cannot tell whether rename committed. The
                 # second process reacquires the lock before inspecting or repairing.
                 reconciled = self._ssh([*arguments[:-1], "reconcile"])
+                if reconciled.returncode in (0, 3):
+                    self._ssh(["rm", "-rf", "--", str(stage)])
                 if reconciled.returncode:
                     self._mark_unreachable(reconciled.stderr or result.stderr)
                     raise BatchPublishFailed(

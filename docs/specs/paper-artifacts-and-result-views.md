@@ -28,8 +28,11 @@ acknowledges them. Publication writes the saved tree to the state root's
 `paper/` some seconds after editing pauses, and at least every few minutes
 during continuous editing, as one staged tree that replaces the previous one in
 a single step, so a rename and the edit that follows it never appear apart. An
-unreachable state root leaves publication pending; saving continues. Paper is
-never committed to Git.
+unreachable state root leaves publication pending; saving continues. Failed
+publication waits for a retry backoff, while an explicit publish retries
+immediately. Paper is never committed to Git. Candidate document reconstruction and SQLite work run
+on workers under the project lock; the owner loop installs and broadcasts only
+after commit, including when a caller is cancelled.
 
 **Why:** a paper co-written live must not lose an acknowledged keystroke to a
 crash, and a half-published tree breaks every build that includes the missing
@@ -38,8 +41,10 @@ half.
 An edit the server refuses, such as an oversized or invalid one, ends that
 file's connection for good and the editor shows a red edge with one retry
 action; an edit refused only by the update rate retries on its own. Deletion,
-maintenance, and transfer pause the live paper; a stop that fails, or
-maintenance that ends, resumes it. A backup records its paper as unpublished,
+maintenance, and transfer pause the live paper; paused admission closes with
+retryable socket code 4503, while lost membership or a deleted file closes with
+4403. Refused connections are accepted before closing so browsers receive the
+code. A stop that fails, or maintenance that ends, resumes it. A backup records its paper as unpublished,
 so a restore republishes the saved text rather than trusting the copied folder.
 
 Files keep a stable identity across renames. One path rule serves editing,
@@ -53,7 +58,9 @@ becomes the live text, and nothing publishes until a member picks which to keep.
 
 History records a version after each burst of editing and on request. Automatic
 versions form a bounded ring; named versions have a quota, and a full quota
-refuses new names rather than evicting old ones. A version is restored per file
+refuses new names rather than evicting old ones. Members may delete named versions
+through `DELETE /api/projects/{project_id}/paper/history/{version_id}` to free quota;
+automatic versions refuse deletion with 409. A version is restored per file
 as a new live edit.
 
 ### Preview

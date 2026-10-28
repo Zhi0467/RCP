@@ -9,20 +9,9 @@ from pycrdt import Doc, Text, create_update_message
 
 from rcp import limits
 from rcp.paper import PaperConflict, PaperLimit, PaperLive, PaperOp
-from rcp.storage import AppStore
-from rcp.transport import LocalStateWorkspace, StateUnavailable
+from rcp.transport import StateUnavailable
 from tests.helpers import async_wait_until
-
-
-@pytest.fixture
-def paper(tmp_path):
-    store = AppStore(tmp_path / "app.sqlite3")
-    root = tmp_path / "state"
-    root.mkdir()
-    workspace = LocalStateWorkspace(root, str(root))
-    live = PaperLive(store, lambda _: workspace)
-    yield live, store, workspace
-    store.close()
+from tests.paper_live_fixtures import paper_fixture  # noqa: F401
 
 
 def run(coroutine):
@@ -36,7 +25,10 @@ def test_apply_guards_atomicity_unicode_and_receipts(paper):
         receipt = await live.apply("p", [PaperOp(kind="create", path="a.md", text="a🙂b")], "human")
         file_id = receipt.file_ids[0]
         ops = [PaperOp(kind="replace", file_id=file_id, start=1, end=2, text="é")]
-        expect = {"receipt_key": "card-1", "ops": [{"text": "🙂"}]}
+        expect = {
+            "receipt_key": "card-1",
+            "checks": [{"file_id": file_id, "start": 1, "end": 2, "text": "🙂"}],
+        }
         accepted = await live.apply("p", ops, "human", expect)
         assert await live.apply("p", ops, "human", expect) == accepted
         assert await live.text_at("p", file_id, accepted.revision) == "aéb"
@@ -55,7 +47,7 @@ def test_apply_guards_atomicity_unicode_and_receipts(paper):
         with pytest.raises(PaperConflict):
             await live.apply("p", ops, "other", expect)
         with pytest.raises(PaperConflict):
-            await live.apply("p", ops, "human", {"ops": [{"text": "stale"}]})
+            await live.apply("p", ops, "human", {"checks": [{"file_id": file_id, "text": "stale"}]})
         assert (await live.snapshot("p")).files[0].text == "aéb"
         with store.connection() as conn:
             assert conn.execute("SELECT COUNT(*) FROM paper_change_receipts").fetchone()[0] == 1
@@ -195,7 +187,7 @@ def test_server_history_timer_ring_named_quota_and_dedup(paper, monkeypatch):
                 "p",
                 [PaperOp(kind="replace", file_id=file_id, start=0, end=1, text=str(index))],
                 "h",
-                {"ops": [{"text": str(index - 1)}]},
+                {"checks": [{"file_id": file_id, "text": str(index - 1)}]},
             )
             await live.tick()
         named = await live.create_version("p", "Milestone", "h")
@@ -414,13 +406,6 @@ def test_raw_and_metadata_do_not_read_unrelated_bodies(paper):
             ],
             "h",
         )
-        # An old writer omitted text sizes; opening upgrades that current manifest.
-        with store.connection() as conn:
-            conn.execute(
-                "UPDATE paper_saved_snapshots SET manifest=json_remove(manifest, '$[0].size', '$[1].size')"
-            )
-        live._initialized.clear()
-        assert [file.size for file in (await live.tree("p")).files] == [5, 9, 5]
         # Corrupt unrelated bodies: metadata needs neither, a raw read only its target.
         with store.connection() as conn:
             conn.execute(
@@ -471,6 +456,124 @@ def test_history_maintenance_collects_once_on_worker(paper, monkeypatch):
         await live.tick()
         await live.tick()
         assert collected == [True]
+        await live.close()
+
+    run(scenario())
+
+
+def test_runtime_sqlite_and_crdt_rebuilds_run_on_workers(paper, monkeypatch):
+    import threading
+
+    import rcp.paper.live as module
+
+    live, store, _ = paper
+    owner = threading.get_ident()
+    connection, compact = store.connection, module._compact_state
+
+    @contextmanager
+    def worker_connection():
+        assert threading.get_ident() != owner
+        with connection() as conn:
+            yield conn
+
+    def worker_compact(encoded):
+        assert threading.get_ident() != owner
+        return compact(encoded)
+
+    async def scenario():
+        monkeypatch.setattr(store, "connection", worker_connection)
+        monkeypatch.setattr(module, "_compact_state", worker_compact)
+        file_id = (await live.apply("p", [PaperOp(kind="create", path="a.md")], "h")).file_ids[0]
+        room = await live.connect("p", file_id)
+        client = Doc({"text": Text()})
+        client.apply_update(room.encoded)
+        client["text"].insert(0, "worker")
+        await live.receive("p", file_id, create_update_message(client.get_update()), "h")
+        version = await live.create_version("p", "saved", "h")
+        await live.publish("p")
+        await live.delete_version("p", version["version_id"])
+        assert (await live.tree("p")).publish_state == "published"
+        await live.tick()
+        await live.close()
+
+    run(scenario())
+
+
+@pytest.mark.parametrize("operation", ["apply", "receive"])
+def test_cancelled_commit_settles_before_install_and_unlock(paper, monkeypatch, operation):
+    import threading
+
+    live, store, _ = paper
+
+    async def scenario():
+        file_id = (await live.apply("p", [PaperOp(kind="create", path="a.md")], "h")).file_ids[0]
+        room = await live.connect("p", file_id)
+        queue = asyncio.Queue()
+        room.subscribers.add(queue)
+        entered, release = threading.Event(), threading.Event()
+        connection = store.connection
+
+        @contextmanager
+        def blocked_commit():
+            with connection() as conn:
+                yield conn
+                if conn.in_transaction:
+                    entered.set()
+                    assert release.wait(5)
+
+        monkeypatch.setattr(store, "connection", blocked_commit)
+        if operation == "apply":
+            action = live.apply(
+                "p",
+                [PaperOp(kind="replace", file_id=file_id, start=0, end=0, text="saved")],
+                "h",
+                {"checks": [{"file_id": file_id, "text": ""}]},
+            )
+        else:
+            client = Doc({"text": Text()})
+            client["text"].insert(0, "saved")
+            action = live.receive("p", file_id, create_update_message(client.get_update()), "h")
+        task = asyncio.create_task(action)
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert live._lock("p").locked() and not task.done()
+            assert str(room.doc["text"]) == "" and queue.empty()
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        monkeypatch.setattr(store, "connection", connection)
+        assert str(room.doc["text"]) == "saved" and not queue.empty()
+        assert (await live.snapshot("p")).files[0].text == "saved"
+        await live.close()
+
+    run(scenario())
+
+
+def test_failed_publication_waits_for_backoff(paper, monkeypatch):
+    live, _, workspace = paper
+    attempts = []
+
+    def fail(*args):
+        attempts.append(True)
+        raise StateUnavailable("offline")
+
+    monkeypatch.setattr(workspace, "publish_paper_tree", fail)
+    monkeypatch.setattr(limits, "PAPER_PUBLISH_IDLE_SECONDS", 0)
+
+    async def scenario():
+        await live.apply("p", [PaperOp(kind="create", path="a.md")], "h")
+        await live.publish("p")
+        await live.apply("p", [PaperOp(kind="create", path="b.md")], "h")
+        await live.tick()
+        await live.drain("p")
+        assert len(attempts) == 1
+        live._publish_failed_at["p"] -= limits.PAPER_PUBLISH_RETRY_SECONDS
+        await live.tick()
+        await live.drain("p")
+        assert len(attempts) == 2
         await live.close()
 
     run(scenario())

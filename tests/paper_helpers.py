@@ -53,7 +53,7 @@ def human_edit(live: PaperLive, file_id: str, text: str, project: str = "p"):
             project,
             [PaperOp(kind="replace", file_id=file_id, start=0, end=len(old), text=text)],
             "human",
-            {"ops": [{"text": old}]},
+            {"checks": [{"file_id": file_id, "text": old}]},
         )
     )
 

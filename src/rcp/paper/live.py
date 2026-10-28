@@ -30,6 +30,7 @@ from rcp.paper.models import (
     PaperFile,
     PaperLimit,
     PaperOp,
+    PaperPaused,
     PaperPrecondition,
     PaperRateLimit,
     PaperSnapshot,
@@ -67,6 +68,18 @@ def _owned(method):
         return await method(self, *args, **kwargs)
 
     return invoke
+
+
+async def _settle(function, *args):
+    """Finish worker work under the caller's lock; let it install before cancellation."""
+    task = asyncio.create_task(asyncio.to_thread(function, *args))
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    return task.result(), cancelled
 
 
 def _doc(state: bytes | None = None, text: str | None = None) -> Doc:
@@ -152,6 +165,7 @@ class PaperLive:
         self._fenced = False
         self._timer: asyncio.Task | None = None
         self._publishers: dict[str, asyncio.Task] = {}
+        self._publish_failed_at: dict[str, float] = {}
         self._compactions: set[asyncio.Task] = set()
         # Saved revision last pruned per project; idle projects are not rescanned.
         self._pruned: dict[str, int] = {}
@@ -169,12 +183,16 @@ class PaperLive:
             raise RuntimeError("Synchronous Paper access requires a worker and a running owner")
         return asyncio.run_coroutine_threadsafe(action, self.loop).result()
 
+    def _rows(self, sql, parameters=()):
+        with self.store.connection() as conn:
+            return conn.execute(sql, parameters).fetchall()
+
     def _lock(self, project: str) -> asyncio.Lock:
         return self._locks.setdefault(project, asyncio.Lock())
 
     def _writable(self, project: str) -> None:
         if self._fenced or project in self._paused:
-            raise PaperConflict("Paper is paused")
+            raise PaperPaused("Paper is paused")
         self._disposed.discard(project)
 
     async def start(self) -> None:
@@ -187,11 +205,10 @@ class PaperLive:
     @_owned
     async def _start(self) -> None:
         if self._timer is None:
-            with self.store.connection() as conn:
-                projects = [row[0] for row in conn.execute("SELECT project_id FROM projects")]
-            for project in projects:
+            rows = await asyncio.to_thread(self._rows, "SELECT project_id FROM projects")
+            for (project,) in rows:
                 try:
-                    self.store.require_project_accepts_new_work(project)
+                    await asyncio.to_thread(self.store.require_project_accepts_new_work, project)
                 except ValueError:
                     self._disposed.add(project)
                     continue
@@ -232,15 +249,14 @@ class PaperLive:
         # project whose paper was never opened. The next read initializes lazily.
         async with self._lock(project_id):
             try:
-                self.store.require_project_accepts_new_work(project_id)
+                await asyncio.to_thread(self.store.require_project_accepts_new_work, project_id)
             except ValueError:
                 return
             self._disposed.discard(project_id)
             self._paused.discard(project_id)
-            with self.store.connection() as conn:
-                exists = conn.execute(
-                    "SELECT 1 FROM paper_publication WHERE project_id=?", (project_id,)
-                ).fetchone()
+            exists = await asyncio.to_thread(
+                self._rows, "SELECT 1 FROM paper_publication WHERE project_id=?", (project_id,)
+            )
             if exists:
                 # Timed publication and history skip uninitialized projects.
                 self._initialized.add(project_id)
@@ -277,7 +293,13 @@ class PaperLive:
         if project in self._initialized:
             return
         if self._fenced:
-            raise PaperConflict("Paper is shutting down")
+            raise PaperPaused("Paper is shutting down")
+        _, cancelled = await _settle(self._initialize, project)
+        self._initialized.add(project)
+        if cancelled:
+            raise asyncio.CancelledError
+
+    def _initialize(self, project):
         with self.store.connection() as conn:
             exists = conn.execute(
                 "SELECT 1 FROM paper_publication WHERE project_id=?", (project,)
@@ -287,15 +309,13 @@ class PaperLive:
                 (project,),
             ).fetchone()
         if exists:
-            await asyncio.to_thread(self._upgrade_metadata, project)
-            self._initialized.add(project)
             return
         if project in self._disposed:
-            raise PaperConflict("Paper is paused")
+            raise PaperPaused("Paper is paused")
 
         canonical_unknown = False
         try:
-            canonical = await asyncio.to_thread(self._legacy_content, project)
+            canonical = self._legacy_content(project)
         except StateUnavailable:
             if draft is None:
                 raise
@@ -373,21 +393,8 @@ class PaperLive:
                     )
             else:
                 conn.execute("INSERT INTO paper_saved_snapshots VALUES(?,?,?)", (project, 0, "[]"))
-        self._initialized.add(project)
 
-    def _upgrade_metadata(self, project):
-        with self.store.connection() as conn:
-            reader = PaperSnapshotReader(conn)
-            revision, entries = reader.manifest(project)
-            if any(entry["kind"] == "text" and "size" not in entry for entry in entries):
-                # Upgrade only the current pre-size manifest once on opening it.
-                _, entries = reader.metadata(project)
-                conn.execute(
-                    "UPDATE paper_saved_snapshots SET manifest=? WHERE project_id=? AND revision=?",
-                    (json.dumps(entries, sort_keys=True), project, revision),
-                )
-
-    def _room(self, project: str, file_id: str) -> Room:
+    async def _room(self, project: str, file_id: str) -> Room:
         key = (project, file_id)
         if key in self.rooms:
             return self.rooms[key]
@@ -399,6 +406,11 @@ class PaperLive:
                     break
             else:
                 raise PaperLimit("Too many open Paper rooms")
+        room = await asyncio.to_thread(self._load_room, key)
+        self.rooms[key] = room
+        return room
+
+    def _load_room(self, key):
         with self.store.connection() as conn:
             conn.execute("BEGIN")
             file = conn.execute(
@@ -407,9 +419,8 @@ class PaperLive:
                 key,
             ).fetchone()
             if file is None or file[0] != "text":
-                raise KeyError(file_id)
+                raise KeyError(key[1])
             room = _stored_room(conn, key)
-        self.rooms[key] = room
         return room
 
     def _snapshot(self, project: str, revision: int | None = None) -> PaperSnapshot:
@@ -507,7 +518,7 @@ class PaperLive:
         )
         conn.execute(
             "UPDATE paper_publication SET saved_revision=?,pending_since=COALESCE(pending_since,?),"
-            "last_edit_at=?,last_error=NULL WHERE project_id=?",
+            "last_edit_at=? WHERE project_id=?",
             (revision, now, now, project),
         )
         conn.execute(
@@ -596,234 +607,205 @@ class PaperLive:
         async with self._lock(project_id):
             self._writable(project_id)
             await self._ensure(project_id)
-            ops = [PaperOp.model_validate(op) for op in ops]
-            if not ops:
-                raise ValueError("Paper operations cannot be empty")
-            expect = expect or {}
-            if set(expect) - {"receipt_key", "ops", "revision", "checks"}:
-                raise ValueError("Unknown Paper precondition")
-            key = expect.get("receipt_key")
-            if key is not None and (not isinstance(key, str) or not key or len(key) > 256):
-                raise ValueError("Invalid Paper receipt key")
-            fingerprint = digest(
-                json.dumps(
-                    {
-                        "ops": [
-                            op.model_dump(mode="python", exclude={"data"})
-                            | {"data_sha256": digest(op.data) if op.data is not None else None}
-                            for op in ops
-                        ],
-                        "expect": expect,
-                        "actor": actor,
-                    },
-                    sort_keys=True,
-                ).encode()
-            )
-            payload = {}
-            if key:
-                with self.store.connection() as conn:
-                    row = conn.execute(
-                        "SELECT payload FROM paper_change_receipts "
-                        "WHERE project_id=? AND receipt_key=?",
-                        (project_id, key),
-                    ).fetchone()
-                payload = json.loads(row[0]) if row else {}
-                if "receipt" in payload:
-                    if payload["fingerprint"] != fingerprint:
-                        raise PaperConflict("Receipt key was used for another operation")
-                    return Receipt.model_validate(payload["receipt"])
-            snapshot = await asyncio.to_thread(self._snapshot, project_id)
-            files = {file.file_id: file.model_copy() for file in snapshot.files}
-            if "revision" in expect and expect["revision"] != snapshot.revision:
-                raise PaperPrecondition("Paper revision changed")
-            checks = expect.get("checks")
-            if checks is not None:
-                self._check_snapshot(files, checks)
-            docs: dict[str, Doc] = {}
-            bases: dict[str, Room] = {}
-            blobs: dict[str, bytes] = {}
-            affected = []
-            conditions = expect.get("ops", [{} for _ in ops])
-            if len(conditions) != len(ops):
-                raise ValueError("Expected one precondition per operation")
-            for op, condition in zip(ops, conditions, strict=True):
-                if not isinstance(condition, dict) or set(condition) - {
-                    "file_id",
-                    "path",
-                    "path_free",
-                    "text",
-                    "blob_sha256",
-                }:
-                    raise ValueError("Unknown Paper operation precondition")
-                file_id = op.file_id or str(uuid.uuid4())
-                file = files.get(file_id)
-                if condition.get("file_id", file_id) != file_id:
-                    raise PaperPrecondition("Paper identity changed")
-                if condition.get("path_free") and any(
-                    f.path == condition["path_free"] for f in files.values()
-                ):
-                    raise PaperPrecondition("Paper path is occupied")
-                if (
-                    op.kind != "replace"
-                    and "text" in condition
-                    and (file is None or file.text != condition["text"])
-                ):
-                    raise PaperPrecondition("Paper text changed")
-                if "path" in condition and (file is None or file.path != condition["path"]):
-                    raise PaperPrecondition("Paper path changed")
-                if "blob_sha256" in condition and (
-                    file is None or file.blob_sha256 != condition["blob_sha256"]
-                ):
-                    raise PaperPrecondition("Paper binary changed")
-                if op.kind == "create":
-                    if file is not None:
-                        raise PaperPrecondition("Paper file already exists")
-                    # A guarded Undo may restore a tombstone, preserving its stable identity.
-                    with self.store.connection() as conn:
-                        tombstone = conn.execute(
-                            "SELECT kind FROM paper_files WHERE project_id=? AND file_id=?",
-                            (project_id, file_id),
-                        ).fetchone()
-                        if tombstone and (
-                            tombstone[0] != op.file_kind
-                            or not any(
-                                check.get("file_id_absent") == file_id for check in checks or []
-                            )
-                        ):
-                            raise PaperPrecondition("Paper identity already exists")
-                        restored = (
-                            _stored_room(conn, (project_id, file_id))
-                            if tombstone and tombstone[0] == "text"
-                            else None
-                        )
-                    file = PaperFile(
-                        file_id=file_id,
-                        path=paper_path(op.path or ""),
-                        kind=op.file_kind,
-                        text=op.text if op.file_kind == "text" else None,
-                    )
-                    files[file_id] = file
-                    if file.kind == "text":
-                        if restored is not None:
-                            if str(restored.doc["text"]) != op.text:
-                                raise PaperPrecondition("Retained Paper document differs from Undo")
-                            bases[file_id] = restored
-                            docs[file_id] = _doc(restored.encoded)
-                        else:
-                            docs[file_id] = _doc(text=op.text)
-                elif file is None:
-                    raise PaperPrecondition("Paper file no longer exists")
-                if op.kind == "replace":
-                    if file.kind != "text":
-                        raise ValueError("Binary files cannot receive text edits")
-                    current = file.text or ""
-                    start, end = op.start, op.end
-                    if start is None or end is None or not 0 <= start <= end <= len(current):
-                        raise PaperPrecondition("Paper region is invalid")
-                    if checks is None:
-                        if "text" not in condition or current[start:end] != condition["text"]:
-                            raise PaperPrecondition("Paper region changed")
-                    elif not any(
-                        check.get("file_id") == file_id
-                        and "text" in check
-                        and (
-                            "start" not in check
-                            or (check["start"] == start and check.get("end") == end)
-                        )
-                        for check in checks
-                    ):
-                        raise ValueError("Paper text replacement requires a text precondition")
-                    if file_id not in docs:
-                        bases[file_id] = self._room(project_id, file_id)
-                        docs[file_id] = _doc(bases[file_id].encoded)
-                    doc = docs[file_id]
-                    # pycrdt Text offsets are UTF-8 bytes; the Python API uses characters.
-                    begin = len(current[:start].encode())
-                    finish = len(current[:end].encode())
-                    with doc.transaction():
-                        del doc["text"][begin:finish]
-                        doc["text"].insert(begin, op.text)
-                    file.text = str(doc["text"])
-                elif op.kind == "rename":
-                    file.path = paper_path(op.path or "")
-                elif op.kind == "delete":
-                    del files[file_id]
-                if op.kind == "binary" or (op.kind == "create" and file.kind == "binary"):
-                    if file.kind != "binary":
-                        raise ValueError("Use a binary Paper file for uploads")
-                    if op.data is not None:
-                        sha = digest(op.data)
-                        blobs[sha] = op.data
-                    else:
-                        sha = op.blob_sha256 or ""
-                        if sha not in snapshot._blobs:
-                            blobs[sha] = await asyncio.to_thread(self.blob, sha)
-                    file.blob_sha256 = sha
-                affected.append(file_id)
-            self.validate_tree(list(files.values()), snapshot._blobs | blobs)
-            encoded_docs = {
-                file_id: _compact_state(merge_updates(bases[file_id].encoded, doc.get_update()))[1]
-                if file_id in bases
-                else doc.get_update()
-                for file_id, doc in docs.items()
-            }
-            if any(
-                len(encoded) > limits.PAPER_MAX_MESSAGE_BYTES for encoded in encoded_docs.values()
-            ):
-                raise PaperLimit("Paper CRDT state is too large")
-            self._rate(project_id)
-            revision = snapshot.revision + 1
-            receipt = Receipt(revision=revision, receipt_key=key, file_ids=affected)
-            now = self.store.now()
-            updates = {}
-            with self.store.connection() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                for sha, data in blobs.items():
-                    conn.execute(
-                        "INSERT OR IGNORE INTO paper_blobs VALUES(?,?,?)", (sha, data, len(data))
-                    )
-                # Free old paths first so a validated multi-operation rename is atomic.
-                conn.execute(
-                    "UPDATE paper_files SET deleted_at=? WHERE project_id=? AND deleted_at IS NULL",
-                    (now, project_id),
-                )
-                for file in files.values():
-                    conn.execute(
-                        "INSERT INTO paper_files VALUES(?,?,?,?,?,NULL,?) ON CONFLICT(project_id,file_id) "
-                        "DO UPDATE SET path=excluded.path,deleted_at=NULL,blob_sha256=excluded.blob_sha256",
-                        (project_id, file.file_id, file.path, file.kind, now, file.blob_sha256),
-                    )
-                for file_id, doc in docs.items():
-                    old = bases.get(file_id)
-                    seq = old.seq + 1 if old else 1
-                    update = doc.get_update(old.doc.get_state()) if old else doc.get_update()
-                    conn.execute(
-                        "INSERT INTO paper_updates VALUES(?,?,?,?,?,?,?)",
-                        (project_id, file_id, seq, update, revision, actor, now),
-                    )
-                    updates[file_id] = (doc, seq, update)
-                self._revision(
-                    conn, project_id, revision, list(files.values()), actor, "apply", now
-                )
-                if key:
-                    payload.update(fingerprint=fingerprint, receipt=receipt.model_dump())
-                    conn.execute(
-                        "INSERT INTO paper_change_receipts VALUES(?,?,NULL,'apply',?,?) "
-                        "ON CONFLICT(project_id,receipt_key) DO UPDATE SET payload=excluded.payload",
-                        (project_id, key, json.dumps(payload), now),
-                    )
+            result, cancelled = await _settle(self._apply, project_id, ops, actor, expect)
+            receipt, updates, encoded_docs, deleted = result
             for file_id, (doc, seq, update) in updates.items():
                 room = self.rooms.get((project_id, file_id))
                 if room:
                     room.doc, room.seq, room.encoded = doc, seq, encoded_docs[file_id]
                     self._broadcast(room, create_update_message(update))
                     self._broadcast(room, _ack(doc))
-                    self._compact(project_id, file_id, room, revision)
-            for file_id in set(affected) - files.keys():
+                    self._compact(project_id, file_id, room, receipt.revision)
+            for file_id in deleted:
                 room = self.rooms.pop((project_id, file_id), None)
                 if room:
                     self._broadcast(room, b"")
+            if cancelled:
+                raise asyncio.CancelledError
             return receipt
+
+    def _apply(self, project_id, ops, actor, expect):
+        ops = [PaperOp.model_validate(op) for op in ops]
+        if not ops:
+            raise ValueError("Paper operations cannot be empty")
+        expect = expect or {}
+        if set(expect) - {"receipt_key", "revision", "checks"}:
+            raise ValueError("Unknown Paper precondition")
+        key = expect.get("receipt_key")
+        if key is not None and (not isinstance(key, str) or not key or len(key) > 256):
+            raise ValueError("Invalid Paper receipt key")
+        fingerprint = digest(
+            json.dumps(
+                {
+                    "ops": [
+                        op.model_dump(mode="python", exclude={"data"})
+                        | {"data_sha256": digest(op.data) if op.data is not None else None}
+                        for op in ops
+                    ],
+                    "expect": expect,
+                    "actor": actor,
+                },
+                sort_keys=True,
+            ).encode()
+        )
+        payload = {}
+        if key:
+            with self.store.connection() as conn:
+                row = conn.execute(
+                    "SELECT payload FROM paper_change_receipts "
+                    "WHERE project_id=? AND receipt_key=?",
+                    (project_id, key),
+                ).fetchone()
+            payload = json.loads(row[0]) if row else {}
+            if "receipt" in payload:
+                if payload["fingerprint"] != fingerprint:
+                    raise PaperConflict("Receipt key was used for another operation")
+                return Receipt.model_validate(payload["receipt"]), {}, {}, set()
+        snapshot = self._snapshot(project_id)
+        files = {file.file_id: file.model_copy() for file in snapshot.files}
+        if "revision" in expect and expect["revision"] != snapshot.revision:
+            raise PaperPrecondition("Paper revision changed")
+        checks = expect.get("checks")
+        if checks is not None:
+            self._check_snapshot(files, checks)
+        docs: dict[str, Doc] = {}
+        bases: dict[str, Room] = {}
+        blobs: dict[str, bytes] = {}
+        affected = []
+        for op in ops:
+            file_id = op.file_id or str(uuid.uuid4())
+            file = files.get(file_id)
+            if op.kind == "create":
+                if file is not None:
+                    raise PaperPrecondition("Paper file already exists")
+                # A guarded Undo may restore a tombstone, preserving its stable identity.
+                with self.store.connection() as conn:
+                    tombstone = conn.execute(
+                        "SELECT kind FROM paper_files WHERE project_id=? AND file_id=?",
+                        (project_id, file_id),
+                    ).fetchone()
+                    if tombstone and (
+                        tombstone[0] != op.file_kind
+                        or not any(check.get("file_id_absent") == file_id for check in checks or [])
+                    ):
+                        raise PaperPrecondition("Paper identity already exists")
+                    restored = (
+                        _stored_room(conn, (project_id, file_id))
+                        if tombstone and tombstone[0] == "text"
+                        else None
+                    )
+                file = PaperFile(
+                    file_id=file_id,
+                    path=paper_path(op.path or ""),
+                    kind=op.file_kind,
+                    text=op.text if op.file_kind == "text" else None,
+                )
+                files[file_id] = file
+                if file.kind == "text":
+                    if restored is not None:
+                        if str(restored.doc["text"]) != op.text:
+                            raise PaperPrecondition("Retained Paper document differs from Undo")
+                        bases[file_id] = restored
+                        docs[file_id] = _doc(restored.encoded)
+                    else:
+                        docs[file_id] = _doc(text=op.text)
+            elif file is None:
+                raise PaperPrecondition("Paper file no longer exists")
+            if op.kind == "replace":
+                if file.kind != "text":
+                    raise ValueError("Binary files cannot receive text edits")
+                current = file.text or ""
+                start, end = op.start, op.end
+                if start is None or end is None or not 0 <= start <= end <= len(current):
+                    raise PaperPrecondition("Paper region is invalid")
+                if not any(
+                    check.get("file_id") == file_id
+                    and "text" in check
+                    and (
+                        "start" not in check
+                        or (check["start"] == start and check.get("end") == end)
+                    )
+                    for check in checks or []
+                ):
+                    raise ValueError("Paper text replacement requires a text precondition")
+                if file_id not in docs:
+                    bases[file_id] = self.rooms.get((project_id, file_id)) or self._load_room(
+                        (project_id, file_id)
+                    )
+                    docs[file_id] = _doc(bases[file_id].encoded)
+                doc = docs[file_id]
+                # pycrdt Text offsets are UTF-8 bytes; the Python API uses characters.
+                begin = len(current[:start].encode())
+                finish = len(current[:end].encode())
+                with doc.transaction():
+                    del doc["text"][begin:finish]
+                    doc["text"].insert(begin, op.text)
+                file.text = str(doc["text"])
+            elif op.kind == "rename":
+                file.path = paper_path(op.path or "")
+            elif op.kind == "delete":
+                del files[file_id]
+            if op.kind == "binary" or (op.kind == "create" and file.kind == "binary"):
+                if file.kind != "binary":
+                    raise ValueError("Use a binary Paper file for uploads")
+                if op.data is not None:
+                    sha = digest(op.data)
+                    blobs[sha] = op.data
+                else:
+                    sha = op.blob_sha256 or ""
+                    if sha not in snapshot._blobs:
+                        blobs[sha] = self.blob(sha)
+                file.blob_sha256 = sha
+            affected.append(file_id)
+        self.validate_tree(list(files.values()), snapshot._blobs | blobs)
+        encoded_docs = {
+            file_id: _compact_state(merge_updates(bases[file_id].encoded, doc.get_update()))[1]
+            if file_id in bases
+            else doc.get_update()
+            for file_id, doc in docs.items()
+        }
+        if any(len(encoded) > limits.PAPER_MAX_MESSAGE_BYTES for encoded in encoded_docs.values()):
+            raise PaperLimit("Paper CRDT state is too large")
+        self._rate(project_id)
+        revision = snapshot.revision + 1
+        receipt = Receipt(revision=revision, receipt_key=key, file_ids=affected)
+        now = self.store.now()
+        updates = {}
+        with self.store.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for sha, data in blobs.items():
+                conn.execute(
+                    "INSERT OR IGNORE INTO paper_blobs VALUES(?,?,?)", (sha, data, len(data))
+                )
+            # Free old paths first so a validated multi-operation rename is atomic.
+            conn.execute(
+                "UPDATE paper_files SET deleted_at=? WHERE project_id=? AND deleted_at IS NULL",
+                (now, project_id),
+            )
+            for file in files.values():
+                conn.execute(
+                    "INSERT INTO paper_files VALUES(?,?,?,?,?,NULL,?) ON CONFLICT(project_id,file_id) "
+                    "DO UPDATE SET path=excluded.path,deleted_at=NULL,blob_sha256=excluded.blob_sha256",
+                    (project_id, file.file_id, file.path, file.kind, now, file.blob_sha256),
+                )
+            for file_id, doc in docs.items():
+                old = bases.get(file_id)
+                seq = old.seq + 1 if old else 1
+                update = doc.get_update(old.doc.get_state()) if old else doc.get_update()
+                conn.execute(
+                    "INSERT INTO paper_updates VALUES(?,?,?,?,?,?,?)",
+                    (project_id, file_id, seq, update, revision, actor, now),
+                )
+                updates[file_id] = (doc, seq, update)
+            self._revision(conn, project_id, revision, list(files.values()), actor, "apply", now)
+            if key:
+                payload.update(fingerprint=fingerprint, receipt=receipt.model_dump())
+                conn.execute(
+                    "INSERT INTO paper_change_receipts VALUES(?,?,NULL,'apply',?,?) "
+                    "ON CONFLICT(project_id,receipt_key) DO UPDATE SET payload=excluded.payload",
+                    (project_id, key, json.dumps(payload), now),
+                )
+        return receipt, updates, encoded_docs, set(affected) - files.keys()
 
     @_owned
     async def connect(
@@ -832,7 +814,7 @@ class PaperLive:
         async with self._lock(project_id):
             self._writable(project_id)
             await self._ensure(project_id)
-            room = self._room(project_id, file_id)
+            room = await self._room(project_id, file_id)
             if subscriber is not None:
                 room.subscribers.add(subscriber)
             return room
@@ -846,7 +828,7 @@ class PaperLive:
             await self._ensure(project_id)
             if not message or len(message) > limits.PAPER_MAX_MESSAGE_BYTES:
                 raise PaperLimit("Paper message is too large")
-            room = self._room(project_id, file_id)
+            room = await self._room(project_id, file_id)
             if message[0] == 1:
                 if len(message) > limits.PAPER_MAX_AWARENESS_BYTES:
                     raise PaperLimit("Paper awareness is too large")
@@ -857,38 +839,34 @@ class PaperLive:
             if kind == 0:
                 reply = handle_sync_message(message[1:], room.doc)
                 return [reply, _ack(room.doc)] if reply else [_ack(room.doc)]
-            encoded = merge_updates(room.encoded, update)
-            if encoded == room.encoded:
-                return [_ack(room.doc)]
-            candidate, encoded = _compact_state(encoded)
-            if len(encoded) > limits.PAPER_MAX_MESSAGE_BYTES:
-                raise PaperLimit("Paper CRDT state is too large")
-            self._rate(project_id)
             seq = room.seq + 1
-            saving = asyncio.create_task(
-                asyncio.to_thread(
-                    self._save_text_update,
-                    project_id,
-                    file_id,
-                    seq,
-                    update,
-                    str(candidate["text"]),
-                    actor,
-                )
+            result, cancelled = await _settle(
+                self._receive_update, project_id, file_id, room.encoded, seq, update, actor
             )
-            cancelled = False
-            try:
-                revision = await asyncio.shield(saving)
-            except asyncio.CancelledError:
-                # Keep the project lock until the transaction has settled.
-                revision = await saving
-                cancelled = True
+            if result is None:
+                if cancelled:
+                    raise asyncio.CancelledError
+                return [_ack(room.doc)]
+            candidate, encoded, revision = result
             room.doc, room.seq, room.encoded = candidate, seq, encoded
             self._broadcast(room, create_update_message(update))
             self._compact(project_id, file_id, room, revision)
             if cancelled:
                 raise asyncio.CancelledError
             return [_ack(candidate)]
+
+    def _receive_update(self, project, file_id, previous, seq, update, actor):
+        encoded = merge_updates(previous, update)
+        if encoded == previous:
+            return None
+        candidate, encoded = _compact_state(encoded)
+        if len(encoded) > limits.PAPER_MAX_MESSAGE_BYTES:
+            raise PaperLimit("Paper CRDT state is too large")
+        self._rate(project)
+        revision = self._save_text_update(
+            project, file_id, seq, update, str(candidate["text"]), actor
+        )
+        return candidate, encoded, revision
 
     def _save_text_update(self, project, file_id, seq, update, text, actor):
         body = text.encode()
@@ -1014,27 +992,33 @@ class PaperLive:
     async def history(self, project_id: str) -> list[dict[str, Any]]:
         async with self._lock(project_id):
             await self._ensure(project_id)
-            with self.store.connection() as conn:
-                return [
-                    dict(row) | {"manifest": json.loads(row["manifest"])}
-                    for row in conn.execute(
-                        "SELECT * FROM paper_versions WHERE project_id=? ORDER BY created_at DESC,rowid DESC",
-                        (project_id,),
-                    )
-                ]
+            return await asyncio.to_thread(self._history, project_id)
+
+    def _history(self, project_id):
+        with self.store.connection() as conn:
+            return [
+                dict(row) | {"manifest": json.loads(row["manifest"])}
+                for row in conn.execute(
+                    "SELECT * FROM paper_versions WHERE project_id=? ORDER BY created_at DESC,rowid DESC",
+                    (project_id,),
+                )
+            ]
 
     @_owned
     async def version(self, project_id: str, version_id: str) -> dict[str, Any]:
         async with self._lock(project_id):
             await self._ensure(project_id)
-            with self.store.connection() as conn:
-                row = conn.execute(
-                    "SELECT * FROM paper_versions WHERE project_id=? AND version_id=?",
-                    (project_id, version_id),
-                ).fetchone()
-                if row is None:
-                    raise KeyError(version_id)
-                return dict(row) | {"manifest": json.loads(row["manifest"])}
+            return await asyncio.to_thread(self._version, project_id, version_id)
+
+    def _version(self, project_id, version_id):
+        with self.store.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM paper_versions WHERE project_id=? AND version_id=?",
+                (project_id, version_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(version_id)
+            return dict(row) | {"manifest": json.loads(row["manifest"])}
 
     @_owned
     async def version_snapshot(self, project_id: str, version_id: str) -> PaperSnapshot:
@@ -1057,11 +1041,42 @@ class PaperLive:
         async with self._lock(project_id):
             self._writable(project_id)
             await self._ensure(project_id)
-            snapshot = await asyncio.to_thread(self._snapshot, project_id)
-            with self.store.connection() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                version_id = save_version(conn, project_id, snapshot, actor, self.store.now(), name)
+            version_id, cancelled = await _settle(self._create_version, project_id, name, actor)
+            if cancelled:
+                raise asyncio.CancelledError
         return await self.version(project_id, version_id)
+
+    def _create_version(self, project_id, name, actor):
+        with self.store.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            snapshot = PaperSnapshotReader(conn).snapshot(project_id)
+            return save_version(conn, project_id, snapshot, actor, self.store.now(), name)
+
+    @_owned
+    async def delete_version(self, project_id: str, version_id: str) -> None:
+        async with self._lock(project_id):
+            self._writable(project_id)
+            await self._ensure(project_id)
+            _, cancelled = await _settle(self._delete_version, project_id, version_id)
+            if cancelled:
+                raise asyncio.CancelledError
+
+    def _delete_version(self, project_id, version_id):
+        with self.store.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT kind FROM paper_versions WHERE project_id=? AND version_id=?",
+                (project_id, version_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(version_id)
+            if row[0] != "named":
+                raise PaperConflict("Only named Paper versions can be deleted")
+            conn.execute(
+                "DELETE FROM paper_versions WHERE project_id=? AND version_id=?",
+                (project_id, version_id),
+            )
+            prune(conn, project_id, refuse=False)
 
     @_owned
     async def restore(
@@ -1102,16 +1117,16 @@ class PaperLive:
                         text=file.text or "",
                     )
                 )
-                conditions.append({"text": existing.text or ""})
+                conditions.append({"file_id": file.file_id, "text": existing.text or ""})
             else:
                 ops.append(
                     PaperOp(kind="binary", file_id=file.file_id, blob_sha256=file.blob_sha256)
                 )
-                conditions.append({"blob_sha256": existing.blob_sha256})
+                conditions.append({"file_id": file.file_id, "blob_sha256": existing.blob_sha256})
             if file.path != existing.path:
                 ops.append(PaperOp(kind="rename", file_id=file.file_id, path=file.path))
-                conditions.append({"path": existing.path})
-        return await self.apply(project_id, ops, actor, {"ops": conditions})
+                conditions.append({"file_id": file.file_id, "path": existing.path})
+        return await self.apply(project_id, ops, actor, {"checks": conditions})
 
     @_owned
     async def resolve_hold(self, project_id: str, keep: str, actor: str) -> PaperTree:
@@ -1120,11 +1135,10 @@ class PaperLive:
         async with self._lock(project_id):
             self._writable(project_id)
             await self._ensure(project_id)
-            with self.store.connection() as conn:
-                row = conn.execute(
-                    "SELECT hold FROM paper_publication WHERE project_id=?", (project_id,)
-                ).fetchone()
-                hold = json.loads(row[0]) if row[0] else None
+            (row,) = await asyncio.to_thread(
+                self._rows, "SELECT hold FROM paper_publication WHERE project_id=?", (project_id,)
+            )
+            hold = json.loads(row[0]) if row[0] else None
         if hold and keep == "canonical":
             if hold.get("canonical_unknown"):
                 canonical = await asyncio.to_thread(self._legacy_content, project_id)
@@ -1134,18 +1148,12 @@ class PaperLive:
                         (file for file in snapshot.files if file.path == "introduction.md"), None
                     )
                     if canonical is not None and introduction is not None:
-                        with self.store.connection() as conn:
-                            hold["canonical_version"] = save_version(
-                                conn,
-                                project_id,
-                                PaperSnapshot(
-                                    revision=0,
-                                    files=[introduction.model_copy(update={"text": canonical})],
-                                ),
-                                "migration",
-                                self.store.now(),
-                                "Legacy canonical",
-                            )
+                        version, cancelled = await _settle(
+                            self._save_canonical_version, project_id, introduction, canonical
+                        )
+                        hold["canonical_version"] = version
+                        if cancelled:
+                            raise asyncio.CancelledError
             if hold["canonical_version"]:
                 target = await self.version_snapshot(project_id, hold["canonical_version"])
                 await self.restore(
@@ -1163,17 +1171,34 @@ class PaperLive:
                     )
         async with self._lock(project_id):
             self._writable(project_id)
-            with self.store.connection() as conn:
-                conn.execute(
-                    "UPDATE paper_publication SET hold=NULL WHERE project_id=?", (project_id,)
-                )
+            _, cancelled = await _settle(
+                self._rows,
+                "UPDATE paper_publication SET hold=NULL WHERE project_id=?",
+                (project_id,),
+            )
+            if cancelled:
+                raise asyncio.CancelledError
         return await self.tree(project_id)
+
+    def _save_canonical_version(self, project, introduction, canonical):
+        with self.store.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            return save_version(
+                conn,
+                project,
+                PaperSnapshot(
+                    revision=0, files=[introduction.model_copy(update={"text": canonical})]
+                ),
+                "migration",
+                self.store.now(),
+                "Legacy canonical",
+            )
 
     @_owned
     async def publish(self, project_id: str) -> None:
         """Flush a saved snapshot, leaving unreachable state roots pending."""
         if self._fenced or project_id in self._paused or project_id in self._disposed:
-            raise PaperConflict("Paper is paused")
+            raise PaperPaused("Paper is paused")
         task = self._publishers.get(project_id)
         if task is None:
             task = asyncio.create_task(self._publish(project_id))
@@ -1187,10 +1212,9 @@ class PaperLive:
     async def _publish(self, project: str) -> None:
         async with self._lock(project):
             await self._ensure(project)
-            with self.store.connection() as conn:
-                row = conn.execute(
-                    "SELECT * FROM paper_publication WHERE project_id=?", (project,)
-                ).fetchone()
+            (row,) = await asyncio.to_thread(
+                self._rows, "SELECT * FROM paper_publication WHERE project_id=?", (project,)
+            )
             if row["hold"] or row["saved_revision"] == row["published_revision"]:
                 return
             snapshot = await asyncio.to_thread(self._snapshot, project)
@@ -1201,24 +1225,37 @@ class PaperLive:
                 self.materialize(snapshot, root)
                 self.workspace_for(project).publish_paper_tree(root, snapshot.revision)
 
+        error = None
         try:
             await asyncio.to_thread(write)
         except Exception as exc:
             _LOG.warning("Paper publication remains pending for %s: %s", project, exc)
-            with self.store.connection() as conn:
+            error = str(exc)[:1000]
+        async with self._lock(project):
+            _, cancelled = await _settle(
+                self._publication_result, project, snapshot.revision, error
+            )
+            if error is not None:
+                self._publish_failed_at[project] = time.monotonic()
+            else:
+                self._publish_failed_at.pop(project, None)
+            if cancelled:
+                raise asyncio.CancelledError
+
+    def _publication_result(self, project, revision, error):
+        with self.store.connection() as conn:
+            if error is not None:
                 conn.execute(
-                    "UPDATE paper_publication SET last_error=? WHERE project_id=?",
-                    (str(exc)[:1000], project),
+                    "UPDATE paper_publication SET last_error=? WHERE project_id=?", (error, project)
                 )
-        else:
-            with self.store.connection() as conn:
+            else:
                 conn.execute(
                     "UPDATE paper_publication SET published_revision=MAX(published_revision,?),"
                     "pending_since=CASE WHEN saved_revision=? THEN NULL ELSE "
                     "(SELECT MIN(created_at) FROM paper_revisions r WHERE r.project_id=paper_publication.project_id "
                     "AND r.revision>?) END,"
                     "last_error=NULL WHERE project_id=?",
-                    (snapshot.revision, snapshot.revision, snapshot.revision, project),
+                    (revision, revision, revision, project),
                 )
 
     async def _tick(self) -> None:
@@ -1232,8 +1269,7 @@ class PaperLive:
     @_owned
     async def tick(self) -> None:
         """One timer pass; timestamps in SQLite also recover bursts after restart."""
-        with self.store.connection() as conn:
-            rows = conn.execute("SELECT * FROM paper_publication").fetchall()
+        rows = await asyncio.to_thread(self._rows, "SELECT * FROM paper_publication")
         now = datetime.now(UTC)
 
         def age(value):
@@ -1250,6 +1286,12 @@ class PaperLive:
                 continue
             if (
                 row["pending_since"]
+                and (
+                    not row["last_error"]
+                    or time.monotonic()
+                    - self._publish_failed_at.setdefault(project, time.monotonic())
+                    >= limits.PAPER_PUBLISH_RETRY_SECONDS
+                )
                 and not row["hold"]
                 and (
                     age(row["last_edit_at"]) >= limits.PAPER_PUBLISH_IDLE_SECONDS
@@ -1272,14 +1314,22 @@ class PaperLive:
                         pruning = asyncio.create_task(asyncio.to_thread(self._prune, project))
                         self._compactions.add(pruning)
                         pruning.add_done_callback(self._compactions.discard)
-                        await asyncio.shield(pruning)
+                        try:
+                            await asyncio.shield(pruning)
+                        except asyncio.CancelledError:
+                            await pruning
+                            raise
                         self._pruned[project] = row["saved_revision"]
                     saving = asyncio.create_task(
                         asyncio.to_thread(self._automatic_version, project, now)
                     )
                     self._compactions.add(saving)
                     saving.add_done_callback(self._compactions.discard)
-                    await asyncio.shield(saving)
+                    try:
+                        await asyncio.shield(saving)
+                    except asyncio.CancelledError:
+                        await saving
+                        raise
             except Exception:
                 # One project's history failure must not stop the others' timers.
                 _LOG.exception("Paper history pass failed for project %s", project)

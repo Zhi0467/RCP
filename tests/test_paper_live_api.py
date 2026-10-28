@@ -128,9 +128,9 @@ def test_websocket_membership_and_revocation(tmp_path, monkeypatch):
         assert client.get(prefix + "/tree").status_code == 404
         with (
             pytest.raises(WebSocketDisconnect) as refused,
-            client.websocket_connect(url, headers={"Origin": "http://testserver"}),
+            client.websocket_connect(url, headers={"Origin": "http://testserver"}) as socket,
         ):
-            pytest.fail("Nonmember connected")
+            socket.receive_bytes()
         assert refused.value.code == 4403
         acting[0] = people[0].user_id
         with client.websocket_connect(url, headers={"Origin": "http://testserver"}) as socket:
@@ -299,3 +299,52 @@ def test_rejected_updates_close_finally_but_rate_limits_retry(
             assert closed.value.code == (
                 4529 if failure.endswith("rate") else 4413 if failure == "large" else 4400
             )
+
+
+@pytest.mark.parametrize("refusal,code", [("paused", 4503), ("admission", 4503), ("deleted", 4403)])
+def test_refused_socket_accepts_then_closes_with_recovery_code(
+    manifest, tmp_path, monkeypatch, refusal, code
+):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    with signed_in_client(app) as client:
+        project = app.state.default_project_id
+        prefix = f"/api/projects/{project}/paper"
+        file_id = _file(client, prefix)
+        if refusal == "paused":
+            app.state.paper_live.run_sync(app.state.paper_live.pause(project))
+        elif refusal == "admission":
+
+            def refuse(*args):
+                raise ValueError("closed")
+
+            monkeypatch.setattr(
+                app.state.services.store, "require_project_accepts_new_work", refuse
+            )
+        else:
+            assert client.delete(prefix + f"/files/{file_id}").status_code == 200
+        with client.websocket_connect(
+            prefix + f"/files/{file_id}/live", headers={"Origin": "http://testserver"}
+        ) as socket:
+            with pytest.raises(WebSocketDisconnect) as closed:
+                socket.receive_bytes()
+            assert closed.value.code == code
+
+
+def test_delete_named_version_releases_quota_and_refuses_auto(manifest, tmp_path, monkeypatch):
+    from rcp import limits
+
+    monkeypatch.setattr(limits, "PAPER_HISTORY_NAMED_LIMIT", 1)
+    monkeypatch.setattr(limits, "PAPER_HISTORY_IDLE_SECONDS", 0)
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    with signed_in_client(app) as client:
+        prefix = f"/api/projects/{app.state.default_project_id}/paper"
+        _file(client, prefix)
+        live = app.state.paper_live
+        live.run_sync(live.tick())
+        auto = client.get(prefix + "/history").json()[0]["version_id"]
+        assert client.delete(prefix + f"/history/{auto}").status_code == 409
+        version = client.post(prefix + "/history", json={"name": "kept"}).json()["version_id"]
+        assert client.post(prefix + "/history", json={"name": "full"}).status_code == 409
+        assert client.delete(prefix + f"/history/{version}").status_code == 204
+        assert client.get(prefix + f"/history/{version}").status_code == 404
+        assert client.post(prefix + "/history", json={"name": "available"}).status_code == 200

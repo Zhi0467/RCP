@@ -11,6 +11,10 @@ class PaperConflict(ValueError):
     """A guarded operation no longer describes the saved tree."""
 
 
+class PaperPaused(PaperConflict):
+    """Paper admission is temporarily closed; clients should retry."""
+
+
 class PaperPrecondition(PaperConflict):
     """An atomic live mutation definitely refused its saved-tree preconditions."""
 
