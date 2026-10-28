@@ -242,8 +242,7 @@ def test_remote_project_snapshot_reads_published_manifest_and_live_paper_badge(
     assert snapshot["repositories"][0]["path"] == expected_repository
     assert snapshot["name"] == "published"
     assert snapshot["canonical_state"]["remote"] is True
-    assert snapshot["paper"]["content"] == ""
-    assert snapshot["paper"]["canonical_available"] is False
+    assert snapshot["paper"] is False
     assert service.manifest.name != "published"
 
 

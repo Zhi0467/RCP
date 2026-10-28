@@ -9,20 +9,15 @@ def test_project_paper_badge_tracks_the_saved_tree_and_sessions(manifest, tmp_pa
         project = f"/api/projects/{app.state.default_project_id}"
         assert client.get(project + "/paper/tree").json()["files"] == []
         initial = client.get(project).json()["paper"]
-        assert initial["canonical_available"] is False
+        assert initial is False
         created = client.post(project + "/paper/files", json={"path": "sections/start.md"})
         assert created.status_code == 200, created.text
         badge = client.get(project).json()["paper"]
-        assert badge == {
-            "content": "",
-            "draft_version": None,
-            "sync_state": "unsynced",
-            "canonical_available": True,
-        }
+        assert badge is True
         assert client.get(project + "/paper/sessions").json() == []
         file_id = created.json()["file_ids"][0]
         assert client.delete(project + f"/paper/files/{file_id}").status_code == 200
-        assert client.get(project).json()["paper"]["canonical_available"] is False
+        assert client.get(project).json()["paper"] is True
 
 
 def test_live_paper_writes_do_not_need_a_display_generation(manifest, tmp_path, monkeypatch):

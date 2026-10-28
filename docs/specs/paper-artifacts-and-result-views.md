@@ -29,7 +29,8 @@ acknowledges them. Publication writes the saved tree to the state root's
 during continuous editing, as one staged tree that replaces the previous one in
 a single step, so a rename and the edit that follows it never appear apart. An
 unreachable state root leaves publication pending; saving continues. Paper is
-never committed to Git.
+never committed to Git. The project snapshot exposes `paper` as a boolean badge:
+true means saved revisions still need publication, false means they are published.
 
 **Why:** a paper co-written live must not lose an acknowledged keystroke to a
 crash, and a half-published tree breaks every build that includes the missing
@@ -54,7 +55,9 @@ becomes the live text, and nothing publishes until a member picks which to keep.
 History records a version after each burst of editing and on request. Automatic
 versions form a bounded ring; named versions have a quota, and a full quota
 refuses new names rather than evicting old ones. A version is restored per file
-as a new live edit.
+as a new live edit. Revision timing rows are pruned once both publication and
+the newest retained version cover them; unpublished or unversioned edits keep
+their timing records.
 
 ### Preview
 
@@ -101,6 +104,9 @@ to apply directly, the other cards still apply. The same durable receipt holds t
 its inverse, and the core's committed result; replay returns that result before
 checking preconditions again. Outstanding cards and active coach turns keep their
 base revisions available even beyond the ordinary snapshot retention window.
+Pending and outdated binary cards retain both original and proposed blobs through
+backup and restore. Card lists load payloads together and read the live paper only
+when pending cards need their anchors checked.
 Delete receipts also retain the text document state so Undo restores its CRDT
 identity; reconnecting a cached editor cannot duplicate the restored text.
 

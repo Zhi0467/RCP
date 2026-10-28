@@ -206,22 +206,13 @@ class MaintenanceCoordinator:
         self.background_admission.close_and_wait(
             timeout=remaining(), additional_idle=self.background.runtime_is_idle
         )
-        from rcp.server_ops.paper_lifecycle import get_paper_live
+        from rcp.server_ops.paper_lifecycle import detach_paper_runtime, get_paper_live
 
-        papers = [
-            (record.project_id, get_paper_live(self.store, record.project_id))
-            for record in self.store.projects()
-        ]
+        for record in self.store.projects():
+            get_paper_live(self.store, record.project_id)
         try:
-            for project_id, paper in papers:
-                if paper is not None:
-                    self._paused_papers.append((project_id, paper))
-                    paper.pause(project_id)
-            for project_id, paper in papers:
-                if paper is not None:
-                    paper.drain(project_id)
-                    paper.dispose(project_id)
-                remaining()
+            self._paused_papers = detach_paper_runtime(self.store)
+            remaining()
             self.capture = self.capture_sqlite()
             self.quiescent = True
         except BaseException:

@@ -3134,16 +3134,7 @@ export interface PaperTree {
   files: PaperFile[];
 }
 
-export interface PaperSnapshot {
-  draft_version: string | null;
-  content: string;
-  sync_state: "not_created" | "synced" | "unsynced" | "behind";
-  base_hash?: string | null;
-  canonical_hash?: string | null;
-  incoming_content?: string | null;
-  updated_at?: string | null;
-  canonical_available: boolean;
-}
+export type PaperSnapshot = boolean;
 
 export interface GraphChangeSource {
   revision: number;

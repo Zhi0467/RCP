@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import logging
 import os
 import stat
 import uuid
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from difflib import SequenceMatcher
@@ -56,8 +55,6 @@ class Change(BaseModel):
     file_kind: Literal["text", "binary"] = "text"
     before_blob: str | None = None
     after_blob: str | None = None
-    before_bytes: str | None = None
-    after_bytes: str | None = None
     lines: dict[str, int] | None = None
     preview: dict[str, object] = Field(default_factory=dict)
     stats: dict[str, int] = Field(default_factory=dict)
@@ -236,24 +233,7 @@ def validate_output(
     reverse = {new: old for old, new in pairs}
     for name, body in files.items():
         original = live.get(reverse.get(name, name))
-        textual = (
-            original.kind == "text"
-            if original
-            else Path(name).suffix.lower()
-            in {
-                ".md",
-                ".tex",
-                ".typ",
-                ".bib",
-                ".txt",
-                ".json",
-                ".csv",
-                ".yaml",
-                ".yml",
-                ".html",
-                ".svg",
-            }
-        )
+        textual = (original.kind if original else paper_file_kind(name, body)) == "text"
         if textual:
             try:
                 body.decode("utf-8")
@@ -653,22 +633,32 @@ class PaperChanges:
 
     def groups(self, project_id: str, task_id: str | None = None) -> list[ChangeGroup]:
         with self.store.connection() as connection:
-            ids = connection.execute(
-                "SELECT group_id FROM paper_change_groups WHERE project_id=? AND (? IS NULL OR task_id=?) ORDER BY created_at,rowid",
+            rows = connection.execute(
+                "SELECT * FROM paper_change_groups WHERE project_id=? "
+                "AND (? IS NULL OR task_id=?) ORDER BY created_at,rowid",
                 (project_id, task_id, task_id),
             ).fetchall()
-        result = []
-        current = self._snapshot(project_id)
+            if not rows:
+                return []
+            cards: dict[str, list[Change]] = defaultdict(list)
+            for row in connection.execute(
+                "SELECT c.group_id,c.payload FROM paper_changes c "
+                "JOIN paper_change_groups g ON g.project_id=c.project_id AND g.group_id=c.group_id "
+                "WHERE g.project_id=? AND (? IS NULL OR g.task_id=?) ORDER BY c.rowid",
+                (project_id, task_id, task_id),
+            ):
+                cards[row[0]].append(Change.model_validate_json(row[1]))
+        groups = [ChangeGroup(**dict(row), changes=cards[row["group_id"]]) for row in rows]
+        current = self._snapshot(project_id) if any(g.state == "pending" for g in groups) else None
         mappings: dict[tuple[str, int, int], _RangeMapping] = {}
-        for row in ids:
-            group = self._load(project_id, row[0])
+        for group in groups:
             if group.state == "pending":
+                assert current is not None
                 try:
                     self._prepare(project_id, group, current, mappings)
                 except OutdatedChange:
                     group.state = "outdated"
-            result.append(group)
-        return result
+        return groups
 
     def stale_group_ids(self, project_id: str, task_id: str) -> set[str]:
         return {
@@ -709,7 +699,6 @@ class PaperChanges:
         ops: list[dict[str, object]] = []
         original: dict[str, PaperFile | None] = {}
         resulting: dict[str, PaperFile] = {}
-        retained: dict[str, str | None] = {}
         # Edits are applied from right to left, preserving offsets in CURRENT text.
         ordered = sorted(
             group.changes, key=lambda c: (c.kind in {"edit", "rewrite"}, c.file_id, -c.start)
@@ -728,11 +717,6 @@ class PaperChanges:
                         "file_kind": change.file_kind,
                         "text": change.after if change.file_kind == "text" else None,
                         "blob_sha256": change.after_blob,
-                        **(
-                            {"bytes_base64": change.after_bytes}
-                            if change.after_bytes is not None
-                            else {}
-                        ),
                     }
                 )
                 original[change.file_id] = None
@@ -812,7 +796,6 @@ class PaperChanges:
                 checks.append(
                     {"file_id": file.file_id, "text": file.text, "blob_sha256": file.blob_sha256}
                 )
-                retained[file.file_id] = change.before_bytes
                 if change.kind == "delete":
                     ops.append({"kind": "delete", "file_id": file.file_id})
                     resulting.pop(file.file_id)
@@ -822,11 +805,6 @@ class PaperChanges:
                             "kind": "binary",
                             "file_id": file.file_id,
                             "blob_sha256": change.after_blob,
-                            **(
-                                {"bytes_base64": change.after_bytes}
-                                if change.after_bytes is not None
-                                else {}
-                            ),
                         }
                     )
                     resulting[file.file_id].blob_sha256 = change.after_blob
@@ -845,11 +823,6 @@ class PaperChanges:
                         "file_kind": old.kind,
                         "text": old.text,
                         "blob_sha256": old.blob_sha256,
-                        **(
-                            {"bytes_base64": retained[file_id]}
-                            if retained.get(file_id) is not None
-                            else {}
-                        ),
                     }
                 )
                 continue
@@ -884,11 +857,6 @@ class PaperChanges:
                         "kind": "binary",
                         "file_id": file_id,
                         "blob_sha256": old.blob_sha256,
-                        **(
-                            {"bytes_base64": retained[file_id]}
-                            if retained.get(file_id) is not None
-                            else {}
-                        ),
                     }
                 )
         return ops, checks, inverse, guards
@@ -897,13 +865,7 @@ class PaperChanges:
         ops = []
         for item in cast(list[dict[str, object]], payload["ops"]):
             data = dict(item)
-            encoded = data.pop("bytes_base64", None)
-            if encoded is not None:
-                data["data"] = base64.b64decode(str(encoded), validate=True)
             data["text"] = data.get("text") or ""
-            # Prepared receipts from the separate coach slice used this spelling.
-            if data["kind"] == "text":
-                data["kind"] = "replace"
             ops.append(PaperOp.model_validate(data))
         try:
             self.live.run_sync(

@@ -83,55 +83,6 @@ def test_paper_live_path_is_unique_but_deleted_paths_can_be_reused(tmp_path):
     store.close()
 
 
-def test_migration_64_merges_prepared_and_committed_receipts(tmp_path):
-    import json
-
-    from rcp.storage.base import _migrate_paper_changes
-
-    path = tmp_path / "old63.sqlite"
-    store = AppStore(path)
-    with store.connection() as conn:
-        for table in ("paper_change_receipts", "paper_changes", "paper_change_groups"):
-            conn.execute(f"DROP TABLE {table}")
-        _migrate_paper_changes(conn)
-        conn.execute(
-            "CREATE TABLE paper_apply_receipts (project_id TEXT, receipt_key TEXT, fingerprint TEXT, receipt TEXT)"
-        )
-        conn.execute(
-            "INSERT INTO paper_change_groups VALUES ('p','g','t',1,'review','pending',NULL,NULL,'now')"
-        )
-        conn.execute(
-            "INSERT INTO paper_change_receipts VALUES ('p','key','g','accept',?, 'now')",
-            (json.dumps({"inverse": [{"kind": "delete", "file_id": "f"}]}),),
-        )
-        receipt = {"revision": 2, "receipt_key": "key", "file_ids": ["f"]}
-        conn.execute(
-            "INSERT INTO paper_apply_receipts VALUES ('p','key','fingerprint',?)",
-            (json.dumps(receipt),),
-        )
-        conn.execute(
-            "INSERT INTO paper_apply_receipts VALUES ('p','generic','other',?)",
-            (json.dumps({"revision": 1}),),
-        )
-        conn.execute("DELETE FROM storage_schema_migrations WHERE migration_version=65")
-    store.close()
-    upgraded = AppStore(path)
-    with upgraded.connection() as conn:
-        rows = {
-            row["receipt_key"]: row for row in conn.execute("SELECT * FROM paper_change_receipts")
-        }
-        assert len(rows) == 2
-        payload = json.loads(rows["key"]["payload"])
-        assert payload["inverse"] == [{"kind": "delete", "file_id": "f"}]
-        assert payload["receipt"] == receipt
-        assert payload["fingerprint"] == "fingerprint"
-        assert rows["generic"]["group_id"] is None
-        assert not conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE name='paper_apply_receipts'"
-        ).fetchone()
-    upgraded.close()
-
-
 @pytest.mark.parametrize("component", ["a" * 256, "é" * 128])
 def test_paper_path_limits_each_utf8_component(component):
     from rcp.paper.models import paper_path
@@ -139,3 +90,42 @@ def test_paper_path_limits_each_utf8_component(component):
     with pytest.raises(ValueError):
         paper_path(f"sections/{component}/file.md")
     assert paper_path("a" * 255 + "/file.md").endswith("/file.md")
+
+
+@pytest.mark.parametrize("published,newest", [(2, 4), (4, 2), (4, None)])
+def test_revision_pruning_requires_publication_and_retained_version(tmp_path, published, newest):
+    from rcp.paper.persistence import prune
+
+    store = AppStore(tmp_path / "app.sqlite3")
+    try:
+        with store.connection() as connection:
+            connection.execute(
+                "INSERT INTO paper_publication(project_id,saved_revision,published_revision) "
+                "VALUES ('p',5,?)",
+                (published,),
+            )
+            connection.executemany(
+                "INSERT INTO paper_revisions VALUES (?,?, 'now','human','edit')",
+                [(project, revision) for project in ("p", "other") for revision in range(1, 6)],
+            )
+            if newest is not None:
+                connection.executemany(
+                    "INSERT INTO paper_versions VALUES ('p',?,?,'named',?,'human','now','[]')",
+                    [(str(revision), revision, str(revision)) for revision in (1, newest)],
+                )
+            prune(connection, "p")
+            boundary = min(published, newest) if newest is not None else 0
+            assert [
+                row[0]
+                for row in connection.execute(
+                    "SELECT revision FROM paper_revisions WHERE project_id='p' ORDER BY revision"
+                )
+            ] == list(range(boundary + 1, 6))
+            assert (
+                connection.execute(
+                    "SELECT COUNT(*) FROM paper_revisions WHERE project_id='other'"
+                ).fetchone()[0]
+                == 5
+            )
+    finally:
+        store.close()

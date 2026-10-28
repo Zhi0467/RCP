@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 from contextlib import nullcontext
@@ -155,34 +154,6 @@ def test_rename_and_dependent_edits_are_atomic(setup):
     assert not receipts(live)
 
 
-def test_binary_delete_undo_retains_bytes(setup):
-    snapshot, live, changes, output = setup
-    body = b"\x89PNG\xff\x00"
-    digest = hashlib.sha256(body).hexdigest()
-    binary = PaperFile(file_id="b", path="fig.png", kind="binary", blob_sha256=digest)
-    apply(
-        live,
-        [
-            PaperOp(
-                kind="create",
-                file_id=binary.file_id,
-                path=binary.path,
-                file_kind="binary",
-                data=body,
-            )
-        ],
-    )
-    snapshot = saved(live)
-    (output / "moves.json").write_text('{"delete":["fig.png"]}')
-    group = changes.collect("p", "t", snapshot, output)[0]
-    changes.accept("p", group.group_id, "human")
-    # Undo uses retained bytes after the live file was deleted.
-    changes.undo("p", group.group_id, "human")
-    changes.undo("p", group.group_id, "human")
-    assert live.blob(digest) == body
-    assert len(receipts(live)) == 2
-
-
 def test_direct_mode_admission_and_receipt_recovery(setup, monkeypatch):
     snapshot, live, changes, output = setup
     (output / "files/new.md").write_text("new")
@@ -292,10 +263,7 @@ def test_routes_enforce_project_scope_accept_and_undo(manifest, tmp_path, monkey
         assert client.post(f"{base}/retry", json={"task_id": "task"}).status_code == 202
         assert continued[-1]["retry_source_task_id"] == "task"
         assert continued[-1]["refresh_file_ids"] is None
-        for _ in range(2):
-            response = client.post(f"{base}/{group.group_id}/accept", json={})
-            assert response.status_code == 200, response.text
-        assert len(receipts(live)) == 1
+        assert client.post(f"{base}/{group.group_id}/accept", json={}).status_code == 200
         assert client.post(f"{base}/{group.group_id}/undo", json={}).status_code == 200
         assert len(receipts(live)) == 2
         assert (
@@ -327,7 +295,6 @@ def test_undo_all_reverse_order_and_failed_apply_can_refresh(setup, monkeypatch)
     monkeypatch.setattr(live, "apply", refused)
     with pytest.raises(OutdatedChange):
         changes.accept("p", group.group_id, "human")
-    assert changes._receipt("p", f"paper:{group.group_id}:accept") is None
     monkeypatch.setattr(live, "apply", apply)
     refreshed = changes.collect(
         "p",
@@ -340,33 +307,11 @@ def test_undo_all_reverse_order_and_failed_apply_can_refresh(setup, monkeypatch)
     assert len(refreshed) == 1
 
 
-def test_binary_replacement_and_new_pdf_use_hash_guards(setup):
-    snapshot, live, changes, output = setup
-    old, replacement = b"old figure", b"replacement figure"
-    digest = hashlib.sha256(old).hexdigest()
-    apply(
-        live,
-        [PaperOp(kind="create", file_id="binary", path="figure.pdf", file_kind="binary", data=old)],
-    )
-    snapshot = saved(live)
-    (output / "files/figure.pdf").write_bytes(replacement)
-    (output / "files/new.pdf").write_bytes(b"%PDF ASCII content")
-    groups = changes.collect("p", "binary-task", snapshot, output)
-    assert {group.changes[0].kind for group in groups} == {"create", "binary"}
-    assert all(group.changes[0].file_kind == "binary" for group in groups)
-    changes.accept_all("p", "binary-task", "human")
-    assert live.blob(hashlib.sha256(replacement).hexdigest()) == replacement
-    changes.undo_all("p", "binary-task", "human")
-    assert (
-        next(file for file in saved(live).files if file.file_id == "binary").blob_sha256 == digest
-    )
-    assert all(file.path != "new.pdf" for file in saved(live).files)
-
-
 def test_old_writer_coach_dispatch_migrates_without_rewriting_history(tmp_path):
     from pydantic import ValidationError
 
     from rcp.storage import AgentTaskRecord
+    from tests.test_paper_live_storage import PAPER_TABLES
 
     path = tmp_path / "old-writer.sqlite"
     store = AppStore(path)
@@ -389,12 +334,9 @@ def test_old_writer_coach_dispatch_migrates_without_rewriting_history(tmp_path):
             "UPDATE graph_runs SET dispatch_authority_json=? WHERE operation_id=?",
             (json.dumps(legacy), "legacy-coach"),
         )
-        connection.execute(
-            "CREATE TABLE paper_apply_receipts (project_id TEXT, receipt_key TEXT, fingerprint TEXT, receipt TEXT)"
-        )
-        for table in ("paper_change_receipts", "paper_changes", "paper_change_groups"):
-            connection.execute(f"DROP TABLE {table}")
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version>=64")
+        for table in PAPER_TABLES:
+            connection.execute(f'DROP TABLE "{table}"')
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=63")
     with pytest.raises(ValidationError):
         store.agent_task("legacy-coach")
     store.close()
@@ -452,42 +394,14 @@ def test_binary_cards_survive_collection_and_undo(setup, monkeypatch, state, kin
             for row in connection.execute("SELECT payload FROM paper_change_receipts")
         )
     assert changes.undo("p", group.group_id, "human").state == "undone"
+    assert changes.undo("p", group.group_id, "human").state == "undone"
+    assert len(receipts(live)) == 2
     figures = [file for file in saved(live).files if file.path == "figure.pdf"]
     if kind == "create":
         assert figures == []
     else:
         assert figures[0].blob_sha256 == hashlib.sha256(old).hexdigest()
         assert live.blob(figures[0].blob_sha256) == old
-
-
-def test_old_writer_binary_card_and_receipt_bodies_still_work(setup):
-    _, live, changes, output = setup
-    old, new = b"old figure", b"legacy replacement"
-    apply(
-        live,
-        [PaperOp(kind="create", file_id="figure", path="figure.pdf", file_kind="binary", data=old)],
-    )
-    (output / "files/figure.pdf").write_bytes(new)
-    group = changes.collect("p", "legacy", saved(live), output)[0]
-    card = group.changes[0]
-    legacy = card.model_dump()
-    legacy.update(
-        before_bytes=base64.b64encode(old).decode(), after_bytes=base64.b64encode(new).decode()
-    )
-    with live.store.connection() as connection:
-        connection.execute(
-            "UPDATE paper_changes SET payload=? WHERE change_id=?",
-            (json.dumps(legacy), card.change_id),
-        )
-        # Old writers kept the proposed body only in card JSON.
-        connection.execute("DELETE FROM paper_blobs WHERE sha256=?", (card.after_blob,))
-    assert changes.accept("p", group.group_id, "human").state == "accepted"
-    assert live.blob(card.after_blob) == new
-    with live.store.connection() as connection:
-        # Force Undo to read the old receipt's embedded before-body.
-        connection.execute("DELETE FROM paper_blobs WHERE sha256=?", (card.before_blob,))
-    assert changes.undo("p", group.group_id, "human").state == "undone"
-    assert live.blob(card.before_blob) == old
 
 
 def test_outstanding_card_keeps_base_past_retention_and_undo_restores_text_identity(
@@ -594,7 +508,7 @@ def test_active_coach_base_is_retained_before_collection(setup, monkeypatch):
     assert changes.collect("p", "active", snapshot, output)[0].state == "pending"
 
 
-def test_new_directory_collision_refuses_without_leaving_a_prepared_receipt(setup):
+def test_new_directory_collision_marks_card_outdated(setup):
     snapshot, live, changes, output = setup
     (output / "files/parts").mkdir()
     (output / "files/parts/new.md").write_text("proposal")
@@ -602,7 +516,6 @@ def test_new_directory_collision_refuses_without_leaving_a_prepared_receipt(setu
     apply(live, [PaperOp(kind="create", path="parts", text="human")])
     with pytest.raises(OutdatedChange):
         changes.accept("p", group.group_id, "human")
-    assert changes._receipt("p", f"paper:{group.group_id}:accept") is None
     assert changes.groups("p", "t")[0].state == "outdated"
 
 
@@ -716,20 +629,18 @@ def test_repeated_deleted_paragraph_makes_card_outdated(setup):
     assert saved(live).files[0].text == current
 
 
-def test_groups_reuses_base_and_mapping_across_cards(setup):
-    from unittest.mock import patch
+@pytest.mark.parametrize("state", [None, "accepted", "rejected", "outdated", "undone"])
+def test_groups_without_pending_cards_need_no_live_content(setup, monkeypatch, state):
+    snapshot, _live, changes, output = setup
+    if state is not None:
+        (output / "files/new.md").write_text("new")
+        group = changes.collect("p", "task", snapshot, output)[0]
+        changes._state("p", group.group_id, state)
 
-    import rcp.paper.changes as module
+    def unavailable(*_args):
+        raise RuntimeError("Live content is unavailable")
 
-    snapshot, live, changes, output = setup
-    before = snapshot.files[0].text
-    (output / "files/section.md").write_text(
-        before.replace("line 3\n", "first\n").replace("line 20\n", "second\n")
+    monkeypatch.setattr(changes, "_snapshot", unavailable)
+    assert [group.state for group in changes.groups("p", "task")] == (
+        [] if state is None else [state]
     )
-    changes.collect("p", "t", snapshot, output)
-    with (
-        patch.object(live, "text_at", wraps=live.text_at) as reads,
-        patch.object(module, "_RangeMapping", wraps=module._RangeMapping) as mappings,
-    ):
-        assert len(changes.groups("p", "t")) == 2
-    assert reads.call_count == mappings.call_count == 1

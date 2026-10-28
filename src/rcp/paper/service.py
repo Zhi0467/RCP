@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import codecs
-import hashlib
-import json
 import os
 import stat
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
 
 from pydantic import BaseModel, model_validator
 
@@ -20,7 +17,7 @@ from rcp.providers import (
     runtime_label,
 )
 from rcp.storage import AppStore
-from rcp.transport import LocalStateWorkspace, StateUnavailable, StateWorkspace
+from rcp.transport import LocalStateWorkspace, StateWorkspace
 
 
 def canonical_introduction_backup_source(root: Path) -> Path | None:
@@ -75,17 +72,6 @@ def validate_canonical_introduction_backup(path: Path) -> None:
         os.close(descriptor)
 
 
-class PaperSnapshot(BaseModel):
-    content: str
-    draft_version: str | None = None
-    sync_state: Literal["not_created", "synced", "unsynced", "behind"]
-    base_hash: str | None = None
-    canonical_hash: str | None = None
-    incoming_content: str | None = None
-    updated_at: datetime | None = None
-    canonical_available: bool
-
-
 class WritingSession(BaseModel):
     provider: ProviderId
     runtime_id: str = ""
@@ -131,26 +117,6 @@ class PaperService:
         )
         self.project_id = project_id or manifest.name
         self.canonical_path = self.workspace.root / "paper" / "introduction.md"
-
-    def snapshot(self) -> PaperSnapshot:
-        draft = self._draft()
-        canonical_content, canonical_available = self._read_canonical()
-        if draft is None and canonical_content is None:
-            return PaperSnapshot(
-                content="",
-                sync_state="not_created",
-                canonical_available=canonical_available,
-            )
-        if draft is None:
-            canonical_hash = _hash(canonical_content)
-            return PaperSnapshot(
-                content=canonical_content or "",
-                sync_state="synced" if canonical_available else "unsynced",
-                base_hash=canonical_hash,
-                canonical_hash=canonical_hash,
-                canonical_available=canonical_available,
-            )
-        return self._draft_snapshot(draft, canonical_content, canonical_available)
 
     def restore_canonical(
         self,
@@ -203,65 +169,3 @@ class PaperService:
                 """,
                 data,
             )
-
-    def _draft(self):
-        with self.store.connection() as connection:
-            return connection.execute(
-                "SELECT * FROM paper_drafts WHERE project_id = ?", (self.project_id,)
-            ).fetchone()
-
-    def _draft_snapshot(
-        self,
-        draft,
-        canonical_content: str | None,
-        canonical_available: bool,
-    ) -> PaperSnapshot:
-        content = draft["content"]
-        stored_base_hash = draft["base_hash"]
-        canonical_hash = _hash(canonical_content) if canonical_content is not None else None
-        incoming_content = None
-        if not canonical_available:
-            state = "unsynced"
-            base_hash = stored_base_hash
-        elif canonical_hash == _hash(content):
-            state = "synced"
-            base_hash = canonical_hash
-        elif canonical_hash == stored_base_hash:
-            state = "unsynced"
-            base_hash = stored_base_hash
-        else:
-            state = "behind"
-            base_hash = stored_base_hash
-            incoming_content = canonical_content
-        return PaperSnapshot(
-            content=content,
-            sync_state=state,
-            base_hash=base_hash,
-            canonical_hash=canonical_hash,
-            incoming_content=incoming_content,
-            updated_at=datetime.fromisoformat(draft["updated_at"]),
-            draft_version=_draft_version(draft),
-            canonical_available=canonical_available,
-        )
-
-    def _read_canonical(self) -> tuple[str | None, bool]:
-        try:
-            with self.workspace.read_snapshot() as root:
-                path = root / "paper" / "introduction.md"
-                return (path.read_text(encoding="utf-8") if path.exists() else None), True
-        except StateUnavailable:
-            return None, False
-
-
-def _hash(content: str | None) -> str:
-    return hashlib.sha256((content or "").encode("utf-8")).hexdigest()
-
-
-def _draft_version(draft) -> str | None:
-    if draft is None:
-        return None
-    return _hash(
-        json.dumps(
-            [draft[key] for key in ("content", "base_hash", "ancestor_content", "updated_at")]
-        )
-    )

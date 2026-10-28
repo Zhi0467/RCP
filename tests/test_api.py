@@ -918,12 +918,7 @@ def test_project_open_reuses_its_single_materialization(app, monkeypatch) -> Non
     payload = response.json()
     assert payload["graph"]["revision"] == payload["revision"]
     tree = client.get(f"/api/projects/{project_id}/paper/tree").json()
-    assert payload["paper"] == {
-        "content": "",
-        "draft_version": None,
-        "sync_state": "synced" if tree["publish_state"] == "published" else "unsynced",
-        "canonical_available": bool(tree["files"]),
-    }
+    assert payload["paper"] == (tree["publish_state"] != "published")
     assert payload["provider_readiness"] == {}
     assert payload["providers"] == {}
 

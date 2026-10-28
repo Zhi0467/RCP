@@ -539,7 +539,6 @@ def complete_restored_project_publication(
             "The restored canonical identity differs from its catalog home."
         )
     owners.service.chat_summaries(limit=1)
-    owners.paper.snapshot()
     record = store.project(capture.project_id)
     if record is None:
         raise RestoredProjectPublicationRefused(
@@ -3337,6 +3336,8 @@ def _valid_display_snapshot(
     last_remote_sync_at = snapshot.get("last_remote_sync_at")
     if last_remote_sync_at is not None and not isinstance(last_remote_sync_at, str):
         return False
+    if not isinstance(snapshot.get("paper"), bool):
+        return False
     if not all(
         isinstance(snapshot.get(key), dict)
         for key in (
@@ -3345,7 +3346,6 @@ def _valid_display_snapshot(
             "counts",
             "graph_mutation",
             "graph",
-            "paper",
             "paper_coach",
             "agent_profiles",
             "provider_readiness",
