@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import json
 import mimetypes
-import tempfile
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from rcp.agents.context import ContextAssembler
@@ -14,8 +13,6 @@ from rcp.attachments import (
     PaperReferenceSelector,
     ProjectReferenceSelector,
     ProjectReferenceSource,
-    _reference_path,
-    _regular_tree,
 )
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import (
@@ -162,37 +159,33 @@ def _resolve_paper(
         raise ValueError("Paper reference source is unavailable.")
     if len(files) > CHAT_ATTACHMENT_MAX_COUNT:
         raise ValueError("The paper reference exceeds the attachment file-count limit.")
-    for item in files:
-        _reference_path(item.path)
-    if len({item.path for item in files}) != len(files):
-        raise ValueError("Paper reference paths are not unique.")
-    selected = snapshot.model_copy(update={"files": files})
-    with tempfile.TemporaryDirectory(prefix="rcp-paper-reference-") as temporary:
-        root = Path(temporary) / "paper"
-        live.materialize(selected, root)
-        paths = _regular_tree(root)
-        if set(paths) != {item.path for item in files}:
-            raise ValueError("Paper reference snapshot is incomplete.")
-        sizes = {path: source.stat().st_size for path, source in paths.items()}
-        if any(size > CHAT_ATTACHMENT_MAX_FILE_BYTES for size in sizes.values()):
-            raise ValueError("A paper reference exceeds the attachment file-size limit.")
-        if sum(sizes.values()) > CHAT_ATTACHMENT_MAX_TOTAL_BYTES:
-            raise ValueError("The paper reference exceeds the attachment total-size limit.")
-        return [
-            ResolvedProjectReference(
-                filename=item.path,
-                display_name=item.path,
-                media_type=(
-                    mimetypes.guess_type(item.path)[0]
-                    or ("text/plain" if item.kind == "text" else "application/octet-stream")
-                ),
-                content=paths[item.path].read_bytes(),
-                reference=ProjectReferenceSource(
-                    kind="paper",
-                    source_id=item.file_id,
-                    path=item.path,
-                    version=str(snapshot.revision),
-                ),
-            )
-            for item in sorted(files, key=lambda item: item.path)
-        ]
+    contents = {
+        item.file_id: (
+            (item.text or "").encode("utf-8")
+            if item.kind == "text"
+            else snapshot._blobs[item.blob_sha256 or ""]
+        )
+        for item in files
+    }
+    if any(len(content) > CHAT_ATTACHMENT_MAX_FILE_BYTES for content in contents.values()):
+        raise ValueError("A paper reference exceeds the attachment file-size limit.")
+    if sum(map(len, contents.values())) > CHAT_ATTACHMENT_MAX_TOTAL_BYTES:
+        raise ValueError("The paper reference exceeds the attachment total-size limit.")
+    return [
+        ResolvedProjectReference(
+            filename=item.path,
+            display_name=item.path,
+            media_type=(
+                mimetypes.guess_type(item.path)[0]
+                or ("text/plain" if item.kind == "text" else "application/octet-stream")
+            ),
+            content=contents[item.file_id],
+            reference=ProjectReferenceSource(
+                kind="paper",
+                source_id=item.file_id,
+                path=item.path,
+                version=str(snapshot.revision),
+            ),
+        )
+        for item in sorted(files, key=lambda item: item.path)
+    ]

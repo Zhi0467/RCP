@@ -27,9 +27,6 @@ class LivePaperLifecycle:
     def resume(self, project_id: str) -> None:
         self.live.run_sync(self.live.resume(project_id))
 
-    def drain(self, project_id: str) -> None:
-        self.live.run_sync(self.live.drain(project_id))
-
     def dispose(self, project_id: str) -> None:
         self.live.run_sync(self.live.dispose(project_id))
 
@@ -38,8 +35,6 @@ class PaperLifecycleOwner(Protocol):
     def pause(self, project_id: str) -> None: ...
 
     def resume(self, project_id: str) -> None: ...
-
-    def drain(self, project_id: str) -> None: ...
 
     def dispose(self, project_id: str) -> None: ...
 
@@ -118,7 +113,6 @@ def pause_paper_project(
 def stop_paper_project(store: PaperLifecycleStore, project_id: str) -> None:
     with pause_paper_project(store, project_id) as live:
         if live is not None:
-            live.drain(project_id)
             live.dispose(project_id)
 
 
@@ -141,6 +135,5 @@ def detach_paper_runtime(
         for project_id in project_ids:
             pauses.enter_context(pause_paper_project(store, project_id))
         for project_id in project_ids:
-            live.drain(project_id)
             live.dispose(project_id)
     return [(project_id, live) for project_id in project_ids]

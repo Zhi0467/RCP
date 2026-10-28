@@ -1065,58 +1065,17 @@ def test_fork_records_transfer_parent_names_and_archive_state(manifest, tmp_path
 
 
 def test_saved_paper_records_roundtrip_preserves_revision_history_and_hold(
-    manifest, tmp_path: Path
+    manifest, tmp_path: Path, monkeypatch
 ) -> None:
     from rcp.server_ops import backup_paper
     from rcp.transfer.records import TransferRecordBundle
+    from tests.test_backup_paper import _saved_paper
 
     source, project_id, attributions = _store(manifest, tmp_path)
     target = AppStore(tmp_path / "target.sqlite3")
-    figure = b"\x89PNG\r\n\x1a\nfigure"
-    digest = hashlib.sha256(figure).hexdigest()
-    snapshot = {
-        "revision": 4,
-        "files": [
-            {
-                "file_id": "figure",
-                "path": "figures/renamed.png",
-                "kind": "binary",
-                "blob_sha256": digest,
-            }
-        ],
-    }
-
     with source.connection() as connection:
-        connection.execute(
-            "INSERT INTO paper_publication VALUES (?, 4, 2, ?, NULL, ?, NULL)",
-            (project_id, source.now(), "legacy-choice"),
-        )
-        connection.execute(
-            "INSERT INTO paper_files VALUES (?, 'figure', 'figures/renamed.png', 'binary', ?, NULL, ?)",
-            (project_id, source.now(), digest),
-        )
-        connection.execute(
-            "INSERT INTO paper_blobs VALUES (?, ?, ?)", (digest, figure, len(figure))
-        )
-        connection.execute(
-            "INSERT INTO paper_versions VALUES (?, 'named', 3, 'named', 'Submission', 'human', ?, ?)",
-            (project_id, source.now(), json.dumps(snapshot["files"])),
-        )
-        connection.execute(
-            "INSERT INTO paper_saved_snapshots VALUES (?, 4, ?)",
-            (project_id, json.dumps(snapshot["files"])),
-        )
-        connection.execute(
-            "INSERT INTO paper_change_groups VALUES (?, 'group', 'task', 4, 'review', 'accepted', 'human', ?, ?)",
-            (project_id, source.now(), source.now()),
-        )
-        connection.execute(
-            "INSERT INTO paper_changes VALUES (?, 'change', 'group', '{}')", (project_id,)
-        )
-        connection.execute(
-            "INSERT INTO paper_change_receipts VALUES (?, 'accept', 'group', 'accept', '{}', ?)",
-            (project_id, source.now()),
-        )
+        connection.execute("PRAGMA defer_foreign_keys=ON")
+        _saved_paper(connection, monkeypatch, project_id=project_id)
     exported = source.export_project_transfer_records(project_id, attributions=attributions)
     restored = TransferRecordBundle.model_validate_json(exported.model_dump_json())
     assert restored.schema_version == 7
@@ -1130,4 +1089,4 @@ def test_saved_paper_records_roundtrip_preserves_revision_history_and_hold(
         publication = connection.execute(
             "SELECT saved_revision, published_revision, hold FROM paper_publication"
         ).fetchone()
-        assert tuple(publication) == (4, 2, "legacy-choice")
+        assert tuple(publication) == (4, 2, "legacy-divergence")

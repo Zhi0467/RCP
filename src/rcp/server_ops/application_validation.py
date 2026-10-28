@@ -1141,15 +1141,11 @@ def _paper_read_proof(client, project_id: str, *, headers: dict[str, str]) -> st
     tree = read(f"{base}/tree").json()
     proof.append(tree)
     proof.append(read(f"{base}/history").json())
-    ids: set[str] = set()
     for file in tree["files"]:
         file_id = file["file_id"]
-        if file_id in ids:
-            raise CandidateRehearsalRefused("Candidate Paper contains duplicate file ids.")
-        ids.add(file_id)
         raw = read(f"{base}/files/{file_id}/raw?revision={tree['saved_revision']}")
         digest = hashlib.sha256(raw.content).hexdigest()
-        if file.get("sha256") is not None and digest != file["sha256"]:
+        if digest != file["sha256"]:
             raise CandidateRehearsalRefused("Candidate Paper file digest differs from its tree.")
         proof.append((file_id, digest))
     return _canonical_sha256(proof)

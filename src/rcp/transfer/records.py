@@ -33,7 +33,6 @@ from rcp.transfer.archive import (
 )
 
 TRANSFER_RECORD_SCHEMA_VERSION = 7
-PAPER_TRANSFER_RECORD_SCHEMA_VERSION = 7
 
 TRANSFER_RECORD_TABLES = frozenset(
     {
@@ -1507,7 +1506,6 @@ def validate_transfer_table_policy(project_linked_tables: tuple[str, ...]) -> No
 
 
 __all__ = [
-    "PAPER_TRANSFER_RECORD_SCHEMA_VERSION",
     "TRANSFER_EXCLUDED_PROJECT_TABLES",
     "TRANSFER_EXECUTABLE_JSON_FIELDS",
     "TRANSFER_RECORD_SCHEMA_VERSION",

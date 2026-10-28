@@ -46,8 +46,9 @@ action; an edit refused only by the update rate retries on its own. Deletion,
 maintenance, and transfer pause the live paper; paused admission closes with
 retryable socket code 4503, while lost membership or a deleted file closes with
 4403. Refused connections are accepted before closing so browsers receive the
-code. A stop that fails, or maintenance that ends, resumes it. A backup records its paper as unpublished,
-so a restore republishes the saved text rather than trusting the copied folder.
+code. A stop that fails, or maintenance that ends, resumes it. The backup SQLite
+snapshot holds all saved Paper state and marks it unpublished, so a restore
+republishes the saved text rather than trusting the copied folder.
 
 Files keep a stable identity across renames. One path rule serves editing,
 backup and transfer; `.git` and `.publish` are reserved path components. Uploaded figures are stored once by

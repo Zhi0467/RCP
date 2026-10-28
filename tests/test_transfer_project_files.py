@@ -572,6 +572,10 @@ def test_transfer_projection_keeps_nested_text_and_binary_separate_from_saved_st
     figure = b"\x89PNG\r\n\x1a\nfigure"
     (paper / "figures/renamed.png").write_bytes(figure)
     root = tmp_path / "capture"
+    with pytest.raises(ValueError):
+        capture_project_transfer_files(service, records, root)
+    records = records.model_copy(update={"schema_version": 7})
+    root = tmp_path / "reviewed-capture"
     captured = capture_project_transfer_files(service, records, root)
     projection = {
         entry.archive_path for entry in captured.entries if entry.group == "paper_projection"

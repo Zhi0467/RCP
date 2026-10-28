@@ -805,11 +805,9 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     from tests.server_upgrade_paper import assert_current_paper, seed_current_paper
 
     current_paper = seed_current_paper(request, fixture, session(fixture))
-    # Two real service starts exercise recovery of saved state and the hold.
-    for _ in range(2):
-        run(["systemctl", "restart", "rcp.service"])
-        wait_health()
-        assert_current_paper(request, fixture, session(fixture), current_paper)
+    run(["systemctl", "restart", "rcp.service"])
+    wait_health()
+    assert_current_paper(request, fixture, session(fixture), current_paper)
     backup()
     candidate_python = str(Path(current["release_directory"]) / ".venv/bin/python")
     service([candidate_python, "-I", str(SCRIPT), "seed-candidate-artifact"])

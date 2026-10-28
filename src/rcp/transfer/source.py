@@ -319,8 +319,6 @@ def _capture_and_seal_source_archive(
         workspace = service.history.workspace
         with workspace.transaction():
             project_capture = capture_project_transfer_files(service, records, project_root)
-            if project_capture.records.schema_version != records.schema_version:
-                raise ValueError("paper migration requires a new source transfer review")
             canonical_entries, canonical_plan = _capture_canonical_history(
                 service,
                 final_root,

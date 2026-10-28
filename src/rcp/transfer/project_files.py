@@ -35,7 +35,6 @@ from rcp.storage.artifact_models import (
 )
 from rcp.transfer.archive import TransferArchiveEntry
 from rcp.transfer.records import (
-    PAPER_TRANSFER_RECORD_SCHEMA_VERSION,
     TransferArtifactReference,
     TransferRecordBundle,
     TransferTaskRecord,
@@ -364,14 +363,8 @@ def _capture_project_files_locked(
             legacy_introduction = records.paper is None and paper_sources == (
                 source_root / "paper/introduction.md",
             )
-            if (
-                paper_sources
-                and not legacy_introduction
-                and records.schema_version < PAPER_TRANSFER_RECORD_SCHEMA_VERSION
-            ):
-                records = records.model_copy(
-                    update={"schema_version": PAPER_TRANSFER_RECORD_SCHEMA_VERSION}
-                )
+            if paper_sources and not legacy_introduction and records.schema_version < 7:
+                raise ValueError("paper migration requires a new source transfer review")
             for source in paper_sources:
                 relative = source.relative_to(source_root / "paper")
                 entry = _capture_regular_file(

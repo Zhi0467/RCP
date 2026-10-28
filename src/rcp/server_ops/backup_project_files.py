@@ -43,7 +43,7 @@ from rcp.server_ops.backup_models import (
     BackupImportedProviderSourceCapture,
     BackupProjectCapture,
 )
-from rcp.server_ops.backup_paper import capture_paper_section, paper_projection_sources
+from rcp.server_ops.backup_paper import paper_projection_sources
 from rcp.server_ops.backup_project_io import (
     BackupProjectFileUnavailable,
     capture_chat_files,
@@ -609,24 +609,13 @@ class BackupProjectFileCaptureCoordinator:
                 closing(AppStore.open_read_only_snapshot(capture_root / "rcp.sqlite3")) as store,
                 store.connection() as connection,
             ):
-                paper = capture_paper_section(connection, inventory.project_id)
-            if (paper.revision if paper is not None else None) != inventory.paper_revision:
-                raise BackupProjectFileUnavailable(
-                    "The saved paper revision differs from its inventory."
-                )
-            if paper is not None:
-                files.append(
-                    write_bytes_entry(
-                        paper.model_dump_json().encode(),
-                        project_root,
-                        inventory.project_id,
-                        PurePosixPath("paper/saved.json"),
-                        group="paper_saved",
-                    )
-                )
+                saved = connection.execute(
+                    "SELECT 1 FROM paper_publication WHERE project_id = ?",
+                    (inventory.project_id,),
+                ).fetchone()
             sources = paper_projection_sources(source_root)
             for source in sources:
-                legacy = paper is None and sources == (source_root / "paper/introduction.md",)
+                legacy = saved is None and sources == (source_root / "paper/introduction.md",)
                 paper_entry = stable_copy_entry(
                     source,
                     project_root,

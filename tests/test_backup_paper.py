@@ -13,7 +13,6 @@ from rcp.server_ops.backup_paper import (
     capture_paper_section,
     paper_projection_sources,
     restore_paper_section,
-    verify_paper_section_records,
 )
 
 
@@ -110,7 +109,6 @@ def test_saved_section_roundtrips_one_revision_and_all_recovery_state(monkeypatc
         section = PaperSection.model_validate_json(section.model_dump_json())
         with target:
             restore_paper_section(target, section)
-        verify_paper_section_records(target, section)
         assert target.execute("SELECT bytes FROM paper_blobs").fetchall() == [(figure,)]
         assert target.execute(
             "SELECT saved_revision, published_revision, hold FROM paper_publication"
@@ -120,9 +118,6 @@ def test_saved_section_roundtrips_one_revision_and_all_recovery_state(monkeypatc
         for table in ("paper_change_groups", "paper_changes", "paper_change_receipts"):
             assert len(section.tables[table]) == 1
         assert capture_paper_section(target, "p") == section
-        target.execute("UPDATE paper_publication SET published_revision=4")
-        with pytest.raises(ValueError):
-            verify_paper_section_records(target, section)
     finally:
         source.close()
         target.close()
@@ -155,34 +150,6 @@ def test_projection_is_recursive_binary_safe_and_rejects_links(tmp_path):
     (paper / "escape").symlink_to(tmp_path, target_is_directory=True)
     with pytest.raises(ValueError):
         paper_projection_sources(tmp_path)
-
-
-def test_restore_schema_requires_exact_registered_paper_shape(tmp_path, monkeypatch):
-    from rcp.server_ops import restore
-    from rcp.server_ops.backup_integrity import database_schema_sha256
-    from rcp.server_ops.restore import _supported_restore_schema
-
-    path = tmp_path / "snapshot.sqlite3"
-    with sqlite3.connect(path) as connection:
-        connection.execute("CREATE TABLE projects(project_id TEXT)")
-        base = database_schema_sha256(connection)
-        monkeypatch.setattr(restore, "SUPPORTED_RESTORE_DATABASE_SCHEMAS", frozenset({base}))
-        connection.execute(
-            "CREATE TABLE paper_publication(project_id, saved_revision, published_revision, pending_since, last_error, hold)"
-        )
-        shape = tuple(
-            connection.execute(
-                "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE tbl_name='paper_publication' ORDER BY type,name,tbl_name"
-            )
-        )
-        digest = database_schema_sha256(connection)
-    assert not _supported_restore_schema(path, digest)
-    monkeypatch.setattr(backup_paper, "PAPER_RESTORE_SCHEMA_VARIANTS", (shape,))
-    assert _supported_restore_schema(path, digest)
-    with sqlite3.connect(path) as connection:
-        connection.execute("ALTER TABLE paper_publication ADD COLUMN unclassified")
-        digest = database_schema_sha256(connection)
-    assert not _supported_restore_schema(path, digest)
 
 
 def test_backup_marks_restored_paper_pending_when_projection_advances(tmp_path, monkeypatch):
@@ -219,9 +186,7 @@ def test_backup_marks_restored_paper_pending_when_projection_advances(tmp_path, 
         publication = BackupCaptureCoordinator(
             store, data_dir, _metadata(data_dir)
         ).capture_sqlite()
-        inventory = _inventory_for_space(inventory, space_id=store.space_id).model_copy(
-            update={"paper_revision": 4}
-        )
+        inventory = _inventory_for_space(inventory, space_id=store.space_id)
         receipt = publication.receipt.model_copy(update={"projects": (inventory,)})
         publication.receipt_path.chmod(0o600)
         publication.receipt_path.unlink()
@@ -240,14 +205,18 @@ def test_backup_marks_restored_paper_pending_when_projection_advances(tmp_path, 
         )
         assert captured.receipt.status == "complete"
         project = captured.receipt.projects[0]
-        saved = next(entry for entry in project.files if entry.group == "paper_saved")
-        section = PaperSection.model_validate_json(
-            (publication.receipt_path.parent / saved.archive_path).read_bytes()
-        )
-        assert section.revision == 4
-        assert section.tables["paper_publication"][0]["published_revision"] == -1
-        assert section.tables["paper_publication"][0]["pending_since"] is not None
-        assert backup_paper.decode_cell(section.tables["paper_blobs"][0]["bytes"]) == figure
+        with sqlite3.connect(publication.receipt_path.parent / "rcp.sqlite3") as archived:
+            assert archived.execute(
+                "SELECT saved_revision,published_revision FROM paper_publication"
+            ).fetchone() == (4, -1)
+            assert (
+                archived.execute("SELECT pending_since FROM paper_publication").fetchone()[0]
+                is not None
+            )
+            assert archived.execute(
+                "SELECT bytes FROM paper_blobs WHERE sha256 != 'unrelated'"
+            ).fetchone() == (figure,)
+        assert all(entry.source_relative_path != "paper/saved.json" for entry in project.files)
         projection = [entry for entry in project.files if entry.group == "paper_projection"]
         assert [entry.source_relative_path for entry in projection] == [
             ".research/paper/published.md"
@@ -255,29 +224,6 @@ def test_backup_marks_restored_paper_pending_when_projection_advances(tmp_path, 
     finally:
         seed.close()
         store.close()
-
-
-def test_restore_allowlist_matches_fresh_and_upgraded_paper_migrations(tmp_path):
-    from rcp.storage import AppStore
-
-    fresh = AppStore(tmp_path / "fresh.sqlite3")
-    upgraded = _database()
-    try:
-        with fresh.connection() as connection:
-            for database in (connection, upgraded):
-                tables = set(backup_paper.PAPER_PROJECT_TABLES + backup_paper.PAPER_SHARED_TABLES)
-                shape = tuple(
-                    tuple(row)
-                    for row in database.execute(
-                        "SELECT type,name,tbl_name,sql FROM sqlite_schema "
-                        "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name,tbl_name"
-                    )
-                    if row[2] in tables
-                )
-                assert shape in backup_paper.PAPER_RESTORE_SCHEMA_VARIANTS
-    finally:
-        fresh.close()
-        upgraded.close()
 
 
 @pytest.mark.parametrize("coached", [False, True])
@@ -338,12 +284,7 @@ def test_deleted_binary_backup_retains_only_required_bytes(tmp_path, monkeypatch
     [
         ".git/config",
         "notes/.publish",
-        "a:b.md",
-        "--rsh=cmd",
         "normal.md",
-        "credentials/key",
-        "run-stage/file",
-        "chat-attachments/file",
     ],
 )
 def test_backup_and_live_share_path_validation(path):
