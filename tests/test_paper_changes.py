@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from contextlib import nullcontext
@@ -409,48 +410,84 @@ def test_old_writer_coach_dispatch_migrates_without_rewriting_history(tmp_path):
     assert upgraded.storage_schema_ledger_head() == upgraded.storage_schema_registry_head()
 
 
-@pytest.mark.parametrize("file_cap,total_cap,sizes", [(128, 1024, [129]), (512, 256, [140, 140])])
-def test_retained_binary_bases_are_subset_materialized_and_bounded(
-    setup, monkeypatch, file_cap, total_cap, sizes
-):
-    snapshot, live, changes, output = setup
-    deletes = []
-    for index, size in enumerate(sizes):
-        body = bytes([index]) * size
-        path = f"figure-{index}.pdf"
+@pytest.mark.parametrize("state", ["pending", "outdated"])
+@pytest.mark.parametrize("kind", ["binary", "create", "delete"])
+def test_binary_cards_survive_collection_and_undo(setup, monkeypatch, state, kind):
+    from rcp.paper.persistence import collect_bodies
+
+    _, live, changes, output = setup
+    old, new = b"original figure", b"new figure"
+    if kind != "create":
         apply(
             live,
             [
                 PaperOp(
-                    kind="create",
-                    file_id=f"binary-{index}",
-                    path=path,
-                    file_kind="binary",
-                    data=body,
+                    kind="create", file_id="figure", path="figure.pdf", file_kind="binary", data=old
                 )
             ],
         )
-        deletes.append(path)
-    unrelated = PaperFile(
-        file_id="unrelated", path="unrelated.pdf", kind="binary", blob_sha256="unmaterialized"
-    )
     snapshot = saved(live)
-    snapshot.files.append(unrelated)
-    (output / "moves.json").write_text(json.dumps({"delete": deletes}))
-    monkeypatch.setattr("rcp.paper.changes.PAPER_CHANGES_MAX_FILE_BYTES", file_cap)
-    monkeypatch.setattr("rcp.paper.changes.PAPER_CHANGES_MAX_TOTAL_BYTES", total_cap)
-    materialized = []
-    materialize = live.materialize
+    if kind == "delete":
+        (output / "moves.json").write_text('{"delete":["figure.pdf"]}')
+    else:
+        (output / "files/figure.pdf").write_bytes(new)
 
-    def capture(selected, dest):
-        materialized.extend(file.path for file in selected.files)
-        materialize(selected, dest)
+    def no_materialization(*_args):
+        pytest.fail("Binary originals must not be extracted to temporary files")
 
-    monkeypatch.setattr(live, "materialize", capture)
-    with pytest.raises(InvalidChanges, match="Saved binary base"):
-        changes.collect("p", "bounded", snapshot, output)
-    assert set(materialized) == set(deletes)
-    assert changes.groups("p", "bounded") == []
+    monkeypatch.setattr(live, "materialize", no_materialization)
+    group = changes.collect("p", "binary", snapshot, output)[0]
+    changes._state("p", group.group_id, state)
+    with live.store.connection() as connection:
+        payload = connection.execute("SELECT payload FROM paper_changes").fetchone()[0]
+        assert "before_bytes" not in payload and "after_bytes" not in payload
+        collect_bodies(connection)
+    assert changes.accept("p", group.group_id, "human").state == "accepted"
+    if kind != "delete":
+        assert live.blob(hashlib.sha256(new).hexdigest()) == new
+    with live.store.connection() as connection:
+        collect_bodies(connection)
+        assert all(
+            "bytes_base64" not in row[0]
+            for row in connection.execute("SELECT payload FROM paper_change_receipts")
+        )
+    assert changes.undo("p", group.group_id, "human").state == "undone"
+    figures = [file for file in saved(live).files if file.path == "figure.pdf"]
+    if kind == "create":
+        assert figures == []
+    else:
+        assert figures[0].blob_sha256 == hashlib.sha256(old).hexdigest()
+        assert live.blob(figures[0].blob_sha256) == old
+
+
+def test_old_writer_binary_card_and_receipt_bodies_still_work(setup):
+    _, live, changes, output = setup
+    old, new = b"old figure", b"legacy replacement"
+    apply(
+        live,
+        [PaperOp(kind="create", file_id="figure", path="figure.pdf", file_kind="binary", data=old)],
+    )
+    (output / "files/figure.pdf").write_bytes(new)
+    group = changes.collect("p", "legacy", saved(live), output)[0]
+    card = group.changes[0]
+    legacy = card.model_dump()
+    legacy.update(
+        before_bytes=base64.b64encode(old).decode(), after_bytes=base64.b64encode(new).decode()
+    )
+    with live.store.connection() as connection:
+        connection.execute(
+            "UPDATE paper_changes SET payload=? WHERE change_id=?",
+            (json.dumps(legacy), card.change_id),
+        )
+        # Old writers kept the proposed body only in card JSON.
+        connection.execute("DELETE FROM paper_blobs WHERE sha256=?", (card.after_blob,))
+    assert changes.accept("p", group.group_id, "human").state == "accepted"
+    assert live.blob(card.after_blob) == new
+    with live.store.connection() as connection:
+        # Force Undo to read the old receipt's embedded before-body.
+        connection.execute("DELETE FROM paper_blobs WHERE sha256=?", (card.before_blob,))
+    assert changes.undo("p", group.group_id, "human").state == "undone"
+    assert live.blob(card.before_blob) == old
 
 
 def test_outstanding_card_keeps_base_past_retention_and_undo_restores_text_identity(

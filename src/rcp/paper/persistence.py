@@ -262,6 +262,10 @@ def collect_bodies(connection: sqlite3.Connection) -> None:
                 "WHERE blob_sha256 IS NOT NULL AND deleted_at IS NULL)"
                 " AND sha256 NOT IN (SELECT j.value FROM paper_change_receipts r, "
                 "json_tree(r.payload) j WHERE j.key='blob_sha256' AND j.value IS NOT NULL)"
+                " AND sha256 NOT IN (SELECT j.value FROM paper_changes c "
+                "JOIN paper_change_groups g ON g.project_id=c.project_id AND g.group_id=c.group_id, "
+                "json_each(c.payload) j WHERE g.state IN ('pending','outdated') "
+                "AND j.key IN ('before_blob','after_blob') AND j.value IS NOT NULL)"
                 if table == "paper_blobs"
                 else ""
             )

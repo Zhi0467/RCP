@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import stat
-import tempfile
 import uuid
 from collections import Counter
 from collections.abc import Callable
@@ -385,10 +384,6 @@ def _utf16_length(text: str) -> int:
     return len(text.encode("utf-16-le")) // 2
 
 
-def _encoded(body: bytes) -> str:
-    return base64.b64encode(body).decode("ascii")
-
-
 def _sha(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest()
 
@@ -399,7 +394,7 @@ def build_changes(
     root: Path,
     live: PaperLive,
     tree: PaperSnapshot | None = None,
-) -> list[list[Change]]:
+) -> tuple[list[list[Change]], dict[str, bytes]]:
     """Diff the coach's output against ``snapshot``.
 
     ``tree`` is the whole saved tree at the same revision when ``snapshot`` holds
@@ -418,26 +413,6 @@ def build_changes(
         if file.path not in deletes
     }
     blobs = dict(tree._blobs)
-    binary_originals: dict[str, bytes] = {}
-    wanted = set(deletes) | {reverse.get(path, path) for path in files}
-    binary_files = [
-        file for file in snapshot.files if file.kind == "binary" and file.path in wanted
-    ]
-    if binary_files:
-        with tempfile.TemporaryDirectory(prefix="rcp-paper-base-") as temp:
-            live.materialize(
-                snapshot.model_copy(update={"files": binary_files}),
-                Path(temp) / "files",
-            )
-            try:
-                retained = _read_output(Path(temp))
-            except InvalidChanges as exc:
-                raise InvalidChanges(
-                    [f"Saved binary base: {message}" for message in exc.diagnostics]
-                ) from exc
-            binary_originals = {
-                path.removeprefix("files/"): body for path, body in retained.items()
-            }
     for old, new in renames:
         file = originals[old]
         changes.append(
@@ -465,7 +440,6 @@ def build_changes(
                 before=file.text or "",
                 file_kind=file.kind,
                 before_blob=file.blob_sha256,
-                before_bytes=_encoded(binary_originals[name]) if file.kind == "binary" else None,
             )
         )
     for name, body in sorted(files.items()):
@@ -493,7 +467,6 @@ def build_changes(
                     after=text or "",
                     file_kind=file_kind,
                     after_blob=_sha(body) if file_kind == "binary" else None,
-                    after_bytes=_encoded(body) if file_kind == "binary" else None,
                 )
             )
         elif file_kind == "binary":
@@ -508,8 +481,6 @@ def build_changes(
                         file_kind="binary",
                         before_blob=original.blob_sha256,
                         after_blob=_sha(body),
-                        before_bytes=_encoded(binary_originals[original.path]),
-                        after_bytes=_encoded(body),
                     )
                 )
         else:
@@ -540,7 +511,10 @@ def build_changes(
         _preview(change)
     # Dependencies in prose/includes cannot be inferred reliably: group the entire
     # proposal when any rename exists, so its dependent edits never apply alone.
-    return [changes] if renames and changes else [[change] for change in changes]
+    groups = [changes] if renames and changes else [[change] for change in changes]
+    return groups, {
+        change.after_blob: blobs[change.after_blob] for change in changes if change.after_blob
+    }
 
 
 class PaperChanges:
@@ -606,7 +580,7 @@ class PaperChanges:
         replace_source_task_id: str | None = None,
     ) -> list[ChangeGroup]:
         tree = self.live.run_sync(self.live.snapshot(project_id, snapshot.revision))
-        groups = build_changes(task_id, snapshot, changes_dir, self.live, tree)
+        groups, blobs = build_changes(task_id, snapshot, changes_dir, self.live, tree)
         with self.admission(project_id), self.store.connection() as connection:
             for group_id in replace_group_ids or set():
                 row = connection.execute(
@@ -628,6 +602,10 @@ class PaperChanges:
                     "DELETE FROM paper_change_groups WHERE project_id=? AND group_id=?",
                     (project_id, group_id),
                 )
+            connection.executemany(
+                "INSERT OR IGNORE INTO paper_blobs VALUES(?,?,?)",
+                [(sha, body, len(body)) for sha, body in blobs.items()],
+            )
             for changes in groups:
                 group_id = str(uuid.uuid4())
                 connection.execute(
@@ -648,7 +626,12 @@ class PaperChanges:
                     change.group_id = group_id
                     connection.execute(
                         "INSERT INTO paper_changes VALUES (?,?,?,?)",
-                        (project_id, change.change_id, group_id, change.model_dump_json()),
+                        (
+                            project_id,
+                            change.change_id,
+                            group_id,
+                            change.model_dump_json(exclude_none=True),
+                        ),
                     )
         return self.groups(project_id, task_id)
 
@@ -729,7 +712,11 @@ class PaperChanges:
                         "file_kind": change.file_kind,
                         "text": change.after if change.file_kind == "text" else None,
                         "blob_sha256": change.after_blob,
-                        "bytes_base64": change.after_bytes,
+                        **(
+                            {"bytes_base64": change.after_bytes}
+                            if change.after_bytes is not None
+                            else {}
+                        ),
                     }
                 )
                 original[change.file_id] = None
@@ -818,7 +805,11 @@ class PaperChanges:
                             "kind": "binary",
                             "file_id": file.file_id,
                             "blob_sha256": change.after_blob,
-                            "bytes_base64": change.after_bytes,
+                            **(
+                                {"bytes_base64": change.after_bytes}
+                                if change.after_bytes is not None
+                                else {}
+                            ),
                         }
                     )
                     resulting[file.file_id].blob_sha256 = change.after_blob
@@ -837,7 +828,11 @@ class PaperChanges:
                         "file_kind": old.kind,
                         "text": old.text,
                         "blob_sha256": old.blob_sha256,
-                        "bytes_base64": retained.get(file_id),
+                        **(
+                            {"bytes_base64": retained[file_id]}
+                            if retained.get(file_id) is not None
+                            else {}
+                        ),
                     }
                 )
                 continue
@@ -872,7 +867,11 @@ class PaperChanges:
                         "kind": "binary",
                         "file_id": file_id,
                         "blob_sha256": old.blob_sha256,
-                        "bytes_base64": retained.get(file_id),
+                        **(
+                            {"bytes_base64": retained[file_id]}
+                            if retained.get(file_id) is not None
+                            else {}
+                        ),
                     }
                 )
         return ops, checks, inverse, guards
