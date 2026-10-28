@@ -118,6 +118,16 @@ def handle_graph_history_command(
         )
     else:
         specs = [parse_head(request.arguments.at)]
+    names = service.paper.store.branch_names(project_id)
+    ids_by_name = {name: branch_id for branch_id, name in names.items()}
+    for index, spec in enumerate(specs):
+        if spec.target is None or spec.target.branch_id is None:
+            continue
+        branch_id = ids_by_name.get(spec.target.branch_id)
+        if branch_id is not None:
+            specs[index] = spec.model_copy(
+                update={"target": GraphTargetRef(kind="branch", branch_id=branch_id)}
+            )
     if any(
         not scope.readable(
             project_id,
@@ -169,6 +179,11 @@ def handle_graph_history_command(
                 return refuse("graph_history_cursor_invalid")
             page = engine.log(request.arguments.id, heads[0], cursor=cursor)
         result = page.model_dump(mode="json")
+        result["branch_names"] = {
+            head.target.branch_id: names[head.target.branch_id]
+            for head in heads
+            if head.target.branch_id in names
+        }
         if page.cursor is not None:
             result["cursor"] = _encode_cursor(
                 _Cursor(binding=binding, heads=heads, engine_cursor=page.cursor)

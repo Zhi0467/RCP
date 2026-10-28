@@ -300,3 +300,67 @@ def test_group_history_resolves_sibling_and_binds_cursor(history_query, verb):
         )
         assert response.result["code"] == code
     assert resolved == ["project"]
+
+
+@pytest.mark.parametrize("verb", ["graph_log", "graph_diff", "branch_changes"])
+def test_branch_names_resolve_at_command_time(history_query, monkeypatch, verb):
+    service, scope, branch = history_query
+    branch.append(_branch_patch("ev/named"))
+    names = {branch.branch_id: "vla-if"}
+    monkeypatch.setattr(service.paper.store, "branch_names", lambda project: dict(names))
+
+    def query(ref):
+        if verb == "graph_log":
+            return request(verb, id="ev/named", at=f"branch:{ref}@head")
+        if verb == "branch_changes":
+            return request(branch_changes=ref, ids=["ev/named"])
+        return request(**{"from": "main@1", "to": f"branch:{ref}@head", "ids": ["ev/named"]})
+
+    by_id = handle_graph_history_command(service, scope, query(branch.branch_id))
+    by_name = handle_graph_history_command(service, scope, query("vla-if"))
+    assert by_name.status == by_id.status == "ok"
+    assert by_name.result == by_id.result
+    assert by_name.result["entries" if verb == "graph_log" else "changes"]
+    assert by_name.result["branch_names"] == names
+    names[branch.branch_id] = "renamed-branch"
+    assert handle_graph_history_command(service, scope, query("renamed-branch")).status == "ok"
+    for missing in ("vla-if", "unknown-branch"):
+        refused = handle_graph_history_command(service, scope, query(missing))
+        assert refused.result["code"] == "graph_history_query_invalid"
+
+
+def test_branch_inventory_respects_fork_read_scope(history_query, monkeypatch):
+    from .test_history_forks import fork_metadata
+
+    service, _, parent = history_query
+    fork = service.history.create_branch(fork_metadata(service.history, parent.head_ref()))
+    sibling = service.history.create_branch(fork_metadata(service.history, parent.head_ref()))
+    names = {
+        parent.branch_id: "parent-branch",
+        fork.branch_id: "my-fork",
+        sibling.branch_id: "sibling",
+    }
+    monkeypatch.setattr(service.paper.store, "branch_names", lambda project: names)
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        service.paper.store,
+        "graph_branches",
+        lambda project: [
+            SimpleNamespace(
+                branch_id=branch.branch_id,
+                name=names[branch.branch_id],
+                owner_episode_id=branch.branch_metadata().episode_id,
+            )
+            for branch in (parent, fork, sibling)
+        ],
+    )
+    scope = GraphReadScope.resolve("project", fork, store=service.paper.store)
+    assert {item.id for item in scope.branches} == {parent.branch_id, fork.branch_id}
+    assert (
+        next(item for item in scope.branches if item.id == fork.branch_id).parent == "parent-branch"
+    )
+    denied = handle_graph_history_command(
+        service, scope, request("graph_log", id="hyp/main", at="branch:sibling@head")
+    )
+    assert denied.result["code"] == "graph_history_scope_refused"

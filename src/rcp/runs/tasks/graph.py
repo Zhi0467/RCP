@@ -36,7 +36,6 @@ from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.prompts import graph_read_contract
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
-from rcp.core.transition_models import GraphTargetRef
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.history.queries import format_head
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS, PATCH_SELF_CHECK_TIMEOUT_SECONDS
@@ -831,7 +830,9 @@ async def stream_graph_run(
                 if identity is None:
                     raise ValueError("Graph history reads require a canonical project identity.")
                 project_id = identity.project_id
-            graph_read_scope = GraphReadScope(project_id=project_id, target=GraphTargetRef())
+            graph_read_scope = GraphReadScope.resolve(
+                project_id, service.history, store=service.paper.store
+            )
             staged_head = prepare_graph_observation(
                 execution,
                 service,
