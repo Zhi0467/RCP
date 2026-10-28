@@ -31,6 +31,8 @@ import type {
   WritingSession,
 } from "../core/types";
 import { taskRetryRequestBody } from "../taskRecovery";
+import { providerSwitchStartsFreshSession } from "../chat/chatWorkspace";
+import { ProviderSwitchHint } from "../chat/ProviderSwitchHint";
 import { PaperChanges, type PaperChange, type PaperChangeAction } from "./PaperChanges";
 import "./paper-coach.css";
 
@@ -148,6 +150,12 @@ export function PaperCoach({
       ? [pendingTask]
       : [];
   const activeTask = sessionTasks.find(isActiveTask);
+  // The provider session the next turn resumes: the newest turn's, else the attached one.
+  const freshProviderSession = providerSwitchStartsFreshSession(
+    sessionTasks,
+    sessionTasks.at(-1)?.native_session_id ?? currentSessionId,
+    config.provider,
+  );
   const transcript = reconstructTaskTranscript(sessionTasks);
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const skills = useSkillPicker({
@@ -361,6 +369,9 @@ export function PaperCoach({
       </div>
       <div className={`paper-coach-composer${error ? " paper-failure" : ""}`}>
         <SkillPicker {...skills.props} />
+        {freshProviderSession && (
+          <ProviderSwitchHint provider={readiness?.label || config.provider} />
+        )}
         <textarea
           ref={textarea}
           aria-label="Message"
@@ -384,8 +395,7 @@ export function PaperCoach({
             value={config}
             label="Coach agent"
             open={configOpen}
-            // A session keeps its agent; New chat picks another.
-            disabled={Boolean(activeTask) || submitting || Boolean(currentSessionId)}
+            disabled={Boolean(activeTask) || submitting}
             onToggle={() => setConfigOpen(!configOpen)}
           />
           <div className="paper-segments" role="group" aria-label="Coach changes">
