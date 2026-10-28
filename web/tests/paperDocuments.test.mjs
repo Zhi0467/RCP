@@ -95,12 +95,31 @@ test("backend reverification preserves owners until an observed identity changes
   assert.equal(changed({ ok: false, health: { ...health, instance_id: "new" } }), true);
 });
 
-test("insertion anchors are painted only against their verified saved text", async () => {
-  const { paperAnchorMatches } = await server.ssrLoadModule("/src/paper/PaperEditor.tsx");
-  const insertion = { preview: { removed: [] }, anchorText: "one\ntwo" };
-  assert.equal(paperAnchorMatches(insertion, "one\ntwo", ""), true);
-  assert.equal(paperAnchorMatches(insertion, "zero\none\ntwo", ""), false);
-  assert.equal(paperAnchorMatches({ preview: { removed: [] } }, "one\ntwo", ""), false);
+test("current UTF-16 anchors follow unrelated local edits and reject stale ranges", async () => {
+  const { anchorPaperChange, resolvePaperAnchor } = await server.ssrLoadModule(
+    "/src/paper/paperAnchors.ts",
+  );
+  const doc = new Y.Doc();
+  const text = doc.getText("text");
+  text.insert(0, "😀one\ntwo");
+  const insertion = { current: { start: 6, end: 6, revision: 2 }, preview: { removed: [] } };
+  const anchor = anchorPaperChange(insertion, text);
+  assert.ok(anchor);
+  text.insert(2, "changed ");
+  assert.deepEqual(resolvePaperAnchor(anchor, insertion, text), { from: 14, to: 14 });
+  const edit = { current: { start: 14, end: 17, revision: 3 }, preview: { removed: ["two"] } };
+  const editAnchor = anchorPaperChange(edit, text);
+  assert.ok(editAnchor);
+  text.insert(15, "x");
+  assert.equal(resolvePaperAnchor(editAnchor, edit, text), null);
+  for (const current of [
+    null,
+    { start: -1, end: -1 },
+    { start: 999, end: 999 },
+    { start: 5, end: 2 },
+  ])
+    assert.equal(anchorPaperChange({ ...insertion, current }, text), null);
+  doc.destroy();
 });
 
 test("permanent rejection exposes failure and disables automatic reconnect", async () => {
@@ -118,6 +137,43 @@ test("permanent rejection exposes failure and disables automatic reconnect", asy
     assert.ok(owner.getSnapshot().error);
   } finally {
     owner.destroy();
+    delete globalThis.window;
+  }
+});
+
+test("rejected reconnect replaces retained oversized Yjs history and deletes only that file cache", async () => {
+  const { PaperDocument } = await server.ssrLoadModule("/src/paper/paperDocuments.ts");
+  globalThis.window = { location: { href: "http://localhost/" } };
+  const key = { backend: "b", member: "m", project: "p", file: "rejected" };
+  const owner = new PaperDocument(key, "/api/projects/p", "Writer");
+  const other = new PaperDocument({ ...key, file: "other" }, "/api/projects/p", "Writer");
+  const oldDoc = owner.doc;
+  const undo = new Y.UndoManager(owner.text);
+  const deleted = [];
+  try {
+    owner.text.insert(0, "x".repeat(5 * 1024 * 1024));
+    owner.text.delete(0, owner.text.length);
+    other.text.insert(0, "unsaved");
+    assert.ok(Y.encodeStateAsUpdate(oldDoc).byteLength > 4 * 1024 * 1024);
+    owner.provider.emit("closed", [{ code: 4413 }]);
+    globalThis.indexedDB = {
+      deleteDatabase(name) {
+        deleted.push(name);
+        const request = {};
+        queueMicrotask(() => request.onsuccess());
+        return request;
+      },
+    };
+    await owner.reconnect();
+    assert.notEqual(owner.doc, oldDoc);
+    assert.ok(Y.encodeStateAsUpdate(owner.doc).byteLength < 100);
+    assert.deepEqual(deleted, [`rcp:paper:${paperDocumentKey(key)}`]);
+    assert.equal(other.text.toString(), "unsaved");
+  } finally {
+    undo.destroy();
+    owner.destroy();
+    other.destroy();
+    delete globalThis.indexedDB;
     delete globalThis.window;
   }
 });

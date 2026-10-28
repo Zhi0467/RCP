@@ -8,14 +8,9 @@ import { stex } from "@codemirror/legacy-modes/mode/stex";
 import { typst_lezer } from "codemirror-lang-typst/lezer";
 import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import { Check, ChevronLeft, ChevronRight, X } from "lucide-react";
+import { anchorPaperChange, resolvePaperAnchor } from "./paperAnchors";
 import type { PaperDocument } from "./paperDocuments";
 import type { PaperChange } from "./PaperChanges";
-
-export function paperAnchorMatches(change: PaperChange, text: string, region: string) {
-  return change.preview.removed.length
-    ? region === change.preview.removed.join("\n")
-    : change.anchorText !== undefined && text === change.anchorText;
-}
 
 class SuggestionWidget extends WidgetType {
   constructor(
@@ -81,6 +76,10 @@ export function PaperEditor({
       ),
     [changes, owner],
   );
+  const anchors = useMemo(
+    () => new Map<PaperChange, ReturnType<typeof anchorPaperChange>>(),
+    [pending, owner, owner.text],
+  );
   const { text, error } = owner.getSnapshot();
   const currentStep = Math.min(step, pending.length - 1);
   const active = pending[currentStep];
@@ -122,25 +121,20 @@ export function PaperEditor({
       view.current = null;
       editor.destroy();
     };
-  }, [owner, format]);
+  }, [owner, owner.text, format]);
 
   useEffect(() => {
     const editor = view.current;
     if (!editor) return;
     const marks = pending.flatMap((change) => {
-      const start = change.lines!.start;
-      const end = change.lines!.end;
-      const insertion = change.preview.removed.length === 0;
-      if (start < 1 || start > editor.state.doc.lines + (insertion ? 1 : 0)) return [];
-      const from =
-        start > editor.state.doc.lines
-          ? editor.state.doc.length
-          : editor.state.doc.line(start).from;
-      const to = insertion
-        ? from
-        : editor.state.doc.line(Math.min(Math.max(start, end), editor.state.doc.lines)).to;
-      // A moved or edited anchor is never painted as if it were still current.
-      if (!paperAnchorMatches(change, text, editor.state.doc.sliceString(from, to))) return [];
+      let anchor = anchors.get(change);
+      if (!anchor) {
+        anchor = anchorPaperChange(change, owner.text);
+        if (anchor) anchors.set(change, anchor);
+      }
+      const range = anchor && resolvePaperAnchor(anchor, change, owner.text);
+      if (!range) return [];
+      const { from, to } = range;
       const result = [
         Decoration.widget({
           widget: new SuggestionWidget(change, (id, action) => decide.current(id, action)),
@@ -156,17 +150,24 @@ export function PaperEditor({
         EditorView.decorations.of(Decoration.set(marks, true)),
       ),
     });
-  }, [pending, owner, text]);
+  }, [pending, owner, text, anchors]);
 
   const locate = (change: PaperChange | undefined) => {
     const editor = view.current;
     if (!editor || !change?.lines) return;
-    const line = editor.state.doc.line(
-      Math.min(editor.state.doc.lines, Math.max(1, change.lines.start)),
-    );
+    const anchor = anchors.get(change);
+    const range = anchor && resolvePaperAnchor(anchor, change, owner.text);
+    const from =
+      range?.from ??
+      Math.min(
+        editor.state.doc.length,
+        change.current?.start ??
+          editor.state.doc.line(Math.min(editor.state.doc.lines, Math.max(1, change.lines.start)))
+            .from,
+      );
     editor.dispatch({
-      selection: { anchor: line.from },
-      effects: EditorView.scrollIntoView(line.from, { y: "center" }),
+      selection: { anchor: from },
+      effects: EditorView.scrollIntoView(from, { y: "center" }),
     });
     editor.focus();
   };

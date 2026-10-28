@@ -26,7 +26,7 @@ export interface PaperChange {
   file_id: string;
   path: string;
   new_path?: string;
-  anchorText?: string;
+  current: { start: number; end: number; revision: number } | null;
   lines?: { start: number; end: number };
   preview: { removed: string[]; added: string[]; more: number };
   stats?: { added: number; removed: number };
@@ -53,32 +53,7 @@ export function usePaperChanges(apiBase: string, refreshKey: string | number) {
         `${apiBase}/paper/changes`,
       );
       if (current !== generation.current) return;
-      const bases = new Map<string, Promise<string>>();
-      const changes = await Promise.all(
-        result.groups.flatMap((group) => {
-          const cards = "changes" in group ? group.changes : [group];
-          return cards.map(async (change) => {
-            if (
-              !("changes" in group) ||
-              change.state !== "pending" ||
-              !change.lines ||
-              change.preview.removed.length
-            )
-              return change;
-            const path = `${apiBase}/paper/files/${encodeURIComponent(change.file_id)}/raw?revision=${group.base_revision}`;
-            let base = bases.get(path);
-            if (!base) {
-              base = apiReadResponse(path, new AbortController().signal).then((response) =>
-                response.text(),
-              );
-              bases.set(path, base);
-            }
-            return { ...change, anchorText: await base };
-          });
-        }),
-      );
-      if (current !== generation.current) return;
-      setChanges(changes);
+      setChanges(result.groups.flatMap((group) => ("changes" in group ? group.changes : [group])));
       setError(null);
     } catch (cause) {
       if (current === generation.current) setError(String(cause));

@@ -65,10 +65,12 @@ function checkLocalStorage(): Promise<void> {
 
 /** Owns the document independently of the editor and its route lifetime. */
 export class PaperDocument {
-  readonly doc = new Y.Doc();
-  readonly text = this.doc.getText("text");
+  doc = new Y.Doc();
+  text = this.doc.getText("text");
   private persistence: IndexeddbPersistence | null = null;
-  readonly provider: WebsocketProvider;
+  provider!: WebsocketProvider;
+  private rejected = false;
+  private recovering = false;
   private ack: Uint8Array | null = null;
   private awaitingAck = true;
   private listeners = new Set<() => void>();
@@ -88,12 +90,16 @@ export class PaperDocument {
 
   constructor(
     readonly key: PaperDocumentKey,
-    apiBase: string,
+    private readonly apiBase: string,
     readonly name: string,
   ) {
+    this.initializeDocument();
+    void this.startStorage();
+  }
+  private initializeDocument() {
     trackDeletionClock(this.doc, this.text);
     const url = new URL(
-      `${apiBase}/paper/files/${encodeURIComponent(key.file)}`,
+      `${this.apiBase}/paper/files/${encodeURIComponent(this.key.file)}`,
       window.location.href,
     );
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
@@ -119,11 +125,11 @@ export class PaperDocument {
       this.emit();
     });
     this.provider.on("closed", ({ code }) => {
+      this.rejected = code === 4413 || code === 4400;
       this.snapshot = { ...this.snapshot, error: `Paper connection closed (${code})` };
       this.emit();
     });
     this.provider.awareness.on("change", () => this.emit());
-    void this.startStorage();
   }
   private async startStorage() {
     if (this.storageStarting || this.disposed) return;
@@ -203,7 +209,42 @@ export class PaperDocument {
     if (this.references || !this.snapshot.saved || this.disposal) return;
     this.disposal = setTimeout(() => this.destroy(), 30_000);
   }
-  reconnect() {
+  async reconnect() {
+    if (this.recovering) return;
+    if (this.rejected) {
+      this.recovering = true;
+      this.snapshot = { ...this.snapshot, ready: false, connected: false, error: null };
+      this.emit();
+      try {
+        const presence = this.provider.awareness.getLocalState();
+        this.provider.destroy();
+        await this.persistence?.destroy();
+        // Await deletion: y-indexeddb.clearData does not await deleteDB itself.
+        await new Promise<void>((resolve, reject) => {
+          const request = indexedDB.deleteDatabase(`rcp:paper:${paperDocumentKey(this.key)}`);
+          request.onsuccess = () => resolve();
+          request.onerror = () => reject(request.error);
+          request.onblocked = () => reject(new Error("Paper local storage is blocked"));
+        });
+        if (this.disposed) return;
+        this.persistence = null;
+        this.doc.destroy();
+        this.doc = new Y.Doc();
+        this.text = this.doc.getText("text");
+        this.ack = null;
+        this.awaitingAck = true;
+        this.initializeDocument();
+        this.provider.awareness.setLocalState(presence);
+        this.rejected = false;
+        await this.startStorage();
+      } catch (error) {
+        this.snapshot = { ...this.snapshot, error: String(error) };
+      } finally {
+        this.recovering = false;
+        this.emit();
+      }
+      return;
+    }
     this.snapshot = { ...this.snapshot, error: null };
     if (this.snapshot.ready) this.provider.connect();
     else void this.startStorage();
