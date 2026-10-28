@@ -737,6 +737,8 @@ test("reloading onto a deleted file opens the first file", async (t) => {
   await page.reload();
   await page.waitForFunction(editorMatches, "draft");
   assert.equal(await page.locator(".paper-path").textContent(), "intro.md");
+  // The address names the file on screen, so a copied link is not dead.
+  await page.waitForFunction(() => window.location.hash.includes("paper_file=f1"));
   assert.deepEqual(errors, []);
 });
 

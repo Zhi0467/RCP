@@ -299,10 +299,15 @@ export async function openPaper(
     cards = [],
     proposedTexts = {},
     initialText = "draft",
+    touch = false,
     configure = () => {},
   },
 ) {
-  const context = await browser.newContext({ viewport: { width, height } });
+  const context = await browser.newContext({
+    viewport: { width, height },
+    hasTouch: touch,
+    isMobile: touch,
+  });
   t.after(async () => {
     await context.close();
   });

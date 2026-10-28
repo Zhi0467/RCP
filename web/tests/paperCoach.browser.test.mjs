@@ -266,3 +266,18 @@ test("phone coach agent and branch pickers are 44px targets", async (t) => {
   await target(page.locator(".branch-picker-trigger"));
   await fits(page);
 });
+
+test("on a touch phone Return writes a new line and a tap outside closes chat history", async (t) => {
+  const { page } = await open(t, { touch: true });
+  await coach(page);
+  const message = page.getByRole("textbox", { name: "Message" });
+  await message.tap();
+  await page.keyboard.type("one");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("two");
+  assert.equal(await message.inputValue(), "one\ntwo");
+  await page.getByRole("button", { name: "Coach chat history" }).tap();
+  await page.locator(".paper-session-list").waitFor();
+  await page.locator(".paper-coach-transcript").tap();
+  await page.locator(".paper-session-list").waitFor({ state: "detached" });
+});

@@ -470,9 +470,11 @@ def build_changes(
                 )
         else:
             assert text is not None
-            for kind, start, end, before, after, first, last in line_changes(
-                original.text or "", text
-            ):
+            # Agent write tools add a final newline; one the human never typed is not a change.
+            base = original.text or ""
+            if base and not base.endswith("\n") and text.endswith("\n"):
+                text = text[:-1]
+            for kind, start, end, before, after, first, last in line_changes(base, text):
                 changes.append(
                     Change(
                         task_id=task_id,

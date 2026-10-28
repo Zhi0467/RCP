@@ -199,7 +199,8 @@ export function PaperWorkspace({
     };
   }, [document, refresh, setSelected]);
   useEffect(() => {
-    if (!file || (selected && selected !== file.file_id)) return;
+    // A pending selection waits for the tree; a gone one hands the URL to the shown file.
+    if (!file || (selected && selected !== file.file_id && !gone)) return;
     onEditorStateChange?.({ fileId: file.file_id });
     const [route, query] = window.location.hash.split("?");
     const params = new URLSearchParams(query);
@@ -209,7 +210,7 @@ export function PaperWorkspace({
       "",
       `${window.location.pathname}${window.location.search}${route || "#"}?${params}`,
     );
-  }, [file, selected, onEditorStateChange]);
+  }, [file, selected, gone, onEditorStateChange]);
   const perform = async (action: () => Promise<void>) => {
     setActionError(null);
     try {

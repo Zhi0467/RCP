@@ -652,6 +652,15 @@ def test_groups_without_pending_cards_need_no_live_content(setup, monkeypatch, s
     )
 
 
+def test_an_added_final_newline_is_not_a_card(setup):
+    snapshot, live, changes, output = setup
+    text = snapshot.files[0].text.rstrip("\n")
+    human_edit(live, "f1", text)
+    (output / "files/section.md").write_text(text.replace("line 10\n", "coach 10\n") + "\n")
+    (group,) = changes.collect("p", "t", saved(live), output)
+    assert [change.after for change in group.changes] == ["coach 10\n"]
+
+
 def test_typing_during_accept_never_outdates_a_valid_card(setup):
     snapshot, live, changes, output = setup
     before = snapshot.files[0].text

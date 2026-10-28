@@ -17,6 +17,7 @@ import {
   profileRunConfig,
 } from "../core/AgentConfigControls";
 import { api } from "../core/api";
+import { useLayerDismiss } from "../core/useLayerDismiss";
 import { MarkdownAnswer } from "../core/chatMarkdown";
 import { SkillPicker, useSkillPicker } from "../core/SkillPicker";
 import { EMPTY_SKILL_SELECTION, skillInvocationFields } from "../core/skillPickerModel";
@@ -73,6 +74,14 @@ export function PaperCoach({
   const [sessionRefresh, setSessionRefresh] = useState(0);
   const [configOpen, setConfigOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const historyButton = useRef<HTMLButtonElement>(null);
+  const historyList = useRef<HTMLDivElement>(null);
+  useLayerDismiss(
+    historyOpen,
+    () => setHistoryOpen(false),
+    [historyList, historyButton],
+    historyButton,
+  );
   const [applyDirectly, setApplyDirectly] = useState(() => {
     try {
       return localStorage.getItem(`rcp:paper-coach-mode:${apiBase}`) === "apply";
@@ -232,6 +241,7 @@ export function PaperCoach({
     <div className="paper-coach">
       <div className={`paper-bar paper-coach-toolbar${sessionError ? " paper-failure" : ""}`}>
         <button
+          ref={historyButton}
           className="icon-button compact"
           aria-label="Coach chat history"
           aria-expanded={historyOpen}
@@ -265,7 +275,7 @@ export function PaperCoach({
         )}
       </div>
       {historyOpen && (
-        <div className="paper-session-list">
+        <div className="paper-session-list" ref={historyList}>
           {sessions.map((session) => (
             <button
               key={session.native_session_id}
@@ -334,7 +344,12 @@ export function PaperCoach({
           }}
           onKeyDown={(event) => {
             if (skills.handleKeyDown(event)) return;
-            if (event.key === "Enter" && !event.shiftKey) {
+            // A touch keyboard's Return writes a new line; the send button sends.
+            if (
+              event.key === "Enter" &&
+              !event.shiftKey &&
+              !window.matchMedia("(pointer: coarse)").matches
+            ) {
               event.preventDefault();
               void send();
             }
