@@ -71,7 +71,7 @@ def route_client(tmp_path, monkeypatch):
 def test_compile_uses_membership_without_write_admission(route_client):
     client, state = route_client
     url = "/api/projects/alias/paper/compile"
-    body = {"engine": "latex", "file_id": "file", "revision": 4}
+    body = {"file_id": "file", "revision": 4}
     assert client.post(url, json=body).status_code == 200
     assert state.calls == [("canonical", "file", 4)]
     state.admitted = False
@@ -154,7 +154,7 @@ def test_application_compiles_real_saved_tree_and_drains(manifest, tmp_path, mon
         assert client.get(prefix + "/engines").status_code == 200
         response = client.post(
             prefix + "/compile",
-            json={"engine": "latex", "file_id": receipt.file_ids[1]},
+            json={"file_id": receipt.file_ids[1]},
         )
         assert response.status_code == 200, response.text
         result = response.json()

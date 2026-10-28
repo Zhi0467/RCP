@@ -1,8 +1,20 @@
 import "./paper-preview.css";
-import { lazy, Suspense, memo, useEffect, useRef, useState } from "react";
-import { Download, FileWarning, LoaderCircle, RotateCcw, X } from "lucide-react";
+import {
+  createContext,
+  useContext,
+  lazy,
+  Suspense,
+  memo,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { Download, FileWarning, LoaderCircle, PackagePlus, RotateCcw, X } from "lucide-react";
 import { api } from "../core/api";
-import { MarkdownAnswer } from "../core/chatMarkdown";
+import ReactMarkdown from "react-markdown";
+import rehypeKatex from "rehype-katex";
+import { ANSWER_SYNTAX_PLUGINS } from "../core/chatMarkdown";
+import { MarkdownCodeBlock } from "../core/MarkdownCodeBlock";
 import type { PaperFile, PaperTree } from "../core/types";
 import {
   TypstCompiler,
@@ -35,36 +47,62 @@ function assetUrl(projectId: string, file: PaperFile) {
   return `${paperRawUrl(projectId, file.file_id)}?sha256=${file.sha256}`;
 }
 
-// Memoization keeps the Markdown parser idle while the source changes.
-const MarkdownPreview = memo(function MarkdownPreview({
-  text,
-  file,
-  tree,
-  projectId,
-}: {
-  text: string;
+type MarkdownContext = {
   file: PaperFile;
   tree: PaperTree;
   projectId: string;
-}) {
+  onOpenFile?: (fileId: string) => void;
+};
+const PaperMarkdownContext = createContext<MarkdownContext>(null!);
+function PaperLink({ href = "", children }: { href?: string; children?: React.ReactNode }) {
+  const { file, tree, onOpenFile } = useContext(PaperMarkdownContext);
+  if (/^https?:\/\//i.test(href))
+    return (
+      <a href={href} target="_blank" rel="noopener noreferrer">
+        {children}
+      </a>
+    );
+  const path = paperRelativePath(file.path, href);
+  const target = tree.files.find((entry) => entry.path === path);
+  return target && onOpenFile ? (
+    <a
+      href="#"
+      onClick={(event) => {
+        event.preventDefault();
+        onOpenFile(target.file_id);
+      }}
+    >
+      {children}
+    </a>
+  ) : (
+    <span>{children}</span>
+  );
+}
+function PaperImage({ src = "", alt = "" }: { src?: string | Blob; alt?: string }) {
+  const { file, tree, projectId } = useContext(PaperMarkdownContext);
+  const path = paperRelativePath(file.path, String(src));
+  const image = tree.files.find(
+    (entry) => entry.path === path && /\.(png|jpe?g|gif|webp)$/i.test(entry.path),
+  );
+  return image ? (
+    <img src={assetUrl(projectId, image)} alt={alt} />
+  ) : (
+    <span role="img" aria-label={alt}>
+      {alt}
+    </span>
+  );
+}
+// Tree saves and callbacks update links without reparsing the unchanged preview text.
+const MarkdownPreview = memo(function MarkdownPreview({ text }: { text: string }) {
   return (
     <article className="paper-markdown chat-markdown">
-      <MarkdownAnswer
-        text={text}
-        renderEmbed={(src, alt) => {
-          const path = paperRelativePath(file.path, src);
-          const image = tree.files.find(
-            (entry) => entry.path === path && /\.(png|jpe?g|gif|webp)$/i.test(entry.path),
-          );
-          return image ? (
-            <img src={assetUrl(projectId, image)} alt={alt} />
-          ) : (
-            <span role="img" aria-label={alt}>
-              {alt}
-            </span>
-          );
-        }}
-      />
+      <ReactMarkdown
+        remarkPlugins={[...ANSWER_SYNTAX_PLUGINS]}
+        rehypePlugins={[[rehypeKatex, { strict: false, trust: false }]]}
+        components={{ pre: MarkdownCodeBlock, a: PaperLink, img: PaperImage }}
+      >
+        {text}
+      </ReactMarkdown>
     </article>
   );
 });
@@ -75,6 +113,7 @@ export function PaperPreview({
   tree,
   text,
   active,
+  onOpenFile,
 }: {
   projectId: string;
   file: PaperFile;
@@ -82,6 +121,7 @@ export function PaperPreview({
   text: string;
   /** A hidden preview stays mounted but does no compile work. */
   active: boolean;
+  onOpenFile?: (fileId: string) => void;
 }) {
   const previewText = usePreviewText(file.format === "markdown" ? text : "", file.file_id, active);
   const compiled = useRef<string | null>(null);
@@ -90,6 +130,7 @@ export function PaperPreview({
   const [showLog, setShowLog] = useState(false);
   useEffect(() => () => compiler.current.dispose(), []);
   const [engines, setEngines] = useState<Engines | null>(null);
+  const [pdfRoot, setPdfRoot] = useState("");
   const [pdf, setPdf] = useState<string | null>(null);
   const [candidates, setCandidates] = useState<string[]>([]);
   const [selectedRoot, setSelectedRoot] = useState("");
@@ -113,6 +154,7 @@ export function PaperPreview({
   );
 
   useEffect(() => {
+    compiled.current = null;
     setSelectedRoot("");
     setCandidates([]);
     setPdf(null);
@@ -157,7 +199,6 @@ export function PaperPreview({
           const result = await api<CompileResult>(`${base}/compile`, {
             method: "POST",
             body: JSON.stringify({
-              engine,
               file_id: candidate?.file_id ?? file.file_id,
               revision: tree.saved_revision,
             }),
@@ -166,14 +207,8 @@ export function PaperPreview({
           if (controller.signal.aborted) return;
           setCandidates(result.candidates ?? []);
           if (result.status === "ok" && result.pdf_url) {
-            const target = new URL(result.pdf_url, window.location.origin);
-            if (
-              target.origin !== window.location.origin ||
-              !target.pathname.startsWith(`${base}/compile/`)
-            ) {
-              throw new Error("Invalid PDF preview URL");
-            }
-            setPdf(target.href);
+            setPdfRoot(result.root_path);
+            setPdf(result.pdf_url);
           } else if (result.status === "unavailable") {
             setEngines((value) => value && { ...value, latex: "unavailable" });
           } else if (result.status === "error" && !result.candidates?.length) {
@@ -215,6 +250,7 @@ export function PaperPreview({
           const objectUrl = URL.createObjectURL(
             new Blob([new Uint8Array(bytes)], { type: "application/pdf" }),
           );
+          setPdfRoot(root);
           setPdf(objectUrl);
         }
       })()
@@ -258,7 +294,11 @@ export function PaperPreview({
   }
 
   if (file.format === "markdown")
-    return <MarkdownPreview text={previewText} file={file} tree={tree} projectId={projectId} />;
+    return (
+      <PaperMarkdownContext.Provider value={{ file, tree, projectId, onOpenFile }}>
+        <MarkdownPreview text={previewText} />
+      </PaperMarkdownContext.Provider>
+    );
   if (file.format === "image" && /\.(png|jpe?g|gif|webp)$/i.test(file.path))
     return (
       <div className="paper-image-preview">
@@ -285,55 +325,59 @@ export function PaperPreview({
       </a>
     );
 
+  const actions = (
+    <>
+      {candidates.length > 1 && (
+        <select
+          aria-label="Preview root"
+          value={selectedRoot}
+          onChange={(event) => {
+            setPdf(null);
+            setSelectedRoot(event.target.value);
+          }}
+        >
+          <option value="" disabled>
+            Choose document
+          </option>
+          {candidates.map((path) => (
+            <option key={path} value={path}>
+              {path}
+            </option>
+          ))}
+        </select>
+      )}
+      {(loading || engines?.[engine] === "installing") && (
+        <LoaderCircle
+          className="spin"
+          size={16}
+          aria-label={loading ? "Compiling" : "Installing engine"}
+        />
+      )}
+      {engines?.[engine] === "unavailable" && !error && (
+        <button
+          className="icon-button"
+          aria-label={`Install ${engine}`}
+          title={`Install ${engine}`}
+          onClick={() => void install()}
+        >
+          <PackagePlus size={16} />
+        </button>
+      )}
+      {error && (
+        <button
+          className="icon-button"
+          aria-label="View compile log"
+          onClick={() => setShowLog(true)}
+        >
+          <FileWarning size={16} />
+        </button>
+      )}
+    </>
+  );
+
   return (
     <div className={`paper-compiled-preview${error ? " paper-failed" : ""}`} aria-busy={loading}>
-      <div className="paper-preview-actions">
-        {candidates.length > 1 && (
-          <select
-            aria-label="Preview root"
-            value={selectedRoot}
-            onChange={(event) => {
-              setPdf(null);
-              setSelectedRoot(event.target.value);
-            }}
-          >
-            <option value="" disabled>
-              Choose document
-            </option>
-            {candidates.map((path) => (
-              <option key={path} value={path}>
-                {path}
-              </option>
-            ))}
-          </select>
-        )}
-        {(loading || engines?.[engine] === "installing") && (
-          <LoaderCircle
-            className="spin"
-            size={16}
-            aria-label={loading ? "Compiling" : "Installing engine"}
-          />
-        )}
-        {engines?.[engine] === "unavailable" && !error && (
-          <button
-            className="icon-button"
-            aria-label={`Install ${engine}`}
-            title={`Install ${engine}`}
-            onClick={() => void install()}
-          >
-            <Download size={16} />
-          </button>
-        )}
-        {error && (
-          <button
-            className="icon-button"
-            aria-label="View compile log"
-            onClick={() => setShowLog(true)}
-          >
-            <FileWarning size={16} />
-          </button>
-        )}
-      </div>
+      {!pdf && <div className="paper-preview-actions">{actions}</div>}
       {showLog && error && (
         <PaperDialog label="Compile log" onClose={() => setShowLog(false)}>
           <header className="paper-bar">
@@ -365,6 +409,9 @@ export function PaperPreview({
       {pdf && (
         <Suspense fallback={<LoaderCircle className="spin" size={16} />}>
           <PaperPdf
+            key={`${projectId}:${pdfRoot}`}
+            scrollKey={`${projectId}:${pdfRoot}`}
+            actions={actions}
             url={pdf}
             name={`${(selectedRoot || file.path)
               .split("/")

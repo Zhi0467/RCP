@@ -6,7 +6,13 @@ interface TypstRuntime {
     use(provider: unknown): void;
     resetShadow(): Promise<void>;
     mapShadow(path: string, bytes: Uint8Array): Promise<void>;
-    pdf(options: { mainFilePath: string }): Promise<Uint8Array | undefined>;
+    getCompiler(): Promise<{
+      reset(): Promise<void>;
+      compile(options: { mainFilePath: string; format: 1; diagnostics: "full" }): Promise<{
+        result?: Uint8Array;
+        diagnostics?: { path: string; range: string; message: string }[];
+      }>;
+    }>;
   };
   TypstSnippet: {
     preloadFontAssets(options: { assetUrlPrefix: string; assets: ["text"] }): unknown;
@@ -46,8 +52,25 @@ self.onmessage = async ({ data }: MessageEvent<Request>) => {
       activeId = request.id;
       await $typst.resetShadow();
       for (const source of request.sources) await $typst.mapShadow(`/${source.path}`, source.bytes);
-      const pdf = await $typst.pdf({ mainFilePath: `/${request.root}` });
-      if (!pdf) throw new Error("Typst compilation failed");
+      // The convenience pdf() API forces diagnostics off and throws Rust debug text.
+      const compiler = await $typst.getCompiler();
+      await compiler.reset();
+      const result = await compiler.compile({
+        mainFilePath: `/${request.root}`,
+        format: 1,
+        diagnostics: "full",
+      });
+      const pdf = result.result;
+      if (!pdf) {
+        throw new Error(
+          result.diagnostics
+            ?.map(({ path, range, message }) => {
+              const line = range ? Number.parseInt(range, 10) + 1 : null;
+              return path && line ? `${path}:${line}: ${message}` : message;
+            })
+            .join("\n") || "Typst compilation failed",
+        );
+      }
       self.postMessage({ id: request.id, pdf });
     }
   } catch (error) {

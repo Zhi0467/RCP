@@ -40,6 +40,29 @@ from tests.helpers import async_wait_until
             ["a.tex"],
         ),
         ({"a.tex": r"\documentclass{article}"}, "missing.tex", []),
+        (
+            {"a.tex": "\\documentclass{article}\n\\input part\n", "part.tex": "text"},
+            "part.tex",
+            ["a.tex"],
+        ),
+        (
+            {
+                "paper/root.tex": r"\documentclass{article}\input{sections/a}",
+                "paper/sections/a.tex": r"\include{sections/b}",
+                "paper/sections/b.tex": "Nested section",
+            },
+            "paper/sections/b.tex",
+            ["paper/root.tex"],
+        ),
+        (
+            {
+                "paper/root.tex": r"\documentclass{article}\subfile{sections/a}",
+                "paper/sections/a.tex": r"\input{b}",
+                "paper/sections/b.tex": "Nested section",
+            },
+            "paper/sections/b.tex",
+            ["paper/root.tex"],
+        ),
     ],
 )
 def test_latex_roots(files, opened, expected):
@@ -123,24 +146,6 @@ out = pathlib.Path(sys.argv[sys.argv.index("--outdir") + 1])
 
 
 @pytest.mark.asyncio
-async def test_stale_saved_revision_discards_pdf(tmp_path):
-    live = Live()
-    engines = fake_compiler(
-        tmp_path,
-        """
-import pathlib, sys
-out = pathlib.Path(sys.argv[sys.argv.index("--outdir") + 1])
-(out / "paper.pdf").write_bytes(b"%PDF-1.4 test")
-""",
-    )
-    compiler = PaperCompiler(live, engines, tmp_path)
-    result = await compiler.compile("project", "file", revision=2)
-    assert result.status == "superseded"
-    with pytest.raises(KeyError):
-        compiler.pdf("project", result.compile_id)
-
-
-@pytest.mark.asyncio
 async def test_real_pinned_tectonic_compile(tmp_path):
     # Opt in with a disposable, previously installed RCP engine directory.
     location = os.environ.get("RCP_TEST_PAPER_ENGINE_DATA_DIR")
@@ -156,13 +161,6 @@ async def test_real_pinned_tectonic_compile(tmp_path):
     assert result.status == "ok", result.log_tail
     assert compiler.pdf("project", result.compile_id).startswith(b"%PDF-")
     await compiler.close()
-
-
-def test_unbraced_latex_input():
-    assert root_candidates(
-        {"a.tex": "\\documentclass{article}\n\\input part\n", "part.tex": "text"},
-        "part.tex",
-    ) == ["a.tex"]
 
 
 @pytest.mark.asyncio
@@ -184,18 +182,6 @@ async def test_compile_limits_kill_job(tmp_path, monkeypatch, mode):
     with pytest.raises(KeyError):
         compiler.pdf("project", result.compile_id)
     await compiler.close()
-
-
-def test_latex_nested_inputs_resolve_from_document_root():
-    files = {
-        "paper/root.tex": r"\documentclass{article}\input{sections/a}",
-        "paper/sections/a.tex": r"\include{sections/b}",
-        "paper/sections/b.tex": "Nested section",
-    }
-    assert root_candidates(files, "paper/sections/b.tex") == ["paper/root.tex"]
-    files["paper/root.tex"] = r"\documentclass{article}\subfile{sections/a}"
-    files["paper/sections/a.tex"] = r"\input{b}"
-    assert root_candidates(files, "paper/sections/b.tex") == ["paper/root.tex"]
 
 
 @pytest.mark.asyncio

@@ -21,21 +21,14 @@ assets_router = APIRouter()
 
 
 def get_paper_compiler(request: Request) -> PaperCompiler:
-    compiler = getattr(request.app.state, "paper_compiler", None)
-    if not isinstance(compiler, PaperCompiler):
-        raise HTTPException(status_code=503, detail="Paper compiler is unavailable")
-    return compiler
+    return request.app.state.paper_compiler
 
 
 def get_paper_engines(request: Request) -> EngineStore:
-    engines = getattr(request.app.state, "paper_engines", None)
-    if not isinstance(engines, EngineStore):
-        raise HTTPException(status_code=503, detail="Paper engines are unavailable")
-    return engines
+    return request.app.state.paper_engines
 
 
 class PaperCompileRequest(BaseModel):
-    engine: Literal["latex"]
     file_id: str = Field(min_length=1)
     revision: int | None = Field(default=None, ge=0)
 
@@ -50,8 +43,6 @@ async def compile_paper(
         return await compiler.compile(canonical_project_id, body.file_id, body.revision)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Paper file or revision not found") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/api/projects/{project_id}/paper/compile/{compile_id}/pdf")

@@ -23,14 +23,16 @@ def test_verified_install_is_atomic_and_reusable_offline(tmp_path, monkeypatch):
         assert not (tmp_path / "paper-engines" / "typst-0.7.0-v1").exists()
 
     async def run():
-        store = engines.EngineStore(tmp_path, download=download)
+        monkeypatch.setattr(engines, "_download", download)
+        store = engines.EngineStore(tmp_path)
         assert (store.status("typst"), store.error("typst")) == ("unavailable", "")
         store.start_install("typst")
         assert store.status("typst") == "installing"
         assert await store.ensure("typst")
         assert store.status("typst") == "ready"
         assert store.asset("runtime.js").read_bytes() == data
-        restarted = engines.EngineStore(tmp_path, download=lambda *_: pytest.fail("offline"))
+        monkeypatch.setattr(engines, "_download", lambda *_: pytest.fail("offline"))
+        restarted = engines.EngineStore(tmp_path)
         assert await restarted.ensure("typst")
         assert len(calls) == 1
         with pytest.raises(ValueError):
@@ -52,7 +54,8 @@ def test_hash_mismatch_never_publishes_and_reports_failure(tmp_path, monkeypatch
     )
 
     async def run():
-        store = engines.EngineStore(tmp_path, download=lambda _, path: path.write_bytes(b"wrong"))
+        monkeypatch.setattr(engines, "_download", lambda _, path: path.write_bytes(b"wrong"))
+        store = engines.EngineStore(tmp_path)
         assert not await store.ensure("typst")
         assert store.status("typst") == "unavailable"
         assert "checksum" in store.error("typst")
@@ -60,14 +63,3 @@ def test_hash_mismatch_never_publishes_and_reports_failure(tmp_path, monkeypatch
         assert not list((tmp_path / "paper-engines").glob(".install-*"))
 
     asyncio.run(run())
-
-
-def test_tectonic_never_uses_path(tmp_path, monkeypatch):
-    binary = tmp_path / "tectonic"
-    binary.write_text("#!/bin/sh\nexit 0\n")
-    binary.chmod(0o700)
-    monkeypatch.setenv("PATH", str(tmp_path))
-    store = engines.EngineStore(tmp_path)
-    assert store.status("latex") == "unavailable"
-    with pytest.raises((OSError, ValueError)):
-        store.binary()

@@ -9,13 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import platform
 import shutil
 import tarfile
 import tempfile
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -29,7 +27,6 @@ from rcp.limits import (
 
 EngineName = Literal["latex", "typst"]
 EngineState = Literal["ready", "installing", "unavailable"]
-MANIFEST_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -198,11 +195,8 @@ def _stat(path: Path) -> tuple[int, int]:
 class EngineStore:
     """One per backend, owned by its main event loop; installs survive caller cancellation."""
 
-    def __init__(
-        self, data_dir: Path, *, download: Callable[[str, Path], None] = _download
-    ) -> None:
+    def __init__(self, data_dir: Path) -> None:
         self.root = data_dir / "paper-engines"
-        self._download = download
         self._tasks: dict[str, asyncio.Task[bool]] = {}
         self._errors: dict[str, str] = {}
         # Hashing the Typst set reads ~35 MB: hash once per process, then compare stats.
@@ -228,9 +222,6 @@ class EngineStore:
             return {asset.name: asset.sha256 for asset in TYPST_ASSETS}
         return {"tectonic": TECTONIC_BINARY_HASHES[self._tectonic().name]}
 
-    def _manifest(self, name: str) -> dict[str, object]:
-        return {"schema": MANIFEST_VERSION, "engine": name, "files": self._hashes(name)}
-
     def _validate(self, name: str) -> Path:
         cached = self._validated.get(name)
         if cached is not None:
@@ -239,10 +230,9 @@ class EngineStore:
                 return dest
             del self._validated[name]
         dest = self._directory(name)
+        dest.lstat()  # A missing installation is unavailable, not a failed installation.
         if dest.is_symlink():
             raise ValueError("Engine directory must not be a symlink")
-        if json.loads((dest / "manifest.json").read_text()) != self._manifest(name):
-            raise ValueError("Engine manifest does not match pinned version")
         for filename, digest in self._hashes(name).items():
             _verify(dest / filename, digest)
         self._validated[name] = (
@@ -305,7 +295,7 @@ class EngineStore:
             assets = TYPST_ASSETS if name == "typst" else (self._tectonic(),)
             for asset in assets:
                 target = stage / asset.name
-                self._download(asset.url, target)
+                _download(asset.url, target)
                 _verify(target, asset.sha256)
                 if name == "latex":
                     with tarfile.open(target) as archive:
@@ -320,7 +310,6 @@ class EngineStore:
                     _verify(stage / "tectonic", self._hashes(name)["tectonic"])
                     (stage / "tectonic").chmod(0o700)
                     target.unlink()
-            (stage / "manifest.json").write_text(json.dumps(self._manifest(name), sort_keys=True))
             # Invalid previous installs are moved aside, never overlaid with partial files.
             if dest.exists() or dest.is_symlink():
                 dest.rename(Path(temp) / "previous")
