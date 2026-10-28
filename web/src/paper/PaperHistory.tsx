@@ -1,3 +1,4 @@
+import { PaperDialog } from "./PaperDialog";
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
@@ -56,15 +57,7 @@ export function PaperHistory({
   const [refresh, setRefresh] = useState(0);
   const retryAction = useRef<() => void>(() => setRefresh((value) => value + 1));
   const controller = useRef<AbortController | null>(null);
-  const dialog = useRef<HTMLElement>(null);
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    dialog.current?.focus();
-    return () => {
-      controller.current?.abort();
-      previous?.focus();
-    };
-  }, []);
+  useEffect(() => () => controller.current?.abort(), []);
   useEffect(() => {
     const abort = new AbortController();
     setBusy(true);
@@ -181,156 +174,141 @@ export function PaperHistory({
     }
   };
   return (
-    <div className="paper-inspector-backdrop" onClick={onClose}>
-      <section
-        className={`paper-inspector${error ? " paper-failure" : ""}`}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Paper history"
-        tabIndex={-1}
-        ref={dialog}
-        onClick={(event) => event.stopPropagation()}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") onClose();
-        }}
-      >
-        <header className="paper-bar">
-          {(version || file) && (
-            <button
-              className="icon-button"
-              aria-label="Back"
-              onClick={() => {
-                controller.current?.abort();
-                setBusy(false);
-                setError(null);
-                if (file) {
-                  setFile(null);
-                  setComparison(null);
-                } else setVersion(null);
-              }}
-            >
-              <ArrowLeft size={16} />
-            </button>
-          )}
-          <strong>
-            {file?.path ||
-              version?.name ||
-              (version ? new Date(version.created_at).toLocaleString() : "History")}
-          </strong>
-          {!version && (
-            <button className="icon-button" aria-label="Name version" onClick={() => setName("")}>
-              <Plus size={16} />
-            </button>
-          )}
-          {file && !busy && !error && (
-            <button
-              className="icon-button"
-              aria-label="Restore file"
-              title="Restore file"
-              onClick={() => void restore()}
-            >
-              <RotateCcw size={16} />
-            </button>
-          )}
-          {error && (
-            <button
-              className="icon-button"
-              aria-label="Retry history"
-              title={error}
-              onClick={() => retryAction.current()}
-            >
-              <RotateCcw size={16} />
-            </button>
-          )}
-          <button className="icon-button" aria-label="Close history" onClick={onClose}>
-            <X size={16} />
-          </button>
-        </header>
-        {name !== null && (
-          <form
-            className="paper-history-name"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void saveNamed();
+    <PaperDialog
+      className={`paper-inspector${error ? " paper-failure" : ""}`}
+      label="Paper history"
+      onClose={onClose}
+    >
+      <header className="paper-bar">
+        {(version || file) && (
+          <button
+            className="icon-button"
+            aria-label="Back"
+            onClick={() => {
+              controller.current?.abort();
+              setBusy(false);
+              setError(null);
+              if (file) {
+                setFile(null);
+                setComparison(null);
+              } else setVersion(null);
             }}
           >
-            <input
-              autoFocus
-              aria-label="Version name"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              maxLength={200}
-            />
-            <button
-              className="icon-button"
-              aria-label="Save version"
-              disabled={!name.trim() || busy}
-            >
-              <Check size={16} />
-            </button>
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="Cancel name"
-              onClick={() => setName(null)}
-            >
-              <X size={16} />
-            </button>
-          </form>
+            <ArrowLeft size={16} />
+          </button>
         )}
-        {busy && <LoaderCircle className="spin" size={18} aria-label="Loading history" />}
-        <div className="paper-history-content">
-          {!version &&
-            versions.map((item) => (
-              <button
-                className="paper-history-row"
-                key={item.version_id}
-                disabled={busy}
-                onClick={() => void selectVersion(item)}
-              >
-                <span>{item.name || new Date(item.created_at).toLocaleString()}</span>
-                <span>{item.actor}</span>
-                <ChevronRight size={16} />
-              </button>
-            ))}
-          {version &&
-            !file &&
-            version.manifest?.map((item) => (
-              <button
-                className="paper-history-row"
-                key={item.file_id}
-                disabled={busy}
-                onClick={() => void selectFile(item)}
-              >
-                <File size={15} />
-                <span>{item.path}</span>
-                <ChevronRight size={16} />
-              </button>
-            ))}
-          {file && comparison && (
-            <div className="paper-history-comparison">
-              <section>
-                <h3>Version</h3>
-                <pre>{comparison.saved}</pre>
-              </section>
-              <section>
-                <h3>Current</h3>
-                <pre>{comparison.current}</pre>
-              </section>
-            </div>
-          )}
-          {file?.kind === "binary" && (
-            <dl className="paper-history-binary">
-              <dt>Version</dt>
-              <dd>{file.blob_sha256}</dd>
-              <dt>Current</dt>
-              <dd>
-                {tree.files.find((item) => item.file_id === file.file_id)?.sha256 ?? "Deleted"}
-              </dd>
-            </dl>
-          )}
-        </div>
-      </section>
-    </div>
+        <strong>
+          {file?.path ||
+            version?.name ||
+            (version ? new Date(version.created_at).toLocaleString() : "History")}
+        </strong>
+        {!version && (
+          <button className="icon-button" aria-label="Name version" onClick={() => setName("")}>
+            <Plus size={16} />
+          </button>
+        )}
+        {file && !busy && !error && (
+          <button
+            className="icon-button"
+            aria-label="Restore file"
+            title="Restore file"
+            onClick={() => void restore()}
+          >
+            <RotateCcw size={16} />
+          </button>
+        )}
+        {error && (
+          <button
+            className="icon-button"
+            aria-label="Retry history"
+            title={error}
+            onClick={() => retryAction.current()}
+          >
+            <RotateCcw size={16} />
+          </button>
+        )}
+        <button className="icon-button" aria-label="Close history" onClick={onClose}>
+          <X size={16} />
+        </button>
+      </header>
+      {name !== null && (
+        <form
+          className="paper-history-name"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void saveNamed();
+          }}
+        >
+          <input
+            autoFocus
+            aria-label="Version name"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            maxLength={200}
+          />
+          <button className="icon-button" aria-label="Save version" disabled={!name.trim() || busy}>
+            <Check size={16} />
+          </button>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="Cancel name"
+            onClick={() => setName(null)}
+          >
+            <X size={16} />
+          </button>
+        </form>
+      )}
+      {busy && <LoaderCircle className="spin" size={18} aria-label="Loading history" />}
+      <div className="paper-history-content">
+        {!version &&
+          versions.map((item) => (
+            <button
+              className="paper-history-row"
+              key={item.version_id}
+              disabled={busy}
+              onClick={() => void selectVersion(item)}
+            >
+              <span>{item.name || new Date(item.created_at).toLocaleString()}</span>
+              <span>{item.actor}</span>
+              <ChevronRight size={16} />
+            </button>
+          ))}
+        {version &&
+          !file &&
+          version.manifest?.map((item) => (
+            <button
+              className="paper-history-row"
+              key={item.file_id}
+              disabled={busy}
+              onClick={() => void selectFile(item)}
+            >
+              <File size={15} />
+              <span>{item.path}</span>
+              <ChevronRight size={16} />
+            </button>
+          ))}
+        {file && comparison && (
+          <div className="paper-history-comparison">
+            <section>
+              <h3>Version</h3>
+              <pre>{comparison.saved}</pre>
+            </section>
+            <section>
+              <h3>Current</h3>
+              <pre>{comparison.current}</pre>
+            </section>
+          </div>
+        )}
+        {file?.kind === "binary" && (
+          <dl className="paper-history-binary">
+            <dt>Version</dt>
+            <dd>{file.blob_sha256}</dd>
+            <dt>Current</dt>
+            <dd>{tree.files.find((item) => item.file_id === file.file_id)?.sha256 ?? "Deleted"}</dd>
+          </dl>
+        )}
+      </div>
+    </PaperDialog>
   );
 }

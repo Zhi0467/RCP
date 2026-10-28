@@ -1,16 +1,19 @@
 import "./paper-preview.css";
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { Download, LoaderCircle, RotateCcw } from "lucide-react";
+import { lazy, Suspense, memo, useEffect, useRef, useState } from "react";
+import { Download, FileWarning, LoaderCircle, RotateCcw, X } from "lucide-react";
 import { api } from "../core/api";
 import { MarkdownAnswer } from "../core/chatMarkdown";
 import type { PaperFile, PaperTree } from "../core/types";
 import {
-  compileTypst,
+  TypstCompiler,
   paperRawUrl,
   paperRelativePath,
   readTypstTree,
   typstRoots,
 } from "./typstPreview";
+
+import { PaperDialog } from "./PaperDialog";
+import { usePreviewText } from "./usePreviewText";
 
 const PaperPdf = lazy(() => import("./PaperPdf"));
 type EngineState = "ready" | "installing" | "unavailable";
@@ -23,6 +26,40 @@ interface CompileResult {
   pdf_url: string | null;
 }
 
+// Memoization keeps the Markdown parser idle while the source changes.
+const MarkdownPreview = memo(function MarkdownPreview({
+  text,
+  file,
+  tree,
+  projectId,
+}: {
+  text: string;
+  file: PaperFile;
+  tree: PaperTree;
+  projectId: string;
+}) {
+  return (
+    <article className="paper-markdown chat-markdown">
+      <MarkdownAnswer
+        text={text}
+        renderEmbed={(src, alt) => {
+          const path = paperRelativePath(file.path, src);
+          const image = tree.files.find(
+            (entry) => entry.path === path && /\.(png|jpe?g|gif|webp)$/i.test(entry.path),
+          );
+          return image ? (
+            <img src={paperRawUrl(projectId, image.file_id, tree.saved_revision)} alt={alt} />
+          ) : (
+            <span role="img" aria-label={alt}>
+              {alt}
+            </span>
+          );
+        }}
+      />
+    </article>
+  );
+});
+
 export function PaperPreview({
   projectId,
   file,
@@ -34,6 +71,11 @@ export function PaperPreview({
   tree: PaperTree;
   text: string;
 }) {
+  const previewText = usePreviewText(file.format === "markdown" ? text : "");
+  const compiler = useRef(new TypstCompiler());
+  const bytesCache = useRef(new Map<string, Uint8Array>());
+  const [showLog, setShowLog] = useState(false);
+  useEffect(() => () => compiler.current.dispose(), []);
   const [engines, setEngines] = useState<Engines | null>(null);
   const [pdf, setPdf] = useState<string | null>(null);
   const [candidates, setCandidates] = useState<string[]>([]);
@@ -62,6 +104,7 @@ export function PaperPreview({
     setCandidates([]);
     setPdf(null);
     setError(null);
+    setShowLog(false);
   }, [projectId, file.file_id]);
   useEffect(() => {
     if (!engine) return;
@@ -131,6 +174,7 @@ export function PaperPreview({
             openFile,
             typstText,
             controller.signal,
+            bytesCache.current,
           );
           const typst = new Map(
             sources
@@ -149,7 +193,7 @@ export function PaperPreview({
             setPdf(null);
             return;
           }
-          const bytes = await compileTypst(sources, root, controller.signal);
+          const bytes = await compiler.current.compile(sources, root, controller.signal);
           if (controller.signal.aborted) return;
           const objectUrl = URL.createObjectURL(
             new Blob([new Uint8Array(bytes)], { type: "application/pdf" }),
@@ -194,26 +238,7 @@ export function PaperPreview({
   }
 
   if (file.format === "markdown")
-    return (
-      <article className="paper-markdown chat-markdown">
-        <MarkdownAnswer
-          text={text}
-          renderEmbed={(src, alt) => {
-            const path = paperRelativePath(file.path, src);
-            const image = tree.files.find(
-              (entry) => entry.path === path && /\.(png|jpe?g|gif|webp)$/i.test(entry.path),
-            );
-            return image ? (
-              <img src={paperRawUrl(projectId, image.file_id, tree.saved_revision)} alt={alt} />
-            ) : (
-              <span role="img" aria-label={alt}>
-                {alt}
-              </span>
-            );
-          }}
-        />
-      </article>
-    );
+    return <MarkdownPreview text={previewText} file={file} tree={tree} projectId={projectId} />;
   if (file.format === "image" && /\.(png|jpe?g|gif|webp)$/i.test(file.path))
     return (
       <div className="paper-image-preview">
@@ -285,16 +310,41 @@ export function PaperPreview({
         {error && (
           <button
             className="icon-button"
-            title={error}
-            aria-label="Retry preview"
-            onClick={() =>
-              engines?.[engine] === "unavailable" ? void install() : setRetry((value) => value + 1)
-            }
+            aria-label="View compile log"
+            onClick={() => setShowLog(true)}
           >
-            <RotateCcw size={16} />
+            <FileWarning size={16} />
           </button>
         )}
       </div>
+      {showLog && error && (
+        <PaperDialog label="Compile log" onClose={() => setShowLog(false)}>
+          <header className="paper-bar">
+            <strong>Compile log</strong>
+            <button
+              className="icon-button"
+              aria-label="Retry preview"
+              onClick={() => {
+                setShowLog(false);
+                if (engines?.[engine] === "unavailable") void install();
+                else setRetry((value) => value + 1);
+              }}
+            >
+              <RotateCcw size={16} />
+            </button>
+            <button
+              className="icon-button"
+              aria-label="Close compile log"
+              onClick={() => setShowLog(false)}
+            >
+              <X size={16} />
+            </button>
+          </header>
+          <pre className="paper-plain-preview" tabIndex={0}>
+            {error}
+          </pre>
+        </PaperDialog>
+      )}
       {pdf && (
         <Suspense fallback={<LoaderCircle className="spin" size={16} />}>
           <PaperPdf

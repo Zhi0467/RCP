@@ -1,3 +1,4 @@
+import { PaperDialog } from "./PaperDialog";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Check,
@@ -329,27 +330,19 @@ export function PaperChanges({
         );
       })}
       {comparison && (
-        <div className="paper-inspector-backdrop" onClick={() => setComparison(null)}>
-          <section
-            className="paper-inspector"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Compare change"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <header className="paper-bar">
-              <strong>{comparison.path}</strong>
-              <button
-                className="icon-button"
-                aria-label="Close comparison"
-                onClick={() => setComparison(null)}
-              >
-                <X size={16} />
-              </button>
-            </header>
-            <PaperRewriteComparison apiBase={apiBase} change={comparison} />
-          </section>
-        </div>
+        <PaperDialog label="Compare change" onClose={() => setComparison(null)}>
+          <header className="paper-bar">
+            <strong>{comparison.path}</strong>
+            <button
+              className="icon-button"
+              aria-label="Close comparison"
+              onClick={() => setComparison(null)}
+            >
+              <X size={16} />
+            </button>
+          </header>
+          <PaperRewriteComparison apiBase={apiBase} change={comparison} />
+        </PaperDialog>
       )}
     </div>
   );

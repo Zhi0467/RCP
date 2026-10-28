@@ -1,3 +1,4 @@
+import { PaperDialog } from "./PaperDialog";
 import { useRef, useState } from "react";
 import {
   Check,
@@ -238,43 +239,45 @@ export function PaperFiles({
         )}
       </footer>
       {deleting && (
-        <div className="paper-dialog-backdrop">
-          <section
-            className={`paper-box paper-confirm ${deleteFailure ? "paper-failed" : ""}`}
-            role="alertdialog"
-            aria-label="Delete file"
-          >
-            <strong>Delete {deleting.path}?</strong>
-            <div className="paper-bar">
-              <button
-                className="button"
-                disabled={busy}
-                onClick={() => {
+        <PaperDialog
+          className={`paper-box paper-confirm ${deleteFailure ? "paper-failed" : ""}`}
+          role="alertdialog"
+          label="Delete file"
+          onClose={() => {
+            setDeleting(null);
+            clearFailure("delete");
+          }}
+        >
+          <strong>Delete {deleting.path}?</strong>
+          <div className="paper-bar">
+            <button
+              className="button"
+              disabled={busy}
+              onClick={() => {
+                setDeleting(null);
+                clearFailure("delete");
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              className={deleteFailure ? "icon-button" : "button"}
+              aria-label={deleteFailure ? "Retry delete" : undefined}
+              title={deleteFailure?.message}
+              disabled={busy}
+              onClick={() =>
+                void perform("delete", async () => {
+                  await api(`${apiBase}/paper/files/${encodeURIComponent(deleting.file_id)}`, {
+                    method: "DELETE",
+                  });
                   setDeleting(null);
-                  clearFailure("delete");
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                className={deleteFailure ? "icon-button" : "button"}
-                aria-label={deleteFailure ? "Retry delete" : undefined}
-                title={deleteFailure?.message}
-                disabled={busy}
-                onClick={() =>
-                  void perform("delete", async () => {
-                    await api(`${apiBase}/paper/files/${encodeURIComponent(deleting.file_id)}`, {
-                      method: "DELETE",
-                    });
-                    setDeleting(null);
-                  })
-                }
-              >
-                {deleteFailure ? <RotateCcw size={16} /> : "Delete"}
-              </button>
-            </div>
-          </section>
-        </div>
+                })
+              }
+            >
+              {deleteFailure ? <RotateCcw size={16} /> : "Delete"}
+            </button>
+          </div>
+        </PaperDialog>
       )}
     </aside>
   );

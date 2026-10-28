@@ -35,12 +35,14 @@
   min-height: 48px;
   flex: none;
 }
-.paper-bar .icon-button {
-  flex: none;
-  width: 29px;
-  height: 29px;
-  min-height: 29px;
-  padding: 5px;
+@media (min-width: 701px) {
+  .paper-bar .icon-button {
+    flex: none;
+    width: 29px;
+    height: 29px;
+    min-height: 29px;
+    padding: 5px;
+  }
 }
 .paper-grow {
   flex: 1;
@@ -224,11 +226,13 @@
   align-items: center;
   gap: 4px;
 }
-.paper-suggestion-stepper .icon-button {
-  width: 25px;
-  height: 25px;
-  padding: 4px;
-  min-height: 25px;
+@media (min-width: 701px) {
+  .paper-suggestion-stepper .icon-button {
+    width: 25px;
+    height: 25px;
+    padding: 4px;
+    min-height: 25px;
+  }
 }
 .paper-deletion {
   background: color-mix(in srgb, var(--coral) 15%, transparent);
@@ -245,12 +249,14 @@
   gap: 4px;
   margin-left: 8px;
 }
-.paper-suggestion-actions button {
-  width: 24px;
-  height: 24px;
-  min-height: 24px;
-  padding: 0;
-  vertical-align: middle;
+@media (min-width: 701px) {
+  .paper-suggestion-actions button {
+    width: 24px;
+    height: 24px;
+    min-height: 24px;
+    padding: 0;
+    vertical-align: middle;
+  }
 }
 .paper-failed {
   border-left: 3px solid var(--coral);
@@ -274,6 +280,18 @@
   background: rgb(0 0 0 / 22%);
   padding: 20px;
 }
+.paper-dialog {
+  border: 0;
+  padding: 0;
+  margin: auto;
+  color: var(--walnut);
+  max-width: calc(100% - 40px);
+  max-height: calc(100dvh - 40px);
+}
+.paper-dialog::backdrop {
+  background: rgb(0 0 0 / 22%);
+}
+
 .paper-confirm {
   padding: 20px;
   max-width: min(440px, 100%);
@@ -385,5 +403,15 @@
   }
   .paper-dialog-backdrop {
     padding: 10px;
+  }
+  .paper-dialog {
+    max-width: calc(100% - 20px);
+    max-height: calc(100dvh - 20px);
+  }
+  .paper-live-workspace .icon-button,
+  .paper-dialog .icon-button,
+  .paper-live-workspace .paper-segments button {
+    min-width: 44px;
+    min-height: 44px;
   }
 }

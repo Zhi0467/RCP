@@ -72,7 +72,8 @@ export function PaperEditor({
   const pending = useMemo(
     () =>
       changes.filter(
-        (change) => change.file_id === owner.key.file && change.state === "pending" && change.lines,
+        (change) =>
+          change.file_id === owner.key.file && change.state === "pending" && change.current,
       ),
     [changes, owner],
   );
@@ -129,9 +130,11 @@ export function PaperEditor({
     if (!editor) return;
     const marks = pending.flatMap((change) => {
       let anchor = anchors.get(change);
-      if (!anchor) {
+      if (!anchors.has(change)) {
         anchor = anchorPaperChange(change, owner.text);
-        if (anchor) anchors.set(change, anchor);
+        // Wait for the first server text, then keep failed matches hidden until
+        // the server supplies a refreshed card instead of trying an old offset.
+        if (anchor || text || owner.provider.synced) anchors.set(change, anchor);
       }
       const range = anchor && resolvePaperAnchor(anchor, change, owner.text);
       if (!range) return [];
@@ -155,22 +158,17 @@ export function PaperEditor({
 
   const locate = (change: PaperChange | undefined) => {
     const editor = view.current;
-    if (!editor || !change?.lines) return;
+    if (!editor || !change) return false;
     const anchor = anchors.get(change);
     const range = anchor && resolvePaperAnchor(anchor, change, owner.text);
-    const from =
-      range?.from ??
-      Math.min(
-        editor.state.doc.length,
-        change.current?.start ??
-          editor.state.doc.line(Math.min(editor.state.doc.lines, Math.max(1, change.lines.start)))
-            .from,
-      );
+    if (!range) return false;
+    const { from } = range;
     editor.dispatch({
       selection: { anchor: from },
       effects: EditorView.scrollIntoView(from, { y: "center" }),
     });
     editor.focus();
+    return true;
   };
   const located = useRef<{ owner: PaperDocument; change: PaperChange } | null>(null);
   useEffect(() => {
@@ -181,11 +179,10 @@ export function PaperEditor({
       (located.current?.owner === owner && located.current.change === focusChange)
     )
       return;
-    locate(focusChange);
-    located.current = { owner, change: focusChange };
+    if (locate(focusChange)) located.current = { owner, change: focusChange };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- locate is recreated each render; text arriving is the trigger
   }, [focusChange, owner, text]);
-  const words = owner.getSnapshot().text.trim().split(/\s+/).filter(Boolean).length;
+  const words = useMemo(() => text.trim().split(/\s+/).filter(Boolean).length, [text]);
   return (
     <>
       <div className={`paper-code paper-well ${error ? "paper-failed" : ""}`} ref={host} />

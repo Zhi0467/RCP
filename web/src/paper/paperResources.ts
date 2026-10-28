@@ -1,6 +1,6 @@
 import { api } from "../core/api";
 import type { ResourceKey, ResourceProfile } from "../core/resourceStore";
-import type { PaperSnapshot, PaperTree, WritingSession } from "../core/types";
+import type { PaperSnapshot, PaperTree } from "../core/types";
 
 /** Each link opening is a new request, including a return to the same file. */
 export function paperFileRequest(hash: string) {
@@ -11,7 +11,6 @@ export interface PaperResource {
   tree: PaperTree;
   /** Shell badge projection until the shell consumes PaperTree directly. */
   paper: PaperSnapshot;
-  sessions: WritingSession[];
 }
 export function paperResourceKey(projectId: string): ResourceKey {
   return { backend: "", member: "", project: projectId, name: "paper" };
@@ -23,13 +22,9 @@ export function paperProfile(
   return {
     key: paperResourceKey(projectId),
     async fetch(signal) {
-      const [tree, sessions] = await Promise.all([
-        api<PaperTree>(`${apiBase}/paper/tree`, { signal }),
-        api<WritingSession[]>(`${apiBase}/paper/sessions`, { signal }),
-      ]);
+      const tree = await api<PaperTree>(`${apiBase}/paper/tree`, { signal });
       return {
         tree,
-        sessions,
         paper: {
           content: "",
           draft_version: null,
