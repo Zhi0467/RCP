@@ -142,21 +142,42 @@ async def test_a_refresh_replaces_every_undecided_card_on_its_file(coach):
 
 
 @pytest.mark.asyncio
-async def test_every_coach_turn_of_a_project_runs_in_one_folder(coach):
+async def test_a_coach_session_keeps_its_folder_and_sessions_never_share_one(coach):
     service, _live, data = coach
     folders = []
 
     class Launcher:
         async def stream(self, _provider, _prompt, **kwargs):
             folders.append(kwargs["cwd"])
-            yield AgentEvent(event="session", session_id=f"folder-native-{len(folders)}")
+            yield AgentEvent(event="session", session_id=kwargs["session_id"] or f"s{len(folders)}")
             yield AgentEvent(event="done")
 
-    for _ in range(2):
-        events = await run_coach(service, Launcher(), data, execution=execution_for(service))
+    async def turn(session_id=None):
+        execution = execution_for(service)
+        events = [
+            AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
+            async for frame in stream_coach(
+                service,
+                Launcher(),
+                service.paper,
+                CoachRequest(message="Edit the paper", session_id=session_id),
+                data,
+                execution,
+            )
+        ]
         assert not [event for event in events if event.event == "error"]
-    # Providers look a resumed session up by its folder.
-    assert folders[0] == folders[1]
+        # The task runner records the session the provider reported.
+        session = next(event.session_id for event in events if event.event == "session")
+        execution.store.checkpoint_agent_task(execution.operation_id, native_session_id=session)
+        execution.store.complete_agent_task(
+            execution.operation_id, applied_revision=None, result={}
+        )
+
+    await turn()
+    await turn("s1")
+    await turn()
+    # Providers look a resumed session up by its folder; each session's mailbox owns it.
+    assert folders[0] == folders[1] != folders[2]
     assert folders[0].is_dir()
 
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 import tempfile
@@ -54,6 +53,7 @@ from rcp.runs.shared import (
     _record_agent_launch_receipt,
     _record_provider_exit,
     _remove_local_tree,
+    _safe_stage_name,
     _sse,
     _stage_json_task_input,
     _stage_or_reuse_task_input,
@@ -297,11 +297,15 @@ async def _stream_coach(
         local_stage.mkdir(parents=True, exist_ok=False)
         if execution is not None:
             execution.checkpoint_stage("", str(local_stage))
-    # OpenCode and Claude find a native session by its working folder, so every coach
-    # turn in a project runs in one folder; a per-turn folder strands follow-ups.
-    workspace = (
-        stage_root / f"paper-coach-{hashlib.sha256(paper.project_id.encode()).hexdigest()[:16]}"
+    # OpenCode and Claude find a native session by its working folder, so a session's
+    # turns all run in the folder of the turn that started it. One session runs one
+    # turn at a time, and its command mailbox owns the whole folder.
+    origin = (
+        execution.store.native_session_origin(paper.project_id, "paper_coach", request.session_id)
+        if execution is not None and request.session_id
+        else None
     )
+    workspace = stage_root / f"paper-coach-{_safe_stage_name(origin) if origin else token}"
     workspace.mkdir(mode=0o700, exist_ok=True)
     os.utime(workspace)
     try:
