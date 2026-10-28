@@ -32,6 +32,8 @@ export function PaperDialog({
       role={role}
       onCancel={(event) => {
         event.preventDefault();
+        // React bubbles a nested dialog's cancel to its parent dialog; close only this one.
+        event.stopPropagation();
         onClose();
       }}
       onClick={(event) => {

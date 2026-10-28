@@ -241,6 +241,11 @@ export function PaperHistory({
             aria-label="Version name"
             value={name}
             onChange={(event) => setName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape") return;
+              event.preventDefault();
+              setName(null);
+            }}
             maxLength={200}
           />
           <button className="icon-button" aria-label="Save version" disabled={!name.trim() || busy}>

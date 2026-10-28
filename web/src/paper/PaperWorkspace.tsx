@@ -135,7 +135,13 @@ export function PaperWorkspace({
     !listed && last?.file.file_id === current && last?.document?.getSnapshot().saved === false
       ? last.file
       : undefined;
-  const file = listed ?? stranded ?? (!selected ? tree?.files[0] : undefined);
+  // A selection the tree does not list (not yet, or no longer) keeps the open file, else
+  // the first one, so a stale link or reload never leaves the editor blank.
+  const file =
+    listed ??
+    stranded ??
+    tree?.files.find((item) => item.file_id === last?.file.file_id) ??
+    tree?.files[0];
   const document = useMemo(
     () =>
       identity && file?.kind === "text"
@@ -288,9 +294,13 @@ export function PaperWorkspace({
                 stranded
                   ? async () => {
                       const body = new FormData();
-                      const path = tree!.files.some((item) => item.path === file!.path)
-                        ? file!.path.replace(/(\.[^./]+)?$/, " (recovered)$1")
-                        : file!.path;
+                      const taken = new Set(tree!.files.map((item) => item.path));
+                      let path = file!.path;
+                      for (let n = 1; taken.has(path); n++)
+                        path = file!.path.replace(
+                          /(\.[^./]+)?$/,
+                          ` (recovered${n > 1 ? ` ${n}` : ""})$1`,
+                        );
                       body.append("path", path);
                       body.append(
                         "file",

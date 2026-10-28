@@ -729,6 +729,17 @@ test("a newly created file receives typing and stays selected after reload", asy
   assert.deepEqual(errors, []);
 });
 
+test("reloading onto a deleted file opens the first file", async (t) => {
+  const { page, fixture, errors } = await openPaper(t, { configure: secondFile });
+  await page.getByRole("button", { name: "second.md", exact: true }).click();
+  await page.waitForFunction(() => window.location.hash.includes("paper_file=f2"));
+  fixture.tree.files.pop();
+  await page.reload();
+  await page.waitForFunction(editorMatches, "draft");
+  assert.equal(await page.locator(".paper-path").textContent(), "intro.md");
+  assert.deepEqual(errors, []);
+});
+
 test("phone Write returns keyboard focus to the document", async (t) => {
   const { page } = await openPaper(t, { width: 390 });
   await page.locator(".cm-content").click();
@@ -774,6 +785,11 @@ test("history uses list manifests and confirms restoring a file", async (t) => {
   assert.ok(await insideViewport(history));
   await history.getByRole("button", { name: "Restore file" }).click();
   assert.equal(fixture.posts.filter((post) => post.path.endsWith("/restore")).length, 0);
+  // Escape closes only the confirmation, not History behind it.
+  await page.keyboard.press("Escape");
+  await page.getByRole("alertdialog").waitFor({ state: "detached" });
+  assert.ok(await history.isVisible());
+  await history.getByRole("button", { name: "Restore file" }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: "Confirm", exact: true }).click();
   await page.waitForFunction(editorMatches, "draft");
   assert.equal(fixture.posts.filter((post) => post.path.endsWith("/restore")).length, 1);

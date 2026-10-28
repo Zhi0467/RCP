@@ -271,7 +271,6 @@ function MarkdownLink({ href, children, className, node, ...props }: MarkdownLin
     {
       ...props,
       href,
-      ...(external ? { target: "_blank", rel: "noopener noreferrer" } : {}),
       className: nextClassName || undefined,
       "aria-label": nodeId
         ? `Open node ${nodeId}`

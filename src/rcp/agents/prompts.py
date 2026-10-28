@@ -1550,7 +1550,7 @@ Graph Patch (optional):
         )
 
     # Bumped when the paper-coach task contract's stable policy prose changes.
-    PAPER_COACH_POLICY_VERSION = "paper-coach-v5"
+    PAPER_COACH_POLICY_VERSION = "paper-coach-v6"
 
     @staticmethod
     def paper_coach_task_contract(
@@ -1609,8 +1609,9 @@ Authorship contract:
   the snapshot, or `moves.json`, so do not mention them.
 - All output is validated together and presented for review, or applied by RCP under the human's
   saved Apply-directly choice. You have no direct paper-write authority.
-- Run no commands except the exact protected graph-history client below. Use native file-reading,
-  Edit/Write, and web tools; never use a general shell.
+- Read with native file-reading tools. Where your provider reads files only through its shell,
+  use read-only commands such as `cat`, `ls`, and `sed -n`. Run no other command except the exact
+  protected graph-history client below. Write with native Edit/Write tools.
 - Do not write anywhere outside the named changes folder, including the snapshot.
 - This task cannot produce a graph Patch and has no validator client. Do not create `patch.json`.
 - The paper is a shared draft, not canonical graph truth. Distinguish its claims
