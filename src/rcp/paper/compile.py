@@ -55,37 +55,22 @@ def _reference(source: str, target: str, suffix: str) -> str | None:
     return path if posixpath.splitext(path)[1] else path + suffix
 
 
-def root_candidates(
-    files: Mapping[str, str], open_path: str, engine: Literal["latex", "typst"]
-) -> list[str]:
-    """Find static literal roots reaching the open file; never guess a main file.
-
-    Dynamic TeX macros and Typst expressions cannot be resolved statically.
-    Cycles are traversed once; a Typst cycle without a parent has no root.
-    """
-    suffix = ".tex" if engine == "latex" else ".typ"
+def root_candidates(files: Mapping[str, str], open_path: str) -> list[str]:
+    """Find static LaTeX roots reaching the open file; traverse cycles once."""
+    suffix = ".tex"
     texts = {path: text for path, text in files.items() if path.endswith(suffix)}
-    edges: dict[str, set[str]] = {}
     roots: set[str] = set()
     latex_refs: dict[str, list[tuple[str, str]]] = {}
     for path, text in texts.items():
-        if engine == "latex":
-            text = re.sub(r"(?<!\\)%[^\n]*", "", text)
-            if re.search(r"\\documentclass\s*(?:\[[^\]]*\])?\s*\{", text):
-                roots.add(path)
-            latex_refs[path] = [
-                (command, braced or bare)
-                for command, braced, bare in re.findall(
-                    r"\\(input|include|subfile)(?![a-zA-Z])\s*(?:\{([^}]+)\}|([^\s{}\\]+))", text
-                )
-            ]
-            continue
-        else:
-            text = re.sub(r"/\*.*?\*/|//[^\n]*", "", text, flags=re.S)
-            refs = re.findall(r'#(?:import|include)\s+"([^"\n]+)"', text)
-        edges[path] = {p for ref in refs if (p := _reference(path, ref, suffix)) in texts}
-    if engine == "typst":
-        roots = set(texts) - {child for children in edges.values() for child in children}
+        text = re.sub(r"(?<!\\)%[^\n]*", "", text)
+        if re.search(r"\\documentclass\s*(?:\[[^\]]*\])?\s*\{", text):
+            roots.add(path)
+        latex_refs[path] = [
+            (command, braced or bare)
+            for command, braced, bare in re.findall(
+                r"\\(input|include|subfile)(?![a-zA-Z])\s*(?:\{([^}]+)\}|([^\s{}\\]+))", text
+            )
+        ]
 
     def reaches(root: str) -> bool:
         pending: list[tuple[str, str]] = [(root, root)]
@@ -97,22 +82,15 @@ def root_candidates(
             if (node, context) in visited:
                 continue
             visited.add((node, context))
-            if engine == "typst":
-                pending.extend((child, child) for child in edges.get(node, ()))
-            else:
-                # Tectonic roots ordinary TeX I/O at the primary input's parent.
-                # A subfile introduces its own directory for included content.
-                for command, target in latex_refs.get(node, ()):
-                    child = _reference(context, target, suffix)
-                    if child is not None and child in texts:
-                        pending.append((child, child if command == "subfile" else context))
+            # Tectonic roots ordinary TeX I/O at the primary input's parent.
+            # A subfile introduces its own directory for included content.
+            for command, target in latex_refs.get(node, ()):
+                child = _reference(context, target, suffix)
+                if child is not None and child in texts:
+                    pending.append((child, child if command == "subfile" else context))
         return False
 
     return sorted(root for root in roots if reaches(root))
-
-
-def typst_root_candidates(files: Mapping[str, str], open_path: str) -> list[str]:
-    return root_candidates(files, open_path, "typst")
 
 
 async def _kill(process: asyncio.subprocess.Process) -> None:
@@ -170,7 +148,7 @@ class PaperCompiler:
             if open_path is None:
                 raise ValueError("The open file is absent from this saved revision.")
             texts = {f.path: f.text for f in entries if f.kind == "text" and f.text is not None}
-            roots = root_candidates(texts, open_path, "latex")
+            roots = root_candidates(texts, open_path)
             if len(roots) != 1:
                 result.candidates = roots
                 result.log_tail = "No unique LaTeX root reaches the open file."
