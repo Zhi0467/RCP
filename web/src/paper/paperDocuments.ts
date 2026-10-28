@@ -1,4 +1,5 @@
 import type { BackendIdentityEventDetail } from "../core/desktopRuntime";
+import type { PaperFile } from "../core/types";
 import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
 import { IndexeddbPersistence } from "y-indexeddb";
@@ -28,6 +29,10 @@ export interface PaperDocumentState {
 export function paperDocumentKey(key: PaperDocumentKey): string {
   return JSON.stringify([key.backend, key.member, key.project, key.file]);
 }
+/** The backend part of a document key: the server origin and the space it serves. */
+export function paperBackendKey(apiBase: string, spaceId: string): string {
+  return `${new URL(apiBase, window.location.href).origin}:${spaceId}`;
+}
 export function vectorCovers(ack: Uint8Array, local: Uint8Array): boolean {
   const saved = Y.decodeStateVector(ack);
   return [...Y.decodeStateVector(local)].every(
@@ -35,6 +40,33 @@ export function vectorCovers(ack: Uint8Array, local: Uint8Array): boolean {
   );
 }
 const owners = new Map<string, PaperDocument>();
+/** Owners whose local text the server has not acknowledged, so a view can reach a file
+ * that left the tree while it still holds unsent text. */
+let unsent: readonly PaperDocument[] = [];
+const unsentListeners = new Set<() => void>();
+let unsentDirty = false;
+// Owners are acquired while a view renders, so the list settles after it, never during.
+function refreshUnsent() {
+  if (unsentDirty) return;
+  unsentDirty = true;
+  queueMicrotask(() => {
+    unsentDirty = false;
+    const next = [...owners.values()].filter((owner) => !owner.getSnapshot().saved);
+    if (next.length === unsent.length && next.every((owner, index) => owner === unsent[index]))
+      return;
+    unsent = next;
+    unsentListeners.forEach((listener) => listener());
+  });
+}
+export const unsentPaperDocuments = {
+  subscribe(listener: () => void) {
+    unsentListeners.add(listener);
+    return () => {
+      unsentListeners.delete(listener);
+    };
+  },
+  getSnapshot: () => unsent,
+};
 
 /** Delete sets do not advance a Yjs state vector. Give a local delete-only edit
  * a causal clock so an older in-flight type-100 ack cannot cover it. S1 persists
@@ -71,9 +103,19 @@ export class PaperDocument {
   text = this.doc.getText("text");
   private persistence: IndexeddbPersistence | null = null;
   provider!: WebsocketProvider;
+  /** The file as last listed in the tree, kept to show it after it leaves the tree. */
+  listing: PaperFile | null = null;
   private rejected = false;
+  /** Whether the current connection received anything: a close before that is admission,
+   * never a refusal of this document's text. */
+  private heard = false;
+  /** Disconnected until the member is verified again after a backend change. */
+  private paused = false;
   private recovering = false;
   private ack: Uint8Array | null = null;
+  /** The state vector after the latest local change. Content the server delivered is
+   * already durable there, so only local content waits for an acknowledgement. */
+  private local: Uint8Array | null = null;
   private awaitingAck = true;
   private listeners = new Set<() => void>();
   private references = 0;
@@ -114,21 +156,49 @@ export class PaperDocument {
       // Identity-isolated persistence and server admission, never a cross-member tab channel.
       disableBc: true,
     });
-    this.provider.messageHandlers[100] = (_encoder, decoder) => {
+    const handlers = this.provider.messageHandlers;
+    for (const type of [0, 1]) {
+      const handle = handlers[type];
+      handlers[type] = (...message) => {
+        this.heard = true;
+        handle(...message);
+      };
+    }
+    handlers[100] = (_encoder, decoder) => {
+      this.heard = true;
       this.ack = readTailAsUint8Array(decoder);
       this.awaitingAck = false;
       this.emit();
     };
+    // Send each synchronous burst of local transactions as one message: a delete and the
+    // deletion clock it bumps travel together instead of doubling the message rate.
+    const send = this.provider._updateHandler;
+    this.doc.off("update", send);
+    let burst: Uint8Array[] = [];
+    this.doc.on("update", (update: Uint8Array, origin: unknown) => {
+      if (origin === this.provider) return;
+      burst.push(update);
+      if (burst.length > 1) return;
+      queueMicrotask(() => {
+        const updates = burst;
+        burst = [];
+        send(updates.length === 1 ? updates[0] : Y.mergeUpdates(updates), null);
+      });
+    });
     this.doc.on("update", (_update: Uint8Array, origin: unknown) => {
-      if (origin !== this.provider) this.awaitingAck = true;
+      if (origin !== this.provider) {
+        this.awaitingAck = true;
+        this.local = Y.encodeStateVector(this.doc);
+      }
       this.emit();
     });
     this.provider.on("status", ({ status }) => {
+      if (status === "connecting") this.heard = false;
       this.snapshot = { ...this.snapshot, connected: status === "connected" };
       this.emit();
     });
     this.provider.on("closed", ({ code }) => {
-      this.rejected = code === 4413 || code === 4400;
+      this.rejected = (code === 4413 || code === 4400) && this.heard && !this.isSaved();
       this.snapshot = {
         ...this.snapshot,
         error: `Paper connection closed (${code})`,
@@ -146,20 +216,41 @@ export class PaperDocument {
       // before constructing it so denied storage has an explicit retry path.
       await checkLocalStorage();
       if (this.disposed) return;
-      this.persistence ??= new IndexeddbPersistence(
-        `rcp:paper:${paperDocumentKey(this.key)}`,
-        this.doc,
-      );
-      await this.persistence.whenSynced;
+      await (this.persistence?.whenSynced ?? this.openPersistence());
       if (this.disposed) return;
       this.snapshot = { ...this.snapshot, ready: true, error: null };
-      this.provider.connect();
+      if (!this.paused) this.provider.connect();
     } catch (error) {
       this.snapshot = { ...this.snapshot, error: String(error) };
     } finally {
       this.storageStarting = false;
       this.emit();
     }
+  }
+  private get storageName() {
+    return `rcp:paper:${paperDocumentKey(this.key)}`;
+  }
+  private async openPersistence() {
+    const persistence = new IndexeddbPersistence(this.storageName, this.doc);
+    this.persistence = persistence;
+    await persistence.whenSynced;
+    // Another tab of this member deletes the store when it discards a refused update.
+    // A new store opened here starts with this whole document, so nothing unsent is lost.
+    persistence.db?.addEventListener("versionchange", () => {
+      if (this.persistence !== persistence || this.disposed) return;
+      void persistence.destroy();
+      this.openPersistence().catch((error) => {
+        this.snapshot = { ...this.snapshot, error: String(error) };
+        this.emit();
+      });
+    });
+  }
+  private isSaved() {
+    return (
+      !this.awaitingAck &&
+      this.ack !== null &&
+      (this.local === null || vectorCovers(this.ack, this.local))
+    );
   }
   getSnapshot = () => this.snapshot;
   subscribe = (listener: () => void) => {
@@ -183,12 +274,10 @@ export class PaperDocument {
       ...this.snapshot,
       text: this.text.toString(),
       presence,
-      saved:
-        !this.awaitingAck &&
-        this.ack !== null &&
-        vectorCovers(this.ack, Y.encodeStateVector(this.doc)),
+      saved: this.isSaved(),
     };
     this.listeners.forEach((listener) => listener());
+    refreshUnsent();
     this.scheduleDisposal();
   }
   retain() {
@@ -246,6 +335,7 @@ export class PaperDocument {
         this.doc = new Y.Doc();
         this.text = this.doc.getText("text");
         this.ack = null;
+        this.local = null;
         this.awaitingAck = true;
         this.initializeDocument();
         this.provider.awareness.setLocalState(presence);
@@ -260,9 +350,23 @@ export class PaperDocument {
       return;
     }
     this.snapshot = { ...this.snapshot, error: null, closed: null };
-    if (this.snapshot.ready) this.provider.connect();
-    else void this.startStorage();
+    if (!this.snapshot.ready) void this.startStorage();
+    else if (!this.paused) this.provider.connect();
     this.emit();
+  }
+  /** Holds the connection, keeping the document editable, until `resume`. */
+  pause() {
+    if (this.disposed || this.paused) return;
+    this.paused = true;
+    this.provider.disconnect();
+    // Only the server that is reached next can say what it holds.
+    this.awaitingAck = true;
+    this.emit();
+  }
+  resume() {
+    if (this.disposed || !this.paused) return;
+    this.paused = false;
+    if (this.snapshot.ready && this.snapshot.closed === null) this.provider.connect();
   }
   /** Cuts the server link at once. A mounted editor still writes into this doc
    * until it unmounts, so local storage stays attached until the last release. */
@@ -272,6 +376,7 @@ export class PaperDocument {
     clearTimeout(this.disposal);
     this.provider.destroy();
     owners.delete(paperDocumentKey(this.key));
+    refreshUnsent();
     if (!this.references) this.closeStorage();
   }
   private closeStorage() {
@@ -285,14 +390,24 @@ export function acquirePaperDocument(key: PaperDocumentKey, apiBase: string, nam
   if (!owner) {
     owner = new PaperDocument(key, apiBase, name);
     owners.set(id, owner);
+    refreshUnsent();
   }
   return owner;
 }
-export function disconnectPaperDocuments() {
-  for (const owner of [...owners.values()]) owner.destroy();
+/** A backend change or an ended session holds every document, editable, until the
+ * member is verified again: nothing typed meanwhile is lost or sent as someone else. */
+export function pausePaperDocuments() {
+  for (const owner of owners.values()) owner.pause();
+}
+/** Resumes the verified member's documents and ends every other member's. */
+export function resumePaperDocuments(backend: string, member: string) {
+  for (const owner of [...owners.values()]) {
+    if (owner.key.backend === backend && owner.key.member === member) owner.resume();
+    else owner.destroy();
+  }
 }
 // Reverification also fires after transport recovery. Only an observed identity
-// change invalidates document owners; a failed probe has no new identity.
+// change pauses document owners; a failed probe has no new identity.
 export function paperBackendIdentityTracker() {
   let previous: string | null = null;
   return (detail: BackendIdentityEventDetail) => {
@@ -307,12 +422,13 @@ export function paperBackendIdentityTracker() {
 const backendChanged = paperBackendIdentityTracker();
 export function observePaperBackend(detail: BackendIdentityEventDetail) {
   const changed = backendChanged(detail);
-  if (changed) disconnectPaperDocuments();
+  if (changed) pausePaperDocuments();
   return changed;
 }
+// Lost project access needs nothing here: the server closes those documents with 4403,
+// and they keep their unsent text.
 if (typeof window !== "undefined") {
-  window.addEventListener("rcp:session-required", disconnectPaperDocuments);
-  window.addEventListener("rcp:read-access-lost", disconnectPaperDocuments);
+  window.addEventListener("rcp:session-required", pausePaperDocuments);
   window.addEventListener("rcp:backend-identity", (event) => {
     if (!observePaperBackend((event as CustomEvent<BackendIdentityEventDetail>).detail)) return;
     window.dispatchEvent(new Event("rcp:paper-backend-changed"));

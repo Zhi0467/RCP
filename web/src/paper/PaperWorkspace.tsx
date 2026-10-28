@@ -1,5 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Cloud, CloudOff, Copy, History, LoaderCircle, PanelLeft, RotateCcw } from "lucide-react";
+import { flushSync } from "react-dom";
+import { EditorView } from "@codemirror/view";
+import {
+  Cloud,
+  CloudOff,
+  Copy,
+  Download,
+  FileWarning,
+  History,
+  LoaderCircle,
+  PanelLeft,
+  RotateCcw,
+} from "lucide-react";
 import { api } from "../core/api";
 import { referenceUrl } from "../core/projectReferences";
 import type {
@@ -13,8 +25,15 @@ import type {
 import { useRefreshRuntime, useResource } from "../core/useResource";
 import { resourceKeyId } from "../core/resourceStore";
 import { paperProfile } from "./paperResources";
-import { acquirePaperDocument, observePaperBackend, type PaperDocument } from "./paperDocuments";
-import { PaperEditor } from "./PaperEditor";
+import {
+  acquirePaperDocument,
+  observePaperBackend,
+  paperBackendKey,
+  resumePaperDocuments,
+  unsentPaperDocuments,
+  type PaperDocument,
+} from "./paperDocuments";
+import { carryPaperSelection, PaperEditor } from "./PaperEditor";
 import { PaperFiles } from "./PaperFiles";
 import { PaperPreview } from "./PaperPreview";
 import { PaperCoach } from "./PaperCoach";
@@ -58,21 +77,22 @@ export function PaperWorkspace({
   const [identity, setIdentity] = useState<IdentityResponse | null>(null);
   const [identityError, setIdentityError] = useState<string | null>(null);
   const [identityRetry, setIdentityRetry] = useState(0);
-  // The tree revision a selection was made at: a newer tree that still lacks it means the
-  // file is gone, while an older one may predate a file just created.
-  const [selection, setSelection] = useState<{ id: string | null; at: number }>(() => ({
+  // The tree revision at which the selected file is known to exist: a tree at or past it
+  // that lacks the file means it is gone, while an older one may predate a file just
+  // created. A listed file or a link records the current revision, a create its receipt's.
+  const [selection, setSelection] = useState<{ id: string | null; existsAt: number }>(() => ({
     id:
       requestedFileId?.fileId ??
       new URLSearchParams(window.location.hash.split("?")[1]).get("paper_file") ??
       editorState?.fileId ??
       null,
-    at: -1,
+    existsAt: -1,
   }));
   const selected = selection.id;
   const treeRevision = useRef(-1);
   treeRevision.current = tree?.revision ?? -1;
   const setSelected = useCallback(
-    (id: string | null) => setSelection({ id, at: treeRevision.current }),
+    (id: string | null, existsAt = treeRevision.current) => setSelection({ id, existsAt }),
     [],
   );
   useEffect(() => {
@@ -107,7 +127,8 @@ export function PaperWorkspace({
   );
   useEffect(() => {
     const controller = new AbortController();
-    setIdentity(null);
+    // The previous identity stays until this one is verified, so an open editor keeps
+    // taking input across a backend restart; its document waits, paused, meanwhile.
     void Promise.all([
       api<IdentityResponse>("/api/identity", { signal: controller.signal }),
       api<PublicHealth>("/api/health", { signal: controller.signal }),
@@ -115,7 +136,14 @@ export function PaperWorkspace({
       .then(([value, health]) => {
         if (controller.signal.aborted) return;
         observePaperBackend({ ok: true, health, message: null, reason: "paper-open" });
-        setIdentity(value);
+        resumePaperDocuments(paperBackendKey(apiBase, value.space_id), value.user.user_id);
+        setIdentity((current) =>
+          current?.space_id === value.space_id &&
+          current.user.user_id === value.user.user_id &&
+          current.user.display_name === value.user.display_name
+            ? current
+            : value,
+        );
         setIdentityError(null);
       })
       .catch((error) => {
@@ -124,39 +152,49 @@ export function PaperWorkspace({
     return () => controller.abort();
   }, [apiBase, identityRetry]);
   useEffect(() => {
-    const reset = () => {
-      // The rebuilt editor takes the focus back if the old one had it.
-      if (window.document.activeElement?.closest(".paper-writing-pane .cm-content"))
-        focusPending.current = true;
-      setIdentity(null);
-      setIdentityRetry((value) => value + 1);
-    };
-    window.addEventListener("rcp:paper-backend-changed", reset);
-    window.addEventListener("rcp:session-required", reset);
-    window.addEventListener("rcp:read-access-lost", reset);
+    const verify = () => setIdentityRetry((value) => value + 1);
+    window.addEventListener("rcp:paper-backend-changed", verify);
+    window.addEventListener("rcp:session-required", verify);
     return () => {
-      window.removeEventListener("rcp:paper-backend-changed", reset);
-      window.removeEventListener("rcp:session-required", reset);
-      window.removeEventListener("rcp:read-access-lost", reset);
+      window.removeEventListener("rcp:paper-backend-changed", verify);
+      window.removeEventListener("rcp:session-required", verify);
     };
   }, []);
   const opened = useRef<{ file: PaperFile; document: PaperDocument | null } | null>(null);
   const last = opened.current;
   const current = selected ?? last?.file.file_id;
   const listed = tree?.files.find((item) => item.file_id === current);
-  // A deleted or inaccessible file stays open, read-only, while it holds unsent local text.
-  const stranded =
-    !listed && last?.file.file_id === current && last?.document?.getSnapshot().saved === false
-      ? last.file
-      : undefined;
-  const gone = tree !== undefined && tree.revision > selection.at;
+  // A file that left the tree stays reachable, read-only, while it holds unsent local text.
+  const unsent = useSyncExternalStore(
+    unsentPaperDocuments.subscribe,
+    unsentPaperDocuments.getSnapshot,
+  );
+  const backend = identity && paperBackendKey(apiBase, identity.space_id);
+  const strandedFiles = unsent.flatMap((owner) =>
+    tree &&
+    owner.listing &&
+    owner.key.backend === backend &&
+    owner.key.member === identity?.user.user_id &&
+    owner.key.project === project.id &&
+    !tree.files.some((item) => item.file_id === owner.key.file)
+      ? [owner.listing]
+      : [],
+  );
+  const stranded = listed ? undefined : strandedFiles.find((item) => item.file_id === current);
+  const gone = tree !== undefined && tree.revision >= selection.existsAt;
   const file = listed ?? stranded ?? (!selected || gone ? tree?.files[0] : undefined);
+  const strandedElsewhere = strandedFiles.find((item) => item.file_id !== file?.file_id);
+  // A selection waiting for a newer tree asks for it once rather than show nothing.
+  useEffect(() => {
+    if (tree && selection.existsAt > tree.revision) refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one read per tree revision that is still behind
+  }, [tree?.revision, selection.existsAt, refresh]);
   const document = useMemo(
     () =>
       identity && file?.kind === "text"
         ? acquirePaperDocument(
             {
-              backend: `${new URL(apiBase, window.location.href).origin}:${identity.space_id}`,
+              backend: paperBackendKey(apiBase, identity.space_id),
               member: identity.user.user_id,
               project: project.id,
               file: file.file_id,
@@ -170,7 +208,21 @@ export function PaperWorkspace({
   useEffect(() => document?.retain(), [document]);
   useEffect(() => {
     opened.current = file ? { file, document } : null;
-  }, [file, document]);
+    if (document && listed && file === listed) document.listing = listed;
+  }, [file, listed, document]);
+  // After a 4403 close the tree read decides between Recreate and Reconnect; until it
+  // lands neither is offered.
+  const resourceNow = useRef(resource);
+  resourceNow.current = resource;
+  const [closeCheck, setCloseCheck] = useState<{
+    document: PaperDocument;
+    seen: typeof resource;
+  } | null>(null);
+  const checking =
+    closeCheck !== null &&
+    closeCheck.document === document &&
+    closeCheck.seen.value === resource.value &&
+    closeCheck.seen.error === resource.error;
   useEffect(() => {
     if (!document) return;
     let lastSavedText: string | null = null;
@@ -182,6 +234,7 @@ export function PaperWorkspace({
       if (state.closed !== lastClosed) {
         lastClosed = state.closed;
         if (lastClosed === 4403) {
+          setCloseCheck({ document, seen: resourceNow.current });
           refresh();
           // A deleted file with nothing unsent leaves for the first file.
           if (state.saved) setSelected(null);
@@ -279,8 +332,8 @@ export function PaperWorkspace({
         apiBase={apiBase}
         files={tree?.files ?? []}
         selected={file?.file_id ?? null}
-        onSelect={(id) => {
-          setSelected(id);
+        onSelect={(id, existsAt) => {
+          setSelected(id, existsAt);
           setFilesOpen(false);
           switchView("write");
         }}
@@ -297,9 +350,24 @@ export function PaperWorkspace({
           </strong>
           {file && <span className="paper-format">{file.format}</span>}
           <span className="paper-grow" />
+          {strandedElsewhere && (
+            <button
+              className="icon-button paper-failed"
+              aria-label="Open unsent file"
+              title={strandedElsewhere.path}
+              onClick={() => {
+                setSelected(strandedElsewhere.file_id);
+                switchView("write");
+              }}
+            >
+              <FileWarning size={16} />
+            </button>
+          )}
           {document && (
             <DocumentStatus
               owner={document}
+              fileName={file!.path.split("/").at(-1)!}
+              checking={checking}
               recover={
                 stranded
                   ? async () => {
@@ -317,11 +385,20 @@ export function PaperWorkspace({
                         new Blob([document.getSnapshot().text], { type: "text/plain" }),
                         path.split("/").at(-1),
                       );
-                      const receipt = await api<{ file_ids: string[] }>(
+                      const editor = writingPane.current?.querySelector<HTMLElement>(".cm-editor");
+                      const cursor = editor && EditorView.findFromDOM(editor)?.state.selection.main;
+                      const receipt = await api<{ file_ids: string[]; revision: number }>(
                         `${apiBase}/paper/uploads`,
                         { method: "POST", body },
                       );
-                      setSelected(receipt.file_ids[0]);
+                      const [created] = receipt.file_ids;
+                      // The new file holds this text now; it opens where the writer was.
+                      if (cursor) carryPaperSelection({ ...document.key, file: created }, cursor);
+                      focusPending.current = true;
+                      // Select first: a render between the two would find the deleted file
+                      // neither listed nor stranded and open another one.
+                      flushSync(() => setSelected(created, receipt.revision));
+                      document.destroy();
                       refresh();
                     }
                   : undefined
@@ -513,9 +590,13 @@ export function PaperWorkspace({
 }
 function DocumentStatus({
   owner,
+  fileName,
+  checking,
   recover,
 }: {
   owner: PaperDocument;
+  fileName: string;
+  checking: boolean;
   recover?: () => Promise<void>;
 }) {
   const state = useSyncExternalStore(owner.subscribe, owner.getSnapshot);
@@ -558,7 +639,24 @@ function DocumentStatus({
       >
         {state.connected ? <Cloud size={16} /> : <CloudOff size={16} />}
       </span>
-      {(state.error || recover) && (
+      {state.closed !== null && !state.saved && !recover && (
+        <button
+          className="icon-button"
+          aria-label="Download unsent text"
+          onClick={() => {
+            const link = window.document.createElement("a");
+            link.href = URL.createObjectURL(
+              new Blob([owner.getSnapshot().text], { type: "text/plain" }),
+            );
+            link.download = fileName;
+            link.click();
+            setTimeout(() => URL.revokeObjectURL(link.href), 0);
+          }}
+        >
+          <Download size={16} />
+        </button>
+      )}
+      {((state.error && !(checking && state.closed === 4403)) || recover) && (
         <button
           className="icon-button paper-failed"
           aria-label={recover ? "Recreate file" : "Reconnect Paper"}

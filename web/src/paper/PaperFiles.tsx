@@ -27,7 +27,8 @@ export function PaperFiles({
   apiBase: string;
   files: PaperFile[];
   selected: string | null;
-  onSelect: (id: string) => void;
+  /** `existsAt`: the tree revision that lists a file just created or replaced. */
+  onSelect: (id: string, existsAt?: number) => void;
   onFold: () => void;
   onChanged: () => void;
 }) {
@@ -72,7 +73,7 @@ export function PaperFiles({
     if (!edit?.path.trim()) return;
     const target = edit;
     void perform("path", async () => {
-      const receipt = await api<{ file_ids: string[] }>(
+      const receipt = await api<{ file_ids: string[]; revision: number }>(
         `${apiBase}/paper/files${target.file ? `/${encodeURIComponent(target.file.file_id)}/rename` : ""}`,
         {
           method: "POST",
@@ -83,7 +84,7 @@ export function PaperFiles({
         },
       );
       setEdit(null);
-      if (!target.file) onSelect(receipt.file_ids[0]);
+      if (!target.file) onSelect(receipt.file_ids[0], receipt.revision);
     });
   };
   const uploadFile = (file: globalThis.File, path: string, existing?: PaperFile) =>
@@ -91,14 +92,14 @@ export function PaperFiles({
       const body = new FormData();
       if (!existing) body.append("path", path);
       body.append("file", file);
-      const receipt = await api<{ file_ids: string[] }>(
+      const receipt = await api<{ file_ids: string[]; revision: number }>(
         existing
           ? `${apiBase}/paper/files/${encodeURIComponent(existing.file_id)}/content`
           : `${apiBase}/paper/uploads`,
         { method: existing ? "PUT" : "POST", body },
       );
       setReplacing(null);
-      onSelect(receipt.file_ids[0]);
+      onSelect(receipt.file_ids[0], receipt.revision);
     });
   const folders = new Set<string>();
   return (

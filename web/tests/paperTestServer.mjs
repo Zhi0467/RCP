@@ -17,6 +17,12 @@ export class PaperTestRoom {
   pending = [];
   events = new EventEmitter();
   updatesReceived = 0;
+  /** Opt-in: drop client messages unread, so local text stays unsent until a reconnect. */
+  drop = false;
+  /** Opt-in: a close code that refuses each new connection before any message, as admission does. */
+  refuseConnect = null;
+  /** Opt-in: close a connection with 4413 when one message exceeds this many bytes. */
+  refuseAbove = Infinity;
 
   constructor(text = "draft") {
     this.doc.getText("text").insert(0, text);
@@ -37,6 +43,10 @@ export class PaperTestRoom {
   }
 
   connect(client) {
+    if (this.refuseConnect !== null) {
+      client.close({ code: this.refuseConnect });
+      return;
+    }
     this.clients.add(client);
     client.onClose(() => this.clients.delete(client));
     const encoder = encoding.createEncoder();
@@ -44,6 +54,11 @@ export class PaperTestRoom {
     sync.writeSyncStep1(encoder, this.doc);
     client.send(Buffer.from(encoding.toUint8Array(encoder)));
     client.onMessage((message) => {
+      if (this.drop) return;
+      if (message.byteLength > this.refuseAbove) {
+        client.close({ code: 4413 });
+        return;
+      }
       const packet = decoding.createDecoder(new Uint8Array(message));
       if (decoding.readVarUint(packet) === 0 && decoding.readVarUint(packet) === 2) {
         this.updatesReceived += 1;
@@ -70,6 +85,28 @@ export class PaperTestRoom {
   async waitForUpdates(count) {
     const signal = AbortSignal.timeout(10_000);
     while (this.updatesReceived < count) await once(this.events, "update-received", { signal });
+  }
+
+  /** Resolves once the room's text equals `expected`. */
+  waitForText(expected, timeout = 5_000) {
+    const text = this.doc.getText("text");
+    return new Promise((resolve, reject) => {
+      const check = () => {
+        if (text.toString() !== expected) return;
+        finish();
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        finish();
+        reject(new Error(`Room text stayed ${JSON.stringify(text.toString())}`));
+      }, timeout);
+      const finish = () => {
+        clearTimeout(timer);
+        this.doc.off("update", check);
+      };
+      this.doc.on("update", check);
+      check();
+    });
   }
 
   flush() {
@@ -341,4 +378,50 @@ export async function openPaper(
   await page.locator(".cm-content").waitFor();
   await page.waitForFunction(editorMatches, initialText);
   return { page, context, room, errors, posts, requests, fixture };
+}
+
+/** Types at the end of the open document. */
+export async function appendText(page, text) {
+  await page.locator(".cm-content").click();
+  await page.keyboard.press("ControlOrMeta+End");
+  await page.keyboard.insertText(text);
+}
+
+/** Waits for the exact durable state, not the debounced visible one. */
+export async function waitForSaved(page, value) {
+  await page.waitForFunction(
+    (expected) =>
+      document.querySelector('[data-testid="paper-saved"]')?.getAttribute("data-saved") ===
+      String(expected),
+    value,
+  );
+}
+
+/** A second tab of the same member: same context, so the same IndexedDB and routes. */
+export async function openPaperTab(t, opened, origin) {
+  const page = await opened.context.newPage();
+  t.after(() => page.close());
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+  await page.goto(`${origin}/tests/fixtures/paperResource.html`);
+  await page.locator(".cm-content").waitFor();
+  return { page, errors };
+}
+
+/** A routed socket whose page-side close completes, as a real server's does. A room's own
+ * close handler otherwise leaves the page socket closing, holding its provider. */
+export function completingSocket(socket) {
+  return {
+    send: (message) => socket.send(message),
+    close: (options) => socket.close(options),
+    onMessage: (handler) => socket.onMessage(handler),
+    onClose: (handler) =>
+      socket.onClose((code, reason) => {
+        handler();
+        socket.close({ code, reason });
+      }),
+  };
 }

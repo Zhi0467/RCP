@@ -372,6 +372,7 @@
     max-width: 65px;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .paper-live-workspace:not([data-view="write"]) .paper-editor-box {
     flex: none;

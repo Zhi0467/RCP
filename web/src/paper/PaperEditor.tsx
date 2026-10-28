@@ -10,7 +10,7 @@ import * as Y from "yjs";
 import { yCollab, ySyncAnnotation } from "y-codemirror.next";
 import { Check, ChevronLeft, ChevronRight, X } from "lucide-react";
 import { anchorPaperChange, resolvePaperAnchor } from "./paperAnchors";
-import { paperDocumentKey, type PaperDocument } from "./paperDocuments";
+import { paperDocumentKey, type PaperDocument, type PaperDocumentKey } from "./paperDocuments";
 import type { PaperChange } from "./PaperChanges";
 
 class SuggestionWidget extends WidgetType {
@@ -50,20 +50,27 @@ class SuggestionWidget extends WidgetType {
   }
 }
 
-/** Per-document editor memory: a file switch keeps undo, selection and scroll.
- * Keyed by Y.Text, so a rejected document's replacement starts fresh. */
-const memories = new WeakMap<
-  Y.Text,
-  {
-    undo: Y.UndoManager;
-    anchor?: Y.RelativePosition;
-    head?: Y.RelativePosition;
-    top?: Y.RelativePosition;
-  }
->();
-/** The latest memory per file, so a document rebuilt after a backend restart resumes
- * at the same cursor and scroll; its undo history starts fresh with the new document. */
-const lastMemories = new Map<string, NonNullable<ReturnType<typeof memories.get>>>();
+/** Per-document undo history, so a file switch keeps it. Keyed by Y.Text: it lives as
+ * long as its document, and a rejected document's replacement starts fresh. */
+const undoManagers = new WeakMap<Y.Text, Y.UndoManager>();
+interface Place {
+  anchor?: Y.RelativePosition;
+  head?: Y.RelativePosition;
+  top?: Y.RelativePosition;
+  /** Offsets carried from a document this file replaces, applied once its text arrives. */
+  carried?: { anchor: number; head: number };
+}
+/** Per-file selection and scroll. Relative positions name items, never the document, so a
+ * disposed document is not kept alive and its reopened owner resumes where it was left. */
+const places = new Map<string, Place>();
+/** The next editor of `key` opens at this selection, e.g. a recreated file at the cursor
+ * its deleted original had. */
+export function carryPaperSelection(
+  key: PaperDocumentKey,
+  selection: { anchor: number; head: number },
+) {
+  places.set(paperDocumentKey(key), { carried: selection });
+}
 
 export function PaperEditor({
   owner,
@@ -122,22 +129,33 @@ export function PaperEditor({
           : format === "typst"
             ? typst_lezer()
             : [];
-    let memory = memories.get(owner.text);
-    if (!memory) {
-      memory = {
-        ...lastMemories.get(paperDocumentKey(owner.key)),
-        undo: new Y.UndoManager(owner.text),
-      };
-      memories.set(owner.text, memory);
+    let undo = undoManagers.get(owner.text);
+    if (!undo) {
+      undo = new Y.UndoManager(owner.text);
+      undoManagers.set(owner.text, undo);
     }
-    lastMemories.set(paperDocumentKey(owner.key), memory);
-    const saved = memory;
+    const saved = { undo };
+    const placeKey = paperDocumentKey(owner.key);
+    const place = places.get(placeKey) ?? {};
+    places.set(placeKey, place);
+    let carried = place.carried;
+    place.carried = undefined;
+    const fits = (selection: { anchor: number; head: number }, length: number) =>
+      Math.max(selection.anchor, selection.head) <= length;
     const relative = (index: number) => Y.createRelativePositionFromTypeIndex(owner.text, index);
     const absolute = (position: Y.RelativePosition | undefined) =>
       position && Y.createAbsolutePositionFromRelativePosition(position, owner.doc)?.index;
-    const anchor = absolute(saved.anchor);
-    const head = absolute(saved.head);
-    const top = absolute(saved.top);
+    let anchor = absolute(place.anchor);
+    let head = absolute(place.head);
+    const top = absolute(place.top);
+    if (
+      (anchor === undefined || head === undefined) &&
+      carried &&
+      fits(carried, owner.text.length)
+    ) {
+      ({ anchor, head } = carried);
+      carried = undefined;
+    }
     let failureFlash: Animation | undefined;
     const encoder = new TextEncoder();
     const flashRefusal = () => {
@@ -224,11 +242,23 @@ export function PaperEditor({
           readOnly.current.of(EditorState.readOnly.of(owner.getSnapshot().closed !== null)),
           EditorView.domEventObservers({
             scroll(_event, view) {
-              saved.top = relative(view.lineBlockAtHeight(view.scrollDOM.scrollTop).from);
+              place.top = relative(view.lineBlockAtHeight(view.scrollDOM.scrollTop).from);
             },
           }),
           EditorView.updateListener.of((update) => {
             if (update.selectionSet || update.docChanged) report(update.state);
+            // A carried selection waits for the server text it points into.
+            if (carried && update.docChanged && fits(carried, update.state.doc.length)) {
+              const selection = carried;
+              carried = undefined;
+              queueMicrotask(() => {
+                if (view.current !== update.view) return;
+                update.view.dispatch({
+                  selection: EditorSelection.single(selection.anchor, selection.head),
+                  effects: EditorView.scrollIntoView(selection.head, { y: "center" }),
+                });
+              });
+            }
           }),
         ],
       }),
@@ -237,8 +267,8 @@ export function PaperEditor({
     report(editor.state);
     return () => {
       const { main } = editor.state.selection;
-      saved.anchor = relative(main.anchor);
-      saved.head = relative(main.head);
+      place.anchor = relative(main.anchor);
+      place.head = relative(main.head);
       view.current = null;
       failureFlash?.cancel();
       editor.destroy();

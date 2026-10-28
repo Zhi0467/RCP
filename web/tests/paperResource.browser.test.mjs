@@ -88,9 +88,9 @@ test("Paper Saved waits for a covering durable acknowledgement", async (t) => {
   await page.locator(".cm-content").click();
   await page.keyboard.press("ControlOrMeta+A");
   await page.keyboard.press("Backspace");
-  // Deletion carries a separate causal marker because a delete set alone has
-  // no state-vector clock. Wait for that clock before acknowledging it.
-  await room.waitForUpdates(updates + 3);
+  // Deletion carries a causal marker, sent with it, because a delete set alone has
+  // no state-vector clock. Wait for that update before acknowledging it.
+  await room.waitForUpdates(updates + 2);
   await saved(page, false);
   room.ack();
   await saved(page, true);
