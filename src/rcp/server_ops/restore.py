@@ -46,6 +46,20 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Episode lifecycle refreshes question cards (v62): fresh, immutable
+        # fixture upgrades, and in-place upgrades.
+        "110fbdd0ae9273d7dac6ac40870fa9780447146b979b10ce6650144df904e860",
+        "16057c92b6029c6d31571f0a5636bb83fe0fe859daf402603ba6d66d8be00edd",
+        "217439403d4fbdad3df5bccb10252a20b1d8bee43effefd0816998cfca66e89d",
+        "67d17603440960ceae8e020d4a3235e4e5744372a175e44f3a5f40199a841bae",
+        "6bfddf6cf605bd70b22d21c3d52f3b36487ed7d5b54bb3971c6182aefdf5a28f",
+        "6d35e5a70db5c9d83955c4bee8d9c9bf24f72332036844c1a5919bd5d6175447",
+        "848edcd6ef8ef85dedfdab6b0513c67a55911f69104eb54ff93a63de2bd4f316",
+        "88b027c911dd945945355054ea41c5a441d0d6eff9bda4038ba109b4202e1406",
+        "90e8be6d8f898b54ba382656a9b81421814d0a1e0dd7581aa7ec12f0a8511897",
+        "a1c1fd7e492232eb7fffcbf3e4bd020879d54b306b0717ca44ac41fc00e93afa",
+        "b5c8e0b0ad193509ccde8fc0012535febaa38640fae7e5bf0c53ce88975cf75c",
+        # v62-end
         # Machine settings on the space card (v61): fresh, immutable fixture
         # upgrades, and in-place upgrades.
         "1f9d439edf04b3e88e49a52d7dc51749ed240d3008b8722740a9bf77d291a3fb",

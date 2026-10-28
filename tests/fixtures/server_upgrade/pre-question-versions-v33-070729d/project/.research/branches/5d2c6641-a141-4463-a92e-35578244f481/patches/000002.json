@@ -1,0 +1,104 @@
+{
+  "schema_generation": 2,
+  "revision": 2,
+  "kind": "work",
+  "author": "agent",
+  "producer": "agent",
+  "created_at": "2026-10-17T23:00:09.199250Z",
+  "summary": "Retained branch evidence",
+  "ops": [
+    {
+      "op": "create_nodes",
+      "nodes": [
+        {
+          "id": "ev/legacy-branch",
+          "title": "Legacy branch evidence",
+          "type": "evidence",
+          "observation": "Stored before branch records existed.",
+          "origin": "internal_run"
+        }
+      ]
+    }
+  ],
+  "run_truth_scope": [
+    "repo"
+  ],
+  "repositories_read": [
+    "repo"
+  ],
+  "processed_cursors": {},
+  "change_summary": [],
+  "source_operation_id": null,
+  "source_effect_id": null,
+  "source_effect_sha256": null,
+  "human_action": null,
+  "agent_action": null,
+  "admission": "accepted",
+  "admission_messages": [
+    {
+      "level": "flag",
+      "code": "internal-evidence-without-experiment",
+      "message": "Evidence ev/legacy-branch has origin internal_run but no producing Experiment; review which Experiment produced this result.",
+      "patch_revision": 2,
+      "related_node_ids": [
+        "ev/legacy-branch"
+      ],
+      "related_edge_ids": [],
+      "operation_index": null,
+      "rule_id": null,
+      "cause_chain": [],
+      "failed_invariant": null
+    },
+    {
+      "level": "flag",
+      "code": "isolated-node",
+      "message": "ev/legacy-branch has no graph connections; double-check whether it relates to another node. Leaving it unconnected is fine when no real relation exists.",
+      "patch_revision": 2,
+      "related_node_ids": [
+        "ev/legacy-branch"
+      ],
+      "related_edge_ids": [],
+      "operation_index": null,
+      "rule_id": null,
+      "cause_chain": [],
+      "failed_invariant": null
+    }
+  ],
+  "experiment_control_node_id": null,
+  "experiment_decision_bundle": [],
+  "project_identity": null,
+  "project_home_transfer": null,
+  "authorized_by": null,
+  "profile": null,
+  "task_id": null,
+  "episode_id": null,
+  "branch_merge": null,
+  "transition": {
+    "schema_generation": 1,
+    "transition_id": "607cc246559e88d4c5a3c263b6a225901f7ef12affde47e0248f3cee33a2c590",
+    "pre_head": {
+      "target": {
+        "kind": "branch",
+        "branch_id": "5d2c6641-a141-4463-a92e-35578244f481"
+      },
+      "revision": 1,
+      "transition_id": null
+    },
+    "ruleset_tag": "rcp.lifecycle.v3",
+    "initiating_groups": [
+      {
+        "group_id": "group-1",
+        "operation_indexes": [
+          0
+        ],
+        "summary": "Retained branch evidence",
+        "change_summary": [],
+        "human_action": null,
+        "agent_action": null
+      }
+    ],
+    "generated_actions": [],
+    "lifecycle_events": [],
+    "expanded_ops_sha256": "7099f24439b48e5d45f87c13c764d3344a46d73ff70008d6c46b513469cf2059"
+  }
+}
