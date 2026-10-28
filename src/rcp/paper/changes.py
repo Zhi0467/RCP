@@ -315,7 +315,23 @@ class _RangeMapping:
         self.edits: list[tuple[int, int, int, int]] = []
         left, right = 0, 0
         windows = []
-        for tag, a, b, c, d in SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
+        # Diff only the span between the common head and tail: edits are local, and
+        # SequenceMatcher is quadratic in the lines it compares.
+        head = 0
+        while head < min(len(old), len(new)) and old[head] == new[head]:
+            head += 1
+        tail = 0
+        while tail < min(len(old), len(new)) - head and old[-1 - tail] == new[-1 - tail]:
+            tail += 1
+        middle = SequenceMatcher(
+            None, old[head : len(old) - tail], new[head : len(new) - tail], autojunk=False
+        ).get_opcodes()
+        opcodes = [
+            ("equal", 0, head, 0, head),
+            *((tag, a + head, b + head, c + head, d + head) for tag, a, b, c, d in middle),
+            ("equal", len(old) - tail, len(old), len(new) - tail, len(new)),
+        ]
+        for tag, a, b, c, d in opcodes:
             if tag != "equal":
                 self.edits.append((old_offsets[a], old_offsets[b], new_offsets[c], new_offsets[d]))
                 continue

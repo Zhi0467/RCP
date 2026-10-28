@@ -496,11 +496,10 @@ class PaperLive:
 
     @_owned
     async def text_at(self, project_id: str, file_id: str, revision: int) -> str:
-        snapshot = await self.snapshot(project_id, revision)
-        for file in snapshot.files:
-            if file.file_id == file_id and file.kind == "text":
-                return file.text or ""
-        raise KeyError(file_id)
+        file, data = await self.raw_file(project_id, file_id, revision)
+        if file.kind != "text":
+            raise KeyError(file_id)
+        return data.decode()
 
     def _revision(self, conn, project, revision, files, actor, kind, now, manifest=None):
         conn.execute(
