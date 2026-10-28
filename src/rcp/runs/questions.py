@@ -473,12 +473,12 @@ class WorkCommandHandler:
                 episode = execution.store.episode(current_episode_id)
                 if (
                     episode is None
-                    or episode.status not in {"queued", "running"}
                     or episode.stop_requested_at is not None
-                    or episode.ending is not None
+                    or episode.ending == "stopped"
                 ):
                     # Close the create-vs-Stop race: a fence before insertion did
-                    # not see this card. A later fence withdraws it itself.
+                    # not see this card. A later fence withdraws it itself. Other
+                    # endings keep the card; its answer continues the episode.
                     execution.store.set_episode_questions_withdrawn(
                         origin.project_id, origin.owner_id, withdrawn=True
                     )
