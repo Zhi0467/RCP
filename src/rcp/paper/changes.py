@@ -16,7 +16,7 @@ from difflib import SequenceMatcher
 from pathlib import Path, PurePosixPath
 from typing import Literal, cast
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from rcp.limits import (
     PAPER_CHANGES_MAX_FILE_BYTES,
@@ -61,6 +61,9 @@ class Change(BaseModel):
     lines: dict[str, int] | None = None
     preview: dict[str, object] = Field(default_factory=dict)
     stats: dict[str, int] = Field(default_factory=dict)
+    # Anchor mapped into the live text when the card was last read, in the UTF-16
+    # offsets the browser's Yjs text uses; never stored.
+    _current: dict[str, int] | None = PrivateAttr(default=None)
 
 
 class ChangeGroup(BaseModel):
@@ -90,7 +93,12 @@ class ChangeGroup(BaseModel):
                     "stats",
                 }
             )
-            card.update(state=self.state, decided_by=self.decided_by, decided_at=self.decided_at)
+            card.update(
+                state=self.state,
+                decided_by=self.decided_by,
+                decided_at=self.decided_at,
+                current=change._current,
+            )
             cards.append(card)
         return {**self.model_dump(exclude={"changes"}), "changes": cards}
 
@@ -336,6 +344,10 @@ def _preview(change: Change) -> None:
         "more": max(0, len(removed) - cap) + max(0, len(added) - cap),
     }
     change.stats = {"added": len(added), "removed": len(removed)}
+
+
+def _utf16_length(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
 
 
 def _encoded(body: bytes) -> str:
@@ -708,6 +720,12 @@ class PaperChanges:
                 start, end = map_range(base, file.text or "", change.start, change.end)
                 if base[change.start : change.end] != change.before:
                     raise OutdatedChange("Stored paper anchor does not match its base")
+                live_text = file.text or ""
+                change._current = {
+                    "start": _utf16_length(live_text[:start]),
+                    "end": _utf16_length(live_text[:end]),
+                    "revision": current.revision,
+                }
                 checks.append(
                     {"file_id": file.file_id, "start": start, "end": end, "text": change.before}
                 )

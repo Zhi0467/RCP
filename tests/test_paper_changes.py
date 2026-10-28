@@ -631,3 +631,18 @@ def test_accept_recovers_committed_apply_despite_delivery_failure(setup, monkeyp
     monkeypatch.setattr(live, "apply", apply_then_fail)
     assert changes.accept("p", group.group_id, "human").state == "accepted"
     assert "receipt" in changes._receipt("p", f"paper:{group.group_id}:accept")
+
+
+def test_pending_card_reports_its_anchor_in_live_utf16_offsets(setup):
+    snapshot, live, changes, output = setup
+    before = snapshot.files[0].text or ""
+    (output / "files/section.md").write_text(before.replace("line 10\n", "line 10\nadded\n"))
+    group = changes.collect("p", "t", snapshot, output)[0]
+    prefix = "😀 edited elsewhere\n"
+    human_edit(live, "f1", prefix + before)
+    card = changes.groups("p", "t")[0].public()["changes"][0]
+    text = saved(live).files[0].text or ""
+    offset = text.index("line 11\n")
+    expected = len(text[:offset].encode("utf-16-le")) // 2
+    assert card["current"] == {"start": expected, "end": expected, "revision": saved(live).revision}
+    assert changes.groups("p", "t")[0].group_id == group.group_id
