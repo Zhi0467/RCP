@@ -2472,6 +2472,9 @@ class ProjectCatalog:
                 )
         except (TypeError, ValueError):
             return "invalid", None
+        if isinstance(snapshot.get("paper"), dict):
+            # Older releases cached a document summary; the badge is publication state.
+            snapshot["paper"] = publication_badge(self.store, project_id)
         if not _valid_display_snapshot(
             project_id,
             snapshot,

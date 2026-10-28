@@ -630,15 +630,20 @@ def test_candidate_paper_proof_reads_saved_bytes_and_refuses_broken_live_api():
         base + "/history": httpx.Response(200, json=[{"version_id": "named", "revision": 3}]),
         base + "/files/figure/raw": httpx.Response(200, content=content),
     }
+    requested = []
+
+    def respond(request):
+        requested.append(str(request.url))
+        return responses[request.url.path]
+
     with httpx.Client(
-        transport=httpx.MockTransport(lambda req: responses[req.url.path]),
-        base_url="https://testserver",
+        transport=httpx.MockTransport(respond), base_url="https://testserver"
     ) as client:
-        proof, reads = rehearsal_module._paper_read_proof(client, "project", headers={}, live=True)
-        assert proof and reads[-1].endswith("?revision=8")
+        assert rehearsal_module._paper_read_proof(client, "project", headers={})
+        assert requested[-1].endswith("?revision=8")
         responses[base + "/files/figure/raw"] = httpx.Response(200, content=b"published bytes")
         with pytest.raises(CandidateRehearsalRefused):
-            rehearsal_module._paper_read_proof(client, "project", headers={}, live=True)
+            rehearsal_module._paper_read_proof(client, "project", headers={})
         responses[base + "/tree"] = httpx.Response(404)
         with pytest.raises(CandidateRehearsalRefused):
-            rehearsal_module._paper_read_proof(client, "project", headers={}, live=True)
+            rehearsal_module._paper_read_proof(client, "project", headers={})

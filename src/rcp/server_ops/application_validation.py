@@ -964,13 +964,6 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
         # status line.
         from fastapi.testclient import TestClient
 
-        with opened.connection() as connection:
-            live_paper = (
-                connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_files'"
-                ).fetchone()
-                is not None
-            )
         reads: list[str] = []
         results: list[CandidateProjectVerification] = []
         with TestClient(app) as client:
@@ -1058,17 +1051,15 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
                             f"/api/projects/{project.project_id}/watchers",
                         )
                     )
-                    paper_proof, paper_reads = _paper_read_proof(
-                        client, project.project_id, headers=headers, live=live_paper
-                    )
-                    repeated, _ = _paper_read_proof(
-                        client, project.project_id, headers=headers, live=live_paper
-                    )
-                    if repeated != paper_proof:
+                    # Paper reads are proven stable here but kept out of `reads`: the
+                    # previous release's baseline names only the reads it served.
+                    paper_proof = _paper_read_proof(client, project.project_id, headers=headers)
+                    if _paper_read_proof(client, project.project_id, headers=headers) != (
+                        paper_proof
+                    ):
                         raise CandidateRehearsalRefused(
                             f"Candidate Paper reads changed project {project.project_id}."
                         )
-                    reads.extend(paper_reads)
                     results.append(
                         CandidateProjectVerification(
                             project_id=project.project_id,
@@ -1136,45 +1127,32 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
             lock_context.__exit__(None, None, None)
 
 
-def _paper_read_proof(
-    client, project_id: str, *, headers: dict[str, str], live: bool
-) -> tuple[str, tuple[str, ...]]:
-    """Read durable Paper through its served API, including every saved file.
-
-    The presence of the live schema requires the live API. A broken live
-    reader must never pass rehearsal by falling back to the legacy projection.
-    """
+def _paper_read_proof(client, project_id: str, *, headers: dict[str, str]) -> str:
+    """Read durable live Paper through its served API, including every saved file."""
     base = f"/api/projects/{project_id}/paper"
-    reads: list[str] = []
     proof: list[object] = []
 
     def read(path: str):
         response = client.get(path, headers=headers)
         if response.status_code != 200:
             raise CandidateRehearsalRefused(f"Candidate Paper read failed for {project_id}.")
-        reads.append(path)
         return response
 
-    if not live:
-        proof.append(read(base).json())
-    else:
-        tree = read(f"{base}/tree").json()
-        proof.append(tree)
-        proof.append(read(f"{base}/history").json())
-        ids: set[str] = set()
-        for file in tree["files"]:
-            file_id = file["file_id"]
-            if file_id in ids:
-                raise CandidateRehearsalRefused("Candidate Paper contains duplicate file ids.")
-            ids.add(file_id)
-            raw = read(f"{base}/files/{file_id}/raw?revision={tree['saved_revision']}")
-            digest = hashlib.sha256(raw.content).hexdigest()
-            if file.get("sha256") is not None and digest != file["sha256"]:
-                raise CandidateRehearsalRefused(
-                    "Candidate Paper file digest differs from its tree."
-                )
-            proof.append((file_id, digest))
-    return _canonical_sha256(proof), tuple(reads)
+    tree = read(f"{base}/tree").json()
+    proof.append(tree)
+    proof.append(read(f"{base}/history").json())
+    ids: set[str] = set()
+    for file in tree["files"]:
+        file_id = file["file_id"]
+        if file_id in ids:
+            raise CandidateRehearsalRefused("Candidate Paper contains duplicate file ids.")
+        ids.add(file_id)
+        raw = read(f"{base}/files/{file_id}/raw?revision={tree['saved_revision']}")
+        digest = hashlib.sha256(raw.content).hexdigest()
+        if file.get("sha256") is not None and digest != file["sha256"]:
+            raise CandidateRehearsalRefused("Candidate Paper file digest differs from its tree.")
+        proof.append((file_id, digest))
+    return _canonical_sha256(proof)
 
 
 def _copy_verified_file(
