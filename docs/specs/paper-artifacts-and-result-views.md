@@ -101,8 +101,9 @@ backend downloads once, checks against pinned hashes, and serves from its own
 origin. LaTeX compiles on the RCP backend with Tectonic, downloaded and checked
 the same way on first use, run with `--untrusted` and bounded in time, output and
 concurrency. A compile changes no state, so any member may start one; a newer
-compile cancels an older one for the same project, and earlier PDFs stay
-readable until the result limit ages them out. A
+compile cancels a different older one for the same project, an identical one
+joins the running compile, a cancelled preview shows the failure with Retry, and
+earlier PDFs stay readable until the result limit ages them out. A
 compile starts from the one root that reaches the open file; with none or
 several, the preview lists the candidates, and the chosen one is sent as the
 compile root, accepted only while it still reaches the open file. The PDF keeps

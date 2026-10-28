@@ -240,7 +240,7 @@ test("Locate waits for an unopened file's server text", async (t) => {
   );
 });
 
-test("superseded LaTeX compilation keeps the existing PDF", async (t) => {
+test("superseded LaTeX compilation keeps the existing PDF and offers Retry", async (t) => {
   let currentTree;
   const { page, context, room } = await openPaper(t, {
     configure: ({ tree }) => {
@@ -252,9 +252,9 @@ test("superseded LaTeX compilation keeps the existing PDF", async (t) => {
   await context.route("**/paper/compile", (route) =>
     route.fulfill({
       json:
-        ++compiled === 1
-          ? { status: "ok", pdf_url: "/api/projects/p/paper/compile/good/pdf" }
-          : { status: "superseded", pdf_url: null },
+        ++compiled === 2
+          ? { status: "superseded", pdf_url: null }
+          : { status: "ok", pdf_url: `/api/projects/p/paper/compile/good${compiled}/pdf` },
     }),
   );
   await page.getByRole("button", { name: "paper.tex", exact: true }).click();
@@ -271,10 +271,13 @@ test("superseded LaTeX compilation keeps the existing PDF", async (t) => {
     () => document.querySelector(".paper-compiled-preview")?.getAttribute("aria-busy") === "false",
   );
   assert.equal(await page.locator(".paper-pdf").count(), 1);
-  assert.match(
-    await page.getByRole("link", { name: "Download PDF" }).getAttribute("href"),
-    /compile\/good\/pdf$/,
-  );
+  const download = page.getByRole("link", { name: "Download PDF" });
+  assert.match(await download.getAttribute("href"), /compile\/good1\/pdf$/);
+  await page.locator(".paper-compiled-preview.paper-failed").waitFor();
+  await page.getByRole("button", { name: "View compile log" }).click();
+  await page.getByRole("button", { name: "Retry preview" }).click();
+  await page.locator(".paper-compiled-preview:not(.paper-failed)").waitFor();
+  assert.match(await download.getAttribute("href"), /compile\/good3\/pdf$/);
 });
 
 test("insertion refreshes use current anchors without downloading base files", async (t) => {

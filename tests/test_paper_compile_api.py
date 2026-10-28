@@ -28,7 +28,7 @@ def route_client(tmp_path, monkeypatch):
             raise HTTPException(409)
         yield membership(project_id)
 
-    async def compile(project, file, revision):
+    async def compile(project, file, revision, root_path):
         state.calls.append((project, file, revision))
         return CompileResult(compile_id="result", status="ok", pdf_url="pdf")
 

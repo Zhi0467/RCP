@@ -213,7 +213,10 @@ export function PaperPreview({
             setEngines((value) => value && { ...value, latex: "unavailable" });
           } else if (result.status === "error" && !result.candidates?.length) {
             throw new Error(result.log_tail || "Compilation failed");
-          } else if (result.status !== "superseded") {
+          } else if (result.status === "superseded") {
+            // Another viewer's different compile replaced this one: offer Retry.
+            throw new Error("Another preview of this paper replaced this compile.");
+          } else {
             setPdf(null);
           }
         } else {

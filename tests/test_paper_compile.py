@@ -161,7 +161,7 @@ out = pathlib.Path(sys.argv[sys.argv.index("--outdir") + 1])
     # write_text creates the file before writing it.
     await async_wait_until(lambda: ready.exists() and "," in ready.read_text())
     leader, _child = map(int, ready.read_text().split(","))
-    second = await compiler.compile("project", "file")
+    second = await compiler.compile("project", "file", revision=2)
     assert (await first).status == "superseded"
     assert second.status == "ok"
     assert compiler.pdf("project", second.compile_id).startswith(b"%PDF-")
@@ -172,6 +172,34 @@ out = pathlib.Path(sys.argv[sys.argv.index("--outdir") + 1])
     # The child held this lock for its whole lifetime; group cancellation releases it.
     with ready.with_suffix(".lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    await compiler.close()
+
+
+@pytest.mark.asyncio
+async def test_identical_requests_share_one_compile(tmp_path):
+    runs = tmp_path / "runs"
+    go = tmp_path / "go"
+    engines = fake_compiler(
+        tmp_path,
+        f"""
+import pathlib, sys, time
+with pathlib.Path({str(runs)!r}).open("a") as runs:
+    runs.write("run\\n")
+while not pathlib.Path({str(go)!r}).exists():
+    time.sleep(0.01)
+out = pathlib.Path(sys.argv[sys.argv.index("--outdir") + 1])
+(out / "paper.pdf").write_bytes(b"%PDF-1.4 test")
+""",
+    )
+    compiler = PaperCompiler(Live(), engines, tmp_path)
+    first = asyncio.create_task(compiler.compile("project", "file", revision=1))
+    await async_wait_until(runs.exists)
+    second = asyncio.create_task(compiler.compile("project", "file", revision=1))
+    await asyncio.sleep(0)
+    go.touch()
+    results = await asyncio.gather(first, second)
+    assert [result.status for result in results] == ["ok", "ok"]
+    assert runs.read_text().count("run") == 1
     await compiler.close()
 
 

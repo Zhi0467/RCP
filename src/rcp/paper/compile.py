@@ -100,6 +100,9 @@ async def _kill(process: asyncio.subprocess.Process) -> None:
     await process.wait()
 
 
+_Request = tuple[str, int | None, str | None]
+
+
 class PaperCompiler:
     """One event-loop owner, one newest job per project, globally bounded workers."""
 
@@ -108,7 +111,8 @@ class PaperCompiler:
         self.engines = engines
         self.cache_dir = data_dir / "paper-engines" / "tectonic-cache"
         self._slots = asyncio.Semaphore(PAPER_COMPILE_CONCURRENCY)
-        self._jobs: dict[str, asyncio.Task[CompileResult]] = {}
+        self._jobs: dict[str, tuple[_Request, asyncio.Task[CompileResult]]] = {}
+        self._waiters: dict[asyncio.Task[CompileResult], int] = {}
         self._pdfs: OrderedDict[str, tuple[str, bytes]] = OrderedDict()
 
     async def compile(
@@ -119,28 +123,35 @@ class PaperCompiler:
         root_path: str | None = None,
     ) -> CompileResult:
         compile_id = uuid.uuid4().hex
-        old = self._jobs.get(project_id)
-        if old is not None:
-            old.cancel()
-        job = asyncio.create_task(
-            self._compile(project_id, file_id, revision, root_path, compile_id)
-        )
-        self._jobs[project_id] = job
+        request = (file_id, revision, root_path)
+        running = self._jobs.get(project_id)
+        # Viewers of one saved revision ask for the same PDF: they share one job.
+        if running is not None and running[0] == request:
+            job = running[1]
+        else:
+            if running is not None:
+                running[1].cancel()
+            job = asyncio.create_task(
+                self._compile(project_id, file_id, revision, root_path, compile_id)
+            )
+            self._jobs[project_id] = (request, job)
+        self._waiters[job] = self._waiters.get(job, 0) + 1
         try:
-            result = await asyncio.shield(job)
-            if self._jobs.get(project_id) is not job:
-                return CompileResult(compile_id=compile_id, status="superseded")
-            return result
+            return await asyncio.shield(job)
         except asyncio.CancelledError:
             if job.cancelled():
                 return CompileResult(compile_id=compile_id, status="superseded")
-            job.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await job
+            if self._waiters[job] == 1:
+                job.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await job
             raise
         finally:
-            if self._jobs.get(project_id) is job:
-                del self._jobs[project_id]
+            self._waiters[job] -= 1
+            if not self._waiters[job]:
+                del self._waiters[job]
+                if self._jobs.get(project_id, (None, None))[1] is job:
+                    del self._jobs[project_id]
 
     async def _compile(
         self,
@@ -295,7 +306,7 @@ class PaperCompiler:
         return data
 
     async def close(self) -> None:
-        jobs = list(self._jobs.values())
+        jobs = [job for _request, job in self._jobs.values()]
         for job in jobs:
             job.cancel()
         await asyncio.gather(*jobs, return_exceptions=True)
