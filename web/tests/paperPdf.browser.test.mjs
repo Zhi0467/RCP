@@ -1,35 +1,28 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { chromium } from "playwright";
-import { createServer } from "vite";
-import { pdfBytes } from "./paperTestServer.mjs";
+import { createPaperViteServer, pdfBytes } from "./paperTestServer.mjs";
 
 test("PDF keeps its reading position and old canvases during replacement, renders nearby pages, and resizes without fetching", async (t) => {
-  const server = await createServer({
-    root: new URL("..", import.meta.url).pathname,
-    logLevel: "error",
-    server: { host: "127.0.0.1", port: 0 },
-    plugins: [
-      {
-        name: "paper-pdf-test",
-        resolveId(id) {
-          if (id === "/paper-pdf-test.tsx") return id;
-        },
-        load(id) {
-          if (id !== "/paper-pdf-test.tsx") return;
-          return `import React from 'react';
+  const { server, close } = await createPaperViteServer([
+    {
+      name: "paper-pdf-test",
+      resolveId(id) {
+        if (id === "/paper-pdf-test.tsx") return id;
+      },
+      load(id) {
+        if (id !== "/paper-pdf-test.tsx") return;
+        return `import React from 'react';
           import { createRoot } from 'react-dom/client';
           import PaperPdf from '/src/paper/PaperPdf.tsx';
           import '/src/paper/paper-preview.css';
           const root = createRoot(document.getElementById('root'));
           window.preview = url => root.render(<PaperPdf url={url} />);
           window.preview('/first.pdf');`;
-        },
       },
-    ],
-  });
-  await server.listen();
-  t.after(() => server.close());
+    },
+  ]);
+  t.after(close);
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 600, height: 700 } });
@@ -106,19 +99,15 @@ test("PDF keeps its reading position and old canvases during replacement, render
 });
 
 test("preview returns from Markdown, retains root scroll, and keeps failed actions on one row", async (t) => {
-  const server = await createServer({
-    root: new URL("..", import.meta.url).pathname,
-    logLevel: "error",
-    server: { host: "127.0.0.1", port: 0 },
-    plugins: [
-      {
-        name: "preview-lifecycle-test",
-        resolveId(id) {
-          if (id === "/preview-test.tsx") return id;
-        },
-        load(id) {
-          if (id !== "/preview-test.tsx") return;
-          return `import React from 'react';
+  const { server, close } = await createPaperViteServer([
+    {
+      name: "preview-lifecycle-test",
+      resolveId(id) {
+        if (id === "/preview-test.tsx") return id;
+      },
+      load(id) {
+        if (id !== "/preview-test.tsx") return;
+        return `import React from 'react';
           import { createRoot } from 'react-dom/client';
           import { PaperPreview } from '/src/paper/PaperPreview.tsx';
           const root = createRoot(document.getElementById('root'));
@@ -130,12 +119,10 @@ test("preview returns from Markdown, retains root scroll, and keeps failed actio
           ];
           window.show = (id, broken=false) => root.render(<PaperPreview projectId="p" file={files.find(f=>f.file_id===id)} tree={{files,saved_revision:1}} text={id==='md' ? '[Methods](methods.md) [External](https://example.org) [Bad](mailto:test@example.org)' : broken ? '#bad' : id==='main' ? '#include "part.typ"' : 'Part'} active onOpenFile={id=>window.opened=id} />);
           window.show('main');`;
-        },
       },
-    ],
-  });
-  await server.listen();
-  t.after(() => server.close());
+    },
+  ]);
+  t.after(close);
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 390, height: 700 } });

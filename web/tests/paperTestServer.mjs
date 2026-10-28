@@ -1,4 +1,7 @@
 import { EventEmitter, once } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createServer } from "vite";
 import * as Y from "yjs";
 import * as encoding from "lib0/encoding";
@@ -169,6 +172,12 @@ export function createPaperFixture({
       if (proposed && proposed[1] in proposedTexts)
         return { body: proposedTexts[proposed[1]], contentType: "text/plain" };
       if (/\/changes\/[^/]+\/accept$/.test(path)) return { json: {} };
+      const rejected = path.match(/\/changes\/([^/]+)\/reject$/);
+      if (rejected) {
+        for (const change of cards.filter((item) => item.group_id === rejected[1]))
+          change.state = "rejected";
+        return { json: {} };
+      }
       if (method === "POST" && (path.endsWith("/files") || path.endsWith("/uploads"))) {
         const file_id = `f${nextFile++}`;
         const text = body.text ?? "";
@@ -235,10 +244,14 @@ export function pdfBytes(count) {
   return Buffer.from(body);
 }
 
-/** Serves the Paper page; each test routes its API and websocket in the browser. */
-export async function createPaperTestServer() {
+/** A Vite server for Paper pages that never proxies to a real backend. Test plugins change
+ * Vite's dependency hash, so each server keeps a private cache instead of re-optimizing the
+ * shared one under other test files' open pages. */
+export async function createPaperViteServer(plugins = []) {
+  const cacheDir = await mkdtemp(join(tmpdir(), "rcp-paper-vite-"));
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
+    cacheDir,
     logLevel: "error",
     optimizeDeps: { entries: ["tests/fixtures/paperResource.html"] },
     server: { host: "127.0.0.1", port: 0 },
@@ -249,14 +262,22 @@ export async function createPaperTestServer() {
           config.server.proxy = undefined;
         },
       },
+      ...plugins,
     ],
   });
   await server.listen();
   return {
+    server,
     origin: `http://127.0.0.1:${server.httpServer.address().port}`,
-    close: () => server.close(),
+    close: async () => {
+      await server.close();
+      await rm(cacheDir, { recursive: true, force: true });
+    },
   };
 }
+
+/** Serves the Paper page; each test routes its API and websocket in the browser. */
+export const createPaperTestServer = () => createPaperViteServer();
 
 export function editorMatches(expected) {
   const source = document.querySelector(".cm-content")?.cloneNode(true);

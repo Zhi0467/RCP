@@ -225,34 +225,27 @@ test("Typst worker requests resolved diagnostics and formats source locations", 
 });
 
 test("large Markdown preview waits until typing pauses", async (t) => {
-  const { createServer } = await import("vite");
+  const { createPaperViteServer } = await import("./paperTestServer.mjs");
   const { chromium } = await import("playwright");
-  const server = await createServer({
-    root: new URL("..", import.meta.url).pathname,
-    logLevel: "error",
-    optimizeDeps: { noDiscovery: true, include: [] },
-    server: { host: "127.0.0.1", port: 0 },
-    plugins: [
-      {
-        name: "preview-idle-test",
-        resolveId(id) {
-          if (id === "/preview-idle.tsx") return id;
-        },
-        load(id) {
-          if (id !== "/preview-idle.tsx") return;
-          return `import React from 'react';
+  const { server, close } = await createPaperViteServer([
+    {
+      name: "preview-idle-test",
+      resolveId(id) {
+        if (id === "/preview-idle.tsx") return id;
+      },
+      load(id) {
+        if (id !== "/preview-idle.tsx") return;
+        return `import React from 'react';
           import {createRoot} from 'react-dom/client';
           import {usePreviewText} from '/src/paper/usePreviewText.ts';
           const root = createRoot(document.getElementById('root'));
           function Preview({text}) { return <output>{usePreviewText(text, 'file', true).slice(-1)}</output>; }
           window.update = suffix => root.render(<Preview text={'x'.repeat(1500000) + suffix}/>);
           window.update('a');`;
-        },
       },
-    ],
-  });
-  await server.listen();
-  t.after(() => server.close());
+    },
+  ]);
+  t.after(close);
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage();

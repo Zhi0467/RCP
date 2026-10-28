@@ -174,8 +174,7 @@ test("oversized UTF-8 edits leave the document editable and synchronized", async
   const { page, room, errors } = await open(t);
   // Mount the editor with its explicit limit contract, independently of Workspace wiring.
   await page.evaluate(async () => {
-    const React = await import("/node_modules/.vite/deps/react.js");
-    const { createRoot } = await import("/node_modules/.vite/deps/react-dom_client.js");
+    const { React, createRoot } = await import("/tests/fixtures/paperReact.ts");
     const { PaperEditor } = await import("/src/paper/PaperEditor.tsx");
     const { acquirePaperDocument } = await import("/src/paper/paperDocuments.ts");
     const owner = acquirePaperDocument(
@@ -231,8 +230,7 @@ test("phone coach agent and branch pickers are 44px targets", async (t) => {
   await target(page.locator(".paper-composer-actions .agent-config-chip"));
   // The shared fixture mounts the workspace without the project-shell branch picker.
   await page.evaluate(async () => {
-    const React = await import("/node_modules/.vite/deps/react.js");
-    const { createRoot } = await import("/node_modules/.vite/deps/react-dom_client.js");
+    const { React, createRoot } = await import("/tests/fixtures/paperReact.ts");
     const { GraphPicker } = await import("/src/graph/GraphPicker.tsx");
     const host = document.createElement("div");
     document.body.prepend(host);

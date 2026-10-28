@@ -30,6 +30,9 @@ export default function PaperPdf({
   const nextGeneration = useRef(0);
   const visibleGeneration = useRef(0);
   const disposeVisible = useRef<(() => void) | null>(null);
+  // Read only when the first document appears; a new key alone must not re-render pages.
+  const restoreKey = useRef(scrollKey);
+  restoreKey.current = scrollKey;
   const [width, setWidth] = useState(0);
   const [document, setDocument] = useState<LoadedPdf | null>(null);
   const [retry, setRetry] = useState(0);
@@ -171,7 +174,7 @@ export default function PaperPdf({
       do {
         position = visibleGeneration.current
           ? root.scrollTop
-          : (scrollPositions.get(scrollKey) ?? 0);
+          : (scrollPositions.get(restoreKey.current) ?? 0);
         let top = 0;
         const scroll = Math.min(
           position,
@@ -218,7 +221,7 @@ export default function PaperPdf({
     return () => {
       if (!committed) dispose();
     };
-  }, [document, width, scrollKey]);
+  }, [document, width]);
 
   return (
     <div

@@ -357,8 +357,11 @@ test("folder uploads select the new file and require confirmation before replaci
 
 test("Reconnect discards a rejected oversized update and its persisted copy only for that file", async (t) => {
   const { page, context, room } = await openPaper(t, {
-    configure: ({ tree }) =>
-      tree.files.push({ ...tree.files[0], file_id: "f2", path: "second.md" }),
+    configure: ({ tree }) => {
+      tree.files.push({ ...tree.files[0], file_id: "f2", path: "second.md" });
+      // Advertise more than the room accepts so the server, not the editor, refuses the paste.
+      tree.max_doc_bytes = 8 * 1024 * 1024;
+    },
   });
   const other = new Room();
   await context.routeWebSocket(/\/files\/f2\/live$/, (socket) => other.connect(socket));
