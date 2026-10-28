@@ -45,6 +45,7 @@ from rcp.paper.persistence import (
     collect_bodies,
     manifest_for,
     prune,
+    read_published_tree,
     read_snapshot,
     save_version,
 )
@@ -180,8 +181,9 @@ class PaperLive:
         self._publishers: dict[str, asyncio.Task] = {}
         self._publish_failed_at: dict[str, float] = {}
         self._compactions: set[asyncio.Task] = set()
-        # Saved revision last pruned per project; idle projects are not rescanned.
-        self._pruned: dict[str, int] = {}
+        # Saved revision and time of each project's last prune; idle projects are
+        # not rescanned, and continuous typing is rescanned only every interval.
+        self._pruned: dict[str, tuple[int, float]] = {}
         self._last_collection = time.monotonic()
         self._rates: dict[str, deque[float]] = {}
 
@@ -245,7 +247,7 @@ class PaperLive:
         for lock in list(self._locks.values()):
             async with lock:
                 pass
-        await asyncio.gather(*self._publishers.values(), *self._compactions)
+        await asyncio.gather(*self._publishers.values(), *self._compactions, return_exceptions=True)
         for room in self.rooms.values():
             self._broadcast(room, b"")
         self.rooms.clear()
@@ -281,7 +283,8 @@ class PaperLive:
         task = self._publishers.get(project_id)
         if task:
             await task
-        await asyncio.gather(*self._compactions)
+        # A failed compaction is logged by its callback; it must not stop the wait for the rest.
+        await asyncio.gather(*self._compactions, return_exceptions=True)
 
     @_owned
     async def dispose(self, project_id: str) -> None:
@@ -327,23 +330,32 @@ class PaperLive:
             raise PaperPaused("Paper is paused")
 
         canonical_unknown = False
+        adopted: list[PaperFile] = []
+        blobs: dict[str, bytes] = {}
+        published = 0
         try:
-            canonical = self._legacy_content(project)
+            # Completed local display generation only; SSH refresh never blocks saving.
+            with self.workspace_for(project).read_snapshot() as root:
+                adopted, blobs, published = read_published_tree(root)
         except StateUnavailable:
             if draft is None:
                 raise
-            canonical = None
             canonical_unknown = True
-        files = []
-        if draft is not None or canonical is not None:
-            files.append(
-                PaperFile(
-                    file_id=str(uuid.uuid4()),
-                    path="introduction.md",
-                    kind="text",
-                    text=draft["content"] if draft else canonical,
-                )
+        # A database without Paper adopts the published tree rather than replacing it.
+        files = [file for file in adopted if draft is None or file.path != "introduction.md"]
+        introduction = next((file for file in adopted if file.path == "introduction.md"), None)
+        if draft is not None and introduction is not None and introduction.kind != "text":
+            raise ValueError("Legacy Paper introduction is not text")
+        canonical = introduction.text if introduction is not None else None
+        if draft is not None:
+            introduction = PaperFile(
+                file_id=str(uuid.uuid4()),
+                path="introduction.md",
+                kind="text",
+                text=draft["content"],
             )
+            files.append(introduction)
+        self.validate_tree(files, blobs)
         behind = (
             draft is not None
             and canonical != draft["content"]
@@ -353,18 +365,29 @@ class PaperLive:
         now = self.store.now()
         with self.store.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute("INSERT INTO paper_publication(project_id) VALUES (?)", (project,))
+            # Revisions continue after the adopted tree's, which publication never undercuts.
+            conn.execute(
+                "INSERT INTO paper_publication(project_id,saved_revision,published_revision) "
+                "VALUES (?,?,?)",
+                (project, published, published),
+            )
+            for sha, data in blobs.items():
+                conn.execute(
+                    "INSERT OR IGNORE INTO paper_blobs VALUES(?,?,?)", (sha, data, len(data))
+                )
             for file in files:
                 conn.execute(
-                    "INSERT INTO paper_files(project_id,file_id,path,kind,created_at) VALUES(?,?,?,?,?)",
-                    (project, file.file_id, file.path, file.kind, now),
+                    "INSERT INTO paper_files(project_id,file_id,path,kind,created_at,blob_sha256) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (project, file.file_id, file.path, file.kind, now, file.blob_sha256),
                 )
-                doc = _doc(text=file.text)
-                conn.execute(
-                    "INSERT INTO paper_doc_states VALUES(?,?,?,?,?)",
-                    (project, file.file_id, doc.get_update(), 0, 1),
-                )
-            revision = 1 if files else 0
+                if file.kind == "text":
+                    doc = _doc(text=file.text)
+                    conn.execute(
+                        "INSERT INTO paper_doc_states VALUES(?,?,?,?,?)",
+                        (project, file.file_id, doc.get_update(), 0, published + 1),
+                    )
+            revision = published + 1 if files else published
             if files:
                 self._revision(conn, project, revision, files, "migration", "migration", now)
                 # Retain canonical and ancestor independently of the live draft.
@@ -373,8 +396,12 @@ class PaperLive:
                     ("Legacy canonical", canonical),
                     ("Legacy ancestor", draft["ancestor_content"] if draft else None),
                 ):
-                    if content is not None and content != files[0].text:
-                        item = files[0].model_copy(update={"text": content})
+                    if (
+                        introduction is not None
+                        and content is not None
+                        and content != introduction.text
+                    ):
+                        item = introduction.model_copy(update={"text": content})
                         version_id = save_version(
                             conn,
                             project,
@@ -398,14 +425,16 @@ class PaperLive:
                             project,
                         ),
                     )
-                elif canonical == files[0].text:
+                elif draft is None or canonical == draft["content"]:
                     conn.execute(
                         "UPDATE paper_publication SET published_revision=?,pending_since=NULL "
                         "WHERE project_id=?",
                         (revision, project),
                     )
             else:
-                conn.execute("INSERT INTO paper_saved_snapshots VALUES(?,?,?)", (project, 0, "[]"))
+                conn.execute(
+                    "INSERT INTO paper_saved_snapshots VALUES(?,?,?)", (project, revision, "[]")
+                )
 
     async def _room(self, project: str, file_id: str) -> Room:
         key = (project, file_id)
@@ -818,8 +847,14 @@ class PaperLive:
 
     @_owned
     async def receive(
-        self, project_id: str, file_id: str, message: bytes, actor: str
+        self,
+        project_id: str,
+        file_id: str,
+        message: bytes,
+        actor: str,
+        sender: asyncio.Queue[bytes] | None = None,
     ) -> list[bytes]:
+        """Return the sender's replies; its own update is never echoed back to it."""
         async with self._lock(project_id):
             self._writable(project_id)
             await self._ensure(project_id)
@@ -844,13 +879,14 @@ class PaperLive:
                 return [_ack(room.doc)]
             candidate, encoded, revision = result
             room.doc, room.seq, room.encoded = candidate, seq, encoded
-            self._broadcast(room, create_update_message(update))
+            ack = _ack(candidate)
+            self._broadcast(room, create_update_message(update), skip=sender)
             # Saved: an idle member is otherwise left showing a durable peer edit as unsaved.
-            self._broadcast(room, _ack(candidate))
+            self._broadcast(room, ack, skip=sender)
             self._compact(project_id, file_id, room, revision)
             if cancelled:
                 raise asyncio.CancelledError
-            return [_ack(candidate)]
+            return [ack]
 
     def _receive_update(self, project, file_id, previous, seq, update, actor):
         encoded = merge_updates(previous, update)
@@ -918,8 +954,8 @@ class PaperLive:
             prune(conn, project, refuse=False)
 
     @staticmethod
-    def _broadcast(room: Room, message: bytes) -> None:
-        for queue in tuple(room.subscribers):
+    def _broadcast(room: Room, message: bytes, skip: asyncio.Queue[bytes] | None = None) -> None:
+        for queue in tuple(room.subscribers - {skip}):
             try:
                 queue.put_nowait(message)
             except asyncio.QueueFull:
@@ -1115,21 +1151,22 @@ class PaperLive:
                 self._rows, "SELECT hold FROM paper_publication WHERE project_id=?", (project_id,)
             )
             hold = json.loads(row[0]) if row[0] else None
-        if hold and keep == "canonical":
-            if hold.get("canonical_unknown"):
-                canonical = await asyncio.to_thread(self._legacy_content, project_id)
-                async with self._lock(project_id):
-                    snapshot = await asyncio.to_thread(self._snapshot, project_id)
-                    introduction = next(
-                        (file for file in snapshot.files if file.path == "introduction.md"), None
+        if hold and hold.get("canonical_unknown"):
+            # Either choice first retains the canonical text; publication would replace it.
+            canonical = await asyncio.to_thread(self._legacy_content, project_id)
+            async with self._lock(project_id):
+                snapshot = await asyncio.to_thread(self._snapshot, project_id)
+                introduction = next(
+                    (file for file in snapshot.files if file.path == "introduction.md"), None
+                )
+                if canonical is not None and introduction is not None:
+                    version, cancelled = await _settle(
+                        self._save_canonical_version, project_id, introduction, canonical
                     )
-                    if canonical is not None and introduction is not None:
-                        version, cancelled = await _settle(
-                            self._save_canonical_version, project_id, introduction, canonical
-                        )
-                        hold["canonical_version"] = version
-                        if cancelled:
-                            raise asyncio.CancelledError
+                    hold["canonical_version"] = version
+                    if cancelled:
+                        raise asyncio.CancelledError
+        if hold and keep == "canonical":
             if hold["canonical_version"]:
                 target = await self.version_snapshot(project_id, hold["canonical_version"])
                 await self.restore(
@@ -1142,8 +1179,12 @@ class PaperLive:
                 current = await self.snapshot(project_id)
                 files = [file for file in current.files if file.path == "introduction.md"]
                 if files:
+                    # The checkpoint keeps the draft text the deletion removes.
                     await self.apply(
-                        project_id, [PaperOp(kind="delete", file_id=files[0].file_id)], actor
+                        project_id,
+                        [PaperOp(kind="delete", file_id=files[0].file_id)],
+                        actor,
+                        checkpoint=True,
                     )
         async with self._lock(project_id):
             self._writable(project_id)
@@ -1286,7 +1327,11 @@ class PaperLive:
                 task.add_done_callback(finished)
             try:
                 async with self._lock(project):
-                    if self._pruned.get(project) != row["saved_revision"]:
+                    pruned = self._pruned.get(project)
+                    if pruned is None or (
+                        pruned[0] != row["saved_revision"]
+                        and time.monotonic() - pruned[1] >= limits.PAPER_PRUNE_SECONDS
+                    ):
                         pruning = asyncio.create_task(asyncio.to_thread(self._prune, project))
                         self._compactions.add(pruning)
                         pruning.add_done_callback(self._compactions.discard)
@@ -1295,7 +1340,7 @@ class PaperLive:
                         except asyncio.CancelledError:
                             await pruning
                             raise
-                        self._pruned[project] = row["saved_revision"]
+                        self._pruned[project] = (row["saved_revision"], time.monotonic())
                     saving = asyncio.create_task(
                         asyncio.to_thread(self._automatic_version, project, now)
                     )

@@ -491,19 +491,23 @@ def test_failed_publication_waits_for_backoff(paper, monkeypatch):
     run(scenario())
 
 
-def test_members_receive_an_ack_covering_a_peer_update(paper):
+def test_members_receive_an_ack_covering_a_peer_update_and_the_sender_one_ack(paper):
     live, _, _ = paper
 
     async def scenario():
         file_id = (await live.apply("p", [PaperOp(kind="create", path="a")], "h")).file_ids[0]
-        queue = asyncio.Queue()
+        queue, sender = asyncio.Queue(), asyncio.Queue()
         room = await live.connect("p", file_id, queue)
+        await live.connect("p", file_id, sender)
         peer = Doc({"text": Text()})
         peer.apply_update(room.doc.get_update())
         peer["text"].insert(0, "peer")
-        await live.receive("p", file_id, create_update_message(peer.get_update()), "h")
+        message = create_update_message(peer.get_update())
+        replies = await live.receive("p", file_id, message, "h", sender)
+        ack = bytes([100]) + room.doc.get_state()
         messages = [queue.get_nowait() for _ in range(queue.qsize())]
-        assert messages[-1] == bytes([100]) + room.doc.get_state()
+        assert messages == [message, ack]
+        assert replies == [ack] and sender.empty()
         await live.close()
 
     run(scenario())
@@ -538,6 +542,40 @@ def test_restore_preserves_peer_position_outside_changed_span(paper):
         assert position.get_index() == 3
         unchanged = await live.restore("p", version["version_id"], [file_id], "h")
         assert unchanged.revision == receipt.revision
+        await live.close()
+
+    run(scenario())
+
+
+def test_a_failed_compaction_does_not_stop_drain_of_the_other_rooms(paper, monkeypatch):
+    import time
+
+    live, _, _ = paper
+    monkeypatch.setattr(limits, "PAPER_COMPACT_UPDATES", 1)
+    compact, compacted = live._compact_bytes, []
+
+    def fail_first(project, file_id, cutoff, revision):
+        # The failure lands while drain already waits on both rooms.
+        if not compacted:
+            compacted.append(None)
+            time.sleep(0.2)
+            raise OSError("disk failure")
+        time.sleep(0.4)
+        compact(project, file_id, cutoff, revision)
+        compacted.append(file_id)
+
+    monkeypatch.setattr(live, "_compact_bytes", fail_first)
+
+    async def scenario():
+        for path in ("a.md", "b.md"):
+            file_id = (await live.apply("p", [PaperOp(kind="create", path=path)], "h")).file_ids[0]
+            room = await live.connect("p", file_id)
+            client = Doc({"text": Text()})
+            client.apply_update(room.encoded)
+            client["text"].insert(0, path)
+            await live.receive("p", file_id, create_update_message(client.get_update()), "h")
+        await live.drain("p")
+        assert compacted == [None, file_id]
         await live.close()
 
     run(scenario())

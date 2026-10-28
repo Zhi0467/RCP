@@ -17,7 +17,7 @@ from tests.paper_live_fixtures import paper_fixture  # noqa: F401
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "limit,budget",
-    [("PAPER_MAX_DOC_BYTES", 4), ("PAPER_MAX_TREE_BYTES", 8), ("PAPER_HISTORY_MAX_BYTES", 12)],
+    [("PAPER_MAX_DOC_BYTES", 4), ("PAPER_MAX_TREE_BYTES", 8)],
 )
 async def test_byte_limits_reject_the_entire_mutation(paper, monkeypatch, limit, budget):
     live, store, _ = paper

@@ -165,7 +165,9 @@ async def replace_content(file_id: str, request: Request, project_id: str = _mem
     live = get_paper_live(request)
     tree = await live.snapshot(project_id)
     current = next((file for file in tree.files if file.file_id == file_id), None)
-    if current is None or current.kind == "binary":
+    if current is None:
+        raise HTTPException(404, "Paper file not found")
+    if current.kind == "binary":
         return await _apply(
             request, project_id, PaperOp(kind="binary", file_id=file_id, data=data), checkpoint=True
         )

@@ -9,7 +9,14 @@ import zlib
 from pathlib import Path
 
 from rcp import limits
-from rcp.paper.models import PaperFile, PaperLimit, PaperSnapshot, digest, paper_path
+from rcp.paper.models import (
+    PaperFile,
+    PaperLimit,
+    PaperSnapshot,
+    digest,
+    paper_file_kind,
+    paper_path,
+)
 
 
 class PaperSnapshotReader:
@@ -83,6 +90,33 @@ class PaperSnapshotReader:
             )
             with path.open("xb") as output:
                 output.write(data)
+
+
+def read_published_tree(root: Path) -> tuple[list[PaperFile], dict[str, bytes], int]:
+    """Read a state root's published tree for a database that holds no Paper yet.
+
+    Returns the files, their binary bodies, and the last published revision, so a
+    fresh database adopts the tree and continues after it instead of replacing it.
+    """
+    from rcp.server_ops.backup_paper import paper_projection_sources
+
+    files: list[PaperFile] = []
+    blobs: dict[str, bytes] = {}
+    for source in paper_projection_sources(root):
+        if source.stat().st_size > limits.PAPER_MAX_TREE_BYTES:
+            raise PaperLimit("Paper tree is too large")
+        path = source.relative_to(root / "paper").as_posix()
+        data = source.read_bytes()
+        file = PaperFile(file_id=str(uuid.uuid4()), path=path, kind=paper_file_kind(path, data))
+        if file.kind == "text":
+            file.text = data.decode()
+        else:
+            file.blob_sha256 = digest(data)
+            blobs[file.blob_sha256] = data
+        files.append(file)
+    marker = root / ".publish" / "paper-current.json"
+    revision = json.loads(marker.read_text(encoding="utf-8"))["revision"] if marker.is_file() else 0
+    return files, blobs, revision
 
 
 def manifest_for(connection: sqlite3.Connection, files: list[PaperFile]) -> str:
@@ -172,8 +206,12 @@ def save_version(
     return version_id
 
 
-def prune(connection: sqlite3.Connection, project: str, *, refuse: bool = True) -> None:
-    """Thin history to its budgets; ``refuse=False`` keeps what cannot be thinned."""
+def prune(connection: sqlite3.Connection, project: str, *, refuse: bool = False) -> None:
+    """Thin history to its budgets, keeping what cannot be thinned.
+
+    Only a named-version request passes ``refuse=True``: edits never fail on a
+    history quota that named versions and protected bases fill.
+    """
     connection.execute(
         "DELETE FROM paper_versions WHERE project_id=? AND kind='auto' AND version_id NOT IN "
         "(SELECT version_id FROM paper_versions WHERE project_id=? AND kind='auto' "

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 from collections.abc import Callable, Coroutine
 from contextlib import suppress
@@ -47,14 +48,27 @@ def _socket_request(socket: WebSocket) -> Request:
     )
 
 
-def _admit_socket(socket: WebSocket, project_id: str) -> Request:
+def _admit_socket(socket: WebSocket, project_id: str, *, touch: bool = False) -> Request:
+    """Admit or recheck a socket; only the opening admission renews its session."""
     request = _socket_request(socket)
     origin = request.headers.get("origin")
     if origin is None or not mutation_origin_matches(request, origin):
         raise HTTPException(403, "Paper origin does not match this server.")
+    identity = _api_services(request).identity_access
+    if request.app.state.space_kind == "personal":
+        identity.resolve_owner_user(request, touch_session=touch)
+    else:
+        identity.resolve_team_user(request, touch_session=touch)
     require_project_membership(project_id, request)
     request.app.state.runtime_admission_gate.require_open("Paper live connection")
     return request
+
+
+def _recheck_socket(socket: WebSocket, project_id: str, live: PaperLive, file_id: str) -> None:
+    _admit_socket(socket, project_id)
+    # A deleted file must close even while another member still has its room.
+    if not live.file_exists(project_id, file_id):
+        raise HTTPException(403, "Paper file was deleted")
 
 
 async def paper_mutation(
@@ -143,8 +157,10 @@ async def paper_socket(socket: WebSocket, project_id: str, file_id: str) -> None
     live: PaperLive = socket.app.state.paper_live
     queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=PAPER_SOCKET_QUEUE_SIZE)
     try:
-        request = await run_sync(_admit_socket, socket, project_id)
+        request = await run_sync(functools.partial(_admit_socket, touch=True), socket, project_id)
         project_id = await run_sync(require_project_membership, project_id, request)
+        # The socket's identity is fixed; the interval recheck catches a revoked session.
+        actor = _api_services(request).identity_access.acting_user(request).user_id
         room = await paper_mutation(
             request, project_id, lambda: live.connect(project_id, file_id, queue)
         )
@@ -190,11 +206,8 @@ async def paper_socket(socket: WebSocket, project_id: str, file_id: str) -> None
             pending_awareness = (
                 _awareness_states(payload, awareness) if payload[:1] == b"\x01" else awareness
             )
-            fresh = await run_sync(_admit_socket, socket, project_id)
-            user = await run_sync(_api_services(fresh).identity_access.acting_user, fresh)
-            actor = user.user_id
 
-            async def accept(message=payload, owner=actor):
+            async def accept(message=payload):
                 states = (
                     _awareness_states(message, room.awareness) if message[:1] == b"\x01" else None
                 )
@@ -203,33 +216,32 @@ async def paper_socket(socket: WebSocket, project_id: str, file_id: str) -> None
                     and len(_awareness_message(states)) > PAPER_MAX_AWARENESS_BYTES
                 ):
                     raise OverflowError("Paper room awareness exceeds its limit")
-                replies = await live.receive(project_id, file_id, message, owner)
+                replies = await live.receive(project_id, file_id, message, actor, queue)
                 if states is not None:
                     room.awareness = states
                 return replies
 
-            replies = await paper_mutation(fresh, project_id, accept)
+            # Membership is still checked per frame inside the write admission.
+            replies = await paper_mutation(request, project_id, accept)
             awareness = pending_awareness
             for reply in replies:
                 queue.put_nowait(reply)
 
     async def send() -> None:
+        # Admission is rechecked on an interval, not per message: per-message
+        # checks cost a session and membership read for every peer keystroke.
         while True:
             payload = await queue.get()
-            await run_sync(_admit_socket, socket, project_id)
-            # A deleted file must close even while another member still has its room.
-            if not await run_sync(live.file_exists, project_id, file_id):
-                raise HTTPException(403, "Paper file was deleted")
             if not payload:
+                # A deleted file closes as deleted rather than as fallen behind.
+                await run_sync(_recheck_socket, socket, project_id, live, file_id)
                 raise asyncio.QueueFull("Paper client fell behind")
             await socket.send_bytes(payload)
 
     async def watch_admission() -> None:
         while True:
             await asyncio.sleep(PAPER_ADMISSION_RECHECK_SECONDS)
-            await run_sync(_admit_socket, socket, project_id)
-            if not await run_sync(live.file_exists, project_id, file_id):
-                raise HTTPException(403, "Paper file was deleted")
+            await run_sync(_recheck_socket, socket, project_id, live, file_id)
 
     tasks = [asyncio.create_task(action()) for action in (receive, send, watch_admission)]
     close_code = 1000

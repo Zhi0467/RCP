@@ -557,6 +557,7 @@ class TargetTransferActivationCoordinator:
                 if activated_project is None:
                     raise RuntimeError("target activation lost its registered project")
                 self.catalog.refresh_after_incoming_transfer_activation(activated_project)
+                _resume_imported_paper(self.store, committed.project_id)
                 self.setup.record_prepared_provider_paths(provisioning)
                 _discard_verified_target_archive(
                     archive_receipt.archive_path,
@@ -638,6 +639,7 @@ class TargetTransferActivationCoordinator:
         if project is None:
             raise RuntimeError("target activation receipt lost its registered project")
         self.catalog.refresh_after_incoming_transfer_activation(project)
+        _resume_imported_paper(self.store, receipt.project_id)
         archive_path = target_transfer_archive_path(self.data_dir, receipt.target_request_id)
         if os.path.lexists(archive_path):
             _discard_verified_target_archive(
@@ -645,6 +647,15 @@ class TargetTransferActivationCoordinator:
                 expected_sha256=upload.archive_sha256,
                 expected_size_bytes=upload.archive_size_bytes,
             )
+
+
+def _resume_imported_paper(store: AppStore, project_id: str) -> None:
+    """Hand imported saved Paper to the live owner, whose timer publishes pending revisions."""
+    from rcp.server_ops.paper_lifecycle import get_paper_live
+
+    live = get_paper_live(store, project_id)
+    if live is not None:
+        live.resume(project_id)
 
 
 def acquire_target_transfer_upload_lease(

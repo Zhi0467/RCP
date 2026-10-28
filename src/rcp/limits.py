@@ -761,6 +761,8 @@ PAPER_HISTORY_MAX_BYTES = 256 * 1024 * 1024
 PAPER_SAVED_REVISION_LIMIT = 512
 PAPER_COMPACT_UPDATES = 64
 PAPER_TIMER_SECONDS = 1.0
+# Continuous typing rescans history for pruning at most this often.
+PAPER_PRUNE_SECONDS = 30.0
 
 # PAPER_COMPILE: runtime assets and bounded paper previews.
 PAPER_COMPILE_TIMEOUT_SECONDS = 180

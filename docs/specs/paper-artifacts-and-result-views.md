@@ -29,8 +29,7 @@ acknowledges them. Publication writes the saved tree to the state root's
 during continuous editing, as one staged tree that replaces the previous one in
 a single step, so a rename and the edit that follows it never appear apart. An
 unreachable state root leaves publication pending; saving continues. Failed
-publication waits for a retry backoff, while an explicit publish retries
-immediately. Paper is never committed to Git. Candidate document reconstruction
+publication retries after a backoff. Paper is never committed to Git. Candidate document reconstruction
 and SQLite work run on workers under the project lock; the owner loop installs
 and broadcasts only after commit, including when a caller is cancelled. The
 project snapshot exposes `paper` as a boolean badge: true means saved revisions
@@ -49,21 +48,32 @@ retryable socket code 4503, while lost membership or a deleted file closes with
 4403. Refused connections are accepted before closing so browsers receive the
 code. A stop that fails, or maintenance that ends, resumes it. The backup SQLite
 snapshot holds all saved Paper state and marks it unpublished, so a restore
-republishes the saved text rather than trusting the copied folder.
+republishes the saved text rather than trusting the copied folder. An imported
+project's saved Paper publishes once the transfer activates it, without a visit.
 
 Files keep a stable identity across renames. A new or uploaded file opens at
 once; uploads go to the chosen folder, and an upload over an existing path asks
 first. When a member deletes a file another member has open with unsent text,
 that member's editor keeps it read-only and offers to recreate it as a new file;
-with nothing unsent the editor moves to another file. While the open file has
-unsent text, leaving the page asks first. One path rule serves editing,
+with nothing unsent the editor moves to another file. A hidden file deleted that
+way stays reachable from one red icon while it holds unsent text. A backend
+restart pauses every document without unmounting the editor, so typing carries
+on; text refused by the server, or held when access is lost, can be downloaded,
+and a close before the server answered (such as a room limit) never discards it.
+While the open file has unsent text, leaving the page asks first. One path rule serves editing,
 backup and transfer; `.git` and `.publish` are reserved path components. Uploaded figures are stored once by
 content hash. Paper files are served as files, never as same-origin documents:
 SVG, HTML and unknown types download; only raster images show inline.
 
+A database with no Paper for a project adopts the tree already published in its
+state root, every file and folder, so a fresh install pointed at existing state
+never publishes over it. On a local state root its revisions continue after the
+published one; an SSH mirror omits that marker, so publication waits until the
+new revisions pass it.
 A project that still holds a pre-tree paper keeps it as `introduction.md`. When
 its old draft had diverged from the saved introduction, both are kept, the draft
 becomes the live text, and nothing publishes until a member picks which to keep.
+The text not picked stays in History.
 
 History records a version after each burst of editing and on request. Deleting a
 file, replacing its uploaded content, or restoring History first checkpoints the
@@ -72,7 +82,8 @@ the changed span, preserving peer positions in unchanged text; identical content
 creates no edit. History rows include the member display name when available,
 and the tree advertises the per-document byte limit as `max_doc_bytes`. Automatic
 versions form a bounded ring; named versions have a quota, and a full quota
-refuses new names rather than evicting old ones. Members may delete named versions
+refuses new names rather than evicting old ones. A history byte budget filled by named
+versions refuses only new names; edits keep saving. Members may delete named versions
 through `DELETE /api/projects/{project_id}/paper/history/{version_id}` to free quota;
 automatic versions refuse deletion with 409. A version is restored per file
 as a new live edit. Revision timing rows are pruned once both publication and
@@ -126,8 +137,8 @@ immutable prompt for each refresh round.
 By default each card waits for a member to accept or reject it. In a chat set to
 apply directly, every fresh card is applied when the turn ends, and the cards
 become a log. Either way, applying re-checks the original text, happens once per
-card, and records a receipt that a guarded Undo reverses while the text is still
-what the coach wrote. Undo all reverses every accepted or applied card of a turn. A card that fails to apply stays reviewable; in a chat set
+card, and records a receipt that a guarded Undo reverses while the regions it
+changed still hold what the coach wrote; edits elsewhere in the file keep it. Undo all reverses every accepted or applied card of a turn. A card that fails to apply stays reviewable; in a chat set
 to apply directly, the other cards still apply. The same durable receipt holds the prepared operation,
 its inverse, and the core's committed result; replay returns that result before
 checking preconditions again. Outstanding cards and active coach turns keep their

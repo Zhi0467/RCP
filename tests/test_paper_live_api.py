@@ -160,6 +160,30 @@ def test_websocket_membership_and_revocation(tmp_path, monkeypatch):
             assert revoked.value.code == 4403
 
 
+@pytest.mark.parametrize("revocation", ["signed_out", "deleted"])
+def test_open_socket_closes_when_its_session_ends_or_file_is_deleted(
+    manifest, tmp_path, monkeypatch, revocation
+):
+    if revocation == "signed_out":
+        monkeypatch.setattr("rcp.api.paper_live.PAPER_ADMISSION_RECHECK_SECONDS", 0.01)
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    with signed_in_client(app) as client:
+        prefix = f"/api/projects/{app.state.default_project_id}/paper"
+        file_id = _file(client, prefix)
+        url = prefix + f"/files/{file_id}/live"
+        with client.websocket_connect(url, headers={"Origin": "http://testserver"}) as socket:
+            _sync(socket, Doc({"text": Text()}))
+            if revocation == "deleted":
+                assert client.delete(prefix + f"/files/{file_id}").status_code == 200
+            else:
+                with app.state.services.store.connection() as connection:
+                    connection.execute("DELETE FROM team_sessions")
+            with pytest.raises(WebSocketDisconnect) as closed:
+                while True:
+                    socket.receive_bytes()
+            assert closed.value.code == 4403
+
+
 def test_upload_bounds_apply_before_file_spooling(manifest, tmp_path, monkeypatch):
     monkeypatch.setattr("rcp.api.paper.PAPER_MAX_UPLOAD_BYTES", 8)
     monkeypatch.setattr("rcp.api.paper.PAPER_MULTIPART_OVERHEAD_BYTES", 512)
