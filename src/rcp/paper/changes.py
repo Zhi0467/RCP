@@ -1058,24 +1058,26 @@ class PaperChanges:
                 # core commits its receipt with the edit, so the gap before the final
                 # state is harmless.
                 self._save_receipt(project_id, group_id, key, "accept", payload)
-            try:
-                self._apply(project_id, payload)
-            except Exception:
-                # The live receipt can already be committed if delivery failed.
-                # Preserve that result and inverse; only release prepared attempts.
-                committed = self._receipt(project_id, key)
-                if committed is not None and "receipt" in committed:
-                    self._state(project_id, group_id, str(payload["state"]), str(payload["actor"]))
-                    return self._load(project_id, group_id)
-                # A refused apply must leave the card reviewable; listing re-checks its anchor.
-                with self.store.connection() as connection:
-                    connection.execute(
-                        "DELETE FROM paper_change_receipts WHERE project_id=? AND receipt_key=?",
-                        (project_id, key),
-                    )
-                raise
+            self._apply_prepared(project_id, key, payload)
             self._state(project_id, group_id, str(payload["state"]), str(payload["actor"]))
             return self._load(project_id, group_id)
+
+    def _apply_prepared(self, project_id: str, key: str, payload: dict[str, object]) -> None:
+        try:
+            self._apply(project_id, payload)
+        except Exception:
+            # The live receipt can already be committed if delivery failed.
+            # Preserve that result and inverse; only release prepared attempts.
+            committed = self._receipt(project_id, key)
+            if committed is not None and "receipt" in committed:
+                return
+            # A refused attempt is released, so a retry prepares it against the current text.
+            with self.store.connection() as connection:
+                connection.execute(
+                    "DELETE FROM paper_change_receipts WHERE project_id=? AND receipt_key=?",
+                    (project_id, key),
+                )
+            raise
 
     def reject(self, project_id: str, group_id: str, actor: str) -> ChangeGroup:
         with self.admission(project_id):
@@ -1113,7 +1115,7 @@ class PaperChanges:
                     "actor": actor,
                 }
                 self._save_receipt(project_id, group_id, key, "undo", payload)
-            self._apply(project_id, payload)
+            self._apply_prepared(project_id, key, payload)
             self._state(project_id, group_id, "undone", str(payload["actor"]))
             return self._load(project_id, group_id)
 

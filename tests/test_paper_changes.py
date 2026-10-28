@@ -164,6 +164,26 @@ def test_accept_idempotency_rebase_and_guarded_undo(setup):
     assert saved(live).files[0].text == "prefix\n" + before + "later\n"
 
 
+def test_a_refused_undo_is_prepared_again_against_the_current_text(setup, monkeypatch):
+    snapshot, live, changes, output = setup
+    before = snapshot.files[0].text
+    (output / "files/section.md").write_text(before.replace("line 10\n", "improved 10\n"))
+    group = changes.collect("p", "t", snapshot, output)[0]
+    changes.accept("p", group.group_id, "human")
+    apply = live.apply
+
+    async def refused(*_args, **_kwargs):
+        raise OutdatedChange("a peer edit landed first")
+
+    monkeypatch.setattr(live, "apply", refused)
+    with pytest.raises(OutdatedChange):
+        changes.undo("p", group.group_id, "human")
+    monkeypatch.setattr(live, "apply", apply)
+    human_edit(live, "f1", "prefix\n" + (saved(live).files[0].text or ""))
+    assert changes.undo("p", group.group_id, "human").state == "undone"
+    assert saved(live).files[0].text == "prefix\n" + before
+
+
 def test_undo_never_deletes_a_created_file_the_human_typed_in(setup):
     snapshot, live, changes, output = setup
     (output / "files/new.md").write_text("new\n")

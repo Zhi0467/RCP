@@ -143,7 +143,8 @@ card, and records a receipt that a guarded Undo reverses while the regions it
 changed still hold what the coach wrote; edits elsewhere in the file keep it. Undo all reverses every accepted or applied card of a turn. A card that fails to apply stays reviewable; in a chat set
 to apply directly, the other cards still apply. The same durable receipt holds the prepared operation,
 its inverse, and the core's committed result; replay returns that result before
-checking preconditions again. Outstanding cards and active coach turns keep their
+checking preconditions again. A refused Accept or Undo drops its prepared receipt,
+so a retry prepares it again against the current text. Outstanding cards and active coach turns keep their
 base revisions available even beyond the ordinary snapshot retention window.
 Pending and outdated binary cards retain both original and proposed blobs through
 backup and restore. Card lists load payloads together and read the live paper only
