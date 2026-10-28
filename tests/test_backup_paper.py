@@ -21,6 +21,10 @@ def _database(*, unified: bool = True) -> sqlite3.Connection:
     connection = sqlite3.connect(":memory:")
     from rcp.storage.base import AppStoreBase, _migrate_paper_changes, _migrate_paper_receipts
 
+    connection.execute(
+        "CREATE TABLE resource_versions(scope TEXT, resource TEXT, entity TEXT, "
+        "generation INTEGER, PRIMARY KEY(scope, resource, entity))"
+    )
     AppStoreBase._migrate_paper_live(connection)
     connection.execute("CREATE TABLE graph_runs(dispatch_authority_json TEXT)")
     _migrate_paper_changes(connection)

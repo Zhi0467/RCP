@@ -1053,6 +1053,9 @@ class AppStoreBase:
         )
         for statement in statements:
             connection.execute(statement)
+        from rcp.storage.resource_versions import install_paper_resource_versions
+
+        install_paper_resource_versions(connection)
 
     def _migrate_conversation_names(self, connection: sqlite3.Connection) -> None:
         from rcp.storage.bulletin import migrate_bulletin_actor_ids

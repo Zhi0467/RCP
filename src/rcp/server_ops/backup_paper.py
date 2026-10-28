@@ -461,6 +461,25 @@ PAPER_RESTORE_SCHEMA_VARIANTS = (
             "                PRIMARY KEY(project_id, version_id)\n"
             "            )",
         ),
+        # Saves and publication invalidate the Paper badge (resource_versions).
+        (
+            "trigger",
+            "resource_paper_publication_delete",
+            "paper_publication",
+            "CREATE TRIGGER resource_paper_publication_delete BEFORE DELETE ON \"paper_publication\"  BEGIN INSERT INTO resource_versions(scope,resource,entity,generation) SELECT OLD.project_id,'paper',COALESCE('',''),1 WHERE (OLD.project_id) IS NOT NULL AND (1) ON CONFLICT(scope,resource,entity) DO UPDATE SET generation=generation+1; END",
+        ),
+        (
+            "trigger",
+            "resource_paper_publication_insert",
+            "paper_publication",
+            "CREATE TRIGGER resource_paper_publication_insert AFTER INSERT ON \"paper_publication\"  BEGIN INSERT INTO resource_versions(scope,resource,entity,generation) SELECT NEW.project_id,'paper',COALESCE('',''),1 WHERE (NEW.project_id) IS NOT NULL AND (1) ON CONFLICT(scope,resource,entity) DO UPDATE SET generation=generation+1; END",
+        ),
+        (
+            "trigger",
+            "resource_paper_publication_update",
+            "paper_publication",
+            'CREATE TRIGGER resource_paper_publication_update AFTER UPDATE ON "paper_publication" WHEN OLD."saved_revision" IS NOT NEW."saved_revision" OR OLD."published_revision" IS NOT NEW."published_revision" OR OLD."pending_since" IS NOT NEW."pending_since" OR OLD."last_error" IS NOT NEW."last_error" OR OLD."hold" IS NOT NEW."hold" BEGIN INSERT INTO resource_versions(scope,resource,entity,generation) SELECT NEW.project_id,\'paper\',COALESCE(\'\',\'\'),1 WHERE (NEW.project_id) IS NOT NULL AND (1) ON CONFLICT(scope,resource,entity) DO UPDATE SET generation=generation+1; INSERT INTO resource_versions(scope,resource,entity,generation) SELECT OLD.project_id,\'paper\',COALESCE(\'\',\'\'),1 WHERE (OLD.project_id) IS NOT NULL AND (1) ON CONFLICT(scope,resource,entity) DO UPDATE SET generation=generation+1; END',
+        ),
     ),
 )
 
