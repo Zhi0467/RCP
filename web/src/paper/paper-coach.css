@@ -34,15 +34,6 @@
   box-shadow: var(--aqua-inset, var(--shadow));
   max-width: 92%;
 }
-.paper-coach-message .markdown-answer {
-  font-size: 13px;
-}
-.paper-coach-message .markdown-answer > :first-child {
-  margin-top: 0;
-}
-.paper-coach-message .markdown-answer > :last-child {
-  margin-bottom: 0;
-}
 .paper-coach-message.agent:empty {
   display: none;
 }
@@ -233,7 +224,9 @@
     var(--aqua-raised, var(--shadow)),
     inset 3px 0 0 var(--amber);
 }
-.paper-failure {
+.paper-failure,
+.paper-change.paper-failure,
+.paper-inspector.paper-failure {
   box-shadow:
     var(--aqua-raised, var(--shadow)),
     inset 3px 0 0 var(--coral);
@@ -252,19 +245,10 @@
 .paper-inspector .paper-bar {
   flex-shrink: 0;
 }
-.paper-inspector.paper-failure {
-  box-shadow:
-    var(--aqua-raised, var(--shadow)),
-    inset 3px 0 0 var(--coral);
-}
 .paper-inspector .paper-bar > strong {
   flex: 1;
   min-width: 0;
   overflow-wrap: anywhere;
-}
-.paper-inspector > .paper-change-diff {
-  flex: 1;
-  margin: 0 12px 12px;
 }
 .paper-history-content {
   flex: 1;
@@ -365,5 +349,27 @@
   }
   .paper-composer-actions {
     gap: 6px;
+  }
+}
+
+.paper-inline-suggestion {
+  margin-inline: 0.4em;
+}
+.paper-inline-suggestion .paper-suggestion-actions {
+  display: inline-flex;
+  vertical-align: middle;
+}
+.paper-inline-suggestion .paper-suggestion-actions button {
+  min-width: 28px;
+  min-height: 28px;
+}
+@media (max-width: 700px) {
+  .paper-inline-suggestion .paper-suggestion-actions button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .paper-composer-actions .agent-config-chip,
+  :root:has(.paper-live-workspace) .branch-picker-trigger {
+    min-height: 44px;
   }
 }

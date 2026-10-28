@@ -7,7 +7,7 @@ import { markdown } from "@codemirror/lang-markdown";
 import { stex } from "@codemirror/legacy-modes/mode/stex";
 import { typst_lezer } from "codemirror-lang-typst/lezer";
 import * as Y from "yjs";
-import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
+import { yCollab, ySyncAnnotation, yUndoManagerKeymap } from "y-codemirror.next";
 import { Check, ChevronLeft, ChevronRight, X } from "lucide-react";
 import { anchorPaperChange, resolvePaperAnchor } from "./paperAnchors";
 import type { PaperDocument } from "./paperDocuments";
@@ -68,8 +68,10 @@ export function PaperEditor({
   changes,
   onDecide,
   focusChange,
+  maxBytes,
 }: {
   owner: PaperDocument;
+  maxBytes?: number;
   format: string;
   changes: PaperChange[];
   onDecide: (id: string, action: "accept" | "reject") => void;
@@ -79,6 +81,8 @@ export function PaperEditor({
   const view = useRef<EditorView | null>(null);
   const suggestions = useRef(new Compartment());
   const readOnly = useRef(new Compartment());
+  const byteLimit = useRef(maxBytes);
+  byteLimit.current = maxBytes;
   const decide = useRef(onDecide);
   decide.current = onDecide;
   const [position, setPosition] = useState({ line: 1, column: 1 });
@@ -127,6 +131,8 @@ export function PaperEditor({
     const anchor = absolute(saved.anchor);
     const head = absolute(saved.head);
     const top = absolute(saved.top);
+    let failureFlash: Animation | undefined;
+    const encoder = new TextEncoder();
     const editor = new EditorView({
       parent: host.current,
       scrollTo: top === undefined ? undefined : EditorView.scrollIntoView(top, { y: "start" }),
@@ -138,6 +144,27 @@ export function PaperEditor({
             : EditorSelection.single(anchor, head),
         extensions: [
           lineNumbers(),
+          EditorState.changeFilter.of((transaction) => {
+            if (
+              !transaction.docChanged ||
+              transaction.annotation(ySyncAnnotation) ||
+              byteLimit.current === undefined ||
+              // A UTF-16 unit is at most three UTF-8 bytes: skip the encode far below the limit.
+              transaction.newDoc.length * 3 <= byteLimit.current ||
+              encoder.encode(transaction.newDoc.toString()).byteLength <= byteLimit.current
+            )
+              return true;
+            failureFlash?.cancel();
+            failureFlash = host.current?.animate(
+              [
+                { boxShadow: "inset 3px 0 0 var(--coral)" },
+                { boxShadow: "inset 3px 0 0 var(--coral)" },
+                { boxShadow: "inset 3px 0 0 transparent" },
+              ],
+              { duration: 1200 },
+            );
+            return false;
+          }),
           keymap.of([...yUndoManagerKeymap, ...defaultKeymap]),
           language,
           syntaxHighlighting(defaultHighlightStyle),
@@ -164,6 +191,7 @@ export function PaperEditor({
       saved.anchor = relative(main.anchor);
       saved.head = relative(main.head);
       view.current = null;
+      failureFlash?.cancel();
       editor.destroy();
     };
   }, [owner, owner.text, format]);
@@ -191,7 +219,7 @@ export function PaperEditor({
         Decoration.widget({
           widget: new SuggestionWidget(change, (id, action) => decide.current(id, action)),
           side: 1,
-        }).range(to),
+        }).range(to > from && editor.state.doc.sliceString(to - 1, to) === "\n" ? to - 1 : to),
       ];
       if (to > from && change.preview.removed.length)
         result.push(Decoration.mark({ class: "paper-deletion" }).range(from, to));

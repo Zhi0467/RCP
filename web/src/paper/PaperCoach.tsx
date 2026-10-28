@@ -31,6 +31,15 @@ import { taskRetryRequestBody } from "../taskRecovery";
 import { PaperChanges, type PaperChange, type PaperChangeAction } from "./PaperChanges";
 import "./paper-coach.css";
 
+function sessionConfig(session: WritingSession): AgentRunConfig {
+  return {
+    provider: session.provider,
+    model: session.model === "provider-default" ? "" : session.model,
+    reasoning: session.reasoning ?? "medium",
+    run_on: session.execution_machine,
+  };
+}
+
 export function PaperCoach({
   apiBase,
   project,
@@ -92,12 +101,7 @@ export function PaperCoach({
     setSessionId(session.native_session_id);
     setFresh(false);
     setPendingTask(null);
-    setConfig({
-      provider: session.provider,
-      model: session.model === "provider-default" ? "" : session.model,
-      reasoning: session.reasoning ?? "medium",
-      run_on: session.execution_machine,
-    });
+    setConfig(sessionConfig(session));
     setHistoryOpen(false);
     setError(null);
   };
@@ -124,12 +128,7 @@ export function PaperCoach({
   useEffect(() => {
     if (selectedSession && configuredSession.current !== selectedSession.native_session_id) {
       configuredSession.current = selectedSession.native_session_id;
-      setConfig({
-        provider: selectedSession.provider,
-        model: selectedSession.model === "provider-default" ? "" : selectedSession.model,
-        reasoning: selectedSession.reasoning ?? "medium",
-        run_on: selectedSession.execution_machine,
-      });
+      setConfig(sessionConfig(selectedSession));
     }
   }, [selectedSession]);
   const sessionTasks = currentSessionId
@@ -196,6 +195,17 @@ export function PaperCoach({
       setSubmitting(false);
     }
   };
+  const retryButton = (task: AgentTask) => (
+    <button
+      className="icon-button compact paper-reply-retry"
+      aria-label="Retry coach reply"
+      title={task.error || undefined}
+      disabled={submitting || !task.can_retry}
+      onClick={() => void retry(task)}
+    >
+      <RotateCcw size={15} />
+    </button>
+  );
   const renderedTasks = new Set<string>();
   const cards = (taskId: string) => (
     <PaperChanges
@@ -272,17 +282,7 @@ export function PaperCoach({
                 key={line.lineId}
               >
                 <MarkdownAnswer text={line.text} />
-                {lastAnswer && task?.failed && (
-                  <button
-                    className="icon-button compact paper-reply-retry"
-                    aria-label="Retry coach reply"
-                    title={task.error || undefined}
-                    disabled={submitting || !task.can_retry}
-                    onClick={() => void retry(task)}
-                  >
-                    <RotateCcw size={15} />
-                  </button>
-                )}
+                {lastAnswer && task?.failed && retryButton(task)}
                 {lastAnswer && cards(line.taskId)}
               </div>
             );
@@ -294,17 +294,7 @@ export function PaperCoach({
               key={task.operation_id}
               className={`paper-coach-message agent${task.failed ? " paper-failure" : ""}`}
             >
-              {task.failed && (
-                <button
-                  className="icon-button compact"
-                  aria-label="Retry coach reply"
-                  title={task.error || undefined}
-                  disabled={submitting || !task.can_retry}
-                  onClick={() => void retry(task)}
-                >
-                  <RotateCcw size={15} />
-                </button>
-              )}
+              {task.failed && retryButton(task)}
               {cards(task.operation_id)}
             </div>
           ))}

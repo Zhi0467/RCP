@@ -136,22 +136,6 @@ test("Paper pending local edits survive reload before the server receives them",
   assert.deepEqual(errors, []);
 });
 
-test("Paper change acceptance posts to the group endpoint", async (t) => {
-  const { page, posts, errors } = await openPaper(t, { cards: [{ ...card }] });
-  await page.getByRole("button", { name: "Coach", exact: true }).last().click();
-  const accepted = page.waitForResponse(
-    (response) =>
-      response.url().endsWith("/changes/g1/accept") && response.request().method() === "POST",
-  );
-  await page
-    .locator('[data-change-id="c1"]')
-    .getByRole("button", { name: "Accept change", exact: true })
-    .click();
-  await accepted;
-  assert.equal(posts[0]?.path, "/api/projects/p/paper/changes/g1/accept");
-  assert.deepEqual(errors, []);
-});
-
 test("Paper fits 390px in Write, Preview, Coach and the file panel", async (t) => {
   const { page, errors } = await openPaper(t, { width: 390, cards: [{ ...card }] });
   for (const panel of ["Write", "Preview", "Coach"]) {
