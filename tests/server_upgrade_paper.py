@@ -84,9 +84,8 @@ def seed_current_paper(request, fixture: dict, cookie: str) -> dict:
     tree = call("/tree")
     assert tree["hold"] is not None, "Divergent legacy paper must retain its publication hold"
     history = call("/history")
-    versions = history
     preserved = set()
-    for version in versions:
+    for version in history:
         manifest = call(f"/history/{version['version_id']}")
         files = manifest["manifest"]
         preserved.update(file.get("text_sha256") for file in files)
@@ -131,7 +130,6 @@ def seed_current_paper(request, fixture: dict, cookie: str) -> dict:
         "figure_sha256": _sha(EDITED_FIGURE),
         "hold": saved["hold"],
     }
-    assert_current_paper(request, fixture, cookie, result)
     return result
 
 

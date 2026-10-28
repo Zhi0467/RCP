@@ -143,7 +143,7 @@ def test_restore_schema_registry_covers_current_and_immutable_upgrade_boundaries
     tmp_path: Path,
 ) -> None:
     current, _bootstrap = AppStore.initialize_team_space(tmp_path / "current.sqlite3", "Current")
-    assert restore_code._supported_restore_schema(current.path, _database_schema_sha256(current))
+    assert _database_schema_sha256(current) in SUPPORTED_RESTORE_DATABASE_SCHEMAS
     for fixture in sorted(
         path for path in Path("tests/fixtures/server_upgrade").iterdir() if path.is_dir()
     ):
@@ -157,9 +157,7 @@ def test_restore_schema_registry_covers_current_and_immutable_upgrade_boundaries
             in SUPPORTED_RESTORE_DATABASE_SCHEMAS
         )
         upgraded = AppStore(database)
-        assert restore_code._supported_restore_schema(
-            upgraded.path, _database_schema_sha256(upgraded)
-        )
+        assert _database_schema_sha256(upgraded) in SUPPORTED_RESTORE_DATABASE_SCHEMAS
         upgraded.close()
 
 
@@ -215,7 +213,7 @@ def test_restore_schema_registry_covers_a_database_that_upgraded_in_place(
             row[1] for row in connection.execute("PRAGMA table_info(graph_runs)")
         }, "opening the database must run the migration under test"
 
-    assert restore_code._supported_restore_schema(reopened.path, _database_schema_sha256(reopened))
+    assert _database_schema_sha256(reopened) in SUPPORTED_RESTORE_DATABASE_SCHEMAS
 
 
 def test_restore_accepts_historical_in_place_provider_readiness_schema(tmp_path: Path) -> None:
@@ -238,7 +236,7 @@ def test_restore_accepts_historical_in_place_provider_readiness_schema(tmp_path:
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert not connection.execute("PRAGMA foreign_key_check").fetchall()
     upgraded = AppStore(database)
-    assert restore_code._supported_restore_schema(upgraded.path, _database_schema_sha256(upgraded))
+    assert _database_schema_sha256(upgraded) in SUPPORTED_RESTORE_DATABASE_SCHEMAS
 
 
 @pytest.mark.parametrize("upgraded_in_place", [False, True])
@@ -323,7 +321,7 @@ def test_restore_accepts_artifact_storage_before_and_after_import_migration(
     assert _database_schema_sha256(store) in SUPPORTED_RESTORE_DATABASE_SCHEMAS
 
     reopened = AppStore(database)
-    assert restore_code._supported_restore_schema(reopened.path, _database_schema_sha256(reopened))
+    assert _database_schema_sha256(reopened) in SUPPORTED_RESTORE_DATABASE_SCHEMAS
     with reopened.connection() as connection:
         assert connection.execute("SELECT * FROM artifact_imports").fetchall() == []
         assert (

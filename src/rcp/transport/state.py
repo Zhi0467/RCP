@@ -2873,8 +2873,6 @@ class SSHStateWorkspace(StateWorkspace):
 
     def publish_paper_tree(self, source: Path, revision: int) -> None:
         """Stage remotely, select under a remote process-owned lock, then mirror."""
-        if revision < 0:
-            raise ValueError("Paper revision must be nonnegative")
         with self.snapshot_lock:
             digest = _paper_tree_digest(source)
             stage = self.remote_root / ".publish" / f"paper-stage-{uuid.uuid4().hex}"

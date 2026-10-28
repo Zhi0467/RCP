@@ -169,7 +169,6 @@ def stop_project_work(
                 )
             )
         if paper is not None:
-            paper.drain(project_id)
             paper.dispose(project_id)
         return unstopped
 

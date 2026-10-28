@@ -26,7 +26,7 @@ from rcp.transport import LocalStateWorkspace
 class PaperOwner:
     def __init__(self):
         self.events = []
-        self.fail_drain = False
+        self.fail_dispose = False
 
     def pause(self, project_id):
         self.events.append(("pause", project_id))
@@ -34,16 +34,13 @@ class PaperOwner:
     def resume(self, project_id):
         self.events.append(("resume", project_id))
 
-    def drain(self, project_id):
-        self.events.append(("drain", project_id))
-        if self.fail_drain:
-            raise RuntimeError("publisher still running")
-
     def dispose(self, project_id):
         self.events.append(("dispose", project_id))
+        if self.fail_dispose:
+            raise RuntimeError("publisher still running")
 
 
-@pytest.mark.parametrize("failure", ["drain", "timeout"])
+@pytest.mark.parametrize("failure", ["dispose", "timeout"])
 def test_paper_is_drained_before_maintenance_capture(manifest, tmp_path, monkeypatch, failure):
     store = AppStore(tmp_path / "rcp.sqlite3")
     catalog = ProjectCatalog(tmp_path, store, AgentLauncher())
@@ -62,7 +59,7 @@ def test_paper_is_drained_before_maintenance_capture(manifest, tmp_path, monkeyp
         capture_sqlite=lambda: owner.events.append(("capture", record.project_id)),
     )
     identity = MaintenanceIdentity(str(uuid.uuid4()), "a" * 64)
-    owner.fail_drain = failure == "drain"
+    owner.fail_dispose = failure == "dispose"
     if failure == "timeout":
         import time
 
@@ -71,19 +68,19 @@ def test_paper_is_drained_before_maintenance_capture(manifest, tmp_path, monkeyp
             "rcp.server_ops.maintenance.time.monotonic",
             lambda: clock() + (10 if any(e[0] == "dispose" for e in owner.events) else 0),
         )
-    with pytest.raises(RuntimeError if failure == "drain" else MaintenanceRefused):
+    with pytest.raises(RuntimeError if failure == "dispose" else MaintenanceRefused):
         coordinator.enter(identity, timeout=1)
     assert not coordinator.quiescent
-    expected = ["pause", "drain"] + (["dispose"] if failure == "timeout" else []) + ["resume"]
+    expected = ["pause", "dispose", "resume"]
     assert [event[0] for event in owner.events] == expected
     if failure == "timeout":
         monkeypatch.undo()
         monkeypatch.setitem(paper_lifecycle._owners, store, owner)
     owner.events.clear()
-    owner.fail_drain = False
+    owner.fail_dispose = False
     coordinator.enter(identity, timeout=1)
     assert coordinator.quiescent
-    assert [event[0] for event in owner.events] == ["pause", "drain", "dispose", "capture"]
+    assert [event[0] for event in owner.events] == ["pause", "dispose", "capture"]
 
 
 def test_real_owner_disposes_reopens_and_deletes_only_project_rows(manifest, tmp_path, monkeypatch):
@@ -176,24 +173,6 @@ def test_real_owner_disposes_reopens_and_deletes_only_project_rows(manifest, tmp
     store.close()
 
 
-def test_restore_detaches_runtime_without_resetting_publication(manifest, tmp_path, monkeypatch):
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    catalog = ProjectCatalog(tmp_path, store, AgentLauncher())
-    record = catalog.register(str(manifest.path), identity_action="adopted")
-    with store.connection() as connection:
-        connection.execute(
-            "INSERT INTO paper_publication VALUES (?, 8, 3, 'pending', 'offline', 'legacy', 'now')",
-            (record.project_id,),
-        )
-        before = tuple(connection.execute("SELECT * FROM paper_publication").fetchone())
-    owner = PaperOwner()
-    monkeypatch.setitem(paper_lifecycle._owners, store, owner)
-    store.detach_restored_lifecycle(diagnostic="Restore test", confirmed_by="Human")
-    assert [event[0] for event in owner.events] == ["pause", "drain", "dispose"]
-    with store.connection() as connection:
-        assert tuple(connection.execute("SELECT * FROM paper_publication").fetchone()) == before
-
-
 def test_saved_paper_without_registered_owner_cannot_claim_quiescence(tmp_path):
     store = AppStore(tmp_path / "rcp.sqlite3")
     stop_paper_project(store, "legacy")
@@ -272,7 +251,7 @@ def test_maintenance_release_resumes_disposed_paper(manifest, tmp_path, monkeypa
     coordinator.enter(identity, timeout=1)
     coordinator.release(identity, timeout=1)
     assert owner.events == [
-        (action, record.project_id) for action in ("pause", "drain", "dispose", "resume")
+        (action, record.project_id) for action in ("pause", "dispose", "resume")
     ]
 
 

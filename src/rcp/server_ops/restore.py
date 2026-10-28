@@ -36,12 +36,6 @@ from rcp.server_ops.backup_integrity import (
     database_schema_sha256,
 )
 from rcp.server_ops.backup_models import BackupArchiveManifest, artifact_backup_entries
-from rcp.server_ops.backup_paper import (
-    PAPER_PROJECT_TABLES,
-    PaperSection,
-    paper_restore_base_schema,
-    verify_paper_section_records,
-)
 from rcp.storage import AppStore
 from rcp.storage.artifacts import write_artifact_file
 
@@ -52,6 +46,18 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Live Paper (v63): fresh, immutable fixture upgrades, and in-place upgrades.
+        "14615397c3f599d096a656ee22f3c2e91bcbb6e079c8db15773f39a1f847705b",
+        "190acaf47763878ceea7f9f187c91f49cf83b36d7678dfb069038171ad2333bb",
+        "1f416682dbd31b8046cee749b7f2d7e899510b4560a59f9050bb4abce428e6a6",
+        "23bcf164f89294fd8679ff78651c4ab8f36fa1cd94f4185d0e087038366bf18d",
+        "46bd4faa3ef739b45f279abc86940de8c37d610b2abc1c81294b98fb43ccdfa7",
+        "721aac969b2bc6c75e638c1535ba75ccd152b6a4d8edac0ece8ce6b8cacd7418",
+        "73431ac7d37c91b7366e6fdbef388d051bf93cc28b40be518aafe33cb9025d07",
+        "a9d0562e10adc42dd1c2e7a3e602c9c56e735e8f7d951ed75eb026bbff8f6a18",
+        "ab5e605dc45f9ebcfd591055a3a7aa4a7ccb33473c1f301ce484df20b13b5eda",
+        "bdfa5207dd9069020a80a154d003daf4967353d5c7c9c1c1c348a29f2cdcec46",
+        "f0d5e88d5ddda33cdd4f2a3db64d0513877cf5cbb5167a63c9ad16a6ad609eb3",
         # Episode lifecycle refreshes question cards (v62): fresh, immutable
         # fixture upgrades, and in-place upgrades.
         "110fbdd0ae9273d7dac6ac40870fa9780447146b979b10ce6650144df904e860",
@@ -1321,8 +1327,6 @@ def _restore_project_bytes(owners, capture, payload, operation_projects, *, exis
 
 def _verify_project_publication_bytes(workspace, entries) -> None:
     for entry in entries:
-        if entry.group == "paper_saved":
-            continue  # Verified against SQLite before detachment; never a published file.
         relative = PurePosixPath(entry.source_relative_path)
         if entry.group in {"kept_artifact", "legacy_kept_result_view"}:
             if entry.group == "kept_artifact":
@@ -1345,43 +1349,6 @@ def _verify_project_publication_bytes(workspace, entries) -> None:
             raise RestoreRefused(
                 "A restored project file changed before final publication readback."
             )
-
-
-def _supported_restore_schema(database: Path, digest: str) -> bool:
-    if digest in SUPPORTED_RESTORE_DATABASE_SCHEMAS:
-        return True
-    with closing(sqlite3.connect(database)) as connection:
-        return paper_restore_base_schema(connection) in SUPPORTED_RESTORE_DATABASE_SCHEMAS
-
-
-def _verify_archived_paper_sections(
-    database: Path, manifest: BackupArchiveManifest, payload: Path
-) -> None:
-    with closing(sqlite3.connect(database)) as connection:
-        present = {
-            row[0]
-            for row in connection.execute("SELECT name FROM sqlite_schema WHERE type='table'")
-        }
-        for project in manifest.projects:
-            if project.status != "captured":
-                continue
-            entries = [entry for entry in project.files if entry.group == "paper_saved"]
-            has_saved = any(
-                connection.execute(
-                    f'SELECT 1 FROM "{table}" WHERE project_id=? LIMIT 1', (project.project_id,)
-                ).fetchone()
-                for table in PAPER_PROJECT_TABLES
-                if table in present
-            )
-            if len(entries) != int(has_saved):
-                raise RestoreRefused("The archive lacks one exact saved paper section.")
-            if entries:
-                section = PaperSection.model_validate_json(
-                    (payload / entries[0].archive_path).read_bytes()
-                )
-                if section.project_id != project.project_id:
-                    raise RestoreRefused("The saved paper section belongs to another project.")
-                verify_paper_section_records(connection, section)
 
 
 def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
@@ -1454,13 +1421,11 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
         )
     archived_database = payload / manifest.sqlite_snapshot.archive_path
     _verify_sqlite_integrity(archived_database)
-    if _database_schema_sha256(
-        archived_database
-    ) != manifest.database_schema_sha256 or not _supported_restore_schema(
-        archived_database, manifest.database_schema_sha256
+    if (
+        _database_schema_sha256(archived_database) != manifest.database_schema_sha256
+        or manifest.database_schema_sha256 not in SUPPORTED_RESTORE_DATABASE_SCHEMAS
     ):
         raise RestoreRefused("Protected archive SQLite schema is unsupported or changed.")
-    _verify_archived_paper_sections(archived_database, manifest, payload)
     app = output / "app-data"
     app.mkdir(mode=0o700)
     database = app / "rcp.sqlite3"
@@ -1661,21 +1626,10 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
             if record is None:
                 raise RestoreRefused("The restored project registration is missing.")
             captured = project.status == "captured"
-            saved_entry = next(
-                (entry for entry in project.files if entry.group == "paper_saved"), None
-            )
-            paper_revision = (
-                PaperSection.model_validate_json(
-                    (payload / saved_entry.archive_path).read_bytes()
-                ).revision
-                if saved_entry is not None
-                else None
-            )
             try:
                 inventories.append(
                     BackupSnapshotProjectInventory(
                         project_id=project.project_id,
-                        paper_revision=paper_revision,
                         home_space_id=project.home_space_id,
                         locator=record.locator
                         if captured

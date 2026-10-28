@@ -891,11 +891,10 @@ stage-only candidates do not. Restoring bytes never accepts a candidate.
 UUID4 and UUID5 task identities are both valid inventory inputs.
 
 Paper capture reads only the caller-owned SQLite snapshot, including saved
-revisions that have not published. The recursive published `paper/` tree is
-inventoried separately. Restore checks the saved section against the archived
-database before detaching runtime owners; exact migration schema variants are
-accepted only over a supported prior schema. Transfer record schema 7 carries
-the same saved section, while schema 6 remains readable. Transfer sealing,
+revisions that have not published; restore recovers saved Paper from that
+archived database. The recursive published `paper/` tree is inventoried
+separately. Transfer record schema 7 carries the saved Paper section, while
+schema 6 remains readable. Transfer sealing,
 delete and maintenance settle the process-owned live documents first.
 
 The app-data inventory is closed. Live SQLite/WAL/SHM, process metadata, bootstrap

@@ -46,7 +46,6 @@ from rcp.server_ops.backup_models import (
     BackupImportedProviderSourceInventory,
     inspect_app_data_capture_plan,
 )
-from rcp.server_ops.backup_paper import capture_paper_section
 from rcp.server_ops.models import redact_server_text
 from rcp.server_runtime import ServerMetadata, data_dir_identity
 from rcp.sources.imported import ImportedProviderSourceStore
@@ -224,7 +223,6 @@ class BackupSnapshotProjectInventory(_StrictCaptureModel):
     task_operation_ids: tuple[str, ...] = ()
     kept_artifacts: tuple[BackupKeptArtifactReference, ...] = ()
     kept_result_views: tuple[BackupKeptResultViewReference, ...] = ()
-    paper_revision: int | None = Field(default=None, ge=0)
     unavailable_reason: str | None = None
     unavailable_at: datetime | None = None
 
@@ -289,7 +287,6 @@ class BackupSnapshotProjectInventory(_StrictCaptureModel):
                 bool(self.task_operation_ids),
                 bool(self.kept_artifacts),
                 bool(self.kept_result_views),
-                self.paper_revision is not None,
                 self.unavailable_reason is None,
                 self.unavailable_at is None,
             )
@@ -640,10 +637,7 @@ def inspect_snapshot_project_inventory(
             if artifact.kept_at is not None
         }
         artifacts = _kept_artifact_references(tasks, unresolved_revisions, store_kept)
-        with snapshot_store.connection() as connection:
-            paper = capture_paper_section(connection, record.project_id)
         return BackupSnapshotProjectInventory(
-            paper_revision=paper.revision if paper is not None else None,
             project_id=record.project_id,
             home_space_id=record.home_space_id,
             locator=record.locator,
