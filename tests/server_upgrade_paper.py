@@ -15,8 +15,12 @@ FIGURE = b"\x89PNG\r\n\x1a\nold-figure\x00"
 EDITED_FIGURE = b"\x89PNG\r\n\x1a\nnew-figure\x00"
 
 
-def seed_legacy_paper(data_dir: Path, fixture: dict) -> dict:
-    """Execute the historical Paper writer so draft, base and canonical diverge."""
+def seed_legacy_paper(data_dir: Path, fixture: dict) -> dict | None:
+    """Execute the historical Paper writer so draft, base and canonical diverge.
+
+    A release that already keeps the live Paper file tree has no such writer; it
+    seeds nothing here and the current writer journey starts from an empty paper.
+    """
     from rcp.config import load_manifest
     from rcp.paper import PaperService
     from rcp.storage import AppStore
@@ -25,6 +29,11 @@ def seed_legacy_paper(data_dir: Path, fixture: dict) -> dict:
     record = store.project(fixture["project_id"])
     assert record is not None
     paper = PaperService(load_manifest(Path(record.locator)), store, project_id=record.project_id)
+    if not hasattr(paper, "create"):
+        close = getattr(store, "close", None)
+        if close is not None:
+            close()
+        return None
 
     def save(text, snapshot):
         arguments = {"content": text, "base_hash": snapshot.base_hash}
@@ -82,18 +91,20 @@ def seed_current_paper(request, fixture: dict, cookie: str) -> dict:
         )
 
     tree = call("/tree")
-    assert tree["hold"] is not None, "Divergent legacy paper must retain its publication hold"
-    history = call("/history")
-    preserved = set()
-    for version in history:
-        files = version["manifest"]
-        preserved.update(file.get("text_sha256") for file in files)
-    # The draft becomes the live text; the diverged canonical and ancestor become versions.
-    assert [file["sha256"] for file in tree["files"]] == [_sha(DRAFT.encode())]
-    required = {_sha(CANONICAL.encode())}
-    if fixture["paper"]["ancestor_stored"]:
-        required.add(_sha(ANCESTOR.encode()))
-    assert required <= preserved, "Migration lost a divergent legacy history version"
+    legacy = fixture.get("paper")
+    if legacy:
+        assert tree["hold"] is not None, "Divergent legacy paper must retain its publication hold"
+        history = call("/history")
+        preserved = set()
+        for version in history:
+            files = version["manifest"]
+            preserved.update(file.get("text_sha256") for file in files)
+        # The draft becomes the live text; the diverged canonical and ancestor become versions.
+        assert [file["sha256"] for file in tree["files"]] == [_sha(DRAFT.encode())]
+        required = {_sha(CANONICAL.encode())}
+        if legacy["ancestor_stored"]:
+            required.add(_sha(ANCESTOR.encode()))
+        assert required <= preserved, "Migration lost a divergent legacy history version"
     for path in ("sections/methods.tex", "references.bib"):
         call("/files", body={"path": path, "kind": "text"}, method="POST")
     upload("figures/result.png", FIGURE)
@@ -113,7 +124,9 @@ def seed_current_paper(request, fixture: dict, cookie: str) -> dict:
     )
     saved = call("/tree")
     assert saved["saved_revision"] > before["saved_revision"]
-    assert saved["saved_revision"] > saved["published_revision"]
+    if legacy:
+        # Only the held legacy paper keeps its saves unpublished.
+        assert saved["saved_revision"] > saved["published_revision"]
     assert saved["hold"] == tree["hold"]
     assert (
         next(file for file in saved["files"] if file["file_id"] == ids["sections/methods.tex"])[
