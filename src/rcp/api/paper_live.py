@@ -24,7 +24,7 @@ from rcp.limits import (
     PAPER_SOCKET_QUEUE_SIZE,
 )
 from rcp.paper import PaperLive
-from rcp.paper.models import PaperLimit, PaperRateLimit
+from rcp.paper.models import PaperLimit, PaperPaused, PaperRateLimit
 from rcp.server_ops.maintenance import MaintenanceAdmissionClosed
 
 router = APIRouter()
@@ -64,15 +64,22 @@ async def paper_mutation(
     loop = asyncio.get_running_loop()
 
     def admitted() -> _Result:
-        with (
-            request.app.state.runtime_admission_gate.mutation("Paper edit"),
-            project_write_admission(project_id, request),
-        ):
-            require_project_membership(project_id, request)
-            return asyncio.run_coroutine_threadsafe(action(), loop).result()
+        try:
+            with (
+                request.app.state.runtime_admission_gate.mutation("Paper edit"),
+                project_write_admission(project_id, request),
+            ):
+                require_project_membership(project_id, request)
+                return asyncio.run_coroutine_threadsafe(action(), loop).result()
+        except HTTPException as exc:
+            if exc.status_code == 409:
+                raise PaperPaused(str(exc.detail)) from exc
+            raise
 
     try:
         return await run_sync(admitted)
+    except PaperPaused as exc:
+        raise HTTPException(503, str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(404, "Paper file or version not found") from exc
     except ValueError as exc:
@@ -120,18 +127,32 @@ def _awareness_message(clocks: dict[int, tuple[int, str]]) -> bytes:
     return create_awareness_message(encoder.to_bytes())
 
 
+def _close_code(exc: Exception) -> int:
+    if isinstance(exc, (MaintenanceAdmissionClosed, PaperPaused)):
+        return 4503
+    cause = exc.__cause__ if isinstance(exc, HTTPException) else exc
+    if isinstance(cause, PaperLimit):
+        return 4529 if isinstance(cause, PaperRateLimit) else 4413
+    if isinstance(exc, HTTPException):
+        return {409: 4400, 429: 4529, 503: 4503}.get(exc.status_code, 4403)
+    return 4403 if isinstance(exc, KeyError) else 4400
+
+
 @router.websocket("/api/projects/{project_id}/paper/files/{file_id}/live")
 async def paper_socket(socket: WebSocket, project_id: str, file_id: str) -> None:
     live: PaperLive = socket.app.state.paper_live
     queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=PAPER_SOCKET_QUEUE_SIZE)
     try:
-        request = _admit_socket(socket, project_id)
-        project_id = require_project_membership(project_id, request)
+        request = await run_sync(_admit_socket, socket, project_id)
+        project_id = await run_sync(require_project_membership, project_id, request)
         room = await paper_mutation(
             request, project_id, lambda: live.connect(project_id, file_id, queue)
         )
-    except (HTTPException, MaintenanceAdmissionClosed, KeyError, ValueError):
-        await socket.close(code=4403)
+    except (HTTPException, MaintenanceAdmissionClosed, KeyError, ValueError) as exc:
+        code = _close_code(exc)
+        with suppress(RuntimeError, WebSocketDisconnect):
+            await socket.accept()
+            await socket.close(code=code)
         return
     try:
         await socket.accept()
@@ -169,8 +190,9 @@ async def paper_socket(socket: WebSocket, project_id: str, file_id: str) -> None
             pending_awareness = (
                 _awareness_states(payload, awareness) if payload[:1] == b"\x01" else awareness
             )
-            fresh = _admit_socket(socket, project_id)
-            actor = _api_services(fresh).identity_access.acting_user(fresh).user_id
+            fresh = await run_sync(_admit_socket, socket, project_id)
+            user = await run_sync(_api_services(fresh).identity_access.acting_user, fresh)
+            actor = user.user_id
 
             async def accept(message=payload, owner=actor):
                 states = (
@@ -194,9 +216,9 @@ async def paper_socket(socket: WebSocket, project_id: str, file_id: str) -> None
     async def send() -> None:
         while True:
             payload = await queue.get()
-            _admit_socket(socket, project_id)
+            await run_sync(_admit_socket, socket, project_id)
             # A deleted file must close even while another member still has its room.
-            if not live.file_exists(project_id, file_id):
+            if not await run_sync(live.file_exists, project_id, file_id):
                 raise HTTPException(403, "Paper file was deleted")
             if not payload:
                 raise asyncio.QueueFull("Paper client fell behind")
@@ -205,8 +227,8 @@ async def paper_socket(socket: WebSocket, project_id: str, file_id: str) -> None
     async def watch_admission() -> None:
         while True:
             await asyncio.sleep(PAPER_ADMISSION_RECHECK_SECONDS)
-            _admit_socket(socket, project_id)
-            if not live.file_exists(project_id, file_id):
+            await run_sync(_admit_socket, socket, project_id)
+            if not await run_sync(live.file_exists, project_id, file_id):
                 raise HTTPException(403, "Paper file was deleted")
 
     tasks = [asyncio.create_task(action()) for action in (receive, send, watch_admission)]
@@ -215,16 +237,8 @@ async def paper_socket(socket: WebSocket, project_id: str, file_id: str) -> None
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
             task.result()
-    except HTTPException as exc:
-        if isinstance(exc.__cause__, PaperLimit):
-            # The shared mutation adapter preserves the live owner's budget error.
-            close_code = 4529 if isinstance(exc.__cause__, PaperRateLimit) else 4413
-        else:
-            close_code = {409: 4400, 429: 4529, 503: 4503}.get(exc.status_code, 4403)
-    except MaintenanceAdmissionClosed:
-        close_code = 4503
-    except KeyError:
-        close_code = 4403
+    except (HTTPException, MaintenanceAdmissionClosed, PaperPaused, KeyError) as exc:
+        close_code = _close_code(exc)
     except asyncio.QueueFull:
         close_code = 1013
     except OverflowError:

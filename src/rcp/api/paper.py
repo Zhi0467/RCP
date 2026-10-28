@@ -202,6 +202,12 @@ async def create_version(body: NamedVersion, request: Request, project_id: str =
     )
 
 
+@router.delete(_PREFIX + "/history/{version_id}", status_code=204)
+async def delete_version(version_id: str, request: Request, project_id: str = _member):
+    live = get_paper_live(request)
+    await paper_mutation(request, project_id, lambda: live.delete_version(project_id, version_id))
+
+
 @router.get(_PREFIX + "/history/{version_id}")
 async def version(version_id: str, request: Request, project_id: str = _member):
     try:

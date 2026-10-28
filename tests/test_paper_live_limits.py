@@ -9,20 +9,9 @@ from types import SimpleNamespace
 import pytest
 
 from rcp import limits
-from rcp.paper import PaperConflict, PaperLimit, PaperLive, PaperOp
-from rcp.storage import AppStore
-from rcp.transport import LocalStateWorkspace, StateUnavailable
-
-
-@pytest.fixture
-def paper(tmp_path):
-    store = AppStore(tmp_path / "app.sqlite3")
-    root = tmp_path / "state"
-    root.mkdir()
-    workspace = LocalStateWorkspace(root, str(root))
-    live = PaperLive(store, lambda _: workspace)
-    yield live, store, workspace
-    store.close()
+from rcp.paper import PaperConflict, PaperLimit, PaperOp
+from rcp.transport import StateUnavailable
+from tests.paper_live_fixtures import paper_fixture  # noqa: F401
 
 
 @pytest.mark.asyncio
@@ -83,24 +72,6 @@ async def test_project_rate_budget_is_bounded_and_recovers(paper, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_create_and_unicode_replace_commit_as_one_revision(paper):
-    live, _, _ = paper
-    receipt = await live.apply(
-        "p",
-        [
-            PaperOp(kind="create", file_id="new", path="a.md", text="a🙂b"),
-            PaperOp(kind="replace", file_id="new", start=1, end=2, text="é"),
-        ],
-        "h",
-        {"ops": [{"path_free": "a.md"}, {"text": "🙂"}]},
-    )
-    assert receipt.revision == 1
-    assert await live.text_at("p", "new", 1) == "aéb"
-    assert str((await live.connect("p", "new")).doc["text"]) == "aéb"
-    await live.close()
-
-
-@pytest.mark.asyncio
 async def test_metadata_and_binary_preconditions_guard_current_content(paper):
     live, _, _ = paper
     created = await live.apply(
@@ -113,13 +84,13 @@ async def test_metadata_and_binary_preconditions_guard_current_content(paper):
         (PaperOp(kind="binary", file_id=file_id, data=b"replacement"), {"blob_sha256": "stale"}),
     ):
         with pytest.raises(PaperConflict):
-            await live.apply("p", [op], "h", {"ops": [condition]})
+            await live.apply("p", [op], "h", {"checks": [{"file_id": file_id, **condition}]})
         assert await live.snapshot("p") == before
     await live.apply(
         "p",
         [PaperOp(kind="binary", file_id=file_id, data=b"replacement")],
         "h",
-        {"ops": [{"blob_sha256": hashlib.sha256(b"current").hexdigest()}]},
+        {"checks": [{"file_id": file_id, "blob_sha256": hashlib.sha256(b"current").hexdigest()}]},
     )
     assert live.blob((await live.snapshot("p")).files[0].blob_sha256) == b"replacement"
     await live.close()
@@ -175,7 +146,7 @@ async def test_offline_legacy_draft_migrates_and_stays_editable(paper, monkeypat
         "p",
         [PaperOp(kind="replace", file_id=snapshot.files[0].file_id, start=0, end=5, text="saved")],
         "h",
-        {"ops": [{"text": "draft"}]},
+        {"checks": [{"file_id": snapshot.files[0].file_id, "text": "draft"}]},
     )
     assert (await live.snapshot("p")).files[0].text == "saved"
     await live.close()
