@@ -903,3 +903,31 @@ test("Download asks the desktop where to save and is a plain download in a brows
     { projectId: "p", folder: "draft", suggestedName: "draft.zip" },
   ]);
 });
+
+test("the editor/preview divider resizes within bounds, persists, and is absent when panes stack", async (t) => {
+  const { page, errors } = await openPaper(t);
+  const handle = page.getByRole("separator", { name: "Resize editor" });
+  const editorWidth = () =>
+    page
+      .locator(".paper-editor-box")
+      .evaluate((box) => Math.round(box.getBoundingClientRect().width));
+  const box = await handle.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x - 100, box.y + box.height / 2);
+  await page.mouse.up();
+  const dragged = await editorWidth();
+  await handle.press("ArrowRight");
+  assert.equal(await editorWidth(), dragged + 16);
+  await handle.press("Home");
+  assert.equal(await editorWidth(), Number(await handle.getAttribute("aria-valuemin")));
+  await handle.press("End");
+  const widest = await editorWidth();
+  assert.equal(widest, Number(await handle.getAttribute("aria-valuemax")));
+  await page.reload();
+  await page.locator(".cm-content").waitFor();
+  assert.equal(await editorWidth(), widest);
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await handle.isVisible(), false);
+  assert.deepEqual(errors, []);
+});

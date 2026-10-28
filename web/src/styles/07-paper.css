@@ -1,7 +1,7 @@
 /* Paper uses the same raised Aqua surfaces and inset fields as the chat shell. */
 .paper-live-workspace {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: 220px minmax(0, var(--paper-editor-width, 1fr)) minmax(0, 1fr);
   gap: 14px;
   padding: 8px 14px 14px;
   height: calc(100dvh - 190px);
@@ -10,7 +10,27 @@
   color: var(--walnut);
 }
 .paper-live-workspace.files-folded {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, var(--paper-editor-width, 1fr)) minmax(0, 1fr);
+}
+/* The right pane sits in the last column, so the handle can share that cell and cover
+   the gap before it. */
+.paper-right-box,
+.paper-split-handle {
+  grid-column: -2;
+  grid-row: 1;
+}
+.paper-split-handle {
+  justify-self: start;
+  width: 14px;
+  margin-left: -14px;
+  border-radius: 7px;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 2;
+}
+.paper-split-handle:hover,
+.paper-split-handle:focus-visible {
+  background: color-mix(in srgb, var(--teal) 22%, transparent);
 }
 .paper-box {
   display: flex;
@@ -368,9 +388,13 @@
 }
 @media (max-width: 1180px) and (min-width: 701px) {
   .paper-live-workspace {
-    grid-template-columns: 165px minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: 165px minmax(0, var(--paper-editor-width, 1fr)) minmax(0, 1fr);
     gap: 10px;
     padding-inline: 10px;
+  }
+  .paper-split-handle {
+    width: 10px;
+    margin-left: -10px;
   }
   .paper-presence {
     max-width: 40px;
@@ -395,6 +419,9 @@
   .paper-editor-box {
     flex: 1;
     border-radius: 10px;
+  }
+  .paper-split-handle {
+    display: none;
   }
   .paper-right-box {
     display: none;
