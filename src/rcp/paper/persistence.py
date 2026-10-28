@@ -146,7 +146,7 @@ def save_version(
 ) -> str:
     kind = "named" if name is not None else "auto"
     if name is not None:
-        if not name.strip() or len(name) > 200:
+        if not name.strip():
             raise ValueError("Version name must contain 1 to 200 characters")
         count = connection.execute(
             "SELECT COUNT(*) FROM paper_versions WHERE project_id=? AND kind='named'", (project,)

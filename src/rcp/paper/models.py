@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
+from rcp import limits
+
 
 class PaperConflict(ValueError):
     """A guarded operation no longer describes the saved tree."""
@@ -52,6 +54,7 @@ class PaperTreeFile(BaseModel):
 
 
 class PaperTree(BaseModel):
+    max_doc_bytes: int = Field(default_factory=lambda: limits.PAPER_MAX_DOC_BYTES)
     revision: int
     saved_revision: int
     published_revision: int

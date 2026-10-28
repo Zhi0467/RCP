@@ -16,7 +16,8 @@ from rcp.api.dependencies import _api_services, get_project_service, require_pro
 from rcp.api.paper_live import get_paper_live, paper_mutation
 from rcp.limits import PAPER_MAX_UPLOAD_BYTES, PAPER_MULTIPART_OVERHEAD_BYTES
 from rcp.paper import PaperOp
-from rcp.paper.models import paper_file_kind
+from rcp.paper.live import text_replacement
+from rcp.paper.models import Receipt, paper_file_kind
 
 router = APIRouter()
 _member = Depends(require_project_membership)
@@ -94,10 +95,12 @@ def _actor(request: Request) -> str:
     return _api_services(request).identity_access.acting_user(request).user_id
 
 
-async def _apply(request: Request, project_id: str, op: PaperOp):
+async def _apply(request: Request, project_id: str, op: PaperOp, *, checkpoint: bool = False):
     live = get_paper_live(request)
     return await paper_mutation(
-        request, project_id, lambda: live.apply(project_id, [op], _actor(request), {})
+        request,
+        project_id,
+        lambda: live.apply(project_id, [op], _actor(request), {}, checkpoint=checkpoint),
     )
 
 
@@ -120,7 +123,9 @@ async def rename_file(file_id: str, body: RenameFile, request: Request, project_
 
 @router.delete(_PREFIX + "/files/{file_id}")
 async def delete_file(file_id: str, request: Request, project_id: str = _member):
-    return await _apply(request, project_id, PaperOp(kind="delete", file_id=file_id))
+    return await _apply(
+        request, project_id, PaperOp(kind="delete", file_id=file_id), checkpoint=True
+    )
 
 
 async def _upload(request: Request, *, new: bool) -> tuple[str | None, bytes]:
@@ -161,19 +166,23 @@ async def replace_content(file_id: str, request: Request, project_id: str = _mem
     tree = await live.snapshot(project_id)
     current = next((file for file in tree.files if file.file_id == file_id), None)
     if current is None or current.kind == "binary":
-        return await _apply(request, project_id, PaperOp(kind="binary", file_id=file_id, data=data))
+        return await _apply(
+            request, project_id, PaperOp(kind="binary", file_id=file_id, data=data), checkpoint=True
+        )
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise HTTPException(409, "Paper text files take UTF-8 uploads") from exc
     old = current.text or ""
     # The whole-text guard refuses an upload that would overwrite a concurrent edit.
-    op = PaperOp(kind="replace", file_id=file_id, start=0, end=len(old), text=text)
+    op = text_replacement(file_id, old, text)
+    if op is None:
+        return Receipt(revision=tree.revision)
     checks = [{"file_id": file_id, "kind": "text", "text": old}]
     return await paper_mutation(
         request,
         project_id,
-        lambda: live.apply(project_id, [op], _actor(request), {"checks": checks}),
+        lambda: live.apply(project_id, [op], _actor(request), {"checks": checks}, checkpoint=True),
     )
 
 
@@ -208,7 +217,12 @@ async def raw_file(
 
 @router.get(_PREFIX + "/history")
 async def history(request: Request, project_id: str = _member):
-    return await get_paper_live(request).history(project_id)
+    names = {user.user_id: user.display_name for user in _api_services(request).store.space_users()}
+    return [
+        row
+        | {"actor_name": "automatic" if row["actor"] == "automatic" else names.get(row["actor"])}
+        for row in await get_paper_live(request).history(project_id)
+    ]
 
 
 @router.post(_PREFIX + "/history")
@@ -223,14 +237,6 @@ async def create_version(body: NamedVersion, request: Request, project_id: str =
 async def delete_version(version_id: str, request: Request, project_id: str = _member):
     live = get_paper_live(request)
     await paper_mutation(request, project_id, lambda: live.delete_version(project_id, version_id))
-
-
-@router.get(_PREFIX + "/history/{version_id}")
-async def version(version_id: str, request: Request, project_id: str = _member):
-    try:
-        return await get_paper_live(request).version(project_id, version_id)
-    except KeyError as exc:
-        raise HTTPException(404, "Paper version not found") from exc
 
 
 @router.get(_PREFIX + "/history/{version_id}/files/{file_id}")

@@ -58,7 +58,12 @@ A project that still holds a pre-tree paper keeps it as `introduction.md`. When
 its old draft had diverged from the saved introduction, both are kept, the draft
 becomes the live text, and nothing publishes until a member picks which to keep.
 
-History records a version after each burst of editing and on request. Automatic
+History records a version after each burst of editing and on request. Deleting a
+file, replacing its uploaded content, or restoring History first checkpoints the
+current revision if no version covers it. Restore and text uploads replace only
+the changed span, preserving peer positions in unchanged text; identical content
+creates no edit. History rows include the member display name when available,
+and the tree advertises the per-document byte limit as `max_doc_bytes`. Automatic
 versions form a bounded ring; named versions have a quota, and a full quota
 refuses new names rather than evicting old ones. Members may delete named versions
 through `DELETE /api/projects/{project_id}/paper/history/{version_id}` to free quota;

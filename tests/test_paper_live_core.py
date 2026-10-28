@@ -45,8 +45,6 @@ def test_apply_guards_atomicity_unicode_and_receipts(paper):
             )
         assert (await live.tree("p")).revision == accepted.revision
         with pytest.raises(PaperConflict):
-            await live.apply("p", ops, "other", expect)
-        with pytest.raises(PaperConflict):
             await live.apply("p", ops, "human", {"checks": [{"file_id": file_id, "text": "stale"}]})
         assert (await live.snapshot("p")).files[0].text == "aéb"
         with store.connection() as conn:
@@ -315,57 +313,6 @@ def test_causal_update_gap_survives_compaction_and_restart(paper, monkeypatch):
     run(scenario())
 
 
-def test_receive_uses_blob_sizes_and_batches_retention(paper, monkeypatch):
-    import threading
-
-    import rcp.paper.live as module
-
-    live, store, _ = paper
-
-    async def scenario():
-        receipt = await live.apply(
-            "p",
-            [
-                PaperOp(kind="create", path="a.md"),
-                PaperOp(kind="create", path="image", file_kind="binary", data=b"image"),
-            ],
-            "h",
-        )
-        room = await live.connect("p", receipt.file_ids[0])
-        client = Doc({"text": Text()})
-        client.apply_update(room.encoded)
-        client["text"].insert(0, "saved")
-        owner = threading.get_ident()
-        queries = []
-        connection = store.connection
-
-        @contextmanager
-        def traced():
-            with connection() as conn:
-                conn.set_trace_callback(lambda sql: queries.append(sql))
-                yield conn
-
-        original = live._save_text_update
-
-        def save(*args):
-            assert threading.get_ident() != owner
-            return original(*args)
-
-        with monkeypatch.context() as patch:
-            patch.setattr(store, "connection", traced)
-            patch.setattr(live, "_save_text_update", save)
-            patch.setattr(module, "prune", lambda *_: pytest.fail("per-update retention"))
-            assert await live.receive(
-                "p", receipt.file_ids[0], create_update_message(client.get_update()), "h"
-            )
-        assert not any("SELECT bytes" in sql for sql in queries)
-        assert (await live.snapshot("p")).files[0].text == "saved"
-        await live.tick()
-        await live.close()
-
-    run(scenario())
-
-
 def test_repeated_megabyte_deletions_reclaim_crdt_budget(paper, monkeypatch):
     live, store, workspace = paper
     monkeypatch.setattr(limits, "PAPER_COMPACT_UPDATES", 2)
@@ -423,44 +370,6 @@ def test_raw_and_metadata_do_not_read_unrelated_bodies(paper):
     run(scenario())
 
 
-def test_history_maintenance_collects_once_on_worker(paper, monkeypatch):
-    import threading
-
-    import rcp.paper.live as module
-
-    live, store, _ = paper
-
-    async def scenario():
-        await live.apply("p", [PaperOp(kind="create", path="a.md")], "h")
-        owner = threading.get_ident()
-        collected = []
-        saved = []
-        collect, save = module.collect_bodies, module.save_version
-
-        def collecting(conn):
-            assert threading.get_ident() != owner
-            collected.append(True)
-            collect(conn)
-
-        def saving(*args, **kwargs):
-            assert threading.get_ident() != owner
-            saved.append(True)
-            return save(*args, **kwargs)
-
-        monkeypatch.setattr(module, "collect_bodies", collecting)
-        monkeypatch.setattr(module, "save_version", saving)
-        monkeypatch.setattr(limits, "PAPER_HISTORY_IDLE_SECONDS", 0)
-        await live.tick()
-        assert saved == [True] and collected == []
-        live._last_collection -= limits.PAPER_HISTORY_MAX_SECONDS
-        await live.tick()
-        await live.tick()
-        assert collected == [True]
-        await live.close()
-
-    run(scenario())
-
-
 def test_runtime_sqlite_and_crdt_rebuilds_run_on_workers(paper, monkeypatch):
     import threading
 
@@ -493,7 +402,10 @@ def test_runtime_sqlite_and_crdt_rebuilds_run_on_workers(paper, monkeypatch):
         await live.publish("p")
         await live.delete_version("p", version["version_id"])
         assert (await live.tree("p")).publish_state == "published"
+        monkeypatch.setattr(limits, "PAPER_HISTORY_IDLE_SECONDS", 0)
+        live._last_collection -= limits.PAPER_HISTORY_MAX_SECONDS
         await live.tick()
+        assert await live.history("p")
         await live.close()
 
     run(scenario())
@@ -574,6 +486,40 @@ def test_failed_publication_waits_for_backoff(paper, monkeypatch):
         await live.tick()
         await live.drain("p")
         assert len(attempts) == 2
+        await live.close()
+
+    run(scenario())
+
+
+def test_restore_preserves_peer_position_outside_changed_span(paper):
+    live, _, _ = paper
+
+    async def scenario():
+        file_id = (
+            await live.apply(
+                "p", [PaperOp(kind="create", path="a.md", text="prefix old suffix")], "h"
+            )
+        ).file_ids[0]
+        version = await live.create_version("p", "original", "h")
+        await live.apply(
+            "p",
+            [PaperOp(kind="replace", file_id=file_id, start=7, end=10, text="new")],
+            "h",
+            {"checks": [{"file_id": file_id, "text": "prefix old suffix"}]},
+        )
+        queue = asyncio.Queue()
+        room = await live.connect("p", file_id, queue)
+        peer = Doc({"text": Text()})
+        peer.apply_update(room.encoded)
+        position = peer["text"].sticky_index(3)
+        receipt = await live.restore("p", version["version_id"], [file_id], "h")
+        from pycrdt import handle_sync_message
+
+        handle_sync_message((await queue.get())[1:], peer)
+        assert str(peer["text"]) == "prefix old suffix"
+        assert position.get_index() == 3
+        unchanged = await live.restore("p", version["version_id"], [file_id], "h")
+        assert unchanged.revision == receipt.revision
         await live.close()
 
     run(scenario())

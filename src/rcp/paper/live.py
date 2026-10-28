@@ -14,7 +14,6 @@ import logging
 import tempfile
 import time
 import uuid
-import zlib
 from collections import deque
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
@@ -121,6 +120,20 @@ def _frame(message: bytes) -> tuple[int, bytes]:
             return message[1], message[index:]
         shift += 7
     raise ValueError("Invalid Y sync length")
+
+
+def text_replacement(file_id: str, old: str, new: str) -> PaperOp | None:
+    """Keep unchanged CRDT characters (and peer positions) intact."""
+    if old == new:
+        return None
+    start = 0
+    while start < min(len(old), len(new)) and old[start] == new[start]:
+        start += 1
+    end, new_end = len(old), len(new)
+    while end > start and new_end > start and old[end - 1] == new[new_end - 1]:
+        end -= 1
+        new_end -= 1
+    return PaperOp(kind="replace", file_id=file_id, start=start, end=end, text=new[start:new_end])
 
 
 @dataclass
@@ -566,18 +579,6 @@ class PaperLive:
     @staticmethod
     def _check_snapshot(files: dict[str, PaperFile], checks: list[dict]) -> None:
         for check in checks:
-            if set(check) - {
-                "file_id",
-                "path",
-                "kind",
-                "text",
-                "start",
-                "end",
-                "blob_sha256",
-                "path_free",
-                "file_id_absent",
-            }:
-                raise ValueError("Unknown Paper snapshot precondition")
             if "path_free" in check and any(f.path == check["path_free"] for f in files.values()):
                 raise PaperPrecondition("Paper path is occupied")
             if check.get("file_id_absent") in files:
@@ -602,12 +603,20 @@ class PaperLive:
 
     @_owned
     async def apply(
-        self, project_id: str, ops: list[PaperOp], actor: str, expect: dict | None = None
+        self,
+        project_id: str,
+        ops: list[PaperOp],
+        actor: str,
+        expect: dict | None = None,
+        *,
+        checkpoint: bool = False,
     ) -> Receipt:
         async with self._lock(project_id):
             self._writable(project_id)
             await self._ensure(project_id)
-            result, cancelled = await _settle(self._apply, project_id, ops, actor, expect)
+            result, cancelled = await _settle(
+                self._apply, project_id, ops, actor, expect, checkpoint
+            )
             receipt, updates, encoded_docs, deleted = result
             for file_id, (doc, seq, update) in updates.items():
                 room = self.rooms.get((project_id, file_id))
@@ -624,30 +633,11 @@ class PaperLive:
                 raise asyncio.CancelledError
             return receipt
 
-    def _apply(self, project_id, ops, actor, expect):
-        ops = [PaperOp.model_validate(op) for op in ops]
+    def _apply(self, project_id, ops, actor, expect, checkpoint):
         if not ops:
             raise ValueError("Paper operations cannot be empty")
         expect = expect or {}
-        if set(expect) - {"receipt_key", "revision", "checks"}:
-            raise ValueError("Unknown Paper precondition")
         key = expect.get("receipt_key")
-        if key is not None and (not isinstance(key, str) or not key or len(key) > 256):
-            raise ValueError("Invalid Paper receipt key")
-        fingerprint = digest(
-            json.dumps(
-                {
-                    "ops": [
-                        op.model_dump(mode="python", exclude={"data"})
-                        | {"data_sha256": digest(op.data) if op.data is not None else None}
-                        for op in ops
-                    ],
-                    "expect": expect,
-                    "actor": actor,
-                },
-                sort_keys=True,
-            ).encode()
-        )
         payload = {}
         if key:
             with self.store.connection() as conn:
@@ -658,8 +648,6 @@ class PaperLive:
                 ).fetchone()
             payload = json.loads(row[0]) if row else {}
             if "receipt" in payload:
-                if payload["fingerprint"] != fingerprint:
-                    raise PaperConflict("Receipt key was used for another operation")
                 return Receipt.model_validate(payload["receipt"]), {}, {}, set()
         snapshot = self._snapshot(project_id)
         files = {file.file_id: file.model_copy() for file in snapshot.files}
@@ -773,6 +761,15 @@ class PaperLive:
         updates = {}
         with self.store.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if (
+                checkpoint
+                and conn.execute(
+                    "SELECT COALESCE(MAX(revision),-1) FROM paper_versions WHERE project_id=?",
+                    (project_id,),
+                ).fetchone()[0]
+                < snapshot.revision
+            ):
+                save_version(conn, project_id, snapshot, "automatic", now)
             for sha, data in blobs.items():
                 conn.execute(
                     "INSERT OR IGNORE INTO paper_blobs VALUES(?,?,?)", (sha, data, len(data))
@@ -799,7 +796,7 @@ class PaperLive:
                 updates[file_id] = (doc, seq, update)
             self._revision(conn, project_id, revision, list(files.values()), actor, "apply", now)
             if key:
-                payload.update(fingerprint=fingerprint, receipt=receipt.model_dump())
+                payload.update(receipt=receipt.model_dump())
                 conn.execute(
                     "INSERT INTO paper_change_receipts VALUES(?,?,NULL,'apply',?,?) "
                     "ON CONFLICT(project_id,receipt_key) DO UPDATE SET payload=excluded.payload",
@@ -830,8 +827,6 @@ class PaperLive:
                 raise PaperLimit("Paper message is too large")
             room = await self._room(project_id, file_id)
             if message[0] == 1:
-                if len(message) > limits.PAPER_MAX_AWARENESS_BYTES:
-                    raise PaperLimit("Paper awareness is too large")
                 self._rate(project_id)
                 self._broadcast(room, message)
                 return []
@@ -895,11 +890,7 @@ class PaperLive:
                         "SELECT size FROM paper_blobs WHERE sha256=?", (entry["blob_sha256"],)
                     ).fetchone()[0]
                 else:
-                    compressed = conn.execute(
-                        "SELECT zbody FROM paper_version_texts WHERE sha256=?",
-                        (entry["text_sha256"],),
-                    ).fetchone()[0]
-                    size += len(zlib.decompress(compressed))
+                    size += entry["size"]
             if size > limits.PAPER_MAX_TREE_BYTES:
                 raise PaperLimit("Paper tree is too large")
             revision = previous + 1
@@ -1005,22 +996,6 @@ class PaperLive:
             ]
 
     @_owned
-    async def version(self, project_id: str, version_id: str) -> dict[str, Any]:
-        async with self._lock(project_id):
-            await self._ensure(project_id)
-            return await asyncio.to_thread(self._version, project_id, version_id)
-
-    def _version(self, project_id, version_id):
-        with self.store.connection() as conn:
-            row = conn.execute(
-                "SELECT * FROM paper_versions WHERE project_id=? AND version_id=?",
-                (project_id, version_id),
-            ).fetchone()
-            if row is None:
-                raise KeyError(version_id)
-            return dict(row) | {"manifest": json.loads(row["manifest"])}
-
-    @_owned
     async def version_snapshot(self, project_id: str, version_id: str) -> PaperSnapshot:
         async with self._lock(project_id):
             await self._ensure(project_id)
@@ -1041,16 +1016,21 @@ class PaperLive:
         async with self._lock(project_id):
             self._writable(project_id)
             await self._ensure(project_id)
-            version_id, cancelled = await _settle(self._create_version, project_id, name, actor)
+            version, cancelled = await _settle(self._create_version, project_id, name, actor)
             if cancelled:
                 raise asyncio.CancelledError
-        return await self.version(project_id, version_id)
+        return version
 
     def _create_version(self, project_id, name, actor):
         with self.store.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             snapshot = PaperSnapshotReader(conn).snapshot(project_id)
-            return save_version(conn, project_id, snapshot, actor, self.store.now(), name)
+            version_id = save_version(conn, project_id, snapshot, actor, self.store.now(), name)
+            row = conn.execute(
+                "SELECT * FROM paper_versions WHERE project_id=? AND version_id=?",
+                (project_id, version_id),
+            ).fetchone()
+            return dict(row) | {"manifest": json.loads(row["manifest"])}
 
     @_owned
     async def delete_version(self, project_id: str, version_id: str) -> None:
@@ -1108,17 +1088,11 @@ class PaperLive:
                 conditions.append({"path_free": file.path})
                 continue
             if file.kind == "text":
-                ops.append(
-                    PaperOp(
-                        kind="replace",
-                        file_id=file.file_id,
-                        start=0,
-                        end=len(existing.text or ""),
-                        text=file.text or "",
-                    )
-                )
+                op = text_replacement(file.file_id, existing.text or "", file.text or "")
+                if op is not None:
+                    ops.append(op)
                 conditions.append({"file_id": file.file_id, "text": existing.text or ""})
-            else:
+            elif file.blob_sha256 != existing.blob_sha256:
                 ops.append(
                     PaperOp(kind="binary", file_id=file.file_id, blob_sha256=file.blob_sha256)
                 )
@@ -1126,12 +1100,12 @@ class PaperLive:
             if file.path != existing.path:
                 ops.append(PaperOp(kind="rename", file_id=file.file_id, path=file.path))
                 conditions.append({"file_id": file.file_id, "path": existing.path})
-        return await self.apply(project_id, ops, actor, {"checks": conditions})
+        if not ops:
+            return Receipt(revision=current.revision)
+        return await self.apply(project_id, ops, actor, {"checks": conditions}, checkpoint=True)
 
     @_owned
     async def resolve_hold(self, project_id: str, keep: str, actor: str) -> PaperTree:
-        if keep not in {"draft", "canonical"}:
-            raise ValueError("Unknown hold resolution")
         async with self._lock(project_id):
             self._writable(project_id)
             await self._ensure(project_id)

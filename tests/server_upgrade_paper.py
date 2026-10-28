@@ -87,8 +87,7 @@ def seed_current_paper(request, fixture: dict, cookie: str) -> dict:
     versions = history
     preserved = set()
     for version in versions:
-        manifest = call(f"/history/{version['version_id']}")
-        files = manifest["manifest"]
+        files = version["manifest"]
         preserved.update(file.get("text_sha256") for file in files)
     # The draft becomes the live text; the diverged canonical and ancestor become versions.
     assert [file["sha256"] for file in tree["files"]] == [_sha(DRAFT.encode())]
@@ -144,8 +143,10 @@ def assert_current_paper(request, fixture: dict, cookie: str, expected: dict) ->
     figure = expected["file_ids"]["figures/result.png"]
     with request(f"{base}/files/{figure}/raw", cookie=cookie) as response:
         assert _sha(response.read()) == expected["figure_sha256"]
-    with request(f"{base}/history/{expected['version_id']}", cookie=cookie) as response:
-        manifest = json.load(response)
+    with request(f"{base}/history", cookie=cookie) as response:
+        manifest = next(
+            row for row in json.load(response) if row["version_id"] == expected["version_id"]
+        )
     files = manifest["manifest"]
     assert any(file["path"] == "sections/methods.tex" for file in files)
     assert any(file.get("blob_sha256") == _sha(FIGURE) for file in files)

@@ -357,5 +357,43 @@ def test_delete_named_version_releases_quota_and_refuses_auto(manifest, tmp_path
         version = client.post(prefix + "/history", json={"name": "kept"}).json()["version_id"]
         assert client.post(prefix + "/history", json={"name": "full"}).status_code == 409
         assert client.delete(prefix + f"/history/{version}").status_code == 204
-        assert client.get(prefix + f"/history/{version}").status_code == 404
+        assert version not in {row["version_id"] for row in client.get(prefix + "/history").json()}
         assert client.post(prefix + "/history", json={"name": "available"}).status_code == 200
+
+
+def test_delete_checkpoints_unversioned_peer_text_and_history_names(tmp_path):
+    from rcp import limits
+
+    app, client, _, people, _ = _team_app(tmp_path)
+    project_id = _create_project(client, tmp_path / "repo")
+    prefix = f"/api/projects/{project_id}/paper"
+    with client:
+        file_id = _file(client, prefix)
+        assert client.get(prefix + "/tree").json()["max_doc_bytes"] == limits.PAPER_MAX_DOC_BYTES
+        named = client.post(prefix + "/history", json={"name": "before"}).json()
+        with client.websocket_connect(
+            prefix + f"/files/{file_id}/live", headers={"Origin": "http://testserver"}
+        ) as socket:
+            peer = Doc({"text": Text()})
+            _sync(socket, peer)
+            peer["text"].insert(0, "Recent peer text")
+            socket.send_bytes(create_update_message(peer.get_update()))
+            _ack(socket, peer)
+        assert client.delete(prefix + f"/files/{file_id}").status_code == 200
+        history = client.get(prefix + "/history").json()
+        assert (
+            next(row for row in history if row["version_id"] == named["version_id"])["actor_name"]
+            == people[0].display_name
+        )
+        automatic = next(row for row in history if row["actor"] == "automatic")
+        assert automatic["actor_name"] == "automatic"
+        assert (
+            client.get(prefix + f"/history/{automatic['version_id']}/files/{file_id}").text
+            == "Recent peer text"
+        )
+        restored = client.post(
+            prefix + f"/history/{automatic['version_id']}/restore", json={"file_ids": [file_id]}
+        )
+        assert restored.status_code == 200, restored.text
+        restored_id = restored.json()["file_ids"][0]
+        assert client.get(prefix + f"/files/{restored_id}/raw").text == "Recent peer text"

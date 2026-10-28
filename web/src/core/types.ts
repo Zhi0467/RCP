@@ -3126,6 +3126,7 @@ export interface PaperFile {
 }
 
 export interface PaperTree {
+  max_doc_bytes: number;
   revision: number;
   saved_revision: number;
   published_revision: number;
