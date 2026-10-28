@@ -40,9 +40,10 @@ still need publication, false means they are published.
 crash, and a half-published tree breaks every build that includes the missing
 half.
 
-An edit the server refuses, such as an oversized or invalid one, ends that
-file's connection for good and the editor shows a red edge with one retry
-action; an edit refused only by the update rate retries on its own. Deletion,
+The editor refuses a local edit that would push its file past `max_doc_bytes`
+and flashes a red edge, leaving the text editable. An edit the server refuses,
+such as an invalid one, ends that file's connection for good and the editor
+shows a red edge with one retry action; an edit refused only by the update rate retries on its own. Deletion,
 maintenance, and transfer pause the live paper; paused admission closes with
 retryable socket code 4503, while lost membership or a deleted file closes with
 4403. Refused connections are accepted before closing so browsers receive the
@@ -50,7 +51,12 @@ code. A stop that fails, or maintenance that ends, resumes it. The backup SQLite
 snapshot holds all saved Paper state and marks it unpublished, so a restore
 republishes the saved text rather than trusting the copied folder.
 
-Files keep a stable identity across renames. One path rule serves editing,
+Files keep a stable identity across renames. A new or uploaded file opens at
+once; uploads go to the chosen folder, and an upload over an existing path asks
+first. When a member deletes a file another member has open with unsent text,
+that member's editor keeps it read-only and offers to recreate it as a new file;
+with nothing unsent the editor moves to another file. While the open file has
+unsent text, leaving the page asks first. One path rule serves editing,
 backup and transfer; `.git` and `.publish` are reserved path components. Uploaded figures are stored once by
 content hash. Paper files are served as files, never as same-origin documents:
 SVG, HTML and unknown types download; only raster images show inline.
@@ -76,7 +82,9 @@ their timing records.
 ### Preview
 
 Markdown renders in the browser, with image paths resolved inside the paper
-tree. Typst compiles in the browser from compiler and font files that the RCP
+tree. A link to another paper file opens it in the editor, an `http(s)` link
+opens a new tab, and any other link is inert. Large Markdown files re-render only
+after typing pauses. Typst compiles in the browser from compiler and font files that the RCP
 backend downloads once, checks against pinned hashes, and serves from its own
 origin. LaTeX compiles on the RCP backend with Tectonic, downloaded and checked
 the same way on first use, run with `--untrusted` and bounded in time, output and
@@ -84,7 +92,9 @@ concurrency. A compile changes no state, so any member may start one; a newer
 compile cancels an older one for the same project, and earlier PDFs stay
 readable until the result limit ages them out. A
 compile starts from the one root that reaches the open file; with none or
-several, the preview lists the candidates.
+several, the preview lists the candidates. The PDF keeps its scroll position per
+compile root across file switches, and Typst errors show as path, line and
+message.
 
 Tectonic runs as the RCP server user with no operating-system sandbox.
 `--untrusted` turns off shell escape only, so `\input` of an absolute path
@@ -107,7 +117,7 @@ proposed tree. A rename and the edits that depend on it form one card group.
 A card applies only to the text it was made from. At the end of a turn RCP
 checks every card against the live paper; a card whose text has since changed is
 refreshed by up to two short follow-up turns of the same coach session, then
-shown as outdated with a refresh action. These follow-ups retain the delivered
+shown as outdated with refresh and reject actions. These follow-ups retain the delivered
 master, send changed snapshot/output paths as a delta, and record a separate
 immutable prompt for each refresh round.
 
@@ -115,7 +125,7 @@ By default each card waits for a member to accept or reject it. In a chat set to
 apply directly, every fresh card is applied when the turn ends, and the cards
 become a log. Either way, applying re-checks the original text, happens once per
 card, and records a receipt that a guarded Undo reverses while the text is still
-what the coach wrote. A card that fails to apply stays reviewable; in a chat set
+what the coach wrote. Undo all reverses every accepted or applied card of a turn. A card that fails to apply stays reviewable; in a chat set
 to apply directly, the other cards still apply. The same durable receipt holds the prepared operation,
 its inverse, and the core's committed result; replay returns that result before
 checking preconditions again. Outstanding cards and active coach turns keep their
