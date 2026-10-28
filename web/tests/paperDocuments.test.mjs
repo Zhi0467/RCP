@@ -122,6 +122,26 @@ test("current UTF-16 anchors follow unrelated local edits and reject stale range
   doc.destroy();
 });
 
+test("repeated lines use the verified current range and hide after that range changes", async () => {
+  const { anchorPaperChange, resolvePaperAnchor } = await server.ssrLoadModule(
+    "/src/paper/paperAnchors.ts",
+  );
+  const doc = new Y.Doc();
+  const text = doc.getText("text");
+  text.insert(0, "same\nsame");
+  const change = {
+    lines: { start: 1, end: 1 },
+    current: { start: 5, end: 9, revision: 1 },
+    preview: { removed: ["same"] },
+  };
+  const anchor = anchorPaperChange(change, text);
+  assert.deepEqual(resolvePaperAnchor(anchor, change, text), { from: 5, to: 9 });
+  text.insert(6, "x");
+  assert.equal(resolvePaperAnchor(anchor, change, text), null);
+  assert.equal(anchorPaperChange({ ...change, current: null }, text), null);
+  doc.destroy();
+});
+
 test("permanent rejection exposes failure and disables automatic reconnect", async () => {
   const { PaperDocument } = await server.ssrLoadModule("/src/paper/paperDocuments.ts");
   globalThis.window = { location: { href: "http://localhost/" } };

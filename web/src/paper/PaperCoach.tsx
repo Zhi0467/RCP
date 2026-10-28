@@ -383,25 +383,25 @@ export function PaperCoach({
             {error ? <RotateCcw size={16} /> : <Send size={16} />}
           </button>
         </div>
-        {configOpen && (
-          <div className="paper-agent-popover">
-            <button
-              className="icon-button compact"
-              aria-label="Close agent settings"
-              onClick={() => setConfigOpen(false)}
-            >
-              <X size={14} />
-            </button>
-            <AgentConfigControls
-              project={project}
-              value={config}
-              onChange={setConfig}
-              workLikeCapable={false}
-              compact
-            />
-          </div>
-        )}
       </div>
+      {configOpen && (
+        <div className="paper-agent-popover">
+          <button
+            className="icon-button compact"
+            aria-label="Close agent settings"
+            onClick={() => setConfigOpen(false)}
+          >
+            <X size={14} />
+          </button>
+          <AgentConfigControls
+            project={project}
+            value={config}
+            onChange={setConfig}
+            workLikeCapable={false}
+            compact
+          />
+        </div>
+      )}
     </div>
   );
 }

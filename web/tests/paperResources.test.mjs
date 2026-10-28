@@ -21,13 +21,12 @@ const tree = {
   files: [{ file_id: "f1", path: "intro.md", kind: "text", format: "markdown", size: 5 }],
 };
 
-test("Paper profile reads the tree and sessions through its API base with shared cancellation", async () => {
+test("Paper profile reads only the tree through its API base with cancellation", async () => {
   const original = globalThis.fetch;
   const requests = [];
-  const sessions = [{ native_session_id: "s1" }];
   globalThis.fetch = async (path, init) => {
     requests.push({ path, ...init });
-    return Response.json(path.endsWith("/sessions") ? sessions : tree);
+    return Response.json(tree);
   };
   try {
     const controller = new AbortController();
@@ -35,11 +34,10 @@ test("Paper profile reads the tree and sessions through its API base with shared
     const result = await profile.fetch(controller.signal);
     assert.deepEqual(
       requests.map(({ path }) => path),
-      ["/api/projects/project/paper/tree", "/api/projects/project/paper/sessions"],
+      ["/api/projects/project/paper/tree"],
     );
     assert.ok(requests.every(({ method, signal }) => !method && signal === controller.signal));
     assert.deepEqual(result.tree, tree);
-    assert.deepEqual(result.sessions, sessions);
     assert.equal(result.paper.content, "");
     assert.equal(result.paper.draft_version, null);
   } finally {
@@ -51,8 +49,7 @@ test("Paper shell badge reflects publication independently of the saved tree rev
   const original = globalThis.fetch;
   try {
     for (const publishState of ["published", "pending", "failed"]) {
-      globalThis.fetch = async (path) =>
-        Response.json(path.endsWith("/sessions") ? [] : { ...tree, publish_state: publishState });
+      globalThis.fetch = async () => Response.json({ ...tree, publish_state: publishState });
       const result = await paperProfile("p").fetch(new AbortController().signal);
       assert.equal(result.tree.saved_revision, 4);
       assert.equal(result.paper.sync_state === "synced", publishState === "published");

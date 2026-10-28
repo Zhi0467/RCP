@@ -32,7 +32,14 @@ function editorMatches(expected) {
 
 async function openPaper(
   t,
-  { room = new Room(), width = 1280, cards = [], proposedTexts = {}, configure = () => {} } = {},
+  {
+    room = new Room(),
+    width = 1280,
+    cards = [],
+    proposedTexts = {},
+    initialText = "draft",
+    configure = () => {},
+  } = {},
 ) {
   const context = await browser.newContext({ viewport: { width, height: 844 } });
   t.after(async () => {
@@ -60,7 +67,7 @@ async function openPaper(
   );
   await page.goto(`${origin}/tests/fixtures/paperResource.html`);
   await page.locator(".cm-content").waitFor();
-  await page.waitForFunction(editorMatches, "draft");
+  await page.waitForFunction(editorMatches, initialText);
   return { page, context, room, errors, posts, requests };
 }
 
@@ -261,7 +268,14 @@ test("cancelling failed delete and rename removes their retry authority", async 
 
 test("Locate waits for an unopened file's server text", async (t) => {
   const { page, context } = await openPaper(t, {
-    cards: [{ ...card, file_id: "f2", lines: { start: 3, end: 3 } }],
+    cards: [
+      {
+        ...card,
+        file_id: "f2",
+        lines: { start: 3, end: 3 },
+        current: { start: 8, end: 13, revision: 1 },
+      },
+    ],
     configure: ({ tree }) =>
       tree.files.push({ ...tree.files[0], file_id: "f2", path: "second.md" }),
   });
@@ -427,4 +441,83 @@ test("Reconnect discards a rejected oversized update and its persisted copy only
   await page.waitForFunction(editorMatches, "draft");
   await saved(page, true);
   assert.equal(room.doc.getText("text").toString(), "draft");
+});
+
+test("Markdown preview waits for idle but updates during continuous typing", async (t) => {
+  const { page } = await openPaper(t);
+  await page.clock.install();
+  await append(page, " idle");
+  assert.equal(await page.locator(".paper-markdown").textContent(), "draft");
+  await page.clock.fastForward(250);
+  await page.waitForFunction(
+    () => document.querySelector(".paper-markdown")?.textContent === "draft idle",
+  );
+  for (let i = 0; i < 5; i++) {
+    await append(page, " word");
+    await page.clock.fastForward(200);
+  }
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".paper-markdown")?.textContent ===
+      "draft idle word word word word word",
+  );
+});
+
+test("compile diagnostics open a readable phone dialog with retry", async (t) => {
+  const { page, context } = await openPaper(t, {
+    width: 390,
+    configure: ({ tree }) =>
+      tree.files.push({ ...tree.files[0], file_id: "f2", path: "paper.tex", format: "latex" }),
+  });
+  await context.route("**/paper/compile", (route) =>
+    route.fulfill({
+      json: { status: "error", log_tail: "Undefined control sequence at line 4", pdf_url: null },
+    }),
+  );
+  await page.getByRole("button", { name: "Show files", exact: true }).click();
+  await page.getByRole("button", { name: "paper.tex", exact: true }).click();
+  await page.getByRole("button", { name: "Preview", exact: true }).first().click();
+  const opener = page.getByRole("button", { name: "View compile log" });
+  await opener.click();
+  const dialog = page.getByRole("dialog", { name: "Compile log" });
+  assert.match(await dialog.locator("pre").textContent(), /Undefined control sequence/);
+  assert.equal(await dialog.locator("textarea, input, [contenteditable=true]").count(), 0);
+  assert.ok(await dialog.getByRole("button", { name: "Retry preview" }).isVisible());
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await page.keyboard.press("Escape");
+  assert.ok(await opener.evaluate((element) => document.activeElement === element));
+});
+
+test("repeated same lines paint and locate the verified current range, then hide on local replacement", async (t) => {
+  const room = new Room();
+  room.doc.getText("text").delete(0, 5);
+  room.doc.getText("text").insert(0, "same\nsame\nsame");
+  const { page } = await openPaper(t, {
+    room,
+    initialText: "same\nsame\nsame",
+    cards: [
+      {
+        ...card,
+        lines: { start: 1, end: 1 },
+        current: { start: 5, end: 9, revision: 1 },
+        preview: { removed: ["same"], added: ["new"], more: 0 },
+      },
+    ],
+  });
+  await page.locator(".paper-deletion").waitFor();
+  assert.deepEqual(
+    await page
+      .locator(".cm-line")
+      .evaluateAll((lines) => lines.map((line) => !!line.querySelector(".paper-deletion"))),
+    [false, true, false],
+  );
+  await page.getByRole("button", { name: "Coach", exact: true }).last().click();
+  await page.getByRole("button", { name: "Locate change", exact: true }).click();
+  await page.waitForFunction(() =>
+    document.querySelector(".paper-position")?.textContent.includes("Ln 2,"),
+  );
+  await page.keyboard.press("Shift+End");
+  await page.keyboard.insertText("gone");
+  await page.waitForFunction(() => !document.querySelector(".paper-inline-suggestion"));
+  assert.equal(await page.locator(".paper-deletion").count(), 0);
 });
