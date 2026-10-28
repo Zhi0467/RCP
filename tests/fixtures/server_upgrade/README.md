@@ -152,3 +152,7 @@ names. It is built by the exact boundary source from
 gained compute, access-hint, provider-path, and legacy-import columns (storage
 migration 61), ending at migration 60 after chat forks. It is built by the exact
 boundary source from `pre-chat-forks-v31-cfaebcc`.
+
+`pre-paper-live-v33-070729d` retains migration 61, before shared live Paper
+adds its tables. The exact merge-base source upgrades
+`pre-machine-settings-v32-0a934a6`, preserving its historical records.

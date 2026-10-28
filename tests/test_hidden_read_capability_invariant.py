@@ -169,7 +169,13 @@ def test_hidden_read_only_adds_denies(provider, capability, browser_enabled, tmp
         reasoning=None,
         session_id=None,
         read_dirs=[tmp_path / "inputs"],
-        write_dirs=[Path(path) for path in write_scope.repository_roots] if write_scope else [],
+        write_dirs=(
+            [tmp_path / "changes"]
+            if capability == "paper_suggest"
+            else [Path(path) for path in write_scope.repository_roots]
+            if write_scope
+            else []
+        ),
         write_scope=write_scope,
         capability=capability,
         provider_version={"claude": "2.1.288", "opencode": "1.18.30"}.get(provider, "0.160.0"),
