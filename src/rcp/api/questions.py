@@ -228,8 +228,8 @@ def answer_question(
         if continues == "turns":
             assert newest is not None
             assert body.invocation_ceiling is not None and body.request_id is not None
-            # The continuation receives every held answer of the chain: an
-            # Experiment claims them in invocation 1, an orchestrator as mail.
+            # The continuation's first turn claims every held answer of the
+            # chain; any later Add turns does the same if this one fails.
             continue_ended_episode(
                 newest,
                 invocation_ceiling=body.invocation_ceiling,
@@ -249,19 +249,18 @@ def answer_question(
                 else None
             )
             if episode is not None and episode.mode == "auto_research":
-                held = (
-                    store.episode_questions(project_id, newest.episode_id)
-                    if continues == "turns" and newest is not None
-                    else [question]
+                # A continuation already claimed this answer for its first turn.
+                mail = (
+                    None
+                    if continues == "turns"
+                    else record_auto_research_question_answer(store, question_id)
                 )
-                for item in held:
-                    mail = record_auto_research_question_answer(store, item.question_id)
-                    if mail is not None:
-                        deliver_pending_auto_research_mail(
-                            request.app.state.background_tasks,
-                            episode_id=mail.episode_id,
-                            recipient_task_id=mail.recipient_task_id,
-                        )
+                if mail is not None:
+                    deliver_pending_auto_research_mail(
+                        request.app.state.background_tasks,
+                        episode_id=mail.episode_id,
+                        recipient_task_id=mail.recipient_task_id,
+                    )
             else:
                 reconcile = True
         except Exception:

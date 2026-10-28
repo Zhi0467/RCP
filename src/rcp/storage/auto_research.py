@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from collections.abc import Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -158,6 +159,7 @@ class AutoResearchStoreMixin(StoreMixinBase):
         task: AgentTaskRecord,
         notice: AutoResearchLifecycleNoticeRecord,
         message: AutoResearchMessageRecord | None = None,
+        question_answers: Sequence[AutoResearchMessageRecord] = (),
     ) -> tuple[EpisodeRecord, AgentTaskRecord, bool]:
         """Add turns to an ended Auto-research episode in one transaction.
 
@@ -168,6 +170,8 @@ class AutoResearchStoreMixin(StoreMixinBase):
         continuation so their endings reach the resumed orchestrator; every other
         row of the source stays exactly as it was. A repeated request id returns
         the continuation it already created, flagged by the third value.
+        ``question_answers`` are answers held since the source ended; the root
+        claims them with the notice, each under its human resolver.
         """
 
         self._validate_new_episode(episode)
@@ -299,12 +303,18 @@ class AutoResearchStoreMixin(StoreMixinBase):
                     ):
                         raise ValueError("invalid continuation message ownership")
                     self._insert_auto_research_message(connection, message)
+                for answer in question_answers:
+                    self._require_held_question_answer(connection, answer, started, task)
+                    self._insert_auto_research_message(connection, answer)
                 if not self._claim_auto_research_root_inputs(
                     connection,
                     started,
                     task,
                     lifecycle_notice_ids=[notice.notice_id],
-                    message_ids=[message.message_id] if message is not None else [],
+                    message_ids=[
+                        *([message.message_id] if message is not None else []),
+                        *(answer.message_id for answer in question_answers),
+                    ],
                 ):
                     raise ValueError("the continuation could not claim its reauthorized notice")
         except sqlite3.IntegrityError as exc:
@@ -316,6 +326,34 @@ class AutoResearchStoreMixin(StoreMixinBase):
         stored_task = self.agent_task(task.operation_id)
         assert stored_episode is not None and stored_task is not None
         return stored_episode, stored_task, False
+
+    def _require_held_question_answer(
+        self,
+        connection: sqlite3.Connection,
+        answer: AutoResearchMessageRecord,
+        episode: EpisodeRecord,
+        task: AgentTaskRecord,
+    ) -> None:
+        """A held answer is its question's current answer, sent by its resolver."""
+
+        question = connection.execute(
+            "SELECT * FROM questions WHERE question_id=?",
+            (json.loads(answer.body).get("question_id"),),
+        ).fetchone()
+        if (
+            question is None
+            or question["project_id"] != episode.project_id
+            or question["state"] != "answered"
+            or answer.message_id
+            != f"question:{question['question_id']}:answer:{question['answer_revision']}"
+            or answer.episode_id != episode.episode_id
+            or answer.recipient_task_id != task.operation_id
+            or answer.sender_role != "human"
+            or answer.sender_task_id is not None
+            or answer.authorized_by is None
+            or answer.authorized_by.model_dump() != json.loads(question["resolved_by_json"])
+        ):
+            raise ValueError("invalid continuation question answer")
 
     def require_auto_research_continuation_available(
         self, connection: sqlite3.Connection, source: EpisodeRecord

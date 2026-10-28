@@ -326,7 +326,9 @@ dismissals, and claimed answers, never transcripts. Successful turns acknowledge
 dismissals; failed launches retain them. Dismissal never wakes or mails. Only
 Stop withdraws cards read-only; after any other ending, answers to the chain's
 cards are held and its last open card names the turns that continue it, so the
-continuation receives every held answer as mail. Continuations reopen ancestor
+continuation's first turn claims every held answer as mail, in the same
+admission as its notice. Any continuation does this, so Add turns retries a card
+whose own continuation failed. Continuations reopen ancestor
 cards with their original bindings. Root and session-start Retry expose `ask`; workers do not.
 
 ## Completion, Stop, and report

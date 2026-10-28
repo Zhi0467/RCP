@@ -243,3 +243,31 @@ def test_ordinary_mail_consent_cannot_start_a_continuation(
     assert response.json()["detail"]["code"] == "auto_research_continuation_required"
     assert store.episode_continuation(original.episode_id) is None
     assert store.auto_research_messages(original.episode_id) == []
+
+
+def test_continuation_first_turn_claims_answers_held_since_the_ending(
+    manifest, tmp_path, monkeypatch
+):
+    from rcp.runs.auto_research_questions import auto_research_question_snapshot
+    from tests.test_episode_questions import _question
+
+    app, store, original, _ = _ended_app(manifest, tmp_path, monkeypatch)
+    held = _question(store, original, state="answered")
+    continued, root = continue_auto_research(
+        app.state.background_tasks,
+        original,
+        invocation_ceiling=1,
+        request_id=str(uuid.uuid4()),
+        authorized_by=original.authorized_by,
+    )
+    [mail] = store.auto_research_messages(continued.episode_id)
+    assert mail.message_id == f"question:{held.question_id}:answer:{held.answer_revision}"
+    assert mail.delivery_operation_id == root.operation_id
+    assert mail.authorized_by == held.resolved_by
+    snapshot, _ = auto_research_question_snapshot(
+        store,
+        project_id=continued.project_id,
+        episode_id=continued.episode_id,
+        operation_id=root.operation_id,
+    )
+    assert held.answer in snapshot

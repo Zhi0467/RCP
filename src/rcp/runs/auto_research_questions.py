@@ -7,8 +7,8 @@ import sqlite3
 from typing import TYPE_CHECKING
 
 from rcp.limits import AUTO_RESEARCH_MAIL_MAX_MESSAGES, AUTO_RESEARCH_QUESTION_SNAPSHOT_MAX_RECORDS
-from rcp.storage import AppStore, AutoResearchMessageRecord, EpisodeNotRunning
-from rcp.storage.question_models import QuestionOrigin
+from rcp.storage import AppStore, AutoResearchMessageRecord, EpisodeNotRunning, EpisodeRecord
+from rcp.storage.question_models import QuestionOrigin, QuestionRecord
 
 if TYPE_CHECKING:
     from rcp.runs.auto_research import AutoResearchCommandContext
@@ -46,6 +46,54 @@ def _answer_mail_id(question_id: str, revision: int) -> str:
     return f"question:{question_id}:answer:{revision}"
 
 
+def question_answer_mail(
+    question: QuestionRecord, *, episode_id: str, recipient_task_id: str, created_at: str
+) -> AutoResearchMessageRecord:
+    """One answer as hearsay mail from its human resolver, under its stable id."""
+    return AutoResearchMessageRecord(
+        message_id=_answer_mail_id(question.question_id, question.answer_revision),
+        episode_id=episode_id,
+        sender_role="human",
+        authorized_by=question.resolved_by,
+        recipient_task_id=recipient_task_id,
+        body=json.dumps(
+            {
+                "question_id": question.question_id,
+                "answer_revision": question.answer_revision,
+                "answer": question.answer,
+                "chosen_choices": question.chosen_choices,
+                "graph_authority": "none",
+                "epistemic_status": "hearsay",
+            },
+            ensure_ascii=False,
+        ),
+        created_at=created_at,
+    )
+
+
+def held_question_answer_mail(
+    store: AppStore, source: EpisodeRecord, *, episode_id: str, recipient_task_id: str
+) -> list[AutoResearchMessageRecord]:
+    """Answers given after the chain ended, addressed to its continuation's first turn."""
+    held = [
+        question
+        for question in store.episode_questions(source.project_id, source.episode_id)
+        if question.state == "answered"
+        and not question.withdrawn_readonly
+        and store.auto_research_message(
+            _answer_mail_id(question.question_id, question.answer_revision)
+        )
+        is None
+    ]
+    now = store.now()
+    return [
+        question_answer_mail(
+            question, episode_id=episode_id, recipient_task_id=recipient_task_id, created_at=now
+        )
+        for question in held
+    ]
+
+
 def record_auto_research_question_answer(
     store: AppStore, question_id: str
 ) -> AutoResearchMessageRecord | None:
@@ -56,8 +104,6 @@ def record_auto_research_question_answer(
     Full answer data lives in the mail itself, including when the orchestrator
     harvests it during the asking turn rather than waiting for a later wake.
     """
-    from rcp.runs.auto_research_delivery import record_auto_research_message
-
     question = store.get_question(question_id)
     if question is None:
         raise KeyError(question_id)
@@ -81,25 +127,13 @@ def record_auto_research_question_answer(
     ):
         return None
     try:
-        return record_auto_research_message(
-            store,
-            message_id=message_id,
-            episode_id=episode.episode_id,
-            sender_role="human",
-            sender_task_id=None,
-            authorized_by=question.resolved_by,
-            recipient_task_id=episode.root_operation_id,
-            body=json.dumps(
-                {
-                    "question_id": question_id,
-                    "answer_revision": question.answer_revision,
-                    "answer": question.answer,
-                    "chosen_choices": question.chosen_choices,
-                    "graph_authority": "none",
-                    "epistemic_status": "hearsay",
-                },
-                ensure_ascii=False,
-            ),
+        return store.record_auto_research_message(
+            question_answer_mail(
+                question,
+                episode_id=episode.episode_id,
+                recipient_task_id=episode.root_operation_id,
+                created_at=store.now(),
+            )
         )
     except EpisodeNotRunning:
         # The ending fence won the race. Keep the answer for reauthorization.
