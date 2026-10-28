@@ -27,7 +27,8 @@ function editorMatches(expected) {
   source
     ?.querySelectorAll(".paper-inline-suggestion, .cm-ySelectionCaret")
     .forEach((widget) => widget.remove());
-  return source?.textContent === expected;
+  const lines = [...(source?.querySelectorAll(".cm-line") ?? [])];
+  return lines.map((line) => line.textContent).join("\n") === expected;
 }
 
 async function openPaper(
@@ -445,6 +446,9 @@ test("Reconnect discards a rejected oversized update and its persisted copy only
 
 test("Markdown preview waits for idle but updates during continuous typing", async (t) => {
   const { page } = await openPaper(t);
+  await page.waitForFunction(
+    () => document.querySelector(".paper-markdown")?.textContent === "draft",
+  );
   await page.clock.install();
   await append(page, " idle");
   assert.equal(await page.locator(".paper-markdown").textContent(), "draft");

@@ -13,6 +13,7 @@ const project = {
     paper_coach: { provider: "codex", model: "", reasoning: "medium", run_on: "local" },
   },
   provider_readiness: {},
+  machines: [],
 };
 createRoot(document.getElementById("root")!).render(
   <RefreshRuntimeContext.Provider value={{ store } as never}>
