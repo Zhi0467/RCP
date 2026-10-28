@@ -31,6 +31,7 @@ def get_paper_engines(request: Request) -> EngineStore:
 class PaperCompileRequest(BaseModel):
     file_id: str = Field(min_length=1)
     revision: int | None = Field(default=None, ge=0)
+    root_path: str | None = None
 
 
 @router.post("/api/projects/{project_id}/paper/compile", response_model=CompileResult)
@@ -40,7 +41,9 @@ async def compile_paper(
     compiler: Annotated[PaperCompiler, Depends(get_paper_compiler)],
 ) -> CompileResult:
     try:
-        return await compiler.compile(canonical_project_id, body.file_id, body.revision)
+        return await compiler.compile(
+            canonical_project_id, body.file_id, body.revision, body.root_path
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Paper file or revision not found") from exc
 

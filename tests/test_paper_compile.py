@@ -109,6 +109,35 @@ def fake_compiler(tmp_path, body):
     return Engines(executable)
 
 
+class SubfileLive(Live):
+    async def snapshot(self, project_id, revision=None):
+        texts = {
+            "main.tex": "\\documentclass{article}\\begin{document}\\subfile{section}\\end{document}",
+            "section.tex": "\\documentclass[main]{subfiles}\\begin{document}S\\end{document}",
+        }
+        files = [PaperFile(file_id=p, path=p, kind="text", text=t) for p, t in texts.items()]
+        return PaperSnapshot(revision=1, files=files)
+
+
+class NoEngine:
+    async def ensure(self, name):
+        return False
+
+    def error(self, name):
+        return ""
+
+
+@pytest.mark.asyncio
+async def test_a_chosen_root_compiles_only_if_it_reaches_the_open_file(tmp_path):
+    compiler = PaperCompiler(SubfileLive(), NoEngine(), tmp_path)
+    ambiguous = await compiler.compile("project", "section.tex")
+    assert ambiguous.candidates == ["main.tex", "section.tex"]
+    chosen = await compiler.compile("project", "section.tex", root_path="section.tex")
+    assert (chosen.status, chosen.root_path) == ("unavailable", "section.tex")
+    stray = await compiler.compile("project", "section.tex", root_path="other.tex")
+    assert stray.candidates == ["main.tex", "section.tex"]
+
+
 @pytest.mark.asyncio
 async def test_new_request_cancels_process_group_and_only_new_pdf_survives(tmp_path):
     ready = tmp_path / "ready"

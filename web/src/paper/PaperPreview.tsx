@@ -195,12 +195,12 @@ export function PaperPreview({
       void (async () => {
         const files = filesRef.current;
         if (engine === "latex") {
-          const candidate = files.find((entry) => entry.path === selectedRoot);
           const result = await api<CompileResult>(`${base}/compile`, {
             method: "POST",
             body: JSON.stringify({
-              file_id: candidate?.file_id ?? file.file_id,
+              file_id: file.file_id,
               revision: tree.saved_revision,
+              root_path: selectedRoot || null,
             }),
             signal: controller.signal,
           });

@@ -112,13 +112,19 @@ class PaperCompiler:
         self._pdfs: OrderedDict[str, tuple[str, bytes]] = OrderedDict()
 
     async def compile(
-        self, project_id: str, file_id: str, revision: int | None = None
+        self,
+        project_id: str,
+        file_id: str,
+        revision: int | None = None,
+        root_path: str | None = None,
     ) -> CompileResult:
         compile_id = uuid.uuid4().hex
         old = self._jobs.get(project_id)
         if old is not None:
             old.cancel()
-        job = asyncio.create_task(self._compile(project_id, file_id, revision, compile_id))
+        job = asyncio.create_task(
+            self._compile(project_id, file_id, revision, root_path, compile_id)
+        )
         self._jobs[project_id] = job
         try:
             result = await asyncio.shield(job)
@@ -137,7 +143,12 @@ class PaperCompiler:
                 del self._jobs[project_id]
 
     async def _compile(
-        self, project_id: str, file_id: str, revision: int | None, compile_id: str
+        self,
+        project_id: str,
+        file_id: str,
+        revision: int | None,
+        root_path: str | None,
+        compile_id: str,
     ) -> CompileResult:
         result = CompileResult(compile_id=compile_id, status="error")
         try:
@@ -148,6 +159,9 @@ class PaperCompiler:
                 raise ValueError("The open file is absent from this saved revision.")
             texts = {f.path: f.text for f in entries if f.kind == "text" and f.text is not None}
             roots = root_candidates(texts, open_path)
+            # A chosen root must still be one that reaches the open file.
+            if root_path in roots:
+                roots = [root_path]
             if len(roots) != 1:
                 result.candidates = roots
                 result.log_tail = "No unique LaTeX root reaches the open file."
