@@ -382,6 +382,7 @@ def test_pending_binary_card_survives_backup_accept_and_undo(tmp_path):
 
     from rcp.paper import PaperLive, PaperOp
     from rcp.paper.changes import PaperChanges
+    from rcp.paper.persistence import collect_bodies
     from rcp.storage import AppStore
     from rcp.transport import LocalStateWorkspace
 
@@ -423,6 +424,13 @@ def test_pending_binary_card_survives_backup_accept_and_undo(tmp_path):
         snapshot = await restored.snapshot("p")
         figure = next(file for file in snapshot.files if file.file_id == created.file_ids[0])
         assert restored.blob(figure.blob_sha256) == b"before"
+        # A rejected card's proposed body is collected, and backup no longer needs it.
+        await asyncio.to_thread(changes.reject, "p", groups[0].group_id, "h")
+        with source.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            collect_bodies(connection)
+        with source.connection() as connection:
+            assert capture_paper_section(connection, "p") is not None
         for owner in owners:
             await owner.close()
 

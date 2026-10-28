@@ -120,7 +120,7 @@ def test_tree_upload_history_restore_and_raw_content_policy(manifest, tmp_path):
         )
         uploaded = client.put(
             prefix + f"/files/{text_id}/content",
-            files={"file": ("chapter.md", "# Uploaded\n".encode(), "text/markdown")},
+            files={"file": ("chapter.md", b"# Uploaded\n", "text/markdown")},
         )
         assert uploaded.status_code == 200, uploaded.text
         assert client.get(prefix + f"/files/{text_id}/raw").content == b"# Uploaded\n"

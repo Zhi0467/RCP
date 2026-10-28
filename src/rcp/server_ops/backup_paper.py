@@ -203,12 +203,21 @@ def _references(files, tables) -> tuple[set[str], set[str]]:
             with suppress(ValueError):
                 visit(json.loads(value))
 
+    # Like collect_bodies: only undecided cards hold their bodies; a decided card's
+    # surviving bodies are held by its receipts.
+    undecided = {
+        row["group_id"]
+        for row in tables.get("paper_change_groups", ())
+        if row["state"] in {"pending", "outdated"}
+    }
     for table, rows in tables.items():
         if table in PAPER_PROJECT_TABLES:
             for row in rows:
                 # Deleted identities survive after their last retained body expires.
                 # A retained version/snapshot supplies any remaining body reference.
                 if table == "paper_files" and row.get("deleted_at") is not None:
+                    continue
+                if table == "paper_changes" and row["group_id"] not in undecided:
                     continue
                 visit(row)
     return blobs, texts

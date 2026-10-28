@@ -90,7 +90,9 @@ def seed_current_paper(request, fixture: dict, cookie: str) -> dict:
         manifest = call(f"/history/{version['version_id']}")
         files = manifest["manifest"]
         preserved.update(file.get("text_sha256") for file in files)
-    required = {_sha(DRAFT.encode()), _sha(CANONICAL.encode())}
+    # The draft becomes the live text; the diverged canonical and ancestor become versions.
+    assert [file["sha256"] for file in tree["files"]] == [_sha(DRAFT.encode())]
+    required = {_sha(CANONICAL.encode())}
     if fixture["paper"]["ancestor_stored"]:
         required.add(_sha(ANCESTOR.encode()))
     assert required <= preserved, "Migration lost a divergent legacy history version"
