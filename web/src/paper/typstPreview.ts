@@ -19,6 +19,16 @@ export function paperRelativePath(from: string, reference: string): string | nul
   return parts.join("/");
 }
 
+/** Resolve a Markdown link or image URL: drop its query and fragment, then decode it. */
+export function markdownPaperPath(from: string, url: string): string | null {
+  if (/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(url)) return null;
+  try {
+    return paperRelativePath(from, decodeURIComponent(url.split(/[?#]/, 1)[0]));
+  } catch {
+    return null;
+  }
+}
+
 export function paperRawUrl(projectId: string, fileId: string, revision?: number): string {
   const path = `/api/projects/${encodeURIComponent(projectId)}/paper/files/${encodeURIComponent(fileId)}/raw`;
   return revision === undefined ? path : `${path}?revision=${revision}`;

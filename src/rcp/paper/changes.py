@@ -626,7 +626,22 @@ class PaperChanges:
                 (project_id, task_id, task_id),
             ):
                 cards[row[0]].append(Change.model_validate_json(row[1]))
+            # A crash between the live commit and the state write leaves the receipt as
+            # the record of the decision.
+            committed = {
+                row[0]: json.loads(row[1])
+                for row in connection.execute(
+                    "SELECT group_id,payload FROM paper_change_receipts "
+                    "WHERE project_id=? AND action='accept'",
+                    (project_id,),
+                )
+            }
         groups = [ChangeGroup(**dict(row), changes=cards[row["group_id"]]) for row in rows]
+        for group in groups:
+            payload = committed.get(group.group_id)
+            if group.state in {"pending", "outdated"} and payload and "receipt" in payload:
+                self._state(project_id, group.group_id, payload["state"], payload["actor"])
+                group.state = payload["state"]
         current = self._snapshot(project_id) if any(g.state == "pending" for g in groups) else None
         mappings: dict[tuple[str, int, int], _RangeMapping] = {}
         for group in groups:
@@ -681,7 +696,15 @@ class PaperChanges:
         for change in ordered:
             file = by_id.get(change.file_id)
             if change.kind == "create":
-                if change.path in paths or file is not None:
+                if (
+                    file is not None
+                    or change.path in paths
+                    # A file cannot sit where a folder is, or inside a file.
+                    or any(
+                        path.startswith(f"{change.path}/") or change.path.startswith(f"{path}/")
+                        for path in paths
+                    )
+                ):
                     raise OutdatedChange("Created paper path is no longer free")
                 checks.append({"path_free": change.path})
                 ops.append(
@@ -705,9 +728,19 @@ class PaperChanges:
                 continue
             if file is None or file.path != change.path or file.kind != change.file_kind:
                 raise OutdatedChange("Paper file identity or path changed")
+            if file.file_id not in original:
+                # The whole touched file, not the paper revision: edits elsewhere still
+                # apply, and Undo's whole-file guard stays true to what was accepted.
+                check: dict[str, object] = {
+                    "file_id": file.file_id,
+                    "path": file.path,
+                    "kind": file.kind,
+                }
+                if file.kind == "text":
+                    check["text"] = file.text
+                checks.append(check)
             original.setdefault(file.file_id, file)
             resulting.setdefault(file.file_id, file.model_copy(deep=True))
-            checks.append({"file_id": file.file_id, "path": file.path, "kind": file.kind})
             if change.kind in {"edit", "rewrite"}:
                 key = (file.file_id, change.base_revision, current.revision)
                 if key not in mappings:
@@ -907,7 +940,7 @@ class PaperChanges:
                     raise
                 payload = {
                     "ops": ops,
-                    "expect": {"receipt_key": key, "revision": current.revision, "checks": checks},
+                    "expect": {"receipt_key": key, "checks": checks},
                     "inverse": inverse,
                     "guards": guards,
                     "actor": actor,
@@ -918,21 +951,19 @@ class PaperChanges:
                 self._save_receipt(project_id, group_id, key, "accept", payload)
             try:
                 self._apply(project_id, payload)
-            except Exception as exc:
+            except Exception:
                 # The live receipt can already be committed if delivery failed.
                 # Preserve that result and inverse; only release prepared attempts.
                 committed = self._receipt(project_id, key)
                 if committed is not None and "receipt" in committed:
                     self._state(project_id, group_id, str(payload["state"]), str(payload["actor"]))
                     return self._load(project_id, group_id)
-                # A refused apply must leave the card reviewable.
+                # A refused apply must leave the card reviewable; listing re-checks its anchor.
                 with self.store.connection() as connection:
                     connection.execute(
                         "DELETE FROM paper_change_receipts WHERE project_id=? AND receipt_key=?",
                         (project_id, key),
                     )
-                if isinstance(exc, OutdatedChange):
-                    self._state(project_id, group_id, "outdated")
                 raise
             self._state(project_id, group_id, str(payload["state"]), str(payload["actor"]))
             return self._load(project_id, group_id)

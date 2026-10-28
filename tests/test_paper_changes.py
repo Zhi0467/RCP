@@ -650,3 +650,53 @@ def test_groups_without_pending_cards_need_no_live_content(setup, monkeypatch, s
     assert [group.state for group in changes.groups("p", "task")] == (
         [] if state is None else [state]
     )
+
+
+def test_typing_during_accept_never_outdates_a_valid_card(setup):
+    snapshot, live, changes, output = setup
+    before = snapshot.files[0].text
+    apply(live, [PaperOp(kind="create", file_id="f2", path="other.md", text="other\n")])
+    (output / "files/section.md").write_text(before.replace("line 10\n", "coach 10\n"))
+    group = changes.collect("p", "t", snapshot, output)[0]
+    prepare = changes._prepare
+    typed: list[tuple[str, str]] = []
+
+    def prepare_then_type(*args, **kwargs):
+        result = prepare(*args, **kwargs)
+        if typed:
+            human_edit(live, *typed.pop())
+        return result
+
+    changes._prepare = prepare_then_type
+    try:
+        # Another file changed: the card's file is intact, so the accept applies.
+        typed.append(("f2", "typed\n"))
+        assert changes.accept("p", group.group_id, "human").state == "accepted"
+        changes.undo("p", group.group_id, "human")
+        retry = changes.collect("p", "t2", saved(live), output)[0]
+        # The same file changed outside the card: refused once, still reviewable.
+        typed.append(("f1", before.replace("line 25\n", "human 25\n")))
+        with pytest.raises(OutdatedChange):
+            changes.accept("p", retry.group_id, "human")
+    finally:
+        changes._prepare = prepare
+    assert changes.groups("p", "t2")[0].state == "pending"
+    assert changes.accept("p", retry.group_id, "human").state == "accepted"
+
+
+def test_a_crash_after_the_live_apply_still_shows_the_decision(setup, monkeypatch):
+    snapshot, live, changes, output = setup
+    before = snapshot.files[0].text
+    (output / "files/section.md").write_text(before.replace("line 10\n", "coach 10\n"))
+    group = changes.collect("p", "t", snapshot, output, mode="apply_directly")[0]
+
+    def killed(*_args, **_kwargs):
+        raise SystemExit("killed after the live commit")
+
+    monkeypatch.setattr(changes, "_state", killed)
+    with pytest.raises(SystemExit):
+        changes.accept("p", group.group_id, "coach", directly=True)
+    monkeypatch.undo()
+    assert changes.groups("p", "t")[0].state == "applied"
+    changes.undo("p", group.group_id, "human")
+    assert saved(live).files[0].text == before

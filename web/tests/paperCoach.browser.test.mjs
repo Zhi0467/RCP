@@ -221,6 +221,22 @@ test("oversized UTF-8 edits leave the document editable and synchronized", async
   await room.waitForUpdates(updates + 1);
   assert.equal(room.doc.getText("text").toString(), "draft😀");
   assert.equal(await editor.getAttribute("contenteditable"), "true");
+  // Undo restoring deleted text past the limit after a peer filled the room is refused too.
+  // Wait out Y.UndoManager's 500 ms capture window so the deletion is its own undo step.
+  await page.waitForTimeout(600);
+  await page.keyboard.press("Backspace");
+  await page.waitForFunction(
+    () => document.querySelector("#limited .cm-content").textContent === "draft",
+  );
+  room.doc.getText("text").insert(0, "abcd");
+  await page.waitForFunction(
+    () => document.querySelector("#limited .cm-content").textContent === "abcddraft",
+  );
+  const beforeUndo = room.updatesReceived;
+  await page.keyboard.press("ControlOrMeta+z");
+  assert.equal(await editor.textContent(), "abcddraft");
+  assert.equal(room.doc.getText("text").toString(), "abcddraft");
+  assert.equal(room.updatesReceived, beforeUndo);
   assert.deepEqual(errors, []);
 });
 

@@ -7,7 +7,7 @@ import { markdown } from "@codemirror/lang-markdown";
 import { stex } from "@codemirror/legacy-modes/mode/stex";
 import { typst_lezer } from "codemirror-lang-typst/lezer";
 import * as Y from "yjs";
-import { yCollab, ySyncAnnotation, yUndoManagerKeymap } from "y-codemirror.next";
+import { yCollab, ySyncAnnotation } from "y-codemirror.next";
 import { Check, ChevronLeft, ChevronRight, X } from "lucide-react";
 import { anchorPaperChange, resolvePaperAnchor } from "./paperAnchors";
 import { paperDocumentKey, type PaperDocument } from "./paperDocuments";
@@ -140,6 +140,38 @@ export function PaperEditor({
     const top = absolute(saved.top);
     let failureFlash: Animation | undefined;
     const encoder = new TextEncoder();
+    const flashRefusal = () => {
+      failureFlash?.cancel();
+      failureFlash = host.current?.animate(
+        [
+          { boxShadow: "inset 3px 0 0 var(--coral)" },
+          { boxShadow: "inset 3px 0 0 var(--coral)" },
+          { boxShadow: "inset 3px 0 0 transparent" },
+        ],
+        { duration: 1200 },
+      );
+    };
+    // Undo and redo reach CodeMirror as synced Yjs changes, past the filter below, so
+    // bound what they would restore before they touch the shared document.
+    const guarded = (stack: "undoStack" | "redoStack", run: () => void) => () => {
+      const item = saved.undo[stack].at(-1);
+      const limit = byteLimit.current;
+      if (item && limit !== undefined) {
+        let restored = 0;
+        owner.doc.transact((transaction) =>
+          Y.iterateDeletedStructs(transaction, item.deletions, (struct) => {
+            if (struct instanceof Y.Item && struct.parent === owner.text)
+              restored += encoder.encode(struct.content.getContent().join("")).byteLength;
+          }),
+        );
+        if (encoder.encode(owner.text.toString()).byteLength + restored > limit) {
+          flashRefusal();
+          return true;
+        }
+      }
+      run();
+      return true;
+    };
     const editor = new EditorView({
       parent: host.current,
       scrollTo: top === undefined ? undefined : EditorView.scrollIntoView(top, { y: "start" }),
@@ -161,18 +193,28 @@ export function PaperEditor({
               encoder.encode(transaction.newDoc.toString()).byteLength <= byteLimit.current
             )
               return true;
-            failureFlash?.cancel();
-            failureFlash = host.current?.animate(
-              [
-                { boxShadow: "inset 3px 0 0 var(--coral)" },
-                { boxShadow: "inset 3px 0 0 var(--coral)" },
-                { boxShadow: "inset 3px 0 0 transparent" },
-              ],
-              { duration: 1200 },
-            );
+            flashRefusal();
             return false;
           }),
-          keymap.of([...yUndoManagerKeymap, ...defaultKeymap]),
+          keymap.of([
+            {
+              key: "Mod-z",
+              run: guarded("undoStack", () => saved.undo.undo()),
+              preventDefault: true,
+            },
+            {
+              key: "Mod-y",
+              mac: "Mod-Shift-z",
+              run: guarded("redoStack", () => saved.undo.redo()),
+              preventDefault: true,
+            },
+            {
+              key: "Mod-Shift-z",
+              run: guarded("redoStack", () => saved.undo.redo()),
+              preventDefault: true,
+            },
+            ...defaultKeymap,
+          ]),
           language,
           syntaxHighlighting(defaultHighlightStyle),
           EditorView.lineWrapping,
@@ -222,14 +264,17 @@ export function PaperEditor({
       const range = anchor && resolvePaperAnchor(anchor, change, owner.text);
       if (!range) return [];
       const { from, to } = range;
+      // The proposal sits before a trailing newline, and the deletion mark ends where it
+      // starts, so the proposed text is never inside the struck-through range.
+      const at = to > from && editor.state.doc.sliceString(to - 1, to) === "\n" ? to - 1 : to;
       const result = [
         Decoration.widget({
           widget: new SuggestionWidget(change, (id, action) => decide.current(id, action)),
           side: 1,
-        }).range(to > from && editor.state.doc.sliceString(to - 1, to) === "\n" ? to - 1 : to),
+        }).range(at),
       ];
-      if (to > from && change.preview.removed.length)
-        result.push(Decoration.mark({ class: "paper-deletion" }).range(from, to));
+      if (at > from && change.preview.removed.length)
+        result.push(Decoration.mark({ class: "paper-deletion" }).range(from, at));
       return result;
     });
     editor.dispatch({

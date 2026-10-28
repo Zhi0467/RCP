@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { paperRelativePath, typstRoots } from "../src/paper/typstPreview.ts";
+import { markdownPaperPath, paperRelativePath, typstRoots } from "../src/paper/typstPreview.ts";
 
 test("paper references remain inside the tree", () => {
   assert.equal(
@@ -9,6 +9,13 @@ test("paper references remain inside the tree", () => {
   );
   assert.equal(paperRelativePath("intro.md", "../secret.png"), null);
   assert.equal(paperRelativePath("intro.md", "https://example.com/a.png"), null);
+});
+
+test("Markdown URLs decode and drop fragments before resolving inside the tree", () => {
+  assert.equal(markdownPaperPath("intro.md", "figures/my%20plot.png"), "figures/my plot.png");
+  assert.equal(markdownPaperPath("a/intro.md", "section.md#results"), "a/section.md");
+  assert.equal(markdownPaperPath("intro.md", "%2e%2e/secret.png"), null);
+  assert.equal(markdownPaperPath("intro.md", "bad%zz.png"), null);
 });
 
 test("Typst root candidates only include ancestors of the open file", () => {

@@ -176,16 +176,25 @@ export function PaperCoach({
       setSubmitting(false);
     }
   };
+  // One UUID per attempt, so a repeated click replays the same retry admission.
+  const retryKeys = useRef(new Map<string, string>());
   const retry = async (task: AgentTask) => {
+    // A paused or interrupted turn continues in its own session; a failed one retries.
+    const action = task.can_resume ? "resume" : "retry";
     setSubmitting(true);
     setError(null);
+    const attempt = `${task.operation_id}:${task.attempt}:${action}`;
+    const key = retryKeys.current.get(attempt) ?? crypto.randomUUID();
+    retryKeys.current.set(attempt, key);
     try {
       const next = await api<AgentTask>(
-        `${apiBase}/tasks/${encodeURIComponent(task.operation_id)}/retry`,
+        `${apiBase}/tasks/${encodeURIComponent(task.operation_id)}/${action}`,
         {
           method: "POST",
-          headers: { "Idempotency-Key": `paper-retry:${task.operation_id}:${task.attempt}` },
-          body: JSON.stringify(taskRetryRequestBody(task, config)),
+          headers: { "Idempotency-Key": key },
+          ...(action === "retry"
+            ? { body: JSON.stringify(taskRetryRequestBody(task, config)) }
+            : {}),
         },
       );
       setPendingTask(next);
@@ -200,12 +209,15 @@ export function PaperCoach({
       className="icon-button compact paper-reply-retry"
       aria-label="Retry coach reply"
       title={task.error || undefined}
-      disabled={submitting || !task.can_retry}
+      disabled={submitting || !(task.can_retry || task.can_resume)}
       onClick={() => void retry(task)}
     >
       <RotateCcw size={15} />
     </button>
   );
+  // Failed, stopped, or cut off by a restart: each shows its edge and a way forward.
+  const stuck = (task: AgentTask | undefined): task is AgentTask =>
+    !!task && !isActiveTask(task) && (task.failed || task.can_resume || task.can_retry);
   const renderedTasks = new Set<string>();
   const cards = (taskId: string) => (
     <PaperChanges
@@ -278,11 +290,11 @@ export function PaperCoach({
             if (lastAnswer) renderedTasks.add(line.taskId);
             return (
               <div
-                className={`paper-coach-message ${line.role}${lastAnswer && task?.failed ? " paper-failure" : ""}`}
+                className={`paper-coach-message ${line.role}${lastAnswer && stuck(task) ? " paper-failure" : ""}`}
                 key={line.lineId}
               >
                 <MarkdownAnswer text={line.text} />
-                {lastAnswer && task?.failed && retryButton(task)}
+                {lastAnswer && stuck(task) && retryButton(task)}
                 {lastAnswer && cards(line.taskId)}
               </div>
             );
@@ -292,9 +304,9 @@ export function PaperCoach({
           .map((task) => (
             <div
               key={task.operation_id}
-              className={`paper-coach-message agent${task.failed ? " paper-failure" : ""}`}
+              className={`paper-coach-message agent${stuck(task) ? " paper-failure" : ""}`}
             >
-              {task.failed && retryButton(task)}
+              {stuck(task) && retryButton(task)}
               {cards(task.operation_id)}
             </div>
           ))}
@@ -334,7 +346,8 @@ export function PaperCoach({
             value={config}
             label="Coach agent"
             open={configOpen}
-            disabled={Boolean(activeTask) || submitting}
+            // A session keeps its agent; New chat picks another.
+            disabled={Boolean(activeTask) || submitting || Boolean(currentSessionId)}
             onToggle={() => setConfigOpen(!configOpen)}
           />
           <div className="paper-segments" role="group" aria-label="Coach changes">

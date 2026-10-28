@@ -455,6 +455,7 @@ async def _stream_coach(
                 node,
                 parts=_coach_continuation_parts(
                     node,
+                    refresh=request.refresh_source_task_id is not None,
                     master_opens_now=master.bootstrap,
                     human_request_path=human_request_path,
                     human_message=request.message,
@@ -542,6 +543,29 @@ async def _stream_coach(
             ),
         )
     )
+
+    async def _record_coach_session() -> None:
+        assert native_session_id is not None
+        intro_hash, graph_revision, research_hash = await asyncio.to_thread(service.pointer_hashes)
+        now = datetime.now(UTC)
+        paper.record_session(
+            WritingSession(
+                provider=request.provider,
+                runtime_id=actual_runtime_id,
+                native_session_id=native_session_id,
+                execution_machine=profile.run_on,
+                project_id=paper.project_id,
+                title=existing.title if existing else request.message[:72],
+                model=model or "provider-default",
+                reasoning=reasoning,
+                created_at=existing.created_at if existing else now,
+                last_resumed_at=now,
+                introduction_hash_examined=intro_hash,
+                graph_revision_examined=graph_revision,
+                research_md_hash_examined=research_hash,
+            )
+        )
+
     try:
         replace_group_ids = set(request.refresh_group_ids) or None
         replace_source_task_id = request.refresh_source_task_id
@@ -714,27 +738,10 @@ async def _stream_coach(
             staged=history_staged,
             execution=execution,
         )
+        # A stopped or failed turn still created its session; the chat continues in it.
+        if native_session_id:
+            await _record_coach_session()
     if completed and native_session_id:
-        intro_hash, graph_revision, research_hash = await asyncio.to_thread(service.pointer_hashes)
-        now = datetime.now(UTC)
-        paper.record_session(
-            WritingSession(
-                provider=request.provider,
-                runtime_id=actual_runtime_id,
-                native_session_id=native_session_id,
-                execution_machine=profile.run_on,
-                project_id=paper.project_id,
-                title=existing.title if existing else request.message[:72],
-                model=model or "provider-default",
-                reasoning=reasoning,
-                created_at=existing.created_at if existing else now,
-                last_resumed_at=now,
-                introduction_hash_examined=intro_hash,
-                graph_revision_examined=graph_revision,
-                research_md_hash_examined=research_hash,
-            )
-        )
-
         commit_prepared_graph_observation(
             execution,
             service,
@@ -771,6 +778,7 @@ def _coach_master_values(
 def _coach_continuation_parts(
     node: PromptNode,
     *,
+    refresh: bool,
     master_opens_now: bool,
     human_request_path: str,
     human_message: str,
@@ -784,6 +792,9 @@ def _coach_continuation_parts(
     and any Retry diagnostics.
     """
 
+    if node == "human_turn" and refresh:
+        # Refresh asks only for the outdated cards' files again, not the original request.
+        return [PromptFactory.inline_continuation(mode="paper_refresh", turn_mode="paper")]
     if node == "human_turn":
         parts = ["The human asks for more coaching in this session:", human_message]
         for section in (

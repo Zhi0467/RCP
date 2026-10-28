@@ -19,7 +19,7 @@ import type { PaperFile, PaperTree } from "../core/types";
 import {
   TypstCompiler,
   paperRawUrl,
-  paperRelativePath,
+  markdownPaperPath,
   readTypstTree,
   typstRoots,
 } from "./typstPreview";
@@ -62,7 +62,7 @@ function PaperLink({ href = "", children }: { href?: string; children?: React.Re
         {children}
       </a>
     );
-  const path = paperRelativePath(file.path, href);
+  const path = markdownPaperPath(file.path, href);
   const target = tree.files.find((entry) => entry.path === path);
   return target && onOpenFile ? (
     <a
@@ -80,7 +80,7 @@ function PaperLink({ href = "", children }: { href?: string; children?: React.Re
 }
 function PaperImage({ src = "", alt = "" }: { src?: string | Blob; alt?: string }) {
   const { file, tree, projectId } = useContext(PaperMarkdownContext);
-  const path = paperRelativePath(file.path, String(src));
+  const path = markdownPaperPath(file.path, String(src));
   const image = tree.files.find(
     (entry) => entry.path === path && /\.(png|jpe?g|gif|webp)$/i.test(entry.path),
   );

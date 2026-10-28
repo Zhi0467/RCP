@@ -20,7 +20,7 @@ from rcp.api.dependencies import (
     require_project_membership,
 )
 from rcp.paper.changes import ChangeGroup, OutdatedChange, PaperChanges, get_paper_changes
-from rcp.paper.models import PaperConflict
+from rcp.paper.models import PaperConflict, PaperPaused
 from rcp.server_ops.maintenance import MaintenanceAdmissionClosed
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -78,6 +78,8 @@ def undo_all(project_id: str, body: TaskChangesRequest, request: Request):
         return {
             "groups": [group.public() for group in manager.undo_all(canonical, body.task_id, actor)]
         }
+    except (PaperPaused, MaintenanceAdmissionClosed) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except (ValueError, KeyError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -147,5 +149,7 @@ def decide(
         return getattr(manager, action)(canonical, group_id, actor).public()
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Paper change group not found") from exc
+    except (PaperPaused, MaintenanceAdmissionClosed) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except (OutdatedChange, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
