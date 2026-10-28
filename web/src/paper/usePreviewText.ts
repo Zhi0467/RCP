@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 
-/** Idle preview updates, with a deadline during continuous typing. */
-export function usePreviewText(text: string) {
-  const [preview, setPreview] = useState(text);
+/** Idle preview updates, with a deadline during continuous typing; a new file shows at once. */
+export function usePreviewText(text: string, fileId: string) {
+  const [preview, setPreview] = useState({ fileId, text });
   const pendingSince = useRef<number | null>(null);
+  if (preview.fileId !== fileId) setPreview({ fileId, text });
   useEffect(() => {
-    if (text === preview) {
+    if (text === preview.text) {
       pendingSince.current = null;
       return;
     }
@@ -14,11 +15,11 @@ export function usePreviewText(text: string) {
     const timer = setTimeout(
       () => {
         pendingSince.current = null;
-        setPreview(text);
+        setPreview({ fileId, text });
       },
       Math.min(250, Math.max(0, 1000 - (now - pendingSince.current))),
     );
     return () => clearTimeout(timer);
-  }, [text, preview]);
-  return preview;
+  }, [text, preview.text, fileId]);
+  return preview.fileId === fileId ? preview.text : text;
 }

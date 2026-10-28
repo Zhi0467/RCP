@@ -71,7 +71,7 @@ export function PaperPreview({
   tree: PaperTree;
   text: string;
 }) {
-  const previewText = usePreviewText(file.format === "markdown" ? text : "");
+  const previewText = usePreviewText(file.format === "markdown" ? text : "", file.file_id);
   const compiler = useRef(new TypstCompiler());
   const bytesCache = useRef(new Map<string, Uint8Array>());
   const [showLog, setShowLog] = useState(false);
