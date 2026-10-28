@@ -427,8 +427,8 @@ const ExecutionView = lazy(() =>
 const ResearchDrilldown = lazy(() =>
   import("./graph/ResearchDrilldown").then((module) => ({ default: module.ResearchDrilldown })),
 );
-const LoadedPaperWorkspace = lazy(() =>
-  import("./paper/PaperWorkspace").then((module) => ({ default: module.LoadedPaperWorkspace })),
+const PaperWorkspace = lazy(() =>
+  import("./paper/PaperWorkspace").then((module) => ({ default: module.PaperWorkspace })),
 );
 const ProjectSettings = lazy(() =>
   import("./projects/ProjectSettings").then((module) => ({ default: module.ProjectSettings })),
@@ -1709,14 +1709,6 @@ function MemberApp({
   const refreshUsage = useCallback(async () => {
     if (projectId) store.invalidate(resourceKeyId(usageProfile(projectId).key));
   }, [projectId, store]);
-
-  useLayoutEffect(() => {
-    // A new editor supersedes the old one's pending save. Leaving Paper alone
-    // still lets that save update the project snapshot used by other views.
-    if (view === "paper" && project?.id) {
-      dispatchProjectSession({ kind: "paper_editor_opened" });
-    }
-  }, [dispatchProjectSession, project?.id, view]);
 
   useEffect(() => {
     const handleHashChange = (event: HashChangeEvent) => {
@@ -5321,8 +5313,7 @@ function MemberApp({
               >
                 {pinTabs}
               </ArtifactsSubnav>
-              <LoadedPaperWorkspace
-                graphTarget={graphTarget}
+              <PaperWorkspace
                 key={project.id}
                 apiBase={apiBase}
                 project={project}

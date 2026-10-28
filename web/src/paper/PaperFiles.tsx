@@ -1,5 +1,5 @@
 import { PaperDialog } from "./PaperDialog";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Check,
   Download,
@@ -14,24 +14,35 @@ import {
   X,
 } from "lucide-react";
 import { api } from "../core/api";
-import type { PaperFile, PaperTree } from "../core/types";
+import type { PaperFile } from "../core/types";
 
 export function PaperFiles({
   apiBase,
-  tree,
+  files,
   selected,
   onSelect,
   onFold,
   onChanged,
 }: {
   apiBase: string;
-  tree: PaperTree;
+  files: PaperFile[];
   selected: string | null;
   onSelect: (id: string) => void;
   onFold: () => void;
   onChanged: () => void;
 }) {
   const [edit, setEdit] = useState<{ file: PaperFile | null; path: string } | null>(null);
+  const [folder, setFolder] = useState<string | null>(null);
+  const [replacing, setReplacing] = useState<{
+    file: globalThis.File;
+    path: string;
+    existing: PaperFile;
+  } | null>(null);
+  const pathInput = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    pathInput.current?.focus();
+  }, [edit?.file]);
+  useEffect(() => setFolder(null), [selected]);
   const [deleting, setDeleting] = useState<PaperFile | null>(null);
   type Action = "path" | "upload" | "delete";
   type Failure = { message: string; retry: () => Promise<void> };
@@ -43,7 +54,8 @@ export function PaperFiles({
   const uploadFailure = failures.upload;
   const [busy, setBusy] = useState(false);
   const upload = useRef<HTMLInputElement>(null);
-  const selectedFile = tree.files.find((file) => file.file_id === selected);
+  const selectedFile = files.find((file) => file.file_id === selected);
+  const currentFolder = folder ?? selectedFile?.path.split("/").slice(0, -1).join("/") ?? "";
   const perform = async (kind: Action, action: () => Promise<void>) => {
     setBusy(true);
     clearFailure(kind);
@@ -60,7 +72,7 @@ export function PaperFiles({
     if (!edit?.path.trim()) return;
     const target = edit;
     void perform("path", async () => {
-      await api(
+      const receipt = await api<{ file_ids: string[] }>(
         `${apiBase}/paper/files${target.file ? `/${encodeURIComponent(target.file.file_id)}/rename` : ""}`,
         {
           method: "POST",
@@ -71,8 +83,23 @@ export function PaperFiles({
         },
       );
       setEdit(null);
+      if (!target.file) onSelect(receipt.file_ids[0]);
     });
   };
+  const uploadFile = (file: globalThis.File, path: string, existing?: PaperFile) =>
+    perform("upload", async () => {
+      const body = new FormData();
+      if (!existing) body.append("path", path);
+      body.append("file", file);
+      const receipt = await api<{ file_ids: string[] }>(
+        existing
+          ? `${apiBase}/paper/files/${encodeURIComponent(existing.file_id)}/content`
+          : `${apiBase}/paper/uploads`,
+        { method: existing ? "PUT" : "POST", body },
+      );
+      setReplacing(null);
+      onSelect(receipt.file_ids[0]);
+    });
   const folders = new Set<string>();
   return (
     <aside
@@ -109,19 +136,11 @@ export function PaperFiles({
           onChange={(event) => {
             const file = event.target.files?.[0];
             if (!file) return;
-            // An existing name replaces that file's content.
-            const existing = tree.files.find((entry) => entry.path === file.name);
-            void perform("upload", async () => {
-              const body = new FormData();
-              if (!existing) body.append("path", file.name);
-              body.append("file", file);
-              await api(
-                existing
-                  ? `${apiBase}/paper/files/${encodeURIComponent(existing.file_id)}/content`
-                  : `${apiBase}/paper/uploads`,
-                { method: existing ? "PUT" : "POST", body },
-              );
-            });
+            const path = currentFolder ? `${currentFolder}/${file.name}` : file.name;
+            const existing = files.find((entry) => entry.path === path);
+            clearFailure("upload");
+            if (existing) setReplacing({ file, path, existing });
+            else void uploadFile(file, path);
             event.target.value = "";
           }}
         />
@@ -137,6 +156,14 @@ export function PaperFiles({
           >
             <input
               autoFocus
+              ref={pathInput}
+              placeholder="folder/name.md"
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  setEdit(null);
+                  clearFailure("path");
+                }
+              }}
               aria-label="File path"
               value={edit.path}
               onChange={(event) => setEdit({ ...edit, path: event.target.value })}
@@ -162,8 +189,8 @@ export function PaperFiles({
             </button>
           </form>
         )}
-        {[...tree.files]
-          .sort((a, b) => a.path.localeCompare(b.path))
+        {[...files]
+          .sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }))
           .map((file) => {
             const parts = file.path.split("/");
             const rows = [];
@@ -172,14 +199,16 @@ export function PaperFiles({
               if (!folders.has(folder)) {
                 folders.add(folder);
                 rows.push(
-                  <div
-                    className="paper-folder"
+                  <button
+                    className={`paper-folder ${currentFolder === folder ? "selected" : ""}`}
+                    aria-pressed={currentFolder === folder}
+                    onClick={() => setFolder(folder)}
                     style={{ paddingLeft: 8 + (i - 1) * 14 }}
                     key={`folder:${folder}`}
                   >
                     <FolderOpen size={15} />
                     <span>{parts[i - 1]}</span>
-                  </div>,
+                  </button>,
                 );
               }
             }
@@ -190,7 +219,10 @@ export function PaperFiles({
                 style={{ paddingLeft: 8 + (parts.length - 1) * 14 }}
                 title={file.path}
                 aria-pressed={selected === file.file_id}
-                onClick={() => onSelect(file.file_id)}
+                onClick={() => {
+                  setFolder(null);
+                  onSelect(file.file_id);
+                }}
               >
                 <File size={15} />
                 <span>{parts.at(-1)}</span>
@@ -200,7 +232,7 @@ export function PaperFiles({
           })}
       </div>
       <footer className="paper-bar">
-        {uploadFailure && (
+        {uploadFailure && !replacing && (
           <button
             className="icon-button"
             aria-label="Retry file operation"
@@ -244,6 +276,40 @@ export function PaperFiles({
           </>
         )}
       </footer>
+      {replacing && (
+        <PaperDialog
+          className={`paper-box paper-confirm ${uploadFailure ? "paper-failed" : ""}`}
+          role="alertdialog"
+          label={`Replace ${replacing.path}?`}
+          onClose={() => {
+            setReplacing(null);
+            clearFailure("upload");
+          }}
+        >
+          <strong>Replace {replacing.path}?</strong>
+          <div className="paper-bar">
+            <button
+              className="button"
+              disabled={busy}
+              onClick={() => {
+                setReplacing(null);
+                clearFailure("upload");
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              className={uploadFailure ? "icon-button" : "button"}
+              aria-label={uploadFailure ? "Retry upload" : undefined}
+              title={uploadFailure?.message}
+              disabled={busy}
+              onClick={() => void uploadFile(replacing.file, replacing.path, replacing.existing)}
+            >
+              {uploadFailure ? <RotateCcw size={16} /> : "Replace"}
+            </button>
+          </div>
+        </PaperDialog>
+      )}
       {deleting && (
         <PaperDialog
           className={`paper-box paper-confirm ${deleteFailure ? "paper-failed" : ""}`}

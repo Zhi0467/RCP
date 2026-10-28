@@ -4,7 +4,6 @@ import { api } from "../core/api";
 import { referenceUrl } from "../core/projectReferences";
 import type {
   AgentTask,
-  GraphTargetRef,
   IdentityResponse,
   PaperFile,
   ProjectSnapshot,
@@ -28,10 +27,8 @@ export interface PaperEditorState {
   fileId?: string;
 }
 interface Props {
-  graphTarget?: GraphTargetRef;
   apiBase: string;
   project: ProjectSnapshot;
-  owner?: string;
   editorState?: PaperEditorState;
   requestedFileId?: { fileId: string | null };
   onEditorStateChange?: (state: PaperEditorState) => void;
@@ -45,13 +42,9 @@ function storedFold() {
     return false;
   }
 }
-export function LoadedPaperWorkspace(props: Props) {
-  return <PaperWorkspace {...props} />;
-}
 export function PaperWorkspace({
   apiBase,
   project,
-  owner: resourceOwner,
   editorState,
   requestedFileId,
   onEditorStateChange,
@@ -59,8 +52,8 @@ export function PaperWorkspace({
   onStartTask,
 }: Props) {
   const { store } = useRefreshRuntime();
-  const profile = paperProfile(project.id, apiBase);
-  const resource = useResource(resourceOwner ?? `${project.id}:paper-view`, profile);
+  const profile = paperProfile(project.id);
+  const resource = useResource(`${project.id}:paper-view`, profile);
   const tree = resource.value?.tree;
   const [identity, setIdentity] = useState<IdentityResponse | null>(null);
   const [identityError, setIdentityError] = useState<string | null>(null);
@@ -85,6 +78,7 @@ export function PaperWorkspace({
     media.addEventListener("change", changed);
     return () => media.removeEventListener("change", changed);
   }, []);
+  const writingPane = useRef<HTMLDivElement>(null);
   const [history, setHistory] = useState(false);
   const [focusChange, setFocusChange] = useState<PaperChange | null>(null);
   const [actionError, setActionError] = useState<{
@@ -97,8 +91,8 @@ export function PaperWorkspace({
     `${tree?.revision}:${tasks.map((task) => `${task.operation_id}:${task.updated_at}`).join("|")}`,
   );
   const refresh = useCallback(
-    () => store.invalidate(resourceKeyId(paperProfile(project.id, apiBase).key)),
-    [store, project.id, apiBase],
+    () => store.invalidate(resourceKeyId(paperProfile(project.id).key)),
+    [store, project.id],
   );
   useEffect(() => {
     const controller = new AbortController();
@@ -141,7 +135,7 @@ export function PaperWorkspace({
     !listed && last?.file.file_id === current && last?.document?.getSnapshot().saved === false
       ? last.file
       : undefined;
-  const file = listed ?? stranded ?? tree?.files[0];
+  const file = listed ?? stranded ?? (!selected ? tree?.files[0] : undefined);
   const document = useMemo(
     () =>
       identity && file?.kind === "text"
@@ -172,7 +166,11 @@ export function PaperWorkspace({
       // 4403: the file was deleted or access was lost; the tree says which.
       if (state.closed !== lastClosed) {
         lastClosed = state.closed;
-        if (lastClosed === 4403) refresh();
+        if (lastClosed === 4403) {
+          refresh();
+          // A deleted file with nothing unsent leaves for the first file.
+          if (state.saved) setSelected(null);
+        }
       }
       if (state.saved && state.text !== lastSavedText) {
         lastSavedText = state.text;
@@ -186,8 +184,17 @@ export function PaperWorkspace({
     };
   }, [document, refresh]);
   useEffect(() => {
-    if (file) onEditorStateChange?.({ fileId: file.file_id });
-  }, [file, onEditorStateChange]);
+    if (!file || (selected && selected !== file.file_id)) return;
+    onEditorStateChange?.({ fileId: file.file_id });
+    const [route, query] = window.location.hash.split("?");
+    const params = new URLSearchParams(query);
+    params.set("paper_file", file.file_id);
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${window.location.search}${route || "#"}?${params}`,
+    );
+  }, [file, selected, onEditorStateChange]);
   const perform = async (action: () => Promise<void>) => {
     setActionError(null);
     try {
@@ -221,9 +228,21 @@ export function PaperWorkspace({
       /* Device preference is optional. */
     }
   };
+  // Focus follows an explicit request (Write, a picked or new file), never a load.
+  const focusPending = useRef(false);
+  const focusEditor = () => {
+    focusPending.current = true;
+    requestAnimationFrame(() => {
+      const editor = writingPane.current?.querySelector<HTMLElement>(".cm-content");
+      if (!editor) return;
+      focusPending.current = false;
+      editor.focus();
+    });
+  };
   const switchView = (next: typeof view) => {
     setView(next);
     if (next !== "write") setRight(next);
+    else focusEditor();
   };
   const locate = (change: PaperChange) => {
     setSelected(change.file_id);
@@ -242,20 +261,12 @@ export function PaperWorkspace({
     >
       <PaperFiles
         apiBase={apiBase}
-        tree={
-          tree ?? {
-            revision: 0,
-            saved_revision: 0,
-            published_revision: 0,
-            publish_state: "pending",
-            hold: null,
-            files: [],
-          }
-        }
+        files={tree?.files ?? []}
         selected={file?.file_id ?? null}
         onSelect={(id) => {
           setSelected(id);
           setFilesOpen(false);
+          switchView("write");
         }}
         onFold={fold}
         onChanged={refresh}
@@ -270,7 +281,33 @@ export function PaperWorkspace({
           </strong>
           {file && <span className="paper-format">{file.format}</span>}
           <span className="paper-grow" />
-          {document && <DocumentStatus owner={document} />}
+          {document && (
+            <DocumentStatus
+              owner={document}
+              recover={
+                stranded
+                  ? async () => {
+                      const body = new FormData();
+                      const path = tree!.files.some((item) => item.path === file!.path)
+                        ? file!.path.replace(/(\.[^./]+)?$/, " (recovered)$1")
+                        : file!.path;
+                      body.append("path", path);
+                      body.append(
+                        "file",
+                        new Blob([document.getSnapshot().text], { type: "text/plain" }),
+                        path.split("/").at(-1),
+                      );
+                      const receipt = await api<{ file_ids: string[] }>(
+                        `${apiBase}/paper/uploads`,
+                        { method: "POST", body },
+                      );
+                      setSelected(receipt.file_ids[0]);
+                      refresh();
+                    }
+                  : undefined
+              }
+            />
+          )}
           {retryError && (
             <button
               className="icon-button"
@@ -321,10 +358,12 @@ export function PaperWorkspace({
             </button>
           ))}
         </div>
-        <div className="paper-writing-pane">
+        <div className="paper-writing-pane" ref={writingPane}>
           {document ? (
             <LiveEditor
               owner={document}
+              focusPending={focusPending}
+              maxBytes={tree?.max_doc_bytes}
               format={file!.format}
               changes={changeFeed.changes}
               focusChange={focusChange}
@@ -346,24 +385,11 @@ export function PaperWorkspace({
       <aside className="paper-box paper-right-box">
         <header className="paper-bar paper-desktop-segments">
           <div className="paper-segments">
-            <button
-              aria-pressed={right === "preview"}
-              onClick={() => {
-                setRight("preview");
-                setView("preview");
-              }}
-            >
-              Preview
-            </button>
-            <button
-              aria-pressed={right === "coach"}
-              onClick={() => {
-                setRight("coach");
-                setView("coach");
-              }}
-            >
-              Coach
-            </button>
+            {(["preview", "coach"] as const).map((panel) => (
+              <button key={panel} aria-pressed={right === panel} onClick={() => switchView(panel)}>
+                {panel[0].toUpperCase() + panel.slice(1)}
+              </button>
+            ))}
           </div>
         </header>
         <div className="paper-right-pane" hidden={right !== "preview"}>
@@ -376,6 +402,7 @@ export function PaperWorkspace({
                 projectId={project.id}
                 file={file}
                 tree={tree}
+                onOpenFile={setSelected}
                 active={previewActive}
               />
             ) : (
@@ -384,6 +411,7 @@ export function PaperWorkspace({
                 file={file}
                 tree={tree}
                 text=""
+                onOpenFile={setSelected}
                 active={previewActive}
               />
             ))}
@@ -463,8 +491,25 @@ export function PaperWorkspace({
     </section>
   );
 }
-function DocumentStatus({ owner }: { owner: PaperDocument }) {
+function DocumentStatus({
+  owner,
+  recover,
+}: {
+  owner: PaperDocument;
+  recover?: () => Promise<void>;
+}) {
   const state = useSyncExternalStore(owner.subscribe, owner.getSnapshot);
+  const [recovering, setRecovering] = useState(false);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
+  useEffect(() => {
+    if (state.saved) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [state.saved]);
   return (
     <>
       <div className="paper-presence" aria-label="People editing">
@@ -493,12 +538,23 @@ function DocumentStatus({ owner }: { owner: PaperDocument }) {
       >
         {state.connected ? <Cloud size={16} /> : <CloudOff size={16} />}
       </span>
-      {state.error && (
+      {(state.error || recover) && (
         <button
           className="icon-button paper-failed"
-          aria-label="Reconnect Paper"
-          title={state.error}
-          onClick={() => owner.reconnect()}
+          aria-label={recover ? "Recreate file" : "Reconnect Paper"}
+          title={recoveryError ?? state.error ?? undefined}
+          disabled={recovering}
+          onClick={async () => {
+            setRecovering(true);
+            setRecoveryError(null);
+            try {
+              await (recover ? recover() : owner.reconnect());
+            } catch (error) {
+              setRecoveryError(String(error));
+            } finally {
+              setRecovering(false);
+            }
+          }}
         >
           <RotateCcw size={16} />
         </button>
@@ -506,8 +562,19 @@ function DocumentStatus({ owner }: { owner: PaperDocument }) {
     </>
   );
 }
-function LiveEditor(props: React.ComponentProps<typeof PaperEditor>) {
+function LiveEditor({
+  focusPending,
+  ...props
+}: React.ComponentProps<typeof PaperEditor> & { focusPending: { current: boolean } }) {
   const state = useSyncExternalStore(props.owner.subscribe, props.owner.getSnapshot);
+  useEffect(() => {
+    if (!state.ready || !focusPending.current) return;
+    const frame = requestAnimationFrame(() => {
+      focusPending.current = false;
+      window.document.querySelector<HTMLElement>(".paper-writing-pane .cm-content")?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [props.owner, state.ready, focusPending]);
   return state.ready ? (
     <PaperEditor {...props} />
   ) : (
