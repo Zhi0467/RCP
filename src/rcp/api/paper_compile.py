@@ -43,7 +43,7 @@ class PaperCompileRequest(BaseModel):
 @router.post("/api/projects/{project_id}/paper/compile", response_model=CompileResult)
 async def compile_paper(
     body: PaperCompileRequest,
-    canonical_project_id: Annotated[str, Depends(require_project_write_admission)],
+    canonical_project_id: Annotated[str, Depends(require_project_membership)],
     compiler: Annotated[PaperCompiler, Depends(get_paper_compiler)],
 ) -> CompileResult:
     try:

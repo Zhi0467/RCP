@@ -140,9 +140,6 @@ class PaperCompiler:
         old = self._jobs.get(project_id)
         if old is not None:
             old.cancel()
-        for key, (owner, _) in list(self._pdfs.items()):
-            if owner == project_id:
-                del self._pdfs[key]
         job = asyncio.create_task(self._compile(project_id, file_id, revision, compile_id))
         self._jobs[project_id] = job
         try:

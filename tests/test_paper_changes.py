@@ -277,6 +277,13 @@ def test_routes_enforce_project_scope_accept_and_undo(manifest, tmp_path, monkey
         response = client.get(base, params={"task_id": "task"})
         assert response.status_code == 200
         assert response.json()["groups"][0]["changes"][0]["path"] == "new.md"
+        with monkeypatch.context() as patch:
+
+            def closed(_project):
+                raise ValueError("maintenance admission closed")
+
+            patch.setattr(service.paper_changes, "admission", closed)
+            assert client.get(base).json()["groups"][0]["group_id"] == group.group_id
         assert client.post(f"{base}/{group.group_id}/refresh", json={}).status_code == 200
         assert continued[-1]["session_id"] == "native-paper"
         assert continued[-1]["refresh_group_ids"] == [group.group_id]
@@ -560,3 +567,67 @@ def test_new_directory_collision_refuses_without_leaving_a_prepared_receipt(setu
         changes.accept("p", group.group_id, "human")
     assert changes._receipt("p", f"paper:{group.group_id}:accept") is None
     assert changes.groups("p", "t")[0].state == "outdated"
+
+
+@pytest.mark.parametrize("case", ["nul", "path", "doc", "upload", "tree", "count"])
+def test_collection_enforces_live_tree_validation(setup, monkeypatch, case):
+    snapshot, _live, changes, output = setup
+    name, body = ("bad\x01.md", b"ok") if case == "path" else ("new.md", b"a\0b")
+    if case in {"doc", "upload", "tree", "count"}:
+        name, body = ("new.pdf", b"1234") if case == "upload" else ("new.md", b"1234")
+        limit = {
+            "doc": "DOC_BYTES",
+            "upload": "UPLOAD_BYTES",
+            "tree": "TREE_BYTES",
+            "count": "FILES",
+        }[case]
+        monkeypatch.setattr(f"rcp.limits.PAPER_MAX_{limit}", 1)
+    (output / "files" / name).write_bytes(body)
+    with pytest.raises(InvalidChanges):
+        changes.collect("p", "t", snapshot, output)
+    assert changes.groups("p", "t") == []
+
+
+@pytest.mark.parametrize("failure", [ValueError, RuntimeError])
+def test_failed_direct_group_releases_receipt_and_continues(setup, monkeypatch, failure):
+    snapshot, live, changes, output = setup
+    for name in ("a.md", "b.md"):
+        (output / "files" / name).write_text("new")
+    first, _second = changes.collect("p", "t", snapshot, output, mode="apply_directly")
+    original = live.apply
+
+    async def apply_group(project, ops, **kwargs):
+        if ops[0].path == "a.md":
+            raise failure("apply refused")
+        return await original(project, ops, **kwargs)
+
+    monkeypatch.setattr(live, "apply", apply_group)
+    assert [g.state for g in changes.accept_all("p", "t", "coach", directly=True)] == [
+        "pending",
+        "applied",
+    ]
+    assert changes._receipt("p", f"paper:{first.group_id}:accept") is None
+    assert changes.reject("p", first.group_id, "human").state == "rejected"
+
+
+def test_pure_rename_has_no_line_preview(setup):
+    snapshot, _live, changes, output = setup
+    (output / "moves.json").write_text('{"rename":[["section.md","renamed.md"]]}')
+    card = changes.collect("p", "t", snapshot, output)[0].changes[0]
+    assert card.preview == {"removed": [], "added": [], "more": 0}
+    assert card.stats == {"added": 0, "removed": 0}
+
+
+def test_accept_recovers_committed_apply_despite_delivery_failure(setup, monkeypatch):
+    snapshot, live, changes, output = setup
+    (output / "files/new.md").write_text("new")
+    group = changes.collect("p", "t", snapshot, output)[0]
+    original = live.apply
+
+    async def apply_then_fail(*args, **kwargs):
+        await original(*args, **kwargs)
+        raise RuntimeError("delivery failed after commit")
+
+    monkeypatch.setattr(live, "apply", apply_then_fail)
+    assert changes.accept("p", group.group_id, "human").state == "accepted"
+    assert "receipt" in changes._receipt("p", f"paper:{group.group_id}:accept")

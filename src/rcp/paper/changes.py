@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import stat
 import tempfile
@@ -25,7 +26,7 @@ from rcp.limits import (
     PAPER_CHANGES_PREVIEW_LINES,
 )
 from rcp.paper import PaperFile, PaperLive, PaperOp, PaperSnapshot
-from rcp.paper.models import PaperPrecondition
+from rcp.paper.models import PaperPrecondition, paper_path
 from rcp.storage import AppStore
 
 
@@ -95,17 +96,10 @@ class ChangeGroup(BaseModel):
 
 
 def _path(value: str) -> str:
-    parts = value.split("/")
-    if (
-        not value
-        or "\\" in value
-        or "\x00" in value
-        or len(value) > 1024
-        or any(part in {"", ".", ".."} for part in parts)
-        or PurePosixPath(value).is_absolute()
-    ):
-        raise InvalidChanges([f"Invalid paper-relative path: {value!r}"])
-    return value
+    try:
+        return paper_path(value)
+    except ValueError as exc:
+        raise InvalidChanges([f"Invalid paper-relative path: {value!r}"]) from exc
 
 
 def _read_output(root: Path) -> dict[str, bytes]:
@@ -359,6 +353,15 @@ def build_changes(
     originals = {file.path: file for file in snapshot.files}
     reverse = {new: old for old, new in renames}
     changes: list[Change] = []
+    moved = dict(renames)
+    proposed = {
+        moved.get(file.path, file.path): file.model_copy(
+            update={"path": moved.get(file.path, file.path)}
+        )
+        for file in snapshot.files
+        if file.path not in deletes
+    }
+    blobs = dict(snapshot._blobs)
     binary_originals: dict[str, bytes] = {}
     wanted = set(deletes) | {reverse.get(path, path) for path in files}
     binary_files = [
@@ -433,6 +436,15 @@ def build_changes(
             if text is not None and not binary_extension
             else "binary"
         )
+        proposed[name] = PaperFile(
+            file_id=original.file_id if original else name,
+            path=name,
+            kind=file_kind,
+            text=text if file_kind == "text" else None,
+            blob_sha256=_sha(body) if file_kind == "binary" else None,
+        )
+        if file_kind == "binary":
+            blobs[_sha(body)] = body
         if original is None:
             changes.append(
                 Change(
@@ -482,6 +494,11 @@ def build_changes(
                         lines={"start": first, "end": last},
                     )
                 )
+    try:
+        # Collection and live apply enforce the same complete-tree budgets.
+        live._validate_tree(list(proposed.values()), blobs)
+    except ValueError as exc:
+        raise InvalidChanges([str(exc)]) from exc
     for change in changes:
         _preview(change)
     # Dependencies in prose/includes cannot be inferred reliably: group the entire
@@ -598,24 +615,22 @@ class PaperChanges:
         return self.groups(project_id, task_id)
 
     def groups(self, project_id: str, task_id: str | None = None) -> list[ChangeGroup]:
-        with self.admission(project_id):
-            with self.store.connection() as connection:
-                ids = connection.execute(
-                    "SELECT group_id FROM paper_change_groups WHERE project_id=? AND (? IS NULL OR task_id=?) ORDER BY created_at,rowid",
-                    (project_id, task_id, task_id),
-                ).fetchall()
-            result = []
-            current = self._snapshot(project_id)
-            for row in ids:
-                group = self._load(project_id, row[0])
-                if group.state == "pending":
-                    try:
-                        self._prepare(project_id, group, current)
-                    except OutdatedChange:
-                        self._state(project_id, group.group_id, "outdated")
-                        group.state = "outdated"
-                result.append(group)
-            return result
+        with self.store.connection() as connection:
+            ids = connection.execute(
+                "SELECT group_id FROM paper_change_groups WHERE project_id=? AND (? IS NULL OR task_id=?) ORDER BY created_at,rowid",
+                (project_id, task_id, task_id),
+            ).fetchall()
+        result = []
+        current = self._snapshot(project_id)
+        for row in ids:
+            group = self._load(project_id, row[0])
+            if group.state == "pending":
+                try:
+                    self._prepare(project_id, group, current)
+                except OutdatedChange:
+                    group.state = "outdated"
+            result.append(group)
+        return result
 
     def stale_group_ids(self, project_id: str, task_id: str) -> set[str]:
         return {
@@ -893,15 +908,21 @@ class PaperChanges:
                 self._save_receipt(project_id, group_id, key, "accept", payload)
             try:
                 self._apply(project_id, payload)
-            except OutdatedChange:
-                # The live core raises this only for an atomic precondition refusal,
-                # never for an uncertain transport/result failure.
+            except Exception as exc:
+                # The live receipt can already be committed if delivery failed.
+                # Preserve that result and inverse; only release prepared attempts.
+                committed = self._receipt(project_id, key)
+                if committed is not None and "receipt" in committed:
+                    self._state(project_id, group_id, str(payload["state"]), str(payload["actor"]))
+                    return self._load(project_id, group_id)
+                # A refused apply must leave the card reviewable.
                 with self.store.connection() as connection:
                     connection.execute(
                         "DELETE FROM paper_change_receipts WHERE project_id=? AND receipt_key=?",
                         (project_id, key),
                     )
-                self._state(project_id, group_id, "outdated")
+                if isinstance(exc, OutdatedChange):
+                    self._state(project_id, group_id, "outdated")
                 raise
             self._state(project_id, group_id, str(payload["state"]), str(payload["actor"]))
             return self._load(project_id, group_id)
@@ -948,7 +969,10 @@ class PaperChanges:
             if group.state == "pending":
                 try:
                     self.accept(project_id, group.group_id, actor, directly=directly)
-                except OutdatedChange:
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "Paper change group %s could not be applied", group.group_id
+                    )
                     continue
         return self.groups(project_id, task_id)
 
