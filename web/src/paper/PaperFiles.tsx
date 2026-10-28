@@ -32,20 +32,25 @@ export function PaperFiles({
 }) {
   const [edit, setEdit] = useState<{ file: PaperFile | null; path: string } | null>(null);
   const [deleting, setDeleting] = useState<PaperFile | null>(null);
-  const [failure, setFailure] = useState<{ message: string; retry: () => Promise<void> } | null>(
-    null,
-  );
+  type Action = "path" | "upload" | "delete";
+  type Failure = { message: string; retry: () => Promise<void> };
+  const [failures, setFailures] = useState<Partial<Record<Action, Failure>>>({});
+  const clearFailure = (action: Action) =>
+    setFailures((current) => ({ ...current, [action]: undefined }));
+  const pathFailure = failures.path;
+  const deleteFailure = failures.delete;
+  const uploadFailure = failures.upload;
   const [busy, setBusy] = useState(false);
   const upload = useRef<HTMLInputElement>(null);
   const selectedFile = tree.files.find((file) => file.file_id === selected);
-  const perform = async (action: () => Promise<void>) => {
+  const perform = async (kind: Action, action: () => Promise<void>) => {
     setBusy(true);
-    setFailure(null);
+    clearFailure(kind);
     try {
       await action();
       onChanged();
     } catch (cause) {
-      setFailure({ message: String(cause), retry: action });
+      setFailures((current) => ({ ...current, [kind]: { message: String(cause), retry: action } }));
     } finally {
       setBusy(false);
     }
@@ -53,7 +58,7 @@ export function PaperFiles({
   const savePath = () => {
     if (!edit?.path.trim()) return;
     const target = edit;
-    void perform(async () => {
+    void perform("path", async () => {
       await api(
         `${apiBase}/paper/files${target.file ? `/${encodeURIComponent(target.file.file_id)}/rename` : ""}`,
         {
@@ -70,7 +75,7 @@ export function PaperFiles({
   const folders = new Set<string>();
   return (
     <aside
-      className={`paper-box paper-files ${failure ? "paper-failed" : ""}`}
+      className={`paper-box paper-files ${Object.values(failures).some(Boolean) ? "paper-failed" : ""}`}
       data-testid="paper-files"
       aria-busy={busy}
     >
@@ -82,7 +87,10 @@ export function PaperFiles({
         <button
           className="icon-button"
           aria-label="New file"
-          onClick={() => setEdit({ file: null, path: "" })}
+          onClick={() => {
+            clearFailure("path");
+            setEdit({ file: null, path: "" });
+          }}
         >
           <FilePlus size={16} />
         </button>
@@ -100,7 +108,7 @@ export function PaperFiles({
           onChange={(event) => {
             const file = event.target.files?.[0];
             if (!file) return;
-            void perform(async () => {
+            void perform("upload", async () => {
               const body = new FormData();
               body.append("path", file.name);
               body.append("file", file);
@@ -113,7 +121,7 @@ export function PaperFiles({
       <div className="paper-tree paper-well">
         {edit && (
           <form
-            className={`paper-path-form ${failure ? "paper-failed" : ""}`}
+            className={`paper-path-form ${pathFailure ? "paper-failed" : ""}`}
             onSubmit={(event) => {
               event.preventDefault();
               savePath();
@@ -130,7 +138,7 @@ export function PaperFiles({
               aria-label="Save file path"
               disabled={busy || !edit.path.trim()}
             >
-              {failure ? <RotateCcw size={14} /> : <Check size={14} />}
+              {pathFailure ? <RotateCcw size={14} /> : <Check size={14} />}
             </button>
             <button
               type="button"
@@ -139,7 +147,7 @@ export function PaperFiles({
               disabled={busy}
               onClick={() => {
                 setEdit(null);
-                setFailure(null);
+                clearFailure("path");
               }}
             >
               <X size={14} />
@@ -184,12 +192,12 @@ export function PaperFiles({
           })}
       </div>
       <footer className="paper-bar">
-        {failure && !edit && !deleting ? (
+        {uploadFailure ? (
           <button
             className="icon-button"
             aria-label="Retry file operation"
-            title={failure.message}
-            onClick={() => void perform(failure.retry)}
+            title={uploadFailure.message}
+            onClick={() => void perform("upload", uploadFailure.retry)}
           >
             <RotateCcw size={16} />
           </button>
@@ -199,7 +207,10 @@ export function PaperFiles({
               <button
                 className="icon-button"
                 aria-label="Rename file"
-                onClick={() => setEdit({ file: selectedFile, path: selectedFile.path })}
+                onClick={() => {
+                  clearFailure("path");
+                  setEdit({ file: selectedFile, path: selectedFile.path });
+                }}
               >
                 <Pencil size={15} />
               </button>
@@ -215,7 +226,10 @@ export function PaperFiles({
               <button
                 className="icon-button"
                 aria-label="Delete file"
-                onClick={() => setDeleting(selectedFile)}
+                onClick={() => {
+                  clearFailure("delete");
+                  setDeleting(selectedFile);
+                }}
               >
                 <Trash2 size={15} />
               </button>
@@ -226,7 +240,7 @@ export function PaperFiles({
       {deleting && (
         <div className="paper-dialog-backdrop">
           <section
-            className={`paper-box paper-confirm ${failure ? "paper-failed" : ""}`}
+            className={`paper-box paper-confirm ${deleteFailure ? "paper-failed" : ""}`}
             role="alertdialog"
             aria-label="Delete file"
           >
@@ -237,18 +251,18 @@ export function PaperFiles({
                 disabled={busy}
                 onClick={() => {
                   setDeleting(null);
-                  setFailure(null);
+                  clearFailure("delete");
                 }}
               >
                 Cancel
               </button>
               <button
-                className={failure ? "icon-button" : "button"}
-                aria-label={failure ? "Retry delete" : undefined}
-                title={failure?.message}
+                className={deleteFailure ? "icon-button" : "button"}
+                aria-label={deleteFailure ? "Retry delete" : undefined}
+                title={deleteFailure?.message}
                 disabled={busy}
                 onClick={() =>
-                  void perform(async () => {
+                  void perform("delete", async () => {
                     await api(`${apiBase}/paper/files/${encodeURIComponent(deleting.file_id)}`, {
                       method: "DELETE",
                     });
@@ -256,7 +270,7 @@ export function PaperFiles({
                   })
                 }
               >
-                {failure ? <RotateCcw size={16} /> : "Delete"}
+                {deleteFailure ? <RotateCcw size={16} /> : "Delete"}
               </button>
             </div>
           </section>

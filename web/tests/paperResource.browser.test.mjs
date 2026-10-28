@@ -40,6 +40,8 @@ async function openPaper(
   });
   const page = await context.newPage();
   const errors = [];
+  const requests = [];
+  page.on("request", (request) => requests.push(request.url()));
   const fixture = createPaperFixture({ room, cards, proposedTexts });
   configure(fixture);
   const posts = fixture.posts;
@@ -59,7 +61,7 @@ async function openPaper(
   await page.goto(`${origin}/tests/fixtures/paperResource.html`);
   await page.locator(".cm-content").waitFor();
   await page.waitForFunction(editorMatches, "draft");
-  return { page, context, room, errors, posts };
+  return { page, context, room, errors, posts, requests };
 }
 
 async function append(page, text) {
@@ -311,4 +313,106 @@ test("superseded LaTeX compilation keeps the existing PDF", async (t) => {
     await page.getByRole("link", { name: "Download PDF" }).getAttribute("href"),
     /compile\/good\/pdf$/,
   );
+});
+
+test("insertion refreshes use current anchors without downloading base files", async (t) => {
+  const insertion = {
+    ...card,
+    current: { start: 5, end: 5, revision: 1 },
+    preview: { removed: [], added: ["suggested"], more: 0 },
+  };
+  let currentTree;
+  const { page, requests } = await openPaper(t, {
+    cards: [insertion],
+    configure: ({ tree }) => {
+      currentTree = tree;
+    },
+  });
+  await page.locator(".paper-inline-suggestion").waitFor();
+  await page.locator(".cm-content").click();
+  await page.keyboard.press("ControlOrMeta+Home");
+  const refreshed = page.waitForResponse((response) => response.url().endsWith("/paper/changes"));
+  await page.keyboard.insertText("prefix ");
+  insertion.current = { start: 12, end: 12, revision: 2 };
+  currentTree.revision = 2;
+  currentTree.saved_revision = 2;
+  await refreshed;
+  await page.locator(".paper-inline-suggestion").waitFor();
+  assert.equal(await page.locator(".paper-inline-suggestion").count(), 1);
+  assert.deepEqual(
+    requests.filter((url) => /\/raw\?revision=/.test(url)),
+    [],
+  );
+});
+
+test("a failed upload keeps its retry when a clean New file form is cancelled", async (t) => {
+  const { page, context } = await openPaper(t, { width: 390 });
+  await page.getByRole("button", { name: "Show files", exact: true }).click();
+  let attempts = 0;
+  await context.route("**/paper/uploads", (route) => {
+    attempts += 1;
+    return route.fulfill({ status: attempts === 1 ? 400 : 200, json: {} });
+  });
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "figure.png",
+    mimeType: "image/png",
+    buffer: Buffer.from("image"),
+  });
+  await page.getByRole("button", { name: "Retry file operation" }).waitFor();
+  await page.getByRole("button", { name: "New file", exact: true }).click();
+  assert.equal(await page.locator(".paper-path-form.paper-failed").count(), 0);
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await page.getByRole("button", { name: "Cancel file path" }).click();
+  const retried = page.waitForResponse(
+    (response) => response.url().endsWith("/paper/uploads") && response.status() === 200,
+  );
+  await page.getByRole("button", { name: "Retry file operation" }).click();
+  await retried;
+  assert.equal(attempts, 2);
+});
+
+test("Reconnect discards a rejected oversized update and its persisted copy only for that file", async (t) => {
+  const { page, context, room } = await openPaper(t, {
+    configure: ({ tree }) =>
+      tree.files.push({ ...tree.files[0], file_id: "f2", path: "second.md" }),
+  });
+  const other = new Room();
+  await context.routeWebSocket(/\/files\/f2\/live$/, (socket) => other.connect(socket));
+  await page.getByRole("button", { name: "second.md", exact: true }).click();
+  await saved(page, true);
+  other.hold = true;
+  await append(page, " unsaved");
+  await saved(page, false);
+  await page.getByRole("button", { name: "intro.md", exact: true }).click();
+  await saved(page, true);
+  // Reconnect the first file through a room that rejects oversized frames before applying them.
+  await context.routeWebSocket(/\/files\/f1\/live$/, (socket) =>
+    room.connect({
+      send: (message) => socket.send(message),
+      onClose: (callback) => socket.onClose(callback),
+      onMessage: (callback) =>
+        socket.onMessage((message) => {
+          if (message.byteLength > 4 * 1024 * 1024) socket.close({ code: 4413 });
+          else callback(message);
+        }),
+    }),
+  );
+  for (const client of [...room.clients]) client.close({ code: 4413 });
+  await page.getByRole("button", { name: "Reconnect Paper" }).click();
+  await saved(page, true);
+  await append(page, "x".repeat(5 * 1024 * 1024));
+  await page.getByRole("button", { name: "Reconnect Paper" }).waitFor();
+  await page.locator(".cm-content").click();
+  await page.keyboard.press("ControlOrMeta+Z");
+  await page.getByRole("button", { name: "Reconnect Paper" }).click();
+  await page.waitForFunction(editorMatches, "draft");
+  await saved(page, true);
+  await page.getByRole("button", { name: "second.md", exact: true }).click();
+  await page.waitForFunction(editorMatches, "draft unsaved");
+  await saved(page, false);
+  await page.getByRole("button", { name: "intro.md", exact: true }).click();
+  await page.reload();
+  await page.waitForFunction(editorMatches, "draft");
+  await saved(page, true);
+  assert.equal(room.doc.getText("text").toString(), "draft");
 });
