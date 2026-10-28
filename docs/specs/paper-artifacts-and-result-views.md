@@ -35,7 +35,15 @@ never committed to Git.
 crash, and a half-published tree breaks every build that includes the missing
 half.
 
-Files keep a stable identity across renames. Uploaded figures are stored once by
+An edit the server refuses, such as an oversized or invalid one, ends that
+file's connection for good and the editor shows a red edge with one retry
+action; an edit refused only by the update rate retries on its own. Deletion,
+maintenance, and transfer pause the live paper; a stop that fails, or
+maintenance that ends, resumes it. A backup records its paper as unpublished,
+so a restore republishes the saved text rather than trusting the copied folder.
+
+Files keep a stable identity across renames. One path rule serves editing,
+backup and transfer; `.git` and `.publish` are reserved path components. Uploaded figures are stored once by
 content hash. Paper files are served as files, never as same-origin documents:
 SVG, HTML and unknown types download; only raster images show inline.
 
@@ -55,7 +63,9 @@ tree. Typst compiles in the browser from compiler and font files that the RCP
 backend downloads once, checks against pinned hashes, and serves from its own
 origin. LaTeX compiles on the RCP backend with Tectonic, downloaded and checked
 the same way on first use, run with `--untrusted` and bounded in time, output and
-concurrency; a newer compile cancels an older one for the same project. A
+concurrency. A compile changes no state, so any member may start one; a newer
+compile cancels an older one for the same project, and earlier PDFs stay
+readable until the result limit ages them out. A
 compile starts from the one root that reaches the open file; with none or
 several, the preview lists the candidates.
 
@@ -74,7 +84,8 @@ turn starts, and writes whole files into its own changes folder
 (`changes/files/…`, with renames and deletions in `changes/moves.json`). RCP
 collects that folder alone, validates all of it or none of it, and turns it into
 change cards by diffing against the snapshot; the coach never writes diffs or
-line numbers. A rename and the edits that depend on it form one card group.
+line numbers. Validation applies the live paper's own limits to the whole
+proposed tree. A rename and the edits that depend on it form one card group.
 
 A card applies only to the text it was made from. At the end of a turn RCP
 checks every card against the live paper; a card whose text has since changed is
@@ -85,7 +96,8 @@ By default each card waits for a member to accept or reject it. In a chat set to
 apply directly, every fresh card is applied when the turn ends, and the cards
 become a log. Either way, applying re-checks the original text, happens once per
 card, and records a receipt that a guarded Undo reverses while the text is still
-what the coach wrote. The same durable receipt holds the prepared operation,
+what the coach wrote. A card that fails to apply stays reviewable; in a chat set
+to apply directly, the other cards still apply. The same durable receipt holds the prepared operation,
 its inverse, and the core's committed result; replay returns that result before
 checking preconditions again. Outstanding cards and active coach turns keep their
 base revisions available even beyond the ordinary snapshot retention window.
