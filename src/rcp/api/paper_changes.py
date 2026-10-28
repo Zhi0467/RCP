@@ -143,10 +143,16 @@ def decide(
     canonical, manager = _manager(project_id, request)
     try:
         if action == "refresh":
-            group = manager._load(canonical, group_id)
+            group = manager.group(canonical, group_id)
             with project_write_admission(project_id, request):
                 return _continue(canonical, group, request)
-        return getattr(manager, action)(canonical, group_id, actor).public()
+        if action == "accept":
+            decided = manager.accept(canonical, group_id, actor)
+        elif action == "reject":
+            decided = manager.reject(canonical, group_id, actor)
+        else:
+            decided = manager.undo(canonical, group_id, actor)
+        return decided.public()
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Paper change group not found") from exc
     except (PaperPaused, MaintenanceAdmissionClosed) as exc:

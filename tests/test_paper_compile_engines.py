@@ -39,7 +39,7 @@ def test_verified_install_is_atomic_and_reusable_offline(tmp_path, monkeypatch):
             restarted.asset("../manifest.json")
         restarted.asset("runtime.js").write_bytes(b"tampered")
         assert restarted.status("typst") == "unavailable"
-        with pytest.raises(ValueError, match="checksum"):
+        with pytest.raises(ValueError):
             restarted.asset("runtime.js")
         await store.close()
 

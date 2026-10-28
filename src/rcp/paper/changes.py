@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -25,7 +24,7 @@ from rcp.limits import (
     PAPER_CHANGES_PREVIEW_LINES,
 )
 from rcp.paper import PaperFile, PaperLive, PaperOp, PaperSnapshot
-from rcp.paper.models import PaperPrecondition, paper_file_kind, paper_path
+from rcp.paper.models import PaperPrecondition, digest, paper_file_kind, paper_path
 from rcp.storage import AppStore
 
 if TYPE_CHECKING:
@@ -417,10 +416,6 @@ def _utf16_length(text: str) -> int:
     return len(text.encode("utf-16-le")) // 2
 
 
-def _sha(body: bytes) -> str:
-    return hashlib.sha256(body).hexdigest()
-
-
 def build_changes(
     task_id: str,
     snapshot: PaperSnapshot,
@@ -485,10 +480,10 @@ def build_changes(
             path=name,
             kind=file_kind,
             text=text,
-            blob_sha256=_sha(body) if file_kind == "binary" else None,
+            blob_sha256=digest(body) if file_kind == "binary" else None,
         )
         if file_kind == "binary":
-            blobs[_sha(body)] = body
+            blobs[digest(body)] = body
         if original is None:
             changes.append(
                 Change(
@@ -499,11 +494,11 @@ def build_changes(
                     base_revision=snapshot.revision,
                     after=text or "",
                     file_kind=file_kind,
-                    after_blob=_sha(body) if file_kind == "binary" else None,
+                    after_blob=digest(body) if file_kind == "binary" else None,
                 )
             )
         elif file_kind == "binary":
-            if _sha(body) != original.blob_sha256:
+            if digest(body) != original.blob_sha256:
                 changes.append(
                     Change(
                         task_id=task_id,
@@ -513,7 +508,7 @@ def build_changes(
                         base_revision=snapshot.revision,
                         file_kind="binary",
                         before_blob=original.blob_sha256,
-                        after_blob=_sha(body),
+                        after_blob=digest(body),
                     )
                 )
         else:
@@ -567,6 +562,9 @@ class PaperChanges:
 
     def _snapshot(self, project_id: str) -> PaperSnapshot:
         return self.live.run_sync(self.live.snapshot(project_id))
+
+    def group(self, project_id: str, group_id: str) -> ChangeGroup:
+        return self._load(project_id, group_id)
 
     def _load(self, project_id: str, group_id: str) -> ChangeGroup:
         with self.store.connection() as connection:
@@ -1006,8 +1004,9 @@ class PaperChanges:
                     "actor": actor,
                     "state": "applied" if directly else "accepted",
                 }
-                # Prepared before mutation, replayed verbatim after a crash. S1's
-                # atomic receipt makes the gap before the final state harmless.
+                # Prepared before mutation, replayed verbatim after a crash. The live
+                # core commits its receipt with the edit, so the gap before the final
+                # state is harmless.
                 self._save_receipt(project_id, group_id, key, "accept", payload)
             try:
                 self._apply(project_id, payload)

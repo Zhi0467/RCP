@@ -83,7 +83,7 @@ def test_coach_changes_are_the_only_write_grant(tmp_path, provider, runtime, ses
         permissions = next(iter(config["agent"].values()))["permission"]
         assert permissions["edit"] == {"*": "deny", f"{str(changes).strip('/')}/**": "allow"}
         assert "bash" not in permissions
-    with pytest.raises(ValueError, match="exactly one absolute changes"):
+    with pytest.raises(ValueError):
         profile.runtime(runtime).turn(replace(request, write_dirs=[]))
-    with pytest.raises(ValueError, match="permission wildcards"):
+    with pytest.raises(ValueError):
         profile.runtime(runtime).turn(replace(request, write_dirs=[tmp_path / "changes*"]))

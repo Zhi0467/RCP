@@ -192,11 +192,14 @@ def test_direct_mode_admission_and_receipt_recovery(setup, monkeypatch):
     )
     assert len(receipts(live)) == 1
 
+    class Closed(Exception):
+        pass
+
     def deny(_project):
-        raise ValueError("admission closed")
+        raise Closed
 
     changes.admission = deny
-    with pytest.raises(ValueError, match="admission closed"):
+    with pytest.raises(Closed):
         changes.undo("p", group.group_id, "human")
 
 
