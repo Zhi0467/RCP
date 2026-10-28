@@ -675,6 +675,22 @@ export async function downloadDesktopArtifact(
   return desktopDownloadPath(result);
 }
 
+/** One Paper file, or a zip of one folder, saved through the native save dialog. */
+export async function downloadDesktopPaper(command: {
+  projectId: string;
+  fileId?: string;
+  folder?: string;
+  suggestedName: string;
+}): Promise<string | null> {
+  if (!isDesktopRuntime())
+    throw new Error("Desktop Paper download is unavailable in this browser.");
+  const result = await invokeDesktop<{ saved: boolean; path?: string | null; error?: string }>(
+    "download_paper_file",
+    command,
+  );
+  return desktopDownloadPath(result);
+}
+
 export async function startDesktopDictation(sessionId: string): Promise<void> {
   if (!isDesktopRuntime()) throw new Error("Dictation is available in the desktop app.");
   await invokeDesktop("desktop_start_dictation", { sessionId });

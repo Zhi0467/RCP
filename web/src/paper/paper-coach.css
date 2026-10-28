@@ -116,9 +116,19 @@
 .paper-agent-popover {
   bottom: 8px;
   max-height: min(460px, calc(100% - 16px));
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
 }
+.paper-agent-popover > .agent-config {
+  flex: 1;
+  min-width: 0;
+}
+/* Close sits on the select row: below the compact config's padding and field label. */
 .paper-agent-popover > .icon-button {
-  float: right;
+  order: 1;
+  flex: none;
+  margin-top: 25px;
 }
 .paper-session-list {
   top: 44px;
@@ -175,6 +185,33 @@
   flex: none;
 }
 @media (min-width: 701px) {
+  /* History and New chat share the Preview/Coach line, so the coach's popovers
+     anchor to the whole pane. */
+  .paper-right-box {
+    --paper-right-bar: 52px;
+    position: relative;
+  }
+  .paper-desktop-segments {
+    height: var(--paper-right-bar);
+  }
+  .paper-right-box .paper-coach {
+    position: static;
+  }
+  .paper-coach-toolbar {
+    position: absolute;
+    top: 0;
+    right: 0;
+    height: var(--paper-right-bar);
+  }
+  .paper-session-list {
+    top: var(--paper-right-bar);
+  }
+  .paper-agent-popover > .icon-button {
+    width: 31px;
+    height: 31px;
+    min-height: 31px;
+    padding: 0;
+  }
   .paper-change .icon-button.compact {
     height: 26px;
     min-height: 26px;
@@ -380,5 +417,11 @@
   .paper-composer-actions .agent-config-chip,
   :root:has(.paper-live-workspace) .branch-picker-trigger {
     min-height: 44px;
+  }
+}
+@media (max-width: 700px) {
+  /* The 44px close target centres on the 31px select row. */
+  .paper-agent-popover > .icon-button {
+    margin-top: calc(25px - (44px - 31px) / 2);
   }
 }

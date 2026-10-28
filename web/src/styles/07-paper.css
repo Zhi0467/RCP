@@ -127,14 +127,82 @@
 .paper-folder svg {
   flex: none;
 }
-.paper-file.selected,
-.paper-folder.selected {
+.paper-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border-radius: 7px;
+}
+.paper-row > .paper-file,
+.paper-row > .paper-folder {
+  flex: 1;
+}
+.paper-row.selected {
   background: var(--aqua-selected, var(--paper));
   box-shadow: var(--aqua-inset, inset 0 0 0 1px var(--rule));
 }
-.paper-file:hover,
-.paper-folder:hover {
+.paper-row:hover {
   background: color-mix(in srgb, var(--teal) 10%, transparent);
+}
+.paper-tree-menu-button {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-right: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  opacity: 0;
+}
+.paper-tree-menu-button:hover,
+.paper-tree-menu-button[aria-expanded="true"] {
+  color: var(--walnut);
+  background: color-mix(in srgb, var(--teal) 14%, transparent);
+}
+.paper-row:hover .paper-tree-menu-button,
+.paper-row:focus-within .paper-tree-menu-button,
+.paper-row.selected .paper-tree-menu-button,
+.paper-tree-menu-button[aria-expanded="true"] {
+  opacity: 1;
+}
+@media (hover: none) {
+  .paper-tree-menu-button {
+    opacity: 1;
+  }
+}
+.paper-tree-menu {
+  position: fixed;
+  z-index: 40;
+  display: grid;
+  min-width: 170px;
+  padding: 5px;
+  border-radius: 9px;
+  background: var(--aqua-surface, var(--surface));
+  box-shadow: var(--aqua-raised, var(--shadow));
+  color: var(--walnut);
+}
+.paper-tree-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  box-shadow: none;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+.paper-tree-menu button:hover:not(:disabled),
+.paper-tree-menu button:focus-visible {
+  background: color-mix(in srgb, var(--teal) 12%, transparent);
 }
 .paper-path-form {
   display: flex;
@@ -192,7 +260,8 @@
   font: 13px/1.75 var(--mono);
   color: var(--walnut);
 }
-.paper-code .cm-editor.cm-focused {
+.paper-code .cm-editor.cm-focused,
+.paper-code .cm-content:focus-visible {
   outline: none;
 }
 .paper-code .cm-scroller {
@@ -399,8 +468,14 @@
   }
   .paper-file,
   .paper-folder,
-  .paper-path-form input {
+  .paper-path-form input,
+  .paper-tree-menu button {
     min-height: 44px;
+  }
+  .paper-tree-menu-button {
+    width: 44px;
+    height: 44px;
+    opacity: 1;
   }
   .paper-live-workspace .icon-button,
   .paper-dialog .icon-button,

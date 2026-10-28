@@ -41,6 +41,7 @@ const COMMANDS: &[&str] = &[
     "desktop_test_notification",
     "open_artifact_pdf",
     "download_artifact",
+    "download_paper_file",
     "open_external",
     "request_quit",
     "check_for_update",

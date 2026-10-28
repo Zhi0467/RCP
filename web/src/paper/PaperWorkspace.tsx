@@ -345,6 +345,7 @@ export function PaperWorkspace({
     >
       <PaperFiles
         apiBase={apiBase}
+        projectId={project.id}
         files={tree?.files ?? []}
         selected={file?.file_id ?? null}
         onSelect={(id, existsAt) => {

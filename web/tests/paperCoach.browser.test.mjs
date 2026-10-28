@@ -274,7 +274,22 @@ test("phone coach agent and branch pickers are 44px targets", async (t) => {
 });
 
 test("on a touch phone Return writes a new line and a tap outside closes chat history", async (t) => {
-  const { page } = await open(t, { touch: true });
+  const session = {
+    provider: "codex",
+    native_session_id: "s1",
+    execution_machine: "local",
+    title: "Earlier",
+    model: "",
+    created_at: new Date().toISOString(),
+  };
+  const { page } = await open(t, {
+    touch: true,
+    configure: (fixture) => {
+      const respond = fixture.respond;
+      fixture.respond = (path, ...rest) =>
+        path.endsWith("/sessions") ? { json: [session] } : respond(path, ...rest);
+    },
+  });
   await coach(page);
   const message = page.getByRole("textbox", { name: "Message" });
   await message.tap();

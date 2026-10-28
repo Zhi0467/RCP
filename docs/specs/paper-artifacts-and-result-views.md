@@ -51,9 +51,15 @@ snapshot holds all saved Paper state and marks it unpublished, so a restore
 republishes the saved text rather than trusting the copied folder. An imported
 project's saved Paper publishes once the transfer activates it, without a visit.
 
-Files keep a stable identity across renames. A new or uploaded file opens at
-once; uploads go to the chosen folder, and an upload over an existing path asks
-first. When a member deletes a file another member has open with unsent text,
+Files keep a stable identity across renames. Folders fold, and every file,
+folder and the tree root carries one action menu: a file renames, downloads or
+deletes; a folder also creates a file, a folder, or an upload inside itself;
+the root creates and uploads. A folder exists through its files' paths, so a
+new empty folder lives only in that browser until a file lands in it. Renaming
+or deleting a folder changes every file under it in one revision, and a folder
+downloads as one zip. The desktop asks where to save each download through the
+native save dialog; a browser downloads normally. A new or uploaded file opens
+at once; an upload over an existing path asks first. When a member deletes a file another member has open with unsent text,
 that member's editor keeps it read-only and offers to recreate it as a new file;
 with nothing unsent the editor moves to another file. A hidden file deleted that
 way stays reachable from one red icon while it holds unsent text, also after a
