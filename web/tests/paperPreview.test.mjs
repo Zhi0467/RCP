@@ -217,6 +217,15 @@ test("Typst worker requests resolved diagnostics and formats source locations", 
     await globalThis.self.onmessage({ data: { id: 1, root: "main.typ", sources: [] } });
     assert.deepEqual(options, [{ mainFilePath: "/main.typ", format: 1, diagnostics: "full" }]);
     assert.deepEqual(replies, [{ id: 1, error: "/sections/part.typ:4: bad input\nno location" }]);
+    // A tree queued behind a failing compile is still compiled and answered under its own id.
+    const running = globalThis.self.onmessage({ data: { id: 2, root: "main.typ", sources: [] } });
+    await globalThis.self.onmessage({ data: { id: 3, root: "main.typ", sources: [] } });
+    await running;
+    assert.equal(options.length, 3);
+    assert.deepEqual(
+      replies.map((reply) => reply.id),
+      [1, 2, 3],
+    );
   } finally {
     globalThis.self = original;
     globalThis.window = originalWindow;

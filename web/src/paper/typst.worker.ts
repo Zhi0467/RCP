@@ -39,46 +39,47 @@ self.onmessage = async ({ data }: MessageEvent<Request>) => {
   pending = data;
   if (running) return;
   running = true;
-  let activeId = data.id;
   try {
-    // A failed load (offline, engine not installed yet) must not stick.
-    const $typst = await (runtime ??= compiler().catch((error: unknown) => {
-      runtime = null;
-      throw error;
-    }));
     while (pending) {
       const request = pending;
       pending = null;
-      activeId = request.id;
-      await $typst.resetShadow();
-      for (const source of request.sources) await $typst.mapShadow(`/${source.path}`, source.bytes);
-      // The convenience pdf() API forces diagnostics off and throws Rust debug text.
-      const compiler = await $typst.getCompiler();
-      await compiler.reset();
-      const result = await compiler.compile({
-        mainFilePath: `/${request.root}`,
-        format: 1,
-        diagnostics: "full",
-      });
-      const pdf = result.result;
-      if (!pdf) {
-        throw new Error(
-          result.diagnostics
-            ?.map(({ path, range, message }) => {
-              const line = range ? Number.parseInt(range, 10) + 1 : null;
-              return path && line ? `${path}:${line}: ${message}` : message;
-            })
-            .join("\n") || "Typst compilation failed",
-        );
+      try {
+        // A failed load (offline, engine not installed yet) must not stick.
+        const $typst = await (runtime ??= compiler().catch((error: unknown) => {
+          runtime = null;
+          throw error;
+        }));
+        await $typst.resetShadow();
+        for (const source of request.sources)
+          await $typst.mapShadow(`/${source.path}`, source.bytes);
+        // The convenience pdf() API forces diagnostics off and throws Rust debug text.
+        const session = await $typst.getCompiler();
+        await session.reset();
+        const result = await session.compile({
+          mainFilePath: `/${request.root}`,
+          format: 1,
+          diagnostics: "full",
+        });
+        const pdf = result.result;
+        if (!pdf) {
+          throw new Error(
+            result.diagnostics
+              ?.map(({ path, range, message }) => {
+                const line = range ? Number.parseInt(range, 10) + 1 : null;
+                return path && line ? `${path}:${line}: ${message}` : message;
+              })
+              .join("\n") || "Typst compilation failed",
+          );
+        }
+        self.postMessage({ id: request.id, pdf });
+      } catch (error) {
+        // The error belongs to this tree; a newer queued tree still compiles.
+        self.postMessage({
+          id: request.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
-      self.postMessage({ id: request.id, pdf });
     }
-  } catch (error) {
-    self.postMessage({
-      id: pending?.id ?? activeId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    pending = null;
   } finally {
     running = false;
   }
