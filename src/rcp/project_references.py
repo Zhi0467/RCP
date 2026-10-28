@@ -85,9 +85,18 @@ def resolve_project_references(
 ) -> list[ResolvedProjectReference]:
     """Read sources once; attachment admission owns retention and combined caps."""
 
-    keys = [selector.model_dump_json() for selector in selectors]
-    if len(set(keys)) != len(keys):
-        raise ValueError("Duplicate project references are not allowed.")
+    whole_paper = any(
+        selector.kind == "paper" and selector.file_id is None for selector in selectors
+    )
+    unique = {}
+    for selector in selectors:
+        if whole_paper and selector.kind == "paper" and selector.file_id is not None:
+            continue
+        key = selector.model_dump_json()
+        if key in unique and selector.kind != "paper":
+            raise ValueError("Duplicate project references are not allowed.")
+        unique.setdefault(key, selector)
+    selectors = list(unique.values())
     resolved = []
     artifact_bytes = 0
     for selector in selectors:

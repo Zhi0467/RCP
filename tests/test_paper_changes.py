@@ -656,3 +656,37 @@ def test_refresh_subset_is_validated_against_the_whole_tree(setup):
     (output / "files/other.md").write_text("collides\n")
     with pytest.raises(InvalidChanges):
         changes.collect("p", "t", subset, output)
+
+
+def test_repeated_deleted_paragraph_makes_card_outdated(setup):
+    snapshot, live, changes, output = setup
+    base = snapshot.files[0].text.replace("line 3\n", "same paragraph\nsame paragraph\n")
+    human_edit(live, "f1", base)
+    snapshot = saved(live)
+    (output / "files/section.md").write_text(base.replace("same paragraph", "improved", 1))
+    group = changes.collect("p", "t", snapshot, output)[0]
+    current = base.replace("same paragraph\n", "", 1)
+    human_edit(live, "f1", current)
+    assert changes.groups("p", "t")[0].state == "outdated"
+    with pytest.raises(OutdatedChange):
+        changes.accept("p", group.group_id, "human")
+    assert saved(live).files[0].text == current
+
+
+def test_groups_reuses_base_and_mapping_across_cards(setup):
+    from unittest.mock import patch
+
+    import rcp.paper.changes as module
+
+    snapshot, live, changes, output = setup
+    before = snapshot.files[0].text
+    (output / "files/section.md").write_text(
+        before.replace("line 3\n", "first\n").replace("line 20\n", "second\n")
+    )
+    changes.collect("p", "t", snapshot, output)
+    with (
+        patch.object(live, "text_at", wraps=live.text_at) as reads,
+        patch.object(module, "_RangeMapping", wraps=module._RangeMapping) as mappings,
+    ):
+        assert len(changes.groups("p", "t")) == 2
+    assert reads.call_count == mappings.call_count == 1

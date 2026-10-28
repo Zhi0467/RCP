@@ -10,6 +10,7 @@ import os
 import stat
 import tempfile
 import uuid
+from collections import Counter
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from difflib import SequenceMatcher
@@ -263,7 +264,7 @@ def validate_output(
 
 
 def line_changes(before: str, after: str) -> list[tuple[str, int, int, str, str, int, int]]:
-    """Return deterministic offset ranges, retaining identity even for repeated paragraphs."""
+    """Return deterministic offset ranges for review against the saved base."""
     old, new = before.splitlines(keepends=True), after.splitlines(keepends=True)
     edits = [
         op
@@ -300,23 +301,52 @@ def line_changes(before: str, after: str) -> list[tuple[str, int, int, str, str,
     ]
 
 
-def map_range(base: str, current: str, start: int, end: int) -> tuple[int, int]:
-    """Translate base offsets; ambiguous boundary insertions and overlaps are stale."""
+class _RangeMapping:
+    """One diff, with changed neighbourhoods bounded by unique unchanged lines."""
+
+    def __init__(self, base: str, current: str):
+        self.base, self.current = base, current
+        old, new = base.splitlines(keepends=True), current.splitlines(keepends=True)
+        old_counts, new_counts = Counter(old), Counter(new)
+        old_offsets, new_offsets = [0], [0]
+        for line in old:
+            old_offsets.append(old_offsets[-1] + len(line))
+        for line in new:
+            new_offsets.append(new_offsets[-1] + len(line))
+        self.edits: list[tuple[int, int, int, int]] = []
+        left, right = 0, 0
+        windows = []
+        for tag, a, b, c, d in SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
+            if tag != "equal":
+                self.edits.append((old_offsets[a], old_offsets[b], new_offsets[c], new_offsets[d]))
+                continue
+            for i, j in zip(range(a, b), range(c, d), strict=True):
+                if old_counts[old[i]] == new_counts[old[i]] == 1:
+                    windows.append((left, old_offsets[i], right, new_offsets[j]))
+                    left, right = old_offsets[i + 1], new_offsets[j + 1]
+        windows.append((left, len(base), right, len(current)))
+        self.changed = [(a, b, c, d) for a, b, c, d in windows if base[a:b] != current[c:d]]
+
+    def map(self, start: int, end: int) -> tuple[int, int]:
+        mapped = _map_edits(self.base, self.current, start, end, self.edits)
+        anchor = self.base[start:end]
+        if anchor:
+            for a, b, c, d in self.changed:
+                if a < end and b > start:
+                    for text in (self.base[a:b], self.current[c:d]):
+                        first = text.find(anchor)
+                        if first >= 0 and text.find(anchor, first + 1) >= 0:
+                            raise OutdatedChange("The anchored paper region is ambiguous")
+        return mapped
+
+
+def _map_edits(
+    base: str, current: str, start: int, end: int, edits: list[tuple[int, int, int, int]]
+) -> tuple[int, int]:
     if not 0 <= start <= end <= len(base):
         raise OutdatedChange("Invalid base anchor")
     shift = 0
-    old_lines, new_lines = base.splitlines(keepends=True), current.splitlines(keepends=True)
-    old_offsets, new_offsets = [0], [0]
-    for line in old_lines:
-        old_offsets.append(old_offsets[-1] + len(line))
-    for line in new_lines:
-        new_offsets.append(new_offsets[-1] + len(line))
-    for tag, a, b, c, d in SequenceMatcher(
-        None, old_lines, new_lines, autojunk=False
-    ).get_opcodes():
-        if tag == "equal":
-            continue
-        a, b, c, d = old_offsets[a], old_offsets[b], new_offsets[c], new_offsets[d]
+    for a, b, c, d in edits:
         overlaps = (
             (a == b and start <= a <= end)
             or (start == end and a <= start <= b)
@@ -330,6 +360,11 @@ def map_range(base: str, current: str, start: int, end: int) -> tuple[int, int]:
     if current[mapped[0] : mapped[1]] != base[start:end]:
         raise OutdatedChange("The anchored paper region changed")
     return mapped
+
+
+def map_range(base: str, current: str, start: int, end: int) -> tuple[int, int]:
+    """Translate anchors only when their changed neighbourhood is unambiguous."""
+    return _RangeMapping(base, current).map(start, end)
 
 
 def _preview(change: Change) -> None:
@@ -644,11 +679,12 @@ class PaperChanges:
             ).fetchall()
         result = []
         current = self._snapshot(project_id)
+        mappings: dict[tuple[str, int, int], _RangeMapping] = {}
         for row in ids:
             group = self._load(project_id, row[0])
             if group.state == "pending":
                 try:
-                    self._prepare(project_id, group, current)
+                    self._prepare(project_id, group, current, mappings)
                 except OutdatedChange:
                     group.state = "outdated"
             result.append(group)
@@ -674,13 +710,19 @@ class PaperChanges:
         return self.affected_file_ids(project_id, self.stale_group_ids(project_id, task_id))
 
     def _prepare(
-        self, project_id: str, group: ChangeGroup, current: PaperSnapshot
+        self,
+        project_id: str,
+        group: ChangeGroup,
+        current: PaperSnapshot,
+        mappings: dict[tuple[str, int, int], _RangeMapping] | None = None,
     ) -> tuple[
         list[dict[str, object]],
         list[dict[str, object]],
         list[dict[str, object]],
         list[dict[str, object]],
     ]:
+        if mappings is None:
+            mappings = {}
         by_id = {file.file_id: file for file in current.files}
         paths = {file.path for file in current.files}
         checks: list[dict[str, object]] = []
@@ -724,10 +766,15 @@ class PaperChanges:
             resulting.setdefault(file.file_id, file.model_copy(deep=True))
             checks.append({"file_id": file.file_id, "path": file.path, "kind": file.kind})
             if change.kind in {"edit", "rewrite"}:
-                base = self.live.run_sync(
-                    self.live.text_at(project_id, file.file_id, change.base_revision)
-                )
-                start, end = map_range(base, file.text or "", change.start, change.end)
+                key = (file.file_id, change.base_revision, current.revision)
+                if key not in mappings:
+                    base = self.live.run_sync(
+                        self.live.text_at(project_id, file.file_id, change.base_revision)
+                    )
+                    mappings[key] = _RangeMapping(base, file.text or "")
+                mapping = mappings[key]
+                base = mapping.base
+                start, end = mapping.map(change.start, change.end)
                 if base[change.start : change.end] != change.before:
                     raise OutdatedChange("Stored paper anchor does not match its base")
                 live_text = file.text or ""

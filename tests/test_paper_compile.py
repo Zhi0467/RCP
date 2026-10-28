@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from rcp.paper import PaperSnapshot
-from rcp.paper.compile import PaperCompiler, root_candidates, typst_root_candidates
+from rcp.paper.compile import PaperCompiler, root_candidates
 from rcp.paper.engines import EngineStore
 from rcp.paper.models import PaperFile
 from tests.helpers import async_wait_until
@@ -43,21 +43,7 @@ from tests.helpers import async_wait_until
     ],
 )
 def test_latex_roots(files, opened, expected):
-    assert root_candidates(files, opened, "latex") == expected
-
-
-def test_typst_roots_include_import_comments_and_cycles():
-    files = {
-        "a.typ": '#import "sub/b.typ": *',
-        "sub/b.typ": '#include "c.typ"',
-        "sub/c.typ": "text",
-    }
-    assert typst_root_candidates(files, "sub/c.typ") == ["a.typ"]
-    files["other.typ"] = '#include "sub/c.typ"'
-    assert typst_root_candidates(files, "sub/c.typ") == ["a.typ", "other.typ"]
-    files["other.typ"] = '// #include "sub/c.typ"'
-    files["sub/c.typ"] = '#include "../a.typ"'
-    assert typst_root_candidates(files, "sub/c.typ") == []
+    assert root_candidates(files, opened) == expected
 
 
 class Live:
@@ -176,7 +162,6 @@ def test_unbraced_latex_input():
     assert root_candidates(
         {"a.tex": "\\documentclass{article}\n\\input part\n", "part.tex": "text"},
         "part.tex",
-        "latex",
     ) == ["a.tex"]
 
 
@@ -207,10 +192,10 @@ def test_latex_nested_inputs_resolve_from_document_root():
         "paper/sections/a.tex": r"\include{sections/b}",
         "paper/sections/b.tex": "Nested section",
     }
-    assert root_candidates(files, "paper/sections/b.tex", "latex") == ["paper/root.tex"]
+    assert root_candidates(files, "paper/sections/b.tex") == ["paper/root.tex"]
     files["paper/root.tex"] = r"\documentclass{article}\subfile{sections/a}"
     files["paper/sections/a.tex"] = r"\input{b}"
-    assert root_candidates(files, "paper/sections/b.tex", "latex") == ["paper/root.tex"]
+    assert root_candidates(files, "paper/sections/b.tex") == ["paper/root.tex"]
 
 
 @pytest.mark.asyncio

@@ -139,3 +139,32 @@ def test_expired_artifact_is_refused(branch_services):
             branch_services,
             [ArtifactReferenceSelector(kind="artifact", artifact_id=artifact.artifact_id)],
         )
+
+
+@pytest.mark.parametrize("whole_first", [False, True])
+def test_whole_paper_subsumes_selected_files_and_stages_once(
+    branch_services, tmp_path, whole_first
+):
+    import uuid
+
+    from rcp.attachments import ChatAttachmentStore
+    from tests.paper_helpers import saved, start_paper
+
+    live = start_paper(branch_services[0].paper_live)
+    snapshot = saved(live, "project")
+    selectors = [
+        PaperReferenceSelector(kind="paper", file_id=snapshot.files[0].file_id),
+        PaperReferenceSelector(kind="paper"),
+    ]
+    if whole_first:
+        selectors.reverse()
+    items = _resolve(branch_services, selectors)
+    assert len(items) == len(snapshot.files)
+    batch = ChatAttachmentStore(tmp_path / "attachments").claim(
+        project_id="project",
+        chat_id=str(uuid.uuid4()),
+        client_id=str(uuid.uuid4()),
+        operation_id=str(uuid.uuid4()),
+        reference_files=items,
+    )
+    assert len(batch.attachments) == len(snapshot.files)
