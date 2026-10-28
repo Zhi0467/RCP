@@ -135,6 +135,10 @@ async def paper_socket(socket: WebSocket, project_id: str, file_id: str) -> None
         return
     try:
         await socket.accept()
+    except (RuntimeError, WebSocketDisconnect):
+        # The client left while admission waited; uvicorn refuses a late accept.
+        room.subscribers.discard(queue)
+        return
     except BaseException:
         room.subscribers.discard(queue)
         raise
