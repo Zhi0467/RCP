@@ -106,6 +106,25 @@ async def test_saved_snapshot_refreshes_same_session_only_affected_files(
 
 
 @pytest.mark.asyncio
+async def test_every_coach_turn_of_a_project_runs_in_one_folder(coach):
+    service, _live, data = coach
+    folders = []
+
+    class Launcher:
+        async def stream(self, _provider, _prompt, **kwargs):
+            folders.append(kwargs["cwd"])
+            yield AgentEvent(event="session", session_id=f"folder-native-{len(folders)}")
+            yield AgentEvent(event="done")
+
+    for _ in range(2):
+        events = await run_coach(service, Launcher(), data, execution=execution_for(service))
+        assert not [event for event in events if event.event == "error"]
+    # Providers look a resumed session up by its folder.
+    assert folders[0] == folders[1]
+    assert folders[0].is_dir()
+
+
+@pytest.mark.asyncio
 async def test_direct_apply_uses_saved_mode_and_admission(coach):
     service, live, data = coach
     execution = execution_for(service)

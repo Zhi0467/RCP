@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import os
 import tempfile
 from collections.abc import AsyncGenerator, Callable
 from contextlib import aclosing
@@ -289,6 +291,13 @@ async def _stream_coach(
         local_stage.mkdir(parents=True, exist_ok=False)
         if execution is not None:
             execution.checkpoint_stage("", str(local_stage))
+    # OpenCode and Claude find a native session by its working folder, so every coach
+    # turn in a project runs in one folder; a per-turn folder strands follow-ups.
+    workspace = (
+        stage_root / f"paper-coach-{hashlib.sha256(paper.project_id.encode()).hexdigest()[:16]}"
+    )
+    workspace.mkdir(mode=0o700, exist_ok=True)
+    os.utime(workspace)
     try:
         live = service.paper_live
         changes = get_paper_changes(service)
@@ -378,9 +387,11 @@ async def _stream_coach(
             revision=service.history.state().revision,
             native_session_id=request.session_id,
         )
+        # The client writes requests into its working folder, so the mailbox lives there.
         history_staged = stage_patch_validation_mailbox(
-            local_stage=local_stage,
+            local_stage=workspace,
             remote_stage=None,
+            local_input_stage=local_stage,
             task_id=token,
             turn_id=f"{token}:paper",
             authority="broker",
@@ -514,8 +525,6 @@ async def _stream_coach(
             "launch_kind": "retry" if retry_attempt else "resume" if resuming else "initial",
         },
     )
-    workspace = local_stage / "workspace"
-    workspace.mkdir(exist_ok=True)
     hidden_read_scope = await _prepare_hidden_read_scope(
         service,
         request,
