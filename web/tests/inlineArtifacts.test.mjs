@@ -272,14 +272,14 @@ test("Markdown hands an embedded image to the reply's renderer and keeps other i
 test("a link around an embedded artifact renders without the link, so its actions stay its own", () => {
   const rendered = renderToStaticMarkup(
     createElement(MarkdownAnswer, {
-      text: `[![Plot](${dir}/plot.html)](/repo/file.py) and [a link](/repo/other.py)`,
+      text: `[![Plot](${dir}/plot.html)](/repo/file.py) and [a link](https://example.com/other.py)`,
       renderEmbed: (src, alt) =>
         src.endsWith("plot.html") ? createElement("span", { "data-embed": alt }) : null,
     }),
   );
   assert.match(
     rendered,
-    /<p><span data-embed="Plot"><\/span> and <a href="\/repo\/other.py">a link<\/a><\/p>/,
+    /<p><span data-embed="Plot"><\/span> and <a href="https:\/\/example.com\/other.py"[^>]*>a link<\/a><\/p>/,
   );
   // A link around an ordinary image is kept.
   assert.match(
@@ -289,7 +289,7 @@ test("a link around an embedded artifact renders without the link, so its action
         renderEmbed: () => null,
       }),
     ),
-    /<a href="https:\/\/example.com"><img/,
+    /<a href="https:\/\/example.com"[^>]*><img/,
   );
 });
 

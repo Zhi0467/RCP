@@ -138,6 +138,20 @@ def test_saved_section_refuses_missing_snapshot_or_corrupt_content(monkeypatch):
         connection.close()
 
 
+def test_document_text_that_looks_like_metadata_is_not_a_reference(monkeypatch):
+    connection = _database()
+    try:
+        _saved_paper(connection, monkeypatch)
+        text = json.dumps({"blob_sha256": "0" * 64, "text_sha256": "1" * 64})
+        connection.execute(
+            "UPDATE paper_change_receipts SET payload=?",
+            (json.dumps({"ops": [{"kind": "replace", "file_id": "text", "text": text}]}),),
+        )
+        assert capture_paper_section(connection, "p") is not None
+    finally:
+        connection.close()
+
+
 def test_projection_is_recursive_binary_safe_and_rejects_links(tmp_path):
     paper = tmp_path / "paper"
     (paper / "sections").mkdir(parents=True)

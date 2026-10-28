@@ -609,10 +609,16 @@ class BackupProjectFileCaptureCoordinator:
                 closing(AppStore.open_read_only_snapshot(capture_root / "rcp.sqlite3")) as store,
                 store.connection() as connection,
             ):
-                saved = connection.execute(
-                    "SELECT 1 FROM paper_publication WHERE project_id = ?",
-                    (inventory.project_id,),
-                ).fetchone()
+                # A capture taken before the live-paper migration has no Paper tables.
+                saved = (
+                    connection.execute(
+                        "SELECT 1 FROM sqlite_schema WHERE name = 'paper_publication'"
+                    ).fetchone()
+                    and connection.execute(
+                        "SELECT 1 FROM paper_publication WHERE project_id = ?",
+                        (inventory.project_id,),
+                    ).fetchone()
+                )
             sources = paper_projection_sources(source_root)
             for source in sources:
                 legacy = saved is None and sources == (source_root / "paper/introduction.md",)

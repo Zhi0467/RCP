@@ -13,7 +13,6 @@ import re
 import sqlite3
 import stat
 import zlib
-from contextlib import suppress
 from pathlib import Path
 from typing import Literal, cast
 
@@ -176,46 +175,43 @@ def _rows(connection: sqlite3.Connection, table: str, where: str = "", args: tup
 
 
 def _references(files, tables) -> tuple[set[str], set[str]]:
+    """Body references, read like ``collect_bodies``: only the JSON columns are decoded,
+    so document text that happens to look like JSON is never taken for metadata."""
     blobs = {file.blob_sha256 for file in files if file.blob_sha256 is not None}
     texts: set[str] = set()
 
-    # History and coach receipts may retain deleted/replaced content.
-    def visit(value):
+    def receipt_blobs(value):
         if isinstance(value, dict):
             for key, item in value.items():
-                if key in {
-                    "blob_sha256",
-                    "before_blob",
-                    "after_blob",
-                    "text_sha256",
-                } and isinstance(item, str):
-                    (texts if key == "text_sha256" else blobs).add(item)
+                if key == "blob_sha256" and isinstance(item, str):
+                    blobs.add(item)
                 else:
-                    visit(item)
+                    receipt_blobs(item)
         elif isinstance(value, list):
             for item in value:
-                visit(item)
-        elif isinstance(value, str) and value[:1] in {"[", "{"}:
-            with suppress(ValueError):
-                visit(json.loads(value))
+                receipt_blobs(item)
 
-    # Like collect_bodies: only undecided cards hold their bodies; a decided card's
-    # surviving bodies are held by its receipts.
+    # History may retain deleted/replaced content.
+    for table in ("paper_versions", "paper_saved_snapshots"):
+        for row in tables.get(table, ()):
+            for entry in json.loads(row["manifest"]):
+                if entry.get("text_sha256"):
+                    texts.add(entry["text_sha256"])
+                if entry.get("blob_sha256"):
+                    blobs.add(entry["blob_sha256"])
+    for row in tables.get("paper_change_receipts", ()):
+        receipt_blobs(json.loads(row["payload"]))
+    # Only undecided cards hold their bodies; a decided card's surviving bodies are
+    # held by its receipts.
     undecided = {
         row["group_id"]
         for row in tables.get("paper_change_groups", ())
         if row["state"] in {"pending", "outdated"}
     }
-    for table, rows in tables.items():
-        if table in PAPER_PROJECT_TABLES:
-            for row in rows:
-                # Deleted identities survive after their last retained body expires.
-                # A retained version/snapshot supplies any remaining body reference.
-                if table == "paper_files" and row.get("deleted_at") is not None:
-                    continue
-                if table == "paper_changes" and row["group_id"] not in undecided:
-                    continue
-                visit(row)
+    for row in tables.get("paper_changes", ()):
+        if row["group_id"] in undecided:
+            change = json.loads(row["payload"])
+            blobs.update(change[key] for key in ("before_blob", "after_blob") if change.get(key))
     return blobs, texts
 
 
