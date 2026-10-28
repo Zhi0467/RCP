@@ -21,7 +21,7 @@ from rcp.artifacts import (
     descriptor_for,
     html_preview_document,
 )
-from rcp.limits import ARTIFACT_INLINE_INITIAL_HEIGHT_PX, ARTIFACT_INLINE_MAX_HEIGHT_PX
+from rcp.limits import ARTIFACT_INLINE_HEIGHT_PX
 from rcp.storage import Artifact
 
 from .helpers import assert_frozen_backend_ships, create_named_app, signed_in_client
@@ -66,7 +66,7 @@ def test_a_declared_doctype_leads_the_page_so_it_renders_in_standards_mode() -> 
 
 
 @pytest.mark.parametrize(("theme", "mode"), [("aqua", "dark"), ("classic", "light")])
-def test_inline_html_paints_with_the_reply_theme_and_reports_its_height(theme, mode) -> None:
+def test_inline_html_paints_with_the_reply_theme(theme, mode) -> None:
     appearance = InlineAppearance(theme, mode)
     document, media_type, csp = artifact_content("game.html", "text/html", PAGE, inline=appearance)
     assert media_type == "text/html"
@@ -77,9 +77,6 @@ def test_inline_html_paints_with_the_reply_theme_and_reports_its_height(theme, m
     assert artifact_theme_css(theme, mode) in page
     for name, value in theme_tokens(theme, mode).items():
         assert f"--rcp-{name}:{value};" in page
-    assert "height:auto!important" in page
-    assert "send({kind:'rcp-artifact-size',height})" in page
-    assert "type:'rcp-artifact-size'" in str(document)
     # The theme precedes the page's own markup, so the page's rules still win.
     assert page.index(artifact_theme_css(theme, mode)) < page.index("<html>")
     # The opaque sandbox and the page's own policy are unchanged.
@@ -93,7 +90,6 @@ def test_panel_content_is_unchanged_by_the_inline_presentation() -> None:
     document, _, _ = artifact_content("game.html", "text/html", PAGE)
     page = _srcdoc(str(document))
     assert "--rcp-ink" not in page
-    assert "rcp-artifact-size" not in str(document)
     assert "color-scheme" not in str(document)
     markdown, _, csp = artifact_content("notes.md", "text/markdown", b"# Notes")
     assert "<script" not in str(markdown)
@@ -107,29 +103,20 @@ def test_panel_content_is_unchanged_by_the_inline_presentation() -> None:
         ("log.txt", b"line one\n<script>alert(1)</script>\n"),
     ],
 )
-def test_inline_text_runs_only_rcp_s_nonce_bound_height_report(name, data) -> None:
+def test_inline_text_runs_no_script(name, data) -> None:
     document, media_type, csp = artifact_content(
         name, classify_artifact_bytes(name, data), data, inline=InlineAppearance("aqua", "dark")
     )
     page = str(document)
     assert media_type == "text/html"
-    nonce = re.search(r"script-src 'nonce-([^']+)'", csp)
-    assert nonce
-    scripts = re.findall(r"<script([^>]*)>", page)
-    assert scripts == [f' nonce="{nonce.group(1)}"']
+    assert "<script" not in page
     assert "&lt;script&gt;" in page
-    assert csp.startswith("sandbox allow-scripts;")
-    assert "'unsafe-inline'" not in csp.split("script-src")[1].split(";")[0]
+    assert csp.startswith("sandbox;") and "script-src" not in csp
     assert "frame-ancestors 'self'" in csp
     assert "--rcp-ink:#e5ebf2;" in page and "color-scheme:dark!important" in page
-    # Two renders never share a nonce.
-    _, _, again = artifact_content(
-        name, classify_artifact_bytes(name, data), data, inline=InlineAppearance("aqua", "dark")
-    )
-    assert again != csp
 
 
-def test_the_inline_shell_has_no_chrome_and_bounds_its_content() -> None:
+def test_the_inline_shell_has_no_chrome() -> None:
     assert_frozen_backend_ships("artifact_inline.js", "artifact_selection.js")
     descriptor = _descriptor("game.html", "text/html")
     document, csp = artifact_viewer_document(
@@ -142,8 +129,6 @@ def test_the_inline_shell_has_no_chrome_and_bounds_its_content() -> None:
     )
     assert "<header" not in document and 'id="keep"' not in document
     assert 'id="composer"' not in document
-    assert f'"maxHeight": {ARTIFACT_INLINE_MAX_HEIGHT_PX}' in document
-    assert f'"initialHeight": {ARTIFACT_INLINE_INITIAL_HEIGHT_PX}' in document
     assert '"selectable": true' in document
     assert '<iframe id="preview" sandbox="allow-scripts"' in document
     assert "liveUrl=" in document
@@ -168,7 +153,7 @@ def test_the_agent_is_told_to_embed_with_the_tokens_and_bound_rcp_applies() -> N
     assert "![" in contract and "(/stage/turns/op/artifacts/" in contract
     for name in ARTIFACT_THEME_TOKENS:
         assert f"--rcp-{name}" in contract
-    assert f"{ARTIFACT_INLINE_MAX_HEIGHT_PX}px" in contract
+    assert f"{ARTIFACT_INLINE_HEIGHT_PX}px" in contract
     # Every advertised token is one the frame actually receives.
     assert set(theme_tokens("aqua", "light")) == set(ARTIFACT_THEME_TOKENS)
 

@@ -19,7 +19,6 @@ const server = await createServer({
 });
 const { MarkdownAnswer } = await server.ssrLoadModule("/src/core/chatMarkdown.ts");
 const {
-  INLINE_ARTIFACT_MAX_HEIGHT,
   ARTIFACT_ERROR_MAX_CHARS,
   turnArtifactFor,
   inlineArtifactIds,
@@ -165,19 +164,13 @@ test("shell messages are read only from that frame and bounded", () => {
   const origin = "http://rcp.test";
   const read = (data, source = frame, from = origin) =>
     readInlineShellMessage({ source, origin: from, data }, frame, origin);
-  assert.deepEqual(read({ type: "rcp-artifact-size", version: 1, height: 640.2 }), {
-    kind: "size",
-    height: 641,
-  });
-  assert.equal(
-    read({ type: "rcp-artifact-size", version: 1, height: 1e9 }).height,
-    INLINE_ARTIFACT_MAX_HEIGHT,
-    ARTIFACT_ERROR_MAX_CHARS,
-  );
-  assert.equal(read({ type: "rcp-artifact-size", version: 1, height: 40 }, {}), null);
-  assert.equal(read({ type: "rcp-artifact-size", version: 1, height: 40 }, frame, "null"), null);
-  assert.equal(read({ type: "rcp-artifact-size", version: 1, height: "tall" }), null);
-  assert.equal(read({ type: "rcp-artifact-size", version: 2, height: 40 }), null);
+  const cleared = { type: "rcp-artifact-selection", version: 1, selection: null };
+  assert.equal(read(cleared).kind, "selection");
+  assert.equal(read(cleared, {}), null);
+  assert.equal(read(cleared, frame, "null"), null);
+  assert.equal(read({ ...cleared, version: 2 }), null);
+  // The chat fixes each frame's height, so no frame can resize itself.
+  assert.equal(read({ type: "rcp-artifact-size", version: 1, height: 640 }), null);
 
   const box = read({
     type: "rcp-artifact-selection",

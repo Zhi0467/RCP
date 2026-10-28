@@ -1,5 +1,5 @@
 // The viewer shell inside a reply. `inlineConfig` is defined by the shell document.
-// The shell sizes itself to its content and tells the containing chat its height;
+// The shell fills the fixed frame the chat gives it, and the content scrolls inside;
 // comment mode forwards selections to the chat, which stages them in its composer.
 const inlineRoot = document.documentElement;
 const inlineFrame = document.getElementById("preview");
@@ -8,8 +8,6 @@ const inlineOrigin = window.location.origin;
 const toChat = (value) => {
   if (window.parent !== window) window.parent.postMessage(value, inlineOrigin);
 };
-const clampHeight = (value) =>
-  Math.max(1, Math.min(inlineConfig.maxHeight, Math.ceil(value)));
 
 // The content renders with the reply's appearance, so a theme switch reloads it.
 let inlineAppearance = "";
@@ -27,7 +25,6 @@ function loadInlineContent() {
   url.searchParams.set("presentation", "inline");
   url.searchParams.set("theme", inlineRoot.dataset.theme || "aqua");
   url.searchParams.set("color_mode", inlineRoot.dataset.colorMode || "light");
-  inlineFrame.style.height = `${inlineConfig.initialHeight}px`;
   inlineFrame.src = url.pathname + url.search;
 }
 loadInlineContent();
@@ -35,15 +32,6 @@ new MutationObserver(loadInlineContent).observe(inlineRoot, {
   attributes: true,
   attributeFilter: ["data-theme", "data-color-mode"],
 });
-
-let lastShellHeight = -1;
-function reportShellHeight() {
-  const height = Math.ceil(inlineRoot.getBoundingClientRect().height);
-  if (height === lastShellHeight) return;
-  lastShellHeight = height;
-  toChat({ type: "rcp-artifact-size", version: 1, height });
-}
-new ResizeObserver(reportShellHeight).observe(inlineRoot);
 
 // Comment mode: off until the chat asks, so a game or a chart reacts to the pointer.
 let commentMode = false;
@@ -150,9 +138,7 @@ window.addEventListener("message", (event) => {
   const value = event.data;
   if (!value || typeof value !== "object") return;
   if (inlineFrame && event.source === inlineFrame.contentWindow) {
-    if (value.type === "rcp-artifact-size" && value.version === 1 && Number.isFinite(value.height))
-      inlineFrame.style.height = `${clampHeight(value.height)}px`;
-    else if (
+    if (
       inlineConfig.selectable &&
       commentMode &&
       value.type === "rcp-artifact-selection" &&

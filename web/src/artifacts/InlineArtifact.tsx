@@ -1,12 +1,12 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { FileX, Maximize2, MessageSquarePlus, RefreshCw } from "lucide-react";
+import { FileX, Maximize2, MessageSquarePlus, RefreshCw, TriangleAlert } from "lucide-react";
 import { useResource, useRefreshRuntime } from "../core/useResource";
 import { resourceKeyId } from "../core/resourceStore";
 import { artifactStateProfile } from "./artifactResources";
 import { errorMessage } from "../core/errors";
 import type { AgentArtifactDescriptor } from "../core/types";
 import {
-  INLINE_ARTIFACT_INITIAL_HEIGHT,
+  INLINE_ARTIFACT_HEIGHT,
   inlineViewerUrl,
   readInlineShellMessage,
   type InlineSelection,
@@ -27,8 +27,11 @@ export interface InlineArtifactSelectionEvent {
 
 interface InlineArtifactProps {
   projectId: string;
-  artifact: AgentArtifactDescriptor;
+  /** Null while the turn that owns it loads; the same element then shows it. */
+  artifact: AgentArtifactDescriptor | null;
   title: string;
+  /** Fetches the owning turn once, when an embed mounts without its artifact. */
+  onLoadTask?: () => void;
   /** Changes when a turn in this chat settles, so a published edit is picked up. */
   refreshToken: string;
   /** Whether this reader may stage comments; false in a read-only transcript. */
@@ -46,11 +49,15 @@ interface InlineArtifactProps {
   onVersionChange: () => void;
 }
 
-/** One artifact shown in place inside a reply: the viewer shell, sized by its content. */
+/** One artifact shown in place inside a reply: the viewer shell in a fixed-height frame.
+ *
+ * The frame has its final height before it loads, so loading, a refresh, or a new
+ * version never moves the reply around it; taller content scrolls inside. */
 export function InlineArtifact({
   projectId,
   artifact,
   title,
+  onLoadTask,
   canComment,
   keeping,
   actionError,
@@ -68,12 +75,11 @@ export function InlineArtifact({
   const owner = useId();
   const resource = useResource(
     `${projectId}:inline:${owner}`,
-    near ? artifactStateProfile(projectId, artifact.artifact_id) : null,
+    near && artifact ? artifactStateProfile(projectId, artifact.artifact_id) : null,
   );
   const state = resource.value;
   const error = resource.error ? errorMessage(resource.error) : "";
   const [pageError, setPageError] = useState<{ message: string; count: number } | null>(null);
-  const [height, setHeight] = useState(INLINE_ARTIFACT_INITIAL_HEIGHT);
   const [commentMode, setCommentMode] = useState(false);
   const commentModeRef = useRef(commentMode);
   commentModeRef.current = commentMode;
@@ -86,6 +92,12 @@ export function InlineArtifact({
   const freshSessionRef = useRef(false);
   freshSessionRef.current = Boolean(state?.fresh_session_required);
 
+  const loadTask = useRef(onLoadTask);
+  loadTask.current = onLoadTask;
+  useEffect(() => {
+    loadTask.current?.();
+  }, []);
+
   // A long chat mounts only the frames a reader is about to reach.
   useEffect(() => {
     const element = host.current;
@@ -94,11 +106,14 @@ export function InlineArtifact({
       setNear(true);
       return;
     }
+    // The margin reaches past the chat's own scroll box only when that box is the root.
+    let root = element.parentElement;
+    while (root && !/auto|scroll/.test(getComputedStyle(root).overflowY)) root = root.parentElement;
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries.some((entry) => entry.isIntersecting)) setNear(true);
       },
-      { rootMargin: "800px 0px" },
+      { root, rootMargin: "800px 0px" },
     );
     observer.observe(element);
     return () => observer.disconnect();
@@ -124,10 +139,6 @@ export function InlineArtifact({
         window.location.origin,
       );
       if (!value) return;
-      if (value.kind === "size") {
-        setHeight(value.height);
-        return;
-      }
       if (value.kind === "error" || value.kind === "error-clear") {
         setPageError(value.kind === "error" ? value : null);
         return;
@@ -175,7 +186,7 @@ export function InlineArtifact({
   const selectable =
     canComment &&
     Boolean(state?.can_comment) &&
-    (artifact.view === "html" || artifact.view === "image");
+    (artifact?.view === "html" || artifact?.view === "image");
   // A refresh can withdraw commenting, such as another edit reserving the
   // artifact, and would leave comment mode on with no Done to end it.
   useEffect(() => {
@@ -183,31 +194,46 @@ export function InlineArtifact({
     setCommentMode(false);
     onSelectionCancelRef.current();
   }, [selectable]);
+  if (!artifact)
+    return (
+      <span ref={host} className="chat-inline-artifact">
+        <span
+          className="chat-inline-artifact-placeholder"
+          style={{ height: INLINE_ARTIFACT_HEIGHT }}
+          role="status"
+          aria-label={`Loading ${title}`}
+        />
+        <span className="chat-inline-artifact-bar">
+          <span className="chat-inline-artifact-name">{title}</span>
+        </span>
+      </span>
+    );
   const source = state?.viewer_url ? inlineViewerUrl(state.viewer_url) : null;
+  const pageErrorText = pageError ? `This page hit an error: ${pageError.message}` : "";
   return (
     <span
       ref={host}
-      className={`chat-inline-artifact ${artifact.view}${commentMode ? " commenting" : ""}`}
-      style={error ? { border: "1px solid var(--danger, #b42318)" } : undefined}
+      className={`chat-inline-artifact ${artifact.view}${commentMode ? " commenting" : ""}${error || pageError ? " failed" : ""}`}
       data-artifact-id={artifact.artifact_id}
     >
-      {source ? (
-        <iframe
-          ref={frame}
-          key={`${state?.current_version}:${source}`}
-          className="chat-inline-artifact-frame"
-          src={source}
-          title={title}
-          style={{ height }}
-          onLoad={() => postCommentMode(commentModeRef.current)}
-        />
-      ) : (
-        <span
-          className="chat-inline-artifact-placeholder"
-          style={{ height: error ? undefined : INLINE_ARTIFACT_INITIAL_HEIGHT }}
-          role={error ? "alert" : "status"}
-        >
-          {error && (
+      {/* One box from mount on: the frame goes inside it rather than replacing it,
+          since WebKit moved the scroll when a box left the page and another took its place. */}
+      <span
+        className={source ? "chat-inline-artifact-box" : "chat-inline-artifact-placeholder"}
+        style={{ height: INLINE_ARTIFACT_HEIGHT }}
+        role={source ? undefined : error ? "alert" : "status"}
+      >
+        {source ? (
+          <iframe
+            ref={frame}
+            key={`${state?.current_version}:${source}`}
+            className="chat-inline-artifact-frame"
+            src={source}
+            title={title}
+            onLoad={() => postCommentMode(commentModeRef.current)}
+          />
+        ) : (
+          error && (
             <button
               aria-label="Retry artifact"
               title={error}
@@ -219,9 +245,9 @@ export function InlineArtifact({
             >
               <RefreshCw size={14} />
             </button>
-          )}
-        </span>
-      )}
+          )
+        )}
+      </span>
       <span className="chat-inline-artifact-bar">
         <span className="chat-inline-artifact-name" title={artifact.name}>
           {title}
@@ -264,35 +290,41 @@ export function InlineArtifact({
           </button>
         )}
         {download}
-        {pageError && (
-          <span
-            className="chat-inline-artifact-error chat-inline-artifact-page-error"
-            role="status"
-            data-error-count={pageError.count}
-          >
-            <span>This page hit an error: {pageError.message}</span>
-            {selectable && (
-              <button
-                type="button"
-                data-artifact-action="fix"
-                onClick={(event) => {
-                  const rect = event.currentTarget.getBoundingClientRect();
-                  onSelection({
-                    selection: null,
-                    description: artifact.name,
-                    initialText: `This page hit an error: ${pageError.message}`,
-                    anchor: { left: rect.left, right: rect.right, top: rect.top },
-                    freshSession: freshSessionRef.current,
-                    version: shownVersion.current,
-                    clear: () => {},
-                  });
-                }}
-              >
-                Ask to fix
-              </button>
-            )}
-          </span>
-        )}
+        {pageError &&
+          (selectable ? (
+            <button
+              type="button"
+              className="chat-inline-artifact-page-error"
+              data-artifact-action="fix"
+              data-error-count={pageError.count}
+              title={pageErrorText}
+              aria-label="Ask to fix"
+              onClick={(event) => {
+                const rect = event.currentTarget.getBoundingClientRect();
+                onSelection({
+                  selection: null,
+                  description: artifact.name,
+                  initialText: pageErrorText,
+                  anchor: { left: rect.left, right: rect.right, top: rect.top },
+                  freshSession: freshSessionRef.current,
+                  version: shownVersion.current,
+                  clear: () => {},
+                });
+              }}
+            >
+              <TriangleAlert size={12} />
+            </button>
+          ) : (
+            <span
+              className="chat-inline-artifact-page-error"
+              role="status"
+              data-error-count={pageError.count}
+              title={pageErrorText}
+              aria-label={pageErrorText}
+            >
+              <TriangleAlert size={12} />
+            </span>
+          ))}
         {actionError && (
           <strong className="chat-inline-artifact-error" role="alert">
             {actionError}
@@ -305,21 +337,6 @@ export function InlineArtifact({
         )}
       </span>
     </span>
-  );
-}
-
-/** An embed whose turn has aged out of the recent task list; its task loads on demand. */
-export function InlineArtifactLoading({ name, onLoad }: { name: string; onLoad: () => void }) {
-  const load = useRef(onLoad);
-  load.current = onLoad;
-  useEffect(() => load.current(), []);
-  return (
-    <span
-      className="chat-inline-artifact-placeholder"
-      style={{ height: INLINE_ARTIFACT_INITIAL_HEIGHT }}
-      role="status"
-      aria-label={`Loading ${name}`}
-    />
   );
 }
 

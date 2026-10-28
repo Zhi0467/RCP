@@ -1901,12 +1901,10 @@ version 1 to the same-origin parent with the artifact and operation ids.
 The stored artifact `viewer` and `content` routes accept `presentation=inline`;
 `panel`, the default, is unchanged and any other value is a validation error.
 The inline content route also reads `theme` and `color_mode`, falling back to
-the app's default appearance for an unknown value. Every inline frame speaks
+the app's default appearance for an unknown value. The chat fixes every inline
+frame's height; no frame reports or changes it. Every inline frame speaks
 protocol version 1 over `postMessage`:
 
-- content to shell, and shell to chat: `rcp-artifact-size` with a numeric
-  `height`. The wrapper relays only this number from the opaque page; the shell
-  and the chat each clamp it to the inline bound.
 - chat to shell: `rcp-inline-comment-mode` with `enabled`, and
   `rcp-inline-selection-clear`. The shell maps them onto the existing
   `rcp-artifact-selection-enable`, `rcp-artifact-selection-disable`, and

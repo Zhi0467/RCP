@@ -18,6 +18,7 @@ import {
 } from "../core/AgentConfigControls";
 import { api } from "../core/api";
 import { useLayerDismiss } from "../core/useLayerDismiss";
+import { returnSends } from "../ui/composerKeys";
 import { MarkdownAnswer } from "../core/chatMarkdown";
 import { SkillPicker, useSkillPicker } from "../core/SkillPicker";
 import { EMPTY_SKILL_SELECTION, skillInvocationFields } from "../core/skillPickerModel";
@@ -344,12 +345,7 @@ export function PaperCoach({
           }}
           onKeyDown={(event) => {
             if (skills.handleKeyDown(event)) return;
-            // A touch keyboard's Return writes a new line; the send button sends.
-            if (
-              event.key === "Enter" &&
-              !event.shiftKey &&
-              !window.matchMedia("(pointer: coarse)").matches
-            ) {
+            if (returnSends(event)) {
               event.preventDefault();
               void send();
             }

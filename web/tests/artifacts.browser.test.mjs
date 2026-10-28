@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chromium } from "playwright";
+import { chromium, webkit } from "playwright";
 import { createServer } from "vite";
 
 // The server moves the artifacts token when the list changes.
@@ -903,7 +903,7 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
     const notice = embed.locator("[data-error-count]");
     await notice.waitFor();
     assert.equal(await notice.getAttribute("data-error-count"), "1");
-    assert.ok((await notice.textContent()).includes("inline-failure"));
+    assert.ok((await notice.getAttribute("title")).includes("inline-failure"));
     assert.equal(await embed.locator("[data-artifact-action=keep]").count(), 1);
     assert.ok(await embed.locator("[download]").count());
     await embed.locator("[data-artifact-action=fix]").click();
@@ -1008,6 +1008,205 @@ test("A branch with many artifacts lists its newest few until asked for the rest
     assert.equal(await branch.locator(".artifact-entry").count(), 70);
     await branch.locator(".artifacts-more button").click();
     assert.equal(await branch.locator(".artifact-entry").count(), 5);
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
+
+test("a chat opens where the reader left it and embeds loading never move it", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const rendered = JSON.parse(
+    execFileSync(
+      "uv",
+      [
+        "run",
+        "python",
+        "-c",
+        `import json
+from rcp.artifacts import AgentArtifactDescriptor
+from rcp.artifact_views import InlineAppearance, artifact_content, artifact_viewer_document
+def shell(name, media_type, content):
+    d = AgentArtifactDescriptor(artifact_id="a"*24, name=name, media_type=media_type, size_bytes=1)
+    return artifact_viewer_document(d, content_url=content, state="temporary", presentation="inline")[0]
+tall, _, _ = artifact_content("tall.html", "text/html", b"<!doctype html><div style='height:900px'>tall</div>", inline=InlineAppearance("aqua", "light"))
+print(json.dumps(dict(page=shell("tall.html", "text/html", "/tall-content"), image=shell("wide.svg", "image/svg+xml", "/wide-content"), tall=tall)))`,
+      ],
+      { cwd: new URL("../..", import.meta.url), encoding: "utf8" },
+    )
+      .trim()
+      .split("\n")
+      .pop(),
+  );
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    // RCP_PREVIEW_BROWSER=webkit runs it in the desktop app's engine.
+    browser = await (process.env.RCP_PREVIEW_BROWSER === "webkit" ? webkit : chromium).launch();
+    const page = await browser.newPage({ viewport: { width: 900, height: 700 } });
+    await page.route("**/api/projects/project/artifacts", (route) => route.fulfill({ json: [] }));
+    await page.route("**/api/projects/project/chats/embed-chat/questions", (route) =>
+      route.fulfill({ json: [] }),
+    );
+    for (const id of ["tall", "wide"])
+      await page.route(`**/api/projects/project/artifacts/${id}/state`, (route) =>
+        route.fulfill({ json: { ...viewerState(id), can_comment: false } }),
+      );
+    await page.route("**/viewer-shell/tall?*", (route) =>
+      route.fulfill({ contentType: "text/html", body: rendered.page }),
+    );
+    await page.route("**/viewer-shell/wide?*", (route) =>
+      route.fulfill({ contentType: "text/html", body: rendered.image }),
+    );
+    await page.route("**/tall-content*", (route) =>
+      route.fulfill({ contentType: "text/html", body: rendered.tall }),
+    );
+    await page.route("**/wide-content*", (route) =>
+      route.fulfill({
+        contentType: "image/svg+xml",
+        body: '<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="200"/>',
+      }),
+    );
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/artifacts.html`,
+    );
+    // WebKit, the desktop app's engine, has no scroll anchoring to hide a jump.
+    await page.addStyleTag({ content: "* { overflow-anchor: none !important; }" });
+    await page.evaluate(async () => {
+      const { default: React } = await import("/node_modules/.vite/deps/react.js");
+      const {
+        default: { createRoot },
+      } = await import("/node_modules/.vite/deps/react-dom_client.js");
+      const { NodeChat } = await import("/src/chat/NodeChat.tsx");
+      const { RefreshRuntimeContext } = await import("/src/core/useResource.ts");
+      const { runtime } = await import("/tests/fixtures/resourceRuntime.ts");
+      const profile = { provider: "codex", model: "", reasoning: "medium", run_on: "local" };
+      const artifact = (artifact_id, name, media_type, view) => ({
+        artifact_id,
+        name,
+        media_type,
+        view,
+        available: true,
+        unavailable_reason: null,
+        can_open: true,
+        can_download: false,
+        can_keep: false,
+        can_discuss: false,
+      });
+      const filler = Array.from({ length: 8 }, (_, i) => `Paragraph ${i}.`).join("\n\n");
+      const container = document.createElement("main");
+      container.style.cssText = "height:700px;display:flex;flex-direction:column";
+      document.body.prepend(container);
+      let root = null;
+      // Opening the chat mounts it afresh, as switching back to its tab does.
+      window.openChat = () => {
+        root?.unmount();
+        root = createRoot(container);
+        root.render(
+          React.createElement(
+            RefreshRuntimeContext.Provider,
+            { value: runtime },
+            React.createElement(NodeChat, {
+              project: {
+                id: "project",
+                name: "Project",
+                agent_profiles: { seed: profile, node_chat: profile, project_chat: profile },
+                repositories: [{ alias: "repo", machine: "local", path: "/repo" }],
+                project_truth_scope: ["repo"],
+                state_repository: "repo",
+                machines: [{ alias: "local", host: null }],
+                provider_readiness: {},
+              },
+              graphTarget: { kind: "main" },
+              node: null,
+              runScope: ["repo"],
+              tasks: [],
+              chatId: "embed-chat",
+              presentation: "workspace",
+              historyMessages: [
+                {
+                  message_id: "reply",
+                  operation_id: "answer-task",
+                  role: "assistant",
+                  text: `${filler}\n\n![Tall](/stage/turns/answer-task/artifacts/tall.html)\n\n![Wide](/stage/turns/answer-task/artifacts/wide.svg)\n\nAfter the embeds.`,
+                  timestamp: "2026-09-02T12:00:00Z",
+                  mode: "discuss",
+                  provider: "codex",
+                  trigger: "human",
+                },
+              ],
+              onRefreshTask: async () => ({
+                result: {
+                  artifacts: [
+                    artifact("tall", "tall.html", "text/html", "html"),
+                    artifact("wide", "wide.svg", "image/svg+xml", "image"),
+                  ],
+                },
+              }),
+              onStartTask: async () => {},
+              onInspectTask() {},
+              onOpenInbox() {},
+              onRepairGraphUpdate: async () => {},
+              onNewSession() {},
+              onClose() {},
+              onResumeTask() {},
+              onRetryTask() {},
+            }),
+          ),
+        );
+      };
+    });
+    const after = page.locator("p", { hasText: "After the embeds." });
+    const top = async () => (await after.boundingBox()).y;
+    const lines = page.locator(".node-chat-lines");
+    const scroll = () =>
+      lines.evaluate((element) => ({
+        top: element.scrollTop,
+        fromBottom: element.scrollHeight - element.scrollTop - element.clientHeight,
+      }));
+    const embedsDrawn = async () => {
+      await page.waitForFunction(() =>
+        [...document.querySelectorAll(".chat-inline-artifact-frame")].some(
+          (frame) => frame.contentDocument?.getElementById("previewImage")?.naturalWidth > 0,
+        ),
+      );
+      // Frame locators wait for the wrapper and its page to attach.
+      await page
+        .frameLocator(".chat-inline-artifact.html .chat-inline-artifact-frame")
+        .frameLocator('#preview[src*="/tall-content"]')
+        .frameLocator("iframe")
+        .locator("div")
+        .first()
+        .waitFor();
+      await page.waitForTimeout(500);
+    };
+
+    // A chat the reader has not scrolled opens at its bottom and stays there.
+    await page.evaluate(() => window.openChat());
+    await after.waitFor();
+    const opened = await top();
+    await embedsDrawn();
+    assert.equal(await top(), opened);
+    assert.ok((await scroll()).fromBottom <= 1);
+
+    // Scrolled up, switched away and back: the same position, before and after loading.
+    await lines.evaluate((element) => {
+      element.scrollTop = 300;
+    });
+    await page.waitForTimeout(100);
+    const left = await top();
+    await page.evaluate(() => window.openChat());
+    await after.waitFor();
+    assert.equal((await scroll()).top, 300);
+    assert.equal(await top(), left);
+    await embedsDrawn();
+    assert.equal((await scroll()).top, 300);
+    assert.equal(await top(), left);
   } finally {
     await browser?.close();
     await server.close();

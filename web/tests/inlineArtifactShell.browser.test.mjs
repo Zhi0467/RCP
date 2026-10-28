@@ -30,7 +30,7 @@ print(json.dumps({"shell": shell, "content": content}))`,
     .pop(),
 );
 
-test("an inline artifact sizes to its content, blends in dark mode, and selects only in comment mode", async () => {
+test("an inline artifact fills its fixed frame, blends in dark mode, and selects only in comment mode", async () => {
   const browser = await chromium.launch();
   try {
     const page = await browser.newPage({ colorScheme: "light" });
@@ -39,7 +39,7 @@ test("an inline artifact sizes to its content, blends in dark mode, and selects 
       route.fulfill({
         contentType: "text/html",
         body: `<html data-theme="aqua" data-color-mode="dark" style="color-scheme:dark;background:#282e36">
-<body style="margin:0"><iframe id="embed" src="/viewer" style="border:0;width:600px;height:320px"></iframe>
+<body style="margin:0"><iframe id="embed" src="/viewer" style="border:0;width:600px;height:480px"></iframe>
 <script>window.received=[];addEventListener("message",(e)=>{if(e.source===embed.contentWindow&&e.origin===location.origin)received.push(e.data)})</script></body></html>`,
       }),
     );
@@ -51,27 +51,26 @@ test("an inline artifact sizes to its content, blends in dark mode, and selects 
       return route.fulfill({ contentType: "text/html", body: rendered.content });
     });
     await page.goto("http://rcp.test/app");
-    const sizes = () =>
-      page.evaluate(() =>
-        window.received.filter((m) => m.type === "rcp-artifact-size").map((m) => m.height),
-      );
-    await page.waitForFunction(() =>
-      window.received.some((m) => m.type === "rcp-artifact-size" && m.height > 500),
-    );
+    await page.waitForFunction(() => window.frames[0]?.frames[0]?.frames.length === 1);
     // The shell asked for content in the reply's appearance.
     assert.equal(contentRequests[0].get("presentation"), "inline");
     assert.equal(contentRequests[0].get("color_mode"), "dark");
     assert.equal(contentRequests[0].get("version_id"), "v1");
-    const settled = (await sizes()).at(-1);
-    assert.ok(settled >= 520 && settled < 600, `content height ${settled}`);
 
     const shell = page.frame({ url: "http://rcp.test/viewer" });
     const wrapper = shell.childFrames()[0];
     const artifact = wrapper.childFrames()[0];
-    await artifact.locator("#grow").click();
-    await page.waitForFunction(() =>
-      window.received.some((m) => m.type === "rcp-artifact-size" && m.height > 700),
+    await artifact.locator("#grow").waitFor();
+    // Every nested frame fills the chat's fixed frame, and taller content scrolls inside.
+    const preview = await shell.locator("#preview").boundingBox();
+    assert.equal(Math.round(preview.height), 480);
+    assert.equal(
+      await artifact.evaluate(() => document.documentElement.clientHeight),
+      Math.round(preview.height),
     );
+    await artifact.locator("#grow").click();
+    assert.equal(Math.round((await shell.locator("#preview").boundingBox()).height), 480);
+    assert.ok(await artifact.evaluate(() => document.scrollingElement.scrollHeight > 700));
 
     // Every frame declares the reply's scheme, so the nested page stays transparent,
     // even though the page itself asked for "light dark" (the OS preference here is light).

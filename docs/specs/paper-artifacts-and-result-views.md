@@ -92,7 +92,9 @@ concurrency. A compile changes no state, so any member may start one; a newer
 compile cancels an older one for the same project, and earlier PDFs stay
 readable until the result limit ages them out. A
 compile starts from the one root that reaches the open file; with none or
-several, the preview lists the candidates. The PDF keeps its scroll position per
+several, the preview lists the candidates, and the chosen one is sent as the
+compile root, accepted only while it still reaches the open file. The PDF keeps
+its scroll position per
 compile root across file switches, and Typst errors show as path, line and
 message.
 
@@ -350,9 +352,9 @@ The shell is same-origin-frameable; agent HTML remains opaque. Repository previe
 are script-free; PDFs/download-only formats follow the type table.
 
 HTML doctype stays before policy/bootstrap; a missing doctype retains browser
-quirks behavior. Uncaught errors/rejections produce bounded plain-text notices
-beneath the frame or in its reply caption, without hiding content or blocking
-live data or Download. First error appears immediately, later summaries
+quirks behavior. Uncaught errors/rejections produce a bounded plain-text notice
+beneath the panel frame, or inside a reply a red edge and one icon action whose
+title holds the summary, without hiding content or blocking live data or Download. First error appears immediately, later summaries
 at most once a second, only from the current private channel. Reload/version
 change clears it. Ask to fix prefills a comment for the human to send.
 
@@ -376,10 +378,12 @@ before declaring absence and retain it across list refreshes.
 Inline uses the same shell without chrome, with transparent background. Every
 frame pins the reply color-scheme; content receives `--rcp-*` palette before its
 CSS. Theme/mode changes reload it. Only inline supplies palette; Expand/download
-use authored fallbacks. Markdown/text have only nonce-bound height reporting.
-The frame grows to `limits.py`'s bound, then scrolls. Private-channel height is
-clamped; root/body viewport-height rules are neutralized to avoid self-measurement.
-Frames mount near the reader and refresh on settled turns, viewer version changes,
+use authored fallbacks. Markdown/text run no script. Every embed holds one box of
+`limits.py`'s fixed height from mount, while its turn loads, and through refreshes
+and versions; taller content scrolls inside it, and an image is centered in it.
+Its caption stays one row until the reader acts (comment mode, a failed Keep), so
+an embed loading never moves the chat. Frames mount within 800px of the reader in
+the chat's own scroll box and refresh on settled turns, viewer version changes,
 page visibility, and a slow live interval. Live data remains one-way.
 
 Comment mode starts off, preserving chart/game input. Mouse/pen readers can enable

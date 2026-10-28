@@ -5,10 +5,8 @@ import { ANSWER_SYNTAX_PLUGINS } from "../core/chatMarkdown";
 import type { AgentArtifactDescriptor, ArtifactSelection } from "../core/types";
 import { turnArtifactLocation } from "../core/repositoryFileLinks";
 
-// Mirror ARTIFACT_INLINE_MAX_HEIGHT_PX and ARTIFACT_INLINE_INITIAL_HEIGHT_PX
-// in src/rcp/limits.py.
-export const INLINE_ARTIFACT_MAX_HEIGHT = 1200;
-export const INLINE_ARTIFACT_INITIAL_HEIGHT = 320;
+// Mirror ARTIFACT_INLINE_HEIGHT_PX in src/rcp/limits.py.
+export const INLINE_ARTIFACT_HEIGHT = 480;
 // Mirror ARTIFACT_ERROR_MAX_CHARS in src/rcp/limits.py.
 export const ARTIFACT_ERROR_MAX_CHARS = 1024;
 
@@ -128,7 +126,6 @@ export function inlineViewerUrl(viewerUrl: string): string {
 export type InlineShellMessage =
   | { kind: "error"; message: string; count: number }
   | { kind: "error-clear" }
-  | { kind: "size"; height: number }
   | { kind: "selection"; selection: InlineSelection | null; description: string };
 
 export type InlineSelection =
@@ -159,13 +156,6 @@ export function readInlineShellMessage(
     return { kind: "error", message: data.message, count: data.count };
   }
   if (data.version !== 1) return null;
-  if (data.type === "rcp-artifact-size") {
-    if (typeof data.height !== "number" || !Number.isFinite(data.height)) return null;
-    return {
-      kind: "size",
-      height: Math.max(1, Math.min(INLINE_ARTIFACT_MAX_HEIGHT, Math.ceil(data.height))),
-    };
-  }
   if (data.type !== "rcp-artifact-selection" || !("selection" in data)) return null;
   const description = typeof data.description === "string" ? data.description.slice(0, 512) : "";
   if (data.selection === null) return { kind: "selection", selection: null, description: "" };

@@ -114,3 +114,35 @@ test("a never-run chat keeps fast typing and shows one line per send", async () 
     await server.close();
   }
 });
+
+test("on a touch phone Return types a newline and only the send button sends", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0, strictPort: false },
+  });
+  let browser;
+  try {
+    await server.listen();
+    const address = server.httpServer?.address();
+    assert.ok(address && typeof address === "object");
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({
+      viewport: { width: 390, height: 844 },
+      hasTouch: true,
+      isMobile: true,
+    });
+    await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatSend.html`);
+    const composer = page.getByRole("textbox", { name: "Message", exact: true });
+    await composer.waitFor();
+    await composer.click();
+    await page.keyboard.type("first");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("second");
+    assert.equal(await composer.inputValue(), "first\nsecond");
+    assert.deepEqual(await page.evaluate(() => window.startCalls), []);
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
