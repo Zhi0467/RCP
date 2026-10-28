@@ -774,10 +774,27 @@ class BackupManifestConfiguration(_StrictBackupModel):
             return self.skill_defaults.model_dump()
         return self.declared_skill_defaults
 
+    def _with_every_agent_on_base(self) -> BackupManifestConfiguration:
+        # An older receipt may record a Paper coach on another machine; the manifest
+        # it restores to drops that choice for the base, so compare it the same way.
+        base = next(
+            repository.machine
+            for repository in self.repositories
+            if repository.alias == self.state_repository
+        )
+        return self.model_copy(
+            update={
+                "agent_profiles": tuple(
+                    profile.model_copy(update={"run_on": base}) for profile in self.agent_profiles
+                )
+            }
+        )
+
     def matches_configuration(self, current: BackupManifestConfiguration) -> bool:
         """Compare human configuration, retaining old receipts' exact integrity hashes."""
         exclude = {"skill_defaults", "declared_skill_defaults", "compute_connections", "machines"}
-        if self.model_dump(exclude=exclude) != current.model_dump(exclude=exclude):
+        recorded = self._with_every_agent_on_base()
+        if recorded.model_dump(exclude=exclude) != current.model_dump(exclude=exclude):
             return False
         if len(self.machines) != len(current.machines) or not all(
             recorded.matches(machine)
