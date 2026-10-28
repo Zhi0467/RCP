@@ -778,4 +778,7 @@ PAPER_CHANGES_MAX_FILE_BYTES = 16 * 1024 * 1024
 PAPER_CHANGES_MAX_TOTAL_BYTES = 32 * 1024 * 1024
 PAPER_CHANGES_MAX_MOVES_BYTES = 64 * 1024
 PAPER_CHANGES_PREVIEW_LINES = 12
+# Line pairs a card diff compares after trimming the common head and tail; past it,
+# the changed middle becomes one card instead of a quadratic comparison.
+PAPER_CHANGES_DIFF_MAX_LINE_PAIRS = 1_000_000
 PAPER_COACH_MAX_REFRESH_ROUNDS = 2

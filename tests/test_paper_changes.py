@@ -7,6 +7,7 @@ from contextlib import nullcontext
 import pytest
 
 from rcp.paper import PaperFile, PaperLive, PaperOp, PaperSnapshot
+from rcp.paper import changes as changes_module
 from rcp.paper.changes import (
     InvalidChanges,
     OutdatedChange,
@@ -106,6 +107,20 @@ def test_line_diff_merges_nearby_and_rewrites_large_changes():
     for index in range(0, 65, 5):
         many = many.replace(f"line {index}\n", f"changed {index}\n")
     assert line_changes(before, many)[0].kind == "rewrite"
+
+
+def test_line_diff_compares_only_a_bounded_middle(monkeypatch):
+    # Repeated lines once made one inserted line a quadratic comparison.
+    repeated = "entry\n" * 10000
+    assert [change.after for change in line_changes(repeated, "changed\n" + repeated)] == [
+        "changed\n"
+    ]
+    before = "".join(f"line {i}\n" for i in range(100))
+    edited = before.replace("line 40\n", "x\n").replace("line 46\n", "y\n")
+    assert len(line_changes(before, edited)) == 2
+    monkeypatch.setattr(changes_module, "PAPER_CHANGES_DIFF_MAX_LINE_PAIRS", 4)
+    (change,) = line_changes(before, edited)
+    assert (change.kind, change.first_line, change.last_line) == ("edit", 41, 47)
 
 
 def test_identity_offsets_repeated_paragraphs_and_empty_insertions():
