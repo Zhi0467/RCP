@@ -181,8 +181,7 @@ pub fn run() {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     dictation::stop_active();
                     api.prevent_close();
-                    windows::cancel_pending_show();
-                    let _ = window.hide();
+                    windows::hide_main(window.clone());
                 }
             }
         })

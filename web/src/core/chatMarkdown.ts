@@ -262,11 +262,16 @@ function MarkdownLink({ href, children, className, node, ...props }: MarkdownLin
           onOpenNode(nodeId);
         }
       : undefined;
+  const external = /^(https?:|mailto:)/i.test(href ?? "");
+  // A path the app does not handle would navigate the whole page onto a backend URL.
+  if (!nodeId && !repositoryFile && !external && !/^\/?#\//.test(href ?? ""))
+    return createElement("span", { className: className || undefined }, children);
   return createElement(
     "a",
     {
       ...props,
       href,
+      ...(external ? { target: "_blank", rel: "noopener noreferrer" } : {}),
       className: nextClassName || undefined,
       "aria-label": nodeId
         ? `Open node ${nodeId}`

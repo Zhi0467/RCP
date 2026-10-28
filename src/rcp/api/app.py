@@ -18,8 +18,10 @@ from fastapi import (
     HTTPException,
     Request,
 )
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import Headers
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from rcp import __version__
@@ -2607,10 +2609,23 @@ class _WebPages(StaticFiles):
     """
 
     async def get_response(self, path: str, scope) -> Response:
-        response = await super().get_response(path, scope)
+        try:
+            response = await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            # A page navigation onto a path the app does not serve (a stray relative
+            # link, a typed URL) returns to the app instead of stranding it on JSON.
+            if exc.status_code == 404 and _is_page_navigation(scope):
+                return RedirectResponse("/", status_code=303)
+            raise
         if response.headers.get("content-type", "").startswith("text/html"):
             response.headers["Cache-Control"] = "no-cache"
         return response
+
+
+def _is_page_navigation(scope) -> bool:
+    headers = Headers(scope=scope)
+    mode = headers.get("sec-fetch-mode")
+    return mode == "navigate" if mode else "text/html" in headers.get("accept", "")
 
 
 def _generic_watcher_delivery_request(group: list[StoredWatcherRecord]) -> RunRequest:

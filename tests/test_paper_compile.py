@@ -129,7 +129,8 @@ out = pathlib.Path(sys.argv[sys.argv.index("--outdir") + 1])
     )
     compiler = PaperCompiler(Live(), engines, tmp_path)
     first = asyncio.create_task(compiler.compile("project", "file"))
-    await async_wait_until(ready.exists)
+    # write_text creates the file before writing it.
+    await async_wait_until(lambda: ready.exists() and "," in ready.read_text())
     leader, _child = map(int, ready.read_text().split(","))
     second = await compiler.compile("project", "file")
     assert (await first).status == "superseded"

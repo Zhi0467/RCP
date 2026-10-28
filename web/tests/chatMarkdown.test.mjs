@@ -125,7 +125,7 @@ test("chat Markdown marks glossary terms only in prose and preserves node links"
   assert.match(rendered, /<strong><dfn[^>]*>mopd<\/dfn><\/strong>/);
   assert.match(rendered, /<code>MOPD<\/code>/);
   assert.match(rendered, /<pre><code class="language-text">MOPD\n<\/code><\/pre>/);
-  assert.match(rendered, /<a href="https:\/\/example\.test">MOPD<\/a>/);
+  assert.match(rendered, /<a href="https:\/\/example\.test" target="_blank"[^>]*>MOPD<\/a>/);
   assert.match(rendered, /alt="MOPD"/);
   assert.match(rendered, /&lt;span&gt;MOPD&lt;\/span&gt;/);
   assert.match(rendered, /href="#rcp-node=exp%2Fknown"/);

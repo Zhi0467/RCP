@@ -394,6 +394,32 @@ pub fn show_main(app: &AppHandle) -> Result<(), String> {
 /// Invalidate a timeout belonging to an earlier show request. In particular,
 /// closing the window after a Dock reopen must not let that request's fallback
 /// show it again several seconds later.
+/// Close hides the main window. Hiding a full-screen window leaves its empty black
+/// Space on screen, so leave full screen first and hide once that has finished,
+/// unless a show request arrives meanwhile.
+pub fn hide_main(window: tauri::Window) {
+    cancel_pending_show();
+    if !window.is_fullscreen().unwrap_or(false) {
+        let _ = window.hide();
+        return;
+    }
+    let generation = SHOW_REQUEST_GENERATION.load(Ordering::SeqCst);
+    let _ = window.set_fullscreen(false);
+    tauri::async_runtime::spawn(async move {
+        for _ in 0..30 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if !window.is_fullscreen().unwrap_or(false) {
+                break;
+            }
+        }
+        // The exit animation outlasts the flag change.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        if show_request_is_current(generation) {
+            let _ = window.hide();
+        }
+    });
+}
+
 pub fn cancel_pending_show() {
     SHOW_REQUEST_GENERATION.fetch_add(1, Ordering::SeqCst);
     if let Ok(mut pending) = pending_recovery().lock() {
