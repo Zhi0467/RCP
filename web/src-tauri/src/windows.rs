@@ -406,16 +406,16 @@ pub fn hide_main(window: tauri::Window) {
     let generation = SHOW_REQUEST_GENERATION.load(Ordering::SeqCst);
     let _ = window.set_fullscreen(false);
     tauri::async_runtime::spawn(async move {
-        for _ in 0..30 {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            if !window.is_fullscreen().unwrap_or(false) {
-                break;
+        // AppKit reports the exit at once but orders the window back in when its
+        // animation ends, so keep hiding it until it stays hidden.
+        for _ in 0..20 {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            if !show_request_is_current(generation) {
+                return;
             }
-        }
-        // The exit animation outlasts the flag change.
-        tokio::time::sleep(Duration::from_millis(400)).await;
-        if show_request_is_current(generation) {
-            let _ = window.hide();
+            if !window.is_fullscreen().unwrap_or(false) && window.is_visible().unwrap_or(false) {
+                let _ = window.hide();
+            }
         }
     });
 }
