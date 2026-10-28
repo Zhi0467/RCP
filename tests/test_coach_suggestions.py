@@ -508,3 +508,81 @@ async def test_remote_coach_stage_failure_classifies_transport_loss(
 
     assert any(event.event == "error" for event in events)
     assert execution.stage_unreachable is link_lost
+
+
+@pytest.mark.asyncio
+async def test_remote_round_left_by_a_lost_link_settles_from_its_recorded_pass(
+    coach, monkeypatch, tmp_path
+):
+    import shutil
+
+    from rcp.agents.provider_environment import unhidden_read_scope
+    from rcp.runs import recorded_settlement
+    from rcp.runs.remote_finalization import recorded_finalizer
+    from rcp.runs.shared import _sse
+    from rcp.runs.tasks import coach as coach_module
+
+    from .test_auto_research_stream import _LocalBackedRemoteStage
+    from .test_work_agent_io import _recorded_pass
+
+    service, _live, data = coach
+    base_machine = service.manifest.repository_map[service.manifest.state.repository].machine
+    service.manifest.machine_map[base_machine].host = "base.example"
+
+    class RemoteStage(_LocalBackedRemoteStage):
+        base = tmp_path / "remote-stage"
+        transport_partition = "test-remote"
+
+        def touch(self):
+            pass
+
+        def put_directory(self, source, label, *, reuse=False):
+            target = self.root / "inputs" / label
+            shutil.copytree(source, target)
+            return str(target)
+
+        def prepare_artifact_directory(self, scope_id, *, reuse):
+            target = self.workspace / "turns" / scope_id / "artifacts"
+            target.mkdir(parents=True, exist_ok=reuse)
+            return target
+
+        def read_workspace_directory(self, name, destination, **_limits):
+            shutil.copytree(self.workspace / name, destination, dirs_exist_ok=True)
+
+    async def hidden_scope(_service, _request, **_kwargs):
+        return unhidden_read_scope(execution_machine=base_machine, host="base.example")
+
+    async def link_lost(*_args, **kwargs):
+        # The provider writes its changes, then the link drops before it exits.
+        output = kwargs["write_dirs"][0] / "files" / "paper.md"
+        output.parent.mkdir()
+        output.write_text("Proposed after the drop\n")
+        yield _sse(AgentEvent(event="session", session_id="remote-native"))
+        kwargs["outcome"].remote_result_pending = True
+
+    monkeypatch.setattr(coach_module, "RemoteRunStage", RemoteStage)
+    monkeypatch.setattr(recorded_settlement, "RemoteRunStage", RemoteStage)
+    monkeypatch.setattr(coach_module, "_prepare_hidden_read_scope", hidden_scope)
+    monkeypatch.setattr(coach_module, "_stream_agent_events", link_lost)
+    execution = execution_for(service)
+    request = CoachRequest(message="Edit the paper")
+
+    await run_coach(service, None, data, execution=execution, request=request)
+    assert service.paper_changes.groups(service.paper.project_id) == []
+
+    finalizer = recorded_finalizer(execution.store, execution.operation_id)
+    assert finalizer is coach_module.finalize_recorded_coach_result
+    settled = [
+        AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
+        async for frame in finalizer(
+            service,
+            None,
+            request,
+            data,
+            execution,
+            _recorded_pass("", "Done", thread_id="remote-native"),
+        )
+    ]
+    assert settled[-1].event == "done"
+    groups = service.paper_changes.groups(service.paper.project_id)
+    assert [group.changes[0].after for group in groups] == ["Proposed after the drop\n"]
