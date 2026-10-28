@@ -1849,6 +1849,26 @@
   min-height: 34px;
   white-space: normal;
 }
+.question-turns {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  color: var(--muted);
+  font-size: var(--type-xs);
+  white-space: nowrap;
+}
+.question-turns input {
+  box-sizing: border-box;
+  width: 56px;
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  font: inherit;
+}
 .question-answer {
   white-space: pre-wrap;
 }

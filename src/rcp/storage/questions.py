@@ -314,6 +314,27 @@ class QuestionStoreMixin(StoreMixinBase):
             append_question_attention(connection, updated, self.now())
             return _question_record(updated)
 
+    def reopen_unclaimed_answer(self, question_id: str, answer_revision: int) -> bool:
+        """Return an answer to pending when the continuation it started failed.
+
+        Only that exact revision, and only while no follow-up or mail carries it,
+        so the card keeps its answer field and can try again.
+        """
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """UPDATE questions SET state='pending', answer=NULL, chosen_choices_json='[]',
+                resolved_by_json=NULL, resolved_at=NULL
+                WHERE question_id=? AND state='answered' AND answer_revision=?
+                AND followup_operation_id IS NULL AND NOT EXISTS (
+                    SELECT 1 FROM auto_research_messages WHERE message_id=?
+                ) RETURNING *""",
+                (question_id, answer_revision, f"question:{question_id}:answer:{answer_revision}"),
+            ).fetchone()
+            if row is not None:
+                append_question_attention(connection, row, self.now())
+            return row is not None
+
     def record_question_receipt(
         self,
         question_id: str,
@@ -527,11 +548,11 @@ class QuestionStoreMixin(StoreMixinBase):
         for row in rows:
             append_question_attention(connection, row, self.now())
 
-    def withdraw_episode_question_if_ended(self, question_id: str) -> bool:
-        """Close a question whose creation raced its episode's ending fence.
+    def withdraw_episode_question_if_stopped(self, question_id: str) -> bool:
+        """Close a question whose creation raced its episode's Stop.
 
-        Serialized with endings: either this check sees the fence, or the later
-        ending sees the newly inserted question. Only this card is affected.
+        Serialized with Stop: either this check sees it, or the later Stop sees
+        the newly inserted question. Other endings keep the card answerable.
         """
         with self.connection() as connection:
             rows = connection.execute(
@@ -539,7 +560,7 @@ class QuestionStoreMixin(StoreMixinBase):
                 WHERE question_id=? AND owner_kind='episode' AND EXISTS (
                     SELECT 1 FROM episodes WHERE episodes.episode_id=questions.owner_id
                     AND episodes.project_id=questions.project_id
-                    AND (status!='running' OR ending IS NOT NULL OR stop_requested_at IS NOT NULL)
+                    AND (stop_requested_at IS NOT NULL OR ending='stopped')
                 ) RETURNING *""",
                 (question_id,),
             ).fetchall()

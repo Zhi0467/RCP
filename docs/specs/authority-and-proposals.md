@@ -191,7 +191,10 @@ Both profiles may create ResearchQuestions and Hypotheses and connect nodes
 created earlier in the same outer Patch. Existing protected nodes require a
 Proposal for edits, removal, supersede, merge, or protected structural changes.
 `has_subquestion` and `has_hypothesis` are protected structural relations;
-connecting either endpoint created in the outer Patch remains direct.
+connecting either endpoint created in the outer Patch remains direct. A Proposal
+may still target a belief or relation created in its own outer Patch.
+**Why:** a merge lands a branch-created Hypothesis and the branch's pending Proposal
+on it in one main revision; refusing that left the branch unmergeable.
 `has_decision` is an ordinary relation even between existing nodes, as are
 `blocked_by` and `governed_by`. Evidence-to-Hypothesis epistemic edges remain
 direct assertions; Hypothesis status is the protected judgment. These authority

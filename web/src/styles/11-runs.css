@@ -215,32 +215,6 @@
 .provider-login-notice p {
   margin: 0;
 }
-.provider-login-notice:has(> .provider-login-notice-dismiss) {
-  padding-right: 48px;
-  position: relative;
-}
-.provider-login-notice-dismiss {
-  align-items: center;
-  background: none;
-  border: 0;
-  border-radius: 5px;
-  color: inherit;
-  cursor: pointer;
-  display: inline-flex;
-  height: 32px;
-  justify-content: center;
-  position: absolute;
-  right: 6px;
-  top: 6px;
-  width: 32px;
-}
-.provider-login-notice-dismiss:hover {
-  background: color-mix(in srgb, var(--red) 12%, transparent);
-}
-.provider-login-notice-dismiss:focus-visible {
-  outline: 2px solid var(--cobalt);
-  outline-offset: -2px;
-}
 /* CompactNotice: wider screens lay the body out as before and never show the
    disclosure. */
 .compact-notice-toggle {
@@ -255,7 +229,8 @@
   .provider-login-notice:has(> .compact-notice-toggle) {
     gap: 0;
     margin-bottom: 10px;
-    padding: 0;
+    padding-block: 0;
+    padding-left: 0;
   }
   .compact-notice-toggle {
     align-items: center;
@@ -301,15 +276,6 @@
   }
   .compact-notice-body ~ [role="alert"] {
     padding: 0 12px 10px;
-  }
-  .provider-login-notice:has(> .provider-login-notice-dismiss) {
-    padding-right: 44px;
-  }
-  .provider-login-notice-dismiss {
-    height: 44px;
-    right: 0;
-    top: 0;
-    width: 44px;
   }
 }
 .provider-login-settings > header,

@@ -65,6 +65,8 @@ async function openDemoProject(t, initialFreshness, options = {}) {
     graphRefs: options.graphRefs === undefined ? [] : options.graphRefs,
     branchGate: options.branchGate ?? null,
     chats: options.chats ?? [],
+    episodes: options.episodes ?? [],
+    watchers: options.watchers ?? [],
     mutations: [],
     renameStatus: 200,
     branchNames: {},
@@ -226,7 +228,12 @@ async function openDemoProject(t, initialFreshness, options = {}) {
         last_remote_sync_at: project().last_remote_sync_at,
         graph_mutation: project().graph_mutation,
       };
-    } else if (path.endsWith("/experiment-episodes") || path === "/api/episodes")
+    } else if (path === "/api/projects/demo/episodes") json = state.episodes;
+    else if (path === "/api/projects/demo/watchers")
+      json = state.watchers.filter(
+        (watcher) => (watcher.graph_target.branch_id ?? null) === branchId,
+      );
+    else if (path.endsWith("/experiment-episodes") || path === "/api/episodes")
       json = { entries: [], unavailable: [] };
     else if (path.endsWith("/chats")) {
       const items = url.searchParams.has("inventory")
@@ -1235,6 +1242,50 @@ test(
     await page.locator(".toast.error").waitFor();
     assert.equal(await composer(page).count(), 0);
     assert.equal((await hashParams(page)).chat, undefined);
+  },
+);
+
+test(
+  "a main link to a branch orchestrator opens it on main with its watchers",
+  { timeout: 25000 },
+  async (t) => {
+    const orchestrator = {
+      ...chat,
+      chat_id: "b1",
+      title: "Branch orchestrator",
+      conversation_kind: "auto_research",
+      orchestrator_episode_id: "b1",
+      graph_target: { kind: "branch", branch_id: "b1" },
+    };
+    const episode = {
+      episode_id: "b1",
+      mode: "auto_research",
+      status: "running",
+      graph_target: orchestrator.graph_target,
+      graph_branch: branchRef("b1"),
+      tasks: [],
+      chain: [],
+    };
+    const watcher = {
+      watcher_id: "branch-watcher",
+      chat_id: "b1",
+      status: "active",
+      graph_target: orchestrator.graph_target,
+      continuation: { patch_kind: "project_chat" },
+    };
+    const { page } = await openedShell(t, {
+      graphRefs: [mainRef(), branchRef("b1")],
+      chats: [orchestrator],
+      episodes: [episode],
+      watchers: [watcher],
+    });
+    await page.evaluate(() => (location.hash = "#/projects/demo?view=chats&chat=b1"));
+    await branchShown(page, "main");
+    await page.locator(".chat-dock").getByText("Branch orchestrator").first().waitFor();
+    assert.equal((await hashParams(page)).chat, "b1");
+    // Its branch's watchers show although main's watcher list has none.
+    await page.locator(".chat-watcher-count").waitFor();
+    assert.equal(await page.locator(".toast.error").count(), 0);
   },
 );
 

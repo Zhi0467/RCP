@@ -1358,3 +1358,35 @@ def test_stale_source_proposal_omission_remains_an_advisory(review_branch):
     ] == [("flag", "stale-source-proposal", ["prop/stale-source"])]
     main = _apply(plan, patch)
     assert main.nodes["blk/merge-ready"].description == "Ordinary source work."
+
+
+def test_merge_carries_a_proposal_on_a_belief_the_branch_created(review_branch):
+    # Main gains the Hypothesis and its pending change in the same revision.
+    harness = review_branch
+    _agent_patch(
+        harness,
+        {
+            "op": "create_nodes",
+            "nodes": [
+                {
+                    "id": "hyp/branch-born",
+                    "type": "hypothesis",
+                    "title": "Branch hypothesis",
+                    "statement": "Original branch claim.",
+                }
+            ],
+        },
+    )
+    operation = {
+        "op": "update_nodes",
+        "intent": "content_change",
+        "nodes": [{"id": "hyp/branch-born", "changes": {"statement": "Revised branch claim."}}],
+    }
+    _agent_patch(
+        harness,
+        {"op": "create_proposals", "proposals": [_proposal(operation, identity="prop/born")]},
+    )
+    url = f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge-preview"
+    response = harness.client.get(url)
+    assert response.status_code == 200, response.json()
+    assert response.json()["graph"]["direct"] > 0

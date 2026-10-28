@@ -1569,8 +1569,16 @@ class SpaceStoreMixin(StoreMixinBase):
         requested = {item.watcher_id for item in watchers}
         group_ids = {item.group_id for item in watchers if item.group_id is not None}
         for watcher in watchers:
-            if watcher.group_id is None and watcher.status != "completed":
-                raise ValueError("an ungrouped watcher must complete before delivery")
+            if watcher.group_id is None and not (
+                watcher.status == "completed"
+                or (
+                    watcher.status == "degraded"
+                    and watcher.consecutive_error_count >= WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT
+                )
+            ):
+                raise ValueError(
+                    "an ungrouped watcher must complete or stay unobservable before delivery"
+                )
         for group_id in group_ids:
             assert group_id is not None
             rows = connection.execute(

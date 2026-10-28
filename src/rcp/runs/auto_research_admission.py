@@ -22,6 +22,7 @@ from rcp.agents.launcher import work_like_launch_problem
 from rcp.config import load_manifest
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.limits import AUTO_RESEARCH_MAIL_MAX_MESSAGES
 from rcp.providers import PROVIDER_IDS
 from rcp.runs.auto_research import (
     AutoResearchCommandEffectResult,
@@ -37,6 +38,7 @@ from rcp.runs.auto_research import (
 from rcp.runs.auto_research import (
     pending_auto_research_mail as _episode_pending_mail,
 )
+from rcp.runs.auto_research_questions import held_question_answer_mail
 from rcp.runs.experiment_admission import experiment_start_message
 from rcp.runs.provider_login import provider_login_host
 from rcp.runs.task_policy import AgentTaskContinuation, resolved_dispatch_authority, skill_update
@@ -297,6 +299,14 @@ def continue_auto_research(
         )
         if message_body is not None and message_id is not None
         else None,
+        # Answers held since the chain ended reach the turn their answer started.
+        question_answers=held_question_answer_mail(
+            store,
+            source,
+            episode_id=episode_id,
+            recipient_task_id=operation_id,
+            limit=AUTO_RESEARCH_MAIL_MAX_MESSAGES - (message_body is not None),
+        ),
     )
     if replayed:
         return stored_episode, stored_task

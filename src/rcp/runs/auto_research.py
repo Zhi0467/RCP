@@ -2227,11 +2227,11 @@ class AutoResearchCommandDispatcher:
                 self.store, request, orchestrator_question_origin(context), parked=True
             )
             question_id = response.result.get("question_id")
-            if question_id is not None and self.store.withdraw_episode_question_if_ended(
+            if question_id is not None and self.store.withdraw_episode_question_if_stopped(
                 question_id
             ):
                 raise AutoResearchCommandUnavailable(
-                    "The Auto-research episode ended while recording the question."
+                    "The Auto-research episode was stopped while recording the question."
                 )
             # Answers can exceed the command audit ledger's byte cap. The
             # question store owns their text; the audit records only identity/state.

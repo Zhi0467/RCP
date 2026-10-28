@@ -46,21 +46,4 @@ export function releaseNotice(notice: UpdateNotice | null, identity: DesktopBuil
   };
 }
 
-const dismissed = new Set<string>();
-const dismissalKey = (release: string) => `rcp:update-dismissed:${release}`;
-export function isReleaseDismissed(release: string): boolean {
-  if (dismissed.has(release)) return true;
-  try {
-    return localStorage.getItem(dismissalKey(release)) === "1";
-  } catch {
-    return false;
-  }
-}
-export function dismissRelease(release: string): void {
-  dismissed.add(release);
-  try {
-    localStorage.setItem(dismissalKey(release), "1");
-  } catch {
-    /* Session memory remains available. */
-  }
-}
+export const releaseDismissKey = (release: string) => `update-dismissed:${release}`;

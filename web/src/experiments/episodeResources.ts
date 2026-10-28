@@ -78,9 +78,18 @@ export function watcherResourceKey(projectId: string, target: GraphTargetRef): R
 export function watchersProfile(
   projectId: string,
   target: GraphTargetRef,
+  { ownTargetOnly = false } = {},
 ): ResourceProfile<WatcherRecord[]> {
   // Capture the route now: a mutable view target never decides where a settled read lands.
+  // A branch view lists every target's watchers; ownTargetOnly reads just its own.
   const base = `${projectBase(projectId)}/watchers`;
-  const path = target.kind === "main" ? base : graphTargetUrl(`${base}?all_targets=true`, target);
-  return { key: watcherResourceKey(projectId, target), fetch: (signal) => api(path, { signal }) };
+  const path =
+    target.kind === "main"
+      ? base
+      : graphTargetUrl(ownTargetOnly ? base : `${base}?all_targets=true`, target);
+  const resourceKey = watcherResourceKey(projectId, target);
+  return {
+    key: ownTargetOnly ? { ...resourceKey, query: `${resourceKey.query}:own` } : resourceKey,
+    fetch: (signal) => api(path, { signal }),
+  };
 }

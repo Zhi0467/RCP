@@ -484,7 +484,7 @@ PAPER_RESTORE_SCHEMA_VARIANTS = (
 )
 
 
-# Migration 63 adds durable coach cards and prepared mutation receipts.
+# Migration 64 adds durable coach cards and prepared mutation receipts.
 _PAPER_CHANGES_SCHEMA = (
     (
         "index",
@@ -528,7 +528,7 @@ _PAPER_CHANGES_SCHEMA = (
 PAPER_RESTORE_SCHEMA_VARIANTS += (
     tuple(sorted((*PAPER_RESTORE_SCHEMA_VARIANTS[0], *_PAPER_CHANGES_SCHEMA))),
 )
-# Migration 64 unifies live results and prepared coach receipts in one table.
+# Migration 65 unifies live results and prepared coach receipts in one table.
 PAPER_RESTORE_SCHEMA_VARIANTS += (
     tuple(
         sorted(

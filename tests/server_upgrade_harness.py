@@ -100,9 +100,13 @@ EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
         "0a934a69dd35c0d2c58364bd144e9b51d76e1a75",
         "20e5a6dfac45794a849c94c0808d345095a7ebc7d0f886b69e4afaa67d41e759",
     ),
-    "pre-paper-live-v33-070729d": (
+    "pre-question-versions-v33-070729d": (
         "070729dfaa8fbe3b0b0bec1bf9a51310b64b879a",
-        "534394879e07fbe8aa5e2a709054bcd4fb2ac5971436eda39a7111dd0a3c14d0",
+        "7449fd07a47aebe0fccaef43049ae7643cfec33766149dc0905e08864f69140b",
+    ),
+    "pre-paper-live-v34-22089be": (
+        "22089bea30c2a880a651f4928ad451aada1606ae",
+        "94a7f451033776563889a4cee77402c09a5c76623fc274019205cf4bae5ebcd4",
     ),
     "team-server-v1-78be62b": (
         "78be62b775fd62d7888c2e22d87569c103bffc83",

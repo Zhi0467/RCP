@@ -2592,7 +2592,7 @@ export function NodeChat({
                 <CompactionDivider compactions={compaction.compactions} />
               )}
               <div className={`node-chat-line ${line.role}${failedTurn ? " unsent" : ""}`}>
-                <BrowserTurnNotice status={line.browserStatus} />
+                <BrowserTurnNotice status={line.browserStatus} turnId={line.taskId} />
                 {line.role === "human" && line.mode && (
                   <span className={`chat-turn-mode ${line.mode}`}>{modeLabel(line.mode)}</span>
                 )}

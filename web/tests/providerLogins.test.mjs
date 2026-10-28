@@ -208,20 +208,31 @@ test("a dismissed sign-in notice stays hidden until that account signs out again
   globalThis.localStorage = {
     getItem: (key) => stored.get(key) ?? null,
     setItem: (key, value) => stored.set(key, String(value)),
+    removeItem: (key) => stored.delete(key),
+    key: (index) => [...stored.keys()][index] ?? null,
+    get length() {
+      return stored.size;
+    },
   };
-  const model = "../src/projects/providerLoginsModel.ts";
+  const { loginNoticeDismissKey: key } = await import("../src/projects/providerLoginsModel.ts");
+  const banners = "../src/ui/bannerDismissal.ts";
   const signOut = { provider: "claude", host: "gpu.example", generation: 3, changed_at: "t1" };
   try {
-    const first = await import(`${model}?tab=1`);
-    assert.equal(first.isLoginNoticeDismissed(signOut), false);
-    first.dismissLoginNotice(signOut);
+    const first = await import(`${banners}?tab=1`);
+    assert.equal(first.isBannerDismissed(key(signOut)), false);
+    first.dismissBanner(key(signOut));
     // A new page load reads the device's record.
-    const reloaded = await import(`${model}?tab=2`);
-    assert.equal(reloaded.isLoginNoticeDismissed(signOut), true);
+    const reloaded = await import(`${banners}?tab=2`);
+    assert.equal(reloaded.isBannerDismissed(key(signOut)), true);
     // Another failure of the same sign-out moves only its time.
-    assert.equal(reloaded.isLoginNoticeDismissed({ ...signOut, changed_at: "t2" }), true);
-    assert.equal(reloaded.isLoginNoticeDismissed({ ...signOut, generation: 5 }), false);
-    assert.equal(reloaded.isLoginNoticeDismissed({ ...signOut, host: "" }), false);
+    assert.equal(reloaded.isBannerDismissed(key({ ...signOut, changed_at: "t2" })), true);
+    assert.equal(reloaded.isBannerDismissed(key({ ...signOut, generation: 5 })), false);
+    assert.equal(reloaded.isBannerDismissed(key({ ...signOut, host: "" })), false);
+    // A cleared condition forgets only its own dismissals.
+    reloaded.dismissBanner("compute-route:gpu:helper:timeout");
+    reloaded.forgetBanners("compute-route:gpu:helper:");
+    assert.equal(reloaded.isBannerDismissed("compute-route:gpu:helper:timeout"), false);
+    assert.equal(reloaded.isBannerDismissed(key(signOut)), true);
     globalThis.localStorage = {
       getItem: () => {
         throw new Error("unavailable");
@@ -230,10 +241,10 @@ test("a dismissed sign-in notice stays hidden until that account signs out again
         throw new Error("unavailable");
       },
     };
-    const blocked = { ...signOut, generation: 4 };
-    assert.equal(reloaded.isLoginNoticeDismissed(blocked), false);
-    reloaded.dismissLoginNotice(blocked);
-    assert.equal(reloaded.isLoginNoticeDismissed(blocked), true);
+    const blocked = key({ ...signOut, generation: 4 });
+    assert.equal(reloaded.isBannerDismissed(blocked), false);
+    reloaded.dismissBanner(blocked);
+    assert.equal(reloaded.isBannerDismissed(blocked), true);
   } finally {
     delete globalThis.localStorage;
   }

@@ -243,3 +243,61 @@ def test_ordinary_mail_consent_cannot_start_a_continuation(
     assert response.json()["detail"]["code"] == "auto_research_continuation_required"
     assert store.episode_continuation(original.episode_id) is None
     assert store.auto_research_messages(original.episode_id) == []
+
+
+def test_continuation_first_turn_claims_answers_held_since_the_ending(
+    manifest, tmp_path, monkeypatch
+):
+    import rcp.runs.auto_research_admission as admission
+    from rcp.runs.auto_research_questions import (
+        auto_research_question_snapshot,
+        question_answer_mail,
+    )
+    from tests.test_episode_questions import _question
+
+    app, store, original, _ = _ended_app(manifest, tmp_path, monkeypatch)
+    # Held answers claim together in mail order; past one wake's bound the rest
+    # wait for ordinary mail delivery instead of refusing the continuation.
+    monkeypatch.setattr(admission, "AUTO_RESEARCH_MAIL_MAX_MESSAGES", 3)
+    answers = [
+        _question(store, original, key=f"held-{index}", state="answered") for index in range(5)
+    ]
+    held = answers[0]
+    # One was mailed while the orchestrator ran and never delivered; it moves too.
+    with store.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        store._insert_auto_research_message(
+            connection,
+            question_answer_mail(
+                answers[4],
+                episode_id=original.episode_id,
+                recipient_task_id=original.root_operation_id,
+                created_at=store.now(),
+            ),
+        )
+    continued, root = continue_auto_research(
+        app.state.background_tasks,
+        original,
+        invocation_ceiling=1,
+        request_id=str(uuid.uuid4()),
+        authorized_by=original.authorized_by,
+    )
+    mails = store.auto_research_messages(continued.episode_id)
+    assert {mail.message_id for mail in mails} == {
+        f"question:{item.question_id}:answer:{item.answer_revision}"
+        for item in [*answers[:3], answers[4]]
+    }
+    assert all(mail.delivery_operation_id == root.operation_id for mail in mails)
+    # The cards show the answers; the turn's chat line does not repeat their mail.
+    turn_lines = store.orchestrator_chat_messages(continued.project_id, original.episode_id)
+    assert not any(line.get("operation_id") == root.operation_id for line in turn_lines)
+    mail = next(mail for mail in mails if held.question_id in mail.message_id)
+    assert mail.delivery_operation_id == root.operation_id
+    assert mail.authorized_by == held.resolved_by
+    snapshot, _ = auto_research_question_snapshot(
+        store,
+        project_id=continued.project_id,
+        episode_id=continued.episode_id,
+        operation_id=root.operation_id,
+    )
+    assert held.answer in snapshot

@@ -34,8 +34,11 @@ def _question(store, episode, *, key="question", state="pending"):
     return question
 
 
-@pytest.mark.parametrize("path", ["fence", "wrapup", "restore", "stop_skipped"])
-def test_questions_withdraw_at_ending_fence_before_report_finishes(tmp_path, path):
+@pytest.mark.parametrize(
+    ("path", "withdrawn"),
+    [("fence", False), ("wrapup", False), ("restore", True), ("stop_skipped", True)],
+)
+def test_only_stop_endings_withdraw_questions(tmp_path, path, withdrawn):
     store = AppStore(tmp_path / "app.sqlite3")
     episode = store.create_episode(_episode(store, "episode"))
     question = _question(store, episode)
@@ -55,7 +58,26 @@ def test_questions_withdraw_at_ending_fence_before_report_finishes(tmp_path, pat
             store.detach_experiment_episodes_for_restore(
                 connection, diagnostic="Restored copy", now=store.now()
             )
-    assert store.get_question(question.question_id).withdrawn_readonly
+    assert store.get_question(question.question_id).withdrawn_readonly is withdrawn
+
+
+def test_episode_lifecycle_refreshes_question_cards(tmp_path):
+    # A card's offer reads its episode's lifecycle, so ending it must refresh cards.
+    store = AppStore(tmp_path / "app.sqlite3")
+    episode = store.create_episode(_episode(store, "episode"))
+    _question(store, episode)
+
+    def generation() -> int:
+        with store.connection() as connection:
+            return connection.execute(
+                "SELECT generation FROM resource_versions "
+                "WHERE scope=? AND resource='questions' AND entity=''",
+                (episode.project_id,),
+            ).fetchone()[0]
+
+    before = generation()
+    store.fence_episode_ending("episode", "exhausted")
+    assert generation() > before
 
 
 def test_continuations_reopen_ancestor_questions_without_changing_origins(tmp_path):
@@ -87,12 +109,12 @@ def test_continuations_reopen_ancestor_questions_without_changing_origins(tmp_pa
         current = next(s for s in snapshots if s.episode.episode_id == episode_id)
         assert current.has_open_questions
         store.end_episode_without_report(episode_id, ending="exhausted", diagnostic=None)
-        assert all(q.withdrawn_readonly for q in store.episode_questions("project", episode_id))
+        assert not any(q.withdrawn_readonly for q in store.episode_questions("project", episode_id))
     assert store.episode_questions("other-project", "third") == []
 
 
 @pytest.mark.parametrize("delivered", [False, True])
-def test_only_undelivered_question_mail_moves_to_latest_continuation(tmp_path, delivered):
+def test_only_undelivered_question_mail_goes_to_the_next_continuation(tmp_path, delivered):
     from rcp.storage import (
         AutoResearchLifecycleNoticeRecord,
         AutoResearchMessageRecord,
@@ -129,6 +151,7 @@ def test_only_undelivered_question_mail_moves_to_latest_continuation(tmp_path, d
             [message.message_id], operation_id=root.operation_id
         )
     episode = original_episode
+    first_turns = []
     for episode_id in ("continuation", "latest"):
         store.end_episode_without_report(episode.episode_id, ending="exhausted", diagnostic=None)
         continuation = _episode(store, episode_id, mode="auto_research").model_copy(
@@ -172,15 +195,19 @@ def test_only_undelivered_question_mail_moves_to_latest_continuation(tmp_path, d
             ),
         )
         assert not replayed
+        first_turns.append(task)
         store.complete_agent_task(task.operation_id, applied_revision=None, result={})
     # A late idempotent ending replay must not withdraw reopened ancestor cards.
     store.end_episode_without_report(
         original_episode.episode_id, ending="exhausted", diagnostic=None
     )
     assert not store.get_question(question.question_id).withdrawn_readonly
+    # Undelivered answer mail is claimed by the next continuation's first turn.
     moved = store.readdress_auto_research_question_answer(question.question_id)
-    assert moved.episode_id == (original_episode.episode_id if delivered else episode.episode_id)
-    assert moved.recipient_task_id == (root.operation_id if delivered else task.operation_id)
+    claimant = root if delivered else first_turns[0]
+    assert moved.episode_id == claimant.episode_id
+    assert moved.recipient_task_id == claimant.operation_id
+    assert moved.delivery_operation_id == claimant.operation_id
     assert moved.authorized_by == question.resolved_by
     assert store.readdress_auto_research_question_answer(question.question_id) == moved
     assert store.auto_research_message(ordinary.message_id) == ordinary

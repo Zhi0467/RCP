@@ -1002,7 +1002,8 @@ class EpisodeStoreMixin(StoreMixinBase):
             raise EpisodeNotRunning("Stop already fenced this episode")
         if episode.status not in {"queued", "running"}:
             raise EpisodeNotRunning("the episode can no longer accept an ending fence")
-        self._withdraw_episode_question_chain(connection, episode_id)
+        # Only Stop withdraws cards; any other ending leaves them for an answer
+        # that adds turns.
         connection.execute(
             """
             UPDATE episodes
@@ -1010,9 +1011,6 @@ class EpisodeStoreMixin(StoreMixinBase):
             WHERE episode_id = ?
             """,
             (ending, diagnostic, now, episode_id),
-        )
-        self.set_episode_chain_questions_withdrawn_in_connection(
-            connection, episode_id, withdrawn=True
         )
         updated = connection.execute(
             "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
@@ -1180,7 +1178,8 @@ class EpisodeStoreMixin(StoreMixinBase):
                     continuation_cause="episode_report",
                 )
                 self._insert_episode_wrapup(connection, wrapup)
-                self._withdraw_episode_question_chain(connection, episode_id)
+                if wrapup.ending == "stopped":
+                    self._withdraw_episode_question_chain(connection, episode_id)
                 connection.execute(
                     """
                     UPDATE episodes
@@ -1244,7 +1243,6 @@ class EpisodeStoreMixin(StoreMixinBase):
             # ending before it learns whether a report can be generated at all.
             if episode.status not in {"queued", "running", "wrapping_up"}:
                 raise EpisodeNotRunning("the episode can no longer accept an ending fence")
-            self._withdraw_episode_question_chain(connection, episode_id)
             connection.execute(
                 """
                 UPDATE episodes
@@ -1254,9 +1252,6 @@ class EpisodeStoreMixin(StoreMixinBase):
                 WHERE episode_id = ?
                 """,
                 (final_status, ending, diagnostic, now, now, episode_id),
-            )
-            self.set_episode_chain_questions_withdrawn_in_connection(
-                connection, episode_id, withdrawn=True
             )
             append_episode_ended(connection, episode_id, now)
             self._terminalize_auto_research_child_experiment_with_notice(
@@ -2508,9 +2503,8 @@ class EpisodeStoreMixin(StoreMixinBase):
             ),
         )
 
-        self.set_episode_chain_questions_withdrawn_in_connection(
-            connection, record.episode_id, withdrawn=True
-        )
+        if record.ending == "stopped":
+            self._withdraw_episode_question_chain(connection, record.episode_id)
 
     @staticmethod
     def _wrapup_fence_matches(

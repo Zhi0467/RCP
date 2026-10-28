@@ -961,6 +961,7 @@ export function EpisodeTimeline({
                           {duration(s)}
                           {s.invocation_number !== null && <> · inv {s.invocation_number}</>}
                           <BrowserTurnNotice
+                            turnId={s.task_id ?? s.span_id}
                             status={
                               browserTasks.find((task) => task.operation_id === s.task_id)
                                 ?.browser_status
@@ -1040,6 +1041,7 @@ export function EpisodeTimeline({
                       <p>{selectedSpan.cause}</p>
                     )}
                     <BrowserTurnNotice
+                      turnId={selectedSpan.task_id ?? selectedSpan.span_id}
                       status={
                         browserTasks.find((task) => task.operation_id === selectedSpan.task_id)
                           ?.browser_status

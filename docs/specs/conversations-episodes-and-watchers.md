@@ -675,7 +675,11 @@ their own bounded timeout owner so a lost client cannot abandon the check.
 Exit `0` means the named work is gone, `1` means still present, and any other result is
 unobservable. Active observations use the normal interval; repeated failures
 persist bounded exponential backoff and identity jitter. Only exit `1` resets
-the error count. A degraded observation is never inferred complete or dead.
+the error count. A degraded observation is never inferred complete or dead, but
+an observer still unobservable after as many consecutive errors as a group member
+needs wakes its agent once with the error, alone or in its group, and then stops
+checking. A lone check that loses sight of its job, as `squeue` does once Slurm
+forgets a finished job, therefore cannot hold its episode shut.
 
 Shell completion reports operational liveness, not scientific success. The
 Experiment watcher-state file and generic Work wake message, including child
@@ -737,7 +741,9 @@ or undelivered answer belonging to that human-started episode. A question never
 excuses unwatched compute. An answer wake spends one normal Experiment invocation
 and preserves the session, scope, target, Stop fence and ceiling; exhaustion needs
 human reauthorization. Continuation episodes reopen their predecessor's questions
-without changing origin provenance; ended episodes withdraw their cards. In the
+without changing origin provenance. Only Stop withdraws an episode's cards: an
+ending turn may ask several questions, and its human answers them after the
+ending, the last open card naming the turns that continue the episode. In the
 continuation's creation transaction, unreceived, unclaimed answers are claimed by
 invocation 1 when its binding passes the answer-wake origin checks. Its first
 question snapshot carries those answers without spending another invocation.

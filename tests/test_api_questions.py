@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock, call
 
 import pytest
+from fastapi import HTTPException
 
 from rcp.storage.question_models import QuestionOrigin
 from tests.helpers import signed_in_client
@@ -98,34 +99,82 @@ def test_store_validates_answer(questions_api):
     app.state.reconcile_question_answers.assert_not_called()
 
 
-def test_episode_continuation_and_withdrawal(questions_api):
+def test_ended_episode_last_card_answers_with_turns(questions_api, monkeypatch):
+    from rcp.api import questions
+
     app, client, store, project_id = questions_api
-    store.create_episode(_episode(store, "first", project_id=project_id))
-    question = _question(store, project_id, owner_kind="episode", owner_id="first")
-    store.end_episode_without_report("first", ending="exhausted", diagnostic=None)
     base = f"/api/projects/{project_id}"
-    card = client.get(f"{base}/episodes/first/questions").json()[0]
-    assert card["withdrawn_readonly"] and not card["can_answer"]
-    for action, body in [("answer", {"answer": "a"}), ("dismiss", {})]:
-        assert (
-            client.post(f"{base}/questions/{question.question_id}/{action}", json=body).status_code
-            == 409
+    continued = []
+    failures = []
+
+    def continue_ended_episode(source, **kw):
+        if failures:
+            raise HTTPException(status_code=409, detail=failures.pop())
+        continued.append((source, kw))
+
+    monkeypatch.setattr(questions, "continue_ended_episode", continue_ended_episode)
+    store.create_episode(_episode(store, "first", project_id=project_id))
+    held, last = (
+        _question(store, project_id, owner_kind="episode", owner_id="first", key=key)
+        for key in ("held", "last")
+    )
+    store.end_episode_without_report("first", ending="exhausted", diagnostic=None)
+
+    def card(question):
+        cards = client.get(f"{base}/episodes/first/questions").json()
+        return next(item for item in cards if item["question_id"] == question.question_id)
+
+    def answer(question, **body):
+        return client.post(
+            f"{base}/questions/{question.question_id}/answer", json={"answer": "a", **body}
         )
+
+    # Every card stays open; an earlier answer is held without adding turns.
+    assert card(held)["can_answer"] and card(held)["answer_continues"] is None
+    assert answer(held).status_code == 200 and continued == []
+    assert card(last)["answer_continues"] == "turns"
+    refused = answer(last)
+    assert refused.status_code == 409
+    assert refused.json()["detail"]["code"] == "question_continuation_required"
+    request_id = "6f0c4f5e-2b7a-4bd4-9b0a-2f9f1d2c3e4a"
+    # A continuation that fails to start leaves the card open to try again.
+    failures.append("provider signed out")
+    assert answer(last, invocation_ceiling=2, request_id=request_id).status_code == 409
+    assert card(last)["can_answer"] and card(last)["answer_continues"] == "turns"
+    assert answer(last, invocation_ceiling=2, request_id=request_id).status_code == 200
+    [(source, kwargs)] = continued
+    assert source.episode_id == "first"
+    assert (kwargs["invocation_ceiling"], kwargs["request_id"]) == (2, request_id)
+    # While that continuation ends and after it has, a retry replays the answer.
     store.create_episode(
-        _episode(store, "next", project_id=project_id).model_copy(
+        _episode(store, "second", project_id=project_id).model_copy(
             update={"continues_episode_id": "first"}
         )
     )
-    cards = client.get(f"{base}/episodes/next/questions").json()
-    assert len(cards) == 1 and cards[0]["question_id"] == question.question_id
-    assert cards[0]["owner_id"] == "first" and cards[0]["can_answer"]
-    assert (
-        client.post(
-            f"{base}/questions/{question.question_id}/answer", json={"answer": "a"}
-        ).status_code
-        == 200
-    )
-    app.state.reconcile_question_answers.assert_called_once_with(project_id)
+    store.fence_episode_ending("second", "exhausted")
+    assert answer(last, invocation_ceiling=2, request_id=request_id).status_code == 200
+    store.end_episode_without_report("second", ending="exhausted", diagnostic=None)
+    assert answer(last, invocation_ceiling=2, request_id=request_id).status_code == 200
+    assert len(continued) == 1
+
+    # A lone card answered while its episode ran replays after the episode ends.
+    store.create_episode(_episode(store, "solo", project_id=project_id))
+    solo = _question(store, project_id, owner_kind="episode", owner_id="solo", key="solo")
+    assert answer(solo).status_code == 200
+    store.end_episode_without_report("solo", ending="exhausted", diagnostic=None)
+    assert answer(solo).status_code == 200
+    assert len(continued) == 1
+
+    # Stop alone withdraws cards; a still-ending episode's last card waits.
+    store.create_episode(_episode(store, "stopped", project_id=project_id))
+    stopped = _question(store, project_id, owner_kind="episode", owner_id="stopped", key="s")
+    store.mark_episode_stop_skipped("stopped")
+    assert answer(stopped).status_code == 409
+    assert store.get_question(stopped.question_id).withdrawn_readonly
+    store.create_episode(_episode(store, "ending", project_id=project_id))
+    waiting = _question(store, project_id, owner_kind="episode", owner_id="ending", key="w")
+    store.fence_episode_ending("ending", "exhausted")
+    assert answer(waiting).json()["detail"]["code"] == "episode_still_ending"
 
 
 def test_nonmember_and_cross_project_refused(questions_api, monkeypatch):

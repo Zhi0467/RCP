@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { answerQuestion, dismissQuestion } from "../core/api";
 import { MarkdownAnswer } from "../core/chatMarkdown";
 import { canSubmitQuestion, questionIsOpen, toggleQuestionChoice } from "./questions";
@@ -20,16 +20,39 @@ export function QuestionCard({
   const [choices, setChoices] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [turns, setTurns] = useState("3");
+  // A retry reuses its request id while the turns asked are unchanged.
+  const continuation = useRef<{ turns: number; id: string } | null>(null);
   const open = questionIsOpen(question) && !question.withdrawn_readonly;
+  // The ended episode's last open card carries the turns its answer adds.
+  const addsTurns = question.answer_continues === "turns";
+  const parsedTurns = Number(turns);
+  const turnsValid = Number.isSafeInteger(parsedTurns) && parsedTurns >= 1;
+  const answerBlocked = question.answer_continues === "ending" || (addsTurns && !turnsValid);
   const disabled = busy || !question.can_answer;
   async function resolve(action: "answer" | "dismiss", selection = choices) {
-    if (busy || (action === "answer" && !canSubmitQuestion(question, text, selection))) return;
+    if (
+      busy ||
+      (action === "answer" && (answerBlocked || !canSubmitQuestion(question, text, selection)))
+    )
+      return;
     setBusy(true);
     setError(null);
     try {
-      if (action === "answer")
-        await answerQuestion(apiBase, question.question_id, { answer: text, choices: selection });
-      else await dismissQuestion(apiBase, question.question_id);
+      if (action === "answer") {
+        if (addsTurns && continuation.current?.turns !== parsedTurns)
+          continuation.current = { turns: parsedTurns, id: crypto.randomUUID() };
+        await answerQuestion(apiBase, question.question_id, {
+          answer: text,
+          choices: selection,
+          ...(addsTurns && continuation.current
+            ? {
+                invocation_ceiling: continuation.current.turns,
+                request_id: continuation.current.id,
+              }
+            : {}),
+        });
+      } else await dismissQuestion(apiBase, question.question_id);
       onResolved();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -85,7 +108,7 @@ export function QuestionCard({
                   key={choice}
                   className="question-choice"
                   type="button"
-                  disabled={disabled}
+                  disabled={disabled || (!question.multiple && answerBlocked)}
                   aria-pressed={question.multiple ? choices.includes(choice) : undefined}
                   onClick={() =>
                     question.multiple
@@ -110,10 +133,24 @@ export function QuestionCard({
               disabled={disabled}
               onChange={(event) => setText(event.target.value)}
             />
+            {addsTurns && (
+              <label className="question-turns">
+                Add turns
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  aria-label="Turns this answer adds"
+                  value={turns}
+                  disabled={disabled}
+                  onChange={(event) => setTurns(event.target.value)}
+                />
+              </label>
+            )}
             <button
               className="button primary compact"
               type="submit"
-              disabled={busy || !canSubmitQuestion(question, text, choices)}
+              disabled={busy || answerBlocked || !canSubmitQuestion(question, text, choices)}
             >
               {continueChat
                 ? `Answer and continue ${question.capability === "discuss" ? "Discuss" : "Work"}`

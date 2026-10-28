@@ -433,6 +433,17 @@ def migrate_episode_report_deletion(connection: sqlite3.Connection) -> None:
     )
 
 
+def migrate_episode_question_versions(connection: sqlite3.Connection) -> None:
+    """A question card's offer reads its episode's lifecycle, so endings refresh it."""
+    _install(
+        connection,
+        "episodes",
+        [_bump("ROW.project_id", "questions")],
+        columns=("status", "ending"),
+        suffix="_questions",
+    )
+
+
 def install_bulletin_resource_versions(connection: sqlite3.Connection) -> None:
     """Posts and their live roster refresh through the existing project polling loop."""
     roster_columns = {

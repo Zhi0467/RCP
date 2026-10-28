@@ -318,13 +318,20 @@ Open questions add `needs_action` health without changing episode admission/stat
 An answer creates one hearsay-only human mail per question/revision, with full
 answer and selected choices. Normal mail wakes spend B or defer while busy;
 harvest can consume it in-turn. Reconciliation repairs interrupted insertion.
-Answers grant no approval, scope, authority, or budget.
+Answers grant no approval, scope, or authority, and no budget except the turns a
+human names on an ended episode's last open card.
 
 Each root launch stages a bounded snapshot of open questions, undelivered
 dismissals, and claimed answers, never transcripts. Successful turns acknowledge
-dismissals; failed launches retain them. Dismissal never wakes or mails. Endings
-withdraw cards read-only; continuations reopen ancestor cards with their original
-bindings. Root and session-start Retry expose `ask`; workers do not.
+dismissals; failed launches retain them. Dismissal never wakes or mails. Only
+Stop withdraws cards read-only; after any other ending, answers to the chain's
+cards are held and its last open card names the turns that continue it, so the
+continuation's first turn claims every held answer as mail, in the same
+admission as its notice, along with answer mail the chain never delivered, up
+to the mail cap. Any continuation does this, so Add turns retries a card
+whose own continuation failed. A continuation that cannot start reopens the
+answered card, so the human can answer again. Continuations reopen ancestor
+cards with their original bindings. Root and session-start Retry expose `ask`; workers do not.
 
 ## Completion, Stop, and report
 

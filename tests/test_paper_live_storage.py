@@ -35,7 +35,7 @@ def test_paper_schema_fresh_and_upgrade_preserve_legacy_rows(tmp_path, upgrade):
         if upgrade:
             for table in PAPER_TABLES:
                 connection.execute(f'DROP TABLE "{table}"')
-            connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version>=62")
+            connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version>=63")
     store.close()
 
     for _ in range(2):
@@ -51,7 +51,7 @@ def test_paper_schema_fresh_and_upgrade_preserve_legacy_rows(tmp_path, upgrade):
             ).fetchone()[:] == ("draft text", "ancestor text")
             assert (
                 connection.execute(
-                    "SELECT COUNT(*) FROM storage_schema_migrations WHERE migration_version=62"
+                    "SELECT COUNT(*) FROM storage_schema_migrations WHERE migration_version=63"
                 ).fetchone()[0]
                 == 1
             )
@@ -113,7 +113,7 @@ def test_migration_64_merges_prepared_and_committed_receipts(tmp_path):
             "INSERT INTO paper_apply_receipts VALUES ('p','generic','other',?)",
             (json.dumps({"revision": 1}),),
         )
-        conn.execute("DELETE FROM storage_schema_migrations WHERE migration_version=64")
+        conn.execute("DELETE FROM storage_schema_migrations WHERE migration_version=65")
     store.close()
     upgraded = AppStore(path)
     with upgraded.connection() as conn:
