@@ -7,12 +7,13 @@ import type {
   GraphTargetRef,
   IdentityResponse,
   ProjectSnapshot,
+  PublicHealth,
   StartAgentTask,
 } from "../core/types";
 import { useRefreshRuntime, useResource } from "../core/useResource";
 import { resourceKeyId } from "../core/resourceStore";
 import { paperProfile } from "./paperResources";
-import { acquirePaperDocument, type PaperDocument } from "./paperDocuments";
+import { acquirePaperDocument, observePaperBackend, type PaperDocument } from "./paperDocuments";
 import { PaperEditor } from "./PaperEditor";
 import { PaperFiles } from "./PaperFiles";
 import { PaperPreview } from "./PaperPreview";
@@ -30,7 +31,7 @@ interface Props {
   project: ProjectSnapshot;
   owner?: string;
   editorState?: PaperEditorState;
-  requestedFileId?: string | null;
+  requestedFileId?: { fileId: string | null };
   onEditorStateChange?: (state: PaperEditorState) => void;
   tasks: AgentTask[];
   onStartTask: StartAgentTask;
@@ -63,13 +64,13 @@ export function PaperWorkspace({
   const [identityError, setIdentityError] = useState<string | null>(null);
   const [identityRetry, setIdentityRetry] = useState(0);
   const [selected, setSelected] = useState<string | null>(
-    requestedFileId ??
+    requestedFileId?.fileId ??
       new URLSearchParams(window.location.hash.split("?")[1]).get("paper_file") ??
       editorState?.fileId ??
       null,
   );
   useEffect(() => {
-    if (requestedFileId) setSelected(requestedFileId);
+    if (requestedFileId?.fileId) setSelected(requestedFileId.fileId);
   }, [requestedFileId]);
   const [folded, setFolded] = useState(storedFold);
   const [filesOpen, setFilesOpen] = useState(false);
@@ -100,8 +101,13 @@ export function PaperWorkspace({
   useEffect(() => {
     const controller = new AbortController();
     setIdentity(null);
-    void api<IdentityResponse>("/api/identity", { signal: controller.signal })
-      .then((value) => {
+    void Promise.all([
+      api<IdentityResponse>("/api/identity", { signal: controller.signal }),
+      api<PublicHealth>("/api/health", { signal: controller.signal }),
+    ])
+      .then(([value, health]) => {
+        if (controller.signal.aborted) return;
+        observePaperBackend({ ok: true, health, message: null, reason: "paper-open" });
         setIdentity(value);
         setIdentityError(null);
       })
@@ -115,11 +121,11 @@ export function PaperWorkspace({
       setIdentity(null);
       setIdentityRetry((value) => value + 1);
     };
-    window.addEventListener("rcp:backend-identity", reset);
+    window.addEventListener("rcp:paper-backend-changed", reset);
     window.addEventListener("rcp:session-required", reset);
     window.addEventListener("rcp:read-access-lost", reset);
     return () => {
-      window.removeEventListener("rcp:backend-identity", reset);
+      window.removeEventListener("rcp:paper-backend-changed", reset);
       window.removeEventListener("rcp:session-required", reset);
       window.removeEventListener("rcp:read-access-lost", reset);
     };

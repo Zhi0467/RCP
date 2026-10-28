@@ -2,6 +2,11 @@ import { api } from "../core/api";
 import type { ResourceKey, ResourceProfile } from "../core/resourceStore";
 import type { PaperSnapshot, PaperTree, WritingSession } from "../core/types";
 
+/** Each link opening is a new request, including a return to the same file. */
+export function paperFileRequest(hash: string) {
+  return { fileId: new URLSearchParams(hash.split("?")[1]).get("paper_file") };
+}
+
 export interface PaperResource {
   tree: PaperTree;
   /** Shell badge projection until the shell consumes PaperTree directly. */

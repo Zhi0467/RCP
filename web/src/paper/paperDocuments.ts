@@ -1,3 +1,4 @@
+import type { BackendIdentityEventDetail } from "../core/desktopRuntime";
 import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
 import { IndexeddbPersistence } from "y-indexeddb";
@@ -72,6 +73,7 @@ export class PaperDocument {
   private awaitingAck = true;
   private listeners = new Set<() => void>();
   private references = 0;
+  private localPresence: Record<string, unknown> | null = null;
   private disposal: ReturnType<typeof setTimeout> | undefined;
   private disposed = false;
   private storageStarting = false;
@@ -183,14 +185,17 @@ export class PaperDocument {
     const colors = ["#386792", "#ba731e", "#785a7c", "#326d72"];
     const hash = [...this.key.member].reduce((sum, char) => sum + char.charCodeAt(0), 0);
     const color = colors[hash % colors.length];
-    this.provider.awareness.setLocalStateField("user", {
-      name: this.name,
-      color,
-      colorLight: `${color}33`,
+    this.provider.awareness.setLocalState({
+      ...this.localPresence,
+      ...this.provider.awareness.getLocalState(),
+      user: { name: this.name, color, colorLight: `${color}33` },
     });
     return () => {
       this.references--;
-      if (!this.references) this.provider.awareness.setLocalState(null);
+      if (!this.references) {
+        this.localPresence = this.provider.awareness.getLocalState();
+        this.provider.awareness.setLocalState(null);
+      }
       this.scheduleDisposal();
     };
   }
@@ -226,8 +231,30 @@ export function acquirePaperDocument(key: PaperDocumentKey, apiBase: string, nam
 export function disconnectPaperDocuments() {
   for (const owner of [...owners.values()]) owner.destroy();
 }
+// Reverification also fires after transport recovery. Only an observed identity
+// change invalidates document owners; a failed probe has no new identity.
+export function paperBackendIdentityTracker() {
+  let previous: string | null = null;
+  return (detail: BackendIdentityEventDetail) => {
+    if (!detail.health) return false;
+    const { instance_id, data_dir_id, version } = detail.health;
+    const next = JSON.stringify([instance_id, data_dir_id, version]);
+    const changed = previous !== null && previous !== next;
+    previous = next;
+    return changed;
+  };
+}
+const backendChanged = paperBackendIdentityTracker();
+export function observePaperBackend(detail: BackendIdentityEventDetail) {
+  const changed = backendChanged(detail);
+  if (changed) disconnectPaperDocuments();
+  return changed;
+}
 if (typeof window !== "undefined") {
   window.addEventListener("rcp:session-required", disconnectPaperDocuments);
   window.addEventListener("rcp:read-access-lost", disconnectPaperDocuments);
-  window.addEventListener("rcp:backend-identity", disconnectPaperDocuments);
+  window.addEventListener("rcp:backend-identity", (event) => {
+    if (!observePaperBackend((event as CustomEvent<BackendIdentityEventDetail>).detail)) return;
+    window.dispatchEvent(new Event("rcp:paper-backend-changed"));
+  });
 }

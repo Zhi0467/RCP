@@ -11,6 +11,12 @@ import { Check, ChevronLeft, ChevronRight, X } from "lucide-react";
 import type { PaperDocument } from "./paperDocuments";
 import type { PaperChange } from "./PaperChanges";
 
+export function paperAnchorMatches(change: PaperChange, text: string, region: string) {
+  return change.preview.removed.length
+    ? region === change.preview.removed.join("\n")
+    : change.anchorText !== undefined && text === change.anchorText;
+}
+
 class SuggestionWidget extends WidgetType {
   constructor(
     readonly change: PaperChange,
@@ -75,7 +81,7 @@ export function PaperEditor({
       ),
     [changes, owner],
   );
-  const text = owner.getSnapshot().text;
+  const { text, error } = owner.getSnapshot();
   const currentStep = Math.min(step, pending.length - 1);
   const active = pending[currentStep];
   useEffect(() => {
@@ -134,11 +140,7 @@ export function PaperEditor({
         ? from
         : editor.state.doc.line(Math.min(Math.max(start, end), editor.state.doc.lines)).to;
       // A moved or edited anchor is never painted as if it were still current.
-      if (
-        change.preview.removed.length &&
-        editor.state.doc.sliceString(from, to) !== change.preview.removed.join("\n")
-      )
-        return [];
+      if (!paperAnchorMatches(change, text, editor.state.doc.sliceString(from, to))) return [];
       const result = [
         Decoration.widget({
           widget: new SuggestionWidget(change, (id, action) => decide.current(id, action)),
@@ -168,13 +170,22 @@ export function PaperEditor({
     });
     editor.focus();
   };
+  const located = useRef<{ owner: PaperDocument; change: PaperChange } | null>(null);
   useEffect(() => {
-    locate(focusChange ?? undefined);
-  }, [focusChange, owner]);
+    if (
+      !focusChange ||
+      focusChange.file_id !== owner.key.file ||
+      !text ||
+      (located.current?.owner === owner && located.current.change === focusChange)
+    )
+      return;
+    locate(focusChange);
+    located.current = { owner, change: focusChange };
+  }, [focusChange, owner, text]);
   const words = owner.getSnapshot().text.trim().split(/\s+/).filter(Boolean).length;
   return (
     <>
-      <div className="paper-code paper-well" ref={host} />
+      <div className={`paper-code paper-well ${error ? "paper-failed" : ""}`} ref={host} />
       <footer className="paper-editor-footer">
         <span className="paper-position">
           Ln {position.line}, Col {position.column}

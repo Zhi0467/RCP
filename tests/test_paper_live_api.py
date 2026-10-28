@@ -266,3 +266,35 @@ def test_served_live_edit_publish_rename_and_shutdown(manifest, tmp_path, monkey
             worker.join(timeout=TASK_SETTLE_TIMEOUT)
         assert not worker.is_alive()
     assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+
+
+@pytest.mark.parametrize("failure", ["nul", "large", "invalid", "project_rate", "socket_rate"])
+def test_rejected_updates_close_finally_but_rate_limits_retry(
+    manifest, tmp_path, monkeypatch, failure
+):
+    from rcp import limits
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    with signed_in_client(app) as client:
+        prefix = f"/api/projects/{app.state.default_project_id}/paper"
+        file_id = _file(client, prefix)
+        with client.websocket_connect(
+            prefix + f"/files/{file_id}/live", headers={"Origin": "http://testserver"}
+        ) as socket:
+            doc = Doc({"text": Text()})
+            _sync(socket, doc)
+            if failure == "large":
+                monkeypatch.setattr(limits, "PAPER_MAX_DOC_BYTES", 2)
+            if failure == "project_rate":
+                monkeypatch.setattr(limits, "PAPER_PROJECT_UPDATES_PER_SECOND", 0)
+            if failure == "socket_rate":
+                monkeypatch.setattr("rcp.api.paper_live.PAPER_CONNECTION_UPDATES_PER_SECOND", 0)
+            doc["text"].insert(0, "\x00" if failure == "nul" else "large")
+            socket.send_bytes(
+                b"invalid" if failure == "invalid" else create_update_message(doc.get_update())
+            )
+            with pytest.raises(WebSocketDisconnect) as closed:
+                socket.receive_bytes()
+            assert closed.value.code == (
+                4529 if failure.endswith("rate") else 4413 if failure == "large" else 4400
+            )

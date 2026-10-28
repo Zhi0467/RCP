@@ -118,7 +118,7 @@ export function PaperPreview({
             setEngines((value) => value && { ...value, latex: "unavailable" });
           } else if (result.status === "error" && !result.candidates?.length) {
             throw new Error(result.log_tail || "Compilation failed");
-          } else {
+          } else if (result.status !== "superseded") {
             setPdf(null);
           }
         } else {

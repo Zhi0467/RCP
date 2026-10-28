@@ -62,3 +62,11 @@ test("Paper shell badge reflects publication independently of the saved tree rev
     globalThis.fetch = original;
   }
 });
+
+test("opening the same paper link creates another navigation request", async () => {
+  const { paperFileRequest } = await server.ssrLoadModule("/src/paper/paperResources.ts");
+  const first = paperFileRequest("#/projects/p/paper?paper_file=A");
+  const again = paperFileRequest("#/projects/p/paper?paper_file=A");
+  assert.equal(again.fileId, "A");
+  assert.notEqual(again, first);
+});
