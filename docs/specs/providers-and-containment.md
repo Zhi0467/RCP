@@ -918,7 +918,11 @@ Every agent runs on the project's **base**: the machine that holds the
 canonical state repository. Chat, Seed, Refresh, Experiments, Auto-research,
 watchers and the Paper coach alike; no profile, request or recovery picks
 another machine, and project Settings tags the base's machine card. A manifest
-whose coach names another machine loads with that choice dropped.
+whose coach names another machine loads with that choice dropped. A fresh Paper
+turn or standalone retry without a native session ignores a stale request's
+machine choice; a resumed native session must retain its recorded machine.
+The coach stages its fixed paper snapshot and reads changes back over the same
+remote-stage transport as other agents; see [Writing coach](paper-artifacts-and-result-views.md#writing-coach).
 
 **Why:** graph-writing agents already had to run beside `.research/`, and a
 per-launch machine made "where does the agent's SSH start" depend on the chat.

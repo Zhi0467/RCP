@@ -626,17 +626,6 @@ class ProjectSetupManager:
                     ),
                 )
             )
-        if request.agents.paper_coach.location == "ssh":
-            checks.append(
-                SetupCheck(
-                    label="Paper coach session resume",
-                    status="warn",
-                    detail=(
-                        "The paper coach can be configured remotely, but v1 native-session "
-                        "resume requires a local execution machine."
-                    ),
-                )
-            )
         execution_host = request.execution.host if request.execution.location == "ssh" else ""
         providers = {
             provider: readiness_cache.get((provider, execution_host))

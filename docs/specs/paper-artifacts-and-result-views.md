@@ -129,6 +129,16 @@ change cards by diffing against the snapshot; the coach never writes diffs or
 line numbers. Validation applies the live paper's own limits to the whole
 proposed tree. A rename and the edits that depend on it form one card group.
 
+The coach runs on the project's base machine, locally or over SSH. Remote
+turns upload each fixed saved-paper snapshot as immutable stage input; they
+never read the live published paper directory. Graph and repository pointers
+refer to base-side paths. The native session reuses its stage workspace, and
+only its changes folder is writable. After each completed round, bounded,
+symlink-refusing read-back supplies the same local card collection. Checkpointed
+recovery retains the stage and machine; finished stages remain for session
+continuations until the normal stage sweeper removes them. A standalone retry
+without a native session uses the base even if an old request names another machine.
+
 A card applies only to the text it was made from. At the end of a turn RCP
 checks every card against the live paper; a card whose text has since changed is
 refreshed by up to two short follow-up turns of the same coach session, then

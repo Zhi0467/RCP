@@ -2979,3 +2979,29 @@ def test_generation_flushes_data_and_descriptor_before_selection(tmp_path, monke
     monkeypatch.setattr(Path, "replace", select)
     generations.copy(root)
     assert generations.current is not None
+
+
+@pytest.mark.parametrize("unsafe", ["symlink", "directory_symlink", "oversize"])
+def test_remote_stage_workspace_tree_is_bounded_and_refuses_symlinks(
+    local_remote_stage, tmp_path: Path, unsafe: str
+) -> None:
+    stage = local_remote_stage
+    root = Path(str(stage.root))
+    directory = root / "workspace" / "turns" / "coach" / "artifacts"
+    (directory / "nested").mkdir(parents=True)
+    payload = b"\x00\xffpaper"
+    (directory / "nested" / "draft.tex").write_bytes(payload)
+    destination = tmp_path / "readback"
+    limits = {"max_files": 8, "max_file_bytes": 16, "max_total_bytes": 32}
+    stage.read_workspace_directory("turns/coach/artifacts", destination, **limits)
+    assert (destination / "nested" / "draft.tex").read_bytes() == payload
+    if unsafe == "symlink":
+        (directory / "linked.tex").symlink_to(directory / "nested" / "draft.tex")
+    elif unsafe == "directory_symlink":
+        (directory / "linked").symlink_to(directory / "nested", target_is_directory=True)
+    else:
+        (directory / "large.tex").write_bytes(b"x" * 17)
+    rejected = tmp_path / "rejected"
+    with pytest.raises(ValueError):
+        stage.read_workspace_directory("turns/coach/artifacts", rejected, **limits)
+    assert not rejected.exists()

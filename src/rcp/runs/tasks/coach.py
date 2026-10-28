@@ -28,10 +28,17 @@ from rcp.agents.prompts import (
 )
 from rcp.background import AgentTaskExecution
 from rcp.core.transition_models import GraphTargetRef
-from rcp.limits import COMMAND_MAILBOX_TIMEOUT_SECONDS, PAPER_COACH_MAX_REFRESH_ROUNDS
+from rcp.limits import (
+    COMMAND_MAILBOX_TIMEOUT_SECONDS,
+    PAPER_CHANGES_MAX_FILE_BYTES,
+    PAPER_CHANGES_MAX_FILES,
+    PAPER_CHANGES_MAX_TOTAL_BYTES,
+    PAPER_COACH_MAX_REFRESH_ROUNDS,
+)
 from rcp.paper import PaperLive, PaperService, PaperSnapshot, WritingSession
 from rcp.paper.changes import InvalidChanges, get_paper_changes
 from rcp.providers import ProviderSkillReference, configured_runtime_id
+from rcp.runs.chat import _validated_remote_chat_resume_stage
 from rcp.runs.patch_validator import (
     cleanup_patch_validation_mailbox,
     serve_patch_validation_mailbox,
@@ -49,12 +56,14 @@ from rcp.runs.session_master import (
 from rcp.runs.shared import (
     _pinned_to_profile,
     _prepare_hidden_read_scope,
+    _protected_run_stage_roots,
     _ProviderOutcome,
     _record_agent_launch_receipt,
     _record_provider_exit,
     _remove_local_tree,
     _safe_stage_name,
     _sse,
+    _stage_context_paths,
     _stage_json_task_input,
     _stage_or_reuse_task_input,
     _stage_task_contract,
@@ -64,7 +73,7 @@ from rcp.runs.shared import (
 )
 from rcp.service import CoachRequest, ProjectService
 from rcp.skills.staging import stage_skill_selection
-from rcp.transport import StateUnavailable
+from rcp.transport import RemoteRunStage, StateUnavailable
 
 
 def _resolved_coach_request(
@@ -102,7 +111,7 @@ def _resolved_coach_request(
             else None
         ),
         reasoning=request.reasoning or (existing.reasoning if existing else None),
-        run_on=request.run_on or (existing.execution_machine if existing else None),
+        run_on=existing.execution_machine if existing else None,
     )
     resolved = request.model_copy(
         update={
@@ -155,6 +164,30 @@ def _stage_saved_paper(
         child.chmod(0o500 if child.is_dir() else 0o400)
     path.chmod(0o500)
     return path
+
+
+def _stage_coach_round(
+    live: PaperLive,
+    snapshot: PaperSnapshot,
+    local_stage: Path,
+    snapshots: list[Path],
+    round_number: int,
+    remote_stage: RemoteRunStage | None,
+    token: str,
+) -> tuple[Path, Path]:
+    snapshot_path = _stage_saved_paper(live, snapshot, local_stage, snapshots, round_number)
+    if remote_stage is None:
+        return snapshot_path, Path(tempfile.mkdtemp(prefix="changes-", dir=local_stage)).resolve()
+    snapshot_path = Path(
+        remote_stage.put_directory(
+            snapshot_path,
+            f"{token}-paper-base-{round_number}",
+            reuse=True,
+        )
+    )
+    remote_stage.finalize_inputs()
+    changes_path = remote_stage.prepare_artifact_directory(f"{token}-{round_number}", reuse=False)
+    return snapshot_path, Path(str(changes_path))
 
 
 def _record_paper_base(
@@ -231,7 +264,11 @@ async def _stream_coach(
     snapshots: list[Path],
 ) -> AsyncGenerator[str, None]:
     continuation = execution.continuation if execution is not None else "fresh"
-    reusing_checkpoint = bool(execution is not None and execution.reuses_native_checkpoint)
+    reusing_checkpoint = bool(
+        execution is not None
+        and execution.reuses_native_checkpoint
+        and not (continuation == "retry" and not request.session_id)
+    )
     resuming = continuation == "resume"
     retrying = continuation == "retry"
     retry_attempt = continuation in {"retry", "handoff"}
@@ -258,23 +295,12 @@ async def _stream_coach(
     execution_machine = service.manifest.machine_map[profile.run_on]
     execution_host = execution_machine.host
     provider_binary = service.launcher.provider_binary(profile.provider, execution_machine.host)
-    if execution_host:
-        yield _sse(
-            AgentEvent(
-                event="error",
-                text=(
-                    "Remote writing-coach sessions need saved-paper snapshot and changes staging for "
-                    "native resume. Choose a local machine for this invocation."
-                ),
-            )
-        )
-        return
     stage_root = _swept_stage_root(
         data_dir,
         store=execution.store if execution is not None else None,
     )
     token = _task_token(execution)
-    if reusing_checkpoint:
+    if reusing_checkpoint and not execution_host:
         if not execution.stage_root:
             yield _sse(
                 AgentEvent(
@@ -294,8 +320,8 @@ async def _stream_coach(
             return
     else:
         local_stage = stage_root / f"paper-{token}"
-        local_stage.mkdir(parents=True, exist_ok=False)
-        if execution is not None:
+        local_stage.mkdir(parents=True, exist_ok=bool(execution_host and reusing_checkpoint))
+        if execution is not None and not execution_host:
             execution.checkpoint_stage("", str(local_stage))
     # OpenCode and Claude find a native session by its working folder, so a session's
     # turns all run in the folder of the turn that started it. One session runs one
@@ -305,10 +331,33 @@ async def _stream_coach(
         if execution is not None and request.session_id
         else None
     )
-    workspace = stage_root / f"paper-coach-{_safe_stage_name(origin) if origin else token}"
-    workspace.mkdir(mode=0o700, exist_ok=True)
-    os.utime(workspace)
+    stage_name = f"paper-coach-{_safe_stage_name(origin) if origin else token}"
+    remote_stage = None
+    workspace = stage_root / stage_name
     try:
+        if execution_host:
+            if reusing_checkpoint:
+                saved_root = _validated_remote_chat_resume_stage(
+                    execution, execution_host, stage_name
+                )
+                remote_stage = RemoteRunStage(execution_host).attach(saved_root)
+            else:
+                remote_stage = RemoteRunStage(execution_host).open(
+                    stage_name,
+                    reuse=True,
+                    protected_roots=_protected_run_stage_roots(
+                        execution.store if execution is not None else None,
+                        execution_host,
+                    ),
+                )
+            remote_stage.touch()
+            assert remote_stage.root is not None
+            if execution is not None:
+                execution.checkpoint_stage(execution_host, str(remote_stage.root))
+            workspace = Path(str(remote_stage.workspace))
+        else:
+            workspace.mkdir(mode=0o700, exist_ok=True)
+            os.utime(workspace)
         live = service.paper_live
         changes = get_paper_changes(service)
         _validate_paper_continuation(execution, request, paper.project_id)
@@ -333,18 +382,20 @@ async def _stream_coach(
         snapshot = await live.snapshot(paper.project_id)
         if wanted is not None:
             snapshot = _only_files(snapshot, wanted)
-        snapshot_path = _stage_saved_paper(live, snapshot, local_stage, snapshots, 0)
-        changes_path = Path(tempfile.mkdtemp(prefix="changes-", dir=local_stage)).resolve()
+        snapshot_path, changes_path = _stage_coach_round(
+            live, snapshot, local_stage, snapshots, 0, remote_stage, token
+        )
         _record_paper_base(execution, snapshot)
-    except (OSError, ValueError) as exc:
+    except (OSError, StateUnavailable, ValueError) as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
         return
+    input_stage = None if remote_stage is not None else local_stage
     history_staged = None
     try:
         skill_pointers = stage_skill_selection(
             service.resolve_skill_selection(request),
-            local_stage=local_stage,
-            remote_stage=None,
+            local_stage=input_stage,
+            remote_stage=remote_stage,
             label=f"rcp-skills-{token}",
         )
         if reusing_checkpoint and not request.session_id:
@@ -353,10 +404,12 @@ async def _stream_coach(
                 "clean attempt instead."
             )
         pointers, read_dirs = service.coach_context(request, snapshot_path)
+        if remote_stage is not None:
+            pointers.update(_stage_context_paths(pointers, service, remote_stage, profile.run_on))
         retry_diagnostics_path = (
             _stage_json_task_input(
-                local_stage,
-                None,
+                input_stage,
+                remote_stage,
                 f"task-{token}-retry-diagnostics.json",
                 {"diagnostics": _paper_retry_diagnostics(execution)},
             )
@@ -374,9 +427,11 @@ async def _stream_coach(
             for item in raw_repositories
             if isinstance(item, dict)
         ]
+        if remote_stage is not None:
+            read_dirs = [Path(item["path"]) for item in repositories if not item["host"]]
         human_request_path = _stage_task_input(
-            local_stage,
-            None,
+            input_stage,
+            remote_stage,
             f"task-{token}-human-request.txt",
             request.message,
         )
@@ -397,9 +452,9 @@ async def _stream_coach(
         )
         # The client writes requests into its working folder, so the mailbox lives there.
         history_staged = stage_patch_validation_mailbox(
-            local_stage=workspace,
-            remote_stage=None,
-            local_input_stage=local_stage,
+            local_stage=workspace if remote_stage is None else None,
+            remote_stage=remote_stage,
+            local_input_stage=local_stage if remote_stage is None else None,
             task_id=token,
             turn_id=f"{token}:paper",
             authority="broker",
@@ -448,8 +503,8 @@ async def _stream_coach(
         if node == "session_start":
             contract = render_contract()
             contract_path, prompt = _stage_task_contract(
-                local_stage,
-                None,
+                input_stage,
+                remote_stage,
                 f"task-{token}-{'base' if retry_attempt else 'initial'}.md",
                 contract,
                 execution=execution,
@@ -464,8 +519,9 @@ async def _stream_coach(
             assert request.session_id is not None
             master = _coach_session_master(
                 execution,
-                local_stage=local_stage,
+                local_stage=input_stage,
                 native_session_id=request.session_id,
+                remote_stage=remote_stage,
                 key=key,
                 render=render_contract,
                 values=master_values,
@@ -491,13 +547,18 @@ async def _stream_coach(
             recovery_mode = "resume" if resuming else "retry" if retrying else None
             contract_path = record_inline_prompt(
                 execution,
-                local_stage=local_stage,
-                remote_stage=None,
+                local_stage=input_stage,
+                remote_stage=remote_stage,
                 label=f"task-{token}-{recovery_mode or 'initial'}.md",
                 role=f"paper_coach_{recovery_mode}" if recovery_mode else "paper_coach",
                 prompt=prompt,
             )
-        read_dirs.extend([service.manifest.research_dir, local_stage / "inputs", snapshot_path])
+        inputs = (
+            Path(str(remote_stage.root / "inputs"))
+            if remote_stage and remote_stage.root
+            else local_stage / "inputs"
+        )
+        read_dirs.extend([Path(str(pointers["graph"])).parent, inputs, snapshot_path])
     except (StateUnavailable, ValueError) as exc:
         if history_staged is not None:
             history_staged.cleanup()
@@ -523,7 +584,7 @@ async def _stream_coach(
         request,
         prompt=prompt,
         contract_path=contract_path,
-        remote=False,
+        remote=remote_stage is not None,
         resumed=reusing_checkpoint,
         continuation=continuation,
         extra={
@@ -537,11 +598,12 @@ async def _stream_coach(
         service,
         request,
         workspace=workspace,
-        remote_stage=None,
+        remote_stage=remote_stage,
         execution=execution,
         capability="paper_suggest",
+        execution_host=execution_host,
         data_dir=data_dir,
-        local_stage=local_stage,
+        local_stage=input_stage,
     )
     from rcp.runs.graph_history_queries import handle_graph_history_command
 
@@ -597,11 +659,20 @@ async def _stream_coach(
             if _coach_stopped(execution):
                 yield _sse(AgentEvent(event="paused", text="Paper coaching stopped before launch."))
                 break
+            if remote_stage is not None:
+                await asyncio.to_thread(remote_stage.finalize_inputs)
             async with aclosing(
                 launcher.stream(
                     profile.provider,
                     prompt,
                     cwd=workspace,
+                    host=execution_host,
+                    remote_pid_file=(
+                        str(remote_stage.root / f"agent-{token}-{refresh_round}.pid")
+                        if remote_stage is not None and remote_stage.root is not None
+                        else None
+                    ),
+                    transport_partition=remote_stage.transport_partition if remote_stage else None,
                     model=model,
                     reasoning=reasoning,
                     session_id=native_session_id,
@@ -633,7 +704,7 @@ async def _stream_coach(
                             execution,
                             provider_outcome,
                             workspace=local_stage,
-                            remote_stage=None,
+                            remote_stage=remote_stage,
                         )
                         continue
                     if event.event == "runtime":
@@ -658,22 +729,43 @@ async def _stream_coach(
             if not completed or provider_failed or _coach_stopped(execution):
                 break
             try:
-                await asyncio.to_thread(
-                    changes.collect,
-                    paper.project_id,
-                    token,
-                    snapshot,
-                    changes_path,
-                    mode=request.mode,
-                    replace_group_ids=replace_group_ids,
-                    replace_source_task_id=replace_source_task_id,
-                )
-            except InvalidChanges as exc:
+                with tempfile.TemporaryDirectory(prefix="paper-changes-") as collected:
+                    collected_path = changes_path
+                    if remote_stage is not None:
+                        collected_path = Path(collected)
+                        await asyncio.to_thread(
+                            remote_stage.read_workspace_directory,
+                            changes_path.relative_to(workspace).as_posix(),
+                            collected_path,
+                            max_files=PAPER_CHANGES_MAX_FILES + 1,
+                            max_file_bytes=PAPER_CHANGES_MAX_FILE_BYTES,
+                            max_total_bytes=PAPER_CHANGES_MAX_TOTAL_BYTES,
+                        )
+                    await asyncio.to_thread(
+                        changes.collect,
+                        paper.project_id,
+                        token,
+                        snapshot,
+                        collected_path,
+                        mode=request.mode,
+                        replace_group_ids=replace_group_ids,
+                        replace_source_task_id=replace_source_task_id,
+                    )
+            except StateUnavailable as exc:
+                # The read-back failed, not the coach: there is nothing to correct.
+                provider_failed = True
+                yield _sse(AgentEvent(event="error", text=str(exc)))
+                break
+            except (InvalidChanges, ValueError) as exc:
                 if execution is not None:
                     execution.store.record_agent_task_receipt(
                         execution.operation_id,
                         "paper_changes_invalid",
-                        {"diagnostics": exc.diagnostics},
+                        {
+                            "diagnostics": exc.diagnostics
+                            if isinstance(exc, InvalidChanges)
+                            else [str(exc)]
+                        },
                     )
                 provider_failed = True
                 yield _sse(AgentEvent(event="error", text=str(exc)))
@@ -700,10 +792,9 @@ async def _stream_coach(
                 changes.undecided_group_ids, paper.project_id, token, stale_files
             )
             snapshot = _only_files(newer, stale_files)
-            snapshot_path = _stage_saved_paper(
-                live, snapshot, local_stage, snapshots, refresh_round + 1
+            snapshot_path, changes_path = _stage_coach_round(
+                live, snapshot, local_stage, snapshots, refresh_round + 1, remote_stage, token
             )
-            changes_path = Path(tempfile.mkdtemp(prefix="changes-", dir=local_stage)).resolve()
             read_dirs.append(snapshot_path)
             _record_paper_base(execution, snapshot)
             values = current_master_values()
@@ -722,8 +813,8 @@ async def _stream_coach(
             )
             contract_path = record_inline_prompt(
                 execution,
-                local_stage=local_stage,
-                remote_stage=None,
+                local_stage=input_stage,
+                remote_stage=remote_stage,
                 label=f"task-{token}-paper-refresh-{refresh_round + 1}.md",
                 role=f"paper_refresh_{refresh_round + 1}",
                 prompt=prompt,
@@ -733,7 +824,7 @@ async def _stream_coach(
                 request,
                 prompt=prompt,
                 contract_path=contract_path,
-                remote=False,
+                remote=remote_stage is not None,
                 resumed=True,
                 continuation="paper_refresh",
                 extra={
@@ -846,8 +937,9 @@ _COACH_MASTER_LABEL = "paper-coach-master"
 def _coach_session_master(
     execution: AgentTaskExecution | None,
     *,
-    local_stage: Path,
+    local_stage: Path | None,
     native_session_id: str,
+    remote_stage: RemoteRunStage | None,
     key: str,
     render: Callable[[], str],
     values: dict[str, object],
@@ -857,13 +949,13 @@ def _coach_session_master(
     if execution is None:
         content = render()
         path = _stage_or_reuse_task_input(
-            local_stage, None, session_master_label(_COACH_MASTER_LABEL, content), content
+            local_stage, remote_stage, session_master_label(_COACH_MASTER_LABEL, content), content
         )
         return MasterRef(path=path, bootstrap=True, values=values)
     return continuation_session_master(
         execution,
         local_stage=local_stage,
-        remote_stage=None,
+        remote_stage=remote_stage,
         native_session_id=native_session_id,
         label_prefix=_COACH_MASTER_LABEL,
         key=key,

@@ -42,6 +42,7 @@ from rcp.service import CoachRequest, ProjectService, RunRequest
 from rcp.storage.models import _NON_PROMPT_CONTRACT_ROLES
 from rcp.transport import RemoteRunStage, StateUnavailable, StateUnreachable
 from rcp.transport.remote_stage_root import READ_CONTEXT_INPUT, prepare_read_context_input
+from rcp.transport.repositories import RepositoryAccess
 from rcp.transport.run_stage import run_stage_partition
 from rcp.transport.state import (
     _remote_turn_supervisor_script,
@@ -1283,15 +1284,21 @@ def stage_branch_read_context(
 
 
 def _stage_context_paths(
-    context: RunContext | ChatContext,
+    context: RunContext | ChatContext | dict[str, object],
     service: ProjectService,
     stage: RemoteRunStage,
     execution_machine: str,
 ) -> dict[str, object]:
     """Repository and materialized-state pointers a remote agent can open."""
 
+    if isinstance(context, dict):
+        raw_repositories = context["truth_repositories"]
+        assert isinstance(raw_repositories, list)
+        source_repositories = [RepositoryAccess.model_validate(item) for item in raw_repositories]
+    else:
+        source_repositories = context.repositories
     repositories = []
-    for repository in context.repositories:
+    for repository in source_repositories:
         if repository.machine == execution_machine:
             repositories.append(repository.model_copy(update={"host": ""}))
             continue
@@ -1302,7 +1309,11 @@ def _stage_context_paths(
                 "agent on that repository's machine or configure a reachable host."
             )
         repositories.append(repository)
-    updates: dict[str, object] = {"repositories": repositories}
+    updates: dict[str, object] = (
+        {"truth_repositories": [item.model_dump() for item in repositories]}
+        if isinstance(context, dict)
+        else {"repositories": repositories}
+    )
     state_repository = service.manifest.repository_map[service.manifest.state.repository]
     if state_repository.machine != execution_machine:
         raise StateUnavailable(
@@ -1310,10 +1321,11 @@ def _stage_context_paths(
             "cross-machine state staging is forbidden."
         )
     canonical = PurePosixPath(state_repository.path) / ".research"
-    for field in _STATE_PATH_FIELDS:
-        raw_path = getattr(context, field)
+    fields = ("graph", "research_md") if isinstance(context, dict) else _STATE_PATH_FIELDS
+    for field in fields:
+        raw_path = context.get(field) if isinstance(context, dict) else getattr(context, field)
         if raw_path:
-            relative_path = Path(raw_path).relative_to(service.manifest.research_dir)
+            relative_path = Path(str(raw_path)).relative_to(service.manifest.research_dir)
             updates[field] = str(canonical / relative_path)
     return updates
 
