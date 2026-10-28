@@ -29,6 +29,7 @@ import {
   acquirePaperDocument,
   observePaperBackend,
   paperBackendKey,
+  recoverUnsentPaperDocuments,
   resumePaperDocuments,
   unsentPaperDocuments,
   type PaperDocument,
@@ -181,6 +182,20 @@ export function PaperWorkspace({
       : [],
   );
   const stranded = listed ? undefined : strandedFiles.find((item) => item.file_id === current);
+  // A reload finds unsent files the tree no longer lists in this member's local list.
+  useEffect(() => {
+    if (!identity || !tree) return;
+    recoverUnsentPaperDocuments(
+      {
+        backend: paperBackendKey(apiBase, identity.space_id),
+        member: identity.user.user_id,
+        project: project.id,
+      },
+      new Set(tree.files.map((item) => item.file_id)),
+      apiBase,
+      identity.user.display_name || identity.user.user_id,
+    );
+  }, [identity, tree, project.id, apiBase]);
   const gone = tree !== undefined && tree.revision >= selection.existsAt;
   const file = listed ?? stranded ?? (!selected || gone ? tree?.files[0] : undefined);
   const strandedElsewhere = strandedFiles.find((item) => item.file_id !== file?.file_id);
@@ -398,7 +413,7 @@ export function PaperWorkspace({
                       // Select first: a render between the two would find the deleted file
                       // neither listed nor stranded and open another one.
                       flushSync(() => setSelected(created, receipt.revision));
-                      document.destroy();
+                      document.discard();
                       refresh();
                     }
                   : undefined

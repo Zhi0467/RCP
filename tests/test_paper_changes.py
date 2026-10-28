@@ -236,6 +236,25 @@ def test_refresh_replaces_only_selected_groups(setup):
     assert {g.group_id for g in groups} - stale <= {g.group_id for g in refreshed}
 
 
+def test_a_card_decided_during_its_refresh_is_not_offered_again(setup):
+    snapshot, live, changes, output = setup
+    original = snapshot.files[0].text
+    coached = original.replace("line 10\n", "coach 10\n")
+    (output / "files/section.md").write_text(coached)
+    (group,) = changes.collect("p", "t", snapshot, output)
+    changes.reject("p", group.group_id, "human")
+    (output / "files/section.md").write_text(coached.replace("line 25\n", "coach 25\n"))
+    changes.collect("p", "t", snapshot, output, replace_group_ids={group.group_id})
+    pending = [
+        change.after
+        for g in changes.groups("p", "t")
+        if g.state == "pending"
+        for change in g.changes
+    ]
+    assert pending == ["coach 25\n"]
+    assert changes.group("p", group.group_id).state == "rejected"
+
+
 def test_routes_enforce_project_scope_accept_and_undo(manifest, tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 

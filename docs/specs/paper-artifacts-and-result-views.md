@@ -56,7 +56,8 @@ once; uploads go to the chosen folder, and an upload over an existing path asks
 first. When a member deletes a file another member has open with unsent text,
 that member's editor keeps it read-only and offers to recreate it as a new file;
 with nothing unsent the editor moves to another file. A hidden file deleted that
-way stays reachable from one red icon while it holds unsent text. A backend
+way stays reachable from one red icon while it holds unsent text, also after a
+reload, until Recreate moves the text to a new file. A backend
 restart pauses every document without unmounting the editor, so typing carries
 on; text refused by the server, or held when access is lost, can be downloaded,
 and a close before the server answered (such as a room limit) never discards it.

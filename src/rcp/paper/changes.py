@@ -423,6 +423,19 @@ def _undo_against(
     return ops, checks
 
 
+def _proposal(change: Change) -> tuple[object, ...]:
+    """What a card proposes, independent of its ids and anchors."""
+    return (
+        change.kind,
+        change.path,
+        change.new_path,
+        change.before,
+        change.after,
+        change.before_blob,
+        change.after_blob,
+    )
+
+
 def _preview(change: Change) -> None:
     removed, added = change.before.splitlines(), change.after.splitlines()
     if change.kind == "rename":
@@ -629,6 +642,7 @@ class PaperChanges:
         tree = self.live.run_sync(self.live.snapshot(project_id, snapshot.revision))
         groups, blobs = build_changes(task_id, snapshot, changes_dir, self.live, tree)
         with self.admission(project_id), self.store.connection() as connection:
+            decided: set[tuple[object, ...]] = set()
             for group_id in replace_group_ids or set():
                 row = connection.execute(
                     "SELECT task_id,state FROM paper_change_groups WHERE project_id=? AND group_id=?",
@@ -644,6 +658,13 @@ class PaperChanges:
                         (project_id, group_id),
                     ).fetchone()
                 ):
+                    decided |= {
+                        _proposal(Change.model_validate_json(payload))
+                        for (payload,) in connection.execute(
+                            "SELECT payload FROM paper_changes WHERE project_id=? AND group_id=?",
+                            (project_id, group_id),
+                        )
+                    }
                     continue
                 connection.execute(
                     "DELETE FROM paper_change_groups WHERE project_id=? AND group_id=?",
@@ -653,7 +674,11 @@ class PaperChanges:
                 "INSERT OR IGNORE INTO paper_blobs VALUES(?,?,?)",
                 [(sha, body, len(body)) for sha, body in blobs.items()],
             )
+            # The refresh re-proposed whole files: a change a human decided meanwhile
+            # is not offered again, and its atomic group goes with it.
             for changes in groups:
+                if any(_proposal(change) in decided for change in changes):
+                    continue
                 group_id = str(uuid.uuid4())
                 connection.execute(
                     "INSERT INTO paper_change_groups VALUES (?,?,?,?,?,?,?,?,?)",

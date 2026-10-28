@@ -108,6 +108,29 @@ test("a peer deleting a hidden file with unsent text leaves that text one action
   assert.equal(fixture.rooms.get(restored.file_id).doc.getText("text").toString(), "draft unsent");
 });
 
+test("a deleted file's unsent text is still one action away after a reload", async (t) => {
+  const opened = await openPaper(t, { configure: secondFile });
+  const { page, fixture, context } = opened;
+  const other = await strandSecondFile(opened);
+  await page.getByRole("button", { name: "intro.md", exact: true }).click();
+  await saved(page, true);
+  deleteSecondFile(fixture, other);
+  // The server now refuses the deleted file's room, as it does after a reload.
+  await context.routeWebSocket(/\/files\/f2\/live$/, (socket) => socket.close({ code: 4403 }));
+  await page.reload();
+  await page.getByRole("button", { name: "Open unsent file" }).click({ timeout: 5_000 });
+  await page.waitForFunction(editorMatches, "draft unsent");
+  await page.getByRole("button", { name: "Recreate file" }).click();
+  await saved(page, true);
+  // Recreated text lives in the new file; a later reload offers nothing to recover.
+  const read = page.waitForResponse((response) => response.url().endsWith("/paper/tree"));
+  await page.reload();
+  await read;
+  await page.waitForFunction(editorMatches, "draft unsent");
+  assert.equal(await page.getByRole("button", { name: "Open unsent file" }).count(), 0);
+  assert.deepEqual(opened.errors, []);
+});
+
 test("a connection refused before any server message keeps unsent text on Reconnect", async (t) => {
   const { page, room, errors } = await openPaper(t);
   await saved(page, true);

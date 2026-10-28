@@ -58,6 +58,46 @@ function refreshUnsent() {
     unsentListeners.forEach((listener) => listener());
   });
 }
+// The files of one member's project that hold unsent text, kept beside their IndexedDB
+// stores so a file deleted meanwhile is still reachable after a reload.
+type PaperProjectKey = Omit<PaperDocumentKey, "file">;
+function inventoryName(key: PaperProjectKey) {
+  return `rcp:paper-unsent:${JSON.stringify([key.backend, key.member, key.project])}`;
+}
+function readInventory(key: PaperProjectKey): Record<string, PaperFile> {
+  try {
+    return JSON.parse(localStorage.getItem(inventoryName(key)) ?? "{}") as Record<
+      string,
+      PaperFile
+    >;
+  } catch {
+    return {};
+  }
+}
+function updateInventory(key: PaperDocumentKey, listing: PaperFile | null) {
+  const entries = readInventory(key);
+  if (listing) entries[key.file] = listing;
+  else delete entries[key.file];
+  try {
+    if (Object.keys(entries).length)
+      localStorage.setItem(inventoryName(key), JSON.stringify(entries));
+    else localStorage.removeItem(inventoryName(key));
+  } catch {
+    // Without browser storage only the documents open in this page stay reachable.
+  }
+}
+/** Reopens this project's files that held unsent text and are no longer listed. */
+export function recoverUnsentPaperDocuments(
+  key: PaperProjectKey,
+  listed: ReadonlySet<string>,
+  apiBase: string,
+  name: string,
+) {
+  for (const [file, listing] of Object.entries(readInventory(key))) {
+    if (listed.has(file)) continue;
+    acquirePaperDocument({ ...key, file }, apiBase, name).listing ??= listing;
+  }
+}
 export const unsentPaperDocuments = {
   subscribe(listener: () => void) {
     unsentListeners.add(listener);
@@ -122,6 +162,8 @@ export class PaperDocument {
   private localPresence: Record<string, unknown> | null = null;
   private disposal: ReturnType<typeof setTimeout> | undefined;
   private disposed = false;
+  private discarded = false;
+  private inventoried = false;
   private storageStarting = false;
   private snapshot: PaperDocumentState = {
     text: "",
@@ -276,6 +318,11 @@ export class PaperDocument {
       presence,
       saved: this.isSaved(),
     };
+    const keep = !this.snapshot.saved && this.listing !== null && !this.discarded;
+    if (keep !== this.inventoried) {
+      this.inventoried = keep;
+      updateInventory(this.key, keep ? this.listing : null);
+    }
     this.listeners.forEach((listener) => listener());
     refreshUnsent();
     this.scheduleDisposal();
@@ -379,9 +426,18 @@ export class PaperDocument {
     refreshUnsent();
     if (!this.references) this.closeStorage();
   }
+  /** Ends a document whose text now lives elsewhere, deleting its local store. */
+  discard() {
+    this.discarded = true;
+    this.inventoried = false;
+    updateInventory(this.key, null);
+    this.destroy();
+  }
   private closeStorage() {
-    void this.persistence?.destroy();
+    const closed = this.persistence?.destroy();
     this.doc.destroy();
+    if (this.discarded)
+      void Promise.resolve(closed).then(() => indexedDB.deleteDatabase(this.storageName));
   }
 }
 export function acquirePaperDocument(key: PaperDocumentKey, apiBase: string, name: string) {
