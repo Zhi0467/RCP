@@ -84,6 +84,7 @@ def paper_path(value: str) -> str:
         or "\\" in value
         or any(ord(char) < 32 or ord(char) == 127 for char in value)
         or any(part in {"", ".", "..", ".git", ".publish"} for part in value.split("/"))
+        or any(len(part.encode()) > 255 for part in value.split("/"))
         or PurePosixPath(value).is_absolute()
     ):
         raise ValueError("Invalid Paper path")
@@ -109,3 +110,28 @@ def file_format(path: str, kind: str) -> str:
         ".svg": "image",
         ".pdf": "pdf",
     }.get(extension, "text" if kind == "text" else "other")
+
+
+def paper_file_kind(path: str, data: bytes) -> Literal["text", "binary"]:
+    """UTF-8 without NUL is editable unless the format is inherently binary."""
+    if (
+        PurePosixPath(path).suffix.lower()
+        in {
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".webp",
+            ".pdf",
+            ".zip",
+            ".woff",
+            ".woff2",
+        }
+        or b"\0" in data
+    ):
+        return "binary"
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return "binary"
+    return "text"

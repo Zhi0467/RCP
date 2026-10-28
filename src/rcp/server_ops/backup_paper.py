@@ -12,20 +12,14 @@ import json
 import re
 import sqlite3
 import stat
-import tempfile
 import zlib
-from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from rcp.limits import BACKUP_INVENTORY_MAX_ENTRIES
-
-if TYPE_CHECKING:
-    from rcp.paper.models import PaperSnapshot
-
 
 PAPER_PROJECT_TABLES = (
     "paper_files",
@@ -66,20 +60,6 @@ class SavedPaperSnapshot(BaseModel):
     model_config = ConfigDict(extra="ignore")
     revision: int = Field(ge=0)
     files: tuple[PaperSavedFile, ...]
-
-
-class PaperSnapshotReader(Protocol):
-    def snapshot(self, project_id: str, revision: int | None = None) -> PaperSnapshot: ...
-    def materialize(self, snapshot: PaperSnapshot, dest: Path) -> None: ...
-
-
-def _snapshot_reader(connection: sqlite3.Connection) -> PaperSnapshotReader:
-    from rcp.paper.persistence import PaperSnapshotReader as SavedTreeReader
-
-    return SavedTreeReader(connection)
-
-
-PAPER_SNAPSHOT_FACTORY: Callable[[sqlite3.Connection], PaperSnapshotReader] = _snapshot_reader
 
 
 class PaperSection(BaseModel):
@@ -242,26 +222,10 @@ def capture_paper_section(connection: sqlite3.Connection, project_id: str) -> Pa
     }
     if not any(tables.values()):
         return None
-    owner = PAPER_SNAPSHOT_FACTORY(connection)
-    raw = owner.snapshot(project_id)
-    snapshot = SavedPaperSnapshot.model_validate(
-        raw.model_dump() if isinstance(raw, BaseModel) else raw
-    )
-    with tempfile.TemporaryDirectory(prefix="rcp-paper-capture-") as temporary:
-        destination = Path(temporary) / "paper"
-        owner.materialize(raw, destination)
-        actual = {
-            path.relative_to(destination).as_posix(): path
-            for path in paper_projection_sources(Path(temporary))
-        }
-        if set(actual) != {file.path for file in snapshot.files}:
-            raise ValueError("materialized paper inventory differs from saved snapshot")
-        for file in snapshot.files:
-            body = actual[file.path].read_bytes()
-            if (file.kind == "text" and body != (file.text or "").encode()) or (
-                file.kind == "binary" and hashlib.sha256(body).hexdigest() != file.blob_sha256
-            ):
-                raise ValueError("materialized paper differs from saved snapshot")
+    from rcp.paper.persistence import PaperSnapshotReader
+
+    raw = PaperSnapshotReader(connection).snapshot(project_id)
+    snapshot = SavedPaperSnapshot.model_validate(raw.model_dump())
     blob_refs, text_refs = _references(snapshot.files, tables)
     for table, hashes in (("paper_blobs", blob_refs), ("paper_version_texts", text_refs)):
         rows = []

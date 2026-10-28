@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypeVar
 
-from pycrdt import Doc, Text, create_update_message, handle_sync_message, merge_updates
+from pycrdt import Doc, Text, create_update_message, get_update, handle_sync_message, merge_updates
 
 from rcp import limits
 from rcp.paper.models import (
@@ -42,6 +42,7 @@ from rcp.paper.models import (
 )
 from rcp.paper.persistence import (
     PaperSnapshotReader,
+    collect_bodies,
     manifest_for,
     prune,
     read_snapshot,
@@ -69,12 +70,20 @@ def _owned(method):
 
 
 def _doc(state: bytes | None = None, text: str | None = None) -> Doc:
-    doc = Doc({"text": Text()})
+    doc = Doc({"text": Text()}, skip_gc=False)
     if state is not None:
         doc.apply_update(state)
     if text:
         doc["text"].insert(0, text)
     return doc
+
+
+def _compact_state(encoded: bytes) -> tuple[Doc, bytes]:
+    doc = _doc(encoded)
+    # Export integrated structs with GC, retaining only the unresolved tail from
+    # the wire encoding. Doc.get_update alone loses out-of-order dependencies.
+    pending = get_update(encoded, doc.get_state())
+    return doc, merge_updates(doc.get_update(), pending)
 
 
 def _ack(doc: Doc) -> bytes:
@@ -126,7 +135,8 @@ def _stored_room(conn, key: tuple[str, str]) -> Room:
         seq = row[0]
     if state is None and seq == 0:
         raise ValueError("Paper document state is missing")
-    return Room(_doc(encoded), seq, encoded)
+    doc, encoded = _compact_state(encoded)
+    return Room(doc, seq, encoded)
 
 
 class PaperLive:
@@ -145,6 +155,7 @@ class PaperLive:
         self._compactions: set[asyncio.Task] = set()
         # Saved revision last pruned per project; idle projects are not rescanned.
         self._pruned: dict[str, int] = {}
+        self._last_collection = time.monotonic()
         self._rates: dict[str, deque[float]] = {}
 
     def run_sync(self, action: Coroutine[Any, Any, _Result]) -> _Result:
@@ -269,6 +280,7 @@ class PaperLive:
                 (project,),
             ).fetchone()
         if exists:
+            await asyncio.to_thread(self._upgrade_metadata, project)
             self._initialized.add(project)
             return
         if project in self._disposed:
@@ -356,6 +368,18 @@ class PaperLive:
                 conn.execute("INSERT INTO paper_saved_snapshots VALUES(?,?,?)", (project, 0, "[]"))
         self._initialized.add(project)
 
+    def _upgrade_metadata(self, project):
+        with self.store.connection() as conn:
+            reader = PaperSnapshotReader(conn)
+            revision, entries = reader.manifest(project)
+            if any(entry["kind"] == "text" and "size" not in entry for entry in entries):
+                # Upgrade only the current pre-size manifest once on opening it.
+                _, entries = reader.metadata(project)
+                conn.execute(
+                    "UPDATE paper_saved_snapshots SET manifest=? WHERE project_id=? AND revision=?",
+                    (json.dumps(entries, sort_keys=True), project, revision),
+                )
+
     def _room(self, project: str, file_id: str) -> Room:
         key = (project, file_id)
         if key in self.rooms:
@@ -395,30 +419,30 @@ class PaperLive:
     async def tree(self, project_id: str) -> PaperTree:
         async with self._lock(project_id):
             await self._ensure(project_id)
-            snapshot = await asyncio.to_thread(self._snapshot, project_id)
-            with self.store.connection() as conn:
-                row = conn.execute(
-                    "SELECT * FROM paper_publication WHERE project_id=?", (project_id,)
-                ).fetchone()
-            files = []
-            for file in snapshot.files:
-                data = (
-                    (file.text or "").encode()
-                    if file.kind == "text"
-                    else snapshot._blobs[file.blob_sha256 or ""]
+            return await asyncio.to_thread(self._tree, project_id)
+
+    def _tree(self, project_id: str) -> PaperTree:
+        with self.store.connection() as conn:
+            conn.execute("BEGIN")
+            revision, entries = PaperSnapshotReader(conn).metadata(project_id)
+            row = conn.execute(
+                "SELECT * FROM paper_publication WHERE project_id=?", (project_id,)
+            ).fetchone()
+            files = [
+                PaperTreeFile(
+                    file_id=entry["file_id"],
+                    path=entry["path"],
+                    kind=entry["kind"],
+                    format=file_format(entry["path"], entry["kind"]),
+                    size=entry["size"],
+                    sha256=entry["text_sha256"]
+                    if entry["kind"] == "text"
+                    else entry["blob_sha256"],
                 )
-                files.append(
-                    PaperTreeFile(
-                        file_id=file.file_id,
-                        path=file.path,
-                        kind=file.kind,
-                        format=file_format(file.path, file.kind),
-                        size=len(data),
-                        sha256=digest(data),
-                    )
-                )
+                for entry in entries
+            ]
             return PaperTree(
-                revision=snapshot.revision,
+                revision=revision,
                 saved_revision=row["saved_revision"],
                 published_revision=row["published_revision"],
                 hold=row["hold"],
@@ -431,6 +455,17 @@ class PaperLive:
                     else "pending"
                 ),
             )
+
+    @_owned
+    async def raw_file(self, project_id: str, file_id: str, revision: int | None = None):
+        async with self._lock(project_id):
+            await self._ensure(project_id)
+        return await asyncio.to_thread(self._raw_file, project_id, file_id, revision)
+
+    def _raw_file(self, project_id, file_id, revision):
+        with self.store.connection() as conn:
+            conn.execute("BEGIN")
+            return PaperSnapshotReader(conn).raw_file(project_id, file_id, revision)
 
     def file_exists(self, project_id: str, file_id: str) -> bool:
         with self.store.connection() as conn:
@@ -721,7 +756,7 @@ class PaperLive:
                 affected.append(file_id)
             self.validate_tree(list(files.values()), snapshot._blobs | blobs)
             encoded_docs = {
-                file_id: merge_updates(bases[file_id].encoded, doc.get_update())
+                file_id: _compact_state(merge_updates(bases[file_id].encoded, doc.get_update()))[1]
                 if file_id in bases
                 else doc.get_update()
                 for file_id, doc in docs.items()
@@ -819,7 +854,7 @@ class PaperLive:
             encoded = merge_updates(room.encoded, update)
             if encoded == room.encoded:
                 return [_ack(room.doc)]
-            candidate = _doc(encoded)
+            candidate, encoded = _compact_state(encoded)
             if len(encoded) > limits.PAPER_MAX_MESSAGE_BYTES:
                 raise PaperLimit("Paper CRDT state is too large")
             self._rate(project_id)
@@ -950,9 +985,7 @@ class PaperLive:
                 (project, file_id, through, cutoff),
             ):
                 updates.append(row[0])
-            # Merging encoded updates retains unresolved dependencies; exporting a
-            # Doc would silently discard them before their predecessors arrive.
-            state = merge_updates(*updates)
+            _, state = _compact_state(merge_updates(*updates))
             conn.commit()
             conn.execute("BEGIN IMMEDIATE")
             if not conn.execute(
@@ -1235,28 +1268,51 @@ class PaperLive:
                         pruning.add_done_callback(self._compactions.discard)
                         await asyncio.shield(pruning)
                         self._pruned[project] = row["saved_revision"]
-                    with self.store.connection() as conn:
-                        previous = (
-                            conn.execute(
-                                "SELECT MAX(revision) FROM paper_versions WHERE project_id=?",
-                                (project,),
-                            ).fetchone()[0]
-                            or 0
-                        )
-                        burst = conn.execute(
-                            "SELECT MIN(created_at) FROM paper_revisions WHERE project_id=? AND revision>?",
-                            (project, previous),
-                        ).fetchone()[0]
-                        if (
-                            row["saved_revision"] > previous
-                            and burst
-                            and (
-                                age(row["last_edit_at"]) >= limits.PAPER_HISTORY_IDLE_SECONDS
-                                or age(burst) >= limits.PAPER_HISTORY_MAX_SECONDS
-                            )
-                        ):
-                            snapshot = await asyncio.to_thread(self._snapshot, project)
-                            save_version(conn, project, snapshot, "automatic", self.store.now())
+                    saving = asyncio.create_task(
+                        asyncio.to_thread(self._automatic_version, project, now)
+                    )
+                    self._compactions.add(saving)
+                    saving.add_done_callback(self._compactions.discard)
+                    await asyncio.shield(saving)
             except Exception:
                 # One project's history failure must not stop the others' timers.
                 _LOG.exception("Paper history pass failed for project %s", project)
+
+        if time.monotonic() - self._last_collection >= limits.PAPER_HISTORY_MAX_SECONDS:
+            collection = asyncio.create_task(asyncio.to_thread(self._collect_bodies))
+            self._compactions.add(collection)
+            collection.add_done_callback(self._compactions.discard)
+            await asyncio.shield(collection)
+            self._last_collection = time.monotonic()
+
+    def _collect_bodies(self):
+        with self.store.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            collect_bodies(conn)
+
+    def _automatic_version(self, project, now):
+        with self.store.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM paper_publication WHERE project_id=?", (project,)
+            ).fetchone()
+            previous = conn.execute(
+                "SELECT COALESCE(MAX(revision),0) FROM paper_versions WHERE project_id=?",
+                (project,),
+            ).fetchone()[0]
+            burst = conn.execute(
+                "SELECT MIN(created_at) FROM paper_revisions WHERE project_id=? AND revision>?",
+                (project, previous),
+            ).fetchone()[0]
+            if (
+                row["saved_revision"] > previous
+                and burst
+                and (
+                    (now - datetime.fromisoformat(row["last_edit_at"])).total_seconds()
+                    >= limits.PAPER_HISTORY_IDLE_SECONDS
+                    or (now - datetime.fromisoformat(burst)).total_seconds()
+                    >= limits.PAPER_HISTORY_MAX_SECONDS
+                )
+            ):
+                conn.execute("BEGIN IMMEDIATE")
+                snapshot = PaperSnapshotReader(conn).snapshot(project)
+                save_version(conn, project, snapshot, "automatic", self.store.now())

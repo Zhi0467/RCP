@@ -95,6 +95,12 @@ def _saved_paper(connection, monkeypatch, project_id="p"):
 
 
 def test_saved_section_roundtrips_one_revision_and_all_recovery_state(monkeypatch):
+    from rcp.paper.persistence import PaperSnapshotReader
+
+    def no_disk(*args):
+        pytest.fail("backup must capture saved bodies without materializing files")
+
+    monkeypatch.setattr(PaperSnapshotReader, "materialize", no_disk)
     source = _database()
     target = _database()
     try:
@@ -347,6 +353,7 @@ def test_deleted_binary_backup_retains_only_required_bytes(tmp_path, monkeypatch
             await live.apply("p", [PaperOp(kind="create", path="later.md")], "h")
         else:
             await live.apply("p", [PaperOp(kind="delete", file_id=created.file_ids[0])], "h")
+        await asyncio.to_thread(live._collect_bodies)
         with store.connection() as connection:
             assert connection.execute("SELECT count(*) FROM paper_blobs").fetchone()[0] == int(
                 coached

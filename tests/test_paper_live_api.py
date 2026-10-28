@@ -106,12 +106,13 @@ def test_tree_upload_history_restore_and_raw_content_policy(manifest, tmp_path):
             assert raw.content == data
             assert raw.headers["x-content-type-options"] == "nosniff"
             assert raw.headers["content-disposition"].startswith(disposition)
-            replaced = client.put(
-                prefix + f"/files/{binary_id}/content",
-                files={"file": (path, b"changed", content_type)},
-            )
-            assert replaced.status_code == 200, replaced.text
-            assert client.get(prefix + f"/files/{binary_id}/raw").content == b"changed"
+            if path.endswith(".png"):
+                replaced = client.put(
+                    prefix + f"/files/{binary_id}/content",
+                    files={"file": (path, b"changed", content_type)},
+                )
+                assert replaced.status_code == 200, replaced.text
+                assert client.get(prefix + f"/files/{binary_id}/raw").content == b"changed"
         assert client.get(prefix + "/sessions").status_code == 200
 
 

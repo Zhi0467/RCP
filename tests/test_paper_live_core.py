@@ -267,6 +267,7 @@ def test_captured_binary_snapshot_survives_retention(paper, tmp_path, monkeypatc
         ).file_ids[0]
         snapshot = await live.snapshot("p")
         await live.apply("p", [PaperOp(kind="binary", file_id=file_id, data=b"new")], "h")
+        await asyncio.to_thread(live._collect_bodies)
         with store.connection() as conn:
             assert conn.execute("SELECT COUNT(*) FROM paper_blobs").fetchone()[0] == 1
         await asyncio.to_thread(live.materialize, snapshot, tmp_path / "captured")
@@ -368,6 +369,108 @@ def test_receive_uses_blob_sizes_and_batches_retention(paper, monkeypatch):
         assert not any("SELECT bytes" in sql for sql in queries)
         assert (await live.snapshot("p")).files[0].text == "saved"
         await live.tick()
+        await live.close()
+
+    run(scenario())
+
+
+def test_repeated_megabyte_deletions_reclaim_crdt_budget(paper, monkeypatch):
+    live, store, workspace = paper
+    monkeypatch.setattr(limits, "PAPER_COMPACT_UPDATES", 2)
+
+    async def scenario():
+        file_id = (await live.apply("p", [PaperOp(kind="create", path="a.md")], "h")).file_ids[0]
+        client = Doc({"text": Text()})
+        for _ in range(6):
+            state = client.get_state()
+            client["text"].insert(0, "x" * 1024 * 1024)
+            await live.receive("p", file_id, create_update_message(client.get_update(state)), "h")
+            state = client.get_state()
+            del client["text"][:]
+            await live.receive("p", file_id, create_update_message(client.get_update(state)), "h")
+        room = await live.connect("p", file_id)
+        assert str(room.doc["text"]) == ""
+        assert len(room.encoded) < 1024
+        await live.close()
+        restarted = PaperLive(store, lambda _: workspace)
+        room = await restarted.connect("p", file_id)
+        assert str(room.doc["text"]) == ""
+        assert len(room.encoded) < 1024
+        await restarted.close()
+
+    run(scenario())
+
+
+def test_raw_and_metadata_do_not_read_unrelated_bodies(paper):
+    live, store, _ = paper
+
+    async def scenario():
+        receipt = await live.apply(
+            "p",
+            [
+                PaperOp(kind="create", path="a.md", text="hello"),
+                PaperOp(kind="create", path="b.md", text="unrelated"),
+                PaperOp(kind="create", path="image.png", file_kind="binary", data=b"image"),
+            ],
+            "h",
+        )
+        # An old writer omitted text sizes; opening upgrades that current manifest.
+        with store.connection() as conn:
+            conn.execute(
+                "UPDATE paper_saved_snapshots SET manifest=json_remove(manifest, '$[0].size', '$[1].size')"
+            )
+        live._initialized.clear()
+        assert [file.size for file in (await live.tree("p")).files] == [5, 9, 5]
+        # Corrupt unrelated bodies: metadata needs neither, a raw read only its target.
+        with store.connection() as conn:
+            conn.execute(
+                "UPDATE paper_version_texts SET zbody=x'00' WHERE sha256=?",
+                (hashlib.sha256(b"unrelated").hexdigest(),),
+            )
+            conn.execute("UPDATE paper_blobs SET bytes=x'00'")
+        tree = await live.tree("p")
+        assert [file.size for file in tree.files] == [5, 9, 5]
+        for revision in (None, receipt.revision):
+            file, data = await live.raw_file("p", receipt.file_ids[0], revision)
+            assert file.path == "a.md" and data == b"hello"
+        await live.close()
+
+    run(scenario())
+
+
+def test_history_maintenance_collects_once_on_worker(paper, monkeypatch):
+    import threading
+
+    import rcp.paper.live as module
+
+    live, store, _ = paper
+
+    async def scenario():
+        await live.apply("p", [PaperOp(kind="create", path="a.md")], "h")
+        owner = threading.get_ident()
+        collected = []
+        saved = []
+        collect, save = module.collect_bodies, module.save_version
+
+        def collecting(conn):
+            assert threading.get_ident() != owner
+            collected.append(True)
+            collect(conn)
+
+        def saving(*args, **kwargs):
+            assert threading.get_ident() != owner
+            saved.append(True)
+            return save(*args, **kwargs)
+
+        monkeypatch.setattr(module, "collect_bodies", collecting)
+        monkeypatch.setattr(module, "save_version", saving)
+        monkeypatch.setattr(limits, "PAPER_HISTORY_IDLE_SECONDS", 0)
+        await live.tick()
+        assert saved == [True] and collected == []
+        live._last_collection -= limits.PAPER_HISTORY_MAX_SECONDS
+        await live.tick()
+        await live.tick()
+        assert collected == [True]
         await live.close()
 
     run(scenario())

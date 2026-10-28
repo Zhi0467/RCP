@@ -16,6 +16,7 @@ from rcp.api.dependencies import _api_services, get_project_service, require_pro
 from rcp.api.paper_live import get_paper_live, paper_mutation
 from rcp.limits import PAPER_MAX_UPLOAD_BYTES, PAPER_MULTIPART_OVERHEAD_BYTES
 from rcp.paper import PaperOp
+from rcp.paper.models import paper_file_kind
 
 router = APIRouter()
 _member = Depends(require_project_membership)
@@ -139,8 +140,17 @@ async def _upload(request: Request, *, new: bool) -> tuple[str | None, bytes]:
 @router.post(_PREFIX + "/uploads")
 async def upload_file(request: Request, project_id: str = _member):
     path, data = await _upload(request, new=True)
+    kind = paper_file_kind(path or "", data)
     return await _apply(
-        request, project_id, PaperOp(kind="create", path=path, file_kind="binary", data=data)
+        request,
+        project_id,
+        PaperOp(
+            kind="create",
+            path=path,
+            file_kind=kind,
+            text=data.decode("utf-8") if kind == "text" else "",
+            data=data if kind == "binary" else None,
+        ),
     )
 
 
@@ -156,15 +166,9 @@ async def raw_file(
 ):
     live = get_paper_live(request)
     try:
-        snapshot = await live.snapshot(project_id, revision)
-        file = next(file for file in snapshot.files if file.file_id == file_id)
-    except (KeyError, StopIteration) as exc:
+        file, data = await live.raw_file(project_id, file_id, revision)
+    except KeyError as exc:
         raise HTTPException(404, "Paper file or revision not found") from exc
-    data = (
-        (file.text or "").encode("utf-8")
-        if file.kind == "text"
-        else live.blob(file.blob_sha256 or "")
-    )
     raster = {
         ".png": "image/png",
         ".jpg": "image/jpeg",

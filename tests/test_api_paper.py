@@ -70,3 +70,22 @@ def test_mutating_routes_open_the_authoritative_owner() -> None:
                 )
             ]
     assert display == []
+
+
+def test_source_uploads_are_live_text_documents(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    with signed_in_client(app) as client:
+        prefix = f"/api/projects/{app.state.default_project_id}/paper"
+        for extension in ("md", "tex", "typ", "bib", "txt", "csv"):
+            path = f"source.{extension}"
+            response = client.post(
+                prefix + "/uploads", data={"path": path}, files={"file": (path, "héllo".encode())}
+            )
+            assert response.status_code == 200, response.text
+            file_id = response.json()["file_ids"][0]
+            assert client.get(prefix + f"/files/{file_id}/raw").content == "héllo".encode()
+        files = client.get(prefix + "/tree").json()["files"]
+        assert len(files) == 6
+        assert all(file["kind"] == "text" for file in files)
+        with app.state.services.store.connection() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM paper_updates").fetchone()[0] == 6

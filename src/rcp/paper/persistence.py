@@ -18,7 +18,7 @@ class PaperSnapshotReader:
     def __init__(self, connection: sqlite3.Connection):
         self.connection = connection
 
-    def snapshot(self, project_id: str, revision: int | None = None) -> PaperSnapshot:
+    def manifest(self, project_id: str, revision: int | None = None) -> tuple[int, list[dict]]:
         if revision is None:
             row = self.connection.execute(
                 "SELECT saved_revision FROM paper_publication WHERE project_id=?",
@@ -39,7 +39,40 @@ class PaperSnapshotReader:
             ).fetchone()
         if row is None:
             raise KeyError("Paper revision is no longer retained")
-        return read_snapshot(self.connection, revision, row[0])
+        return revision, json.loads(row[0])
+
+    def snapshot(self, project_id: str, revision: int | None = None) -> PaperSnapshot:
+        revision, entries = self.manifest(project_id, revision)
+        return read_snapshot(self.connection, revision, json.dumps(entries))
+
+    def raw_file(self, project_id: str, file_id: str, revision: int | None = None):
+        revision, entries = self.manifest(project_id, revision)
+        entry = next((entry for entry in entries if entry["file_id"] == file_id), None)
+        if entry is None:
+            raise KeyError(file_id)
+        snapshot = read_snapshot(self.connection, revision, json.dumps([entry]))
+        file = snapshot.files[0]
+        data = (
+            (file.text or "").encode()
+            if file.kind == "text"
+            else snapshot._blobs[file.blob_sha256 or ""]
+        )
+        return file, data
+
+    def metadata(self, project_id: str):
+        revision, entries = self.manifest(project_id)
+        for entry in entries:
+            if entry["kind"] == "binary":
+                entry["size"] = self.connection.execute(
+                    "SELECT size FROM paper_blobs WHERE sha256=?", (entry["blob_sha256"],)
+                ).fetchone()[0]
+            elif "size" not in entry:
+                # Pre-size manifests remain readable; new saves store this metadata.
+                body = self.connection.execute(
+                    "SELECT zbody FROM paper_version_texts WHERE sha256=?", (entry["text_sha256"],)
+                ).fetchone()[0]
+                entry["size"] = len(zlib.decompress(body))
+        return revision, entries
 
     @staticmethod
     def materialize(snapshot: PaperSnapshot, dest: Path) -> None:
@@ -61,7 +94,11 @@ class PaperSnapshotReader:
 def manifest_for(connection: sqlite3.Connection, files: list[PaperFile]) -> str:
     manifest = []
     for file in sorted(files, key=lambda item: item.path):
-        entry = {"file_id": file.file_id, "path": file.path, "kind": file.kind}
+        entry: dict[str, str | int] = {
+            "file_id": file.file_id,
+            "path": file.path,
+            "kind": file.kind,
+        }
         if file.kind == "text":
             body = (file.text or "").encode()
             sha = digest(body)
@@ -70,6 +107,7 @@ def manifest_for(connection: sqlite3.Connection, files: list[PaperFile]) -> str:
                 (sha, zlib.compress(body)),
             )
             entry["text_sha256"] = sha
+            entry["size"] = len(body)
         else:
             entry["blob_sha256"] = file.blob_sha256 or ""
         manifest.append(entry)
@@ -81,6 +119,7 @@ def read_snapshot(connection: sqlite3.Connection, revision: int, manifest: str) 
     blobs = {}
     for entry in json.loads(manifest):
         entry = dict(entry)
+        entry.pop("size", None)
         sha = entry.pop("text_sha256", None)
         if sha is not None:
             row = connection.execute(
@@ -204,6 +243,10 @@ def prune(connection: sqlite3.Connection, project: str, *, refuse: bool = True) 
             "WHERE r.project_id=? AND j.key='file_id' AND j.value IS NOT NULL)",
             (project, project, project),
         )
+
+
+def collect_bodies(connection: sqlite3.Connection) -> None:
+    """Rare global maintenance, separate from each project's history pruning."""
     # Bodies are shared across projects and both history collections.
     for table, column in (("paper_version_texts", "text_sha256"), ("paper_blobs", "blob_sha256")):
         connection.execute(

@@ -130,3 +130,12 @@ def test_migration_64_merges_prepared_and_committed_receipts(tmp_path):
             "SELECT 1 FROM sqlite_master WHERE name='paper_apply_receipts'"
         ).fetchone()
     upgraded.close()
+
+
+@pytest.mark.parametrize("component", ["a" * 256, "é" * 128])
+def test_paper_path_limits_each_utf8_component(component):
+    from rcp.paper.models import paper_path
+
+    with pytest.raises(ValueError):
+        paper_path(f"sections/{component}/file.md")
+    assert paper_path("a" * 255 + "/file.md").endswith("/file.md")

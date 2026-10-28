@@ -8,10 +8,9 @@ from rcp.paper.models import (
     PaperTree,
     Receipt,
 )
-from rcp.paper.service import INTRODUCTION_TEMPLATE, PaperService, WritingSession
+from rcp.paper.service import PaperService, WritingSession
 
 __all__ = [
-    "INTRODUCTION_TEMPLATE",
     "PaperConflict",
     "PaperFile",
     "PaperLimit",
