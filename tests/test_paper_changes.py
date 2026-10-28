@@ -646,3 +646,13 @@ def test_pending_card_reports_its_anchor_in_live_utf16_offsets(setup):
     expected = len(text[:offset].encode("utf-16-le")) // 2
     assert card["current"] == {"start": expected, "end": expected, "revision": saved(live).revision}
     assert changes.groups("p", "t")[0].group_id == group.group_id
+
+
+def test_refresh_subset_is_validated_against_the_whole_tree(setup):
+    _, live, changes, output = setup
+    apply(live, [PaperOp(kind="create", file_id="f2", path="other.md", text="unseen\n")])
+    full = saved(live)
+    subset = full.model_copy(update={"files": [f for f in full.files if f.file_id == "f1"]})
+    (output / "files/other.md").write_text("collides\n")
+    with pytest.raises(InvalidChanges):
+        changes.collect("p", "t", subset, output)

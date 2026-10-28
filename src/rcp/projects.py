@@ -1991,25 +1991,33 @@ class ProjectCatalog:
                 with suppress(Exception):
                     opening.result()
             unstopped: list[str] = []
+            stopped = False
             if stop_work is not None:
                 # Refuse before stopping anything: a transfer or an unsafe file
                 # target would otherwise leave the work stopped and the project kept.
                 self._validated_deletion_targets(project_id, work_stopped=False)
                 unstopped = stop_work(project_id)
+                stopped = True
             with self._snapshot_lock(project_id):
-                (
-                    stages,
-                    display_snapshot,
-                    paper_snapshot,
-                    project_cache_root,
-                    imported_sources,
-                    imported_inventory,
-                ) = self._validated_deletion_targets(project_id, work_stopped=True)
+                try:
+                    (
+                        stages,
+                        display_snapshot,
+                        paper_snapshot,
+                        project_cache_root,
+                        imported_sources,
+                        imported_inventory,
+                    ) = self._validated_deletion_targets(project_id, work_stopped=True)
 
-                from rcp.runs.browser_lifecycle import close_chat_browser_owners
+                    from rcp.runs.browser_lifecycle import close_chat_browser_owners
 
-                close_chat_browser_owners(self.store, project_id, delete_profile=True)
-                database_records = self.store.delete_project_records(project_id)
+                    close_chat_browser_owners(self.store, project_id, delete_profile=True)
+                    database_records = self.store.delete_project_records(project_id)
+                except BaseException:
+                    if stopped:
+                        # The project is kept, so its paper must publish again.
+                        _resume_kept_paper(self.store, project_id)
+                    raise
                 self._display_workspaces.pop(project_id, None)
                 self._snapshot_generations.pop(project_id, None)
                 self._committed_snapshot_generations.pop(project_id, None)
@@ -3136,6 +3144,19 @@ def _is_canonical_uuid4(value: str) -> bool:
     except ValueError:
         return False
     return parsed.version == 4 and str(parsed) == value
+
+
+def _resume_kept_paper(store: AppStore, project_id: str) -> None:
+    from rcp.server_ops.paper_lifecycle import get_paper_live
+
+    live = get_paper_live(store, project_id)
+    if live is None:
+        return
+    try:
+        live.resume(project_id)
+    except Exception:
+        # The deletion's own failure is the one the caller must see.
+        _LOGGER.exception("Paper for kept project %s could not resume", project_id)
 
 
 def _warn_project_cleanup_failure(project_id: str, path: str, error: Exception) -> None:

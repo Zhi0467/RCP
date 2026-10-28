@@ -359,21 +359,30 @@ def _sha(body: bytes) -> str:
 
 
 def build_changes(
-    task_id: str, snapshot: PaperSnapshot, root: Path, live: PaperLive
+    task_id: str,
+    snapshot: PaperSnapshot,
+    root: Path,
+    live: PaperLive,
+    tree: PaperSnapshot | None = None,
 ) -> list[list[Change]]:
+    """Diff the coach's output against ``snapshot``.
+
+    ``tree`` is the whole saved tree at the same revision when ``snapshot`` holds
+    only a refresh round's files; the result is validated against all of it.
+    """
+    tree = tree or snapshot
     files, renames, deletes = validate_output(root, snapshot)
     originals = {file.path: file for file in snapshot.files}
     reverse = {new: old for old, new in renames}
     changes: list[Change] = []
     moved = dict(renames)
+    # Keyed by file id, so a path the coach could not see still collides.
     proposed = {
-        moved.get(file.path, file.path): file.model_copy(
-            update={"path": moved.get(file.path, file.path)}
-        )
-        for file in snapshot.files
+        file.file_id: file.model_copy(update={"path": moved.get(file.path, file.path)})
+        for file in tree.files
         if file.path not in deletes
     }
-    blobs = dict(snapshot._blobs)
+    blobs = dict(tree._blobs)
     binary_originals: dict[str, bytes] = {}
     wanted = set(deletes) | {reverse.get(path, path) for path in files}
     binary_files = [
@@ -448,7 +457,7 @@ def build_changes(
             if text is not None and not binary_extension
             else "binary"
         )
-        proposed[name] = PaperFile(
+        proposed[original.file_id if original else f"new:{name}"] = PaperFile(
             file_id=original.file_id if original else name,
             path=name,
             kind=file_kind,
@@ -580,7 +589,8 @@ class PaperChanges:
         replace_group_ids: set[str] | None = None,
         replace_source_task_id: str | None = None,
     ) -> list[ChangeGroup]:
-        groups = build_changes(task_id, snapshot, changes_dir, self.live)
+        tree = self.live.run_sync(self.live.snapshot(project_id, snapshot.revision))
+        groups = build_changes(task_id, snapshot, changes_dir, self.live, tree)
         with self.admission(project_id), self.store.connection() as connection:
             for group_id in replace_group_ids or set():
                 row = connection.execute(

@@ -309,3 +309,20 @@ def test_release_reopens_admission_for_a_never_opened_paper(manifest, tmp_path):
 
     asyncio.run(scenario())
     store.close()
+
+
+def test_deletion_failing_after_stop_resumes_kept_paper(manifest, tmp_path, monkeypatch):
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    catalog = ProjectCatalog(tmp_path, store, AgentLauncher())
+    record = catalog.register(str(manifest.path), identity_action="adopted")
+    owner = PaperOwner()
+    monkeypatch.setitem(paper_lifecycle._owners, store, owner)
+
+    def fail(project_id):
+        raise RuntimeError("records stayed")
+
+    monkeypatch.setattr(store, "delete_project_records", fail)
+    with pytest.raises(RuntimeError):
+        catalog.delete(record.project_id, stop_work=lambda project_id: [])
+    assert owner.events == [("resume", record.project_id)]
+    assert store.project(record.project_id) is not None
