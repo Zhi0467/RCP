@@ -572,7 +572,8 @@ def test_new_directory_collision_refuses_without_leaving_a_prepared_receipt(setu
 @pytest.mark.parametrize("case", ["nul", "path", "doc", "upload", "tree", "count"])
 def test_collection_enforces_live_tree_validation(setup, monkeypatch, case):
     snapshot, _live, changes, output = setup
-    name, body = ("bad\x01.md", b"ok") if case == "path" else ("new.md", b"a\0b")
+    # NUL is refused in an existing text file; a new file with NUL is binary.
+    name, body = ("bad\x01.md", b"ok") if case == "path" else ("section.md", b"a\0b")
     if case in {"doc", "upload", "tree", "count"}:
         name, body = ("new.pdf", b"1234") if case == "upload" else ("new.md", b"1234")
         limit = {

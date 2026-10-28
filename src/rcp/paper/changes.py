@@ -27,7 +27,7 @@ from rcp.limits import (
     PAPER_CHANGES_PREVIEW_LINES,
 )
 from rcp.paper import PaperFile, PaperLive, PaperOp, PaperSnapshot
-from rcp.paper.models import PaperPrecondition, paper_path
+from rcp.paper.models import PaperPrecondition, paper_file_kind, paper_path
 from rcp.storage import AppStore
 
 
@@ -470,28 +470,9 @@ def build_changes(
         )
     for name, body in sorted(files.items()):
         original = originals.get(reverse.get(name, name))
-        try:
-            text = body.decode("utf-8")
-        except UnicodeDecodeError:
-            text = None
-        binary_extension = Path(name).suffix.lower() in {
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".gif",
-            ".webp",
-            ".pdf",
-            ".zip",
-            ".woff",
-            ".woff2",
-        }
-        file_kind = (
-            original.kind
-            if original
-            else "text"
-            if text is not None and not binary_extension
-            else "binary"
-        )
+        # A replaced file keeps its kind; a new one is classified like an upload.
+        file_kind = original.kind if original else paper_file_kind(name, body)
+        text = body.decode("utf-8") if file_kind == "text" else None
         proposed[original.file_id if original else f"new:{name}"] = PaperFile(
             file_id=original.file_id if original else name,
             path=name,
