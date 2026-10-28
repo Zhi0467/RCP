@@ -147,6 +147,14 @@ def test_ended_episode_last_card_answers_with_turns(questions_api, monkeypatch):
     assert answer(last, invocation_ceiling=2, request_id=request_id).status_code == 200
     assert len(continued) == 1
 
+    # A lone card answered while its episode ran replays after the episode ends.
+    store.create_episode(_episode(store, "solo", project_id=project_id))
+    solo = _question(store, project_id, owner_kind="episode", owner_id="solo", key="solo")
+    assert answer(solo).status_code == 200
+    store.end_episode_without_report("solo", ending="exhausted", diagnostic=None)
+    assert answer(solo).status_code == 200
+    assert len(continued) == 1
+
     # Stop alone withdraws cards; a still-ending episode's last card waits.
     store.create_episode(_episode(store, "stopped", project_id=project_id))
     stopped = _question(store, project_id, owner_kind="episode", owner_id="stopped", key="s")

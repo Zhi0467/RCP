@@ -187,19 +187,19 @@ def answer_question(
     human = identity_access.require_patch_capable_identity(request)
     with project_write_admission(project_id, request):
         current = _question_for_http(store, project_id, question_id)
-        # Judged before answering, so a retry of an answer whose continuation
-        # failed still carries its turns.
         newest = _newest_episode(store, current)
         continues = _answer_continues(store, current, newest)
-        if (
-            continues is not None
+        if current.resolved_at is not None and not (
+            # A resolved card replays its answer. It adds turns only when the
+            # retry names them and no continuation has begun since it was
+            # answered, which is a continuation that failed to start.
+            continues == "turns"
+            and body.invocation_ceiling is not None
+            and body.request_id is not None
             and newest is not None
-            and current.resolved_at is not None
             and datetime.fromisoformat(newest.created_at)
-            > datetime.fromisoformat(current.resolved_at)
+            <= datetime.fromisoformat(current.resolved_at)
         ):
-            # A continuation began after this answer and has received it; a
-            # retry replays the answer rather than adding turns again.
             continues = None
         if continues == "ending":
             raise HTTPException(
