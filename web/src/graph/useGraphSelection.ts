@@ -1,3 +1,4 @@
+import { rememberSubview, tabEntryView } from "../core/viewTabs";
 import {
   graphSessionKey,
   graphTargetFromHash,
@@ -184,7 +185,6 @@ export function useGraphSelection({
   const panelRef = useRef<HTMLElement>(null);
   const panelScrollRef = useRef(new Map<AppView, number>());
   const viewRef = useRef<AppView>(view);
-  const researchSubviewRef = useRef<AppView>("scientific");
   const dagViewportRefsRef = useRef(new Map<string, ProjectViewportRef<DagViewport>>());
   const researchTrailRefsRef = useRef(new Map<string, ProjectViewportRef<ResearchStep[]>>());
   const selectionSnapshotRef = useRef<SelectionSnapshot>({
@@ -235,7 +235,6 @@ export function useGraphSelection({
         viewState: {
           view: viewRef.current,
           panelScroll: [...panelScroll.entries()],
-          researchSubview: researchSubviewRef.current,
           dagViewport: dagViewport ? { ...dagViewport } : null,
         },
       };
@@ -281,7 +280,6 @@ export function useGraphSelection({
       setDockedNodeIds(snapshot.dockedNodeIds.filter((nodeId) => Boolean(nextGraph.nodes[nodeId])));
       setDagRelationFocusId(snapshot.dagRelationFocusId);
       panelScrollRef.current = new Map(snapshot.viewState.panelScroll);
-      researchSubviewRef.current = snapshot.viewState.researchSubview;
       const viewportRef = projectViewportRef(
         dagViewportRefsRef.current,
         graphSessionKey(id, target),
@@ -315,7 +313,6 @@ export function useGraphSelection({
       setDagRelationFocusId(null);
       setRunScope([]);
       panelScrollRef.current = new Map();
-      researchSubviewRef.current = "scientific";
       setView(nextView);
     },
     [],
@@ -370,9 +367,11 @@ export function useGraphSelection({
     dispatchExperimentSelection({ kind: "view_changed" });
     setView(next);
   }, []);
-  const openLastResearchView = useCallback(() => {
-    changeView(researchSubviewRef.current);
-  }, [changeView]);
+  /** A top tab reopens the sub-view this viewer last had open there. */
+  const openTab = useCallback(
+    (tab: AppView) => changeView(projectId ? tabEntryView(projectId, tab) : tab),
+    [changeView, projectId],
+  );
 
   const changeTrustView = useCallback((next: TrustView) => {
     setTrustView(next);
@@ -588,7 +587,7 @@ export function useGraphSelection({
 
   useLayoutEffect(() => {
     viewRef.current = view;
-    if (view === "scientific" || view === "dag") researchSubviewRef.current = view;
+    if (!loading && loadedProjectId) rememberSubview(loadedProjectId, view);
     const panel = panelRef.current;
     if (panel) panel.scrollTop = panelScrollRef.current.get(view) ?? 0;
   }, [loading, loadedProjectId, view]);
@@ -618,7 +617,7 @@ export function useGraphSelection({
     replaceRunScope,
     applyRouteSelection,
     changeView,
-    openLastResearchView,
+    openTab,
     changeTrustView,
     openNode,
     openRelatedNode,

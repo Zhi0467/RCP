@@ -13,7 +13,6 @@ export interface ProjectTabCloseResult {
 export interface ProjectViewState {
   view: AppView;
   panelScroll: Array<[AppView, number]>;
-  researchSubview: AppView;
   dagViewport: { zoom: number; scrollLeft: number; scrollTop: number } | null;
 }
 

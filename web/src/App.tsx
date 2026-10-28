@@ -2,6 +2,7 @@ import { projectGroupHash } from "./projects/projectGroups";
 import { EvidenceFlagProvider } from "./graph/EvidenceFlagContext";
 import { EvidenceFlagInbox } from "./projects/EvidenceFlagInbox";
 import { evidenceFlagRows } from "./projects/evidenceFlags";
+import { topTab } from "./core/viewTabs";
 import { errorMessage } from "./core/errors";
 import { PinnedView, PinnedViewTab } from "./graph/PinnedView";
 import { pinRequest, pinScopeKey, researchViewsProfile } from "./graph/researchViewResources";
@@ -469,11 +470,7 @@ const GRAPH_REF_VIEWS: ReadonlySet<AppView> = new Set<AppView>([
 
 /** A tab stays highlighted while one of its sub-views is open. */
 function navItemActive(item: AppView, view: AppView): boolean {
-  return (
-    view === item ||
-    (item === "scientific" && view === "dag") ||
-    (item === "artifacts" && view === "paper")
-  );
+  return topTab(view) === item;
 }
 
 function ArtifactsSubnav({
@@ -1045,7 +1042,7 @@ function MemberApp({
     replaceRunScope,
     applyRouteSelection,
     changeView,
-    openLastResearchView,
+    openTab,
     changeTrustView,
     openNode,
     openRelatedNode: openRelatedGraphNode,
@@ -4657,13 +4654,7 @@ function MemberApp({
         key={item.view}
         className={navItemActive(item.view, view) ? "active" : ""}
         aria-current={navItemActive(item.view, view) ? "page" : undefined}
-        onClick={() =>
-          item.view === "chats"
-            ? openChats()
-            : item.view === "scientific"
-              ? openLastResearchView()
-              : changeView(item.view)
-        }
+        onClick={() => (item.view === "chats" ? openChats() : openTab(item.view))}
       >
         {item.icon}
         <span>{item.label}</span>
