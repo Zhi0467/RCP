@@ -101,11 +101,11 @@ def test_line_diff_merges_nearby_and_rewrites_large_changes():
     assert len(line_changes(before, nearby)) == 1
     distant = nearby.replace("line 30\n", "changed 30\n")
     assert len(line_changes(before, distant)) == 2
-    assert line_changes(before, "rewritten\n")[0][0] == "rewrite"
+    assert line_changes(before, "rewritten\n")[0].kind == "rewrite"
     many = before
     for index in range(0, 65, 5):
         many = many.replace(f"line {index}\n", f"changed {index}\n")
-    assert line_changes(before, many)[0][0] == "rewrite"
+    assert line_changes(before, many)[0].kind == "rewrite"
 
 
 def test_identity_offsets_repeated_paragraphs_and_empty_insertions():

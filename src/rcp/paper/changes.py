@@ -12,7 +12,7 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from difflib import SequenceMatcher
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal, NamedTuple, cast
 
 from pydantic import BaseModel, Field, PrivateAttr
 
@@ -242,7 +242,24 @@ def validate_output(
     return files, pairs, deletions
 
 
-def line_changes(before: str, after: str) -> list[tuple[str, int, int, str, str, int, int]]:
+# Edits this few unchanged lines apart become one card.
+_CARD_MERGE_GAP_LINES = 3
+# Past this share of changed lines, or this many cards, one rewrite card reads better.
+_REWRITE_CHANGED_SHARE = 0.4
+_REWRITE_CARD_COUNT = 12
+
+
+class LineChange(NamedTuple):
+    kind: Literal["edit", "rewrite"]
+    start: int
+    end: int
+    before: str
+    after: str
+    first_line: int
+    last_line: int
+
+
+def line_changes(before: str, after: str) -> list[LineChange]:
     """Return deterministic offset ranges for review against the saved base."""
     old, new = before.splitlines(keepends=True), after.splitlines(keepends=True)
     edits = [
@@ -254,20 +271,23 @@ def line_changes(before: str, after: str) -> list[tuple[str, int, int, str, str,
         return []
     regions: list[tuple[int, int, int, int]] = []
     for _tag, a, b, c, d in edits:
-        if regions and a - regions[-1][1] <= 3:
+        if regions and a - regions[-1][1] <= _CARD_MERGE_GAP_LINES:
             first = regions.pop()
             regions.append((first[0], b, first[2], d))
         else:
             regions.append((a, b, c, d))
     changed = max(sum(b - a for _, a, b, _, _ in edits), sum(d - c for _, _, _, c, d in edits))
-    rewrite = changed / max(len(old), len(new), 1) > 0.4 or len(regions) > 12
+    rewrite = (
+        changed / max(len(old), len(new), 1) > _REWRITE_CHANGED_SHARE
+        or len(regions) > _REWRITE_CARD_COUNT
+    )
     if rewrite:
         regions = [(0, len(old), 0, len(new))]
     offsets = [0]
     for line in old:
         offsets.append(offsets[-1] + len(line))
     return [
-        (
+        LineChange(
             "rewrite" if rewrite else "edit",
             offsets[a],
             offsets[b],
@@ -521,7 +541,7 @@ def build_changes(
                 changes.append(
                     Change(
                         task_id=task_id,
-                        kind=cast(Literal["edit", "rewrite"], kind),
+                        kind=kind,
                         file_id=original.file_id,
                         path=original.path,
                         base_revision=snapshot.revision,
