@@ -114,7 +114,7 @@ def test_continuations_reopen_ancestor_questions_without_changing_origins(tmp_pa
 
 
 @pytest.mark.parametrize("delivered", [False, True])
-def test_only_undelivered_question_mail_moves_to_latest_continuation(tmp_path, delivered):
+def test_only_undelivered_question_mail_goes_to_the_next_continuation(tmp_path, delivered):
     from rcp.storage import (
         AutoResearchLifecycleNoticeRecord,
         AutoResearchMessageRecord,
@@ -151,6 +151,7 @@ def test_only_undelivered_question_mail_moves_to_latest_continuation(tmp_path, d
             [message.message_id], operation_id=root.operation_id
         )
     episode = original_episode
+    first_turns = []
     for episode_id in ("continuation", "latest"):
         store.end_episode_without_report(episode.episode_id, ending="exhausted", diagnostic=None)
         continuation = _episode(store, episode_id, mode="auto_research").model_copy(
@@ -194,15 +195,19 @@ def test_only_undelivered_question_mail_moves_to_latest_continuation(tmp_path, d
             ),
         )
         assert not replayed
+        first_turns.append(task)
         store.complete_agent_task(task.operation_id, applied_revision=None, result={})
     # A late idempotent ending replay must not withdraw reopened ancestor cards.
     store.end_episode_without_report(
         original_episode.episode_id, ending="exhausted", diagnostic=None
     )
     assert not store.get_question(question.question_id).withdrawn_readonly
+    # Undelivered answer mail is claimed by the next continuation's first turn.
     moved = store.readdress_auto_research_question_answer(question.question_id)
-    assert moved.episode_id == (original_episode.episode_id if delivered else episode.episode_id)
-    assert moved.recipient_task_id == (root.operation_id if delivered else task.operation_id)
+    claimant = root if delivered else first_turns[0]
+    assert moved.episode_id == claimant.episode_id
+    assert moved.recipient_task_id == claimant.operation_id
+    assert moved.delivery_operation_id == claimant.operation_id
     assert moved.authorized_by == question.resolved_by
     assert store.readdress_auto_research_question_answer(question.question_id) == moved
     assert store.auto_research_message(ordinary.message_id) == ordinary

@@ -314,6 +314,27 @@ class QuestionStoreMixin(StoreMixinBase):
             append_question_attention(connection, updated, self.now())
             return _question_record(updated)
 
+    def reopen_unclaimed_answer(self, question_id: str, answer_revision: int) -> bool:
+        """Return an answer to pending when the continuation it started failed.
+
+        Only that exact revision, and only while no follow-up or mail carries it,
+        so the card keeps its answer field and can try again.
+        """
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """UPDATE questions SET state='pending', answer=NULL, chosen_choices_json='[]',
+                resolved_by_json=NULL, resolved_at=NULL
+                WHERE question_id=? AND state='answered' AND answer_revision=?
+                AND followup_operation_id IS NULL AND NOT EXISTS (
+                    SELECT 1 FROM auto_research_messages WHERE message_id=?
+                ) RETURNING *""",
+                (question_id, answer_revision, f"question:{question_id}:answer:{answer_revision}"),
+            ).fetchone()
+            if row is not None:
+                append_question_attention(connection, row, self.now())
+            return row is not None
+
     def record_question_receipt(
         self,
         question_id: str,

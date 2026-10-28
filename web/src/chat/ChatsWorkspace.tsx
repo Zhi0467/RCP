@@ -729,7 +729,9 @@ export function ChatsWorkspace({
   const offGraphWatcherView = useResource(
     `${project.id}:orchestrator-watcher-view`,
     offGraphOrchestrator
-      ? watchersProfile(project.id, offGraphOrchestrator.graphTarget ?? MAIN_GRAPH)
+      ? watchersProfile(project.id, offGraphOrchestrator.graphTarget ?? MAIN_GRAPH, {
+          ownTargetOnly: true,
+        })
       : null,
   );
   const orchestratorWatchers = offGraphOrchestrator

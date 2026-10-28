@@ -114,7 +114,12 @@ def _answer_continues(
     return None if others_open else state
 
 
-def _serialize(store: AppStore, question: QuestionRecord) -> QuestionResponse:
+def _serialize(
+    store: AppStore,
+    question: QuestionRecord,
+    *,
+    continues: Literal["turns", "ending"] | None = None,
+) -> QuestionResponse:
     task = store.agent_task(question.origin.operation_id)
     state = question.state
     if state == "pending" and (
@@ -132,11 +137,7 @@ def _serialize(store: AppStore, question: QuestionRecord) -> QuestionResponse:
         agent_waiting=(
             _can_answer(question) and store.question_activity.is_waiting(question.question_id)
         ),
-        answer_continues=(
-            _answer_continues(store, question, _newest_episode(store, question))
-            if _can_answer(question)
-            else None
-        ),
+        answer_continues=continues,
     )
 
 
@@ -160,7 +161,14 @@ def episode_questions(
 ) -> list[QuestionResponse]:
     project_id = catalog.resolve_project_id(project_id)
     _episode_for_http(store, catalog, project_id, episode_id)
-    return [_serialize(store, item) for item in store.episode_questions(project_id, episode_id)]
+    questions = store.episode_questions(project_id, episode_id)
+    # Only a lone open card can carry the turns; judge it once per list.
+    open_cards = [item for item in questions if _can_answer(item)]
+    lone = open_cards[0] if len(open_cards) == 1 else None
+    continues = _answer_continues(store, lone, _newest_episode(store, lone)) if lone else None
+    return [
+        _serialize(store, item, continues=continues if item is lone else None) for item in questions
+    ]
 
 
 def _question_for_http(store: AppStore, project_id: str, question_id: str) -> QuestionRecord:
@@ -230,15 +238,21 @@ def answer_question(
             assert body.invocation_ceiling is not None and body.request_id is not None
             # The continuation's first turn claims every held answer of the
             # chain; any later Add turns does the same if this one fails.
-            continue_ended_episode(
-                newest,
-                invocation_ceiling=body.invocation_ceiling,
-                request_id=body.request_id,
-                authorized_by=human,
-                catalog=catalog,
-                store=store,
-                background_tasks=request.app.state.background_tasks,
-            )
+            try:
+                continue_ended_episode(
+                    newest,
+                    invocation_ceiling=body.invocation_ceiling,
+                    request_id=body.request_id,
+                    authorized_by=human,
+                    catalog=catalog,
+                    store=store,
+                    background_tasks=request.app.state.background_tasks,
+                )
+            except HTTPException:
+                # The card stays open with its turns and the reason, so the
+                # human can fix the cause and answer again.
+                store.reopen_unclaimed_answer(question_id, question.answer_revision)
+                raise
         # Retry delivery even when the answer was already committed: an earlier
         # owner call may have failed. Owner delivery is independently idempotent.
         reconcile = False

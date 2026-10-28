@@ -310,6 +310,31 @@ class AutoResearchStoreMixin(StoreMixinBase):
                 for answer in question_answers:
                     self._require_held_question_answer(connection, answer, started, task)
                     self._insert_auto_research_message(connection, answer)
+                # Answers mailed before the ending but never delivered move to
+                # this first turn too, within the same wake bound.
+                chain = sorted((seen - {episode.episode_id}) | {current.episode_id})
+                claimed_mail.extend(
+                    self._auto_research_message_record(row)
+                    for row in connection.execute(
+                        f"""
+                        UPDATE auto_research_messages SET episode_id = ?, recipient_task_id = ?
+                        WHERE message_id IN (
+                            SELECT message_id FROM auto_research_messages
+                            WHERE message_id LIKE 'question:%'
+                              AND delivered_at IS NULL AND delivery_operation_id IS NULL
+                              AND episode_id IN ({",".join("?" for _ in chain)})
+                            ORDER BY created_at, message_id LIMIT ?
+                        )
+                        RETURNING *
+                        """,
+                        (
+                            started.episode_id,
+                            task.operation_id,
+                            *chain,
+                            AUTO_RESEARCH_MAIL_MAX_MESSAGES - len(claimed_mail),
+                        ),
+                    ).fetchall()
+                )
                 if not self._claim_auto_research_root_inputs(
                     connection,
                     started,

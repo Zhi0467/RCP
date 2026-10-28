@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock, call
 
 import pytest
+from fastapi import HTTPException
 
 from rcp.storage.question_models import QuestionOrigin
 from tests.helpers import signed_in_client
@@ -104,9 +105,14 @@ def test_ended_episode_last_card_answers_with_turns(questions_api, monkeypatch):
     app, client, store, project_id = questions_api
     base = f"/api/projects/{project_id}"
     continued = []
-    monkeypatch.setattr(
-        questions, "continue_ended_episode", lambda source, **kw: continued.append((source, kw))
-    )
+    failures = []
+
+    def continue_ended_episode(source, **kw):
+        if failures:
+            raise HTTPException(status_code=409, detail=failures.pop())
+        continued.append((source, kw))
+
+    monkeypatch.setattr(questions, "continue_ended_episode", continue_ended_episode)
     store.create_episode(_episode(store, "first", project_id=project_id))
     held, last = (
         _question(store, project_id, owner_kind="episode", owner_id="first", key=key)
@@ -131,6 +137,10 @@ def test_ended_episode_last_card_answers_with_turns(questions_api, monkeypatch):
     assert refused.status_code == 409
     assert refused.json()["detail"]["code"] == "question_continuation_required"
     request_id = "6f0c4f5e-2b7a-4bd4-9b0a-2f9f1d2c3e4a"
+    # A continuation that fails to start leaves the card open to try again.
+    failures.append("provider signed out")
+    assert answer(last, invocation_ceiling=2, request_id=request_id).status_code == 409
+    assert card(last)["can_answer"] and card(last)["answer_continues"] == "turns"
     assert answer(last, invocation_ceiling=2, request_id=request_id).status_code == 200
     [(source, kwargs)] = continued
     assert source.episode_id == "first"

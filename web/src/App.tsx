@@ -854,10 +854,16 @@ function MemberApp({
     project: sessionProject,
     reportError: reportErrorNotice,
   });
-  // A cleared staged conflict forgets its dismissal; a later conflict shows again.
+  // A cleared condition forgets its banner dismissal, so the next one shows.
+  const stagedConflictScope = projectId ? graphSessionKey(projectId, graphTarget) : null;
+  const replayDegraded = sessionProject ? projectGraphMutationFailureLabel(sessionProject) : null;
   useEffect(() => {
-    if (projectId && !draftPreviewConflict) forgetBanners(`staged-conflict:${projectId}:`);
-  }, [projectId, draftPreviewConflict]);
+    if (stagedConflictScope && !draftPreviewConflict)
+      forgetBanners(`staged-conflict:${stagedConflictScope}:`);
+  }, [stagedConflictScope, draftPreviewConflict]);
+  useEffect(() => {
+    if (projectId && !replayDegraded) forgetBanners(`replay-degraded:${projectId}:`);
+  }, [projectId, replayDegraded]);
   const pinBranchId = graphTarget.kind === "branch" ? graphTarget.branch_id : null;
   const pinScope = pinScopeKey(projectId, pinBranchId);
   const [pinSelection, setPinSelection] = useState<{ scope: string; id: string } | null>(null);
@@ -4936,7 +4942,7 @@ function MemberApp({
         )}
         {draftPreviewConflict && (
           <Banner
-            dismissKey={`staged-conflict:${project.id}:${draftPreviewConflict}`}
+            dismissKey={`staged-conflict:${graphSessionKey(project.id, graphTarget)}:${draftPreviewConflict}`}
             className="coverage-banner validation-rejected"
             role="alert"
           >
