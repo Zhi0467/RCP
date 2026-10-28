@@ -973,10 +973,8 @@ class RunRequest(BaseModel):
 class CoachRequest(BaseModel):
     message: str
     mode: Literal["review", "apply_directly"] = "review"
-    refresh_file_ids: list[str] | None = None
     refresh_source_task_id: str | None = None
     refresh_group_ids: list[str] = Field(default_factory=list)
-    retry_source_task_id: str | None = None
     provider: ProviderId | None = None
     model: str | None = None
     reasoning: str | None = None

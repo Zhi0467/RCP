@@ -106,7 +106,9 @@ proposed tree. A rename and the edits that depend on it form one card group.
 A card applies only to the text it was made from. At the end of a turn RCP
 checks every card against the live paper; a card whose text has since changed is
 refreshed by up to two short follow-up turns of the same coach session, then
-shown as outdated with a refresh action.
+shown as outdated with a refresh action. These follow-ups retain the delivered
+master, send changed snapshot/output paths as a delta, and record a separate
+immutable prompt for each refresh round.
 
 By default each card waits for a member to accept or reject it. In a chat set to
 apply directly, every fresh card is applied when the turn ends, and the cards
@@ -119,7 +121,9 @@ checking preconditions again. Outstanding cards and active coach turns keep thei
 base revisions available even beyond the ordinary snapshot retention window.
 Pending and outdated binary cards retain both original and proposed blobs through
 backup and restore. Card lists load payloads together and read the live paper only
-when pending cards need their anchors checked.
+when pending cards need their anchors checked. Each mapped text anchor exposes
+`current` with live UTF-16 start/end offsets, its 1-based start `line`, revision,
+and anchored text.
 Delete receipts also retain the text document state so Undo restores its CRDT
 identity; reconnecting a cached editor cannot duplicate the restored text.
 

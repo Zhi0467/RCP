@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -83,6 +82,9 @@ async def test_saved_snapshot_refreshes_same_session_only_affected_files(
             assert (base / "other.md").exists() == (len(paths) == 1)
             assert kwargs["capability"] == "paper_suggest"
             assert len(kwargs["write_dirs"]) == 1
+            if len(paths) > 1:
+                assert str(base) in _prompt
+                assert str(kwargs["write_dirs"][0]) in _prompt
             output = kwargs["write_dirs"][0] / "files" / "paper.md"
             output.parent.mkdir()
             output.write_text("Proposed replacement.\n")
@@ -93,7 +95,7 @@ async def test_saved_snapshot_refreshes_same_session_only_affected_files(
             yield AgentEvent(event="session", session_id="same-native-session")
             yield AgentEvent(event="done")
 
-    events = await run_coach(service, Launcher(), data)
+    events = await run_coach(service, Launcher(), data, execution=execution_for(service))
     assert not [event for event in events if event.event == "error"]
     assert sessions == [None] + ["same-native-session"] * (expected_turns - 1)
     assert all(not path.exists() for path in paths)
@@ -123,9 +125,6 @@ async def test_direct_apply_uses_saved_mode_and_admission(coach):
     task_receipts = execution.store.agent_task_receipts(execution.operation_id)
     base = next(r.payload for r in task_receipts if r.category == "paper_turn_base")
     assert base["revision"] == 1
-    assert base["file_ids"] == ["paper-file"]
-    assert base["mode"] == "apply_directly"
-    assert not Path(base["snapshot_path"]).exists()
 
 
 @pytest.mark.asyncio

@@ -19,7 +19,7 @@ from rcp.api.dependencies import (
     project_write_admission,
     require_project_membership,
 )
-from rcp.paper.changes import OutdatedChange, PaperChanges, get_paper_changes
+from rcp.paper.changes import ChangeGroup, OutdatedChange, PaperChanges, get_paper_changes
 from rcp.paper.models import PaperConflict
 from rcp.server_ops.maintenance import MaintenanceAdmissionClosed
 
@@ -70,20 +70,6 @@ def proposed(project_id: str, change_id: str, request: Request):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.post("/api/projects/{project_id}/paper/changes/accept-all")
-def accept_all(project_id: str, body: TaskChangesRequest, request: Request):
-    actor = get_identity_access(request).require_patch_capable_identity(request).user_id
-    canonical, manager = _manager(project_id, request)
-    try:
-        return {
-            "groups": [
-                group.public() for group in manager.accept_all(canonical, body.task_id, actor)
-            ]
-        }
-    except (ValueError, KeyError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
 @router.post("/api/projects/{project_id}/paper/changes/undo-all")
 def undo_all(project_id: str, body: TaskChangesRequest, request: Request):
     actor = get_identity_access(request).require_patch_capable_identity(request).user_id
@@ -96,11 +82,11 @@ def undo_all(project_id: str, body: TaskChangesRequest, request: Request):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-def _continue(project_id: str, task_id: str, request: Request, *, group_id: str | None = None):
+def _continue(project_id: str, group: ChangeGroup, request: Request):
     from rcp.api.tasks import start_ordinary_task
 
     store = get_store(request)
-    previous = store.agent_task(task_id)
+    previous = store.agent_task(group.task_id)
     if (
         previous is None
         or previous.project_id != project_id
@@ -124,34 +110,12 @@ def _continue(project_id: str, task_id: str, request: Request, *, group_id: str 
         provider=previous.request.get("provider"),
         run_on=previous.request.get("run_on"),
     )
-    if group_id is None:
-        diagnostics = store.agent_task_receipts_by_category(task_id, "paper_changes_invalid")
-        if not diagnostics:
-            raise HTTPException(
-                status_code=409, detail="This task has no invalid-output diagnostics"
-            )
-        body.update(
-            retry_source_task_id=task_id,
-            refresh_source_task_id=None,
-            refresh_group_ids=[],
-            refresh_file_ids=None,
-        )
-    else:
-        _, manager = _manager(project_id, request)
-        try:
-            group = manager._load(project_id, group_id)
-        except KeyError:
-            group = None
-        if group is None or group.task_id != task_id or group.state not in {"pending", "outdated"}:
-            raise HTTPException(
-                status_code=409, detail="Only undecided paper changes can be refreshed"
-            )
-        body.update(
-            refresh_source_task_id=task_id,
-            refresh_group_ids=[group_id],
-            refresh_file_ids=sorted(manager.affected_file_ids(project_id, {group_id})),
-            retry_source_task_id=None,
-        )
+    if group.state not in {"pending", "outdated"}:
+        raise HTTPException(status_code=409, detail="Only undecided paper changes can be refreshed")
+    body.update(
+        refresh_source_task_id=group.task_id,
+        refresh_group_ids=[group.group_id],
+    )
     authorized_by = get_identity_access(request).require_patch_capable_identity(request)
     return start_ordinary_task(
         project_id,
@@ -166,12 +130,6 @@ def _continue(project_id: str, task_id: str, request: Request, *, group_id: str 
     ).model_dump(mode="json")
 
 
-@router.post("/api/projects/{project_id}/paper/changes/retry", status_code=202)
-def retry_changes(project_id: str, body: TaskChangesRequest, request: Request):
-    with project_write_admission(project_id, request) as canonical:
-        return _continue(canonical, body.task_id, request)
-
-
 @router.post("/api/projects/{project_id}/paper/changes/{group_id}/{action}")
 def decide(
     project_id: str,
@@ -183,14 +141,9 @@ def decide(
     canonical, manager = _manager(project_id, request)
     try:
         if action == "refresh":
-            group = next(
-                (group for group in manager.groups(canonical) if group.group_id == group_id),
-                None,
-            )
-            if group is None:
-                raise KeyError("Paper change group not found")
+            group = manager._load(canonical, group_id)
             with project_write_admission(project_id, request):
-                return _continue(canonical, group.task_id, request, group_id=group_id)
+                return _continue(canonical, group, request)
         return getattr(manager, action)(canonical, group_id, actor).public()
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Paper change group not found") from exc

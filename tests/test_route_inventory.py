@@ -275,8 +275,6 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("GET",), "/api/projects/{project_id}/paper/history"),
     (("GET",), "/api/projects/{project_id}/paper/history/{version_id}/files/{file_id}"),
     (("GET",), "/api/projects/{project_id}/paper/tree"),
-    (("POST",), "/api/projects/{project_id}/paper/changes/accept-all"),
-    (("POST",), "/api/projects/{project_id}/paper/changes/retry"),
     (("POST",), "/api/projects/{project_id}/paper/changes/undo-all"),
     (("POST",), "/api/projects/{project_id}/paper/changes/{group_id}/{action}"),
     (("POST",), "/api/projects/{project_id}/paper/compile"),

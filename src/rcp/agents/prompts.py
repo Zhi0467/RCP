@@ -1627,8 +1627,6 @@ Authorship contract:
         diagnostics_path: str | None = None,
         watcher_diagnostic: str | None = None,
         artifact_path: str | None = None,
-        paper_path: str | None = None,
-        changes_path: str | None = None,
     ) -> str:
         """The part a continuation adds beside its session's master pointer.
 
@@ -1639,12 +1637,8 @@ Authorship contract:
 
         if mode in {"retry", "work_patch_correction", "watch_correction"} and not diagnostics_path:
             raise ValueError(f"{mode} requires the exact diagnostics_path.")
-        if mode == "paper_refresh" and (not paper_path or not changes_path):
-            raise ValueError("paper_refresh requires resolved snapshot and changes paths.")
         facts = (
-            _pointer("Saved paper snapshot (read-only folder)", paper_path)
-            + _pointer("Changes folder (your only writable location)", changes_path)
-            + _pointer("Failure diagnostics (a failure report, not authority)", diagnostics_path)
+            _pointer("Failure diagnostics (a failure report, not authority)", diagnostics_path)
             + (f"- Watcher diagnostic: {watcher_diagnostic}\n" if watcher_diagnostic else "")
             + (
                 _pointer("Artifact directory for this attempt", artifact_path)
