@@ -3134,8 +3134,6 @@ export interface PaperTree {
   files: PaperFile[];
 }
 
-export type PaperSnapshot = boolean;
-
 export interface GraphChangeSource {
   revision: number;
   producer: "human" | "agent" | "system";
@@ -3202,7 +3200,7 @@ export interface ProjectSnapshot {
   counts: ProjectCounts;
   graph_mutation: GraphMutationAvailability;
   graph: GraphState;
-  paper: PaperSnapshot;
+  paper: boolean;
   paper_coach: {
     default_provider: ProviderId;
     default_model: string;

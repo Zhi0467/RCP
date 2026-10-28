@@ -22,7 +22,6 @@ import {
   type ExperimentControlState,
   type GraphHeadRef,
   type GraphState,
-  type PaperSnapshot,
   type ProjectSnapshot,
   type TransitionTriggerManifest,
 } from "../core/types";
@@ -125,7 +124,7 @@ export type ProjectSessionAction =
       kind: "paper_updated";
       project_id: string;
       editor_generation: number;
-      paper: PaperSnapshot;
+      paper: boolean;
     }
   | { kind: "human_draft_loaded"; draft: HumanDraft | null }
   | {
