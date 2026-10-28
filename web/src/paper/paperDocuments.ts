@@ -208,6 +208,7 @@ export class PaperDocument {
       if (!this.references) {
         this.localPresence = this.provider.awareness.getLocalState();
         this.provider.awareness.setLocalState(null);
+        if (this.disposed) this.closeStorage();
       }
       this.scheduleDisposal();
     };
@@ -263,14 +264,19 @@ export class PaperDocument {
     else void this.startStorage();
     this.emit();
   }
+  /** Cuts the server link at once. A mounted editor still writes into this doc
+   * until it unmounts, so local storage stays attached until the last release. */
   destroy() {
     if (this.disposed) return;
     this.disposed = true;
     clearTimeout(this.disposal);
     this.provider.destroy();
+    owners.delete(paperDocumentKey(this.key));
+    if (!this.references) this.closeStorage();
+  }
+  private closeStorage() {
     void this.persistence?.destroy();
     this.doc.destroy();
-    owners.delete(paperDocumentKey(this.key));
   }
 }
 export function acquirePaperDocument(key: PaperDocumentKey, apiBase: string, name: string) {

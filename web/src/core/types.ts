@@ -3122,7 +3122,7 @@ export interface PaperFile {
   kind: "text" | "binary";
   format: string;
   size: number;
-  sha256?: string;
+  sha256: string;
 }
 
 export interface PaperTree {
