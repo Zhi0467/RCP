@@ -58,15 +58,26 @@ export function PaperWorkspace({
   const [identity, setIdentity] = useState<IdentityResponse | null>(null);
   const [identityError, setIdentityError] = useState<string | null>(null);
   const [identityRetry, setIdentityRetry] = useState(0);
-  const [selected, setSelected] = useState<string | null>(
-    requestedFileId?.fileId ??
+  // The tree revision a selection was made at: a newer tree that still lacks it means the
+  // file is gone, while an older one may predate a file just created.
+  const [selection, setSelection] = useState<{ id: string | null; at: number }>(() => ({
+    id:
+      requestedFileId?.fileId ??
       new URLSearchParams(window.location.hash.split("?")[1]).get("paper_file") ??
       editorState?.fileId ??
       null,
+    at: -1,
+  }));
+  const selected = selection.id;
+  const treeRevision = useRef(-1);
+  treeRevision.current = tree?.revision ?? -1;
+  const setSelected = useCallback(
+    (id: string | null) => setSelection({ id, at: treeRevision.current }),
+    [],
   );
   useEffect(() => {
     if (requestedFileId?.fileId) setSelected(requestedFileId.fileId);
-  }, [requestedFileId]);
+  }, [requestedFileId, setSelected]);
   const [folded, setFolded] = useState(storedFold);
   const [filesOpen, setFilesOpen] = useState(false);
   const [view, setView] = useState<"write" | "preview" | "coach">("write");
@@ -114,6 +125,9 @@ export function PaperWorkspace({
   }, [apiBase, identityRetry]);
   useEffect(() => {
     const reset = () => {
+      // The rebuilt editor takes the focus back if the old one had it.
+      if (window.document.activeElement?.closest(".paper-writing-pane .cm-content"))
+        focusPending.current = true;
       setIdentity(null);
       setIdentityRetry((value) => value + 1);
     };
@@ -135,13 +149,8 @@ export function PaperWorkspace({
     !listed && last?.file.file_id === current && last?.document?.getSnapshot().saved === false
       ? last.file
       : undefined;
-  // A selection the tree does not list (not yet, or no longer) keeps the open file, else
-  // the first one, so a stale link or reload never leaves the editor blank.
-  const file =
-    listed ??
-    stranded ??
-    tree?.files.find((item) => item.file_id === last?.file.file_id) ??
-    tree?.files[0];
+  const gone = tree !== undefined && tree.revision > selection.at;
+  const file = listed ?? stranded ?? (!selected || gone ? tree?.files[0] : undefined);
   const document = useMemo(
     () =>
       identity && file?.kind === "text"
@@ -188,7 +197,7 @@ export function PaperWorkspace({
       unsubscribe();
       clearTimeout(timer);
     };
-  }, [document, refresh]);
+  }, [document, refresh, setSelected]);
   useEffect(() => {
     if (!file || (selected && selected !== file.file_id)) return;
     onEditorStateChange?.({ fileId: file.file_id });

@@ -54,5 +54,8 @@ test("a keystroke shown after a backend restart is detected survives into the ne
     () => document.querySelector('[data-testid="paper-saved"]')?.dataset.saved === "true",
   );
   assert.equal(room.doc.getText("text").toString(), "draft before after");
+  // The rebuilt editor keeps the focus and the cursor, so typing simply continues.
+  await page.keyboard.insertText(" more");
+  await page.waitForFunction(editorMatches, "draft before after more");
   assert.deepEqual(errors, []);
 });

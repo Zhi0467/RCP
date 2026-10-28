@@ -491,6 +491,24 @@ def test_failed_publication_waits_for_backoff(paper, monkeypatch):
     run(scenario())
 
 
+def test_members_receive_an_ack_covering_a_peer_update(paper):
+    live, _, _ = paper
+
+    async def scenario():
+        file_id = (await live.apply("p", [PaperOp(kind="create", path="a")], "h")).file_ids[0]
+        queue = asyncio.Queue()
+        room = await live.connect("p", file_id, queue)
+        peer = Doc({"text": Text()})
+        peer.apply_update(room.doc.get_update())
+        peer["text"].insert(0, "peer")
+        await live.receive("p", file_id, create_update_message(peer.get_update()), "h")
+        messages = [queue.get_nowait() for _ in range(queue.qsize())]
+        assert messages[-1] == bytes([100]) + room.doc.get_state()
+        await live.close()
+
+    run(scenario())
+
+
 def test_restore_preserves_peer_position_outside_changed_span(paper):
     live, _, _ = paper
 

@@ -845,6 +845,8 @@ class PaperLive:
             candidate, encoded, revision = result
             room.doc, room.seq, room.encoded = candidate, seq, encoded
             self._broadcast(room, create_update_message(update))
+            # Saved: an idle member is otherwise left showing a durable peer edit as unsaved.
+            self._broadcast(room, _ack(candidate))
             self._compact(project_id, file_id, room, revision)
             if cancelled:
                 raise asyncio.CancelledError

@@ -56,13 +56,17 @@ def test_two_websocket_clients_converge_and_ack_is_committed(manifest, tmp_path)
             two.send_bytes(create_update_message(right.get_update()))
             _ack(one, left)
             _ack(two, right)
-            # Request a new state sync after both durable acknowledgements.
+            # Request new state syncs after the durable acknowledgements; peer acks
+            # may still be queued ahead of the replies.
             from pycrdt import create_sync_message
 
-            one.send_bytes(create_sync_message(left))
-            two.send_bytes(create_sync_message(right))
-            _ack(one, left)
-            _ack(two, right)
+            for _ in range(4):
+                one.send_bytes(create_sync_message(left))
+                two.send_bytes(create_sync_message(right))
+                _ack(one, left)
+                _ack(two, right)
+                if str(left["text"]) == str(right["text"]):
+                    break
             assert str(left["text"]) == str(right["text"])
             saved = client.get(prefix + f"/files/{file_id}/raw")
             assert saved.text == str(left["text"])

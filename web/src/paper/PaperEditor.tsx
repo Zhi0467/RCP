@@ -10,7 +10,7 @@ import * as Y from "yjs";
 import { yCollab, ySyncAnnotation, yUndoManagerKeymap } from "y-codemirror.next";
 import { Check, ChevronLeft, ChevronRight, X } from "lucide-react";
 import { anchorPaperChange, resolvePaperAnchor } from "./paperAnchors";
-import type { PaperDocument } from "./paperDocuments";
+import { paperDocumentKey, type PaperDocument } from "./paperDocuments";
 import type { PaperChange } from "./PaperChanges";
 
 class SuggestionWidget extends WidgetType {
@@ -61,6 +61,9 @@ const memories = new WeakMap<
     top?: Y.RelativePosition;
   }
 >();
+/** The latest memory per file, so a document rebuilt after a backend restart resumes
+ * at the same cursor and scroll; its undo history starts fresh with the new document. */
+const lastMemories = new Map<string, NonNullable<ReturnType<typeof memories.get>>>();
 
 export function PaperEditor({
   owner,
@@ -121,9 +124,13 @@ export function PaperEditor({
             : [];
     let memory = memories.get(owner.text);
     if (!memory) {
-      memory = { undo: new Y.UndoManager(owner.text) };
+      memory = {
+        ...lastMemories.get(paperDocumentKey(owner.key)),
+        undo: new Y.UndoManager(owner.text),
+      };
       memories.set(owner.text, memory);
     }
+    lastMemories.set(paperDocumentKey(owner.key), memory);
     const saved = memory;
     const relative = (index: number) => Y.createRelativePositionFromTypeIndex(owner.text, index);
     const absolute = (position: Y.RelativePosition | undefined) =>
