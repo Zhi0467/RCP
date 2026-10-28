@@ -32,6 +32,7 @@ from rcp.server_ops._local_primitives import (
 from rcp.server_ops._local_primitives import (
     canonical_uuid4 as _canonical_uuid4,
 )
+from rcp.server_ops.backup_paper import safe_paper_path
 from rcp.server_ops.github import GitHubRepositoryRef
 from rcp.server_ops.models import redact_server_text
 from rcp.skill_registry import SkillDefaults
@@ -281,10 +282,10 @@ class BackupFileEntry(_StrictBackupModel):
             raise ValueError("Paper backup entries must name the canonical introduction")
         elif self.group == "paper_saved" and source != PurePosixPath("paper/saved.json"):
             raise ValueError("saved Paper entries require the versioned section path")
-        elif self.group == "paper_projection" and not (
-            len(source.parts) > 2 and source.parts[:2] == (".research", "paper")
-        ):
-            raise ValueError("Paper projection entries must stay below .research/paper")
+        elif self.group == "paper_projection":
+            if not (len(source.parts) > 2 and source.parts[:2] == (".research", "paper")):
+                raise ValueError("Paper projection entries must stay below .research/paper")
+            safe_paper_path(PurePosixPath(*source.parts[2:]).as_posix())
         elif self.group == "fact" and not (
             len(source.parts) > 2 and source.parts[:2] == (".research", "facts")
         ):
@@ -316,7 +317,7 @@ class BackupFileEntry(_StrictBackupModel):
             if not valid:
                 raise ValueError("imported provider-history entries require owned sealed paths")
         forbidden = {".git", "credentials", "run-stage", "chat-attachments"}
-        if forbidden.intersection(source.parts):
+        if self.group != "paper_projection" and forbidden.intersection(source.parts):
             raise ValueError("backup entries cannot include credentials, source Git, or stages")
         return self
 

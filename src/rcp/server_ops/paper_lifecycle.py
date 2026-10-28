@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import threading
-from contextlib import AbstractContextManager
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from typing import TYPE_CHECKING, Protocol
 from weakref import WeakKeyDictionary
 
@@ -32,6 +33,9 @@ class LivePaperLifecycle:
     def pause(self, project_id: str) -> None:
         self._call("pause", project_id)
 
+    def resume(self, project_id: str) -> None:
+        self._call("resume", project_id)
+
     def drain(self, project_id: str) -> None:
         self._call("drain", project_id)
 
@@ -41,6 +45,8 @@ class LivePaperLifecycle:
 
 class PaperLifecycleOwner(Protocol):
     def pause(self, project_id: str) -> None: ...
+
+    def resume(self, project_id: str) -> None: ...
 
     def drain(self, project_id: str) -> None: ...
 
@@ -98,12 +104,27 @@ def get_paper_live(store: PaperLifecycleStore, project_id: str) -> PaperLifecycl
     return None
 
 
-def stop_paper_project(store: PaperLifecycleStore, project_id: str) -> None:
+@contextmanager
+def pause_paper_project(
+    store: PaperLifecycleStore, project_id: str
+) -> Iterator[PaperLifecycleOwner | None]:
+    """Keep a successful stop fenced; unwind every failed stop, including pause itself."""
     live = get_paper_live(store, project_id)
-    if live is not None:
-        live.pause(project_id)
-        live.drain(project_id)
-        live.dispose(project_id)
+    try:
+        if live is not None:
+            live.pause(project_id)
+        yield live
+    except BaseException:
+        if live is not None:
+            live.resume(project_id)
+        raise
+
+
+def stop_paper_project(store: PaperLifecycleStore, project_id: str) -> None:
+    with pause_paper_project(store, project_id) as live:
+        if live is not None:
+            live.drain(project_id)
+            live.dispose(project_id)
 
 
 def detach_paper_runtime(store: PaperLifecycleStore) -> None:
@@ -119,8 +140,9 @@ def detach_paper_runtime(store: PaperLifecycleStore) -> None:
         return
     with store.connection() as connection:
         project_ids = [row[0] for row in connection.execute("SELECT project_id FROM projects")]
-    for project_id in project_ids:
-        live.pause(project_id)
-    for project_id in project_ids:
-        live.drain(project_id)
-        live.dispose(project_id)
+    with ExitStack() as pauses:
+        for project_id in project_ids:
+            pauses.enter_context(pause_paper_project(store, project_id))
+        for project_id in project_ids:
+            live.drain(project_id)
+            live.dispose(project_id)

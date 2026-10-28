@@ -15,6 +15,7 @@ from rcp.server_ops import paper_lifecycle
 from rcp.server_ops.maintenance import (
     MaintenanceCoordinator,
     MaintenanceIdentity,
+    MaintenanceRefused,
     RuntimeAdmissionGate,
 )
 from rcp.server_ops.paper_lifecycle import register_paper_live, stop_paper_project
@@ -30,6 +31,9 @@ class PaperOwner:
     def pause(self, project_id):
         self.events.append(("pause", project_id))
 
+    def resume(self, project_id):
+        self.events.append(("resume", project_id))
+
     def drain(self, project_id):
         self.events.append(("drain", project_id))
         if self.fail_drain:
@@ -39,7 +43,8 @@ class PaperOwner:
         self.events.append(("dispose", project_id))
 
 
-def test_paper_is_drained_before_maintenance_capture(manifest, tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure", ["drain", "timeout"])
+def test_paper_is_drained_before_maintenance_capture(manifest, tmp_path, monkeypatch, failure):
     store = AppStore(tmp_path / "rcp.sqlite3")
     catalog = ProjectCatalog(tmp_path, store, AgentLauncher())
     record = catalog.register(str(manifest.path), identity_action="adopted")
@@ -57,11 +62,23 @@ def test_paper_is_drained_before_maintenance_capture(manifest, tmp_path, monkeyp
         capture_sqlite=lambda: owner.events.append(("capture", record.project_id)),
     )
     identity = MaintenanceIdentity(str(uuid.uuid4()), "a" * 64)
-    owner.fail_drain = True
-    with pytest.raises(RuntimeError):
+    owner.fail_drain = failure == "drain"
+    if failure == "timeout":
+        import time
+
+        clock = time.monotonic
+        monkeypatch.setattr(
+            "rcp.server_ops.maintenance.time.monotonic",
+            lambda: clock() + (10 if any(e[0] == "dispose" for e in owner.events) else 0),
+        )
+    with pytest.raises(RuntimeError if failure == "drain" else MaintenanceRefused):
         coordinator.enter(identity, timeout=1)
     assert not coordinator.quiescent
-    assert [event[0] for event in owner.events] == ["pause", "drain"]
+    expected = ["pause", "drain"] + (["dispose"] if failure == "timeout" else []) + ["resume"]
+    assert [event[0] for event in owner.events] == expected
+    if failure == "timeout":
+        monkeypatch.undo()
+        monkeypatch.setitem(paper_lifecycle._owners, store, owner)
     owner.events.clear()
     owner.fail_drain = False
     coordinator.enter(identity, timeout=1)
@@ -109,6 +126,7 @@ def test_real_owner_disposes_reopens_and_deletes_only_project_rows(manifest, tmp
                     "INSERT INTO paper_change_receipts VALUES (?, 'accept', 'group', 'accept', '{}', ?)",
                     (project, store.now()),
                 )
+        await live.apply(record.project_id, [PaperOp(kind="create", path="b.md")], "human")
         await asyncio.to_thread(stop_paper_project, store, record.project_id)
         assert not any(key[0] == record.project_id for key in live.rooms)
         before = await live.tree(record.project_id)
@@ -117,8 +135,16 @@ def test_real_owner_disposes_reopens_and_deletes_only_project_rows(manifest, tmp
         await live.drain(record.project_id)
         assert await live.tree(record.project_id) == before
         assert await live.history(record.project_id) == history
-        # Disposal settles workers but does not permanently disable later admission.
-        await live.apply(record.project_id, [PaperOp(kind="create", path="b.md")], "human")
+        # Resume recovers the existing outbox and history burst without a new edit.
+        await live.resume(record.project_id)
+        await live.tick()
+        await live.drain(record.project_id)
+        resumed = await live.tree(record.project_id)
+        assert resumed.published_revision == before.saved_revision
+        assert any(
+            version["revision"] == before.saved_revision and version["kind"] == "auto"
+            for version in await live.history(record.project_id)
+        )
         assert (
             await asyncio.to_thread(stop_project_work, store, background, record.project_id, None)
             == []
@@ -208,3 +234,43 @@ def test_released_project_stays_inactive_after_restart(tmp_path, monkeypatch, sa
         await restarted.close()
 
     asyncio.run(scenario())
+
+
+def test_deletion_conflict_resumes_paper(manifest, tmp_path, monkeypatch):
+    from rcp.storage import ProjectActiveTaskConflict
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    catalog = ProjectCatalog(tmp_path, store, AgentLauncher())
+    record = catalog.register(str(manifest.path), identity_action="adopted")
+    owner = PaperOwner()
+    monkeypatch.setitem(paper_lifecycle._owners, store, owner)
+    background = SimpleNamespace(wait_for_stopped_workers=lambda *args, **kwargs: ["busy"])
+    with pytest.raises(ProjectActiveTaskConflict):
+        stop_project_work(store, background, record.project_id, None)
+    assert owner.events == [("pause", record.project_id), ("resume", record.project_id)]
+
+
+def test_maintenance_release_resumes_disposed_paper(manifest, tmp_path, monkeypatch):
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    catalog = ProjectCatalog(tmp_path, store, AgentLauncher())
+    record = catalog.register(str(manifest.path), identity_action="adopted")
+    owner = PaperOwner()
+    monkeypatch.setitem(paper_lifecycle._owners, store, owner)
+    coordinator = MaintenanceCoordinator(
+        admission=RuntimeAdmissionGate(),
+        background_admission=RuntimeAdmissionGate(),
+        background=SimpleNamespace(
+            close_watcher_notifications=lambda: None,
+            accept_watcher_notifications=lambda: None,
+            runtime_is_idle=lambda: True,
+        ),
+        catalog=catalog,
+        store=store,
+        capture_sqlite=lambda: None,
+    )
+    identity = MaintenanceIdentity(str(uuid.uuid4()), "a" * 64)
+    coordinator.enter(identity, timeout=1)
+    coordinator.release(identity, timeout=1)
+    assert owner.events == [
+        (action, record.project_id) for action in ("pause", "drain", "dispose", "resume")
+    ]

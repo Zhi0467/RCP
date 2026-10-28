@@ -214,7 +214,7 @@ def test_restore_schema_requires_exact_registered_paper_shape(tmp_path, monkeypa
     assert not _supported_restore_schema(path, digest)
 
 
-def test_backup_binds_saved_sqlite_revision_separately_from_projection(tmp_path, monkeypatch):
+def test_backup_marks_restored_paper_pending_when_projection_advances(tmp_path, monkeypatch):
     import uuid
 
     from rcp.server_ops.backup_capture import (
@@ -241,6 +241,10 @@ def test_backup_binds_saved_sqlite_revision_separately_from_projection(tmp_path,
             for statement in seed.iterdump():
                 if statement.startswith("INSERT INTO"):
                     connection.execute(statement)
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE paper_publication SET published_revision=4,pending_since=NULL,hold=NULL"
+            )
         publication = BackupCaptureCoordinator(
             store, data_dir, _metadata(data_dir)
         ).capture_sqlite()
@@ -252,8 +256,13 @@ def test_backup_binds_saved_sqlite_revision_separately_from_projection(tmp_path,
         publication.receipt_path.unlink()
         digest = write_immutable_backup_receipt(publication.receipt_path, receipt)
         # Publication and live rows may advance after SQLite capture.
+        (paper / "published.md").write_text("newer published tree")
         with store.connection() as connection:
-            connection.execute("UPDATE paper_publication SET saved_revision=5")
+            assert (
+                connection.execute("SELECT published_revision FROM paper_publication").fetchone()[0]
+                == 4
+            )
+            connection.execute("UPDATE paper_publication SET saved_revision=5,published_revision=5")
             connection.execute("DELETE FROM paper_blobs")
         captured = BackupProjectFileCaptureCoordinator(data_dir).capture(
             publication.receipt_path, expected_sha256=digest
@@ -265,6 +274,8 @@ def test_backup_binds_saved_sqlite_revision_separately_from_projection(tmp_path,
             (publication.receipt_path.parent / saved.archive_path).read_bytes()
         )
         assert section.revision == 4
+        assert section.tables["paper_publication"][0]["published_revision"] == -1
+        assert section.tables["paper_publication"][0]["pending_since"] is not None
         assert backup_paper.decode_cell(section.tables["paper_blobs"][0]["bytes"]) == figure
         projection = [entry for entry in project.files if entry.group == "paper_projection"]
         assert [entry.source_relative_path for entry in projection] == [
@@ -352,3 +363,46 @@ def test_deleted_binary_backup_retains_only_required_bytes(tmp_path, monkeypatch
         asyncio.run(scenario())
     finally:
         store.close()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".git/config",
+        "notes/.publish",
+        "a:b.md",
+        "--rsh=cmd",
+        "normal.md",
+        "credentials/key",
+        "run-stage/file",
+        "chat-attachments/file",
+    ],
+)
+def test_backup_and_live_share_path_validation(path):
+    from rcp.paper.models import paper_path
+    from rcp.server_ops.backup_models import BackupFileEntry
+    from rcp.transfer.archive import TransferArchiveEntry
+
+    entries = (
+        lambda: BackupFileEntry(
+            archive_path=f"project/.research/paper/{path}",
+            source_relative_path=f".research/paper/{path}",
+            group="paper_projection",
+            sha256="a" * 64,
+            size_bytes=0,
+        ),
+        lambda: TransferArchiveEntry(
+            archive_path=f"paper/projection/{path}",
+            group="paper_projection",
+            sha256="a" * 64,
+            size_bytes=0,
+        ),
+        lambda: backup_paper.PaperSavedFile(file_id="text", path=path, kind="text", text=""),
+    )
+    for entry in entries:
+        if path in {".git/config", "notes/.publish"}:
+            with pytest.raises(ValueError):
+                entry()
+        else:
+            assert paper_path(path) == path
+            entry()
