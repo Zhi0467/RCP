@@ -248,3 +248,23 @@ async def test_close_waits_for_materialization_before_removing_tree(tmp_path):
     assert result.status == "superseded"
     assert written.is_set()
     assert not destinations[0].exists()
+
+
+@pytest.mark.asyncio
+async def test_previous_pdf_survives_until_result_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr("rcp.paper.compile.PAPER_COMPILE_RESULT_LIMIT", 2)
+    compiler = PaperCompiler(Live(), Engines(tmp_path / "unused"), tmp_path)
+
+    async def run(tree, output, root):
+        (output / "paper.pdf").write_bytes(b"%PDF-1.7 retained")
+        return 0, ""
+
+    monkeypatch.setattr(compiler, "_run", run)
+    first = await compiler.compile("p", "file")
+    await compiler.compile("p", "missing")
+    second = await compiler.compile("p", "file")
+    assert compiler.pdf("p", first.compile_id) == compiler.pdf("p", second.compile_id)
+    await compiler.compile("p", "file")
+    with pytest.raises(KeyError):
+        compiler.pdf("p", first.compile_id)
+    await compiler.close()

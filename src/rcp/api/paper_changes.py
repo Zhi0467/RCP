@@ -20,6 +20,8 @@ from rcp.api.dependencies import (
     require_project_membership,
 )
 from rcp.paper.changes import OutdatedChange, PaperChanges, get_paper_changes
+from rcp.paper.models import PaperConflict
+from rcp.server_ops.maintenance import MaintenanceAdmissionClosed
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
 
@@ -45,7 +47,10 @@ def _manager(project_id: str, request: Request):
 @router.get("/api/projects/{project_id}/paper/changes")
 def changes(project_id: str, request: Request, task_id: str | None = None):
     canonical, manager = _manager(project_id, request)
-    return {"groups": [group.public() for group in manager.groups(canonical, task_id)]}
+    try:
+        return {"groups": [group.public() for group in manager.groups(canonical, task_id)]}
+    except (PaperConflict, MaintenanceAdmissionClosed) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/api/projects/{project_id}/paper/changes/{change_id}/proposed")

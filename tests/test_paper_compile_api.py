@@ -68,15 +68,15 @@ def route_client(tmp_path, monkeypatch):
         yield client, state
 
 
-def test_compile_uses_canonical_project_and_write_admission(route_client):
+def test_compile_uses_membership_without_write_admission(route_client):
     client, state = route_client
     url = "/api/projects/alias/paper/compile"
     body = {"engine": "latex", "file_id": "file", "revision": 4}
     assert client.post(url, json=body).status_code == 200
     assert state.calls == [("canonical", "file", 4)]
     state.admitted = False
-    assert client.post(url, json=body).status_code == 409
-    assert len(state.calls) == 1
+    assert client.post(url, json=body).status_code == 200
+    assert len(state.calls) == 2
     state.member = False
     assert client.post(url, json=body).status_code == 404
 
