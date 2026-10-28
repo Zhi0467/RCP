@@ -35,7 +35,11 @@ self.onmessage = async ({ data }: MessageEvent<Request>) => {
   running = true;
   let activeId = data.id;
   try {
-    const $typst = await (runtime ??= compiler());
+    // A failed load (offline, engine not installed yet) must not stick.
+    const $typst = await (runtime ??= compiler().catch((error: unknown) => {
+      runtime = null;
+      throw error;
+    }));
     while (pending) {
       const request = pending;
       pending = null;

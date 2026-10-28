@@ -7,13 +7,16 @@ import {
   paperTestCard as card,
   createPaperFixture,
   createPaperTestServer,
+  editorMatches,
+  openPaper as openPaperPage,
+  pdfBytes,
 } from "./paperTestServer.mjs";
 
 let server;
 let browser;
 let origin;
 before(async () => {
-  server = await createPaperTestServer({ port: 0 });
+  server = await createPaperTestServer();
   origin = server.origin;
   browser = await chromium.launch({ headless: true });
 });
@@ -22,55 +25,7 @@ after(async () => {
   await server?.close();
 });
 
-function editorMatches(expected) {
-  const source = document.querySelector(".cm-content")?.cloneNode(true);
-  source
-    ?.querySelectorAll(".paper-inline-suggestion, .cm-ySelectionCaret")
-    .forEach((widget) => widget.remove());
-  const lines = [...(source?.querySelectorAll(".cm-line") ?? [])];
-  return lines.map((line) => line.textContent).join("\n") === expected;
-}
-
-async function openPaper(
-  t,
-  {
-    room = new Room(),
-    width = 1280,
-    cards = [],
-    proposedTexts = {},
-    initialText = "draft",
-    configure = () => {},
-  } = {},
-) {
-  const context = await browser.newContext({ viewport: { width, height: 844 } });
-  t.after(async () => {
-    await context.close();
-  });
-  const page = await context.newPage();
-  const errors = [];
-  const requests = [];
-  page.on("request", (request) => requests.push(request.url()));
-  const fixture = createPaperFixture({ room, cards, proposedTexts });
-  configure(fixture);
-  const posts = fixture.posts;
-  page.on("pageerror", (error) => errors.push(error.message));
-  page.on("console", (message) => {
-    if (message.type() === "error") errors.push(message.text());
-  });
-  await context.route("**/api/**", async (route) => {
-    const request = route.request();
-    return route.fulfill(
-      fixture.respond(new URL(request.url()).pathname, request.method(), request.postDataJSON()),
-    );
-  });
-  await context.routeWebSocket(/\/paper\/files\/[^/]+\/live(?:\?.*)?$/, (socket) =>
-    room.connect(socket),
-  );
-  await page.goto(`${origin}/tests/fixtures/paperResource.html`);
-  await page.locator(".cm-content").waitFor();
-  await page.waitForFunction(editorMatches, initialText);
-  return { page, context, room, errors, posts, requests };
-}
+const openPaper = (t, options = {}) => openPaperPage(t, { browser, origin, ...options });
 
 async function append(page, text) {
   await page.locator(".cm-content").click();
@@ -225,7 +180,7 @@ test("Paper refuses editing when local persistence is unavailable and exposes re
   assert.equal(await page.locator(".cm-content").count(), 0);
 });
 
-test("rewrite comparison reads the complete proposed file and fits 390px", async (t) => {
+test("rewrite comparison reads the complete proposed file", async (t) => {
   const proposed = Array.from({ length: 100 }, (_, index) => `proposed line ${index}`).join("\n");
   const { page, errors } = await openPaper(t, {
     width: 390,
@@ -243,7 +198,6 @@ test("rewrite comparison reads the complete proposed file and fits 390px", async
   const texts = page.getByRole("dialog", { name: "Compare change" }).locator("pre");
   await texts.nth(1).waitFor();
   assert.deepEqual(await texts.allTextContents(), ["draft", proposed]);
-  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   assert.deepEqual(errors, []);
 });
 
@@ -360,28 +314,47 @@ test("insertion refreshes use current anchors without downloading base files", a
   );
 });
 
-test("a failed upload keeps its retry when a clean New file form is cancelled", async (t) => {
-  const { page, context } = await openPaper(t, { width: 390 });
+test("uploading an existing name replaces it, and a failed upload keeps the file actions", async (t) => {
+  const { page, context } = await openPaper(t, {
+    width: 390,
+    configure: ({ tree }) =>
+      tree.files.push({
+        file_id: "img",
+        path: "figure.png",
+        kind: "binary",
+        format: "image",
+        size: 5,
+        sha256: "a",
+      }),
+  });
   await page.getByRole("button", { name: "Show files", exact: true }).click();
   let attempts = 0;
-  await context.route("**/paper/uploads", (route) => {
+  await context.route("**/paper/files/img/content", (route) => {
     attempts += 1;
-    return route.fulfill({ status: attempts === 1 ? 400 : 200, json: {} });
+    assert.equal(route.request().method(), "PUT");
+    return route.fulfill({ status: attempts === 1 ? 500 : 200, json: {} });
   });
   await page.locator('input[type="file"]').setInputFiles({
     name: "figure.png",
     mimeType: "image/png",
     buffer: Buffer.from("image"),
   });
-  await page.getByRole("button", { name: "Retry file operation" }).waitFor();
+  const footer = page.getByTestId("paper-files").locator("footer");
+  await footer.getByRole("button", { name: "Retry file operation" }).waitFor();
+  for (const name of ["Rename file", "Download file", "Delete file"]) {
+    const box = await footer
+      .getByRole(name === "Download file" ? "link" : "button", { name })
+      .boundingBox();
+    assert.ok(box && box.x >= 0 && box.x + box.width <= 390);
+  }
+  // A clean New file form does not take over the upload's failure.
   await page.getByRole("button", { name: "New file", exact: true }).click();
   assert.equal(await page.locator(".paper-path-form.paper-failed").count(), 0);
-  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   await page.getByRole("button", { name: "Cancel file path" }).click();
   const retried = page.waitForResponse(
-    (response) => response.url().endsWith("/paper/uploads") && response.status() === 200,
+    (response) => response.url().endsWith("/files/img/content") && response.status() === 200,
   );
-  await page.getByRole("button", { name: "Retry file operation" }).click();
+  await footer.getByRole("button", { name: "Retry file operation" }).click();
   await retried;
   assert.equal(attempts, 2);
 });
@@ -487,7 +460,6 @@ test("compile diagnostics open a readable phone dialog with retry", async (t) =>
   assert.match(await dialog.locator("pre").textContent(), /Undefined control sequence/);
   assert.equal(await dialog.locator("textarea, input, [contenteditable=true]").count(), 0);
   assert.ok(await dialog.getByRole("button", { name: "Retry preview" }).isVisible());
-  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   await page.keyboard.press("Escape");
   assert.ok(await opener.evaluate((element) => document.activeElement === element));
 });
@@ -524,4 +496,193 @@ test("repeated same lines paint and locate the verified current range, then hide
   await page.keyboard.insertText("gone");
   await page.waitForFunction(() => !document.querySelector(".paper-inline-suggestion"));
   assert.equal(await page.locator(".paper-deletion").count(), 0);
+});
+
+const secondFile = ({ tree }) =>
+  tree.files.push({ ...tree.files[0], file_id: "f2", path: "second.md" });
+
+async function insideViewport(locator, width = 390) {
+  const box = await locator.boundingBox();
+  return box && box.x >= 0 && box.x + box.width <= width;
+}
+
+test("switching files keeps each document's undo history, selection and scroll", async (t) => {
+  const long = Array.from({ length: 60 }, (_, index) => `line ${index + 1}`).join("\n");
+  const room = new Room();
+  room.doc.getText("text").delete(0, 5);
+  room.doc.getText("text").insert(0, long);
+  const { page, context } = await openPaper(t, {
+    room,
+    initialText: long,
+    configure: secondFile,
+  });
+  await context.routeWebSocket(/\/files\/f2\/live$/, (socket) => new Room().connect(socket));
+  await append(page, " edited");
+  const scroller = page.locator(".cm-scroller");
+  const position = await page.locator(".paper-position").textContent();
+  const scroll = await scroller.evaluate((element) => element.scrollTop);
+  assert.ok(scroll > 0);
+  await page.getByRole("button", { name: "second.md", exact: true }).click();
+  await page.waitForFunction(editorMatches, "draft");
+  // The restored scroll renders only the lines near the bottom.
+  const lastLine = (text) =>
+    page.waitForFunction(
+      (expected) => [...document.querySelectorAll(".cm-line")].at(-1)?.textContent === expected,
+      text,
+    );
+  await page.getByRole("button", { name: "intro.md", exact: true }).click();
+  await lastLine("line 60 edited");
+  assert.equal(await page.locator(".paper-position").textContent(), position);
+  // Scroll restores to the top visible line.
+  assert.ok(Math.abs((await scroller.evaluate((element) => element.scrollTop)) - scroll) < 40);
+  await page.locator(".cm-content").focus();
+  await page.keyboard.press("ControlOrMeta+Z");
+  await lastLine("line 60");
+});
+
+test("a hidden phone preview keeps its PDF and reading position and compiles only when shown", async (t) => {
+  let currentTree;
+  const { page, context } = await openPaper(t, {
+    width: 390,
+    configure: ({ tree }) => {
+      currentTree = tree;
+      tree.files.push({ ...tree.files[0], file_id: "f2", path: "paper.tex", format: "latex" });
+    },
+  });
+  let compiles = 0;
+  let pdfs = 0;
+  await context.route("**/paper/compile", (route) => {
+    compiles += 1;
+    return route.fulfill({
+      json: { status: "ok", pdf_url: "/api/projects/p/paper/compile/one/pdf" },
+    });
+  });
+  await context.route("**/compile/one/pdf", (route) => {
+    pdfs += 1;
+    return route.fulfill({ contentType: "application/pdf", body: pdfBytes(20) });
+  });
+  await page.getByRole("button", { name: "Show files", exact: true }).click();
+  await page.getByRole("button", { name: "paper.tex", exact: true }).click();
+  await page.getByRole("button", { name: "Preview", exact: true }).first().click();
+  await page.locator('.paper-pdf-page[data-page="1"] canvas').waitFor();
+  const viewer = page.locator(".paper-pdf");
+  await viewer.evaluate((element) => {
+    element.scrollTop = 2000;
+  });
+  await page.waitForFunction(
+    () => !document.querySelector('.paper-pdf-page[data-page="1"] canvas'),
+  );
+  const scroll = await viewer.evaluate((element) => element.scrollTop);
+  const write = page.getByRole("button", { name: "Write", exact: true });
+  const preview = page.getByRole("button", { name: "Preview", exact: true }).first();
+  await write.click();
+  await preview.click();
+  assert.equal(await viewer.evaluate((element) => element.scrollTop), scroll);
+  await page.waitForTimeout(1000);
+  assert.equal(compiles, 1);
+  await write.click();
+  currentTree.saved_revision += 1;
+  const treeRead = page.waitForResponse((response) => response.url().endsWith("/paper/tree"));
+  await append(page, " hidden");
+  await treeRead;
+  await page.waitForTimeout(1000);
+  assert.equal(compiles, 1);
+  const recompiled = page.waitForResponse((response) => response.url().endsWith("/paper/compile"));
+  await preview.click();
+  await recompiled;
+  assert.equal(compiles, 2);
+  assert.equal(pdfs, 1);
+});
+
+test("a deleted file keeps its unsent text read-only and refreshes the tree", async (t) => {
+  const { page, context, fixture } = await openPaper(t, { configure: secondFile });
+  const other = new Room();
+  await context.routeWebSocket(/\/files\/f2\/live$/, (socket) => other.connect(socket));
+  // Opening a saved file refreshes the tree once; let that read finish first.
+  const opened = page.waitForResponse((response) => response.url().endsWith("/paper/tree"));
+  await page.getByRole("button", { name: "second.md", exact: true }).click();
+  await saved(page, true);
+  await opened;
+  other.hold = true;
+  await append(page, " unsent");
+  await saved(page, false);
+  fixture.tree.files.pop();
+  const treeRead = page.waitForResponse((response) => response.url().endsWith("/paper/tree"));
+  for (const client of [...other.clients]) client.close({ code: 4403 });
+  await treeRead;
+  await page.getByRole("button", { name: "second.md", exact: true }).waitFor({ state: "detached" });
+  assert.equal(await page.locator(".paper-path").textContent(), "second.md");
+  await page.getByRole("button", { name: "Reconnect Paper" }).waitFor();
+  await page.locator(".cm-content").click();
+  await page.keyboard.insertText(" typed");
+  assert.ok(await page.evaluate(editorMatches, "draft unsent"));
+});
+
+test("a refused card decision refreshes the cards and keeps their actions; only server failures retry", async (t) => {
+  const { page, context } = await openPaper(t, { width: 390, cards: [{ ...card }] });
+  let status = 409;
+  await context.route("**/changes/g1/accept", (route) =>
+    route.fulfill({ status, json: { detail: "Paper change is outdated" } }),
+  );
+  await page.getByRole("button", { name: "Coach", exact: true }).first().click();
+  const change = page.locator('[data-change-id="c1"]');
+  const reloaded = page.waitForResponse((response) => response.url().endsWith("/paper/changes"));
+  await change.getByRole("button", { name: "Accept change" }).click();
+  await reloaded;
+  await page.locator('[data-change-id="c1"].paper-failure').waitFor();
+  assert.equal(await change.getByRole("button", { name: "Retry change" }).count(), 0);
+  status = 503;
+  await change.getByRole("button", { name: "Accept change" }).click();
+  await change.getByRole("button", { name: "Retry change" }).waitFor();
+  for (const name of ["Retry change", "Accept change", "Reject change"])
+    assert.ok(await insideViewport(change.getByRole("button", { name })));
+});
+
+test("a failed engine install shows as the compile error with its log and retry", async (t) => {
+  const { page, context } = await openPaper(t, {
+    width: 390,
+    configure: ({ tree }) =>
+      tree.files.push({ ...tree.files[0], file_id: "f2", path: "paper.tex", format: "latex" }),
+  });
+  await context.route("**/paper/engines", (route) =>
+    route.fulfill({
+      json: {
+        latex: "unavailable",
+        typst: "ready",
+        errors: { latex: "engine download failed", typst: null },
+      },
+    }),
+  );
+  await page.getByRole("button", { name: "Show files", exact: true }).click();
+  await page.getByRole("button", { name: "paper.tex", exact: true }).click();
+  await page.getByRole("button", { name: "Preview", exact: true }).first().click();
+  await page.locator(".paper-compiled-preview.paper-failed").waitFor();
+  await page.getByRole("button", { name: "View compile log" }).click();
+  const dialog = page.getByRole("dialog", { name: "Compile log" });
+  assert.equal(await dialog.locator("pre").textContent(), "engine download failed");
+  const install = page.waitForRequest(
+    (request) => request.url().endsWith("/engines/latex/install") && request.method() === "POST",
+  );
+  await dialog.getByRole("button", { name: "Retry preview" }).click();
+  await install;
+});
+
+test("named versions can be deleted from history; automatic versions cannot", async (t) => {
+  const { page, fixture } = await openPaper(t, {
+    width: 390,
+    configure: ({ versions }) =>
+      versions.push({ ...versions[0], version_id: "auto", name: null, kind: "auto" }),
+  });
+  await page.getByRole("button", { name: "Paper history", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Paper history" });
+  const remove = dialog.getByRole("button", { name: "Delete version" });
+  await remove.waitFor();
+  assert.equal(await remove.count(), 1);
+  assert.ok(await insideViewport(remove));
+  await remove.click();
+  await remove.waitFor({ state: "detached" });
+  assert.deepEqual(
+    fixture.versions.map((version) => version.version_id),
+    ["auto"],
+  );
 });

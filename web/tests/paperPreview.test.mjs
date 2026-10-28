@@ -48,6 +48,7 @@ test("Markdown preview embeds a paper image through its raw file endpoint", asyn
       kind: "binary",
       format: "image",
       size: 50,
+      sha256: "abc",
     };
     const html = renderToStaticMarkup(
       createElement(PaperPreview, {
@@ -62,9 +63,10 @@ test("Markdown preview embeds a paper image through its raw file endpoint", asyn
           files: [file, image],
         },
         text: "![plot](../figures/result.png)",
+        active: true,
       }),
     );
-    assert.match(html, /<img[^>]*src="\/api\/projects\/p\/paper\/files\/figure\/raw\?revision=3"/);
+    assert.match(html, /<img[^>]*src="\/api\/projects\/p\/paper\/files\/figure\/raw\?sha256=abc"/);
     assert.doesNotMatch(html, /src="\.\.\/figures/);
   } finally {
     await server.close();

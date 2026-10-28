@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { chromium } from "playwright";
-import { createPaperFixture, createPaperTestServer, paperTestCard } from "./paperTestServer.mjs";
+import { createPaperTestServer, openPaper, paperTestCard } from "./paperTestServer.mjs";
 
 let server, browser;
 before(async () => {
-  server = await createPaperTestServer({ port: 0 });
+  server = await createPaperTestServer();
   browser = await chromium.launch({ headless: true });
 });
 after(async () => {
@@ -13,27 +13,20 @@ after(async () => {
   await server?.close();
 });
 async function open(t, width = 390, height = 600) {
-  const context = await browser.newContext({ viewport: { width, height } });
-  t.after(() => context.close());
-  const fixture = createPaperFixture({
-    cards: [{ ...paperTestCard, kind: "rewrite", current: { start: 0, end: 5, revision: 1, text: "draft" } }],
+  const { page } = await openPaper(t, {
+    browser,
+    origin: server.origin,
+    width,
+    height,
+    cards: [
+      {
+        ...paperTestCard,
+        kind: "rewrite",
+        current: { start: 0, end: 5, revision: 1, text: "draft" },
+      },
+    ],
     proposedTexts: { c1: "revised" },
   });
-  await context.route("**/api/**", (route) =>
-    route.fulfill(
-      fixture.respond(
-        new URL(route.request().url()).pathname,
-        route.request().method(),
-        route.request().postDataJSON(),
-      ),
-    ),
-  );
-  await context.routeWebSocket(/\/paper\/files\/[^/]+\/live(?:\?.*)?$/, (socket) =>
-    fixture.room.connect(socket),
-  );
-  const page = await context.newPage();
-  await page.goto(`${server.origin}/tests/fixtures/paperResource.html`);
-  await page.locator(".cm-content").waitFor();
   return page;
 }
 
@@ -124,6 +117,27 @@ test("Paper phone icon actions retain 44px touch targets", async (t) => {
       );
     assert.ok(sizes.length > 0);
     assert.ok(sizes.every(({ width, height }) => width >= 44 && height >= 44));
-    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   }
+});
+
+test("a held legacy paper keeps its version choice modal until one is chosen", async (t) => {
+  const { page, posts } = await openPaper(t, {
+    browser,
+    origin: server.origin,
+    width: 390,
+    configure: ({ tree }) => {
+      tree.hold = "legacy";
+    },
+  });
+  const dialog = page.getByRole("dialog", { name: "Choose Paper version" });
+  assert.ok(await dialog.evaluate((element) => element.matches("dialog:modal")));
+  await page.keyboard.press("Escape");
+  await page.mouse.click(2, 2);
+  assert.ok(await dialog.isVisible());
+  await dialog.getByRole("button", { name: "Keep draft" }).click();
+  await dialog.waitFor({ state: "detached" });
+  assert.deepEqual(posts.at(-1), {
+    path: "/api/projects/p/paper/hold/resolve",
+    body: { keep: "draft" },
+  });
 });

@@ -8,6 +8,7 @@ import {
   LoaderCircle,
   Plus,
   RotateCcw,
+  Trash2,
   X,
 } from "lucide-react";
 import { api, apiReadResponse } from "../core/api";
@@ -173,6 +174,23 @@ export function PaperHistory({
       setBusy(false);
     }
   };
+  const deleteVersion = async (target: Version) => {
+    retryAction.current = () => {
+      void deleteVersion(target);
+    };
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`${apiBase}/paper/history/${encodeURIComponent(target.version_id)}`, {
+        method: "DELETE",
+      });
+      setRefresh((value) => value + 1);
+    } catch (cause) {
+      setError(String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <PaperDialog
       className={`paper-inspector${error ? " paper-failure" : ""}`}
@@ -263,16 +281,28 @@ export function PaperHistory({
       <div className="paper-history-content">
         {!version &&
           versions.map((item) => (
-            <button
-              className="paper-history-row"
-              key={item.version_id}
-              disabled={busy}
-              onClick={() => void selectVersion(item)}
-            >
-              <span>{item.name || new Date(item.created_at).toLocaleString()}</span>
-              <span>{item.actor}</span>
-              <ChevronRight size={16} />
-            </button>
+            <div className="paper-history-version" key={item.version_id}>
+              <button
+                className="paper-history-row"
+                disabled={busy}
+                onClick={() => void selectVersion(item)}
+              >
+                <span>{item.name || new Date(item.created_at).toLocaleString()}</span>
+                <span>{item.actor}</span>
+                <ChevronRight size={16} />
+              </button>
+              {item.kind === "named" && (
+                <button
+                  className="icon-button"
+                  aria-label="Delete version"
+                  title="Delete version"
+                  disabled={busy}
+                  onClick={() => void deleteVersion(item)}
+                >
+                  <Trash2 size={15} />
+                </button>
+              )}
+            </div>
           ))}
         {version &&
           !file &&

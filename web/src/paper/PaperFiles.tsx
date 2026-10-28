@@ -109,11 +109,18 @@ export function PaperFiles({
           onChange={(event) => {
             const file = event.target.files?.[0];
             if (!file) return;
+            // An existing name replaces that file's content.
+            const existing = tree.files.find((entry) => entry.path === file.name);
             void perform("upload", async () => {
               const body = new FormData();
-              body.append("path", file.name);
+              if (!existing) body.append("path", file.name);
               body.append("file", file);
-              await api(`${apiBase}/paper/uploads`, { method: "POST", body });
+              await api(
+                existing
+                  ? `${apiBase}/paper/files/${encodeURIComponent(existing.file_id)}/content`
+                  : `${apiBase}/paper/uploads`,
+                { method: existing ? "PUT" : "POST", body },
+              );
             });
             event.target.value = "";
           }}
@@ -193,7 +200,7 @@ export function PaperFiles({
           })}
       </div>
       <footer className="paper-bar">
-        {uploadFailure ? (
+        {uploadFailure && (
           <button
             className="icon-button"
             aria-label="Retry file operation"
@@ -202,40 +209,39 @@ export function PaperFiles({
           >
             <RotateCcw size={16} />
           </button>
-        ) : (
-          selectedFile && (
-            <>
-              <button
-                className="icon-button"
-                aria-label="Rename file"
-                onClick={() => {
-                  clearFailure("path");
-                  setEdit({ file: selectedFile, path: selectedFile.path });
-                }}
-              >
-                <Pencil size={15} />
-              </button>
-              <a
-                className="icon-button"
-                aria-label="Download file"
-                download={selectedFile.path.split("/").at(-1)}
-                href={`${apiBase}/paper/files/${encodeURIComponent(selectedFile.file_id)}/raw`}
-              >
-                <Download size={15} />
-              </a>
-              <span className="paper-grow" />
-              <button
-                className="icon-button"
-                aria-label="Delete file"
-                onClick={() => {
-                  clearFailure("delete");
-                  setDeleting(selectedFile);
-                }}
-              >
-                <Trash2 size={15} />
-              </button>
-            </>
-          )
+        )}
+        {selectedFile && (
+          <>
+            <button
+              className="icon-button"
+              aria-label="Rename file"
+              onClick={() => {
+                clearFailure("path");
+                setEdit({ file: selectedFile, path: selectedFile.path });
+              }}
+            >
+              <Pencil size={15} />
+            </button>
+            <a
+              className="icon-button"
+              aria-label="Download file"
+              download={selectedFile.path.split("/").at(-1)}
+              href={`${apiBase}/paper/files/${encodeURIComponent(selectedFile.file_id)}/raw`}
+            >
+              <Download size={15} />
+            </a>
+            <span className="paper-grow" />
+            <button
+              className="icon-button"
+              aria-label="Delete file"
+              onClick={() => {
+                clearFailure("delete");
+                setDeleting(selectedFile);
+              }}
+            >
+              <Trash2 size={15} />
+            </button>
+          </>
         )}
       </footer>
       {deleting && (

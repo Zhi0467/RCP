@@ -17,7 +17,7 @@ import {
   Undo2,
   X,
 } from "lucide-react";
-import { api, apiReadResponse } from "../core/api";
+import { api, ApiError, apiReadResponse } from "../core/api";
 
 export interface PaperChange {
   change_id: string;
@@ -68,21 +68,28 @@ export function usePaperChanges(apiBase: string, refreshKey: string | number) {
   }, [refresh, refreshKey]);
   const act = useCallback(
     async (groupId: string, action: PaperChangeAction) => {
-      await api(`${apiBase}/paper/changes/${encodeURIComponent(groupId)}/${action}`, {
-        method: "POST",
-        body: "{}",
-      });
-      await refresh();
+      // A refused decision usually changed the card (outdated); always show its new state.
+      try {
+        await api(`${apiBase}/paper/changes/${encodeURIComponent(groupId)}/${action}`, {
+          method: "POST",
+          body: "{}",
+        });
+      } finally {
+        await refresh();
+      }
     },
     [apiBase, refresh],
   );
   const undoAll = useCallback(
     async (taskId: string) => {
-      await api(`${apiBase}/paper/changes/undo-all`, {
-        method: "POST",
-        body: JSON.stringify({ task_id: taskId }),
-      });
-      await refresh();
+      try {
+        await api(`${apiBase}/paper/changes/undo-all`, {
+          method: "POST",
+          body: JSON.stringify({ task_id: taskId }),
+        });
+      } finally {
+        await refresh();
+      }
     },
     [apiBase, refresh],
   );
@@ -148,10 +155,11 @@ export function PaperChanges({
   onLocate: (change: PaperChange) => void;
 }) {
   const [busy, setBusy] = useState(false);
+  // Only a server or network failure can succeed on Retry; a refusal is final.
   const [failure, setFailure] = useState<{
     id: string;
     error: string;
-    retry: () => Promise<void>;
+    retry: (() => Promise<void>) | null;
   } | null>(null);
   const [comparison, setComparison] = useState<PaperChange | null>(null);
   const perform = async (id: string, action: () => Promise<void>) => {
@@ -161,11 +169,16 @@ export function PaperChanges({
     try {
       await action();
     } catch (error) {
-      setFailure({ id, error: String(error), retry: action });
+      setFailure({
+        id,
+        error: String(error),
+        retry: !(error instanceof ApiError) || error.status >= 500 ? action : null,
+      });
     } finally {
       setBusy(false);
     }
   };
+  const retryAll = failure?.id === "all" ? failure.retry : null;
   const pending = changes.filter((change) => change.state === "pending");
   const applied = changes.filter((change) => change.state === "applied");
   if (!changes.length) return null;
@@ -205,12 +218,12 @@ export function PaperChanges({
             <Undo2 size={15} />
           </button>
         )}
-        {failure?.id === "all" && (
+        {retryAll && (
           <button
             className="icon-button compact"
             aria-label="Retry changes"
-            title={failure.error}
-            onClick={() => void perform("all", failure.retry)}
+            title={failure?.error}
+            onClick={() => void perform("all", retryAll)}
           >
             <RotateCcw size={15} />
           </button>
@@ -220,6 +233,7 @@ export function PaperChanges({
         const Icon = icons[change.kind];
         const settled = ["accepted", "rejected", "applied", "undone"].includes(change.state);
         const failed = failure?.id === change.change_id;
+        const retry = failure?.id === change.change_id ? failure.retry : null;
         return (
           <article
             key={change.change_id}
@@ -247,82 +261,79 @@ export function PaperChanges({
                   {change.state !== "pending" ? ` · ${change.state}` : ""}
                 </span>
               </span>
-              {failed ? (
+              {retry && (
                 <button
                   className="icon-button compact"
                   aria-label="Retry change"
-                  title={failure.error}
-                  onClick={() => void perform(change.change_id, failure.retry)}
+                  title={failure?.error}
+                  onClick={() => void perform(change.change_id, retry)}
                 >
                   <RotateCcw size={14} />
                 </button>
-              ) : (
+              )}
+              {!settled && change.kind !== "delete" && (
+                <button
+                  className="icon-button compact"
+                  aria-label={change.kind === "rewrite" ? "Compare" : "Locate change"}
+                  title={change.kind === "rewrite" ? "Compare" : "Locate change"}
+                  onClick={() =>
+                    change.kind === "rewrite" ? setComparison(change) : onLocate(change)
+                  }
+                >
+                  {change.kind === "rewrite" ? <Columns2 size={14} /> : <Locate size={14} />}
+                </button>
+              )}
+              {change.state === "pending" && (
                 <>
-                  {!settled && change.kind !== "delete" && (
-                    <button
-                      className="icon-button compact"
-                      aria-label={change.kind === "rewrite" ? "Compare" : "Locate change"}
-                      title={change.kind === "rewrite" ? "Compare" : "Locate change"}
-                      onClick={() =>
-                        change.kind === "rewrite" ? setComparison(change) : onLocate(change)
-                      }
-                    >
-                      {change.kind === "rewrite" ? <Columns2 size={14} /> : <Locate size={14} />}
-                    </button>
-                  )}
-                  {change.state === "pending" && (
-                    <>
-                      <button
-                        className="icon-button compact accept"
-                        aria-label="Accept change"
-                        title="Accept change"
-                        disabled={busy}
-                        onClick={() =>
-                          void perform(change.change_id, () => onAction(change.group_id, "accept"))
-                        }
-                      >
-                        <Check size={14} />
-                      </button>
-                      <button
-                        className="icon-button compact reject"
-                        aria-label="Reject change"
-                        title="Reject change"
-                        disabled={busy}
-                        onClick={() =>
-                          void perform(change.change_id, () => onAction(change.group_id, "reject"))
-                        }
-                      >
-                        <X size={14} />
-                      </button>
-                    </>
-                  )}
-                  {change.state === "outdated" && (
-                    <button
-                      className="icon-button compact"
-                      aria-label="Refresh change"
-                      title="Refresh change"
-                      disabled={busy}
-                      onClick={() =>
-                        void perform(change.change_id, () => onAction(change.group_id, "refresh"))
-                      }
-                    >
-                      <RefreshCw size={14} />
-                    </button>
-                  )}
-                  {(change.state === "applied" || change.state === "accepted") && (
-                    <button
-                      className="icon-button compact"
-                      aria-label="Undo change"
-                      title="Undo change"
-                      disabled={busy}
-                      onClick={() =>
-                        void perform(change.change_id, () => onAction(change.group_id, "undo"))
-                      }
-                    >
-                      <Undo2 size={14} />
-                    </button>
-                  )}
+                  <button
+                    className="icon-button compact accept"
+                    aria-label="Accept change"
+                    title="Accept change"
+                    disabled={busy}
+                    onClick={() =>
+                      void perform(change.change_id, () => onAction(change.group_id, "accept"))
+                    }
+                  >
+                    <Check size={14} />
+                  </button>
+                  <button
+                    className="icon-button compact reject"
+                    aria-label="Reject change"
+                    title="Reject change"
+                    disabled={busy}
+                    onClick={() =>
+                      void perform(change.change_id, () => onAction(change.group_id, "reject"))
+                    }
+                  >
+                    <X size={14} />
+                  </button>
                 </>
+              )}
+              {change.state === "outdated" && (
+                <button
+                  className="icon-button compact"
+                  aria-label="Refresh change"
+                  title="Refresh change"
+                  disabled={busy}
+                  onClick={() =>
+                    void perform(change.change_id, () => onAction(change.group_id, "refresh"))
+                  }
+                >
+                  <RefreshCw size={14} />
+                </button>
+              )}
+              {(change.state === "applied" || change.state === "accepted") && (
+                <button
+                  className="icon-button compact"
+                  aria-label="Undo change"
+                  title="Undo change"
+                  disabled={busy}
+                  onClick={() =>
+                    void perform(change.change_id, () => onAction(change.group_id, "undo"))
+                  }
+                >
+                  <Undo2 size={14} />
+                </button>
               )}
             </div>
             {!settled && change.kind !== "rewrite" && <PaperChangeDiff change={change} />}

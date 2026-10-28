@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Cloud, CloudOff, Copy, History, LoaderCircle, PanelLeft, RotateCcw } from "lucide-react";
 import { api } from "../core/api";
 import { referenceUrl } from "../core/projectReferences";
@@ -6,6 +6,7 @@ import type {
   AgentTask,
   GraphTargetRef,
   IdentityResponse,
+  PaperFile,
   ProjectSnapshot,
   PublicHealth,
   StartAgentTask,
@@ -19,6 +20,7 @@ import { PaperFiles } from "./PaperFiles";
 import { PaperPreview } from "./PaperPreview";
 import { PaperCoach } from "./PaperCoach";
 import { PaperHistory } from "./PaperHistory";
+import { PaperDialog } from "./PaperDialog";
 import { usePaperChanges, type PaperChange, type PaperChangeAction } from "./PaperChanges";
 
 /** Route snapshots retain selection only; IndexedDB owns all document content. */
@@ -130,7 +132,16 @@ export function PaperWorkspace({
       window.removeEventListener("rcp:read-access-lost", reset);
     };
   }, []);
-  const file = tree?.files.find((item) => item.file_id === selected) ?? tree?.files[0];
+  const opened = useRef<{ file: PaperFile; document: PaperDocument | null } | null>(null);
+  const last = opened.current;
+  const current = selected ?? last?.file.file_id;
+  const listed = tree?.files.find((item) => item.file_id === current);
+  // A deleted or inaccessible file stays open, read-only, while it holds unsent local text.
+  const stranded =
+    !listed && last?.file.file_id === current && last?.document?.getSnapshot().saved === false
+      ? last.file
+      : undefined;
+  const file = listed ?? stranded ?? tree?.files[0];
   const document = useMemo(
     () =>
       identity && file?.kind === "text"
@@ -149,11 +160,20 @@ export function PaperWorkspace({
   );
   useEffect(() => document?.retain(), [document]);
   useEffect(() => {
+    opened.current = file ? { file, document } : null;
+  }, [file, document]);
+  useEffect(() => {
     if (!document) return;
     let lastSavedText: string | null = null;
+    let lastClosed: number | null = null;
     let timer: ReturnType<typeof setTimeout>;
     const unsubscribe = document.subscribe(() => {
       const state = document.getSnapshot();
+      // 4403: the file was deleted or access was lost; the tree says which.
+      if (state.closed !== lastClosed) {
+        lastClosed = state.closed;
+        if (lastClosed === 4403) refresh();
+      }
       if (state.saved && state.text !== lastSavedText) {
         lastSavedText = state.text;
         clearTimeout(timer);
@@ -177,8 +197,11 @@ export function PaperWorkspace({
     }
   };
   const act = async (id: string, action: PaperChangeAction) => {
-    await changeFeed.act(id, action);
-    refresh();
+    try {
+      await changeFeed.act(id, action);
+    } finally {
+      refresh();
+    }
   };
   const fold = () => {
     setFolded(true);
@@ -207,6 +230,10 @@ export function PaperWorkspace({
     setFocusChange(change);
     setView("write");
   };
+  const previewActive = right === "preview" && (!phone || view === "preview");
+  // Mounted on first view, then kept while hidden so its PDF and position survive.
+  const [previewShown, setPreviewShown] = useState(previewActive);
+  if (previewActive && !previewShown) setPreviewShown(true);
   const retryError = actionError?.error ?? identityError ?? resource.error ?? changeFeed.error;
   return (
     <section
@@ -340,14 +367,25 @@ export function PaperWorkspace({
           </div>
         </header>
         <div className="paper-right-pane" hidden={right !== "preview"}>
-          {right === "preview" &&
-            (!phone || view === "preview") &&
+          {previewShown &&
             file &&
             tree &&
             (document ? (
-              <LivePreview owner={document} projectId={project.id} file={file} tree={tree} />
+              <LivePreview
+                owner={document}
+                projectId={project.id}
+                file={file}
+                tree={tree}
+                active={previewActive}
+              />
             ) : (
-              <PaperPreview projectId={project.id} file={file} tree={tree} text="" />
+              <PaperPreview
+                projectId={project.id}
+                file={file}
+                tree={tree}
+                text=""
+                active={previewActive}
+              />
             ))}
         </div>
         <div className="paper-right-pane" hidden={right !== "coach"}>
@@ -359,8 +397,11 @@ export function PaperWorkspace({
             changes={changeFeed.changes}
             onChangeAction={act}
             onUndoAll={async (taskId) => {
-              await changeFeed.undoAll(taskId);
-              refresh();
+              try {
+                await changeFeed.undoAll(taskId);
+              } finally {
+                refresh();
+              }
             }}
             onLocate={locate}
           />
@@ -375,50 +416,49 @@ export function PaperWorkspace({
         />
       )}
       {tree?.hold && (
-        <div className="paper-dialog-backdrop">
-          <section
-            className={`paper-box paper-confirm ${actionError ? "paper-failed" : ""}`}
-            role="dialog"
-            aria-modal="true"
-            aria-label="Choose Paper version"
-          >
-            <strong>Choose Paper version</strong>
-            <div className="paper-bar">
-              {(["draft", "canonical"] as const).map((keep) => (
-                <button
-                  key={keep}
-                  className="button"
-                  disabled={resolving}
-                  onClick={() =>
-                    void perform(async () => {
-                      setResolving(true);
-                      try {
-                        await api(`${apiBase}/paper/hold/resolve`, {
-                          method: "POST",
-                          body: JSON.stringify({ keep }),
-                        });
-                        refresh();
-                      } finally {
-                        setResolving(false);
-                      }
-                    })
-                  }
-                >
-                  {keep === "draft" ? "Keep draft" : "Keep saved"}
-                </button>
-              ))}
-            </div>
-            {actionError && (
+        <PaperDialog
+          className={`paper-box paper-confirm ${actionError ? "paper-failed" : ""}`}
+          label="Choose Paper version"
+          onClose={() => {
+            /* A version must be chosen. */
+          }}
+        >
+          <strong>Choose Paper version</strong>
+          <div className="paper-bar">
+            {(["draft", "canonical"] as const).map((keep) => (
               <button
-                className="icon-button"
-                aria-label="Retry choice"
-                onClick={() => void perform(actionError.retry)}
+                key={keep}
+                className="button"
+                disabled={resolving}
+                onClick={() =>
+                  void perform(async () => {
+                    setResolving(true);
+                    try {
+                      await api(`${apiBase}/paper/hold/resolve`, {
+                        method: "POST",
+                        body: JSON.stringify({ keep }),
+                      });
+                      refresh();
+                    } finally {
+                      setResolving(false);
+                    }
+                  })
+                }
               >
-                <RotateCcw size={16} />
+                {keep === "draft" ? "Keep draft" : "Keep saved"}
               </button>
-            )}
-          </section>
-        </div>
+            ))}
+          </div>
+          {actionError && (
+            <button
+              className="icon-button"
+              aria-label="Retry choice"
+              onClick={() => void perform(actionError.retry)}
+            >
+              <RotateCcw size={16} />
+            </button>
+          )}
+        </PaperDialog>
       )}
     </section>
   );

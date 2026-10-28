@@ -285,6 +285,17 @@
   text-align: left;
   width: 100%;
 }
+.paper-history-version {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  margin-bottom: 9px;
+}
+.paper-history-version > .paper-history-row {
+  flex: 1;
+  margin-bottom: 0;
+  min-width: 0;
+}
 .paper-history-row > span:first-of-type {
   flex: 1;
   overflow-wrap: anywhere;

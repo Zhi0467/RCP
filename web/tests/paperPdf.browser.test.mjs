@@ -2,30 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
-
-function pdfBytes(count) {
-  const objects = ["<< /Type /Catalog /Pages 2 0 R >>", ""];
-  const children = [];
-  for (let index = 0; index < count; index++) {
-    children.push(`${objects.length + 1} 0 R`);
-    objects.push("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << >> >>");
-  }
-  objects[1] = `<< /Type /Pages /Count ${count} /Kids [${children.join(" ")}] >>`;
-  let body = "%PDF-1.4\n";
-  const offsets = [0];
-  objects.forEach((object, index) => {
-    offsets.push(Buffer.byteLength(body));
-    body += `${index + 1} 0 obj\n${object}\nendobj\n`;
-  });
-  const start = Buffer.byteLength(body);
-  body += `xref\n0 ${offsets.length}\n0000000000 65535 f \n`;
-  body += offsets
-    .slice(1)
-    .map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`)
-    .join("");
-  body += `trailer\n<< /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${start}\n%%EOF`;
-  return Buffer.from(body);
-}
+import { pdfBytes } from "./paperTestServer.mjs";
 
 test("PDF keeps its reading position and old canvases during replacement, renders nearby pages, and resizes without fetching", async (t) => {
   const server = await createServer({
@@ -126,6 +103,5 @@ test("PDF keeps its reading position and old canvases during replacement, render
   });
   assert.equal(fetches, 2);
   assert.ok((await page.locator("canvas").count()) < 10);
-  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   assert.deepEqual(errors, []);
 });

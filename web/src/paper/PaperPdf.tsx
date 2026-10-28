@@ -28,7 +28,11 @@ export default function PaperPdf({ url, name = "paper.pdf" }: { url: string; nam
   useEffect(() => {
     const container = pages.current;
     if (!container) return;
-    const observer = new ResizeObserver(([entry]) => setWidth(Math.floor(entry.contentRect.width)));
+    // A hidden preview measures zero; keep its layout for when it is shown again.
+    const observer = new ResizeObserver(([entry]) => {
+      const next = Math.floor(entry.contentRect.width);
+      if (next) setWidth(next);
+    });
     observer.observe(container);
     return () => observer.disconnect();
   }, []);
