@@ -252,7 +252,10 @@ async def test_stop_prevents_refresh_and_direct_application(coach):
 
 
 @pytest.mark.asyncio
-async def test_remote_base_stages_snapshot_and_collects_changes(coach, monkeypatch, tmp_path):
+@pytest.mark.parametrize("keep_running", [False, True])
+async def test_remote_base_stages_snapshot_and_collects_changes(
+    coach, monkeypatch, tmp_path, keep_running
+):
     import shutil
     from pathlib import Path
 
@@ -309,11 +312,20 @@ async def test_remote_base_stages_snapshot_and_collects_changes(coach, monkeypat
 
     monkeypatch.setattr(coach_module, "RemoteRunStage", RemoteStage)
     monkeypatch.setattr(coach_module, "_prepare_hidden_read_scope", hidden_scope)
+    monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_args, **_kwargs: False)
     execution = execution_for(service)
+    provider_pids = []
 
     class Launcher:
         async def stream(self, _provider, _prompt, **kwargs):
             stage = stages[-1]
+            assert kwargs["supervise_remote"] is True
+            pid = kwargs["remote_pid_file"]
+            provider_pids.append(pid)
+            yield AgentEvent(event="remote_process_start", text=pid)
+            assert execution.store.unresolved_remote_provider_passes(
+                "base.example", str(stage.root)
+            ) == [(execution.operation_id, pid)]
             provider_folders.append(kwargs["cwd"])
             assert kwargs["host"] == "base.example"
             assert kwargs["cwd"] == stage.workspace
@@ -338,10 +350,31 @@ async def test_remote_base_stages_snapshot_and_collects_changes(coach, monkeypat
             else:
                 assert kwargs["session_id"] == "remote-native"
             yield AgentEvent(event="session", session_id="remote-native")
+            if not keep_running:
+                yield AgentEvent(event="remote_process_stop", text=pid)
+                assert (
+                    execution.store.unresolved_remote_provider_passes(
+                        "base.example", str(stage.root)
+                    )
+                    == []
+                )
             yield AgentEvent(event="done")
 
     events = await run_coach(service, Launcher(), data, execution=execution)
 
+    task_receipts = execution.store.agent_task_receipts(execution.operation_id)
+    starts = [r for r in task_receipts if r.category == "remote_provider_started"]
+    stops = [r for r in task_receipts if r.category == "remote_provider_stopped"]
+    assert all(r.payload["supervised"] for r in starts)
+    if keep_running:
+        assert any(event.event == "error" for event in events)
+        assert len(provider_folders) == len(starts) == 1
+        assert stops == []
+        assert execution.store.unresolved_remote_provider_passes(
+            "base.example", str(stages[0].root)
+        ) == [(execution.operation_id, provider_pids[0])]
+        return
+    assert len(starts) == len(stops) == len(set(provider_pids)) == 2
     assert not [event for event in events if event.event == "error"]
     assert any(event.event == "done" for event in events)
     assert execution.stage_host == "base.example"
@@ -355,3 +388,45 @@ async def test_remote_base_stages_snapshot_and_collects_changes(coach, monkeypat
     assert groups[0].state == "pending"
     assert groups[0].changes[0].after == "Remote proposed text\n"
     assert service.paper.sessions()[0].execution_machine == base_machine
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_at", ["open", "upload"])
+@pytest.mark.parametrize("link_lost", [False, True])
+async def test_remote_coach_stage_failure_classifies_transport_loss(
+    coach, monkeypatch, tmp_path, failure_at, link_lost
+):
+    from rcp.runs.tasks import coach as coach_module
+    from rcp.transport import StateUnavailable, StateUnreachable
+
+    from .test_auto_research_stream import _LocalBackedRemoteStage
+
+    service, _live, data = coach
+    machine = service.manifest.repository_map[service.manifest.state.repository].machine
+    service.manifest.machine_map[machine].host = "base.example"
+    failure = StateUnreachable("connection lost") if link_lost else StateUnavailable("refused")
+
+    class RemoteStage(_LocalBackedRemoteStage):
+        base = tmp_path / "remote-stage"
+
+        def open(self, operation_id, **kwargs):
+            if failure_at == "open":
+                raise failure
+            return super().open(operation_id, **kwargs)
+
+        def touch(self):
+            pass
+
+        def put_directory(self, *_args, **_kwargs):
+            raise failure
+
+    class Launcher:
+        def stream(self, *_args, **_kwargs):
+            raise AssertionError("provider must not launch after a failed stage transfer")
+
+    monkeypatch.setattr(coach_module, "RemoteRunStage", RemoteStage)
+    execution = execution_for(service)
+    events = await run_coach(service, Launcher(), data, execution=execution)
+
+    assert any(event.event == "error" for event in events)
+    assert execution.stage_unreachable is link_lost

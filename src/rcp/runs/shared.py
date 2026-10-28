@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Protocol, TypeVar
 from pydantic import BaseModel
 
 from rcp.agents import AgentEvent, AgentLauncher, ChatContext, PromptFactory, RunContext
+from rcp.agents.context import RepositoryPointer
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.config import AgentSurfaceConfig
@@ -42,7 +43,6 @@ from rcp.service import CoachRequest, ProjectService, RunRequest
 from rcp.storage.models import _NON_PROMPT_CONTRACT_ROLES
 from rcp.transport import RemoteRunStage, StateUnavailable, StateUnreachable
 from rcp.transport.remote_stage_root import READ_CONTEXT_INPUT, prepare_read_context_input
-from rcp.transport.repositories import RepositoryAccess
 from rcp.transport.run_stage import run_stage_partition
 from rcp.transport.state import (
     _remote_turn_supervisor_script,
@@ -840,7 +840,7 @@ async def _prepare_hidden_read_scope(
 
 async def _stream_agent_events(
     launcher: AgentLauncher,
-    request: RunRequest,
+    request: RunRequest | CoachRequest,
     prompt: str,
     *,
     workspace: Path,
@@ -857,6 +857,7 @@ async def _stream_agent_events(
     invocation_gate: ProviderInvocationGate | None = None,
     shell_timeout_seconds: int | None | EllipsisType = ...,
     required_session_id: str | None = None,
+    forward_labelled_events: bool = False,
     browser_grant: BrowserGrant | None = None,
     hidden_read_scope: HiddenReadScope | None = None,
     service: ProjectService | None = None,
@@ -866,6 +867,7 @@ async def _stream_agent_events(
 
     Terminal and labelled events are withheld from the wire: the caller decides
     what a completed run, an answer, or a trace is worth in its own protocol.
+    Owners that display provider answers directly can forward labelled events.
     """
     if execution is not None and write_scope is not None:
         from rcp.runs.episodes.isolation import validate_episode_launch
@@ -1100,8 +1102,11 @@ async def _stream_agent_events(
                     )
                     return
                 outcome.session_id = event.session_id
-                if execution_host and execution is None:
+                if execution_host and execution is None and not forward_labelled_events:
                     continue
+            if forward_labelled_events and event.event in {"answer", "message"}:
+                yield _sse(event)
+                continue
             if event.event == "answer":
                 if fork and not outcome.session_id:
                     outcome.failed = True
@@ -1283,50 +1288,53 @@ def stage_branch_read_context(
     }
 
 
-def _stage_context_paths(
-    context: RunContext | ChatContext | dict[str, object],
-    service: ProjectService,
-    stage: RemoteRunStage,
-    execution_machine: str,
-) -> dict[str, object]:
-    """Repository and materialized-state pointers a remote agent can open."""
-
-    if isinstance(context, dict):
-        raw_repositories = context["truth_repositories"]
-        assert isinstance(raw_repositories, list)
-        source_repositories = [RepositoryAccess.model_validate(item) for item in raw_repositories]
-    else:
-        source_repositories = context.repositories
-    repositories = []
-    for repository in source_repositories:
+def _execution_host_repositories(
+    repositories: list[RepositoryPointer], execution_machine: str
+) -> list[RepositoryPointer]:
+    """Resolve repository access from the execution machine."""
+    resolved = []
+    for repository in repositories:
         if repository.machine == execution_machine:
-            repositories.append(repository.model_copy(update={"host": ""}))
-            continue
-        if not repository.host:
+            resolved.append(repository.model_copy(update={"host": ""}))
+        elif not repository.host:
             raise StateUnavailable(
                 f"Repository {repository.alias!r} is on {repository.machine!r}, which has no "
                 f"SSH host reachable from execution machine {execution_machine!r}. Run the "
                 "agent on that repository's machine or configure a reachable host."
             )
-        repositories.append(repository)
-    updates: dict[str, object] = (
-        {"truth_repositories": [item.model_dump() for item in repositories]}
-        if isinstance(context, dict)
-        else {"repositories": repositories}
-    )
+        else:
+            resolved.append(repository)
+    return resolved
+
+
+def _execution_host_state_path(
+    service: ProjectService, local_path: str | Path, execution_machine: str
+) -> str:
+    """Map a materialized state pointer to its canonical execution-host path."""
     state_repository = service.manifest.repository_map[service.manifest.state.repository]
     if state_repository.machine != execution_machine:
         raise StateUnavailable(
             "Graph-writing agents must run on the canonical state machine; "
             "cross-machine state staging is forbidden."
         )
-    canonical = PurePosixPath(state_repository.path) / ".research"
-    fields = ("graph", "research_md") if isinstance(context, dict) else _STATE_PATH_FIELDS
-    for field in fields:
-        raw_path = context.get(field) if isinstance(context, dict) else getattr(context, field)
+    relative_path = Path(local_path).relative_to(service.manifest.research_dir)
+    return str(PurePosixPath(state_repository.path) / ".research" / relative_path)
+
+
+def _stage_context_paths(
+    context: RunContext | ChatContext,
+    service: ProjectService,
+    stage: RemoteRunStage,
+    execution_machine: str,
+) -> dict[str, object]:
+    """Repository and materialized-state pointers a remote agent can open."""
+    updates: dict[str, object] = {
+        "repositories": _execution_host_repositories(context.repositories, execution_machine)
+    }
+    for field in _STATE_PATH_FIELDS:
+        raw_path = getattr(context, field)
         if raw_path:
-            relative_path = Path(str(raw_path)).relative_to(service.manifest.research_dir)
-            updates[field] = str(canonical / relative_path)
+            updates[field] = _execution_host_state_path(service, raw_path, execution_machine)
     return updates
 
 

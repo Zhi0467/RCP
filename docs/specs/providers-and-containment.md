@@ -920,7 +920,10 @@ watchers and the Paper coach alike; no profile, request or recovery picks
 another machine, and project Settings tags the base's machine card. A manifest
 whose coach names another machine loads with that choice dropped. A fresh Paper
 turn or standalone retry without a native session ignores a stale request's
-machine choice; a resumed native session must retain its recorded machine.
+machine choice. Continuing, refreshing cards from, or resuming a Paper session
+recorded on another machine starts a fresh native session on the base. Visible
+chat history remains; native session memory is lost. Sessions already on the
+base retain their native session and stage.
 The coach stages its fixed paper snapshot and reads changes back over the same
 remote-stage transport as other agents; see [Writing coach](paper-artifacts-and-result-views.md#writing-coach).
 

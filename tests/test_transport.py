@@ -2981,8 +2981,8 @@ def test_generation_flushes_data_and_descriptor_before_selection(tmp_path, monke
     assert generations.current is not None
 
 
-@pytest.mark.parametrize("unsafe", ["symlink", "directory_symlink", "oversize"])
-def test_remote_stage_workspace_tree_is_bounded_and_refuses_symlinks(
+@pytest.mark.parametrize("unsafe", ["symlink", "directory_symlink", "hardlink", "oversize"])
+def test_remote_stage_workspace_tree_is_bounded_and_refuses_links(
     local_remote_stage, tmp_path: Path, unsafe: str
 ) -> None:
     stage = local_remote_stage
@@ -2999,6 +2999,8 @@ def test_remote_stage_workspace_tree_is_bounded_and_refuses_symlinks(
         (directory / "linked.tex").symlink_to(directory / "nested" / "draft.tex")
     elif unsafe == "directory_symlink":
         (directory / "linked").symlink_to(directory / "nested", target_is_directory=True)
+    elif unsafe == "hardlink":
+        (directory / "linked.tex").hardlink_to(directory / "nested" / "draft.tex")
     else:
         (directory / "large.tex").write_bytes(b"x" * 17)
     rejected = tmp_path / "rejected"

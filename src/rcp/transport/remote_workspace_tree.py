@@ -44,6 +44,8 @@ def read_tree(
                     info = os.fstat(child)
                     if not stat.S_ISREG(info.st_mode):
                         raise ValueError("workspace tree entry is not a regular file")
+                    if info.st_nlink > 1:
+                        raise ValueError("workspace tree contains a hard-linked file")
                     limit = min(max_file_bytes, max_total_bytes - total)
                     if info.st_size > limit:
                         raise ValueError("workspace tree exceeds byte limit")

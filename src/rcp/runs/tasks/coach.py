@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import tempfile
 from collections.abc import AsyncGenerator, Callable
@@ -10,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
+from rcp.agents.context import RepositoryPointer
 from rcp.agents.continuation_prompt import (
     LaunchPhase,
     MasterRef,
@@ -54,22 +54,24 @@ from rcp.runs.session_master import (
     session_master_label,
 )
 from rcp.runs.shared import (
+    _execution_host_repositories,
+    _execution_host_state_path,
     _pinned_to_profile,
     _prepare_hidden_read_scope,
     _protected_run_stage_roots,
     _ProviderOutcome,
     _record_agent_launch_receipt,
-    _record_provider_exit,
     _remove_local_tree,
     _safe_stage_name,
     _sse,
-    _stage_context_paths,
     _stage_json_task_input,
     _stage_or_reuse_task_input,
     _stage_task_contract,
     _stage_task_input,
+    _stream_agent_events,
     _swept_stage_root,
     _task_token,
+    note_link_lost_before_provider,
 )
 from rcp.service import CoachRequest, ProjectService
 from rcp.skills.staging import stage_skill_selection
@@ -81,6 +83,7 @@ def _resolved_coach_request(
     request: CoachRequest,
 ) -> CoachRequest:
     existing = None
+    base_machine = service.manifest.repository_map[service.manifest.state.repository].machine
     if request.session_id:
         existing = next(
             (
@@ -98,7 +101,11 @@ def _resolved_coach_request(
             raise ValueError("A resumed session cannot change model.")
         if request.reasoning is not None and request.reasoning != existing.reasoning:
             raise ValueError("A resumed session cannot change reasoning.")
-        if request.run_on is not None and request.run_on != existing.execution_machine:
+        if (
+            existing.execution_machine == base_machine
+            and request.run_on is not None
+            and request.run_on != existing.execution_machine
+        ):
             raise ValueError("A resumed session cannot change execution machine.")
     profile = service.resolve_agent_profile(
         "paper_coach",
@@ -111,7 +118,7 @@ def _resolved_coach_request(
             else None
         ),
         reasoning=request.reasoning or (existing.reasoning if existing else None),
-        run_on=existing.execution_machine if existing else None,
+        run_on=base_machine,
     )
     resolved = request.model_copy(
         update={
@@ -119,6 +126,11 @@ def _resolved_coach_request(
             "model": profile.model or None,
             "reasoning": profile.reasoning,
             "run_on": profile.run_on,
+            "session_id": (
+                None
+                if existing is not None and existing.execution_machine != base_machine
+                else request.session_id
+            ),
         }
     )
     result = service.resolve_skill_request(resolved)
@@ -227,14 +239,19 @@ def _validate_paper_continuation(
     if execution is None:
         raise ValueError("Paper continuation requires a durable task")
     source = execution.store.agent_task(source_id)
+    fresh_on_base = (
+        source is not None
+        and source.request.get("run_on") != request.run_on
+        and request.session_id is None
+    )
     if (
         source is None
         or source.project_id != project_id
         or source.kind != "paper_coach"
         or not source.native_session_id
-        or source.native_session_id != request.session_id
+        or (not fresh_on_base and source.native_session_id != request.session_id)
         or source.request.get("provider") != request.provider
-        or source.request.get("run_on") != request.run_on
+        or (not fresh_on_base and source.request.get("run_on") != request.run_on)
         or source.request.get("mode", "review") != request.mode
     ):
         raise ValueError("Paper continuation must retain its task, session, machine, and mode")
@@ -278,9 +295,21 @@ async def _stream_coach(
             (item for item in paper.sessions() if item.native_session_id == request.session_id),
             None,
         )
+    base_machine = service.manifest.repository_map[service.manifest.state.repository].machine
+    if (
+        reusing_checkpoint
+        and existing is None
+        and request.run_on
+        and request.run_on != base_machine
+    ):
+        request = request.model_copy(update={"session_id": None, "run_on": base_machine})
+        reusing_checkpoint = False
     try:
         if not (reusing_checkpoint and existing is None):
             request = _resolved_coach_request(service, request)
+            if existing is not None and request.session_id is None:
+                reusing_checkpoint = False
+                existing = None
         profile = service.resolve_agent_profile(
             "paper_coach",
             provider=request.provider,
@@ -387,6 +416,7 @@ async def _stream_coach(
         )
         _record_paper_base(execution, snapshot)
     except (OSError, StateUnavailable, ValueError) as exc:
+        note_link_lost_before_provider(execution, exc)
         yield _sse(AgentEvent(event="error", text=str(exc)))
         return
     input_stage = None if remote_stage is not None else local_stage
@@ -405,7 +435,18 @@ async def _stream_coach(
             )
         pointers, read_dirs = service.coach_context(request, snapshot_path)
         if remote_stage is not None:
-            pointers.update(_stage_context_paths(pointers, service, remote_stage, profile.run_on))
+            raw = pointers["truth_repositories"]
+            assert isinstance(raw, list)
+            pointers["truth_repositories"] = [
+                item.model_dump()
+                for item in _execution_host_repositories(
+                    [RepositoryPointer.model_validate(item) for item in raw], profile.run_on
+                )
+            ]
+            for field in ("graph", "research_md"):
+                pointers[field] = _execution_host_state_path(
+                    service, str(pointers[field]), profile.run_on
+                )
         retry_diagnostics_path = (
             _stage_json_task_input(
                 input_stage,
@@ -560,6 +601,7 @@ async def _stream_coach(
         )
         read_dirs.extend([Path(str(pointers["graph"])).parent, inputs, snapshot_path])
     except (StateUnavailable, ValueError) as exc:
+        note_link_lost_before_provider(execution, exc)
         if history_staged is not None:
             history_staged.cleanup()
         yield _sse(AgentEvent(event="error", text=str(exc)))
@@ -569,7 +611,6 @@ async def _stream_coach(
         if existing
         else request.model
     )
-    reasoning = existing.reasoning if existing else request.reasoning
     native_session_id = request.session_id
     actual_runtime_id = (
         execution.runtime_id
@@ -578,7 +619,6 @@ async def _stream_coach(
     )
     completed = False
     provider_failed = False
-    provider_outcome = _ProviderOutcome(session_id=native_session_id)
     _record_agent_launch_receipt(
         execution,
         request,
@@ -636,7 +676,7 @@ async def _stream_coach(
                 project_id=paper.project_id,
                 title=existing.title if existing else request.message[:72],
                 model=model or "provider-default",
-                reasoning=reasoning,
+                reasoning=request.reasoning,
                 created_at=existing.created_at if existing else now,
                 last_resumed_at=now,
                 introduction_hash_examined=intro_hash,
@@ -659,73 +699,40 @@ async def _stream_coach(
             if _coach_stopped(execution):
                 yield _sse(AgentEvent(event="paused", text="Paper coaching stopped before launch."))
                 break
-            if remote_stage is not None:
-                await asyncio.to_thread(remote_stage.finalize_inputs)
+            provider_outcome = _ProviderOutcome(session_id=native_session_id)
             async with aclosing(
-                launcher.stream(
-                    profile.provider,
+                _stream_agent_events(
+                    launcher,
+                    request,
                     prompt,
-                    cwd=workspace,
-                    host=execution_host,
-                    remote_pid_file=(
-                        str(remote_stage.root / f"agent-{token}-{refresh_round}.pid")
-                        if remote_stage is not None and remote_stage.root is not None
-                        else None
-                    ),
-                    transport_partition=remote_stage.transport_partition if remote_stage else None,
-                    model=model,
-                    reasoning=reasoning,
+                    workspace=workspace,
+                    execution_host=execution_host,
+                    execution=execution,
+                    remote_stage=remote_stage,
                     session_id=native_session_id,
+                    required_session_id=native_session_id,
                     read_dirs=read_dirs,
                     write_dirs=[changes_path],
+                    write_scope=None,
                     capability="paper_suggest",
                     invocation_gate=history_staged.invocation_gate,
                     hidden_read_scope=hidden_read_scope,
-                    control=execution.control if execution is not None else None,
                     binary=provider_binary,
-                    runtime_id=(execution.runtime_id or None) if execution is not None else None,
-                    operation_id=execution.operation_id if execution is not None else None,
-                    git_access=execution.git_access if execution is not None else None,
+                    outcome=provider_outcome,
+                    forward_labelled_events=True,
                 )
             ) as stream:
-                async for event in stream:
-                    if event.event == "provider_exit":
-                        try:
-                            evidence: object = json.loads(event.text)
-                        except (json.JSONDecodeError, TypeError, ValueError):
-                            evidence = None
-                        exit_evidence: dict[str, object] = (
-                            evidence
-                            if isinstance(evidence, dict)
-                            else {"unparsed": event.text[:400]}
-                        )
-                        provider_outcome.exit_evidence = exit_evidence
-                        _record_provider_exit(
-                            execution,
-                            provider_outcome,
-                            workspace=local_stage,
-                            remote_stage=remote_stage,
-                        )
-                        continue
+                async for frame in stream:
+                    event = AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
                     if event.event == "runtime":
                         actual_runtime_id = event.text
                     if event.event == "session" and event.session_id:
-                        if native_session_id and native_session_id != event.session_id:
-                            provider_failed = True
-                            yield _sse(
-                                AgentEvent(
-                                    event="error",
-                                    text="Paper coach continuation changed its native session.",
-                                )
-                            )
-                            break
                         native_session_id = event.session_id
-                    if event.event == "error":
-                        provider_failed = True
-                    if event.event == "done":
-                        completed = True
-                        continue
-                    yield _sse(event)
+                    yield frame
+            completed = provider_outcome.completed
+            provider_failed = provider_outcome.failed
+            if provider_outcome.remote_result_pending:
+                return
             if not completed or provider_failed or _coach_stopped(execution):
                 break
             try:
@@ -752,6 +759,7 @@ async def _stream_coach(
                         replace_source_task_id=replace_source_task_id,
                     )
             except StateUnavailable as exc:
+                note_link_lost_before_provider(execution, exc)
                 # The read-back failed, not the coach: there is nothing to correct.
                 provider_failed = True
                 yield _sse(AgentEvent(event="error", text=str(exc)))
@@ -845,6 +853,10 @@ async def _stream_coach(
                     directly=True,
                 )
             yield _sse(AgentEvent(event="done"))
+    except StateUnavailable as exc:
+        completed = False
+        note_link_lost_before_provider(execution, exc)
+        yield _sse(AgentEvent(event="error", text=str(exc)))
     finally:
         history_stop.set()
         await history_task

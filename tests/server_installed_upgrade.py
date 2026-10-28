@@ -686,6 +686,12 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     ) as response:
         assert response.status == 200
     assert_serves(fixture, selected["version_string"])
+    if fixture["paper"] is None:
+        from tests.server_upgrade_paper import seed_tree_paper
+
+        # A baseline that already keeps the Paper file tree writes one through its own API.
+        fixture["paper"] = seed_tree_paper(request, fixture, cookie)
+        write_json(ROOT / "state/fixture.json", fixture, service_owned=True)
     destination = Path("/var/backups/rcp-installed-upgrade")
     destination.mkdir(mode=0o700)
     account = pwd.getpwnam("rcp")
@@ -802,7 +808,14 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     assert_serves(fixture, version)
     assert_kept_artifact(fixture, base_artifact)
     assert_followup(fixture, followup)
-    from tests.server_upgrade_paper import assert_current_paper, seed_current_paper
+    from tests.server_upgrade_paper import (
+        assert_current_paper,
+        assert_tree_paper,
+        seed_current_paper,
+    )
+
+    if fixture["paper"]["writer"] == "tree":
+        assert_tree_paper(request, fixture, session(fixture))
 
     current_paper = seed_current_paper(request, fixture, session(fixture))
     run(["systemctl", "restart", "rcp.service"])

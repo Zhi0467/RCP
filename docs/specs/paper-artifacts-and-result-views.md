@@ -134,10 +134,14 @@ turns upload each fixed saved-paper snapshot as immutable stage input; they
 never read the live published paper directory. Graph and repository pointers
 refer to base-side paths. The native session reuses its stage workspace, and
 only its changes folder is writable. After each completed round, bounded,
-symlink-refusing read-back supplies the same local card collection. Checkpointed
-recovery retains the stage and machine; finished stages remain for session
-continuations until the normal stage sweeper removes them. A standalone retry
-without a native session uses the base even if an old request names another machine.
+symlink- and hardlink-refusing read-back supplies the same local card collection.
+Each remote round uses the shared supervised provider pass: durable process receipts
+and a quiescence check prevent overlapping providers in the session workspace. Checkpointed
+recovery on the base retains its stage; finished stages remain for session
+continuations until the normal stage sweeper removes them. Continuing, refreshing
+cards from, or resuming a session recorded on another machine starts a fresh
+native session on the base, preserving visible chat history but losing native
+session memory. A standalone retry without a native session also uses the base.
 
 A card applies only to the text it was made from. At the end of a turn RCP
 checks every card against the live paper; a card whose text has since changed is

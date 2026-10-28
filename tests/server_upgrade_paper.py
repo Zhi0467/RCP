@@ -15,6 +15,56 @@ FIGURE = b"\x89PNG\r\n\x1a\nold-figure\x00"
 EDITED_FIGURE = b"\x89PNG\r\n\x1a\nnew-figure\x00"
 
 
+TREE_FILES = {
+    "sections/baseline.md": b"# Baseline\n\nWritten by the baseline release.\n",
+    "figures/baseline.png": FIGURE,
+}
+
+
+def _uploader(request, fixture: dict, cookie: str):
+    base = f"/api/projects/{fixture['project_id']}/paper"
+
+    def upload(path, content):
+        boundary = uuid.uuid4().hex
+        payload = (
+            (
+                f'--{boundary}\r\nContent-Disposition: form-data; name="path"\r\n\r\n'
+                f'{path}\r\n--{boundary}\r\nContent-Disposition: form-data; name="file"; '
+                f'filename="{Path(path).name}"\r\nContent-Type: application/octet-stream\r\n\r\n'
+            ).encode()
+            + content
+            + f"\r\n--{boundary}--\r\n".encode()
+        )
+        with request(
+            base + "/uploads",
+            body=payload,
+            method="POST",
+            cookie=cookie,
+            content_type=f"multipart/form-data; boundary={boundary}",
+        ) as response:
+            return json.load(response)
+
+    return base, upload
+
+
+def seed_tree_paper(request, fixture: dict, cookie: str) -> dict:
+    """Write a file tree through a baseline release that already keeps one."""
+    _, upload = _uploader(request, fixture, cookie)
+    for path, content in TREE_FILES.items():
+        upload(path, content)
+    return {"writer": "tree", "files": {path: _sha(data) for path, data in TREE_FILES.items()}}
+
+
+def assert_tree_paper(request, fixture: dict, cookie: str) -> None:
+    """The baseline's file tree survives the upgrade byte for byte."""
+    base, _ = _uploader(request, fixture, cookie)
+    with request(base + "/tree", cookie=cookie) as response:
+        files = {file["path"]: file["file_id"] for file in json.load(response)["files"]}
+    for path, sha in fixture["paper"]["files"].items():
+        with request(f"{base}/files/{files[path]}/raw", cookie=cookie) as response:
+            assert _sha(response.read()) == sha, f"Upgrade changed {path}"
+
+
 def seed_legacy_paper(data_dir: Path, fixture: dict) -> dict | None:
     """Execute the historical Paper writer so draft, base and canonical diverge.
 
@@ -91,7 +141,7 @@ def seed_current_paper(request, fixture: dict, cookie: str) -> dict:
         )
 
     tree = call("/tree")
-    legacy = fixture.get("paper")
+    legacy = fixture["paper"] if (fixture.get("paper") or {}).get("writer") == "legacy" else None
     if legacy:
         assert tree["hold"] is not None, "Divergent legacy paper must retain its publication hold"
         history = call("/history")
