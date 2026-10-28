@@ -988,6 +988,15 @@ class CoachRequest(BaseModel):
     resolved_provider_skills: list[ProviderSkillReference] = Field(default_factory=list)
     resolved_skill_packages: list[SkillReference] | None = None
 
+    attachment_scope_id: str | None = None
+    attachment_set_id: str | None = None
+    attachment_client_id: str | None = None
+    attachment_batch_id: str | None = None
+    attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
+    references: list[ProjectReferenceSelector] = Field(
+        default_factory=list, max_length=CHAT_ATTACHMENT_MAX_COUNT
+    )
+
     @model_validator(mode="before")
     @classmethod
     def apply_directly_mode(cls, value: object) -> object:

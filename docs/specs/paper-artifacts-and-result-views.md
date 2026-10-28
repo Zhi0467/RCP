@@ -142,6 +142,16 @@ continuations until the normal stage sweeper removes them. Continuing, refreshin
 cards from, or resuming a session recorded on another machine starts a fresh
 native session on the base, preserving visible chat history but losing native
 session memory. A standalone retry without a native session also uses the base.
+Model and reasoning changes retain the native session; changing provider starts
+a fresh native session while preserving visible coach history, using the same
+profile compatibility decision as ordinary chat.
+
+Coach turns claim uploads and project references through ordinary chat attachment
+admission, using the composer's UUID `attachment_scope_id` as the upload chat id.
+The same attachment store stages immutable copies locally or on the remote base;
+their parent folders are readable and the shared prompt renderer lists uploads
+and references separately. The coach also resolves the ordinary graph read scope,
+including named branch pointers in its master and continuation deltas.
 
 A card applies only to the text it was made from. At the end of a turn RCP
 checks every card against the live paper; a card whose text has since changed is

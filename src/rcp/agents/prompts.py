@@ -1553,7 +1553,7 @@ Graph Patch (optional):
         )
 
     # Bumped when the paper-coach task contract's stable policy prose changes.
-    PAPER_COACH_POLICY_VERSION = "paper-coach-v7"
+    PAPER_COACH_POLICY_VERSION = "paper-coach-v8"
 
     @staticmethod
     def paper_coach_task_contract(
@@ -1564,6 +1564,7 @@ Graph Patch (optional):
         research_path: str,
         repositories: list[dict[str, str]],
         human_request_path: str,
+        attachments: list[dict[str, object]] | None = None,
         retry_diagnostics_path: str | None = None,
         skill_pointers: list[dict[str, object]] | None = None,
         invoked_skill_pointers: list[dict[str, object]] | None = None,
@@ -1590,7 +1591,7 @@ Required inputs:
 {_pointer("Prior-attempt diagnostics", retry_diagnostics_path)}
 {graph_rules(edits=False, ontology_extensions=False)}
 Relevant repository inputs; read only when the coaching request needs them:
-{_repository_pointers(repositories)}{selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}
+{_repository_pointers(repositories)}{selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}{_attachment_items(attachments)}
 
 Read the required inputs from disk. Their bytes are the current inputs for this turn and are not
 repeated in the launch message; their semantic standing follows the graph rather than this pointer.

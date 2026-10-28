@@ -5335,10 +5335,12 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
 
 
 @pytest.mark.asyncio
-async def test_paper_resume_rejects_settings_change_before_launch(manifest, tmp_path) -> None:
+async def test_paper_resume_launches_with_changed_model(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     paper = service.paper
+    wire_saved_paper(service)
+    _record_local_codex_path(app)
     session_id = str(uuid.uuid4())
     now = datetime.now(UTC)
     paper.record_session(
@@ -5374,8 +5376,12 @@ async def test_paper_resume_rejects_settings_change_before_launch(manifest, tmp_
         )
     ]
 
-    assert any("cannot change model" in item for item in events)
-    assert launcher.calls == 0
+    assert not [
+        item for item in events if json.loads(item.removeprefix("data: "))["event"] == "error"
+    ]
+    assert launcher.calls == 1
+    assert launcher.last_kwargs["session_id"] == session_id
+    assert launcher.last_kwargs["model"] == "different-model"
 
 
 @pytest.mark.asyncio
@@ -5529,7 +5535,9 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
         "group",
         "work",
         "browser",
+        "branches",
     }
+    assert prompt_values["branches"] == []
     assert "graph_revision" not in prompt_values["current"]
     assert [item["id"] for item in prompt_values["compute"]["active"]] == ["laptop"]
     inputs = master_path.parent

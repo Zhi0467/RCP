@@ -156,22 +156,28 @@ def test_fork_scope_enforces_ancestry_revisions_and_cursor_binding(history_query
     parent_head = branch.head_ref()
     fork = service.history.create_branch(fork_metadata(service.history, parent_head))
     nested = service.history.create_branch(fork_metadata(service.history, fork.head_ref()))
-    scope = GraphReadScope.resolve("project", nested)
+    scope = GraphReadScope.resolve("project", nested, store=service.paper.store)
     assert scope.ancestry_ceilings == (
         fork.head_ref(),
         parent_head,
         branch.branch_metadata().base_head,
     )
-    assert GraphReadScope.resolve("project", branch).ancestry_ceilings is None
+    assert (
+        GraphReadScope.resolve("project", branch, store=service.paper.store).ancestry_ceilings
+        is None
+    )
     episode_root = service.history.create_branch(
         fork_metadata(service.history, service.history.head_ref()).model_copy(
             update={"kind": "auto_research"}
         )
     )
-    assert GraphReadScope.resolve("project", episode_root).ancestry_ceilings is None
+    assert (
+        GraphReadScope.resolve("project", episode_root, store=service.paper.store).ancestry_ceilings
+        is None
+    )
     # Saved pre-change grants retain their project-wide semantics.
     assert GraphReadScope.model_validate({"project_id": "project", "target": {}}) == (
-        GraphReadScope.resolve("project", service.history)
+        GraphReadScope.resolve("project", service.history, store=service.paper.store)
     )
     with monkeypatch.context() as guard:
         guard.setattr(

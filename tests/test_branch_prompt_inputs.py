@@ -421,7 +421,7 @@ def test_parent_snapshot_and_location_exclude_post_parent_graph(
 
     response = handle_graph_history_command(
         service,
-        GraphReadScope.resolve("project", fork),
+        GraphReadScope.resolve("project", fork, store=service.paper.store),
         request("graph_log", id="ev/after-parent", at=fields["branch_parent"]),
     )
     assert response.status == "ok"

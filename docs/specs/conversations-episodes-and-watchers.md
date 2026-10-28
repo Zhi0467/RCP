@@ -364,8 +364,9 @@ captured target/settings; a changed target or setting keeps the draft instead.
 RCP stores no audio. SpeechAnalyzer is local; the older Apple recognizer or a
 chosen network service may send audio externally. Audio attachments are refused.
 
-One nonblank Discuss/Work message atomically claims bounded temporary attachments.
-They stage immutably on the execution host and recovery reuses the exact batch;
+One nonblank Discuss/Work or Paper coach message atomically claims bounded
+temporary attachments. They stage immutably on the execution host and recovery
+reuses the exact batch;
 partial transfer fails rather than dropping files. The claimed batch expires
 `RUN_STAGE_RETENTION_DAYS` after send; from then on its task offers no Retry or
 Resume and both endpoints refuse, since recovery without the exact batch would
@@ -378,9 +379,9 @@ target, or the saved paper introduction. Drag, pasted reference links and the
 project picker create read-only copies through each source owner at admission.
 Missing sources reject the turn; later edits/deletion cannot change staged bytes.
 They share attachment caps and add no roots or target authority. Prompts list
-them separately from uploads and editable comments. Only ordinary node/project
-Discuss/Work admits them; steering and other run kinds refuse them, and question
-or watcher follow-ups clear them.
+them separately from uploads and editable comments. Ordinary node/project
+Discuss/Work and Paper coach admit them; steering and other run kinds refuse them,
+and question or watcher follow-ups clear them.
 
 Answer-text selections offer a floating Comment action without disturbing Copy.
 Overshoots clamp to answer text; a visible Comment command provides a keyboard

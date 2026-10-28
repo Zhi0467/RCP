@@ -54,7 +54,7 @@ class GraphReadScope(BaseModel):
         history: HistoryManager | BranchHistoryManager,
         group_context: GroupContext | None = None,
         *,
-        store: AppStore | None = None,
+        store: AppStore,
     ) -> GraphReadScope:
         target = history.graph_target
         scope = cls(project_id=project_id, target=target, group_context=group_context)
@@ -68,8 +68,6 @@ class GraphReadScope(BaseModel):
                     ceilings.append(parent)
                     metadata = generations[parent.target.key].source.metadata
                 scope = scope.model_copy(update={"ancestry_ceilings": tuple(ceilings)})
-        if store is None:
-            return scope
         records = store.graph_branches(project_id)
         names = {branch.branch_id: branch.name for branch in records}
         identities = [

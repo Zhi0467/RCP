@@ -10,6 +10,7 @@ from rcp.agents import AgentEvent, AgentLauncher
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.prompts import render_graph_history
 from rcp.core.transition_models import GraphTargetRef
+from rcp.runs.session_master import recorded_master_values
 from rcp.runs.tasks.coach import stream_coach
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.graph import stream_graph_run
@@ -87,6 +88,17 @@ class _HistoryLauncher:
         assert response.result["to_head"] == (
             f"{scope.target.key}@{self.service.history.state().revision}"
         )
+        for branch in scope.branches:
+            response = await handler(
+                history_request(
+                    "graph_log",
+                    id="hyp/replanning-restores-plasticity",
+                    at=f"branch:{branch.name}@head",
+                ),
+                identity,
+            )
+            assert response.status == "ok", response
+            assert response.result["at_head"] == f"branch:{branch.id}@{branch.head_revision}"
         if self.kind in {"discuss", "paper_coach"}:
             response = await handler(_apply_request("forbidden"), identity)
             assert response.status == "invalid", response
@@ -121,7 +133,7 @@ def test_graph_reader_master_commands_and_committed_observation(
         wire_saved_paper(service)
     if kind != "seed":
         append_fixture_patch(service, seed_patch())
-    if kind not in {"seed", "paper_coach"}:
+    if kind != "seed":
         from .test_history_forks import fork_metadata
 
         parent = service.history.create_branch(
@@ -191,6 +203,15 @@ def test_graph_reader_master_commands_and_committed_observation(
         started = client.post(f"/api/projects/{project_id}/tasks/{task_kind}", json=payload)
         assert started.status_code == 202, started.text
         task = wait_for_task_response(client, project_id, started.json()["operation_id"])
+        if kind == "paper_coach":
+            values = recorded_master_values(service.paper.store, started.json()["operation_id"])
+            assert values is not None
+            assert values["branches"] == [
+                item.model_dump(mode="json")
+                for item in GraphReadScope.resolve(
+                    project_id, service.history, store=service.paper.store
+                ).branches
+            ]
         if continue_session:
             assert task["status"] == "succeeded", task.get("error")
             append_fixture_patch(service, refresh_patch())

@@ -131,6 +131,8 @@ class PaperService:
                 )
                 ON CONFLICT(native_session_id) DO UPDATE SET
                     runtime_id = excluded.runtime_id,
+                    model = excluded.model,
+                    reasoning = excluded.reasoning,
                     title = excluded.title,
                     last_resumed_at = excluded.last_resumed_at,
                     introduction_hash_examined = excluded.introduction_hash_examined,

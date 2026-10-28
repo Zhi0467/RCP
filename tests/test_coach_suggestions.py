@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import io
 import json
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 
 from rcp.agents import AgentEvent
 from rcp.agents.launcher import AgentProcessControl
+from rcp.attachments import ChatAttachmentStore, ProjectReferenceSource
 from rcp.background import AgentTaskExecution
 from rcp.paper import PaperOp
+from rcp.project_references import ResolvedProjectReference
 from rcp.runs.tasks.coach import stream_coach
 from rcp.service import CoachRequest
 from rcp.storage.models import AgentTaskRecord
@@ -25,18 +29,91 @@ def coach(manifest, tmp_path):
     return service, live, tmp_path / "data"
 
 
-async def run_coach(service, launcher, data, *, mode="review", execution=None):
+async def run_coach(service, launcher, data, *, mode="review", execution=None, request=None):
     return [
         AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
         async for frame in stream_coach(
             service,
             launcher,
             service.paper,
-            CoachRequest(message="Edit the paper", mode=mode),
+            request or CoachRequest(message="Edit the paper", mode=mode),
             data,
             execution,
         )
     ]
+
+
+def attachment_request(service, data):
+    store = ChatAttachmentStore(data / "chat-attachments")
+    scope, client = str(uuid4()), str(uuid4())
+    uploaded = store.add(
+        project_id=service.paper.project_id,
+        chat_id=scope,
+        client_id=client,
+        filename="notes.md",
+        media_type="text/markdown",
+        source=io.BytesIO(b"Uploaded notes"),
+    )
+    batch = store.claim(
+        project_id=service.paper.project_id,
+        chat_id=scope,
+        client_id=client,
+        attachment_set_id=uploaded.attachment_set_id,
+        operation_id=str(uuid4()),
+        reference_files=[
+            ResolvedProjectReference(
+                filename="reference.md",
+                display_name="Saved reference",
+                media_type="text/markdown",
+                content=b"Reference bytes",
+                reference=ProjectReferenceSource(
+                    kind="paper",
+                    source_id="paper-file",
+                    version="1",
+                ),
+            )
+        ],
+    )
+    return CoachRequest(
+        message="Read these inputs", attachment_scope_id=scope, **batch.model_dump()
+    )
+
+
+def assert_attachment_launch(request, read_dirs, prompt):
+    roots = [
+        path
+        for path in read_dirs
+        if path.name == f"chat-attachments-v1-{request.attachment_batch_id}"
+    ]
+    assert len(roots) == 1
+    files = list(roots[0].iterdir())
+    assert {path.read_bytes() for path in files} == {b"Uploaded notes", b"Reference bytes"}
+    assert all(str(path) in prompt for path in files)
+    assert all(item.name in prompt for item in request.attachments)
+    assert '"source_id": "paper-file"' in prompt
+
+
+@pytest.mark.asyncio
+async def test_coach_stages_upload_and_reference_on_each_session_turn(coach):
+    from .helpers import launch_contract_path
+
+    service, _live, data = coach
+    for session in (None, "attachment-session"):
+        request = attachment_request(service, data).model_copy(update={"session_id": session})
+
+        class Launcher:
+            async def stream(
+                self, _provider, prompt, *, session=session, request=request, **kwargs
+            ):
+                contract = launch_contract_path(prompt).read_text() if session is None else prompt
+                assert_attachment_launch(request, kwargs["read_dirs"], contract)
+                yield AgentEvent(event="session", session_id="attachment-session")
+                yield AgentEvent(event="done")
+
+        events = await run_coach(
+            service, Launcher(), data, request=request, execution=execution_for(service)
+        )
+        assert not [event for event in events if event.event == "error"]
 
 
 def execution_for(service):
@@ -257,7 +334,6 @@ async def test_remote_base_stages_snapshot_and_collects_changes(
     coach, monkeypatch, tmp_path, keep_running
 ):
     import shutil
-    from pathlib import Path
 
     from rcp.agents.provider_environment import unhidden_read_scope
     from rcp.runs.tasks import coach as coach_module
@@ -315,6 +391,7 @@ async def test_remote_base_stages_snapshot_and_collects_changes(
     monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_args, **_kwargs: False)
     execution = execution_for(service)
     provider_pids = []
+    request = attachment_request(service, data)
 
     class Launcher:
         async def stream(self, _provider, _prompt, **kwargs):
@@ -330,6 +407,7 @@ async def test_remote_base_stages_snapshot_and_collects_changes(
             assert kwargs["host"] == "base.example"
             assert kwargs["cwd"] == stage.workspace
             contracts = "\n".join(path.read_text() for path in (stage.root / "inputs").glob("*.md"))
+            assert_attachment_launch(request, kwargs["read_dirs"], contracts)
             assert str(Path(state_repository.path) / ".research" / "graph.json") in contracts
             assert str(Path(state_repository.path) / ".research" / "research.md") in contracts
             assert len(kwargs["write_dirs"]) == 1
@@ -360,7 +438,7 @@ async def test_remote_base_stages_snapshot_and_collects_changes(
                 )
             yield AgentEvent(event="done")
 
-    events = await run_coach(service, Launcher(), data, execution=execution)
+    events = await run_coach(service, Launcher(), data, execution=execution, request=request)
 
     task_receipts = execution.store.agent_task_receipts(execution.operation_id)
     starts = [r for r in task_receipts if r.category == "remote_provider_started"]
