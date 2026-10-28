@@ -13,6 +13,7 @@ from rcp.storage import (
     WatcherRecord,
 )
 from tests.helpers import signed_in_client, unchecked_write_authority
+from tests.paper_helpers import start_paper
 
 from .helpers import seed_patch
 
@@ -243,7 +244,8 @@ def test_unnamed_personal_owner_gates_all_agent_api_admissions(
             json={"message": "Review the introduction."},
         )
     )
-    paper = client.post(f"/api/projects/{project_id}/paper/create", json={})
+    start_paper(app.state.paper_live)
+    paper = client.post(f"/api/projects/{project_id}/paper/files", json={"path": "notes.md"})
     assert paper.status_code == 200
     assert started_kinds == []
 
@@ -979,9 +981,13 @@ def test_old_project_url_alias_is_canonicalized_for_tasks_chat_and_paper(
     assert chat.status_code == 200
     assert chat.json()["chat_id"] == chat_id
 
-    created_paper = client.post(f"/api/projects/{old_project_id}/paper/create", json={})
-    read_paper = client.get(f"/api/projects/{old_project_id}/paper?proof=kept")
+    start_paper(app.state.paper_live)
+    created_paper = client.post(
+        f"/api/projects/{old_project_id}/paper/files", json={"path": "notes.md"}
+    )
+    read_paper = client.get(f"/api/projects/{old_project_id}/paper/tree?proof=kept")
     assert created_paper.status_code == 200
     assert read_paper.status_code == 200
-    assert read_paper.json() == created_paper.json()
+    assert [file["path"] for file in read_paper.json()["files"]] == ["notes.md"]
+    assert client.get(f"/api/projects/{project_id}/paper/tree").json() == read_paper.json()
     assert client.get("/api/health?proof=kept").status_code == 200

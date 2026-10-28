@@ -427,7 +427,7 @@ def _programs(source: str) -> set[str]:
     return found
 
 
-def test_external_dependency_names_match_source() -> None:
+def test_external_dependency_names_match_source(monkeypatch, tmp_path) -> None:
     locations: dict[str, list[str]] = defaultdict(list)
     for path in sorted((ROOT / "src/rcp").rglob("*.py")):
         source = path.read_text()
@@ -438,6 +438,13 @@ def test_external_dependency_names_match_source() -> None:
     for path in sorted((ROOT / "src/rcp").rglob("*.sh")):
         for program in _shell_programs(path.read_text()):
             locations[program].append(str(path.relative_to(ROOT)))
+    # Paper installs its executable by pinned hash, so its argv head is dynamic.
+    # Read the real executable selector; stub only the download integrity probe.
+    from rcp.paper.engines import EngineStore
+
+    monkeypatch.setattr(EngineStore, "_validate", lambda self, engine: tmp_path / engine)
+    binary = EngineStore.binary(object.__new__(EngineStore))
+    locations[binary.name].append("src/rcp/paper/engines.py")
     missing = sorted(locations.keys() - BY_NAME.keys())
     stale = sorted(BY_NAME.keys() - locations.keys())
     assert not missing and not stale, (

@@ -285,7 +285,16 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
             await releaseRefresh.promise;
           }
           json = project();
-        } else if (path.endsWith("/readiness")) json = project();
+        } else if (path === "/api/projects/demo/paper/tree")
+          json = {
+            revision: 0,
+            saved_revision: 0,
+            published_revision: 0,
+            publish_state: "published",
+            hold: null,
+            files: [],
+          };
+        else if (path.endsWith("/readiness")) json = project();
         else if (path.endsWith("/tasks")) json = recovered ? [next, previous] : [previous];
         else if (path.endsWith("/episodes")) json = [episode()];
         else if (path.endsWith("/chats")) json = { chats: [], next_cursor: null };
@@ -347,7 +356,6 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
             // The canvas editor's relation rules load with the project.
             "/api/projects/demo/graph-edit-options",
             // Project navigation and the opened card read their own resources.
-            "/api/projects/demo/paper",
             "/api/projects/demo/paper/sessions",
             "/api/projects/demo/episodes/episode/messages",
           ].includes(path)

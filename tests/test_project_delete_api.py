@@ -150,16 +150,21 @@ def test_delete_project_route_disappears_after_restart_without_touching_reposito
 def test_completed_deletion_refuses_cached_paper_writer(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
-    client = signed_in_client(app)
-    assert client.post(f"/api/projects/{project_id}/paper/create", json={}).status_code == 200
+    with signed_in_client(app) as client:
+        assert (
+            client.post(
+                f"/api/projects/{project_id}/paper/files", json={"path": "notes.md"}
+            ).status_code
+            == 200
+        )
 
-    deleted = client.delete(f"/api/projects/{project_id}")
-    response = client.put(
-        f"/api/projects/{project_id}/paper",
-        json={"content": "# Too late\n", "base_hash": None},
-    )
+        deleted = client.delete(f"/api/projects/{project_id}")
+        response = client.post(
+            f"/api/projects/{project_id}/paper/files",
+            json={"path": "too-late.md"},
+        )
 
-    assert deleted.status_code == 200
+    assert deleted.status_code == 200, deleted.text
     assert response.status_code in {404, 409}
     with pytest.raises(ValueError, match="no longer registered"):
         app.state.services.store.require_project_accepts_new_work(project_id)
@@ -167,13 +172,13 @@ def test_completed_deletion_refuses_cached_paper_writer(manifest, tmp_path) -> N
         get_project_service(app.state.catalog, project_id)
     assert caught.value.status_code == 404
     with app.state.services.store.connection() as connection:
-        assert (
-            connection.execute(
-                "SELECT COUNT(*) FROM paper_drafts WHERE project_id = ?",
-                (project_id,),
-            ).fetchone()[0]
-            == 0
-        )
+        for table in ("paper_drafts", "paper_files", "paper_publication"):
+            assert (
+                connection.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE project_id = ?", (project_id,)
+                ).fetchone()[0]
+                == 0
+            )
 
 
 def test_delete_waits_for_project_write_admission_lock(manifest, tmp_path) -> None:

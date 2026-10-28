@@ -285,7 +285,7 @@
   padding: 20px;
   overflow-wrap: anywhere;
 }
-@media (max-width: 1100px) and (min-width: 701px) {
+@media (max-width: 1180px) and (min-width: 701px) {
   .paper-live-workspace {
     grid-template-columns: 165px minmax(0, 1fr) minmax(0, 1fr);
     gap: 10px;
