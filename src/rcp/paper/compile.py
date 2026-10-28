@@ -142,7 +142,6 @@ class PaperCompiler:
         result = CompileResult(compile_id=compile_id, status="error")
         try:
             snapshot = await self.live.snapshot(project_id, revision)
-            saved_revision = snapshot.revision
             entries = snapshot.files
             open_path = next((f.path for f in entries if f.file_id == file_id), None)
             if open_path is None:
@@ -153,8 +152,6 @@ class PaperCompiler:
                 result.candidates = roots
                 result.log_tail = "No unique LaTeX root reaches the open file."
                 return result
-            if Path(roots[0]).is_absolute() or ".." in Path(roots[0]).parts:
-                raise ValueError("Paper root must stay inside the saved tree.")
             result.root_path = roots[0]
             if not await self.engines.ensure("latex"):
                 result.status = "unavailable"
@@ -183,10 +180,6 @@ class PaperCompiler:
                     self.cache_dir.mkdir(parents=True, exist_ok=True)
                     code, log = await self._run(tree, output, roots[0])
                     result.log_tail = log
-                    latest = await self.live.snapshot(project_id)
-                    if latest.revision != saved_revision:
-                        result.status = "superseded"
-                        return result
                     pdf = output / (Path(roots[0]).stem + ".pdf")
                     if code == 0 and pdf.is_file() and not pdf.is_symlink():
                         if pdf.stat().st_size > PAPER_COMPILE_MAX_OUTPUT_BYTES:

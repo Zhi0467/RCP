@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
-/** Idle preview updates, with a deadline during continuous typing; a new file shows at once.
+/** Large previews wait for idle; small previews also update during continuous typing.
+ * A new file shows at once.
  * An inactive (hidden) preview keeps its text until shown again. */
 export function usePreviewText(text: string, fileId: string, active: boolean) {
   const [preview, setPreview] = useState({ fileId, text });
@@ -19,7 +20,9 @@ export function usePreviewText(text: string, fileId: string, active: boolean) {
         pendingSince.current = null;
         setPreview({ fileId, text });
       },
-      Math.min(250, Math.max(0, 1000 - (now - pendingSince.current))),
+      text.length > 200_000
+        ? 1000
+        : Math.min(250, Math.max(0, 1000 - (now - pendingSince.current))),
     );
     return () => clearTimeout(timer);
   }, [text, preview.text, fileId, active]);

@@ -22,7 +22,7 @@ test("Typst root candidates only include ancestors of the open file", () => {
   assert.deepEqual(typstRoots("other.typ", sources), ["other.typ"]);
 });
 
-test("Markdown preview embeds a paper image through its raw file endpoint", async () => {
+test("Markdown preview resolves paper references without navigating outside the tree", async () => {
   const { createServer } = await import("vite");
   const { createElement } = await import("react");
   const { renderToStaticMarkup } = await import("react-dom/server");
@@ -62,12 +62,20 @@ test("Markdown preview embeds a paper image through its raw file endpoint", asyn
           hold: null,
           files: [file, image],
         },
-        text: "![plot](../figures/result.png)",
+        text: "![plot](../figures/result.png) [local](intro.md) [external](https://example.org/) [missing](missing.md) [unsafe](javascript:alert)",
+        onOpenFile() {},
         active: true,
       }),
     );
     assert.match(html, /<img[^>]*src="\/api\/projects\/p\/paper\/files\/figure\/raw\?sha256=abc"/);
     assert.doesNotMatch(html, /src="\.\.\/figures/);
+    assert.match(html, /<a href="#">local<\/a>/);
+    assert.match(
+      html,
+      /<a href="https:\/\/example.org\/" target="_blank" rel="noopener noreferrer">external<\/a>/,
+    );
+    assert.match(html, /<span>missing<\/span>/);
+    assert.match(html, /<span>unsafe<\/span>/);
   } finally {
     await server.close();
   }
@@ -161,4 +169,110 @@ test("Typst compiler reuses its worker, ignores superseded replies and survives 
     compiler.dispose();
     globalThis.Worker = original;
   }
+});
+
+test("Typst worker requests resolved diagnostics and formats source locations", async () => {
+  const { mkdtemp, mkdir, writeFile, readFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { pathToFileURL } = await import("node:url");
+  const { stripTypeScriptTypes } = await import("node:module");
+  const directory = await mkdtemp(`${tmpdir()}/paper-worker-`);
+  const original = globalThis.self;
+  const originalWindow = globalThis.window;
+  const replies = [];
+  const options = [];
+  const diagnostics = [
+    { path: "/sections/part.typ", range: "3:2-3:5", message: "bad input" },
+    { path: "", range: "", message: "no location" },
+  ];
+  globalThis.self = {
+    location: { origin: pathToFileURL(directory).href },
+    postMessage: (reply) => replies.push(reply),
+    runtime: {
+      setCompilerInitOptions() {},
+      use() {},
+      async resetShadow() {},
+      async mapShadow() {},
+      async getCompiler() {
+        return {
+          async reset() {},
+          async compile(value) {
+            options.push(value);
+            return { diagnostics };
+          },
+        };
+      },
+    },
+  };
+  try {
+    await mkdir(`${directory}/api/paper-assets/typst`, { recursive: true });
+    await writeFile(
+      `${directory}/api/paper-assets/typst/all-in-one-lite.bundle.js`,
+      "export const $typst = globalThis.self.runtime; export const TypstSnippet = {preloadFontAssets() {}};",
+    );
+    const source = await readFile(new URL("../src/paper/typst.worker.ts", import.meta.url), "utf8");
+    await import(
+      `data:text/javascript;base64,${Buffer.from(stripTypeScriptTypes(source)).toString("base64")}`
+    );
+    await globalThis.self.onmessage({ data: { id: 1, root: "main.typ", sources: [] } });
+    assert.deepEqual(options, [{ mainFilePath: "/main.typ", format: 1, diagnostics: "full" }]);
+    assert.deepEqual(replies, [{ id: 1, error: "/sections/part.typ:4: bad input\nno location" }]);
+  } finally {
+    globalThis.self = original;
+    globalThis.window = originalWindow;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("large Markdown preview waits until typing pauses", async (t) => {
+  const { createServer } = await import("vite");
+  const { chromium } = await import("playwright");
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "error",
+    optimizeDeps: { noDiscovery: true, include: [] },
+    server: { host: "127.0.0.1", port: 0 },
+    plugins: [
+      {
+        name: "preview-idle-test",
+        resolveId(id) {
+          if (id === "/preview-idle.tsx") return id;
+        },
+        load(id) {
+          if (id !== "/preview-idle.tsx") return;
+          return `import React from 'react';
+          import {createRoot} from 'react-dom/client';
+          import {usePreviewText} from '/src/paper/usePreviewText.ts';
+          const root = createRoot(document.getElementById('root'));
+          function Preview({text}) { return <output>{usePreviewText(text, 'file', true).slice(-1)}</output>; }
+          window.update = suffix => root.render(<Preview text={'x'.repeat(1500000) + suffix}/>);
+          window.update('a');`;
+        },
+      },
+    ],
+  });
+  await server.listen();
+  t.after(() => server.close());
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.route("**/preview-idle.html", async (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: await server.transformIndexHtml(
+        "/preview-idle.html",
+        '<div id="root"></div><script type="module" src="/preview-idle.tsx"></script>',
+      ),
+    }),
+  );
+  await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/preview-idle.html`);
+  await page.waitForFunction(() => document.querySelector("output")?.textContent === "a");
+  await page.clock.install();
+  for (let i = 0; i < 10; i++) {
+    await page.evaluate((i) => window.update(String(i)), i);
+    await page.clock.fastForward(200);
+    assert.equal(await page.locator("output").textContent(), "a");
+  }
+  await page.clock.fastForward(1000);
+  await page.waitForFunction(() => document.querySelector("output")?.textContent === "9");
 });

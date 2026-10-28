@@ -38,8 +38,17 @@
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+  flex-wrap: nowrap;
+  height: 56px;
+  box-sizing: border-box;
+  flex-shrink: 0;
   min-width: 0;
   padding: 4px 12px 8px;
+}
+.paper-preview-actions .icon-button {
+  min-height: 44px;
+  min-width: 44px;
+  flex-shrink: 0;
 }
 .paper-preview-actions select {
   min-width: 0;

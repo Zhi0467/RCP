@@ -120,16 +120,14 @@ export async function readTypstTree(
   signal: AbortSignal,
   cache: Map<string, Uint8Array>,
 ): Promise<TypstSource[]> {
-  const keys = new Set(
-    files.map((file) => `${projectId}:${file.sha256 ?? `${file.file_id}:${revision}`}`),
-  );
+  const keys = new Set(files.map((file) => `${projectId}:${file.sha256}`));
   for (const key of cache.keys()) if (!keys.has(key)) cache.delete(key);
   return Promise.all(
     files.map(async (file) => {
       if (file.file_id === openFile.file_id) {
         return { path: file.path, bytes: new TextEncoder().encode(text) };
       }
-      const key = `${projectId}:${file.sha256 ?? `${file.file_id}:${revision}`}`;
+      const key = `${projectId}:${file.sha256}`;
       const cached = cache.get(key);
       if (cached) return { path: file.path, bytes: cached };
       const response = await fetch(paperRawUrl(projectId, file.file_id, revision), { signal });

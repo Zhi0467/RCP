@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Download, LoaderCircle, RotateCcw } from "lucide-react";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
@@ -12,10 +12,20 @@ type LoadedPdf = {
   destroy: () => void;
 };
 
-export default function PaperPdf({ url, name = "paper.pdf" }: { url: string; name?: string }) {
+const scrollPositions = new Map<string, number>();
+export default function PaperPdf({
+  url,
+  name = "paper.pdf",
+  scrollKey = url,
+  actions,
+}: {
+  url: string;
+  name?: string;
+  scrollKey?: string;
+  actions?: ReactNode;
+}) {
   const viewer = useRef<HTMLDivElement>(null);
   const pages = useRef<HTMLDivElement>(null);
-  const retained = useRef(new Set<() => void>());
   const loadedTasks = useRef(new Map<() => void, number>());
   const nextGeneration = useRef(0);
   const visibleGeneration = useRef(0);
@@ -44,11 +54,9 @@ export default function PaperPdf({ url, name = "paper.pdf" }: { url: string; nam
     setLoading(true);
     const task = getDocument({ url, enableXfa: false });
     const destroy = () => {
-      retained.current.delete(destroy);
       loadedTasks.current.delete(destroy);
       void task.destroy();
     };
-    retained.current.add(destroy);
     void (async () => {
       const pdf = await task.promise;
       const ratios: number[] = [];
@@ -79,7 +87,7 @@ export default function PaperPdf({ url, name = "paper.pdf" }: { url: string; nam
   useEffect(
     () => () => {
       disposeVisible.current?.();
-      retained.current.forEach((destroy) => destroy());
+      for (const destroy of loadedTasks.current.keys()) destroy();
     },
     [],
   );
@@ -161,7 +169,9 @@ export default function PaperPdf({ url, name = "paper.pdf" }: { url: string; nam
       // range) until the pages around the current reading position are ready.
       let position: number;
       do {
-        position = root.scrollTop;
+        position = visibleGeneration.current
+          ? root.scrollTop
+          : (scrollPositions.get(scrollKey) ?? 0);
         let top = 0;
         const scroll = Math.min(
           position,
@@ -183,7 +193,7 @@ export default function PaperPdf({ url, name = "paper.pdf" }: { url: string; nam
         });
         await Promise.all(near.map(render));
         if (disposed) return;
-      } while (root.scrollTop !== position);
+      } while (visibleGeneration.current && root.scrollTop !== position);
       disposeVisible.current?.();
       disposeVisible.current = dispose;
       committed = true;
@@ -208,11 +218,18 @@ export default function PaperPdf({ url, name = "paper.pdf" }: { url: string; nam
     return () => {
       if (!committed) dispose();
     };
-  }, [document, width]);
+  }, [document, width, scrollKey]);
 
   return (
-    <div ref={viewer} className={`paper-pdf${error ? " paper-failed" : ""}`}>
+    <div
+      ref={viewer}
+      onScroll={(event) => {
+        scrollPositions.set(scrollKey, event.currentTarget.scrollTop);
+      }}
+      className={`paper-pdf${error ? " paper-failed" : ""}`}
+    >
       <div className="paper-preview-actions">
+        {actions}
         {loading && <LoaderCircle size={16} className="spin" aria-label="Rendering PDF" />}
         {error && (
           <button
