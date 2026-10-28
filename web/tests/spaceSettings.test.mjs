@@ -339,6 +339,32 @@ test("space-wide sections render on space Settings and project sections on proje
   }
 });
 
+test("the machine holding the state repository is the one tagged as the base", () => {
+  const project = settingsProject();
+  project.machines = [
+    ...project.machines,
+    { ...project.machines[0], alias: "gpu", host: "gpu.example", removable: true },
+  ];
+  const html = renderMarkup(
+    React.createElement(ProjectSettings, {
+      apiBase: `/api/projects/${projectId}`,
+      project,
+      identity: null,
+      onLeftProject() {},
+      usage: null,
+      onRefreshUsage: async () => {},
+      cacheClearDisabled: false,
+      onSaved() {},
+      onCacheMetricsChange() {},
+      onRefreshReadiness: async () => {},
+      spaceKind: "personal",
+    }),
+  );
+  const tile = (name) => html.match(new RegExp(`data-machine-tile="${name}".*?</button>`))[0];
+  assert.match(tile("local"), /machine-tile-base/);
+  assert.doesNotMatch(tile("gpu"), /machine-tile-base/);
+});
+
 test("the identity menu holds Display, and Space settings sits beside it", () => {
   const identity = {
     space_id: "space",

@@ -2528,7 +2528,6 @@ export function NodeChat({
           onChange={(next) => setConfigOverride({ chatId, config: next })}
           effectiveModel={effectiveModel}
           workLikeCapable={profile.work_like_capable}
-          showRunOn={false}
           compact
         />
       )}

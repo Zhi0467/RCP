@@ -13,7 +13,7 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../core/api";
 import { chooseDesktopRepositoryFolder, isDesktopRuntime } from "../core/desktopRuntime";
@@ -257,17 +257,6 @@ function PersonalProjectSetup({
       .catch(() => setProviders([]));
   }, []);
 
-  const remoteHosts = useMemo(
-    () => [
-      ...new Set(
-        repositories
-          .filter((repo) => repo.location === "ssh")
-          .map((repo) => repo.host.trim())
-          .filter(Boolean),
-      ),
-    ],
-    [repositories],
-  );
   const stateRepo = repositories.find((repo) => repo.alias === stateRepository) ?? repositories[0];
   const defaultRead = repositories.filter((repo) => repo.default_read);
   const canonicalExecution = {
@@ -286,17 +275,7 @@ function PersonalProjectSetup({
     default_auto_research_invocation_ceiling: defaultAutoResearchInvocationCeiling,
     execution: canonicalExecution,
     agents: Object.fromEntries(
-      agentExecutionProfiles.map(({ id }) => [
-        id,
-        {
-          ...agents[id],
-          ...(id === "paper_coach"
-            ? {
-                host: agents[id].location === "ssh" ? agents[id].host.trim() : "",
-              }
-            : canonicalExecution),
-        },
-      ]),
+      agentExecutionProfiles.map(({ id }) => [id, { ...agents[id], ...canonicalExecution }]),
     ) as SetupAgents,
     confirmed: false,
   });
@@ -343,15 +322,6 @@ function PersonalProjectSetup({
       defaultAutoResearchInvocationCeiling < 1
     ) {
       return "Set the default auto-research ceiling to at least 1 operational invocation.";
-    }
-    const invalidAgent = agentExecutionProfiles.find(
-      ({ id }) =>
-        id === "paper_coach" &&
-        agents[id].location === "ssh" &&
-        !remoteHosts.includes(agents[id].host),
-    );
-    if (invalidAgent) {
-      return `Choose one of the repository hosts for the ${invalidAgent.label} agent.`;
     }
     return null;
   };
@@ -597,9 +567,6 @@ function PersonalProjectSetup({
                   const readiness = readinessFor(providers, profile.provider);
                   const models = readiness?.models ?? [];
                   const runtimes = runtimeOptions(readiness, profile.runtime);
-                  const execution = id === "paper_coach" ? profile : canonicalExecution;
-                  const machineValue =
-                    execution.location === "local" ? "local" : `ssh:${execution.host}`;
                   return (
                     <article className="agent-role-card" key={id}>
                       <header>
@@ -684,32 +651,6 @@ function PersonalProjectSetup({
                                 </option>
                               ),
                             )}
-                          </select>
-                        </label>
-                        <label className={id === "paper_coach" ? undefined : "agent-machine-fixed"}>
-                          Run on{" "}
-                          {id === "paper_coach" ? null : (
-                            <LockKeyhole size={12} aria-hidden="true" />
-                          )}
-                          <select
-                            value={machineValue}
-                            disabled={id !== "paper_coach"}
-                            onChange={(event) => {
-                              const value = event.target.value;
-                              updateAgent(
-                                id,
-                                value === "local"
-                                  ? { location: "local", host: "" }
-                                  : { location: "ssh", host: value.slice(4) },
-                              );
-                            }}
-                          >
-                            <option value="local">This machine</option>
-                            {remoteHosts.map((host) => (
-                              <option key={host} value={`ssh:${host}`}>
-                                {host}
-                              </option>
-                            ))}
                           </select>
                         </label>
                       </div>
@@ -877,8 +818,7 @@ function PersonalProjectSetup({
             label="Agent roles"
             value={agentExecutionProfiles
               .map(({ id, label }) => {
-                const execution = id === "paper_coach" ? agents[id] : canonicalExecution;
-                return `${label}: ${agents[id].provider} @ ${execution.location === "ssh" ? execution.host || "remote" : "local"}`;
+                return `${label}: ${agents[id].provider} @ ${canonicalExecution.location === "ssh" ? canonicalExecution.host || "remote" : "local"}`;
               })
               .join(" · ")}
           />

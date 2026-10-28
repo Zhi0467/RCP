@@ -143,6 +143,17 @@ def test_orchestrator_profile_is_fixed_and_must_run_beside_canonical_state(manif
         Manifest.model_validate(wrong_machine)
 
 
+def test_an_older_coach_machine_is_dropped_for_the_base(manifest) -> None:
+    older = manifest.model_dump(mode="python")
+    older["machines"].append({"alias": "other", "host": "gpu.example", "provider_paths": {}})
+    older["agent"]["paper_coach"]["run_on"] = "other"
+
+    loaded = Manifest.model_validate(older)
+
+    base = loaded.repository_map[loaded.state.repository].machine
+    assert loaded.agent_profile("paper_coach").run_on == base
+
+
 def test_write_agent_settings_persists_all_six_execution_profiles(manifest) -> None:
     names = (
         "seed",

@@ -59,7 +59,8 @@ def test_setup_rejects_graph_profile_off_canonical_machine(tmp_path) -> None:
         )
 
 
-def test_runtime_override_cannot_move_graph_agent(manifest, tmp_path) -> None:
+@pytest.mark.parametrize("surface", ["refresh", "paper_coach"])
+def test_runtime_override_cannot_move_an_agent_off_the_base(manifest, tmp_path, surface) -> None:
     manifest.machines.append(type(manifest.machines[0])(alias="remote", host="gpu.example"))
     history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     store = AppStore(tmp_path / "rcp.sqlite3")
@@ -67,10 +68,7 @@ def test_runtime_override_cannot_move_graph_agent(manifest, tmp_path) -> None:
     service = ProjectService(manifest, history, paper, data_dir=tmp_path / "data")
 
     with pytest.raises(ValueError, match="canonical state machine"):
-        service.resolve_agent_profile("refresh", run_on="remote")
-
-    coach = service.resolve_agent_profile("paper_coach", run_on="remote")
-    assert coach.run_on == "remote"
+        service.resolve_agent_profile(surface, run_on="remote")
 
 
 def test_provider_override_does_not_inherit_previous_provider_model(manifest, tmp_path) -> None:

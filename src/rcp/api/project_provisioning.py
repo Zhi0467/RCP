@@ -22,7 +22,6 @@ from rcp.api.identity import IdentityAccess
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,
     DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING,
-    GRAPH_AGENT_EXECUTION_PROFILES,
     AgentExecutionProfile,
 )
 from rcp.core.models import AuthorizedHuman, GraphState, Patch
@@ -212,13 +211,9 @@ class ProjectProvisioningCreateRequest(_StrictModel):
         }
         canonical_machine = repository_machines.get(self.state_repository)
         if canonical_machine is not None and any(
-            check.profile in GRAPH_AGENT_EXECUTION_PROFILES
-            and check.machine_alias != canonical_machine
-            for check in self.provider_checks
+            check.machine_alias != canonical_machine for check in self.provider_checks
         ):
-            raise ValueError(
-                "graph-writing provider profiles must run on the canonical state machine"
-            )
+            raise ValueError("every provider profile must run on the canonical state machine")
         return self
 
 

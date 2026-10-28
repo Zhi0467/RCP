@@ -20,7 +20,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from rcp.agents import AgentLauncher, ProviderReadiness
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,
-    GRAPH_AGENT_EXECUTION_PROFILES,
     AgentExecutionProfile,
     Manifest,
     load_manifest,
@@ -405,9 +404,6 @@ class ProjectSetupRequest(_StrictSetupModel):
         ]
         if len(locations) != len(set(locations)):
             raise ValueError("the same repository path cannot be added twice")
-        remote_hosts = {
-            repository.host for repository in self.repositories if repository.location == "ssh"
-        }
         if self.agents is None:
             canonical = next(
                 repository
@@ -424,24 +420,19 @@ class ProjectSetupRequest(_StrictSetupModel):
                 node_chat=graph_profile.model_copy(),
                 project_chat=graph_profile.model_copy(),
                 orchestrator=graph_profile.model_copy(),
+                paper_coach=graph_profile.model_copy(update={"model": "gpt-5.6-luna"}),
             )
         canonical = next(
             repository
             for repository in self.repositories
             if repository.alias == self.state_repository
         )
-        for surface in GRAPH_AGENT_EXECUTION_PROFILES:
+        for surface in _SETUP_AGENT_EXECUTION_PROFILES:
             profile = self.agents.profile(surface)
             if (profile.location, profile.host) != (canonical.location, canonical.host):
                 target = canonical.host or "this machine"
                 raise ValueError(
                     f"{surface.replace('_', ' ')} must run beside canonical state on {target}"
-                )
-        for surface in _SETUP_AGENT_EXECUTION_PROFILES:
-            profile = self.agents.profile(surface)
-            if profile.location == "ssh" and profile.host not in remote_hosts:
-                raise ValueError(
-                    f"{surface.replace('_', ' ')} must run on a host that owns a project repository"
                 )
         return self
 

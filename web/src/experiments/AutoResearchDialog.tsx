@@ -391,7 +391,6 @@ export function AutoResearchDialog({
               effectiveModel={launchEffectiveModel}
               workLikeCapable={launchProfile.work_like_capable}
               locked={busy}
-              showRunOn={false}
               compact
             >
               <div className="agent-config-options" role="group" aria-label="Launch options">

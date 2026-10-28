@@ -2603,7 +2603,7 @@ class ProjectService:
             if run_on not in self.manifest.machine_map:
                 raise ValueError(f"unknown execution machine: {run_on}")
             state_machine = self.manifest.repository_map[self.manifest.state.repository].machine
-            if surface != "paper_coach" and run_on != state_machine:
+            if run_on != state_machine:
                 raise ValueError(
                     f"{surface.replace('_', ' ')} must run on canonical state machine "
                     f"{state_machine!r}"

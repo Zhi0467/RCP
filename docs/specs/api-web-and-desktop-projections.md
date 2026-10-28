@@ -1256,7 +1256,7 @@ wrap-up means no report was needed; sign-in-blocked reports remain wrapping up.
 `GET /api/providers/logins` lists machine accounts, dependent project machines,
 secret-free credential summaries, labels, supported sign-in methods, and active
 sign-ins. The project snapshot's `provider_logins` lists only accounts an agent
-uses: each execution profile's provider on its `run_on` machine, plus any
+uses: each execution profile's provider on the base machine, plus any
 account holding this project's parked work (queued tasks, provider-auth
 recoveries, the current failed Experiment turn, undelivered watcher groups). A
 machine no profile runs on raises no notice. Signed-out accounts get one notice
