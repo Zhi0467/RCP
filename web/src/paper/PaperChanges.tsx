@@ -27,19 +27,14 @@ export interface PaperChange {
   file_id: string;
   path: string;
   new_path?: string;
-  current: { start: number; end: number; revision: number; text: string } | null;
+  current: { start: number; end: number; revision: number; text: string; line: number } | null;
   lines?: { start: number; end: number };
   preview: { removed: string[]; added: string[]; more: number };
   stats?: { added: number; removed: number };
   state: "pending" | "accepted" | "rejected" | "outdated" | "applied" | "undone";
-  decided_by?: string;
-  decided_at?: string;
 }
 export type PaperChangeAction = "accept" | "reject" | "undo" | "refresh";
 interface ChangeGroup {
-  base_revision: number;
-  group_id: string;
-  task_id: string;
   changes: PaperChange[];
 }
 
@@ -50,11 +45,9 @@ export function usePaperChanges(apiBase: string, refreshKey: string | number) {
   const refresh = useCallback(async () => {
     const current = ++generation.current;
     try {
-      const result = await api<{ groups: (ChangeGroup | PaperChange)[] }>(
-        `${apiBase}/paper/changes`,
-      );
+      const result = await api<{ groups: ChangeGroup[] }>(`${apiBase}/paper/changes`);
       if (current !== generation.current) return;
-      setChanges(result.groups.flatMap((group) => ("changes" in group ? group.changes : [group])));
+      setChanges(result.groups.flatMap((group) => group.changes));
       setError(null);
     } catch (cause) {
       if (current === generation.current) setError(String(cause));
@@ -105,7 +98,11 @@ const icons = {
   binary: Image,
 };
 function location(change: PaperChange) {
-  const lines = change.lines;
+  const shift = change.current && change.lines ? change.current.line - change.lines.start : 0;
+  const lines = change.lines && {
+    start: change.lines.start + shift,
+    end: change.lines.end + shift,
+  };
   return [
     change.kind !== "edit" ? change.kind : null,
     lines
@@ -180,7 +177,9 @@ export function PaperChanges({
   };
   const retryAll = failure?.id === "all" ? failure.retry : null;
   const pending = changes.filter((change) => change.state === "pending");
-  const applied = changes.filter((change) => change.state === "applied");
+  const applied = changes.filter(
+    (change) => change.state === "applied" || change.state === "accepted",
+  );
   if (!changes.length) return null;
   return (
     <div className="paper-changes" aria-busy={busy}>
@@ -218,14 +217,14 @@ export function PaperChanges({
             <Undo2 size={15} />
           </button>
         )}
-        {retryAll && (
+        {failure?.id === "all" && (
           <button
             className="icon-button compact"
-            aria-label="Retry changes"
+            aria-label={retryAll ? "Retry changes" : "Dismiss changes failure"}
             title={failure?.error}
-            onClick={() => void perform("all", retryAll)}
+            onClick={() => (retryAll ? void perform("all", retryAll) : setFailure(null))}
           >
-            <RotateCcw size={15} />
+            {retryAll ? <RotateCcw size={15} /> : <X size={15} />}
           </button>
         )}
       </div>
@@ -261,17 +260,17 @@ export function PaperChanges({
                   {change.state !== "pending" ? ` · ${change.state}` : ""}
                 </span>
               </span>
-              {retry && (
+              {failed && (
                 <button
                   className="icon-button compact"
-                  aria-label="Retry change"
+                  aria-label={retry ? "Retry change" : "Dismiss change failure"}
                   title={failure?.error}
-                  onClick={() => void perform(change.change_id, retry)}
+                  onClick={() => (retry ? void perform(change.change_id, retry) : setFailure(null))}
                 >
-                  <RotateCcw size={14} />
+                  {retry ? <RotateCcw size={14} /> : <X size={14} />}
                 </button>
               )}
-              {!settled && change.kind !== "delete" && (
+              {!settled && change.kind !== "delete" && change.kind !== "create" && (
                 <button
                   className="icon-button compact"
                   aria-label={change.kind === "rewrite" ? "Compare" : "Locate change"}
@@ -284,30 +283,30 @@ export function PaperChanges({
                 </button>
               )}
               {change.state === "pending" && (
-                <>
-                  <button
-                    className="icon-button compact accept"
-                    aria-label="Accept change"
-                    title="Accept change"
-                    disabled={busy}
-                    onClick={() =>
-                      void perform(change.change_id, () => onAction(change.group_id, "accept"))
-                    }
-                  >
-                    <Check size={14} />
-                  </button>
-                  <button
-                    className="icon-button compact reject"
-                    aria-label="Reject change"
-                    title="Reject change"
-                    disabled={busy}
-                    onClick={() =>
-                      void perform(change.change_id, () => onAction(change.group_id, "reject"))
-                    }
-                  >
-                    <X size={14} />
-                  </button>
-                </>
+                <button
+                  className="icon-button compact accept"
+                  aria-label="Accept change"
+                  title="Accept change"
+                  disabled={busy}
+                  onClick={() =>
+                    void perform(change.change_id, () => onAction(change.group_id, "accept"))
+                  }
+                >
+                  <Check size={14} />
+                </button>
+              )}
+              {(change.state === "pending" || change.state === "outdated") && (
+                <button
+                  className="icon-button compact reject"
+                  aria-label="Reject change"
+                  title="Reject change"
+                  disabled={busy}
+                  onClick={() =>
+                    void perform(change.change_id, () => onAction(change.group_id, "reject"))
+                  }
+                >
+                  <X size={14} />
+                </button>
               )}
               {change.state === "outdated" && (
                 <button
