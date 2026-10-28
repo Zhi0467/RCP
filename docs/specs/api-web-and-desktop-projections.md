@@ -1611,7 +1611,15 @@ owns inline definitions.
 
 The desktop window is a client of backend-owned durable work. Closing or hiding
 the window never cancels a task. Reopening attaches to the healthy owner and
-current app state.
+current app state. Closing a full-screen window first leaves full screen and
+keeps the window hidden once macOS finishes the transition, so no empty
+full-screen Space remains.
+
+No link strands the app on a page it does not serve. Rendered Markdown keeps
+node, repository-file and in-app `#/` links; external `http(s)` and `mailto`
+links open a new tab, and any other link renders as plain text. A link the page
+did not handle that would leave the app document opens a new tab instead, and a
+page navigation to a path the server does not serve redirects to the app.
 
 A source-mode frontend rebuild preserves content-hashed assets from the prior
 build so an already-open window can keep lazy-loading its coherent bundle until
