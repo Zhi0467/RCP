@@ -21,3 +21,16 @@ export function dismissBanner(key: string): void {
     /* Session memory still hides it on this page. */
   }
 }
+
+// A cleared condition forgets its dismissals, so its next occurrence shows.
+export function forgetBanners(prefix: string): void {
+  for (const key of dismissed) if (key.startsWith(prefix)) dismissed.delete(key);
+  try {
+    for (let index = localStorage.length - 1; index >= 0; index--) {
+      const key = localStorage.key(index);
+      if (key?.startsWith(storageKey(prefix))) localStorage.removeItem(key);
+    }
+  } catch {
+    /* Nothing persisted to forget. */
+  }
+}

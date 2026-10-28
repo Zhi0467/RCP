@@ -135,12 +135,14 @@ def test_ended_episode_last_card_answers_with_turns(questions_api, monkeypatch):
     [(source, kwargs)] = continued
     assert source.episode_id == "first"
     assert (kwargs["invocation_ceiling"], kwargs["request_id"]) == (2, request_id)
-    # Once that continuation has itself ended, a retry replays the answer.
+    # While that continuation ends and after it has, a retry replays the answer.
     store.create_episode(
         _episode(store, "second", project_id=project_id).model_copy(
             update={"continues_episode_id": "first"}
         )
     )
+    store.fence_episode_ending("second", "exhausted")
+    assert answer(last, invocation_ceiling=2, request_id=request_id).status_code == 200
     store.end_episode_without_report("second", ending="exhausted", diagnostic=None)
     assert answer(last, invocation_ceiling=2, request_id=request_id).status_code == 200
     assert len(continued) == 1

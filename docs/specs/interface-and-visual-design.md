@@ -69,7 +69,9 @@ visible; Inbox counts share a row.
 
 Every banner is the shared `ui/Banner`: one icon-only Dismiss in its corner and one
 per-device store. Its key names one occurrence (a release, a sign-out, a failure,
-a turn), so a new occurrence shows again.
+a turn), so a new occurrence shows again. A banner whose key cannot name its
+occurrence, such as a compute route failure, forgets its dismissal once the
+condition clears.
 **Why:** each banner once grew its own dismiss, or none, and the gaps recurred.
 
 Glossary definitions are inline, without a destination. Cached projects paint

@@ -208,6 +208,11 @@ test("a dismissed sign-in notice stays hidden until that account signs out again
   globalThis.localStorage = {
     getItem: (key) => stored.get(key) ?? null,
     setItem: (key, value) => stored.set(key, String(value)),
+    removeItem: (key) => stored.delete(key),
+    key: (index) => [...stored.keys()][index] ?? null,
+    get length() {
+      return stored.size;
+    },
   };
   const { loginNoticeDismissKey: key } = await import("../src/projects/providerLoginsModel.ts");
   const banners = "../src/ui/bannerDismissal.ts";
@@ -223,6 +228,11 @@ test("a dismissed sign-in notice stays hidden until that account signs out again
     assert.equal(reloaded.isBannerDismissed(key({ ...signOut, changed_at: "t2" })), true);
     assert.equal(reloaded.isBannerDismissed(key({ ...signOut, generation: 5 })), false);
     assert.equal(reloaded.isBannerDismissed(key({ ...signOut, host: "" })), false);
+    // A cleared condition forgets only its own dismissals.
+    reloaded.dismissBanner("compute-route:gpu:helper:timeout");
+    reloaded.forgetBanners("compute-route:gpu:helper:");
+    assert.equal(reloaded.isBannerDismissed("compute-route:gpu:helper:timeout"), false);
+    assert.equal(reloaded.isBannerDismissed(key(signOut)), true);
     globalThis.localStorage = {
       getItem: () => {
         throw new Error("unavailable");

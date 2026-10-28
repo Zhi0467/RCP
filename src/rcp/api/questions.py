@@ -192,7 +192,7 @@ def answer_question(
         newest = _newest_episode(store, current)
         continues = _answer_continues(store, current, newest)
         if (
-            continues == "turns"
+            continues is not None
             and newest is not None
             and current.resolved_at is not None
             and datetime.fromisoformat(newest.created_at)

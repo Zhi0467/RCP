@@ -233,6 +233,7 @@ import { DetailDrawer } from "./graph/DetailDrawer";
 import { branchNameRefusal } from "./graph/BranchNameField";
 import { branchName } from "./core/branchNames";
 import { Banner } from "./ui/Banner";
+import { forgetBanners } from "./ui/bannerDismissal";
 import { DraggableWindow } from "./ui/DraggableWindow";
 import { ProjectHistoryDrawer } from "./agents/ProjectHistoryDrawer";
 import { ProjectDock } from "./projects/ProjectDock";
@@ -853,6 +854,10 @@ function MemberApp({
     project: sessionProject,
     reportError: reportErrorNotice,
   });
+  // A cleared staged conflict forgets its dismissal; a later conflict shows again.
+  useEffect(() => {
+    if (projectId && !draftPreviewConflict) forgetBanners(`staged-conflict:${projectId}:`);
+  }, [projectId, draftPreviewConflict]);
   const pinBranchId = graphTarget.kind === "branch" ? graphTarget.branch_id : null;
   const pinScope = pinScopeKey(projectId, pinBranchId);
   const [pinSelection, setPinSelection] = useState<{ scope: string; id: string } | null>(null);
