@@ -576,8 +576,14 @@ async def _stream_coach(
         )
 
     try:
-        replace_group_ids = set(request.refresh_group_ids) or None
         replace_source_task_id = request.refresh_source_task_id
+        replace_group_ids = (
+            await asyncio.to_thread(
+                changes.undecided_group_ids, paper.project_id, replace_source_task_id, wanted
+            )
+            if replace_source_task_id and wanted is not None
+            else None
+        )
         for refresh_round in range(PAPER_COACH_MAX_REFRESH_ROUNDS + 1):
             completed = False
             if _coach_stopped(execution):
@@ -681,6 +687,9 @@ async def _stream_coach(
                 break
             stale_files = await asyncio.to_thread(
                 changes.affected_file_ids, paper.project_id, replace_group_ids
+            )
+            replace_group_ids = await asyncio.to_thread(
+                changes.undecided_group_ids, paper.project_id, token, stale_files
             )
             snapshot = newer.model_copy(
                 update={"files": [file for file in newer.files if file.file_id in stale_files]}

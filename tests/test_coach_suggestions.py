@@ -106,6 +106,42 @@ async def test_saved_snapshot_refreshes_same_session_only_affected_files(
 
 
 @pytest.mark.asyncio
+async def test_a_refresh_replaces_every_undecided_card_on_its_file(coach):
+    service, live, data = coach
+    project = service.paper.project_id
+    human_edit(live, "paper-file", "".join(f"line {i}\n" for i in range(30)), project)
+    rounds = []
+
+    class Launcher:
+        async def stream(self, _provider, _prompt, **kwargs):
+            rounds.append(kwargs["session_id"])
+            text = saved(live, project).files[0].text or ""
+            output = kwargs["write_dirs"][0] / "files" / "paper.md"
+            output.parent.mkdir()
+            output.write_text(
+                text.replace("line 2\n", "coach 2\n")
+                .replace("human 2\n", "coach 2\n")
+                .replace("line 25\n", "coach 25\n")
+            )
+            if len(rounds) == 1:
+                # Inside the first card only: it goes outdated, the second stays pending.
+                human_edit(live, "paper-file", text.replace("line 2\n", "human 2\n"), project)
+            yield AgentEvent(event="session", session_id="refresh-native")
+            yield AgentEvent(event="done")
+
+    events = await run_coach(service, Launcher(), data, execution=execution_for(service))
+    assert not [event for event in events if event.event == "error"]
+    assert len(rounds) == 2
+    undecided = [
+        change.after
+        for group in service.paper_changes.groups(project)
+        if group.state in {"pending", "outdated"}
+        for change in group.changes
+    ]
+    assert sorted(undecided) == ["coach 2\n", "coach 25\n"]
+
+
+@pytest.mark.asyncio
 async def test_every_coach_turn_of_a_project_runs_in_one_folder(coach):
     service, _live, data = coach
     folders = []

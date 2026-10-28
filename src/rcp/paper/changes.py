@@ -611,17 +611,17 @@ class PaperChanges:
                     "SELECT task_id,state FROM paper_change_groups WHERE project_id=? AND group_id=?",
                     (project_id, group_id),
                 ).fetchone()
-                if (
-                    row is None
-                    or row[0] != (replace_source_task_id or task_id)
-                    or row[1] not in {"pending", "outdated"}
-                ):
+                if row is None or row[0] != (replace_source_task_id or task_id):
                     raise ValueError("Only this task's undecided groups can be refreshed")
-                if connection.execute(
-                    "SELECT 1 FROM paper_change_receipts WHERE project_id=? AND group_id=?",
-                    (project_id, group_id),
-                ).fetchone():
-                    raise ValueError("A group with a mutation receipt cannot be refreshed")
+                # A human decided it while the coach worked: the decision stands.
+                if (
+                    row[1] not in {"pending", "outdated"}
+                    or connection.execute(
+                        "SELECT 1 FROM paper_change_receipts WHERE project_id=? AND group_id=?",
+                        (project_id, group_id),
+                    ).fetchone()
+                ):
+                    continue
                 connection.execute(
                     "DELETE FROM paper_change_groups WHERE project_id=? AND group_id=?",
                     (project_id, group_id),
@@ -708,6 +708,16 @@ class PaperChanges:
             group.group_id
             for group in self.groups(project_id, task_id)
             if group.state == "outdated"
+        }
+
+    def undecided_group_ids(self, project_id: str, task_id: str, file_ids: set[str]) -> set[str]:
+        """A refresh re-proposes whole files, so it replaces every undecided group of the
+        task on those files, not only the outdated one."""
+        return {
+            group.group_id
+            for group in self.groups(project_id, task_id)
+            if group.state in {"pending", "outdated"}
+            and any(change.file_id in file_ids for change in group.changes)
         }
 
     def affected_file_ids(self, project_id: str, group_ids: set[str]) -> set[str]:
