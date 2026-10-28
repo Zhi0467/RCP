@@ -2293,7 +2293,9 @@ export function NodeChat({
           return;
         }
       }
-      setRepositoryFileErrors((current) => withMapValue(current, messageId, resolution.message));
+      // A path no repository or turn folder owns, such as an API route, is an inert link.
+      if (resolution.reason !== "no-match")
+        setRepositoryFileErrors((current) => withMapValue(current, messageId, resolution.message));
       return;
     }
 

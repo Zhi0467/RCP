@@ -420,7 +420,7 @@ test("universal cards preserve actions, refresh Keep, and resolve file citations
         updated_at: "2026-09-27T10:00:00Z",
         request: { chat_id: "chat", mode: "discuss" },
         result: {
-          messages: ["[file](/scratch/turns/turn/artifacts/file.dat)"],
+          messages: ["[file](/scratch/turns/turn/artifacts/file.dat) [health](/api/health)"],
           artifacts,
           artifact_omissions: { empty: 2, count_limit: 3, discovery_failed: false },
         },
@@ -497,6 +497,10 @@ test("universal cards preserve actions, refresh Keep, and resolve file citations
     assert.equal(await page.locator(".chat-artifact-omissions[role=status]").count(), 2);
     await page.locator('a[href="/scratch/turns/turn/artifacts/file.dat"]').click();
     assert.equal(await page.evaluate(() => document.activeElement.id), "artifact-turn-file");
+    // A path no repository or turn owns is an inert link, never a caption.
+    await page.locator('a[href="/api/health"]').click();
+    await page.waitForTimeout(100);
+    assert.equal(await page.locator(".chat-repository-file-error").count(), 0);
     await file.locator("[data-artifact-action=keep]").click();
     await file.locator("[data-artifact-action=keep]").waitFor({ state: "detached" });
     assert.deepEqual(mutations, [{ method: "POST", body: {}, contentType: "application/json" }]);
